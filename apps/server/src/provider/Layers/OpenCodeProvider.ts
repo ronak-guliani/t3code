@@ -205,6 +205,14 @@ export function checkOpenCodeProviderStatus(input: {
   };
 
   return Effect.gen(function* () {
+    yield* Effect.logDebug("opencode.provider.probe.start", {
+      cwd: input.cwd,
+      enabled: input.settings.enabled,
+      usingExternalServer: isExternalServer,
+      serverUrl: input.settings.serverUrl,
+      customModelCount: customModels.length,
+    });
+
     if (!input.settings.enabled) {
       return buildServerProvider({
         provider: PROVIDER,
@@ -230,6 +238,9 @@ export function checkOpenCodeProviderStatus(input: {
 
     let version: string | null = null;
     if (!isExternalServer) {
+      yield* Effect.logDebug("opencode.provider.probe.version", {
+        binaryPath: input.settings.binaryPath,
+      });
       const versionExit = yield* Effect.exit(
         Effect.tryPromise({
           try: () =>
@@ -241,11 +252,21 @@ export function checkOpenCodeProviderStatus(input: {
         }),
       );
       if (versionExit._tag === "Failure") {
+        yield* Effect.logWarning("opencode.provider.probe.version-failed", {
+          cause: Cause.squash(versionExit.cause),
+        });
         return fallback(Cause.squash(versionExit.cause));
       }
       version = parseGenericCliVersion(versionExit.value.stdout) ?? null;
+      yield* Effect.logDebug("opencode.provider.probe.version-complete", {
+        version,
+      });
     }
 
+    yield* Effect.logDebug("opencode.provider.probe.inventory", {
+      usingExternalServer: isExternalServer,
+      cwd: input.cwd,
+    });
     const inventoryExit = yield* Effect.exit(
       Effect.acquireUseRelease(
         Effect.tryPromise({
@@ -274,6 +295,10 @@ export function checkOpenCodeProviderStatus(input: {
       ),
     );
     if (inventoryExit._tag === "Failure") {
+      yield* Effect.logWarning("opencode.provider.probe.inventory-failed", {
+        version,
+        cause: Cause.squash(inventoryExit.cause),
+      });
       return fallback(Cause.squash(inventoryExit.cause), version);
     }
 
@@ -284,6 +309,12 @@ export function checkOpenCodeProviderStatus(input: {
       DEFAULT_OPENCODE_MODEL_CAPABILITIES,
     );
     const connectedCount = inventoryExit.value.providerList.connected.length;
+    yield* Effect.logInfo("opencode.provider.probe.ready", {
+      version,
+      connectedProviderCount: connectedCount,
+      discoveredModelCount: models.length,
+      usingExternalServer: isExternalServer,
+    });
     return buildServerProvider({
       provider: PROVIDER,
       enabled: true,

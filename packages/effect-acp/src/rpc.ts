@@ -76,6 +76,12 @@ export const SetSessionConfigOptionRpc = Rpc.make(AGENT_METHODS.session_set_conf
   error: AcpSchema.Error,
 });
 
+export const SetSessionModeRpc = Rpc.make(AGENT_METHODS.session_set_mode, {
+  payload: AcpSchema.SetSessionModeRequest,
+  success: AcpSchema.SetSessionModeResponse,
+  error: AcpSchema.Error,
+});
+
 export const ReadTextFileRpc = Rpc.make(CLIENT_METHODS.fs_read_text_file, {
   payload: AcpSchema.ReadTextFileRequest,
   success: AcpSchema.ReadTextFileResponse,
@@ -143,6 +149,7 @@ export const AgentRpcs = RpcGroup.make(
   PromptRpc,
   SetSessionModelRpc,
   SetSessionConfigOptionRpc,
+  SetSessionModeRpc,
 );
 
 export const ClientRpcs = RpcGroup.make(

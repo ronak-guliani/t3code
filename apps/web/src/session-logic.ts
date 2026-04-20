@@ -33,6 +33,7 @@ export const PROVIDER_OPTIONS: Array<{
   { value: "claudeAgent", label: "Claude", available: true },
   { value: "opencode", label: "OpenCode", available: true },
   { value: "cursor", label: "Cursor", available: true },
+  { value: "copilot", label: "GitHub Copilot", available: true },
 ];
 
 export interface WorkLogEntry {

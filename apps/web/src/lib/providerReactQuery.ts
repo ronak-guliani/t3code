@@ -2,6 +2,8 @@ import {
   type EnvironmentId,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
+  type ProviderKind,
+  type ServerProviderListCommandsResult,
   ThreadId,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
@@ -19,6 +21,11 @@ interface CheckpointDiffQueryInput {
 
 export const providerQueryKeys = {
   all: ["providers"] as const,
+  commands: (
+    environmentId: EnvironmentId | null,
+    provider: ProviderKind | null,
+    cwd: string | null,
+  ) => ["providers", "commands", environmentId ?? null, provider ?? null, cwd ?? null] as const,
   checkpointDiff: (input: CheckpointDiffQueryInput) =>
     [
       "providers",
@@ -29,6 +36,10 @@ export const providerQueryKeys = {
       input.toTurnCount,
       input.cacheScope ?? null,
     ] as const,
+};
+
+const EMPTY_PROVIDER_COMMANDS_RESULT: ServerProviderListCommandsResult = {
+  commands: [],
 };
 
 function decodeCheckpointDiffRequest(input: CheckpointDiffQueryInput) {
@@ -127,5 +138,33 @@ export function checkpointDiffQueryOptions(input: CheckpointDiffQueryInput) {
       isCheckpointTemporarilyUnavailable(error)
         ? Math.min(5_000, 250 * 2 ** (attempt - 1))
         : Math.min(1_000, 100 * 2 ** (attempt - 1)),
+  });
+}
+
+export function providerCommandsQueryOptions(input: {
+  environmentId: EnvironmentId | null;
+  provider: ProviderKind | null;
+  cwd: string | null;
+  enabled?: boolean;
+}) {
+  return queryOptions({
+    queryKey: providerQueryKeys.commands(input.environmentId, input.provider, input.cwd),
+    queryFn: async () => {
+      if (!input.environmentId || !input.provider || !input.cwd) {
+        throw new Error("Provider commands are unavailable.");
+      }
+      const api = ensureEnvironmentApi(input.environmentId);
+      return api.server.listProviderCommands({
+        provider: input.provider,
+        cwd: input.cwd,
+      });
+    },
+    enabled:
+      (input.enabled ?? true) &&
+      input.environmentId !== null &&
+      input.provider !== null &&
+      input.cwd !== null,
+    staleTime: 30_000,
+    placeholderData: (previous) => previous ?? EMPTY_PROVIDER_COMMANDS_RESULT,
   });
 }

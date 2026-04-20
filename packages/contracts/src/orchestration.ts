@@ -2,6 +2,7 @@ import { Effect, Option, Schema, SchemaIssue, Struct } from "effect";
 import {
   ClaudeModelOptions,
   CodexModelOptions,
+  CopilotModelOptions,
   CursorModelOptions,
   OpenCodeModelOptions,
 } from "./model.ts";
@@ -30,7 +31,13 @@ export const ORCHESTRATION_WS_METHODS = {
   subscribeThread: "orchestration.subscribeThread",
 } as const;
 
-export const ProviderKind = Schema.Literals(["codex", "claudeAgent", "cursor", "opencode"]);
+export const ProviderKind = Schema.Literals([
+  "codex",
+  "claudeAgent",
+  "cursor",
+  "copilot",
+  "opencode",
+]);
 export type ProviderKind = typeof ProviderKind.Type;
 export const ProviderApprovalPolicy = Schema.Literals([
   "untrusted",
@@ -68,6 +75,12 @@ export const CursorModelSelection = Schema.Struct({
   options: Schema.optionalKey(CursorModelOptions),
 });
 export type CursorModelSelection = typeof CursorModelSelection.Type;
+export const CopilotModelSelection = Schema.Struct({
+  provider: Schema.Literal("copilot"),
+  model: TrimmedNonEmptyString,
+  options: Schema.optionalKey(CopilotModelOptions),
+});
+export type CopilotModelSelection = typeof CopilotModelSelection.Type;
 export const OpenCodeModelSelection = Schema.Struct({
   provider: Schema.Literal("opencode"),
   model: TrimmedNonEmptyString,
@@ -79,6 +92,7 @@ export const ModelSelection = Schema.Union([
   CodexModelSelection,
   ClaudeModelSelection,
   CursorModelSelection,
+  CopilotModelSelection,
   OpenCodeModelSelection,
 ]);
 export type ModelSelection = typeof ModelSelection.Type;

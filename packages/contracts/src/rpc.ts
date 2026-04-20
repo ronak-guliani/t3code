@@ -70,6 +70,10 @@ import {
 import {
   ServerConfigStreamEvent,
   ServerConfig,
+  ServerRefreshProvidersInput,
+  ServerProviderListCommandsError,
+  ServerProviderListCommandsInput,
+  ServerProviderListCommandsResult,
   ServerLifecycleStreamEvent,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingInput,
@@ -115,6 +119,7 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverListProviderCommands: "server.listProviderCommands",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
@@ -140,8 +145,14 @@ export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
 });
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
-  payload: Schema.Struct({}),
+  payload: ServerRefreshProvidersInput,
   success: ServerProviderUpdatedPayload,
+});
+
+export const WsServerListProviderCommandsRpc = Rpc.make(WS_METHODS.serverListProviderCommands, {
+  payload: ServerProviderListCommandsInput,
+  success: ServerProviderListCommandsResult,
+  error: ServerProviderListCommandsError,
 });
 
 export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
@@ -358,6 +369,7 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerListProviderCommandsRpc,
   WsServerUpsertKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,

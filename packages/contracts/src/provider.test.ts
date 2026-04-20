@@ -88,6 +88,24 @@ describe("ProviderSessionStartInput", () => {
       expect(parsed.modelSelection.options?.fastMode).toBe(true);
     }
   });
+
+  it("accepts copilot provider", () => {
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "thread-1",
+      provider: "copilot",
+      cwd: "/tmp/workspace",
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      modelSelection: {
+        provider: "copilot",
+        model: "auto",
+      },
+    });
+    expect(parsed.provider).toBe("copilot");
+    expect(parsed.interactionMode).toBe("plan");
+    expect(parsed.modelSelection?.provider).toBe("copilot");
+    expect(parsed.modelSelection?.model).toBe("auto");
+  });
 });
 
 describe("ProviderSendTurnInput", () => {
@@ -132,5 +150,18 @@ describe("ProviderSendTurnInput", () => {
     }
     expect(parsed.modelSelection.options?.effort).toBe("ultrathink");
     expect(parsed.modelSelection.options?.fastMode).toBe(true);
+  });
+
+  it("accepts copilot modelSelection", () => {
+    const parsed = decodeProviderSendTurnInput({
+      threadId: "thread-1",
+      modelSelection: {
+        provider: "copilot",
+        model: "auto",
+      },
+    });
+
+    expect(parsed.modelSelection?.provider).toBe("copilot");
+    expect(parsed.modelSelection?.model).toBe("auto");
   });
 });

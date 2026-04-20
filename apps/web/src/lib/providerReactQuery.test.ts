@@ -1,7 +1,11 @@
 import { EnvironmentId, ThreadId, type EnvironmentApi } from "@t3tools/contracts";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkpointDiffQueryOptions, providerQueryKeys } from "./providerReactQuery";
+import {
+  checkpointDiffQueryOptions,
+  providerCommandsQueryOptions,
+  providerQueryKeys,
+} from "./providerReactQuery";
 import * as environmentApi from "../environmentApi";
 
 const threadId = ThreadId.make("thread-id");
@@ -10,8 +14,12 @@ const environmentId = EnvironmentId.make("environment-local");
 function mockNativeApi(input: {
   getTurnDiff: ReturnType<typeof vi.fn>;
   getFullThreadDiff: ReturnType<typeof vi.fn>;
+  listProviderCommands?: ReturnType<typeof vi.fn>;
 }) {
   vi.spyOn(environmentApi, "ensureEnvironmentApi").mockReturnValue({
+    server: {
+      listProviderCommands: input.listProviderCommands ?? vi.fn(),
+    },
     orchestration: {
       getTurnDiff: input.getTurnDiff,
       getFullThreadDiff: input.getFullThreadDiff,
@@ -21,6 +29,42 @@ function mockNativeApi(input: {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("providerCommandsQueryOptions", () => {
+  it("caches and forwards provider command lookups by environment, provider, and cwd", async () => {
+    const listProviderCommands = vi.fn().mockResolvedValue({
+      commands: [{ name: "review", description: "Review changes" }],
+    });
+    mockNativeApi({
+      getTurnDiff: vi.fn(),
+      getFullThreadDiff: vi.fn(),
+      listProviderCommands,
+    });
+
+    const options = providerCommandsQueryOptions({
+      environmentId,
+      provider: "copilot",
+      cwd: "/repo/project",
+    });
+
+    const queryClient = new QueryClient();
+    await expect(queryClient.fetchQuery(options)).resolves.toEqual({
+      commands: [{ name: "review", description: "Review changes" }],
+    });
+
+    expect(options.queryKey).toEqual([
+      "providers",
+      "commands",
+      environmentId,
+      "copilot",
+      "/repo/project",
+    ]);
+    expect(listProviderCommands).toHaveBeenCalledWith({
+      provider: "copilot",
+      cwd: "/repo/project",
+    });
+  });
 });
 
 describe("providerQueryKeys.checkpointDiff", () => {

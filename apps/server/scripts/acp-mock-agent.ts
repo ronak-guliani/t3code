@@ -17,9 +17,14 @@ const emitInterleavedAssistantToolCalls =
   process.env.T3_ACP_EMIT_INTERLEAVED_ASSISTANT_TOOL_CALLS === "1";
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
+const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+const authMethods = (process.env.T3_ACP_AUTH_METHODS ?? "")
+  .split(",")
+  .map((method) => method.trim())
+  .filter((method) => method.length > 0);
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -217,6 +222,14 @@ const program = Effect.gen(function* () {
       return {
         protocolVersion: 1,
         agentCapabilities: { loadSession: true },
+        ...(authMethods.length > 0
+          ? {
+              authMethods: authMethods.map((id) => ({
+                id,
+                name: id,
+              })),
+            }
+          : {}),
       };
     }),
   );
@@ -282,6 +295,20 @@ const program = Effect.gen(function* () {
       return {
         configOptions: configOptions(),
       };
+    }),
+  );
+
+  yield* agent.handleSetSessionMode((request) =>
+    Effect.gen(function* () {
+      currentModeId = request.modeId;
+      yield* agent.client.sessionUpdate({
+        sessionId: String(request.sessionId ?? sessionId),
+        update: {
+          sessionUpdate: "current_mode_update",
+          currentModeId,
+        },
+      });
+      return {};
     }),
   );
 
@@ -479,6 +506,35 @@ const program = Effect.gen(function* () {
               ],
             },
           ],
+        });
+
+        return { stopReason: "end_turn" };
+      }
+
+      if (emitElicitation) {
+        yield* agent.client.elicit({
+          sessionId: requestedSessionId,
+          mode: "form",
+          message: "Choose deployment options",
+          requestedSchema: {
+            type: "object",
+            title: "Deployment",
+            properties: {
+              environment: {
+                type: "string",
+                title: "Environment",
+                description: "Which environment should Copilot use?",
+                enum: ["staging", "production"],
+              },
+              runChecks: {
+                type: "boolean",
+                title: "Run checks",
+                description: "Run validation before deploy?",
+                default: true,
+              },
+            },
+            required: ["environment"],
+          },
         });
 
         return { stopReason: "end_turn" };

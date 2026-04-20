@@ -203,6 +203,9 @@ function createMockEnvironmentApi(input: {
       browse: input.browse,
     },
     git: {} as EnvironmentApi["git"],
+    server: {
+      listProviderCommands: async () => ({ commands: [] }),
+    },
     orchestration: {
       dispatchCommand: input.dispatchCommand,
       getTurnDiff: (() => {

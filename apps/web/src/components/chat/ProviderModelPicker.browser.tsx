@@ -129,6 +129,41 @@ function buildCodexProvider(models: ServerProvider["models"]): ServerProvider {
   };
 }
 
+function buildCopilotProvider(input?: {
+  enabled?: boolean;
+  installed?: boolean;
+  status?: ServerProvider["status"];
+}): ServerProvider {
+  const enabled = input?.enabled ?? true;
+  const installed = input?.installed ?? true;
+  return {
+    provider: "copilot",
+    enabled,
+    installed,
+    version: "1.0.0",
+    status: input?.status ?? (enabled && installed ? "ready" : "warning"),
+    auth: { status: "unknown" },
+    checkedAt: new Date().toISOString(),
+    slashCommands: [],
+    skills: [],
+    models: [
+      {
+        slug: "auto",
+        name: "Auto",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+    ],
+    ...(!installed ? { message: "GitHub Copilot CLI was not found." } : {}),
+  };
+}
+
 async function mountPicker(props: {
   provider: ProviderKind;
   model: string;
@@ -367,6 +402,26 @@ describe("ProviderModelPicker", () => {
     }
   });
 
+  it("shows GitHub Copilot models when server status reports it ready", async () => {
+    const mounted = await mountPicker({
+      provider: "codex",
+      model: "gpt-5-codex",
+      lockedProvider: null,
+      providers: [...TEST_PROVIDERS, buildCopilotProvider()],
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("menuitem", { name: "GitHub Copilot" }).hover();
+
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("Auto");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows disabled providers as non-selectable entries", async () => {
     const disabledProviders = TEST_PROVIDERS.slice();
     const claudeIndex = disabledProviders.findIndex(
@@ -395,6 +450,28 @@ describe("ProviderModelPicker", () => {
         expect(text).toContain("Claude");
         expect(text).toContain("Disabled");
         expect(text).not.toContain("Claude Sonnet 4.6");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("uses server status details for unavailable GitHub Copilot", async () => {
+    const mounted = await mountPicker({
+      provider: "codex",
+      model: "gpt-5-codex",
+      lockedProvider: null,
+      providers: [...TEST_PROVIDERS, buildCopilotProvider({ installed: false })],
+    });
+
+    try {
+      await page.getByRole("button").click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("GitHub Copilot");
+        expect(text).toContain("Not installed");
+        expect(text).not.toContain("Auto");
       });
     } finally {
       await mounted.cleanup();

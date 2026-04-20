@@ -22,6 +22,7 @@ export interface AcpToolCallState {
   readonly kind?: string;
   readonly title?: string;
   readonly status?: "pending" | "inProgress" | "completed" | "failed";
+  readonly itemType?: ToolLifecycleItemType;
   readonly command?: string;
   readonly detail?: string;
   readonly data: Record<string, unknown>;
@@ -263,6 +264,7 @@ function makeToolCallState(
     readonly title?: string | null | undefined;
     readonly kind?: EffectAcpSchema.ToolKind | null | undefined;
     readonly status?: EffectAcpSchema.ToolCallStatus | null | undefined;
+    readonly _meta?: Readonly<Record<string, unknown>> | null | undefined;
     readonly rawInput?: unknown;
     readonly rawOutput?: unknown;
     readonly content?: ReadonlyArray<EffectAcpSchema.ToolCallContent> | null | undefined;
@@ -287,6 +289,9 @@ function makeToolCallState(
   const kind = normalizeToolKind(input.kind);
   if (kind) {
     data.kind = kind;
+  }
+  if (input._meta !== undefined) {
+    data._meta = input._meta;
   }
   if (command) {
     data.command = command;
@@ -343,6 +348,7 @@ function parseTypedToolCallState(
       title: event.title,
       kind: event.kind,
       status: event.status,
+      _meta: event._meta,
       rawInput: event.rawInput,
       rawOutput: event.rawOutput,
       content: event.content,
@@ -385,6 +391,7 @@ export function parsePermissionRequest(
       title: params.toolCall.title,
       kind: params.toolCall.kind,
       status: params.toolCall.status,
+      _meta: params.toolCall._meta,
       rawInput: params.toolCall.rawInput,
       rawOutput: params.toolCall.rawOutput,
       content: params.toolCall.content,

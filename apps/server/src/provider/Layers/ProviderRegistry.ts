@@ -9,13 +9,19 @@ import { Effect, Equal, FileSystem, Layer, Path, PubSub, Ref, Stream } from "eff
 import { ServerConfig } from "../../config.ts";
 import { ClaudeProviderLive } from "./ClaudeProvider.ts";
 import { CodexProviderLive } from "./CodexProvider.ts";
+import { CopilotProviderLive } from "./CopilotProvider.ts";
 import { CursorProviderLive } from "./CursorProvider.ts";
 import { OpenCodeProviderLive } from "./OpenCodeProvider.ts";
 import { ClaudeProvider } from "../Services/ClaudeProvider.ts";
 import { CodexProvider } from "../Services/CodexProvider.ts";
+import { CopilotProvider } from "../Services/CopilotProvider.ts";
 import { CursorProvider } from "../Services/CursorProvider.ts";
 import { OpenCodeProvider } from "../Services/OpenCodeProvider.ts";
-import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderRefreshInput,
+  type ProviderRegistryShape,
+} from "../Services/ProviderRegistry.ts";
 import {
   hydrateCachedProvider,
   PROVIDER_CACHE_IDS,
@@ -29,8 +35,13 @@ type ProviderSnapshotSource = {
   readonly provider: ProviderKind;
   readonly getSnapshot: Effect.Effect<ServerProvider>;
   readonly refresh: Effect.Effect<ServerProvider>;
+  readonly refreshForCwd?: (cwd: string) => Effect.Effect<ServerProvider>;
   readonly streamChanges: Stream.Stream<ServerProvider>;
 };
+
+function normalizeRefreshInput(input?: ProviderKind | ProviderRefreshInput): ProviderRefreshInput {
+  return typeof input === "string" ? { provider: input } : (input ?? {});
+}
 
 const loadProviders = (
   providerSources: ReadonlyArray<ProviderSnapshotSource>,
@@ -91,6 +102,7 @@ const ProviderRegistryLiveBase = Layer.effect(
     const codexProvider = yield* CodexProvider;
     const claudeProvider = yield* ClaudeProvider;
     const openCodeProvider = yield* OpenCodeProvider;
+    const copilotProvider = yield* CopilotProvider;
     const config = yield* ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -121,6 +133,13 @@ const ProviderRegistryLiveBase = Layer.effect(
         getSnapshot: cursorProvider.getSnapshot,
         refresh: cursorProvider.refresh,
         streamChanges: cursorProvider.streamChanges,
+      },
+      {
+        provider: "copilot",
+        getSnapshot: copilotProvider.getSnapshot,
+        refresh: copilotProvider.refresh,
+        refreshForCwd: copilotProvider.refreshForCwd,
+        streamChanges: copilotProvider.streamChanges,
       },
     ] satisfies ReadonlyArray<ProviderSnapshotSource>;
     const activeProviders = PROVIDER_CACHE_IDS;
@@ -173,20 +192,27 @@ const ProviderRegistryLiveBase = Layer.effect(
     const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
 
     const persistProvider = (provider: ServerProvider) =>
-      writeProviderStatusCache({
-        filePath: cachePathByProvider.get(provider.provider)!,
-        provider,
-      }).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.tapError(Effect.logError),
-        Effect.ignore,
-      );
+      Effect.gen(function* () {
+        const filePath = cachePathByProvider.get(
+          provider.provider as (typeof activeProviders)[number],
+        );
+        if (!filePath) {
+          return;
+        }
+        yield* writeProviderStatusCache({
+          filePath,
+          provider,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
+      }).pipe(Effect.tapError(Effect.logError), Effect.ignore);
 
     const upsertProviders = Effect.fn("upsertProviders")(function* (
       nextProviders: ReadonlyArray<ServerProvider>,
       options?: {
         readonly publish?: boolean;
+        readonly persist?: boolean;
       },
     ) {
       const [previousProviders, providers] = yield* Ref.modify(
@@ -209,10 +235,12 @@ const ProviderRegistryLiveBase = Layer.effect(
       );
 
       if (haveProvidersChanged(previousProviders, providers)) {
-        yield* Effect.forEach(nextProviders, persistProvider, {
-          concurrency: "unbounded",
-          discard: true,
-        });
+        if (options?.persist !== false) {
+          yield* Effect.forEach(nextProviders, persistProvider, {
+            concurrency: "unbounded",
+            discard: true,
+          });
+        }
         if (options?.publish !== false) {
           yield* PubSub.publish(changesPubSub, providers);
         }
@@ -230,25 +258,54 @@ const ProviderRegistryLiveBase = Layer.effect(
       return yield* upsertProviders([provider], options);
     });
 
-    const refresh = Effect.fn("refresh")(function* (provider?: ProviderKind) {
-      if (provider) {
-        const providerSource = providerSources.find((candidate) => candidate.provider === provider);
+    const refresh = Effect.fn("refresh")(function* (input?: ProviderKind | ProviderRefreshInput) {
+      const normalizedInput = normalizeRefreshInput(input);
+
+      if (normalizedInput.provider) {
+        const providerSource = providerSources.find(
+          (candidate) => candidate.provider === normalizedInput.provider,
+        );
         if (!providerSource) {
           return yield* Ref.get(providersRef);
         }
-        return yield* providerSource.refresh.pipe(
-          Effect.flatMap((nextProvider) => syncProvider(nextProvider)),
+
+        const nextProviderEffect =
+          normalizedInput.cwd && providerSource.refreshForCwd
+            ? providerSource.refreshForCwd(normalizedInput.cwd)
+            : providerSource.refresh;
+
+        return yield* nextProviderEffect.pipe(
+          Effect.flatMap((nextProvider) =>
+            upsertProviders([nextProvider], {
+              persist: normalizedInput.cwd === undefined,
+            }),
+          ),
         );
       }
 
       return yield* Effect.forEach(
         providerSources,
-        (providerSource) => providerSource.refresh.pipe(Effect.flatMap(syncProvider)),
+        (providerSource) =>
+          (normalizedInput.cwd && providerSource.refreshForCwd
+            ? providerSource.refreshForCwd(normalizedInput.cwd)
+            : providerSource.refresh
+          ).pipe(
+            Effect.flatMap((nextProvider) =>
+              upsertProviders([nextProvider], {
+                publish: false,
+                persist:
+                  normalizedInput.cwd === undefined || providerSource.refreshForCwd === undefined,
+              }),
+            ),
+          ),
         {
           concurrency: "unbounded",
           discard: true,
         },
-      ).pipe(Effect.andThen(Ref.get(providersRef)));
+      ).pipe(
+        Effect.andThen(Ref.get(providersRef)),
+        Effect.tap((providers) => PubSub.publish(changesPubSub, providers)),
+      );
     });
 
     yield* Effect.forEach(
@@ -268,8 +325,8 @@ const ProviderRegistryLiveBase = Layer.effect(
 
     return {
       getProviders: Ref.get(providersRef),
-      refresh: (provider?: ProviderKind) =>
-        refresh(provider).pipe(
+      refresh: (input?: ProviderKind | ProviderRefreshInput) =>
+        refresh(input).pipe(
           Effect.tapError(Effect.logError),
           Effect.orElseSucceed(() => [] as ReadonlyArray<ServerProvider>),
         ),
@@ -284,6 +341,7 @@ export const ProviderRegistryLive = Layer.unwrap(
   Effect.sync(() =>
     ProviderRegistryLiveBase.pipe(
       Layer.provideMerge(CursorProviderLive),
+      Layer.provideMerge(CopilotProviderLive),
       Layer.provideMerge(CodexProviderLive),
       Layer.provideMerge(ClaudeProviderLive),
       Layer.provideMerge(OpenCodeProviderLive),

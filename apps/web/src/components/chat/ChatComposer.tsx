@@ -31,6 +31,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
+import { providerCommandsQueryOptions } from "~/lib/providerReactQuery";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -579,6 +580,29 @@ export const ChatComposer = memo(
       () => providerStatuses.find((provider) => provider.provider === selectedProvider),
       [providerStatuses, selectedProvider],
     );
+    const projectScopedProviderCommandsQuery = useQuery(
+      providerCommandsQueryOptions({
+        environmentId,
+        provider: selectedProvider,
+        cwd: gitCwd,
+        enabled: selectedProvider === "copilot" && gitCwd !== null,
+      }),
+    );
+    const selectedProviderSlashCommands = useMemo(() => {
+      const seen = new Set<string>();
+      const commands: Array<ServerProvider["slashCommands"][number]> = [];
+      for (const command of [
+        ...(selectedProviderStatus?.slashCommands ?? []),
+        ...(projectScopedProviderCommandsQuery.data?.commands ?? []),
+      ]) {
+        if (seen.has(command.name)) {
+          continue;
+        }
+        seen.add(command.name);
+        commands.push(command);
+      }
+      return commands;
+    }, [projectScopedProviderCommandsQuery.data?.commands, selectedProviderStatus?.slashCommands]);
 
     const composerProviderState = useMemo(
       () =>
@@ -613,6 +637,7 @@ export const ChatComposer = memo(
         opencode:
           providerStatuses.find((provider) => provider.provider === "opencode")?.models ?? [],
         cursor: providerStatuses.find((provider) => provider.provider === "cursor")?.models ?? [],
+        copilot: providerStatuses.find((provider) => provider.provider === "copilot")?.models ?? [],
       }),
       [providerStatuses],
     );
@@ -749,16 +774,14 @@ export const ChatComposer = memo(
             description: "Switch this thread back to normal build mode",
           },
         ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-        const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
-          (command) => ({
-            id: `provider-slash-command:${selectedProvider}:${command.name}`,
-            type: "provider-slash-command" as const,
-            provider: selectedProvider,
-            command,
-            label: `/${command.name}`,
-            description: command.description ?? command.input?.hint ?? "Run provider command",
-          }),
-        );
+        const providerSlashCommandItems = selectedProviderSlashCommands.map((command) => ({
+          id: `provider-slash-command:${selectedProvider}:${command.name}`,
+          type: "provider-slash-command" as const,
+          provider: selectedProvider,
+          command,
+          label: `/${command.name}`,
+          description: command.description ?? command.input?.hint ?? "Run provider command",
+        }));
         const query = composerTrigger.query.trim().toLowerCase();
         const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
         if (!query) {
@@ -804,6 +827,7 @@ export const ChatComposer = memo(
       composerTrigger,
       searchableModelOptions,
       selectedProvider,
+      selectedProviderSlashCommands,
       selectedProviderStatus,
       workspaceEntries,
     ]);
@@ -869,10 +893,14 @@ export const ChatComposer = memo(
     ]);
 
     const isComposerMenuLoading =
-      composerTriggerKind === "path" &&
-      ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
-        workspaceEntriesQuery.isLoading ||
-        workspaceEntriesQuery.isFetching);
+      (composerTriggerKind === "path" &&
+        ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
+          workspaceEntriesQuery.isLoading ||
+          workspaceEntriesQuery.isFetching)) ||
+      (composerTriggerKind === "slash-command" &&
+        selectedProvider === "copilot" &&
+        (projectScopedProviderCommandsQuery.isLoading ||
+          projectScopedProviderCommandsQuery.isFetching));
     const composerMenuEmptyState = useMemo(() => {
       if (composerTriggerKind === "skill") {
         return "No skills found. Try / to browse provider commands.";

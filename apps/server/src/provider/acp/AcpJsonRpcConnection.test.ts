@@ -8,7 +8,12 @@ import { it } from "@effect/vitest";
 import { Effect, Stream } from "effect";
 import { describe, expect } from "vitest";
 
-import { AcpSessionRuntime, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
+import {
+  buildRestrictedAcpSpawnEnv,
+  AcpSessionRuntime,
+  resolveAcpSpawnEnv,
+  type AcpSessionRequestLogEvent,
+} from "./AcpSessionRuntime.ts";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +21,41 @@ const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts")
 const bunExe = "bun";
 
 describe("AcpSessionRuntime", () => {
+  it("builds restricted ACP spawn environments from an allowlist", () => {
+    const processEnv = {
+      PATH: "/usr/bin",
+      HOME: "/Users/test",
+      GH_TOKEN: "gh-token",
+      OPENAI_API_KEY: "secret",
+      ANTHROPIC_API_KEY: "secret",
+    };
+
+    expect(buildRestrictedAcpSpawnEnv(processEnv)).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/Users/test",
+      GH_TOKEN: "gh-token",
+    });
+    expect(
+      resolveAcpSpawnEnv({
+        inheritEnv: false,
+        env: { T3_PROVIDER: "copilot" },
+        processEnv,
+      }),
+    ).toEqual({
+      PATH: "/usr/bin",
+      HOME: "/Users/test",
+      GH_TOKEN: "gh-token",
+      T3_PROVIDER: "copilot",
+    });
+    expect(
+      resolveAcpSpawnEnv({
+        inheritEnv: true,
+        env: { T3_PROVIDER: "cursor" },
+        processEnv,
+      })?.OPENAI_API_KEY,
+    ).toBe("secret");
+  });
+
   it.effect("merges custom initialize client capabilities into the ACP handshake", () => {
     const requestEvents: Array<AcpSessionRequestLogEvent> = [];
     return Effect.gen(function* () {
@@ -48,6 +88,84 @@ describe("AcpSessionRuntime", () => {
           },
           clientInfo: { name: "t3-test", version: "0.0.0" },
           authMethodId: "test",
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("fails startup when a required ACP auth method is missing", () => {
+    const requestEvents: Array<AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const error = yield* runtime.start().pipe(Effect.flip);
+
+      expect(error._tag).toBe("AcpRequestError");
+      expect(error.message).toBe(
+        'GitHub Copilot login is unavailable. Run "copilot login" in a terminal, then try again.',
+      );
+      expect(
+        requestEvents.some(
+          (event) => event.method === "authenticate" && event.status === "started",
+        ),
+      ).toBe(false);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          auth: {
+            methodId: "copilot-login",
+            required: true,
+            missingMessage:
+              'GitHub Copilot login is unavailable. Run "copilot login" in a terminal, then try again.',
+          },
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("authenticates with a required ACP auth method when it is advertised", () => {
+    const requestEvents: Array<AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+
+      const authenticateStarted = requestEvents.find(
+        (event) => event.method === "authenticate" && event.status === "started",
+      );
+      expect(authenticateStarted?.payload).toEqual({ methodId: "copilot-login" });
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: {
+              T3_ACP_AUTH_METHODS: "copilot-login",
+            },
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          auth: {
+            methodId: "copilot-login",
+            required: true,
+          },
           requestLogger: (event) =>
             Effect.sync(() => {
               requestEvents.push(event);
@@ -279,6 +397,46 @@ describe("AcpSessionRuntime", () => {
       Effect.provide(
         AcpSessionRuntime.layer({
           authMethodId: "test",
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+          },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              requestEvents.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
+
+  it.effect("can switch modes with real ACP session/set_mode", () => {
+    const requestEvents: Array<AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+
+      yield* runtime.setMode("code");
+
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/set_mode" && event.status === "started",
+        ),
+      ).toBe(true);
+      expect(
+        requestEvents.some(
+          (event) => event.method === "session/set_config_option" && event.status === "started",
+        ),
+      ).toBe(false);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          authMethodId: "test",
+          modeSwitchMethod: "set_mode",
           spawn: {
             command: bunExe,
             args: [mockAgentPath],

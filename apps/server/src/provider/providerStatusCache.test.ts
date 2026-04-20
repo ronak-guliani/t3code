@@ -5,6 +5,7 @@ import { Effect, FileSystem } from "effect";
 
 import {
   hydrateCachedProvider,
+  orderProviderSnapshots,
   readProviderStatusCache,
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
@@ -172,6 +173,21 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
         fallbackProvider: disabledFallback,
       }),
       disabledFallback,
+    );
+  });
+
+  it("orders Copilot after Cursor in provider snapshots", () => {
+    const providers = [
+      makeProvider("copilot"),
+      makeProvider("cursor"),
+      makeProvider("codex"),
+      makeProvider("opencode"),
+      makeProvider("claudeAgent"),
+    ];
+
+    assert.deepStrictEqual(
+      orderProviderSnapshots(providers).map((provider) => provider.provider),
+      ["codex", "claudeAgent", "opencode", "cursor", "copilot"],
     );
   });
 });

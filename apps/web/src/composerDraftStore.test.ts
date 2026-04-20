@@ -91,7 +91,7 @@ function resetComposerDraftStore() {
 }
 
 function modelSelection(
-  provider: "codex" | "claudeAgent" | "cursor",
+  provider: "codex" | "claudeAgent" | "cursor" | "copilot" | "opencode",
   model: string,
   options?: ModelSelection["options"],
 ): ModelSelection {
@@ -478,6 +478,46 @@ describe("composerDraftStore terminal contexts", () => {
     expect(mergedState.draftsByThreadKey[threadKeyFor(threadId)]).toBeUndefined();
     expect(mergedState.draftThreadsByThreadKey).toEqual({});
     expect(mergedState.logicalProjectDraftThreadKeyByLogicalProjectKey).toEqual({});
+  });
+
+  it("hydrates Copilot drafts while dropping empty Copilot options and unknown providers", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadKey: {
+          [threadKeyFor(threadId, TEST_ENVIRONMENT_ID)]: {
+            prompt: "ask copilot",
+            attachments: [],
+            modelSelectionByProvider: {
+              copilot: {
+                provider: "copilot",
+                model: "auto",
+                options: {},
+              },
+              "retired-provider": {
+                provider: "retired-provider",
+                model: "legacy-model",
+              },
+            },
+            activeProvider: "copilot",
+          },
+        },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    const draft = mergedState.draftsByThreadKey[threadKeyFor(threadId, TEST_ENVIRONMENT_ID)];
+    expect(draft?.modelSelectionByProvider).toEqual({
+      copilot: modelSelection("copilot", "auto"),
+    });
+    expect(draft?.activeProvider).toBe("copilot");
   });
 });
 

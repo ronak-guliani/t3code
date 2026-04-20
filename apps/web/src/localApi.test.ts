@@ -76,6 +76,7 @@ const rpcClientMock = {
   server: {
     getConfig: vi.fn(),
     refreshProviders: vi.fn(),
+    listProviderCommands: vi.fn(),
     upsertKeybinding: vi.fn(),
     getSettings: vi.fn(),
     updateSettings: vi.fn(),
@@ -117,6 +118,34 @@ vi.mock("./environments/runtime", () => ({
   resetSavedEnvironmentRegistryStoreForTests: vi.fn(),
   resetSavedEnvironmentRuntimeStoreForTests: vi.fn(),
 }));
+
+describe("createLocalApi", () => {
+  it("forwards provider refresh requests to the RPC client", async () => {
+    const nextProviders = [
+      {
+        provider: "copilot",
+        enabled: true,
+        installed: true,
+        version: "1.0.0",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: new Date().toISOString(),
+        models: [],
+        slashCommands: [],
+        skills: [],
+      },
+    ] satisfies ReadonlyArray<ServerProvider>;
+    const input = { cwd: "/repo/project" };
+
+    rpcClientMock.server.refreshProviders.mockResolvedValue({ providers: nextProviders });
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(api.server.refreshProviders(input)).resolves.toEqual({ providers: nextProviders });
+    expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith(input);
+  });
+});
 
 vi.mock("./contextMenuFallback", () => ({
   showContextMenuFallback: showContextMenuFallbackMock,
@@ -301,6 +330,21 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.subscribeLifecycle).not.toHaveBeenCalled();
   });
 
+  it("forwards provider command lookups to the RPC client", async () => {
+    rpcClientMock.server.listProviderCommands.mockResolvedValue({
+      commands: [{ name: "review", description: "Review changes" }],
+    });
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+    const input = { provider: "copilot" as const, cwd: "/repo" };
+
+    await expect(api.server.listProviderCommands(input)).resolves.toEqual({
+      commands: [{ name: "review", description: "Review changes" }],
+    });
+    expect(rpcClientMock.server.listProviderCommands).toHaveBeenCalledWith(input);
+  });
+
   it("forwards terminal and shell stream events", async () => {
     const { createEnvironmentApi } = await import("./environmentApi");
 
@@ -464,13 +508,14 @@ describe("wsApi", () => {
         checkedAt: "2026-01-03T00:00:00.000Z",
       },
     ];
+    const input = {};
     rpcClientMock.server.refreshProviders.mockResolvedValue({ providers: nextProviders });
     const { createLocalApi } = await import("./localApi");
 
     const api = createLocalApi(rpcClientMock as never);
 
-    await expect(api.server.refreshProviders()).resolves.toEqual({ providers: nextProviders });
-    expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith();
+    await expect(api.server.refreshProviders(input)).resolves.toEqual({ providers: nextProviders });
+    expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith(input);
   });
 
   it("forwards server settings updates directly to the RPC client", async () => {

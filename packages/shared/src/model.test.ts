@@ -65,6 +65,9 @@ describe("resolveModelSlugForProvider", () => {
     expect(resolveModelSlugForProvider("claudeAgent", undefined)).toBe(
       DEFAULT_MODEL_BY_PROVIDER.claudeAgent,
     );
+    expect(resolveModelSlugForProvider("copilot", undefined)).toBe(
+      DEFAULT_MODEL_BY_PROVIDER.copilot,
+    );
   });
 
   it("preserves normalized unknown models", () => {

@@ -14,6 +14,7 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
+  ServerProviderListCommandsError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
@@ -43,6 +44,7 @@ import {
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
+import { listCopilotPreconnectionCommands } from "./provider/copilotPreconnectionCommands.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
@@ -749,10 +751,30 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(WS_METHODS.serverGetConfig, loadServerConfig, {
             "rpc.aggregate": "server",
           }),
-        [WS_METHODS.serverRefreshProviders]: (_input) =>
+        [WS_METHODS.serverRefreshProviders]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverRefreshProviders,
-            providerRegistry.refresh().pipe(Effect.map((providers) => ({ providers }))),
+            providerRegistry.refresh(input).pipe(Effect.map((providers) => ({ providers }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverListProviderCommands]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListProviderCommands,
+            Effect.tryPromise({
+              try: async () => {
+                if (input.provider !== "copilot") {
+                  return { commands: [] };
+                }
+                return {
+                  commands: await listCopilotPreconnectionCommands({ cwd: input.cwd }),
+                };
+              },
+              catch: (cause) =>
+                new ServerProviderListCommandsError({
+                  message: "Failed to load provider commands.",
+                  cause,
+                }),
+            }),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>

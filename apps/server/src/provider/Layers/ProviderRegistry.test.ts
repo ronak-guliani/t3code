@@ -36,6 +36,7 @@ import {
   ProviderRegistryLive,
 } from "./ProviderRegistry.ts";
 import { OpenCodeProvider } from "../Services/OpenCodeProvider.ts";
+import { CopilotProvider } from "../Services/CopilotProvider.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "../../serverSettings.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -57,6 +58,32 @@ const fakeOpenCodeSnapshot: ServerProvider = {
   slashCommands: [],
   skills: [],
   message: "OpenCode test stub",
+};
+const fakeCopilotSnapshot: ServerProvider = {
+  provider: "copilot",
+  status: "disabled",
+  enabled: false,
+  installed: false,
+  auth: { status: "unknown" },
+  checkedAt: "2026-03-25T00:00:00.000Z",
+  version: null,
+  models: [
+    {
+      slug: "auto",
+      name: "Auto",
+      isCustom: false,
+      capabilities: {
+        reasoningEffortLevels: [],
+        supportsFastMode: false,
+        supportsThinkingToggle: false,
+        contextWindowOptions: [],
+        promptInjectedEffortLevels: [],
+      },
+    },
+  ],
+  slashCommands: [],
+  skills: [],
+  message: "GitHub Copilot test stub",
 };
 
 function mockHandle(result: { stdout: string; stderr: string; code: number }) {
@@ -758,6 +785,14 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
               }),
             ),
             Layer.provideMerge(
+              Layer.succeed(CopilotProvider, {
+                getSnapshot: Effect.succeed(fakeCopilotSnapshot),
+                refresh: Effect.succeed(fakeCopilotSnapshot),
+                refreshForCwd: () => Effect.succeed(fakeCopilotSnapshot),
+                streamChanges: Stream.empty,
+              }),
+            ),
+            Layer.provideMerge(
               mockCommandSpawnerLayer((command, args) => {
                 const joined = args.join(" ");
                 if (joined === "--version") {
@@ -882,7 +917,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest()))(
 
               assert.deepStrictEqual(
                 providers.map((provider) => provider.provider),
-                ["codex", "claudeAgent", "opencode", "cursor"],
+                ["codex", "claudeAgent", "opencode", "cursor", "copilot"],
               );
               assert.strictEqual(cursorProvider?.enabled, false);
               assert.strictEqual(cursorProvider?.status, "disabled");

@@ -7,6 +7,7 @@ export const PROVIDER_CACHE_IDS = [
   "claudeAgent",
   "opencode",
   "cursor",
+  "copilot",
 ] as const satisfies ReadonlyArray<ServerProvider["provider"]>;
 
 const decodeProviderStatusCache = Schema.decodeUnknownEffect(
@@ -14,7 +15,7 @@ const decodeProviderStatusCache = Schema.decodeUnknownEffect(
 );
 
 const providerOrderRank = (provider: ServerProvider["provider"]): number => {
-  const rank = PROVIDER_CACHE_IDS.indexOf(provider);
+  const rank = PROVIDER_CACHE_IDS.indexOf(provider as (typeof PROVIDER_CACHE_IDS)[number]);
   return rank === -1 ? Number.MAX_SAFE_INTEGER : rank;
 };
 

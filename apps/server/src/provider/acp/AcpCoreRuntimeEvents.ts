@@ -36,6 +36,7 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
     case "read":
       return "file_read_approval";
     case "edit":
+    case "write":
     case "delete":
     case "move":
       return "file_change_approval";
@@ -47,14 +48,19 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
 function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
   switch (kind) {
     case "execute":
+    case "shell":
       return "command_execution";
     case "edit":
+    case "write":
     case "delete":
     case "move":
       return "file_change";
     case "search":
     case "fetch":
       return "web_search";
+    case "task":
+    case "subagent":
+      return "collab_agent_tool_call";
     default:
       return "dynamic_tool_call";
   }
@@ -177,7 +183,7 @@ export function makeAcpToolCallEvent(input: {
     turnId: input.turnId,
     itemId: RuntimeItemId.make(input.toolCall.toolCallId),
     payload: {
-      itemType: canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
+      itemType: input.toolCall.itemType ?? canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
       ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),

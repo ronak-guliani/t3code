@@ -46,6 +46,8 @@ export const CursorModelOptions = Schema.Struct({
   contextWindow: Schema.optional(Schema.String),
 });
 export type CursorModelOptions = typeof CursorModelOptions.Type;
+export const CopilotModelOptions = Schema.Struct({});
+export type CopilotModelOptions = typeof CopilotModelOptions.Type;
 export const OpenCodeModelOptions = Schema.Struct({
   variant: Schema.optional(TrimmedNonEmptyString),
   agent: Schema.optional(TrimmedNonEmptyString),
@@ -56,6 +58,7 @@ export const ProviderModelOptions = Schema.Struct({
   codex: Schema.optional(CodexModelOptions),
   claudeAgent: Schema.optional(ClaudeModelOptions),
   cursor: Schema.optional(CursorModelOptions),
+  copilot: Schema.optional(CopilotModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
@@ -89,6 +92,7 @@ export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderKind, string> = {
   codex: "gpt-5.4",
   claudeAgent: "claude-sonnet-4-6",
   cursor: "auto",
+  copilot: "auto",
   opencode: "openai/gpt-5",
 };
 
@@ -99,6 +103,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER: Record<ProviderKind,
   codex: "gpt-5.4-mini",
   claudeAgent: "claude-haiku-4-5",
   cursor: "composer-2",
+  copilot: "auto",
   opencode: "openai/gpt-5",
 };
 
@@ -138,6 +143,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
     "opus-4.5-thinking": "claude-opus-4-5",
     "opus-4.5": "claude-opus-4-5",
   },
+  copilot: {},
   opencode: {},
 };
 
@@ -147,5 +153,6 @@ export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
   codex: "Codex",
   claudeAgent: "Claude",
   cursor: "Cursor",
+  copilot: "GitHub Copilot",
   opencode: "OpenCode",
 };

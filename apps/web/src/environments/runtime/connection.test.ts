@@ -32,6 +32,7 @@ function createTestClient() {
       },
       subscribeAuthAccess: () => () => undefined,
       refreshProviders: vi.fn(async () => undefined),
+      listProviderCommands: vi.fn(async () => ({ commands: [] })),
       upsertKeybinding: vi.fn(async () => undefined),
       getSettings: vi.fn(async () => undefined),
       updateSettings: vi.fn(async () => undefined),

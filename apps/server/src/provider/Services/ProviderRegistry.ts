@@ -10,6 +10,11 @@ import type { ProviderKind, ServerProvider } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Effect, Stream } from "effect";
 
+export interface ProviderRefreshInput {
+  readonly provider?: ProviderKind | undefined;
+  readonly cwd?: string | undefined;
+}
+
 export interface ProviderRegistryShape {
   /**
    * Read the latest provider snapshots.
@@ -19,7 +24,9 @@ export interface ProviderRegistryShape {
   /**
    * Refresh all providers, or a single provider when specified.
    */
-  readonly refresh: (provider?: ProviderKind) => Effect.Effect<ReadonlyArray<ServerProvider>>;
+  readonly refresh: (
+    input?: ProviderKind | ProviderRefreshInput,
+  ) => Effect.Effect<ReadonlyArray<ServerProvider>>;
 
   /**
    * Stream of provider snapshot updates.

@@ -468,6 +468,37 @@ describe("getComposerProviderState", () => {
       },
     });
   });
+
+  it("normalizes Copilot dispatch options to undefined", () => {
+    const state = getComposerProviderState({
+      provider: "copilot",
+      model: "auto",
+      models: [
+        {
+          slug: "auto",
+          name: "Auto",
+          isCustom: false,
+          capabilities: {
+            reasoningEffortLevels: [],
+            supportsFastMode: false,
+            supportsThinkingToggle: false,
+            contextWindowOptions: [],
+            promptInjectedEffortLevels: [],
+          },
+        },
+      ],
+      prompt: "",
+      modelOptions: {
+        copilot: {},
+      },
+    });
+
+    expect(state).toEqual({
+      provider: "copilot",
+      promptEffort: null,
+      modelOptionsForDispatch: undefined,
+    });
+  });
 });
 
 describe("getComposerProviderControls", () => {
@@ -477,11 +508,17 @@ describe("getComposerProviderControls", () => {
     });
   });
 
-  it("keeps the interaction mode toggle for Codex and Claude", () => {
+  it("keeps the interaction mode toggle for Codex, Claude, Cursor, and Copilot", () => {
     expect(getComposerProviderControls("codex")).toEqual({
       showInteractionModeToggle: true,
     });
     expect(getComposerProviderControls("claudeAgent")).toEqual({
+      showInteractionModeToggle: true,
+    });
+    expect(getComposerProviderControls("cursor")).toEqual({
+      showInteractionModeToggle: true,
+    });
+    expect(getComposerProviderControls("copilot")).toEqual({
       showInteractionModeToggle: true,
     });
   });

@@ -531,7 +531,11 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+  return value === "codex" ||
+    value === "claudeAgent" ||
+    value === "cursor" ||
+    value === "copilot" ||
+    value === "opencode"
     ? value
     : null;
 }
@@ -712,6 +716,28 @@ function normalizeModelSelection(
   return createModelSelection(provider, model, options);
 }
 
+function normalizeModelSelectionByProvider(
+  value: unknown,
+): Partial<Record<ProviderKind, ModelSelection>> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+
+  const result: Partial<Record<ProviderKind, ModelSelection>> = {};
+  for (const [providerKey, selectionValue] of Object.entries(value as Record<string, unknown>)) {
+    const provider = normalizeProviderKind(providerKey);
+    if (provider === null) {
+      continue;
+    }
+    const selection = normalizeModelSelection(selectionValue, { provider });
+    if (selection === null || selection.provider !== provider) {
+      continue;
+    }
+    result[provider] = selection;
+  }
+  return result;
+}
+
 // ── Legacy sync helpers (used only during migration from v2 storage) ──
 
 function legacySyncModelSelectionOptions(
@@ -766,7 +792,7 @@ function legacyToModelSelectionByProvider(
   const result: Partial<Record<ProviderKind, ModelSelection>> = {};
   // Add entries from the options bag (for non-active providers)
   if (modelOptions) {
-    for (const provider of ["codex", "claudeAgent", "cursor", "opencode"] as const) {
+    for (const provider of ["codex", "claudeAgent", "cursor", "copilot", "opencode"] as const) {
       const options = modelOptions[provider];
       if (options && Object.keys(options).length > 0) {
         result[provider] = createModelSelection(
@@ -1408,9 +1434,9 @@ function normalizePersistedDraftsByThreadId(
       typeof draftCandidate.modelSelectionByProvider === "object"
     ) {
       // v3 format
-      modelSelectionByProvider = draftCandidate.modelSelectionByProvider as Partial<
-        Record<ProviderKind, ModelSelection>
-      >;
+      modelSelectionByProvider = normalizeModelSelectionByProvider(
+        draftCandidate.modelSelectionByProvider,
+      );
       activeProvider = normalizeProviderKind(draftCandidate.activeProvider);
     } else {
       // v2 or legacy format: migrate
@@ -1616,10 +1642,9 @@ function normalizeCurrentPersistedComposerDraftStoreState(
     normalizedPersistedState.stickyModelSelectionByProvider &&
     typeof normalizedPersistedState.stickyModelSelectionByProvider === "object"
   ) {
-    stickyModelSelectionByProvider =
-      normalizedPersistedState.stickyModelSelectionByProvider as Partial<
-        Record<ProviderKind, ModelSelection>
-      >;
+    stickyModelSelectionByProvider = normalizeModelSelectionByProvider(
+      normalizedPersistedState.stickyModelSelectionByProvider,
+    );
     stickyActiveProvider = normalizeProviderKind(normalizedPersistedState.stickyActiveProvider);
   } else {
     // Legacy migration path
@@ -2312,7 +2337,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const base = existing ?? createEmptyThreadDraft();
             const nextMap = { ...base.modelSelectionByProvider };
-            for (const provider of ["codex", "claudeAgent", "cursor", "opencode"] as const) {
+            for (const provider of [
+              "codex",
+              "claudeAgent",
+              "cursor",
+              "copilot",
+              "opencode",
+            ] as const) {
               // Only touch providers explicitly present in the input
               if (!normalizedOpts || !(provider in normalizedOpts)) continue;
               const opts = normalizedOpts[provider];

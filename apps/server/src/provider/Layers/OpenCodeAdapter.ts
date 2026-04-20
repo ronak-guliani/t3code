@@ -39,6 +39,7 @@ import {
 } from "../opencodeRuntime.ts";
 
 const PROVIDER = "opencode" as const;
+const OPEN_CODE_STALL_WARNING_MS = 15_000;
 
 interface OpenCodeTurnSnapshot {
   readonly id: TurnId;
@@ -61,6 +62,10 @@ interface OpenCodeSessionContext {
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
+  activeTurnStartedAt: string | undefined;
+  lastObservedEventAt: string | undefined;
+  lastObservedEventType: string | undefined;
+  stallWarningTimer: ReturnType<typeof setTimeout> | undefined;
   stopped: boolean;
   readonly eventsAbortController: AbortController;
 }
@@ -345,6 +350,134 @@ function sessionErrorMessage(error: unknown): string {
     : "OpenCode session failed.";
 }
 
+function truncateLogText(value: string | undefined, maxLength = 240): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength)}...`;
+}
+
+function summarizeEvent(event: {
+  readonly type: string;
+  readonly properties?: Record<string, unknown>;
+}) {
+  const properties = event.properties;
+  const part = properties?.part as Part | undefined;
+  const status =
+    properties?.status && typeof properties.status === "object"
+      ? ((properties.status as { type?: unknown }).type ?? undefined)
+      : undefined;
+  const requestId =
+    (typeof properties?.id === "string" ? properties.id : undefined) ??
+    (typeof properties?.requestID === "string" ? properties.requestID : undefined);
+
+  return {
+    eventType: event.type,
+    ...(typeof requestId === "string" ? { requestId } : {}),
+    ...(typeof status === "string" ? { sessionStatus: status } : {}),
+    ...(part?.type === "tool"
+      ? {
+          toolName: part.tool,
+          toolCallId: part.callID,
+          toolStatus: part.state.status,
+          ...(part.state.status === "running" && part.state.title
+            ? { toolTitle: truncateLogText(part.state.title) }
+            : {}),
+        }
+      : {}),
+    ...(part && part.type !== "tool"
+      ? {
+          partId: part.id,
+          partType: part.type,
+        }
+      : {}),
+  };
+}
+
+function runningToolCallsSnapshot(context: OpenCodeSessionContext): ReadonlyArray<{
+  readonly callId: string;
+  readonly tool: string;
+  readonly status: string;
+  readonly title?: string;
+}> {
+  const running = new Map<
+    string,
+    {
+      readonly callId: string;
+      readonly tool: string;
+      readonly status: string;
+      readonly title?: string;
+    }
+  >();
+
+  for (const part of context.partById.values()) {
+    if (part.type !== "tool") {
+      continue;
+    }
+    if (part.state.status !== "running" && part.state.status !== "pending") {
+      continue;
+    }
+    const toolSnapshot: {
+      readonly callId: string;
+      readonly tool: string;
+      readonly status: string;
+      title?: string;
+    } = {
+      callId: part.callID,
+      tool: part.tool,
+      status: part.state.status,
+    };
+    if (part.state.status === "running" && part.state.title) {
+      const title = truncateLogText(part.state.title);
+      if (title) {
+        toolSnapshot.title = title;
+      }
+    }
+    running.set(part.callID, toolSnapshot);
+  }
+
+  return [...running.values()];
+}
+
+function turnObservabilitySnapshot(context: OpenCodeSessionContext) {
+  const now = Date.now();
+  const sinceLastEventMs = context.lastObservedEventAt
+    ? Math.max(0, now - new Date(context.lastObservedEventAt).getTime())
+    : undefined;
+  const sinceTurnStartMs = context.activeTurnStartedAt
+    ? Math.max(0, now - new Date(context.activeTurnStartedAt).getTime())
+    : undefined;
+
+  return {
+    threadId: context.session.threadId,
+    ...(context.activeTurnId ? { turnId: context.activeTurnId } : {}),
+    sessionStatus: context.session.status,
+    pendingPermissionCount: context.pendingPermissions.size,
+    pendingQuestionCount: context.pendingQuestions.size,
+    partCount: context.partById.size,
+    emittedPartCount: context.emittedTextByPartId.size,
+    ...(context.activeAgent ? { activeAgent: context.activeAgent } : {}),
+    ...(context.activeVariant ? { activeVariant: context.activeVariant } : {}),
+    ...(context.lastObservedEventType
+      ? { lastObservedEventType: context.lastObservedEventType }
+      : {}),
+    ...(sinceLastEventMs !== undefined ? { millisecondsSinceLastEvent: sinceLastEventMs } : {}),
+    ...(sinceTurnStartMs !== undefined ? { millisecondsSinceTurnStart: sinceTurnStartMs } : {}),
+    runningToolCalls: runningToolCallsSnapshot(context),
+  };
+}
+
+function clearTurnStallWarning(context: OpenCodeSessionContext): void {
+  if (context.stallWarningTimer !== undefined) {
+    clearTimeout(context.stallWarningTimer);
+    context.stallWarningTimer = undefined;
+  }
+}
+
 function updateProviderSession(
   context: OpenCodeSessionContext,
   patch: Partial<ProviderSession>,
@@ -371,6 +504,10 @@ function updateProviderSession(
 
 async function stopOpenCodeContext(context: OpenCodeSessionContext): Promise<void> {
   context.stopped = true;
+  if (context.stallWarningTimer !== undefined) {
+    clearTimeout(context.stallWarningTimer);
+    context.stallWarningTimer = undefined;
+  }
   context.eventsAbortController.abort();
   try {
     await context.client.session
@@ -401,6 +538,36 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
         Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
       const emitPromise = (event: ProviderRuntimeEvent) =>
         emit(event).pipe(Effect.runPromiseWith(services));
+      const runLogEffect = (effect: Effect.Effect<void, never, never>) =>
+        effect.pipe(Effect.runPromiseWith(services)).catch(() => undefined);
+      const logDebug = (message: string, fields?: Record<string, unknown>) =>
+        runLogEffect(Effect.logDebug(message, fields));
+      const logInfo = (message: string, fields?: Record<string, unknown>) =>
+        runLogEffect(Effect.logInfo(message, fields));
+      const logWarning = (message: string, fields?: Record<string, unknown>) =>
+        runLogEffect(Effect.logWarning(message, fields));
+      const scheduleTurnStallWarning = (
+        context: OpenCodeSessionContext,
+        reason: "awaiting_first_event" | "awaiting_followup_event",
+      ) => {
+        clearTurnStallWarning(context);
+        if (context.stopped || !context.activeTurnId) {
+          return;
+        }
+        context.stallWarningTimer = setTimeout(() => {
+          if (context.stopped || !context.activeTurnId) {
+            context.stallWarningTimer = undefined;
+            return;
+          }
+          context.stallWarningTimer = undefined;
+          void logWarning("opencode.turn.stalled", {
+            reason,
+            stallWarningThresholdMs: OPEN_CODE_STALL_WARNING_MS,
+            ...turnObservabilitySnapshot(context),
+          });
+          scheduleTurnStallWarning(context, "awaiting_followup_event");
+        }, OPEN_CODE_STALL_WARNING_MS);
+      };
       const writeNativeEventPromise = (
         threadId: ThreadId,
         event: {
@@ -424,8 +591,13 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
           return;
         }
         context.stopped = true;
+        clearTurnStallWarning(context);
         sessions.delete(context.session.threadId);
         context.server.close();
+        void logWarning("opencode.session.unexpected-exit", {
+          message,
+          ...turnObservabilitySnapshot(context),
+        });
         const turnId = context.activeTurnId;
         void emitPromise({
           ...buildEventBase({ threadId: context.session.threadId, turnId }),
@@ -516,8 +688,17 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
       const startEventPump = (context: OpenCodeSessionContext) => {
         void (async () => {
           try {
+            void logInfo("opencode.event-pump.subscribing", {
+              threadId: context.session.threadId,
+              providerThreadId: context.openCodeSessionId,
+              cwd: context.directory,
+            });
             const subscription = await context.client.event.subscribe(undefined, {
               signal: context.eventsAbortController.signal,
+            });
+            void logInfo("opencode.event-pump.subscribed", {
+              threadId: context.session.threadId,
+              providerThreadId: context.openCodeSessionId,
             });
 
             for await (const event of subscription.stream) {
@@ -530,6 +711,17 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
               }
 
               const turnId = context.activeTurnId;
+              context.lastObservedEventAt = nowIso();
+              context.lastObservedEventType = event.type;
+              if (turnId) {
+                scheduleTurnStallWarning(context, "awaiting_followup_event");
+              }
+              void logDebug("opencode.event.received", {
+                threadId: context.session.threadId,
+                ...(turnId ? { turnId } : {}),
+                providerThreadId: context.openCodeSessionId,
+                ...summarizeEvent(event),
+              });
               await writeNativeEventBestEffort(context.session.threadId, {
                 observedAt: nowIso(),
                 event: {
@@ -619,6 +811,22 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                   }
 
                   if (part.type === "tool") {
+                    void logInfo("opencode.tool.state", {
+                      threadId: context.session.threadId,
+                      ...(turnId ? { turnId } : {}),
+                      toolCallId: part.callID,
+                      toolName: part.tool,
+                      toolStatus: part.state.status,
+                      ...(part.state.status === "running" && part.state.title
+                        ? { toolTitle: truncateLogText(part.state.title) }
+                        : {}),
+                      ...(part.state.status === "completed" && part.state.output
+                        ? { outputPreview: truncateLogText(part.state.output) }
+                        : {}),
+                      ...(part.state.status === "error" && part.state.error
+                        ? { errorPreview: truncateLogText(part.state.error) }
+                        : {}),
+                    });
                     const itemType = toToolLifecycleItemType(part.tool);
                     const title =
                       part.state.status === "running" ? (part.state.title ?? part.tool) : part.tool;
@@ -661,6 +869,14 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
 
                 case "permission.asked": {
                   context.pendingPermissions.set(event.properties.id, event.properties);
+                  void logInfo("opencode.permission.asked", {
+                    threadId: context.session.threadId,
+                    ...(turnId ? { turnId } : {}),
+                    requestId: event.properties.id,
+                    permission: event.properties.permission,
+                    patterns: event.properties.patterns,
+                    pendingPermissionCount: context.pendingPermissions.size,
+                  });
                   await emitPromise({
                     ...buildEventBase({
                       threadId: context.session.threadId,
@@ -683,6 +899,13 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
 
                 case "permission.replied": {
                   context.pendingPermissions.delete(event.properties.requestID);
+                  void logInfo("opencode.permission.replied", {
+                    threadId: context.session.threadId,
+                    ...(turnId ? { turnId } : {}),
+                    requestId: event.properties.requestID,
+                    reply: event.properties.reply,
+                    pendingPermissionCount: context.pendingPermissions.size,
+                  });
                   await emitPromise({
                     ...buildEventBase({
                       threadId: context.session.threadId,
@@ -701,6 +924,14 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
 
                 case "question.asked": {
                   context.pendingQuestions.set(event.properties.id, event.properties);
+                  void logInfo("opencode.question.asked", {
+                    threadId: context.session.threadId,
+                    ...(turnId ? { turnId } : {}),
+                    requestId: event.properties.id,
+                    questionCount: event.properties.questions.length,
+                    headers: event.properties.questions.map((question) => question.header),
+                    pendingQuestionCount: context.pendingQuestions.size,
+                  });
                   await emitPromise({
                     ...buildEventBase({
                       threadId: context.session.threadId,
@@ -725,6 +956,13 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                       event.properties.answers[index]?.join(", ") ?? "",
                     ]),
                   );
+                  void logInfo("opencode.question.replied", {
+                    threadId: context.session.threadId,
+                    ...(turnId ? { turnId } : {}),
+                    requestId: event.properties.requestID,
+                    answers,
+                    pendingQuestionCount: context.pendingQuestions.size,
+                  });
                   await emitPromise({
                     ...buildEventBase({
                       threadId: context.session.threadId,
@@ -740,6 +978,12 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
 
                 case "question.rejected": {
                   context.pendingQuestions.delete(event.properties.requestID);
+                  void logInfo("opencode.question.rejected", {
+                    threadId: context.session.threadId,
+                    ...(turnId ? { turnId } : {}),
+                    requestId: event.properties.requestID,
+                    pendingQuestionCount: context.pendingQuestions.size,
+                  });
                   await emitPromise({
                     ...buildEventBase({
                       threadId: context.session.threadId,
@@ -754,6 +998,10 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                 }
 
                 case "session.status": {
+                  void logInfo("opencode.session.status", {
+                    ...turnObservabilitySnapshot(context),
+                    status: event.properties.status,
+                  });
                   if (event.properties.status.type === "busy") {
                     updateProviderSession(context, { status: "running", activeTurnId: turnId });
                   }
@@ -771,7 +1019,9 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                   }
 
                   if (event.properties.status.type === "idle" && turnId) {
+                    clearTurnStallWarning(context);
                     context.activeTurnId = undefined;
+                    context.activeTurnStartedAt = undefined;
                     updateProviderSession(
                       context,
                       { status: "ready" },
@@ -791,7 +1041,9 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                 case "session.error": {
                   const message = sessionErrorMessage(event.properties.error);
                   const activeTurnId = context.activeTurnId;
+                  clearTurnStallWarning(context);
                   context.activeTurnId = undefined;
+                  context.activeTurnStartedAt = undefined;
                   updateProviderSession(
                     context,
                     {
@@ -827,8 +1079,19 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                 }
 
                 default:
+                  void logDebug("opencode.event.unhandled", {
+                    threadId: context.session.threadId,
+                    ...(turnId ? { turnId } : {}),
+                    ...summarizeEvent(event),
+                  });
                   break;
               }
+            }
+            if (!context.eventsAbortController.signal.aborted && !context.stopped) {
+              void logWarning("opencode.event-pump.completed", {
+                message: "OpenCode event stream ended without an explicit stop.",
+                ...turnObservabilitySnapshot(context),
+              });
             }
           } catch (error) {
             if (context.eventsAbortController.signal.aborted || context.stopped) {
@@ -871,6 +1134,11 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
           const directory = input.cwd ?? serverConfig.cwd;
           const existing = sessions.get(input.threadId);
           if (existing) {
+            yield* Effect.logWarning("opencode.session.replacing", {
+              ...turnObservabilitySnapshot(existing),
+              providerThreadId: existing.openCodeSessionId,
+              cwd: existing.directory,
+            });
             yield* Effect.tryPromise({
               try: () => stopOpenCodeContext(existing),
               catch: (cause) =>
@@ -886,7 +1154,20 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
 
           const started = yield* Effect.tryPromise({
             try: async () => {
+              void logInfo("opencode.session.starting", {
+                threadId: input.threadId,
+                cwd: directory,
+                runtimeMode: input.runtimeMode,
+                ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
+                usingExternalServer: serverUrl?.trim().length > 0,
+              });
               const server = await connectToOpenCodeServer({ binaryPath, serverUrl });
+              void logInfo("opencode.session.server-connected", {
+                threadId: input.threadId,
+                cwd: directory,
+                serverUrl: server.url,
+                external: server.external,
+              });
               const client = createOpenCodeSdkClient({
                 baseUrl: server.url,
                 directory,
@@ -899,6 +1180,11 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
               if (!openCodeSession.data) {
                 throw new Error("OpenCode session.create returned no session payload.");
               }
+              void logInfo("opencode.session.created", {
+                threadId: input.threadId,
+                providerThreadId: openCodeSession.data.id,
+                cwd: directory,
+              });
               return { server, client, openCodeSession: openCodeSession.data };
             },
             catch: (cause) =>
@@ -956,11 +1242,23 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
             activeTurnId: undefined,
             activeAgent: undefined,
             activeVariant: undefined,
+            activeTurnStartedAt: undefined,
+            lastObservedEventAt: undefined,
+            lastObservedEventType: undefined,
+            stallWarningTimer: undefined,
             stopped: false,
             eventsAbortController: new AbortController(),
           };
           sessions.set(input.threadId, context);
           startEventPump(context);
+
+          yield* Effect.logInfo("opencode.session.started", {
+            threadId: input.threadId,
+            providerThreadId: started.openCodeSession.id,
+            cwd: directory,
+            runtimeMode: input.runtimeMode,
+            ...(input.modelSelection ? { model: input.modelSelection.model } : {}),
+          });
 
           yield* emit({
             ...buildEventBase({ threadId: input.threadId }),
@@ -1024,6 +1322,10 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
         context.activeTurnId = turnId;
         context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
         context.activeVariant = variant;
+        context.activeTurnStartedAt = nowIso();
+        context.lastObservedEventAt = undefined;
+        context.lastObservedEventType = undefined;
+        scheduleTurnStallWarning(context, "awaiting_first_event");
         updateProviderSession(
           context,
           {
@@ -1033,6 +1335,17 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
           },
           { clearLastError: true },
         );
+
+        yield* Effect.logInfo("opencode.turn.prompt-dispatching", {
+          threadId: input.threadId,
+          turnId,
+          sessionId: context.openCodeSessionId,
+          model: modelSelection?.model ?? context.session.model,
+          textLength: text?.length ?? 0,
+          attachmentCount: fileParts.length,
+          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+          ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+        });
 
         yield* emit({
           ...buildEventBase({ threadId: input.threadId, turnId }),
@@ -1052,6 +1365,10 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                 ...(context.activeAgent ? { agent: context.activeAgent } : {}),
                 ...(context.activeVariant ? { variant: context.activeVariant } : {}),
                 parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+              });
+              void logInfo("opencode.turn.prompt-dispatched", {
+                ...turnObservabilitySnapshot(context),
+                sessionId: context.openCodeSessionId,
               });
             },
             catch: (cause) =>
@@ -1075,9 +1392,11 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                 cause: failure,
               });
           const failureMessage = requestError.detail;
+          clearTurnStallWarning(context);
           context.activeTurnId = undefined;
           context.activeAgent = undefined;
           context.activeVariant = undefined;
+          context.activeTurnStartedAt = undefined;
           updateProviderSession(
             context,
             {
@@ -1087,6 +1406,12 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
             },
             { clearActiveTurnId: true },
           );
+          yield* Effect.logWarning("opencode.turn.prompt-failed", {
+            threadId: input.threadId,
+            turnId,
+            sessionId: context.openCodeSessionId,
+            error: failureMessage,
+          });
           yield* emit({
             ...buildEventBase({ threadId: input.threadId, turnId }),
             type: "turn.aborted",
@@ -1106,6 +1431,10 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
       const interruptTurn: OpenCodeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
         function* (threadId, turnId) {
           const context = ensureSessionContext(sessions, threadId);
+          yield* Effect.logInfo("opencode.turn.interrupting", {
+            ...turnObservabilitySnapshot(context),
+            sessionId: context.openCodeSessionId,
+          });
           yield* Effect.tryPromise({
             try: () => context.client.session.abort({ sessionID: context.openCodeSessionId }),
             catch: (cause) =>
@@ -1140,6 +1469,14 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
           });
         }
 
+        yield* Effect.logInfo("opencode.permission.replying", {
+          threadId,
+          turnId: context.activeTurnId,
+          requestId,
+          decision,
+          sessionId: context.openCodeSessionId,
+        });
+
         yield* Effect.tryPromise({
           try: () =>
             context.client.permission.reply({
@@ -1172,6 +1509,14 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
           });
         }
 
+        yield* Effect.logInfo("opencode.question.replying", {
+          threadId,
+          turnId: context.activeTurnId,
+          requestId,
+          answerKeys: Object.keys(answers),
+          sessionId: context.openCodeSessionId,
+        });
+
         yield* Effect.tryPromise({
           try: () =>
             context.client.question.reply({
@@ -1191,6 +1536,11 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
       const stopSession: OpenCodeAdapterShape["stopSession"] = Effect.fn("stopSession")(
         function* (threadId) {
           const context = ensureSessionContext(sessions, threadId);
+          clearTurnStallWarning(context);
+          yield* Effect.logInfo("opencode.session.stopping", {
+            ...turnObservabilitySnapshot(context),
+            providerThreadId: context.openCodeSessionId,
+          });
           yield* Effect.tryPromise({
             try: () => stopOpenCodeContext(context),
             catch: (cause) =>
@@ -1291,6 +1641,10 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
         Effect.tryPromise({
           try: async () => {
             const contexts = [...sessions.values()];
+            void logInfo("opencode.session.stop-all", {
+              sessionCount: contexts.length,
+              threadIds: contexts.map((context) => context.session.threadId),
+            });
             sessions.clear();
             const results = await Promise.allSettled(
               contexts.map((context) => stopOpenCodeContext(context)),

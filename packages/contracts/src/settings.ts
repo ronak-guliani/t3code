@@ -98,6 +98,12 @@ export const CursorSettings = Schema.Struct({
   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type CursorSettings = typeof CursorSettings.Type;
+export const CopilotSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  binaryPath: makeBinaryPathSetting("copilot"),
+  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
+export type CopilotSettings = typeof CopilotSettings.Type;
 export const OpenCodeSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   binaryPath: makeBinaryPathSetting("opencode"),
@@ -133,6 +139,7 @@ export const ServerSettings = Schema.Struct({
     codex: CodexSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    copilot: CopilotSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
@@ -183,6 +190,8 @@ const CursorModelOptionsPatch = Schema.Struct({
   contextWindow: Schema.optionalKey(CursorModelOptions.fields.contextWindow),
 });
 
+const CopilotModelOptionsPatch = Schema.Struct({});
+
 const OpenCodeModelOptionsPatch = Schema.Struct({
   variant: Schema.optionalKey(OpenCodeModelOptions.fields.variant),
   agent: Schema.optionalKey(OpenCodeModelOptions.fields.agent),
@@ -203,6 +212,11 @@ const ModelSelectionPatch = Schema.Union([
     provider: Schema.optionalKey(Schema.Literal("cursor")),
     model: Schema.optionalKey(TrimmedNonEmptyString),
     options: Schema.optionalKey(CursorModelOptionsPatch),
+  }),
+  Schema.Struct({
+    provider: Schema.optionalKey(Schema.Literal("copilot")),
+    model: Schema.optionalKey(TrimmedNonEmptyString),
+    options: Schema.optionalKey(CopilotModelOptionsPatch),
   }),
   Schema.Struct({
     provider: Schema.optionalKey(Schema.Literal("opencode")),
@@ -232,6 +246,12 @@ const CursorSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const CopilotSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(Schema.String),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OpenCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
@@ -256,6 +276,7 @@ export const ServerSettingsPatch = Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
       claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
       cursor: Schema.optionalKey(CursorSettingsPatch),
+      copilot: Schema.optionalKey(CopilotSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
     }),
   ),
