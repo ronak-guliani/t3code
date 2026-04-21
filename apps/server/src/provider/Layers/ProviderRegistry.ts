@@ -22,6 +22,7 @@ import {
   type ProviderRefreshInput,
   type ProviderRegistryShape,
 } from "../Services/ProviderRegistry.ts";
+import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import {
   hydrateCachedProvider,
   PROVIDER_CACHE_IDS,
@@ -345,6 +346,7 @@ export const ProviderRegistryLive = Layer.unwrap(
       Layer.provideMerge(CodexProviderLive),
       Layer.provideMerge(ClaudeProviderLive),
       Layer.provideMerge(OpenCodeProviderLive),
+      Layer.provideMerge(OpenCodeRuntimeLive),
     ),
   ),
 );

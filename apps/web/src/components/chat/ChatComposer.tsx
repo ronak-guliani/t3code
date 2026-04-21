@@ -6,6 +6,7 @@ import type {
   ProviderApprovalDecision,
   ProviderInteractionMode,
   ProviderKind,
+  ResolvedKeybindingsConfig,
   RuntimeMode,
   ScopedThreadRef,
   ServerProvider,
@@ -31,7 +32,6 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
-import { providerCommandsQueryOptions } from "~/lib/providerReactQuery";
 import {
   clampCollapsedComposerCursor,
   type ComposerTrigger,
@@ -60,7 +60,7 @@ import {
   shouldUseCompactComposerFooter,
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
-import { AVAILABLE_PROVIDER_OPTIONS, ProviderModelPicker } from "./ProviderModelPicker";
+import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -104,6 +104,7 @@ import type { PendingApproval, PendingUserInput } from "../../session-logic";
 import { deriveLatestContextWindowSnapshot } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { AVAILABLE_PROVIDER_OPTIONS } from "./providerIconUtils";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 
@@ -318,6 +319,9 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 export interface ChatComposerHandle {
   focusAtEnd: () => void;
   focusAt: (cursor: number) => void;
+  openModelPicker: () => void;
+  toggleModelPicker: () => void;
+  isModelPickerOpen: () => boolean;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -411,6 +415,8 @@ export interface ChatComposerProps {
   // Misc
   resolvedTheme: "light" | "dark";
   settings: UnifiedSettings;
+  keybindings: ResolvedKeybindingsConfig;
+  terminalOpen: boolean;
   gitCwd: string | null;
 
   // Refs the parent needs kept in sync
@@ -498,6 +504,8 @@ export const ChatComposer = memo(
       activeThreadActivities,
       resolvedTheme,
       settings,
+      keybindings,
+      terminalOpen,
       gitCwd,
       promptRef,
       composerImagesRef,
@@ -580,29 +588,6 @@ export const ChatComposer = memo(
       () => providerStatuses.find((provider) => provider.provider === selectedProvider),
       [providerStatuses, selectedProvider],
     );
-    const projectScopedProviderCommandsQuery = useQuery(
-      providerCommandsQueryOptions({
-        environmentId,
-        provider: selectedProvider,
-        cwd: gitCwd,
-        enabled: selectedProvider === "copilot" && gitCwd !== null,
-      }),
-    );
-    const selectedProviderSlashCommands = useMemo(() => {
-      const seen = new Set<string>();
-      const commands: Array<ServerProvider["slashCommands"][number]> = [];
-      for (const command of [
-        ...(selectedProviderStatus?.slashCommands ?? []),
-        ...(projectScopedProviderCommandsQuery.data?.commands ?? []),
-      ]) {
-        if (seen.has(command.name)) {
-          continue;
-        }
-        seen.add(command.name);
-        commands.push(command);
-      }
-      return commands;
-    }, [projectScopedProviderCommandsQuery.data?.commands, selectedProviderStatus?.slashCommands]);
 
     const composerProviderState = useMemo(
       () =>
@@ -647,7 +632,17 @@ export const ChatComposer = memo(
         ? selectedModelForPicker
         : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
     }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
-    const searchableModelOptions = useMemo(
+    const searchableModelOptions = useMemo<
+      ReadonlyArray<{
+        provider: ProviderKind;
+        providerLabel: string;
+        slug: string;
+        name: string;
+        searchSlug: string;
+        searchName: string;
+        searchProvider: string;
+      }>
+    >(
       () =>
         AVAILABLE_PROVIDER_OPTIONS.filter(
           (option) => lockedProvider === null || option.value === lockedProvider,
@@ -689,6 +684,7 @@ export const ChatComposer = memo(
     const [isDragOverComposer, setIsDragOverComposer] = useState(false);
     const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
     const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
+    const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
 
     // ------------------------------------------------------------------
     // Refs
@@ -774,14 +770,16 @@ export const ChatComposer = memo(
             description: "Switch this thread back to normal build mode",
           },
         ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
-        const providerSlashCommandItems = selectedProviderSlashCommands.map((command) => ({
-          id: `provider-slash-command:${selectedProvider}:${command.name}`,
-          type: "provider-slash-command" as const,
-          provider: selectedProvider,
-          command,
-          label: `/${command.name}`,
-          description: command.description ?? command.input?.hint ?? "Run provider command",
-        }));
+        const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
+          (command) => ({
+            id: `provider-slash-command:${selectedProvider}:${command.name}`,
+            type: "provider-slash-command" as const,
+            provider: selectedProvider,
+            command,
+            label: `/${command.name}`,
+            description: command.description ?? command.input?.hint ?? "Run provider command",
+          }),
+        );
         const query = composerTrigger.query.trim().toLowerCase();
         const slashCommandItems = [...builtInSlashCommandItems, ...providerSlashCommandItems];
         if (!query) {
@@ -817,7 +815,7 @@ export const ChatComposer = memo(
         })
         .map(({ provider, providerLabel, slug, name }) => ({
           id: `model:${provider}:${slug}`,
-          type: "model",
+          type: "model" as const,
           provider,
           model: slug,
           label: name,
@@ -827,7 +825,6 @@ export const ChatComposer = memo(
       composerTrigger,
       searchableModelOptions,
       selectedProvider,
-      selectedProviderSlashCommands,
       selectedProviderStatus,
       workspaceEntries,
     ]);
@@ -893,14 +890,10 @@ export const ChatComposer = memo(
     ]);
 
     const isComposerMenuLoading =
-      (composerTriggerKind === "path" &&
-        ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
-          workspaceEntriesQuery.isLoading ||
-          workspaceEntriesQuery.isFetching)) ||
-      (composerTriggerKind === "slash-command" &&
-        selectedProvider === "copilot" &&
-        (projectScopedProviderCommandsQuery.isLoading ||
-          projectScopedProviderCommandsQuery.isFetching));
+      composerTriggerKind === "path" &&
+      ((pathTriggerQuery.length > 0 && composerPathQueryDebouncer.state.isPending) ||
+        workspaceEntriesQuery.isLoading ||
+        workspaceEntriesQuery.isFetching);
     const composerMenuEmptyState = useMemo(() => {
       if (composerTriggerKind === "skill") {
         return "No skills found. Try / to browse provider commands.";
@@ -1304,7 +1297,7 @@ export const ChatComposer = memo(
         rangeStart: number,
         rangeEnd: number,
         replacement: string,
-        options?: { expectedText?: string },
+        options?: { expectedText?: string; focusEditorAfterReplace?: boolean },
       ): boolean => {
         const currentText = promptRef.current;
         const safeStart = Math.max(0, Math.min(currentText.length, rangeStart));
@@ -1333,9 +1326,11 @@ export const ChatComposer = memo(
         }
         setComposerCursor(nextCursor);
         setComposerTrigger(detectComposerTrigger(next.text, nextExpandedCursor));
-        window.requestAnimationFrame(() => {
-          composerEditorRef.current?.focusAt(nextCursor);
-        });
+        if (options?.focusEditorAfterReplace !== false) {
+          window.requestAnimationFrame(() => {
+            composerEditorRef.current?.focusAt(nextCursor);
+          });
+        }
         return true;
       },
       [
@@ -1405,20 +1400,13 @@ export const ChatComposer = memo(
         }
         if (item.type === "slash-command") {
           if (item.command === "model") {
-            const replacement = "/model ";
-            const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
-              snapshot.value,
-              trigger.rangeEnd,
-              replacement,
-            );
-            const applied = applyPromptReplacement(
-              trigger.rangeStart,
-              replacementRangeEnd,
-              replacement,
-              { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
-            );
+            const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+              expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+              focusEditorAfterReplace: false,
+            });
             if (applied) {
               setComposerHighlightedItemId(null);
+              setIsComposerModelPickerOpen(true);
             }
             return;
           }
@@ -1467,12 +1455,15 @@ export const ChatComposer = memo(
           }
           return;
         }
-        onProviderModelSelect(item.provider, item.model);
-        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
-          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
-        });
-        if (applied) {
-          setComposerHighlightedItemId(null);
+        if (item.type === "model") {
+          onProviderModelSelect(item.provider, item.model);
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          });
+          if (applied) {
+            setComposerHighlightedItemId(null);
+          }
+          return;
         }
       },
       [
@@ -1661,6 +1652,13 @@ export const ChatComposer = memo(
         focusAt: (cursor: number) => {
           composerEditorRef.current?.focusAt(cursor);
         },
+        openModelPicker: () => {
+          setIsComposerModelPickerOpen(true);
+        },
+        toggleModelPicker: () => {
+          setIsComposerModelPickerOpen((open) => !open);
+        },
+        isModelPickerOpen: () => isComposerModelPickerOpen,
         readSnapshot: () => {
           return readComposerSnapshot();
         },
@@ -1738,6 +1736,7 @@ export const ChatComposer = memo(
         promptRef,
         composerImagesRef,
         composerTerminalContextsRef,
+        isComposerModelPickerOpen,
         readComposerSnapshot,
         selectedModel,
         selectedModelOptionsForDispatch,
@@ -1953,13 +1952,19 @@ export const ChatComposer = memo(
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
                     providers={providerStatuses}
+                    keybindings={keybindings}
                     modelOptionsByProvider={modelOptionsByProvider}
+                    terminalOpen={terminalOpen}
+                    open={isComposerModelPickerOpen}
                     {...(composerProviderState.modelPickerIconClassName
                       ? {
                           activeProviderIconClassName:
                             composerProviderState.modelPickerIconClassName,
                         }
                       : {})}
+                    onOpenChange={(open) => {
+                      setIsComposerModelPickerOpen(open);
+                    }}
                     onProviderModelChange={onProviderModelSelect}
                   />
 
