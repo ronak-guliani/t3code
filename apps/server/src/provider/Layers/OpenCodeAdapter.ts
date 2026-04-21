@@ -40,11 +40,7 @@ import {
 
 const PROVIDER = "opencode" as const;
 const OPEN_CODE_STALL_WARNING_MS = 15_000;
-
-interface OpenCodeTurnSnapshot {
-  readonly id: TurnId;
-  readonly items: Array<unknown>;
-}
+const EXTERNAL_OPENCODE_ABORT_GRACE_MS = 2_000;
 
 interface OpenCodeSessionContext {
   session: ProviderSession;
@@ -58,7 +54,6 @@ interface OpenCodeSessionContext {
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedAssistantPartIds: Set<string>;
-  readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
@@ -177,29 +172,22 @@ function mapPermissionDecision(reply: "once" | "always" | "reject"): string {
   }
 }
 
-function resolveTurnSnapshot(
-  context: OpenCodeSessionContext,
-  turnId: TurnId,
-): OpenCodeTurnSnapshot {
-  const existing = context.turns.find((turn) => turn.id === turnId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: OpenCodeTurnSnapshot = { id: turnId, items: [] };
-  context.turns.push(created);
-  return created;
-}
-
-function appendTurnItem(
-  context: OpenCodeSessionContext,
-  turnId: TurnId | undefined,
-  item: unknown,
-): void {
-  if (!turnId) {
-    return;
-  }
-  resolveTurnSnapshot(context, turnId).items.push(item);
+/**
+ * Drop per-turn streaming bookkeeping after a turn ends. Long sessions otherwise
+ * accumulate full assistant/reasoning text and tool-call state in `partById` /
+ * `emittedTextByPartId` for every turn ever processed, which can grow into the
+ * multi-GB range for sustained use.
+ *
+ * We intentionally drop *all* parts: events that arrive after the turn ends for
+ * a previously-seen part are no-ops in the existing handlers (they guard on
+ * `partById.get(...)` returning `undefined`), and assistant text for a closed
+ * turn has already been emitted as `item.completed`.
+ */
+function pruneCompletedTurnState(context: OpenCodeSessionContext): void {
+  context.partById.clear();
+  context.emittedTextByPartId.clear();
+  context.completedAssistantPartIds.clear();
+  context.messageRoleById.clear();
 }
 
 function ensureSessionContext(
@@ -509,12 +497,20 @@ async function stopOpenCodeContext(context: OpenCodeSessionContext): Promise<voi
     context.stallWarningTimer = undefined;
   }
   context.eventsAbortController.abort();
-  try {
-    await context.client.session
-      .abort({ sessionID: context.openCodeSessionId })
-      .catch(() => undefined);
-  } catch {}
+  if (context.server.external) {
+    // External servers outlive us: try to abort the remote session politely,
+    // but do not block teardown if the RPC is wedged.
+    await Promise.race([
+      context.client.session.abort({ sessionID: context.openCodeSessionId }).catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, EXTERNAL_OPENCODE_ABORT_GRACE_MS)),
+    ]);
+    context.server.close();
+    return;
+  }
+  // Local server: skip the abort RPC entirely — we own the process and are
+  // about to terminate it, so the HTTP call would just race a dropped socket.
   context.server.close();
+  pruneCompletedTurnState(context);
 }
 
 export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
@@ -531,6 +527,8 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
               stream: "native",
             })
           : undefined);
+      const managedNativeEventLogger =
+        _options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
       const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
       const sessions = new Map<ThreadId, OpenCodeSessionContext>();
 
@@ -593,7 +591,9 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
         context.stopped = true;
         clearTurnStallWarning(context);
         sessions.delete(context.session.threadId);
+        context.eventsAbortController.abort();
         context.server.close();
+        pruneCompletedTurnState(context);
         void logWarning("opencode.session.unexpected-exit", {
           message,
           ...turnObservabilitySnapshot(context),
@@ -861,7 +861,6 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                             : "item.updated",
                       payload,
                     };
-                    appendTurnItem(context, turnId, part);
                     await emitPromise(runtimeEvent);
                   }
                   break;
@@ -1022,6 +1021,7 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                     clearTurnStallWarning(context);
                     context.activeTurnId = undefined;
                     context.activeTurnStartedAt = undefined;
+                    pruneCompletedTurnState(context);
                     updateProviderSession(
                       context,
                       { status: "ready" },
@@ -1044,6 +1044,7 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
                   clearTurnStallWarning(context);
                   context.activeTurnId = undefined;
                   context.activeTurnStartedAt = undefined;
+                  pruneCompletedTurnState(context);
                   updateProviderSession(
                     context,
                     {
@@ -1238,7 +1239,6 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
             emittedTextByPartId: new Map(),
             messageRoleById: new Map(),
             completedAssistantPartIds: new Set(),
-            turns: [],
             activeTurnId: undefined,
             activeAgent: undefined,
             activeVariant: undefined,
@@ -1397,6 +1397,7 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
           context.activeAgent = undefined;
           context.activeVariant = undefined;
           context.activeTurnStartedAt = undefined;
+          pruneCompletedTurnState(context);
           updateProviderSession(
             context,
             {
@@ -1670,6 +1671,18 @@ export function makeOpenCodeAdapterLive(_options?: OpenCodeAdapterLiveOptions) {
               cause,
             }),
         });
+
+      yield* Effect.addFinalizer(() =>
+        stopAll().pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("opencode.session.stop-all-finalizer-failed", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+          Effect.tap(() => Queue.shutdown(runtimeEvents)),
+          Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
+        ),
+      );
 
       return {
         provider: PROVIDER,

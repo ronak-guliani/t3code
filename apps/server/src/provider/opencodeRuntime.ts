@@ -378,7 +378,16 @@ export async function startOpenCodeServerProcess(input: {
       return;
     }
     closed = true;
-    child.kill();
+    const forceKillTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }, 1_000);
+    forceKillTimer.unref();
+    child.once("exit", () => clearTimeout(forceKillTimer));
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.kill("SIGTERM");
   };
 
   const url = await new Promise<string>((resolve, reject) => {
@@ -440,6 +449,12 @@ export async function startOpenCodeServerProcess(input: {
     child.once("error", onError);
     child.once("close", onClose);
   });
+
+  // After startup, keep draining the child's stdio so its OS pipe buffers
+  // never fill (which would block the OpenCode server on its next write).
+  // We don't retain the data \u2014 only listeners that count as consumers.
+  child.stdout.on("data", () => {});
+  child.stderr.on("data", () => {});
 
   return {
     url,

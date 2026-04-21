@@ -480,7 +480,25 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       assert.equal(sessions.length, 1);
       assert.equal(sessions[0]?.threadId, "thread-native-log-failure");
-      assert.deepEqual(runtimeMock.state.closeCalls, []);
+      assert.deepEqual(runtimeMock.state.closeCalls, ["http://127.0.0.1:9999"]);
     }),
   );
 });
+
+it.effect("OpenCodeAdapterLive stops active sessions when the adapter layer is released", () =>
+  Effect.gen(function* () {
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        yield* adapter.startSession({
+          provider: "opencode",
+          threadId: asThreadId("thread-finalizer"),
+          runtimeMode: "full-access",
+        });
+      }).pipe(Effect.provide(OpenCodeAdapterTestLayer)),
+    );
+
+    assert.deepEqual(runtimeMock.state.abortCalls, ["http://127.0.0.1:9999/session"]);
+    assert.deepEqual(runtimeMock.state.closeCalls, ["http://127.0.0.1:9999"]);
+  }),
+);
