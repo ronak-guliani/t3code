@@ -19,6 +19,7 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadPendingRuntimeModeSetPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadUnarchivedPayload,
@@ -256,6 +257,7 @@ export function projectEvent(
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
+            pendingRuntimeMode: payload.pendingRuntimeMode,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
@@ -336,6 +338,23 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             runtimeMode: payload.runtimeMode,
+            pendingRuntimeMode: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pending-runtime-mode-set":
+      return decodeForEvent(
+        ThreadPendingRuntimeModeSetPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pendingRuntimeMode: payload.runtimeMode,
             updatedAt: payload.updatedAt,
           }),
         })),

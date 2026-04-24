@@ -6,6 +6,7 @@ import {
   COPILOT_LEGACY_AUTOPILOT_MODE_ID,
   COPILOT_LEGACY_PLAN_MODE_ID,
   COPILOT_PLAN_MODE_ID,
+  buildCopilotRuntimeModeArgs,
   buildCopilotAcpSpawnInput,
   isCopilotPlanModeId,
   normalizeCopilotAcpModeId,
@@ -14,7 +15,7 @@ import {
 
 describe("buildCopilotAcpSpawnInput", () => {
   it("builds the default GitHub Copilot ACP command with restricted inherited env", () => {
-    expect(buildCopilotAcpSpawnInput(undefined, "/tmp/project")).toEqual({
+    expect(buildCopilotAcpSpawnInput(undefined, "/tmp/project", "approval-required")).toEqual({
       command: "copilot",
       args: ["--acp", "--stdio"],
       cwd: "/tmp/project",
@@ -23,12 +24,25 @@ describe("buildCopilotAcpSpawnInput", () => {
   });
 
   it("uses the configured binary path", () => {
-    expect(buildCopilotAcpSpawnInput({ binaryPath: "/opt/bin/copilot" }, "/tmp/project")).toEqual({
+    expect(
+      buildCopilotAcpSpawnInput({ binaryPath: "/opt/bin/copilot" }, "/tmp/project", "full-access"),
+    ).toEqual({
       command: "/opt/bin/copilot",
-      args: ["--acp", "--stdio"],
+      args: ["--acp", "--stdio", "--allow-all"],
       cwd: "/tmp/project",
       inheritEnv: false,
     });
+  });
+});
+
+describe("buildCopilotRuntimeModeArgs", () => {
+  it("maps full-access to allow-all startup args", () => {
+    expect(buildCopilotRuntimeModeArgs("full-access")).toEqual(["--allow-all"]);
+  });
+
+  it("does not add startup args for stricter runtime modes", () => {
+    expect(buildCopilotRuntimeModeArgs("approval-required")).toEqual([]);
+    expect(buildCopilotRuntimeModeArgs("auto-accept-edits")).toEqual([]);
   });
 });
 

@@ -19,11 +19,15 @@ export type ClaudeCodeEffort = ClaudeAgentEffort;
 export const CURSOR_REASONING_OPTIONS = ["low", "medium", "high", "max", "xhigh"] as const;
 export const CursorReasoningOption = Schema.Literals(CURSOR_REASONING_OPTIONS);
 export type CursorReasoningOption = typeof CursorReasoningOption.Type;
+export const COPILOT_REASONING_OPTIONS = ["low", "medium", "high", "xhigh"] as const;
+export const CopilotReasoningOption = Schema.Literals(COPILOT_REASONING_OPTIONS);
+export type CopilotReasoningOption = typeof CopilotReasoningOption.Type;
 
 export type ProviderReasoningEffort =
   | CodexReasoningEffort
   | ClaudeAgentEffort
-  | CursorReasoningOption;
+  | CursorReasoningOption
+  | CopilotReasoningOption;
 
 export const CodexModelOptions = Schema.Struct({
   reasoningEffort: Schema.optional(CodexReasoningEffort),
@@ -46,7 +50,9 @@ export const CursorModelOptions = Schema.Struct({
   contextWindow: Schema.optional(Schema.String),
 });
 export type CursorModelOptions = typeof CursorModelOptions.Type;
-export const CopilotModelOptions = Schema.Struct({});
+export const CopilotModelOptions = Schema.Struct({
+  reasoning: Schema.optional(CopilotReasoningOption),
+});
 export type CopilotModelOptions = typeof CopilotModelOptions.Type;
 export const OpenCodeModelOptions = Schema.Struct({
   variant: Schema.optional(TrimmedNonEmptyString),

@@ -1222,6 +1222,154 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["tool-1-complete", "tool-2-complete"]);
   });
 
+  it("collapses Copilot tool lifecycles across interleaved plan updates with a stable row id", () => {
+    const toolUpdate = makeActivity({
+      id: "copilot-tool-update",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      kind: "tool.updated",
+      summary: "Read file",
+      payload: {
+        itemType: "dynamic_tool_call",
+        title: "Read file",
+        detail: "apps/web/src/session-logic.ts",
+        data: {
+          toolCallId: "tool-copilot-read-1",
+          kind: "read",
+          rawInput: {
+            path: "apps/web/src/session-logic.ts",
+          },
+        },
+      },
+    });
+    const activities: OrchestrationThreadActivity[] = [
+      toolUpdate,
+      makeActivity({
+        id: "copilot-plan-update",
+        createdAt: "2026-02-23T00:00:01.500Z",
+        kind: "turn.plan.updated",
+        summary: "Plan updated",
+        tone: "info",
+        payload: {
+          plan: [{ step: "Inspect chat rendering", status: "inProgress" }],
+        },
+      }),
+      makeActivity({
+        id: "copilot-tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Read file",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read file",
+          data: {
+            toolCallId: "tool-copilot-read-1",
+            kind: "read",
+            rawOutput: {
+              content: "export function deriveWorkLogEntries() {}\n",
+            },
+          },
+        },
+      }),
+    ];
+
+    const initialTimelineEntries = deriveTimelineEntries(
+      [],
+      [],
+      deriveWorkLogEntries([toolUpdate], undefined),
+    );
+    const entries = deriveWorkLogEntries(activities, undefined);
+    const completedTimelineEntries = deriveTimelineEntries([], [], entries);
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "copilot-plan-update",
+      "copilot-tool-complete",
+    ]);
+    expect(entries[1]).toMatchObject({
+      id: "copilot-tool-complete",
+      stableId: "tool:tool-copilot-read-1",
+      toolTitle: "Read file",
+      itemType: "dynamic_tool_call",
+    });
+    expect(initialTimelineEntries[0]?.id).toBe("tool:tool-copilot-read-1");
+    expect(completedTimelineEntries[1]?.id).toBe("tool:tool-copilot-read-1");
+  });
+
+  it("scopes stable Copilot tool lifecycle row ids by turn", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "turn-1-tool-update",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "tool.updated",
+        summary: "Read file",
+        turnId: "turn-1",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read file",
+          data: {
+            toolCallId: "tool-call-1",
+            kind: "read",
+          },
+        },
+      }),
+      makeActivity({
+        id: "turn-1-tool-complete",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.completed",
+        summary: "Read file",
+        turnId: "turn-1",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read file",
+          data: {
+            toolCallId: "tool-call-1",
+            kind: "read",
+          },
+        },
+      }),
+      makeActivity({
+        id: "turn-2-tool-update",
+        createdAt: "2026-02-23T00:01:01.000Z",
+        kind: "tool.updated",
+        summary: "Read file",
+        turnId: "turn-2",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read file",
+          data: {
+            toolCallId: "tool-call-1",
+            kind: "read",
+          },
+        },
+      }),
+      makeActivity({
+        id: "turn-2-tool-complete",
+        createdAt: "2026-02-23T00:01:02.000Z",
+        kind: "tool.completed",
+        summary: "Read file",
+        turnId: "turn-2",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read file",
+          data: {
+            toolCallId: "tool-call-1",
+            kind: "read",
+          },
+        },
+      }),
+    ];
+
+    const timelineEntries = deriveTimelineEntries(
+      [],
+      [],
+      deriveWorkLogEntries(activities, undefined),
+    );
+
+    expect(timelineEntries.map((entry) => entry.id)).toEqual([
+      "tool:turn-1:tool-call-1",
+      "tool:turn-2:tool-call-1",
+    ]);
+  });
+
   it("collapses same-timestamp lifecycle rows even when completed sorts before updated by id", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -24,6 +24,7 @@ export const ProjectionThreadSession = Schema.Struct({
   providerName: Schema.NullOr(Schema.String),
   runtimeMode: RuntimeMode,
   activeTurnId: Schema.NullOr(TurnId),
+  resumeCursor: Schema.NullOr(Schema.Unknown),
   lastError: Schema.NullOr(Schema.String),
   updatedAt: IsoDateTime,
 });

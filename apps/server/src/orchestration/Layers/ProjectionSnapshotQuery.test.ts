@@ -280,6 +280,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          pendingRuntimeMode: null,
           branch: null,
           worktreePath: null,
           latestTurn: {
@@ -390,6 +391,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          pendingRuntimeMode: null,
           branch: null,
           worktreePath: null,
           latestTurn: {
@@ -429,6 +431,143 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
       }
     }),
+  );
+
+  it.effect(
+    "falls back to provider runtime resume cursors when thread session projections are stale",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+
+        yield* sql`DELETE FROM projection_projects`;
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_thread_sessions`;
+        yield* sql`DELETE FROM provider_session_runtime`;
+
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id,
+            title,
+            workspace_root,
+            default_model_selection_json,
+            scripts_json,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES (
+            'project-1',
+            'Project 1',
+            '/tmp/project-1',
+            '{"provider":"copilot","model":"gpt-5.4"}',
+            '[]',
+            '2026-02-24T00:00:00.000Z',
+            '2026-02-24T00:00:01.000Z',
+            NULL
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            branch,
+            worktree_path,
+            latest_turn_id,
+            latest_user_message_at,
+            pending_approval_count,
+            pending_user_input_count,
+            has_actionable_proposed_plan,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES (
+            'thread-1',
+            'project-1',
+            'Thread 1',
+            '{"provider":"copilot","model":"gpt-5.4"}',
+            'approval-required',
+            'default',
+            NULL,
+            NULL,
+            NULL,
+            NULL,
+            0,
+            0,
+            0,
+            '2026-02-24T00:00:02.000Z',
+            '2026-02-24T00:00:03.000Z',
+            NULL
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id,
+            status,
+            provider_name,
+            runtime_mode,
+            active_turn_id,
+            resume_cursor_json,
+            last_error,
+            updated_at
+          )
+          VALUES (
+            'thread-1',
+            'ready',
+            'copilot',
+            'approval-required',
+            NULL,
+            NULL,
+            NULL,
+            '2026-02-24T00:00:04.000Z'
+          )
+        `;
+
+        yield* sql`
+          INSERT INTO provider_session_runtime (
+            thread_id,
+            provider_name,
+            adapter_key,
+            runtime_mode,
+            status,
+            last_seen_at,
+            resume_cursor_json,
+            runtime_payload_json
+          )
+          VALUES (
+            'thread-1',
+            'copilot',
+            'copilot',
+            'approval-required',
+            'running',
+            '2026-02-24T00:00:05.000Z',
+            '{"schemaVersion":1,"sessionId":"resume-123"}',
+            '{"cwd":"/tmp/project-1"}'
+          )
+        `;
+
+        const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+        assert.deepEqual(shellSnapshot.threads[0]?.session?.resumeCursor, {
+          schemaVersion: 1,
+          sessionId: "resume-123",
+        });
+
+        const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
+        assert.equal(threadDetail._tag, "Some");
+        if (threadDetail._tag === "Some") {
+          assert.deepEqual(threadDetail.value.session?.resumeCursor, {
+            schemaVersion: 1,
+            sessionId: "resume-123",
+          });
+        }
+      }),
   );
 
   it.effect(

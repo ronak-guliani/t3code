@@ -18,8 +18,16 @@ const emitInterleavedAssistantToolCalls =
 const emitGenericToolPlaceholders = process.env.T3_ACP_EMIT_GENERIC_TOOL_PLACEHOLDERS === "1";
 const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const emitElicitation = process.env.T3_ACP_EMIT_ELICITATION === "1";
+const permissionRequestCount = Number.parseInt(
+  process.env.T3_ACP_PERMISSION_REQUEST_COUNT ?? "0",
+  10,
+);
+const permissionRequestKind = process.env.T3_ACP_PERMISSION_REQUEST_KIND ?? "execute";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
+const ignoreCancel = process.env.T3_ACP_IGNORE_CANCEL === "1";
+const promptDelayMs = Number.parseInt(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0", 10);
+const promptStartedText = process.env.T3_ACP_PROMPT_STARTED_TEXT;
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
 const authMethods = (process.env.T3_ACP_AUTH_METHODS ?? "")
   .split(",")
@@ -34,6 +42,61 @@ let currentReasoning = "medium";
 let currentContext = "272k";
 let currentFast = false;
 const cancelledSessions = new Set<string>();
+
+function mockPermissionRequestPayload(kind: string) {
+  switch (kind) {
+    case "edit":
+      return {
+        title: "Edit file",
+        rawInput: {
+          path: "server/package.json",
+        },
+        content: [
+          {
+            type: "content" as const,
+            content: {
+              type: "text" as const,
+              text: "Edit server/package.json",
+            },
+          },
+        ],
+      };
+    default:
+      return {
+        title: "`cat server/package.json`",
+        rawInput: {
+          command: ["cat", "server/package.json"],
+        },
+        content: [
+          {
+            type: "content" as const,
+            content: {
+              type: "text" as const,
+              text: "Not in allowlist: cat server/package.json",
+            },
+          },
+        ],
+      };
+  }
+}
+
+function reasoningEffortOptionsForModel(): ReadonlyArray<{
+  readonly value: string;
+  readonly name: string;
+}> {
+  return /^gpt-5(?:[.-]|$)/u.test(currentModelId)
+    ? [
+        { value: "low", name: "Low" },
+        { value: "medium", name: "Medium" },
+        { value: "high", name: "High" },
+        { value: "xhigh", name: "Extra High" },
+      ]
+    : [
+        { value: "low", name: "Low" },
+        { value: "medium", name: "Medium" },
+        { value: "high", name: "High" },
+      ];
+}
 
 function logExit(reason: string): void {
   if (!exitLogPath) {
@@ -91,18 +154,12 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         return [
           ...baseOptions,
           {
-            id: "reasoning",
+            id: "reasoning_effort",
             name: "Reasoning",
             category: "thought_level",
             type: "select",
             currentValue: currentReasoning,
-            options: [
-              { value: "none", name: "None" },
-              { value: "low", name: "Low" },
-              { value: "medium", name: "Medium" },
-              { value: "high", name: "High" },
-              { value: "extra-high", name: "Extra High" },
-            ],
+            options: reasoningEffortOptionsForModel(),
           },
           {
             id: "context",
@@ -146,16 +203,12 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         return [
           ...baseOptions,
           {
-            id: "reasoning",
+            id: "reasoning_effort",
             name: "Reasoning",
             category: "thought_level",
             type: "select",
             currentValue: currentReasoning,
-            options: [
-              { value: "low", name: "Low" },
-              { value: "medium", name: "Medium" },
-              { value: "high", name: "High" },
-            ],
+            options: reasoningEffortOptionsForModel(),
           },
           {
             id: "thinking",
@@ -172,6 +225,18 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 
   return [
     {
+      id: "mode",
+      name: "Mode",
+      category: "mode",
+      type: "select" as const,
+      currentValue: currentModeId,
+      options: availableModes.map((mode) => ({
+        value: mode.id,
+        name: mode.name,
+        ...(mode.description ? { description: mode.description } : {}),
+      })),
+    },
+    {
       id: "model",
       name: "Model",
       category: "model",
@@ -180,9 +245,18 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
       options: [
         { value: "default", name: "Auto" },
         { value: "composer-2", name: "Composer 2" },
-        { value: "composer-2[fast=true]", name: "Composer 2 Fast" },
-        { value: "gpt-5.3-codex[reasoning=medium,fast=false]", name: "Codex 5.3" },
+        { value: "gpt-5.3-codex", name: "Codex 5.3" },
+        { value: "gpt-5.4", name: "GPT-5.4" },
+        { value: "claude-opus-4-6", name: "Opus 4.6" },
       ],
+    },
+    {
+      id: "reasoning_effort",
+      name: "Reasoning Effort",
+      category: "thought_level",
+      type: "select" as const,
+      currentValue: currentReasoning,
+      options: reasoningEffortOptionsForModel(),
     },
   ];
 }
@@ -283,7 +357,10 @@ const program = Effect.gen(function* () {
       if (request.configId === "model" && typeof request.value === "string") {
         currentModelId = request.value;
       }
-      if (request.configId === "reasoning" && typeof request.value === "string") {
+      if (
+        (request.configId === "reasoning" || request.configId === "reasoning_effort") &&
+        typeof request.value === "string"
+      ) {
         currentReasoning = request.value;
       }
       if (request.configId === "context" && typeof request.value === "string") {
@@ -314,6 +391,9 @@ const program = Effect.gen(function* () {
 
   yield* agent.handleCancel(({ sessionId }) =>
     Effect.sync(() => {
+      if (ignoreCancel) {
+        return;
+      }
       cancelledSessions.add(String(sessionId ?? "mock-session-1"));
     }),
   );
@@ -321,6 +401,20 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (promptStartedText) {
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: promptStartedText },
+          },
+        });
+      }
+
+      if (Number.isFinite(promptDelayMs) && promptDelayMs > 0) {
+        yield* Effect.sleep(`${promptDelayMs} millis`);
+      }
 
       if (emitInterleavedAssistantToolCalls) {
         const toolCallId = "tool-call-1";
@@ -451,6 +545,39 @@ const program = Effect.gen(function* () {
         });
 
         return { stopReason: cancelled ? "cancelled" : "end_turn" };
+      }
+
+      if (Number.isFinite(permissionRequestCount) && permissionRequestCount > 0) {
+        for (let index = 0; index < permissionRequestCount; index += 1) {
+          const toolCallId = `permission-tool-call-${index + 1}`;
+          const payload = mockPermissionRequestPayload(permissionRequestKind);
+          yield* agent.client.requestPermission({
+            sessionId: requestedSessionId,
+            toolCall: {
+              toolCallId,
+              title: payload.title,
+              kind: permissionRequestKind as AcpSchema.ToolKind,
+              status: "pending",
+              content: payload.content,
+              rawInput: payload.rawInput,
+            },
+            options: [
+              { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+              { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
+              { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+            ],
+          });
+        }
+
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: promptResponseText ?? "hello from mock" },
+          },
+        });
+
+        return { stopReason: "end_turn" };
       }
 
       if (emitGenericToolPlaceholders) {

@@ -1213,6 +1213,9 @@ const make = Effect.gen(function* () {
               providerName: event.provider,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
+              ...(thread.session?.resumeCursor !== undefined
+                ? { resumeCursor: thread.session.resumeCursor }
+                : {}),
               lastError,
               updatedAt: now,
             },
@@ -1458,6 +1461,9 @@ const make = Effect.gen(function* () {
               providerName: event.provider,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
+              ...(thread.session?.resumeCursor !== undefined
+                ? { resumeCursor: thread.session.resumeCursor }
+                : {}),
               lastError: runtimeErrorMessage,
               updatedAt: now,
             },

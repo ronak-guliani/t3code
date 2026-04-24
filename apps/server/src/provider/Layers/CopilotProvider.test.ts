@@ -117,7 +117,50 @@ describe("CopilotProvider", () => {
         name: "GPT-5.2 Codex",
         isCustom: false,
         capabilities: {
-          reasoningEffortLevels: [],
+          reasoningEffortLevels: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium", isDefault: true },
+            { value: "high", label: "High" },
+            { value: "xhigh", label: "Extra High" },
+          ],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+    );
+    assert.deepStrictEqual(
+      models.find((model) => model.slug === "auto"),
+      {
+        slug: "auto",
+        name: "Auto",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium", isDefault: true },
+            { value: "high", label: "High" },
+          ],
+          supportsFastMode: false,
+          supportsThinkingToggle: false,
+          contextWindowOptions: [],
+          promptInjectedEffortLevels: [],
+        },
+      },
+    );
+    assert.deepStrictEqual(
+      models.find((model) => model.slug === "claude-sonnet-4.6"),
+      {
+        slug: "claude-sonnet-4.6",
+        name: "Claude Sonnet 4.6",
+        isCustom: false,
+        capabilities: {
+          reasoningEffortLevels: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium", isDefault: true },
+            { value: "high", label: "High" },
+          ],
           supportsFastMode: false,
           supportsThinkingToggle: false,
           contextWindowOptions: [],
@@ -169,6 +212,22 @@ describe("CopilotProvider", () => {
 
   it.effect("returns ready when Copilot CLI version probing succeeds", () =>
     Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const homeDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-copilot-provider-home-",
+      });
+      const previousHome = process.env.HOME;
+      process.env.HOME = homeDir;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (previousHome === undefined) {
+            delete process.env.HOME;
+          } else {
+            process.env.HOME = previousHome;
+          }
+        }),
+      );
+
       const status = yield* checkCopilotProviderStatus();
 
       assert.strictEqual(status.provider, "copilot");
@@ -193,6 +252,7 @@ describe("CopilotProvider", () => {
         ),
       ),
       withNodeServices,
+      Effect.scoped,
     ),
   );
 
@@ -227,6 +287,22 @@ describe("CopilotProvider", () => {
   it.effect("falls back to help probing when version probing is unsupported", () => {
     const calls: string[] = [];
     return Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const homeDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-copilot-provider-home-",
+      });
+      const previousHome = process.env.HOME;
+      process.env.HOME = homeDir;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (previousHome === undefined) {
+            delete process.env.HOME;
+          } else {
+            process.env.HOME = previousHome;
+          }
+        }),
+      );
+
       const status = yield* checkCopilotProviderStatus();
 
       assert.deepStrictEqual(calls, ["copilot --version", "copilot --help"]);
@@ -253,6 +329,7 @@ describe("CopilotProvider", () => {
         ),
       ),
       withNodeServices,
+      Effect.scoped,
     );
   });
 

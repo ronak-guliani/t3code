@@ -39,7 +39,10 @@ describe("ServerSettingsPatch", () => {
     const parsed = decodeServerSettingsPatch({
       textGenerationModelSelection: {
         provider: "copilot",
-        model: "auto",
+        model: "gpt-5.4",
+        options: {
+          reasoning: "high",
+        },
       },
       providers: {
         copilot: {
@@ -51,6 +54,10 @@ describe("ServerSettingsPatch", () => {
     });
 
     expect(parsed.textGenerationModelSelection?.provider).toBe("copilot");
+    if (parsed.textGenerationModelSelection?.provider !== "copilot") {
+      throw new Error("Expected copilot textGenerationModelSelection");
+    }
+    expect(parsed.textGenerationModelSelection.options?.reasoning).toBe("high");
     expect(parsed.providers?.copilot?.binaryPath).toBe("/opt/homebrew/bin/copilot");
   });
 });

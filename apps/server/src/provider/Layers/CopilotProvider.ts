@@ -37,12 +37,36 @@ const EMPTY_CAPABILITIES: ModelCapabilities = {
   promptInjectedEffortLevels: [],
 };
 
+const COPILOT_REASONING_LEVELS: ReadonlyArray<ModelCapabilities["reasoningEffortLevels"][number]> =
+  [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+  ];
+
+const COPILOT_REASONING_LEVELS_WITH_XHIGH: ReadonlyArray<
+  ModelCapabilities["reasoningEffortLevels"][number]
+> = [...COPILOT_REASONING_LEVELS, { value: "xhigh", label: "Extra High" }];
+
+function supportsCopilotXHigh(slug: string): boolean {
+  return /^gpt-5(?:[.-]|$)/u.test(slug);
+}
+
+function getCopilotModelCapabilities(slug: string): ModelCapabilities {
+  return {
+    ...EMPTY_CAPABILITIES,
+    reasoningEffortLevels: supportsCopilotXHigh(slug)
+      ? COPILOT_REASONING_LEVELS_WITH_XHIGH
+      : COPILOT_REASONING_LEVELS,
+  };
+}
+
 function makeCopilotBuiltInModel(slug: string, name: string): ServerProviderModel {
   return {
     slug,
     name,
     isCustom: false,
-    capabilities: EMPTY_CAPABILITIES,
+    capabilities: getCopilotModelCapabilities(slug),
   };
 }
 

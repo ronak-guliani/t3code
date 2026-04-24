@@ -78,6 +78,28 @@ it.layer(TestLayer)("CopilotSettings", (it) => {
       }),
     );
 
+    it.effect("accepts commented Copilot config files", () =>
+      Effect.gen(function* () {
+        const homeDir = yield* makeTempDir();
+        const cwd = yield* makeTempDir();
+        yield* writeTextFile(
+          homeDir,
+          ".copilot/config.json",
+          `{
+  // User selected model
+  "model": "gpt-5.4",
+}
+`,
+        );
+
+        const settings = yield* readCopilotMergedSettings({ cwd, homeDir });
+
+        expect(settings.model).toBe("gpt-5.4");
+        expect(settings.userConfig?.model).toBe("gpt-5.4");
+        expect(settings.warnings).toEqual([]);
+      }),
+    );
+
     it.effect("reports malformed JSON as a warning without failing", () =>
       Effect.gen(function* () {
         const homeDir = yield* makeTempDir();

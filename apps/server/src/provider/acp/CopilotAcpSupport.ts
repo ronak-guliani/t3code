@@ -1,4 +1,8 @@
-import { type CopilotSettings, type ProviderInteractionMode } from "@t3tools/contracts";
+import {
+  type CopilotSettings,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+} from "@t3tools/contracts";
 import { Effect, Layer, Scope } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
@@ -38,7 +42,9 @@ export const COPILOT_CLIENT_CAPABILITIES = {
   terminal: false,
 } satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
 
-type CopilotAcpRuntimeCopilotSettings = Pick<CopilotSettings, "binaryPath">;
+type CopilotAcpRuntimeCopilotSettings = {
+  readonly binaryPath: CopilotSettings["binaryPath"];
+};
 
 export interface CopilotAcpRuntimeInput extends Omit<
   AcpSessionRuntimeOptions,
@@ -46,15 +52,21 @@ export interface CopilotAcpRuntimeInput extends Omit<
 > {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly copilotSettings: CopilotAcpRuntimeCopilotSettings | null | undefined;
+  readonly runtimeMode: RuntimeMode;
+}
+
+export function buildCopilotRuntimeModeArgs(runtimeMode: RuntimeMode): ReadonlyArray<string> {
+  return runtimeMode === "full-access" ? ["--allow-all"] : [];
 }
 
 export function buildCopilotAcpSpawnInput(
   copilotSettings: CopilotAcpRuntimeCopilotSettings | null | undefined,
   cwd: string,
+  runtimeMode: RuntimeMode,
 ): AcpSpawnInput {
   return {
     command: copilotSettings?.binaryPath || "copilot",
-    args: ["--acp", "--stdio"],
+    args: ["--acp", "--stdio", ...buildCopilotRuntimeModeArgs(runtimeMode)],
     cwd,
     inheritEnv: false,
   };
@@ -97,7 +109,7 @@ export const makeCopilotAcpRuntime = (
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
-        spawn: buildCopilotAcpSpawnInput(input.copilotSettings, input.cwd),
+        spawn: buildCopilotAcpSpawnInput(input.copilotSettings, input.cwd, input.runtimeMode),
         auth: {
           methodId: COPILOT_AUTH_METHOD_ID,
           required: true,

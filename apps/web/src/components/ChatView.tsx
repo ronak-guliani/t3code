@@ -30,7 +30,7 @@ import { applyClaudePromptEffortPrefix, createModelSelection } from "@t3tools/sh
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
@@ -38,7 +38,12 @@ import { usePrimaryEnvironmentId } from "../environments/primary";
 import { readEnvironmentApi } from "../environmentApi";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
-import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
+import {
+  buildClosedDiffRouteSearch,
+  type DiffRouteSearch,
+  parseDiffRouteSearch,
+  stripDiffSearchParams,
+} from "../diffRouteSearch";
 import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
@@ -185,6 +190,23 @@ const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnsw
 
 type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
 
+function getCopilotResumeCommand(session: Thread["session"]): string | null {
+  if (!session || session.provider !== "copilot") {
+    return null;
+  }
+  const resumeCursor = session.resumeCursor;
+  if (
+    typeof resumeCursor !== "object" ||
+    resumeCursor === null ||
+    !("sessionId" in resumeCursor) ||
+    typeof resumeCursor.sessionId !== "string"
+  ) {
+    return null;
+  }
+  const sessionId = resumeCursor.sessionId.trim();
+  return sessionId.length > 0 ? `copilot --resume=${sessionId}` : null;
+}
+
 function useThreadPlanCatalog(threadIds: readonly ThreadId[]): ThreadPlanCatalogEntry[] {
   return useStore(
     useMemo(() => {
@@ -319,16 +341,22 @@ type ChatViewProps =
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
+      onDiffSearchChange?: (nextSearch: DiffRouteSearch) => void;
       reserveTitleBarControlInset?: boolean;
       routeKind: "server";
+      diffSearch?: DiffRouteSearch;
+      paneActions?: ReactNode;
       draftId?: never;
     }
   | {
       environmentId: EnvironmentId;
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
+      onDiffSearchChange?: (nextSearch: DiffRouteSearch) => void;
       reserveTitleBarControlInset?: boolean;
       routeKind: "draft";
+      diffSearch?: DiffRouteSearch;
+      paneActions?: ReactNode;
       draftId: DraftId;
     };
 
@@ -589,7 +617,10 @@ export default function ChatView(props: ChatViewProps) {
     threadId,
     routeKind,
     onDiffPanelOpen,
+    onDiffSearchChange,
     reserveTitleBarControlInset = true,
+    diffSearch: controlledDiffSearch,
+    paneActions,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
@@ -616,10 +647,11 @@ export default function ChatView(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const navigate = useNavigate();
-  const rawSearch = useSearch({
+  const routeDiffSearch = useSearch({
     strict: false,
     select: (params) => parseDiffRouteSearch(params),
   });
+  const diffSearch = controlledDiffSearch ?? routeDiffSearch;
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -790,7 +822,7 @@ export default function ChatView(props: ChatViewProps) {
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const diffOpen = rawSearch.diff === "1";
+  const diffOpen = diffSearch.diff === "1";
   const activeThreadId = activeThread?.id ?? null;
   const activeThreadRef = useMemo(
     () => (activeThread ? scopeThreadRef(activeThread.environmentId, activeThread.id) : null),
@@ -1414,6 +1446,10 @@ export default function ChatView(props: ChatViewProps) {
     if (!completionSummary) return null;
     return deriveCompletionDividerBeforeEntryId(timelineEntries, activeLatestTurn);
   }, [activeLatestTurn, completionSummary, latestTurnSettled, timelineEntries]);
+  const copilotResumeCommand = useMemo(
+    () => getCopilotResumeCommand(activeThread?.session ?? null),
+    [activeThread?.session],
+  );
   const gitCwd = activeProject
     ? projectScriptCwd({
         project: { cwd: activeProject.cwd },
@@ -1474,6 +1510,43 @@ export default function ChatView(props: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle", nonTerminalShortcutLabelOptions),
     [keybindings, nonTerminalShortcutLabelOptions],
   );
+  const updateDiffSearch = useCallback(
+    (nextDiffSearch: DiffRouteSearch) => {
+      if (!isServerThread) {
+        return;
+      }
+
+      const sanitizedDiffSearch =
+        nextDiffSearch.diff === "1"
+          ? {
+              diff: "1" as const,
+              ...(nextDiffSearch.diffTurnId ? { diffTurnId: nextDiffSearch.diffTurnId } : {}),
+              ...(nextDiffSearch.diffTurnId && nextDiffSearch.diffFilePath
+                ? { diffFilePath: nextDiffSearch.diffFilePath }
+                : {}),
+            }
+          : buildClosedDiffRouteSearch();
+
+      if (onDiffSearchChange) {
+        onDiffSearchChange(sanitizedDiffSearch);
+        return;
+      }
+
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId,
+          threadId,
+        },
+        replace: true,
+        search: (previous) => ({
+          ...stripDiffSearchParams(previous),
+          ...sanitizedDiffSearch,
+        }),
+      });
+    },
+    [environmentId, isServerThread, navigate, onDiffSearchChange, threadId],
+  );
   const onToggleDiff = useCallback(() => {
     if (!isServerThread) {
       return;
@@ -1481,19 +1554,8 @@ export default function ChatView(props: ChatViewProps) {
     if (!diffOpen) {
       onDiffPanelOpen?.();
     }
-    void navigate({
-      to: "/$environmentId/$threadId",
-      params: {
-        environmentId,
-        threadId,
-      },
-      replace: true,
-      search: (previous) => {
-        const rest = stripDiffSearchParams(previous);
-        return diffOpen ? { ...rest, diff: undefined } : { ...rest, diff: "1" };
-      },
-    });
-  }, [diffOpen, environmentId, isServerThread, navigate, onDiffPanelOpen, threadId]);
+    updateDiffSearch(diffOpen ? {} : { diff: "1" });
+  }, [diffOpen, isServerThread, onDiffPanelOpen, updateDiffSearch]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -3175,21 +3237,13 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       onDiffPanelOpen?.();
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: {
-          environmentId,
-          threadId,
-        },
-        search: (previous) => {
-          const rest = stripDiffSearchParams(previous);
-          return filePath
-            ? { ...rest, diff: "1", diffTurnId: turnId, diffFilePath: filePath }
-            : { ...rest, diff: "1", diffTurnId: turnId };
-        },
-      });
+      updateDiffSearch(
+        filePath
+          ? { diff: "1", diffTurnId: turnId, diffFilePath: filePath }
+          : { diff: "1", diffTurnId: turnId },
+      );
     },
-    [environmentId, isServerThread, navigate, onDiffPanelOpen, threadId],
+    [isServerThread, onDiffPanelOpen, updateDiffSearch],
   );
   // Both the Map and the revert handler are read from refs at call-time so
   // the callback reference is fully stable and never busts context identity.
@@ -3251,6 +3305,7 @@ export default function ChatView(props: ChatViewProps) {
           onDeleteProjectScript={deleteProjectScript}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleDiff={onToggleDiff}
+          paneActions={paneActions}
         />
       </header>
 
@@ -3277,6 +3332,7 @@ export default function ChatView(props: ChatViewProps) {
               timelineEntries={timelineEntries}
               completionDividerBeforeEntryId={completionDividerBeforeEntryId}
               completionSummary={completionSummary}
+              copilotResumeCommand={copilotResumeCommand}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
               routeThreadKey={routeThreadKey}

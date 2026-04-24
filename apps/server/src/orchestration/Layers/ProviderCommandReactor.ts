@@ -35,6 +35,7 @@ type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.runtime-mode-set"
+      | "thread.session-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
@@ -64,6 +65,31 @@ function mapProviderSessionStatusToOrchestrationStatus(
     default:
       return "ready";
   }
+}
+
+function providerSessionResumeCursorEqual(
+  left: OrchestrationSession["resumeCursor"] | undefined,
+  right: ProviderSession["resumeCursor"] | undefined,
+): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function threadSessionNeedsProviderSync(input: {
+  readonly threadSession: OrchestrationSession;
+  readonly providerSession: ProviderSession;
+  readonly runtimeMode: RuntimeMode;
+}): boolean {
+  return (
+    input.threadSession.status !==
+      mapProviderSessionStatusToOrchestrationStatus(input.providerSession.status) ||
+    input.threadSession.providerName !== input.providerSession.provider ||
+    input.threadSession.runtimeMode !== input.runtimeMode ||
+    input.threadSession.lastError !== (input.providerSession.lastError ?? null) ||
+    !providerSessionResumeCursorEqual(
+      input.threadSession.resumeCursor,
+      input.providerSession.resumeCursor,
+    )
+  );
 }
 
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
@@ -257,6 +283,43 @@ const make = Effect.gen(function* () {
     return readModel.threads.find((entry) => entry.id === threadId);
   });
 
+  const canApplyPendingRuntimeMode = (thread: {
+    readonly pendingRuntimeMode: RuntimeMode | null;
+    readonly session: OrchestrationSession | null;
+  }): boolean => {
+    const pendingRuntimeMode = thread.pendingRuntimeMode;
+    if (pendingRuntimeMode === null) {
+      return false;
+    }
+    const session = thread.session;
+    return (
+      session === null ||
+      session.status === "stopped" ||
+      (session.status !== "running" && session.activeTurnId === null)
+    );
+  };
+
+  const flushPendingRuntimeModeForThreadIfSettled = Effect.fn(
+    "flushPendingRuntimeModeForThreadIfSettled",
+  )(function* (threadId: ThreadId, createdAt: string) {
+    const thread = yield* resolveThread(threadId);
+    if (!thread || !canApplyPendingRuntimeMode(thread)) {
+      return;
+    }
+    const pendingRuntimeMode = thread.pendingRuntimeMode;
+    if (pendingRuntimeMode === null) {
+      return;
+    }
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.runtime-mode.set",
+      commandId: serverCommandId("pending-runtime-mode-flush"),
+      threadId,
+      runtimeMode: pendingRuntimeMode,
+      createdAt,
+    });
+  });
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
@@ -264,6 +327,8 @@ const make = Effect.gen(function* () {
       readonly modelSelection?: ModelSelection;
     },
   ) {
+    yield* flushPendingRuntimeModeForThreadIfSettled(threadId, createdAt);
+
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
@@ -326,6 +391,7 @@ const make = Effect.gen(function* () {
           runtimeMode: desiredRuntimeMode,
           // Provider turn ids are not orchestration turn ids.
           activeTurnId: null,
+          ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
           lastError: session.lastError ?? null,
           updatedAt: session.updatedAt,
         },
@@ -335,7 +401,7 @@ const make = Effect.gen(function* () {
     const activeSession = yield* resolveActiveSession(threadId);
     const existingSessionThreadId =
       thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
-    if (existingSessionThreadId) {
+    if (existingSessionThreadId && activeSession) {
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
       const sessionModelSwitch =
         currentProvider === undefined
@@ -356,6 +422,16 @@ const make = Effect.gen(function* () {
         !shouldRestartForModelChange &&
         !shouldRestartForModelSelectionChange
       ) {
+        if (
+          thread.session &&
+          threadSessionNeedsProviderSync({
+            threadSession: thread.session,
+            providerSession: activeSession,
+            runtimeMode: desiredRuntimeMode,
+          })
+        ) {
+          yield* bindSessionToThread(activeSession);
+        }
         return existingSessionThreadId;
       }
 
@@ -706,13 +782,14 @@ const make = Effect.gen(function* () {
       });
     }
 
-    yield* providerService
+    const responded = yield* providerService
       .respondToRequest({
         threadId: event.payload.threadId,
         requestId: event.payload.requestId,
         decision: event.payload.decision,
       })
       .pipe(
+        Effect.as(true as const),
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* appendProviderFailureActivity({
@@ -727,10 +804,39 @@ const make = Effect.gen(function* () {
               requestId: event.payload.requestId,
             });
 
-            if (!isUnknownPendingApprovalRequestError(cause)) return;
+            if (!isUnknownPendingApprovalRequestError(cause)) {
+              return false as const;
+            }
+            return false as const;
           }),
         ),
       );
+
+    if (!responded) {
+      return;
+    }
+
+    if (event.payload.decision !== "acceptForSession") {
+      return;
+    }
+
+    const resolvedThread = yield* resolveThread(event.payload.threadId);
+    if (!resolvedThread || resolvedThread.runtimeMode === "full-access") {
+      return;
+    }
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.pending-runtime-mode.set",
+      commandId: serverCommandId("pending-runtime-mode-set"),
+      threadId: event.payload.threadId,
+      runtimeMode: "full-access",
+      createdAt: event.payload.createdAt,
+    });
+
+    yield* flushPendingRuntimeModeForThreadIfSettled(
+      event.payload.threadId,
+      event.payload.createdAt,
+    );
   });
 
   const processUserInputResponseRequested = Effect.fn("processUserInputResponseRequested")(
@@ -799,6 +905,9 @@ const make = Effect.gen(function* () {
         providerName: thread.session?.providerName ?? null,
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
+        ...(thread.session?.resumeCursor !== undefined
+          ? { resumeCursor: thread.session.resumeCursor }
+          : {}),
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
       },
@@ -831,6 +940,9 @@ const make = Effect.gen(function* () {
         );
         return;
       }
+      case "thread.session-set":
+        yield* flushPendingRuntimeModeForThreadIfSettled(event.payload.threadId, event.occurredAt);
+        return;
       case "thread.turn-start-requested":
         yield* processTurnStartRequested(event);
         return;
@@ -868,6 +980,7 @@ const make = Effect.gen(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.session-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||

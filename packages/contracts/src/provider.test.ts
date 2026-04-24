@@ -98,13 +98,20 @@ describe("ProviderSessionStartInput", () => {
       interactionMode: "plan",
       modelSelection: {
         provider: "copilot",
-        model: "auto",
+        model: "gpt-5.4",
+        options: {
+          reasoning: "high",
+        },
       },
     });
     expect(parsed.provider).toBe("copilot");
     expect(parsed.interactionMode).toBe("plan");
     expect(parsed.modelSelection?.provider).toBe("copilot");
-    expect(parsed.modelSelection?.model).toBe("auto");
+    expect(parsed.modelSelection?.model).toBe("gpt-5.4");
+    if (parsed.modelSelection?.provider !== "copilot") {
+      throw new Error("Expected copilot modelSelection");
+    }
+    expect(parsed.modelSelection.options?.reasoning).toBe("high");
   });
 });
 
@@ -157,11 +164,18 @@ describe("ProviderSendTurnInput", () => {
       threadId: "thread-1",
       modelSelection: {
         provider: "copilot",
-        model: "auto",
+        model: "gpt-5.4",
+        options: {
+          reasoning: "xhigh",
+        },
       },
     });
 
     expect(parsed.modelSelection?.provider).toBe("copilot");
-    expect(parsed.modelSelection?.model).toBe("auto");
+    expect(parsed.modelSelection?.model).toBe("gpt-5.4");
+    if (parsed.modelSelection?.provider !== "copilot") {
+      throw new Error("Expected copilot modelSelection");
+    }
+    expect(parsed.modelSelection.options?.reasoning).toBe("xhigh");
   });
 });

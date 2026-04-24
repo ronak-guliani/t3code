@@ -246,6 +246,7 @@ export const OrchestrationSession = Schema.Struct({
   providerName: Schema.NullOr(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
+  resumeCursor: Schema.optional(Schema.Unknown),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
@@ -318,6 +319,9 @@ export const OrchestrationThread = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -364,6 +368,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -510,6 +517,14 @@ const ThreadRuntimeModeSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   runtimeMode: RuntimeMode,
+  createdAt: IsoDateTime,
+});
+
+const ThreadPendingRuntimeModeSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.pending-runtime-mode.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runtimeMode: Schema.NullOr(RuntimeMode),
   createdAt: IsoDateTime,
 });
 
@@ -734,6 +749,7 @@ const ThreadRevertCompleteCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadPendingRuntimeModeSetCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -760,6 +776,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.meta-updated",
   "thread.runtime-mode-set",
+  "thread.pending-runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
@@ -812,6 +829,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -849,6 +869,12 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
 export const ThreadRuntimeModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   runtimeMode: RuntimeMode,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadPendingRuntimeModeSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  runtimeMode: Schema.NullOr(RuntimeMode),
   updatedAt: IsoDateTime,
 });
 
@@ -1013,6 +1039,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.runtime-mode-set"),
     payload: ThreadRuntimeModeSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pending-runtime-mode-set"),
+    payload: ThreadPendingRuntimeModeSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

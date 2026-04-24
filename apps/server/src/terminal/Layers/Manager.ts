@@ -100,6 +100,12 @@ interface TerminalSessionState {
   status: TerminalSessionStatus;
   pid: number | null;
   history: string;
+  /**
+   * Number of `\n` characters in `history`. Tracked incrementally so we
+   * avoid an O(n) `split('\n')` over the entire history string on every
+   * output chunk; see `appendHistoryChunk`.
+   */
+  historyNewlineCount: number;
   pendingHistoryControlSequence: string;
   pendingProcessEvents: Array<PendingProcessEvent>;
   pendingProcessEventIndex: number;
@@ -459,6 +465,45 @@ function capHistory(history: string, maxLines: number): string {
   if (lines.length <= maxLines) return history;
   const capped = lines.slice(lines.length - maxLines).join("\n");
   return hasTrailingNewline ? `${capped}\n` : capped;
+}
+
+function countNewlines(value: string): number {
+  let count = 0;
+  for (let index = 0; index < value.length; index++) {
+    if (value.charCodeAt(index) === 10) count++;
+  }
+  return count;
+}
+
+/**
+ * Append a chunk of visible terminal output to `session.history`, performing
+ * line-cap compaction lazily (only when the buffered history grows past
+ * `maxLines * 2`). This keeps the per-chunk hot path O(chunk.length) instead
+ * of the previous O(history.length) `split('\n')` + `join` on every chunk.
+ *
+ * The session's snapshot may temporarily expose up to `2 * maxLines` of
+ * history between compactions; the cap is still enforced before persistence
+ * (the persist worker writes the same `session.history` string, but compaction
+ * runs frequently enough that the on-disk file remains bounded by ~2x the
+ * configured cap in the worst case).
+ */
+function appendHistoryChunk(session: TerminalSessionState, chunk: string, maxLines: number): void {
+  if (chunk.length === 0) return;
+  session.history += chunk;
+  session.historyNewlineCount += countNewlines(chunk);
+
+  // Effective line count matches `capHistory`'s view: trailing newline does
+  // not count as an additional partial line.
+  const effectiveLineCount = session.history.endsWith("\n")
+    ? session.historyNewlineCount
+    : session.historyNewlineCount + 1;
+
+  // Compact only when we've grown to ~2x the cap so the amortised cost of
+  // the O(n) `capHistory` work is paid roughly once per `maxLines` lines.
+  if (effectiveLineCount > maxLines * 2) {
+    session.history = capHistory(session.history, maxLines);
+    session.historyNewlineCount = countNewlines(session.history);
+  }
 }
 
 function isCsiFinalByte(codePoint: number): boolean {
@@ -1189,10 +1234,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             );
             session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
             if (sanitized.visibleText.length > 0) {
-              session.history = capHistory(
-                `${session.history}${sanitized.visibleText}`,
-                historyLineLimit,
-              );
+              appendHistoryChunk(session, sanitized.visibleText, historyLineLimit);
             }
             session.updatedAt = new Date().toISOString();
 
@@ -1637,6 +1679,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               status: "starting",
               pid: null,
               history,
+              historyNewlineCount: countNewlines(history),
               pendingHistoryControlSequence: "",
               pendingProcessEvents: [],
               pendingProcessEventIndex: 0,
@@ -1690,6 +1733,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             liveSession.worktreePath = input.worktreePath ?? null;
             liveSession.runtimeEnv = nextRuntimeEnv;
             liveSession.history = "";
+            liveSession.historyNewlineCount = 0;
             liveSession.pendingHistoryControlSequence = "";
             liveSession.pendingProcessEvents = [];
             liveSession.pendingProcessEventIndex = 0;
@@ -1703,6 +1747,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
             liveSession.runtimeEnv = nextRuntimeEnv;
             liveSession.worktreePath = input.worktreePath ?? null;
             liveSession.history = "";
+            liveSession.historyNewlineCount = 0;
             liveSession.pendingHistoryControlSequence = "";
             liveSession.pendingProcessEvents = [];
             liveSession.pendingProcessEventIndex = 0;
@@ -1779,6 +1824,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const terminalId = input.terminalId ?? DEFAULT_TERMINAL_ID;
           const session = yield* requireSession(input.threadId, terminalId);
           session.history = "";
+          session.historyNewlineCount = 0;
           session.pendingHistoryControlSequence = "";
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;
@@ -1816,6 +1862,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
               status: "starting",
               pid: null,
               history: "",
+              historyNewlineCount: 0,
               pendingHistoryControlSequence: "",
               pendingProcessEvents: [],
               pendingProcessEventIndex: 0,
@@ -1850,6 +1897,7 @@ export const makeTerminalManagerWithOptions = Effect.fn("makeTerminalManagerWith
           const rows = input.rows ?? session.rows;
 
           session.history = "";
+          session.historyNewlineCount = 0;
           session.pendingHistoryControlSequence = "";
           session.pendingProcessEvents = [];
           session.pendingProcessEventIndex = 0;

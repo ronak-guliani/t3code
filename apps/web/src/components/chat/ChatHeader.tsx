@@ -6,7 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
 import { DiffIcon, TerminalSquareIcon } from "lucide-react";
@@ -41,6 +41,7 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleTerminal: () => void;
   onToggleDiff: () => void;
+  paneActions?: ReactNode;
 }
 
 export const ChatHeader = memo(function ChatHeader({
@@ -67,6 +68,7 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
   onToggleTerminal,
   onToggleDiff,
+  paneActions,
 }: ChatHeaderProps) {
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
@@ -163,6 +165,7 @@ export const ChatHeader = memo(function ChatHeader({
                 : "Toggle diff panel"}
           </TooltipPopup>
         </Tooltip>
+        {paneActions}
       </div>
     </div>
   );

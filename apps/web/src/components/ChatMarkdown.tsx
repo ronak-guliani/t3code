@@ -211,6 +211,19 @@ function SuspenseShikiCodeBlock({
     );
   }
 
+  // Skip Shiki tokenization while the code block is streaming. Re-tokenizing
+  // the entire (growing) block on every delta is O(N^2) over the streaming
+  // window and was a measurable cause of UI sluggishness during long Claude/
+  // Codex responses. We render the raw text with monospace styling instead;
+  // the cache path above runs exactly once after streaming completes.
+  if (isStreaming) {
+    return (
+      <pre className="chat-markdown-shiki overflow-x-auto whitespace-pre-wrap break-words">
+        <code className={className}>{code}</code>
+      </pre>
+    );
+  }
+
   const highlighter = use(getHighlighterPromise(language));
   const highlightedHtml = useMemo(() => {
     try {

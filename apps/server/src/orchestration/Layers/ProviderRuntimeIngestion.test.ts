@@ -2290,6 +2290,53 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("runtime exploded");
   });
 
+  it("preserves the session resume cursor across runtime.error updates", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-resume-cursor"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          resumeCursor: { sessionId: "a7f0c803-7cce-4554-9ad6-dfd9df539e33" },
+          updatedAt: createdAt,
+          lastError: null,
+        },
+        createdAt,
+      }),
+    );
+
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-runtime-error-preserve-resume-cursor"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      payload: {
+        message: "runtime exploded",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "error" &&
+        entry.session?.lastError === "runtime exploded" &&
+        typeof entry.session?.resumeCursor === "object" &&
+        entry.session.resumeCursor !== null,
+    );
+    expect(thread.session?.resumeCursor).toEqual({
+      sessionId: "a7f0c803-7cce-4554-9ad6-dfd9df539e33",
+    });
+  });
+
   it("records runtime.error activities from the typed payload message", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

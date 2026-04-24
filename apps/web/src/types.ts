@@ -100,6 +100,7 @@ export interface Thread {
   title: string;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
+  pendingRuntimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode;
   session: ThreadSession | null;
   messages: ChatMessage[];
@@ -124,6 +125,7 @@ export interface ThreadShell {
   title: string;
   modelSelection: ModelSelection;
   runtimeMode: RuntimeMode;
+  pendingRuntimeMode: RuntimeMode | null;
   interactionMode: ProviderInteractionMode;
   error: string | null;
   createdAt: string;
@@ -161,6 +163,7 @@ export interface ThreadSession {
   provider: ProviderKind;
   status: SessionPhase | "error" | "closed";
   activeTurnId?: TurnId | undefined;
+  resumeCursor?: unknown;
   createdAt: string;
   updatedAt: string;
   lastError?: string;

@@ -42,11 +42,6 @@ import {
 
 const PROVIDER = "opencode" as const;
 
-interface OpenCodeTurnSnapshot {
-  readonly id: TurnId;
-  readonly items: Array<unknown>;
-}
-
 type OpenCodeSubscribedEvent =
   Awaited<ReturnType<OpencodeClient["event"]["subscribe"]>> extends {
     readonly stream: AsyncIterable<infer TEvent>;
@@ -66,7 +61,6 @@ interface OpenCodeSessionContext {
   readonly partById: Map<string, Part>;
   readonly emittedTextByPartId: Map<string, string>;
   readonly completedAssistantPartIds: Set<string>;
-  readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
@@ -211,31 +205,6 @@ function mapPermissionDecision(reply: "once" | "always" | "reject"): string {
     default:
       return "decline";
   }
-}
-
-function resolveTurnSnapshot(
-  context: OpenCodeSessionContext,
-  turnId: TurnId,
-): OpenCodeTurnSnapshot {
-  const existing = context.turns.find((turn) => turn.id === turnId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: OpenCodeTurnSnapshot = { id: turnId, items: [] };
-  context.turns.push(created);
-  return created;
-}
-
-function appendTurnItem(
-  context: OpenCodeSessionContext,
-  turnId: TurnId | undefined,
-  item: unknown,
-): void {
-  if (!turnId) {
-    return;
-  }
-  resolveTurnSnapshot(context, turnId).items.push(item);
 }
 
 function ensureSessionContext(
@@ -413,6 +382,33 @@ function updateProviderSession(
   return nextSession;
 }
 
+function clearOpenCodeTransientEventState(context: OpenCodeSessionContext): void {
+  context.messageRoleById.clear();
+  context.partById.clear();
+  context.emittedTextByPartId.clear();
+  context.completedAssistantPartIds.clear();
+}
+
+function clearOpenCodeRetainedState(context: OpenCodeSessionContext): void {
+  context.pendingPermissions.clear();
+  context.pendingQuestions.clear();
+  clearOpenCodeTransientEventState(context);
+  context.activeTurnId = undefined;
+  context.activeAgent = undefined;
+  context.activeVariant = undefined;
+}
+
+function removeOpenCodeMessageParts(context: OpenCodeSessionContext, messageId: string): void {
+  for (const [partId, part] of context.partById) {
+    if (part.messageID !== messageId) {
+      continue;
+    }
+    context.partById.delete(partId);
+    context.emittedTextByPartId.delete(partId);
+    context.completedAssistantPartIds.delete(partId);
+  }
+}
+
 const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   context: OpenCodeSessionContext,
 ) {
@@ -427,6 +423,8 @@ const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   yield* runOpenCodeSdk("session.abort", () =>
     context.client.session.abort({ sessionID: context.openCodeSessionId }),
   ).pipe(Effect.ignore({ log: true }));
+
+  clearOpenCodeRetainedState(context);
 
   // Closing the session scope interrupts every fiber forked into it and
   // runs each finalizer we registered — the `AbortController.abort()` call,
@@ -534,6 +532,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             exitKind: "error",
           },
         }).pipe(Effect.ignore);
+        clearOpenCodeRetainedState(context);
         // Inline the teardown that `stopOpenCodeContext` would do; we can't
         // delegate to it because our `getAndSet` above already flipped the
         // one-shot guard, so the call would no-op.
@@ -607,6 +606,8 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
               ...(latestText.length > 0 ? { detail: latestText } : {}),
             },
           });
+          context.partById.delete(part.id);
+          context.emittedTextByPartId.delete(part.id);
         }
       });
 
@@ -614,6 +615,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
         context: OpenCodeSessionContext,
         event: OpenCodeSubscribedEvent,
       ) {
+        if (yield* Ref.get(context.stopped)) {
+          return;
+        }
         const payloadSessionId =
           "properties" in event
             ? (event.properties as { sessionID?: unknown }).sessionID
@@ -651,6 +655,7 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
 
           case "message.removed": {
             context.messageRoleById.delete(event.properties.messageID);
+            removeOpenCodeMessageParts(context, event.properties.messageID);
             break;
           }
 
@@ -701,10 +706,13 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
 
           case "message.part.updated": {
             const part = event.properties.part;
-            context.partById.set(part.id, part);
             const messageRole = messageRoleForPart(context, part);
 
-            if (messageRole === "assistant") {
+            if (part.type !== "tool") {
+              context.partById.set(part.id, part);
+            }
+
+            if (part.type !== "tool" && messageRole === "assistant") {
               yield* emitAssistantTextDelta(context, part, turnId, event);
             }
 
@@ -743,7 +751,6 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
                       : "item.updated",
                 payload,
               };
-              appendTurnItem(context, turnId, part);
               yield* emit(runtimeEvent);
             }
             break;
@@ -862,6 +869,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
 
             if (event.properties.status.type === "idle" && turnId) {
               context.activeTurnId = undefined;
+              context.activeAgent = undefined;
+              context.activeVariant = undefined;
+              clearOpenCodeTransientEventState(context);
               updateProviderSession(context, { status: "ready" }, { clearActiveTurnId: true });
               yield* emit({
                 ...buildEventBase({ threadId: context.session.threadId, turnId, raw: event }),
@@ -878,6 +888,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             const message = sessionErrorMessage(event.properties.error);
             const activeTurnId = context.activeTurnId;
             context.activeTurnId = undefined;
+            context.activeAgent = undefined;
+            context.activeVariant = undefined;
+            clearOpenCodeTransientEventState(context);
             updateProviderSession(
               context,
               {
@@ -1084,7 +1097,6 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
             emittedTextByPartId: new Map(),
             messageRoleById: new Map(),
             completedAssistantPartIds: new Set(),
-            turns: [],
             activeTurnId: undefined,
             activeAgent: undefined,
             activeVariant: undefined,
@@ -1226,6 +1238,9 @@ export function makeOpenCodeAdapterLive(options?: OpenCodeAdapterLiveOptions) {
           yield* runOpenCodeSdk("session.abort", () =>
             context.client.session.abort({ sessionID: context.openCodeSessionId }),
           ).pipe(Effect.mapError(toRequestError));
+          context.pendingPermissions.clear();
+          context.pendingQuestions.clear();
+          clearOpenCodeTransientEventState(context);
           if (turnId ?? context.activeTurnId) {
             yield* emit({
               ...buildEventBase({ threadId, turnId: turnId ?? context.activeTurnId }),

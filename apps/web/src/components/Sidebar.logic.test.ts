@@ -722,6 +722,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
       ...overrides?.modelSelection,
     },
     runtimeMode: DEFAULT_RUNTIME_MODE,
+    pendingRuntimeMode: null,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     messages: [],

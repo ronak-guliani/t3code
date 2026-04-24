@@ -148,6 +148,7 @@ function mapSession(session: OrchestrationSession): ThreadSession {
     status: toLegacySessionStatus(session.status),
     orchestrationStatus: session.status,
     activeTurnId: session.activeTurnId ?? undefined,
+    ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     ...(session.lastError ? { lastError: session.lastError } : {}),
@@ -233,6 +234,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     title: thread.title,
     modelSelection: normalizeModelSelection(thread.modelSelection),
     runtimeMode: thread.runtimeMode,
+    pendingRuntimeMode: thread.pendingRuntimeMode,
     interactionMode: thread.interactionMode,
     session: thread.session ? mapSession(thread.session) : null,
     messages: thread.messages.map((message) => mapMessage(environmentId, message)),
@@ -267,6 +269,7 @@ function mapThreadShell(
     title: thread.title,
     modelSelection: normalizeModelSelection(thread.modelSelection),
     runtimeMode: thread.runtimeMode,
+    pendingRuntimeMode: thread.pendingRuntimeMode,
     interactionMode: thread.interactionMode,
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
@@ -315,6 +318,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     title: thread.title,
     modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,
+    pendingRuntimeMode: thread.pendingRuntimeMode,
     interactionMode: thread.interactionMode,
     error: thread.error,
     createdAt: thread.createdAt,
@@ -366,11 +370,14 @@ function threadSessionsEqual(
 ): boolean {
   if (left === right) return true;
   if (left == null || right == null) return false;
+  const leftResumeCursor = JSON.stringify(left.resumeCursor ?? null);
+  const rightResumeCursor = JSON.stringify(right.resumeCursor ?? null);
   return (
     left.provider === right.provider &&
     left.status === right.status &&
     left.orchestrationStatus === right.orchestrationStatus &&
     left.activeTurnId === right.activeTurnId &&
+    leftResumeCursor === rightResumeCursor &&
     left.createdAt === right.createdAt &&
     left.updatedAt === right.updatedAt &&
     left.lastError === right.lastError
@@ -411,6 +418,7 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.title === right.title &&
     left.modelSelection === right.modelSelection &&
     left.runtimeMode === right.runtimeMode &&
+    left.pendingRuntimeMode === right.pendingRuntimeMode &&
     left.interactionMode === right.interactionMode &&
     left.error === right.error &&
     left.createdAt === right.createdAt &&
@@ -1250,6 +1258,7 @@ function applyEnvironmentOrchestrationEvent(
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
+          pendingRuntimeMode: event.payload.pendingRuntimeMode,
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
@@ -1304,6 +1313,14 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         runtimeMode: event.payload.runtimeMode,
+        pendingRuntimeMode: null,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.pending-runtime-mode-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        pendingRuntimeMode: event.payload.runtimeMode,
         updatedAt: event.payload.updatedAt,
       }));
 

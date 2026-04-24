@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseDiffRouteSearch } from "./diffRouteSearch";
+import { buildClosedDiffRouteSearch, parseDiffRouteSearch } from "./diffRouteSearch";
 
 describe("parseDiffRouteSearch", () => {
   it("parses valid diff search values", () => {
@@ -69,6 +69,16 @@ describe("parseDiffRouteSearch", () => {
 
     expect(parsed).toEqual({
       diff: "1",
+    });
+  });
+});
+
+describe("buildClosedDiffRouteSearch", () => {
+  it("returns explicit undefined keys for diff state", () => {
+    expect(buildClosedDiffRouteSearch()).toEqual({
+      diff: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
     });
   });
 });

@@ -3,8 +3,8 @@ import {
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   type ClaudeAgentEffort,
   type ClaudeModelOptions,
-  type CodexModelOptions,
   type CopilotModelOptions,
+  type CodexModelOptions,
   type CursorModelOptions,
   type ModelCapabilities,
   type ModelSelection,
@@ -125,6 +125,18 @@ export function normalizeCursorModelOptionsWithCapabilities(
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }
 
+export function normalizeCopilotModelOptionsWithCapabilities(
+  caps: ModelCapabilities,
+  modelOptions: CopilotModelOptions | null | undefined,
+): CopilotModelOptions | undefined {
+  const reasoning = resolveEffort(caps, modelOptions?.reasoning);
+  return reasoning
+    ? {
+        reasoning: reasoning as CopilotModelOptions["reasoning"],
+      }
+    : undefined;
+}
+
 function resolveLabeledOption(
   options: ReadonlyArray<{ value: string; isDefault?: boolean | undefined }> | undefined,
   raw: string | null | undefined,
@@ -164,7 +176,10 @@ export function normalizeProviderModelOptionsWithCapabilities(
     case "cursor":
       return normalizeCursorModelOptionsWithCapabilities(caps, modelOptions as CursorModelOptions);
     case "copilot":
-      return undefined;
+      return normalizeCopilotModelOptionsWithCapabilities(
+        caps,
+        modelOptions as CopilotModelOptions,
+      );
     case "opencode":
       return normalizeOpenCodeModelOptionsWithCapabilities(
         caps,

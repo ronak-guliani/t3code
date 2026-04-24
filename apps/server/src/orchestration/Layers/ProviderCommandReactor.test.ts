@@ -899,6 +899,76 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
+  it("rebinds the active provider session when the thread session is missing its resume cursor", async () => {
+    const harness = await createHarness({
+      threadModelSelection: { provider: "copilot", model: "gpt-5.4" },
+    });
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-copilot-sync-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-copilot-sync-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-without-resume-cursor"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "copilot",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-copilot-sync-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-copilot-sync-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    expect(harness.startSession.mock.calls.length).toBe(1);
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.resumeCursor).toEqual({ opaque: "resume-1" });
+  });
+
   it("restarts claude sessions when claude effort changes", async () => {
     const harness = await createHarness({
       threadModelSelection: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
@@ -1371,6 +1441,130 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  it("persists and immediately applies acceptForSession when the thread is idle", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-idle-approval"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.approval.respond",
+        commandId: CommandId.make("cmd-approval-respond-idle-accept-for-session"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("approval-request-idle"),
+        decision: "acceptForSession",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.runtimeMode ===
+        "full-access"
+      );
+    });
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.runtimeMode).toBe("full-access");
+    expect(thread?.pendingRuntimeMode).toBeNull();
+  });
+
+  it("defers acceptForSession until thread.session.set shows the turn has settled", async () => {
+    const harness = await createHarness();
+    const runningAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-running-approval"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: runningAt,
+        },
+        createdAt: runningAt,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.approval.respond",
+        commandId: CommandId.make("cmd-approval-respond-running-accept-for-session"),
+        threadId: ThreadId.make("thread-1"),
+        requestId: asApprovalRequestId("approval-request-running"),
+        decision: "acceptForSession",
+        createdAt: runningAt,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      return thread?.pendingRuntimeMode === "full-access";
+    });
+
+    let readModel = await Effect.runPromise(harness.engine.getReadModel());
+    let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.runtimeMode).toBe("approval-required");
+    expect(thread?.pendingRuntimeMode).toBe("full-access");
+
+    const settledAt = new Date(Date.now() + 1000).toISOString();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-ready-after-approval"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: settledAt,
+        },
+        createdAt: settledAt,
+      }),
+    );
+
+    await waitFor(async () => {
+      const nextReadModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        nextReadModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"))
+          ?.runtimeMode === "full-access"
+      );
+    });
+
+    readModel = await Effect.runPromise(harness.engine.getReadModel());
+    thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.runtimeMode).toBe("full-access");
+    expect(thread?.pendingRuntimeMode).toBeNull();
+  });
+
   it("reacts to thread.user-input.respond by forwarding structured user input answers", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -1500,6 +1694,8 @@ describe("ProviderCommandReactor", () => {
       requestId: "approval-request-1",
       detail: expect.stringContaining("Stale pending approval request: approval-request-1"),
     });
+    expect(thread?.runtimeMode).toBe("approval-required");
+    expect(thread?.pendingRuntimeMode).toBeNull();
 
     const resolvedActivity = thread?.activities.find(
       (activity) =>

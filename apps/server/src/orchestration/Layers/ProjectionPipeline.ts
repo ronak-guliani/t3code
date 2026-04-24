@@ -568,6 +568,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
+            pendingRuntimeMode: event.payload.pendingRuntimeMode,
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
@@ -645,6 +646,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             runtimeMode: event.payload.runtimeMode,
+            pendingRuntimeMode: null,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.pending-runtime-mode-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            pendingRuntimeMode: event.payload.runtimeMode,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -947,6 +964,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         providerName: event.payload.session.providerName,
         runtimeMode: event.payload.session.runtimeMode,
         activeTurnId: event.payload.session.activeTurnId,
+        resumeCursor: event.payload.session.resumeCursor ?? null,
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });

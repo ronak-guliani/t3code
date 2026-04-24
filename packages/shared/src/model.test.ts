@@ -9,6 +9,7 @@ import {
   hasEffortLevel,
   isClaudeUltrathinkPrompt,
   normalizeClaudeModelOptionsWithCapabilities,
+  normalizeCopilotModelOptionsWithCapabilities,
   normalizeCodexModelOptionsWithCapabilities,
   normalizeModelSlug,
   resolveContextWindow,
@@ -42,6 +43,19 @@ const claudeCaps: ModelCapabilities = {
     { value: "1m", label: "1M", isDefault: true },
   ],
   promptInjectedEffortLevels: ["ultrathink"],
+};
+
+const copilotCaps: ModelCapabilities = {
+  reasoningEffortLevels: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium", isDefault: true },
+    { value: "high", label: "High" },
+    { value: "xhigh", label: "Extra High" },
+  ],
+  supportsFastMode: false,
+  supportsThinkingToggle: false,
+  contextWindowOptions: [],
+  promptInjectedEffortLevels: [],
 };
 
 describe("normalizeModelSlug", () => {
@@ -248,6 +262,43 @@ describe("normalize*ModelOptionsWithCapabilities", () => {
       ),
     ).toEqual({
       thinking: true,
+    });
+  });
+
+  it("normalizes Copilot reasoning to supported values", () => {
+    expect(
+      normalizeCopilotModelOptionsWithCapabilities(copilotCaps, {
+        reasoning: "xhigh",
+      }),
+    ).toEqual({
+      reasoning: "xhigh",
+    });
+    expect(
+      normalizeCopilotModelOptionsWithCapabilities(copilotCaps, {
+        reasoning: "low",
+      }),
+    ).toEqual({
+      reasoning: "low",
+    });
+  });
+
+  it("falls back Copilot reasoning to the default when unsupported", () => {
+    expect(
+      normalizeCopilotModelOptionsWithCapabilities(
+        {
+          ...copilotCaps,
+          reasoningEffortLevels: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium", isDefault: true },
+            { value: "high", label: "High" },
+          ],
+        },
+        {
+          reasoning: "xhigh",
+        },
+      ),
+    ).toEqual({
+      reasoning: "medium",
     });
   });
 });

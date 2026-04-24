@@ -83,6 +83,7 @@ function buildProps() {
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
     completionSummary: null,
+    copilotResumeCommand: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: () => {},
@@ -185,5 +186,32 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
+  });
+
+  it("renders the Copilot resume command in assistant message metadata", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        copilotResumeCommand="copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33"
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-04-22T19:00:45.000Z",
+            message: {
+              id: MessageId.make("message-assistant"),
+              role: "assistant",
+              text: "All set.",
+              createdAt: "2026-04-22T19:00:45.000Z",
+              completedAt: "2026-04-22T19:03:33.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33");
   });
 });

@@ -1,7 +1,8 @@
 import * as os from "node:os";
 
 import type { ServerProviderModel } from "@t3tools/contracts";
-import { Effect, FileSystem, Path, Result } from "effect";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { Effect, FileSystem, Path, Result, Schema } from "effect";
 
 export interface CopilotConfigReadWarning {
   readonly path: string;
@@ -35,6 +36,8 @@ const CONFIG_DIRECTORY = ".copilot";
 const CONFIG_FILE = "config.json";
 
 type JsonRecord = Record<string, unknown>;
+
+const LenientJsonUnknown = fromLenientJson(Schema.Unknown);
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,7 +79,7 @@ function parseConfigFile(
 ): CopilotConfigFile | CopilotConfigReadWarning {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(contents);
+    parsed = Schema.decodeUnknownSync(LenientJsonUnknown)(contents);
   } catch (error) {
     return {
       path,

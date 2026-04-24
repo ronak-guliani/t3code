@@ -224,6 +224,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
+          pendingRuntimeMode: null,
           interactionMode: command.interactionMode,
           branch: command.branch,
           worktreePath: command.worktreePath,
@@ -343,6 +344,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         }),
         type: "thread.runtime-mode-set",
+        payload: {
+          threadId: command.threadId,
+          runtimeMode: command.runtimeMode,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.pending-runtime-mode.set": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pending-runtime-mode-set",
         payload: {
           threadId: command.threadId,
           runtimeMode: command.runtimeMode,

@@ -4,6 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import {
   ClaudeModelOptions,
+  CopilotModelOptions,
   CodexModelOptions,
   CursorModelOptions,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
@@ -196,7 +197,9 @@ const CursorModelOptionsPatch = Schema.Struct({
   contextWindow: Schema.optionalKey(CursorModelOptions.fields.contextWindow),
 });
 
-const CopilotModelOptionsPatch = Schema.Struct({});
+const CopilotModelOptionsPatch = Schema.Struct({
+  reasoning: Schema.optionalKey(CopilotModelOptions.fields.reasoning),
+});
 
 const OpenCodeModelOptionsPatch = Schema.Struct({
   variant: Schema.optionalKey(OpenCodeModelOptions.fields.variant),

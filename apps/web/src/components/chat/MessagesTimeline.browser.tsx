@@ -1,6 +1,6 @@
 import "../../index.css";
 
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId } from "@t3tools/contracts";
 import { createRef } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
@@ -57,6 +57,7 @@ function buildProps() {
     listRef: createRef<LegendListRef | null>(),
     completionDividerBeforeEntryId: null,
     completionSummary: null,
+    copilotResumeCommand: null,
     turnDiffSummaryByAssistantMessageId: new Map(),
     routeThreadKey: "environment-local:thread-1",
     onOpenTurnDiff: vi.fn(),
@@ -153,6 +154,38 @@ describe("MessagesTimeline", () => {
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
       expect(requestAnimationFrameSpy).toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders the Copilot resume command beside assistant metadata", async () => {
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        copilotResumeCommand="copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33"
+        timelineEntries={[
+          {
+            id: "assistant-1",
+            kind: "message",
+            createdAt: "2026-04-22T19:00:45.000Z",
+            message: {
+              id: MessageId.make("assistant-message-1"),
+              role: "assistant",
+              text: "Done.",
+              createdAt: "2026-04-22T19:00:45.000Z",
+              completedAt: "2026-04-22T19:03:33.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    try {
+      await expect
+        .element(page.getByText("copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33"))
+        .toBeVisible();
     } finally {
       await screen.unmount();
     }

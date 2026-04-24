@@ -75,6 +75,7 @@ interface TimelineRowSharedState {
   isWorking: boolean;
   isRevertingCheckpoint: boolean;
   completionSummary: string | null;
+  copilotResumeCommand: string | null;
   timestampFormat: TimestampFormat;
   routeThreadKey: string;
   markdownCwd: string | undefined;
@@ -101,6 +102,7 @@ interface MessagesTimelineProps {
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
+  copilotResumeCommand: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
@@ -129,6 +131,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timelineEntries,
   completionDividerBeforeEntryId,
   completionSummary,
+  copilotResumeCommand,
   turnDiffSummaryByAssistantMessageId,
   routeThreadKey,
   onOpenTurnDiff,
@@ -198,6 +201,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       isRevertingCheckpoint,
       completionSummary,
+      copilotResumeCommand,
       timestampFormat,
       routeThreadKey,
       markdownCwd,
@@ -214,6 +218,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       isWorking,
       isRevertingCheckpoint,
       completionSummary,
+      copilotResumeCommand,
       timestampFormat,
       routeThreadKey,
       markdownCwd,
@@ -413,8 +418,8 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                   resolvedTheme={ctx.resolvedTheme}
                   onOpenTurnDiff={ctx.onOpenTurnDiff}
                 />
-                <div className="mt-1.5 flex items-center gap-2">
-                  <p className="text-[10px] text-muted-foreground/30">
+                <div className="mt-1.5 flex min-w-0 items-center gap-2">
+                  <p className="shrink-0 text-[10px] text-muted-foreground/30">
                     {row.message.streaming ? (
                       <LiveMessageMeta
                         createdAt={row.message.createdAt}
@@ -429,6 +434,14 @@ function TimelineRowContent({ row }: { row: TimelineRow }) {
                       )
                     )}
                   </p>
+                  {ctx.copilotResumeCommand ? (
+                    <span
+                      className="min-w-0 truncate font-mono text-[10px] text-muted-foreground/30"
+                      title={ctx.copilotResumeCommand}
+                    >
+                      {ctx.copilotResumeCommand}
+                    </span>
+                  ) : null}
                   {assistantCopyState.visible ? (
                     <div className="flex items-center opacity-0 transition-opacity duration-200  group-hover/assistant:opacity-100">
                       <MessageCopyButton
@@ -562,7 +575,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
       <div className="space-y-0.5">
         {visibleEntries.map((workEntry) => (
           <SimpleWorkEntryRow
-            key={`work-row:${workEntry.id}`}
+            key={`work-row:${workEntry.stableId ?? workEntry.id}`}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
           />
@@ -1032,7 +1045,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
             return (
               <span
-                key={`${workEntry.id}:${filePath}`}
+                key={`${workEntry.stableId ?? workEntry.id}:${filePath}`}
                 className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
                 title={displayPath}
               >

@@ -499,6 +499,46 @@ describe("getComposerProviderState", () => {
       modelOptionsForDispatch: undefined,
     });
   });
+
+  it("preserves supported Copilot reasoning for dispatch", () => {
+    const state = getComposerProviderState({
+      provider: "copilot",
+      model: "gpt-5.4",
+      models: [
+        {
+          slug: "gpt-5.4",
+          name: "GPT-5.4",
+          isCustom: false,
+          capabilities: {
+            reasoningEffortLevels: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium", isDefault: true },
+              { value: "high", label: "High" },
+              { value: "xhigh", label: "Extra High" },
+            ],
+            supportsFastMode: false,
+            supportsThinkingToggle: false,
+            contextWindowOptions: [],
+            promptInjectedEffortLevels: [],
+          },
+        },
+      ],
+      prompt: "",
+      modelOptions: {
+        copilot: {
+          reasoning: "xhigh",
+        },
+      },
+    });
+
+    expect(state).toEqual({
+      provider: "copilot",
+      promptEffort: "xhigh",
+      modelOptionsForDispatch: {
+        reasoning: "xhigh",
+      },
+    });
+  });
 });
 
 describe("getComposerProviderControls", () => {

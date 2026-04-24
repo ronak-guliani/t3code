@@ -93,6 +93,9 @@ export interface AcpSessionRuntimeShape {
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
   ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
   readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
+  readonly signalProcess: (
+    signal?: ChildProcess.Signal,
+  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setMode: (
     modeId: string,
   ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
@@ -218,6 +221,7 @@ const makeAcpSessionRuntime = (
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
+    yield* Scope.addFinalizer(runtimeScope, Queue.shutdown(eventQueue));
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
@@ -607,6 +611,37 @@ const makeAcpSessionRuntime = (
       cancel: getStartedState.pipe(
         Effect.flatMap((started) => acp.agent.cancel({ sessionId: started.sessionId })),
       ),
+      signalProcess: (signal = "SIGTERM") =>
+        getStartedState.pipe(
+          Effect.flatMap(() =>
+            (process.platform === "win32"
+              ? child.kill({ killSignal: signal })
+              : Effect.try({
+                  try: () => {
+                    process.kill(-Number(child.pid), signal);
+                  },
+                  catch: (cause) =>
+                    new EffectAcpErrors.AcpTransportError({
+                      detail: `Failed to signal ACP process group with ${signal}`,
+                      cause: cause instanceof Error ? cause : new Error(String(cause)),
+                    }),
+                }).pipe(
+                  Effect.matchEffect({
+                    onSuccess: () => Effect.void,
+                    onFailure: () => child.kill({ killSignal: signal }),
+                  }),
+                )
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new EffectAcpErrors.AcpTransportError({
+                    detail: `Failed to signal ACP process with ${signal}`,
+                    cause,
+                  }),
+              ),
+            ),
+          ),
+        ),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
           Effect.flatMap((modeState) => {

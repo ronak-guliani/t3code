@@ -158,6 +158,60 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
+  it.effect("keeps Copilot read snapshots from retaining base64 attachment payloads", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.make("copilot-retained-attachment-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() => makeMockCopilotWrapper());
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const attachmentId = "copilot-retained-image";
+      const imageBytes = Buffer.from("image-bytes-kept-out-of-snapshots");
+      yield* Effect.promise(() => mkdir(config.attachmentsDir, { recursive: true }));
+      yield* Effect.promise(() =>
+        writeFile(path.join(config.attachmentsDir, `${attachmentId}.png`), imageBytes),
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "inspect this image",
+        attachments: [
+          {
+            type: "image",
+            id: attachmentId,
+            name: "image.png",
+            mimeType: "image/png",
+            sizeBytes: imageBytes.byteLength,
+          },
+        ],
+      });
+
+      const snapshot = yield* adapter.readThread(threadId);
+      const firstItem = snapshot.turns[0]?.items[0] as
+        | { readonly prompt?: ReadonlyArray<Record<string, unknown>> }
+        | undefined;
+      const imagePart = firstItem?.prompt?.find((part) => part.type === "image");
+
+      assert.equal(imagePart?.data, undefined);
+      assert.equal(imagePart?.dataLength, imageBytes.toString("base64").length);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts Copilot with ACP stdio args and switches modes via session/set_mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
@@ -197,7 +251,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       });
 
       const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
-      assert.deepEqual(argv[0], ["--acp", "--stdio"]);
+      assert.deepEqual(argv[0], ["--acp", "--stdio", "--allow-all"]);
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
       const methods = requests.map((request) => request.method);
@@ -219,68 +273,224 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
-  it.effect("applies configured and selected Copilot models through ACP session config", () =>
+  it.effect("does not add allow-all startup args outside full-access", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
       const settings = yield* ServerSettingsService;
-      const threadId = ThreadId.make("copilot-model-thread");
-
       yield* isolateCopilotHome();
 
       const tempDir = yield* Effect.promise(() =>
-        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-model-")),
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-runtime-modes-")),
       );
-      const requestLogPath = path.join(tempDir, "requests.ndjson");
-      const projectDir = path.join(tempDir, "project");
+      const argvLogPath = path.join(tempDir, "argv.log");
+      const wrapperPath = yield* Effect.promise(() => makeMockCopilotWrapper({}, { argvLogPath }));
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId: ThreadId.make("copilot-approval-required-thread"),
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+      yield* adapter.stopSession(ThreadId.make("copilot-approval-required-thread"));
+
+      yield* adapter.startSession({
+        threadId: ThreadId.make("copilot-auto-accept-thread"),
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "auto-accept-edits",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+      yield* adapter.stopSession(ThreadId.make("copilot-auto-accept-thread"));
+
+      const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
+      assert.deepEqual(argv[0], ["--acp", "--stdio"]);
+      assert.deepEqual(argv[1], ["--acp", "--stdio"]);
+    }),
+  );
+
+  it.effect("throttles leaked full-access permission warnings to one per permission kind", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-warning-throttle-thread");
+
+      yield* isolateCopilotHome();
 
       const wrapperPath = yield* Effect.promise(() =>
         makeMockCopilotWrapper({
-          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_PERMISSION_REQUEST_COUNT: "2",
+          T3_ACP_PERMISSION_REQUEST_KIND: "execute",
         }),
       );
       yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
-      yield* Effect.promise(() => mkdir(path.join(projectDir, ".copilot"), { recursive: true }));
-      yield* Effect.promise(() =>
-        writeFile(
-          path.join(projectDir, ".copilot", "config.json"),
-          JSON.stringify({ model: "composer-2" }),
-          "utf8",
-        ),
-      );
 
       yield* adapter.startSession({
         threadId,
         provider: "copilot",
-        cwd: projectDir,
+        cwd: process.cwd(),
         runtimeMode: "full-access",
         modelSelection: { provider: "copilot", model: "auto" },
       });
+
+      const relevantEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "runtime.warning" ||
+            event.type === "request.opened" ||
+            event.type === "turn.completed",
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
       yield* adapter.sendTurn({
         threadId,
-        input: "use configured model",
+        input: "trigger repeated leaked permissions",
         attachments: [],
-        modelSelection: {
-          provider: "copilot",
-          model: "gpt-5.3-codex[reasoning=medium,fast=false]",
-        },
       });
 
-      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
-      const setConfigPayloads = requests
-        .filter((request) => request.method === "session/set_config_option")
-        .map(
-          (request) => request.params as { readonly configId?: string; readonly value?: string },
-        );
-
+      const events = Array.from(yield* Fiber.join(relevantEventsFiber));
       assert.deepEqual(
-        setConfigPayloads
-          .filter((payload) => payload.configId === "model")
-          .map((payload) => payload.value),
-        ["composer-2", "gpt-5.3-codex[reasoning=medium,fast=false]"],
+        events.map((event) => event.type),
+        ["runtime.warning", "turn.completed"],
       );
 
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect("surfaces leaked permission requests in approval-required mode", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-approval-request-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_PERMISSION_REQUEST_COUNT: "1",
+          T3_ACP_PERMISSION_REQUEST_KIND: "edit",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+
+      const requestedEventFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "request.opened"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      const turnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "trigger visible permission request",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const requestedEvent = yield* Fiber.join(requestedEventFiber);
+      assert.equal(requestedEvent._tag, "Some");
+      if (requestedEvent._tag !== "Some" || requestedEvent.value.type !== "request.opened") {
+        assert.fail("Expected request.opened event");
+        return;
+      }
+
+      yield* adapter.respondToRequest(
+        threadId,
+        ApprovalRequestId.make(requestedEvent.value.requestId!),
+        "accept",
+      );
+
+      yield* Fiber.join(turnFiber);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect(
+    "applies configured Copilot models and reasoning effort through ACP session config",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* CopilotAdapter;
+        const settings = yield* ServerSettingsService;
+        const threadId = ThreadId.make("copilot-model-thread");
+
+        yield* isolateCopilotHome();
+
+        const tempDir = yield* Effect.promise(() =>
+          mkdtemp(path.join(os.tmpdir(), "copilot-adapter-model-")),
+        );
+        const requestLogPath = path.join(tempDir, "requests.ndjson");
+        const projectDir = path.join(tempDir, "project");
+
+        const wrapperPath = yield* Effect.promise(() =>
+          makeMockCopilotWrapper({
+            T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          }),
+        );
+        yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+        yield* Effect.promise(() => mkdir(path.join(projectDir, ".copilot"), { recursive: true }));
+        yield* Effect.promise(() =>
+          writeFile(
+            path.join(projectDir, ".copilot", "config.json"),
+            JSON.stringify({ model: "composer-2" }),
+            "utf8",
+          ),
+        );
+
+        yield* adapter.startSession({
+          threadId,
+          provider: "copilot",
+          cwd: projectDir,
+          runtimeMode: "full-access",
+          modelSelection: { provider: "copilot", model: "auto" },
+        });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "use configured model",
+          attachments: [],
+          modelSelection: {
+            provider: "copilot",
+            model: "gpt-5.4",
+            options: {
+              reasoning: "xhigh",
+            },
+          },
+        });
+
+        const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+        const setConfigPayloads = requests
+          .filter((request) => request.method === "session/set_config_option")
+          .map(
+            (request) => request.params as { readonly configId?: string; readonly value?: string },
+          );
+
+        assert.deepEqual(
+          setConfigPayloads
+            .filter((payload) => payload.configId === "model")
+            .map((payload) => payload.value),
+          ["composer-2", "gpt-5.4"],
+        );
+        assert.deepEqual(
+          setConfigPayloads
+            .filter((payload) => payload.configId === "reasoning_effort")
+            .map((payload) => payload.value),
+          ["xhigh"],
+        );
+
+        yield* adapter.stopSession(threadId);
+      }),
   );
 
   it.effect("routes ACP form elicitation through user-input lifecycle", () =>
@@ -361,6 +571,167 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       const turn = yield* Fiber.join(sendFiber);
       assert.equal(turn.threadId, threadId);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("uses SIGINT to stop a Copilot turn and resumes the session afterward", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-interrupt-thread");
+
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-interrupt-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const exitLogPath = path.join(tempDir, "exits.log");
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_EXIT_LOG_PATH: exitLogPath,
+          T3_ACP_IGNORE_CANCEL: "1",
+          T3_ACP_PROMPT_DELAY_MS: "2000",
+          T3_ACP_PROMPT_STARTED_TEXT: "waiting for interrupt",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const completedTurnsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const turnStartedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "content.delta" && event.payload.delta === "waiting for interrupt",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+
+      const interruptedTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "hang until interrupted",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const promptStarted = yield* Fiber.join(turnStartedFiber);
+      assert.equal(promptStarted._tag, "Some");
+      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId);
+
+      const interruptedTurn = yield* Fiber.join(interruptedTurnFiber);
+      assert.equal(interruptedTurn.threadId, threadId);
+      assert.deepEqual(interruptedTurn.resumeCursor, session.resumeCursor);
+
+      const resumedTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "after interrupt",
+        attachments: [],
+      });
+      assert.equal(resumedTurn.threadId, threadId);
+
+      const completedTurns = Array.from(yield* Fiber.join(completedTurnsFiber));
+      assert.lengthOf(completedTurns, 2);
+      assert.equal(completedTurns[0]?.payload.state, "cancelled");
+      assert.equal(completedTurns[0]?.payload.stopReason, "cancelled");
+      assert.equal(completedTurns[1]?.payload.state, "completed");
+
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      const methods = requests.map((request) => request.method);
+      assert.equal(methods.filter((method) => method === "session/load").length, 1);
+      assert.equal(methods.filter((method) => method === "session/prompt").length, 2);
+
+      const exitLog = yield* Effect.promise(() => readFile(exitLogPath, "utf8"));
+      assert.equal(exitLog.split("\n").filter((line) => line === "SIGINT").length, 1);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("restarts resumed sessions with updated runtime-mode startup args", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-resume-mode-change-thread");
+
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-resume-mode-change-")),
+      );
+      const argvLogPath = path.join(tempDir, "argv.log");
+      const wrapperPath = yield* Effect.promise(() => makeMockCopilotWrapper({}, { argvLogPath }));
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const initialSession = yield* adapter.startSession({
+        threadId,
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+      yield* adapter.stopSession(threadId);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: initialSession.resumeCursor,
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+      yield* adapter.stopSession(threadId);
+
+      const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
+      assert.deepEqual(argv[0], ["--acp", "--stdio"]);
+      assert.deepEqual(argv[1], ["--acp", "--stdio", "--allow-all"]);
+    }),
+  );
+
+  it.effect("optionally smoke-tests the real Copilot binary with full-access ACP startup", () =>
+    Effect.gen(function* () {
+      if (process.env.T3_RUN_REAL_COPILOT_SMOKE !== "1") {
+        return;
+      }
+
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-real-binary-smoke-thread");
+
+      yield* settings.updateSettings({
+        providers: {
+          copilot: {
+            binaryPath: process.env.T3_REAL_COPILOT_BINARY ?? "copilot",
+          },
+        },
+      });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: "copilot",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { provider: "copilot", model: "auto" },
+      });
+
+      assert.equal(session.provider, "copilot");
       yield* adapter.stopSession(threadId);
     }),
   );

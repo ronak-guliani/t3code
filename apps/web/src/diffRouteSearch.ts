@@ -25,6 +25,15 @@ export function stripDiffSearchParams<T extends Record<string, unknown>>(
   return rest as Omit<T, "diff" | "diffTurnId" | "diffFilePath">;
 }
 
+export function buildClosedDiffRouteSearch(): DiffRouteSearch {
+  // Keep the keys present so retainSearchParams doesn't restore a prior open diff state.
+  return {
+    diff: undefined,
+    diffTurnId: undefined,
+    diffFilePath: undefined,
+  };
+}
+
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
   const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
   const diffTurnIdRaw = diff ? normalizeSearchString(search.diffTurnId) : undefined;

@@ -27,6 +27,7 @@ export const ProjectionThread = Schema.Struct({
   title: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode),
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),

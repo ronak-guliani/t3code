@@ -19,6 +19,7 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import {
+  Cause,
   DateTime,
   Deferred,
   Effect,
@@ -47,7 +48,10 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
-import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
+import {
+  type AcpSessionRuntimeShape,
+  type AcpSessionRuntimeStartResult,
+} from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
@@ -72,6 +76,7 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 
 const PROVIDER = "copilot" as const;
 const COPILOT_RESUME_VERSION = 1 as const;
+const COPILOT_RETAINED_TEXT_PREVIEW_LENGTH = 4096;
 
 export interface CopilotAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
@@ -87,41 +92,148 @@ interface PendingUserInput {
   readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
 }
 
-interface CopilotSessionContext {
-  readonly threadId: ThreadId;
-  session: ProviderSession;
+type CopilotRuntimeCopilotSettings = {
+  readonly binaryPath: string | undefined;
+};
+
+interface CopilotRuntimeResources {
+  readonly started: AcpSessionRuntimeStartResult;
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
+  readonly notificationFiber: Fiber.Fiber<void, never>;
+}
+
+interface CopilotRetainedTurnSnapshot {
+  readonly id: TurnId;
+  readonly items: Array<unknown>;
+}
+
+interface CopilotSessionContext {
+  readonly threadId: ThreadId;
+  readonly copilotSettings: CopilotRuntimeCopilotSettings;
+  session: ProviderSession;
+  scope: Scope.Closeable;
+  acp: AcpSessionRuntimeShape;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
-  readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
+  readonly fullAccessWarningKeys: Set<string>;
+  readonly turns: Array<CopilotRetainedTurnSnapshot>;
   activeTurnId: TurnId | undefined;
+  inFlightTurnId: TurnId | undefined;
+  cancelRequestedTurnId: TurnId | undefined;
   stopped: boolean;
 }
 
 function settlePendingApprovalsAsCancelled(
-  pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
+  pendingApprovals: Map<ApprovalRequestId, PendingApproval>,
 ): Effect.Effect<void> {
   return Effect.forEach(
     Array.from(pendingApprovals.values()),
     (pending) => Deferred.succeed(pending.decision, "cancel").pipe(Effect.ignore),
     { discard: true },
-  );
+  ).pipe(Effect.andThen(Effect.sync(() => pendingApprovals.clear())));
 }
 
 function settlePendingUserInputsAsEmptyAnswers(
-  pendingUserInputs: ReadonlyMap<ApprovalRequestId, PendingUserInput>,
+  pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>,
 ): Effect.Effect<void> {
   return Effect.forEach(
     Array.from(pendingUserInputs.values()),
     (pending) => Deferred.succeed(pending.answers, {}).pipe(Effect.ignore),
     { discard: true },
-  );
+  ).pipe(Effect.andThen(Effect.sync(() => pendingUserInputs.clear())));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function retainedTextPreview(text: string): {
+  readonly text: string;
+  readonly textLength?: number;
+  readonly truncated?: true;
+} {
+  if (text.length <= COPILOT_RETAINED_TEXT_PREVIEW_LENGTH) {
+    return { text };
+  }
+  return {
+    text: text.slice(0, COPILOT_RETAINED_TEXT_PREVIEW_LENGTH),
+    textLength: text.length,
+    truncated: true,
+  };
+}
+
+function retainedPromptPart(part: EffectAcpSchema.ContentBlock): unknown {
+  switch (part.type) {
+    case "text":
+      return {
+        type: "text",
+        ...retainedTextPreview(part.text),
+      };
+    case "image":
+      return {
+        type: "image",
+        mimeType: part.mimeType,
+        dataLength: part.data.length,
+        ...(part.uri ? { uri: part.uri } : {}),
+      };
+    case "audio":
+      return {
+        type: "audio",
+        mimeType: part.mimeType,
+        dataLength: part.data.length,
+      };
+    case "resource_link":
+      return {
+        type: "resource_link",
+        name: part.name,
+        uri: part.uri,
+        ...(part.title ? { title: part.title } : {}),
+        ...(part.mimeType ? { mimeType: part.mimeType } : {}),
+        ...(part.size !== undefined && part.size !== null ? { size: part.size } : {}),
+      };
+    case "resource":
+      return {
+        type: "resource",
+        uri: part.resource.uri,
+        ...(part.resource.mimeType ? { mimeType: part.resource.mimeType } : {}),
+        ...("text" in part.resource
+          ? {
+              text: part.resource.text.slice(0, COPILOT_RETAINED_TEXT_PREVIEW_LENGTH),
+              textLength: part.resource.text.length,
+              ...(part.resource.text.length > COPILOT_RETAINED_TEXT_PREVIEW_LENGTH
+                ? { truncated: true as const }
+                : {}),
+            }
+          : {
+              blobLength: part.resource.blob.length,
+            }),
+      };
+  }
+}
+
+function retainedPromptParts(
+  promptParts: ReadonlyArray<EffectAcpSchema.ContentBlock>,
+): ReadonlyArray<unknown> {
+  return promptParts.map(retainedPromptPart);
+}
+
+function retainedPromptResult(result: EffectAcpSchema.PromptResponse): unknown {
+  return {
+    stopReason: result.stopReason,
+    ...(result.usage ? { usage: result.usage } : {}),
+    ...(result.userMessageId ? { userMessageId: result.userMessageId } : {}),
+  };
+}
+
+function cloneCopilotTurns(
+  turns: ReadonlyArray<CopilotRetainedTurnSnapshot>,
+): ReadonlyArray<CopilotRetainedTurnSnapshot> {
+  return turns.map((turn) => ({
+    id: turn.id,
+    items: [...turn.items],
+  }));
 }
 
 function parseCopilotResume(raw: unknown): { sessionId: string } | undefined {
@@ -169,15 +281,56 @@ function isQuestionLikePermissionRequest(
 
 function selectAutoApprovedPermissionOption(
   request: EffectAcpSchema.RequestPermissionRequest,
+  preferAlways: boolean,
 ): string | undefined {
   if (isQuestionLikePermissionRequest(request)) {
     return undefined;
   }
-  const allowOnceOption = request.options.find((option) => option.kind === "allow_once");
-  if (typeof allowOnceOption?.optionId === "string" && allowOnceOption.optionId.trim()) {
-    return allowOnceOption.optionId.trim();
+
+  const orderedKinds = preferAlways
+    ? (["allow_always", "allow_once"] as const)
+    : (["allow_once", "allow_always"] as const);
+  for (const kind of orderedKinds) {
+    const option = request.options.find((entry) => entry.kind === kind);
+    if (typeof option?.optionId === "string" && option.optionId.trim()) {
+      return option.optionId.trim();
+    }
   }
   return undefined;
+}
+
+function isAutoAcceptEditsPermission(
+  permissionRequest: ReturnType<typeof normalizeCopilotPermissionRequest>,
+): boolean {
+  return (
+    permissionRequest.kind === "edit" ||
+    permissionRequest.kind === "delete" ||
+    permissionRequest.kind === "move" ||
+    permissionRequest.toolCall?.itemType === "file_change"
+  );
+}
+
+function selectPermissionOptionForRuntimeMode(
+  runtimeMode: ProviderSession["runtimeMode"],
+  params: EffectAcpSchema.RequestPermissionRequest,
+  permissionRequest: ReturnType<typeof normalizeCopilotPermissionRequest>,
+): string | undefined {
+  switch (runtimeMode) {
+    case "full-access":
+      return selectAutoApprovedPermissionOption(params, true);
+    case "auto-accept-edits":
+      return isAutoAcceptEditsPermission(permissionRequest)
+        ? selectAutoApprovedPermissionOption(params, false)
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function leakedFullAccessWarningKey(
+  permissionRequest: ReturnType<typeof normalizeCopilotPermissionRequest>,
+): string {
+  return `${permissionRequest.kind}:${permissionRequest.toolCall?.itemType ?? "unknown"}`;
 }
 
 function selectPermissionOptionForDecision(
@@ -368,6 +521,26 @@ function resolveEffectiveCopilotModel(input: {
   return hasConcreteCopilotCurrentModel(input.configuredModel) ? input.configuredModel : undefined;
 }
 
+function clearTurnState(ctx: CopilotSessionContext, turnId: TurnId): void {
+  const sessionHasTurn = ctx.session.activeTurnId === turnId;
+  if (ctx.activeTurnId === turnId) {
+    ctx.activeTurnId = undefined;
+  }
+  if (ctx.inFlightTurnId === turnId) {
+    ctx.inFlightTurnId = undefined;
+  }
+  if (ctx.cancelRequestedTurnId === turnId) {
+    ctx.cancelRequestedTurnId = undefined;
+  }
+  if (sessionHasTurn) {
+    ctx.session = {
+      ...ctx.session,
+      activeTurnId: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+}
+
 function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -414,6 +587,20 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
 
+    const deleteThreadSemaphore = (threadId: string) =>
+      SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
+        if (!current.has(threadId)) {
+          return Effect.succeed([undefined, current] as const);
+        }
+        const next = new Map(current);
+        next.delete(threadId);
+        return Effect.succeed([undefined, next] as const);
+      });
+
+    const clearThreadSemaphores = SynchronizedRef.modifyEffect(threadLocksRef, () =>
+      Effect.succeed([undefined, new Map<string, Semaphore.Semaphore>()] as const),
+    );
+
     const logNative = (threadId: ThreadId, method: string, payload: unknown) =>
       Effect.gen(function* () {
         if (!nativeEventLogger) return;
@@ -447,16 +634,47 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       return Effect.succeed(ctx);
     };
 
+    const toProcessError = (threadId: ThreadId, cause: Error) =>
+      new ProviderAdapterProcessError({
+        provider: PROVIDER,
+        threadId,
+        detail: cause.message,
+        cause,
+      });
+
+    const closeRuntimeResources = (runtime: {
+      readonly notificationFiber: Fiber.Fiber<void, never> | undefined;
+      readonly scope: Scope.Closeable;
+    }) =>
+      Effect.gen(function* () {
+        const notificationFiber = runtime.notificationFiber;
+        if (notificationFiber) {
+          yield* Fiber.interrupt(notificationFiber);
+        }
+        yield* Effect.ignore(Scope.close(runtime.scope, Exit.void));
+      });
+
+    const closeRuntimeInternal = (ctx: CopilotSessionContext) =>
+      Effect.gen(function* () {
+        const notificationFiber = ctx.notificationFiber;
+        ctx.notificationFiber = undefined;
+        yield* closeRuntimeResources({
+          notificationFiber,
+          scope: ctx.scope,
+        });
+      });
+
     const stopSessionInternal = (ctx: CopilotSessionContext) =>
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        ctx.inFlightTurnId = undefined;
+        ctx.cancelRequestedTurnId = undefined;
+        ctx.activeTurnId = undefined;
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        if (ctx.notificationFiber) {
-          yield* Fiber.interrupt(ctx.notificationFiber);
-        }
-        yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
+        ctx.turns.length = 0;
+        yield* closeRuntimeInternal(ctx);
         sessions.delete(ctx.threadId);
         yield* offerRuntimeEvent({
           type: "session.exited",
@@ -465,6 +683,332 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           threadId: ctx.threadId,
           payload: { exitKind: "graceful" },
         });
+      });
+
+    const openRuntime = (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+      readonly runtimeMode: ProviderSession["runtimeMode"];
+      readonly copilotSettings: CopilotRuntimeCopilotSettings;
+      readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
+      readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
+      readonly fullAccessWarningKeys: Set<string>;
+      readonly getCurrentTurnId: () => TurnId | undefined;
+      readonly resumeSessionId?: string;
+    }) =>
+      Effect.gen(function* () {
+        const sessionScope = yield* Scope.make("sequential");
+        let sessionScopeTransferred = false;
+        yield* Effect.addFinalizer(() =>
+          sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
+        );
+
+        const acpNativeLoggers = makeAcpNativeLoggers({
+          nativeEventLogger,
+          provider: PROVIDER,
+          threadId: input.threadId,
+        });
+
+        const acp = yield* makeCopilotAcpRuntime({
+          copilotSettings: input.copilotSettings.binaryPath
+            ? { binaryPath: input.copilotSettings.binaryPath }
+            : undefined,
+          childProcessSpawner,
+          cwd: input.cwd,
+          runtimeMode: input.runtimeMode,
+          ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+          ...acpNativeLoggers,
+        }).pipe(
+          Effect.provideService(Scope.Scope, sessionScope),
+          Effect.mapError((cause) => toProcessError(input.threadId, cause)),
+        );
+
+        const started = yield* Effect.gen(function* () {
+          yield* acp.handleRequestPermission((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "session/request_permission", params);
+              const permissionRequest = normalizeCopilotPermissionRequest(params);
+              const autoApprovedOptionId = selectPermissionOptionForRuntimeMode(
+                input.runtimeMode,
+                params,
+                permissionRequest,
+              );
+
+              if (input.runtimeMode === "full-access") {
+                const warningKey = leakedFullAccessWarningKey(permissionRequest);
+                if (!input.fullAccessWarningKeys.has(warningKey)) {
+                  input.fullAccessWarningKeys.add(warningKey);
+                  yield* offerRuntimeEvent({
+                    type: "runtime.warning",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: input.getCurrentTurnId(),
+                    payload: {
+                      message: "Copilot requested permission despite full-access runtime mode.",
+                      detail: {
+                        requestKind: permissionRequest.kind,
+                        requestDetail: permissionRequest.detail ?? null,
+                      },
+                    },
+                  });
+                }
+              }
+
+              if (autoApprovedOptionId !== undefined) {
+                return {
+                  outcome: {
+                    outcome: "selected" as const,
+                    optionId: autoApprovedOptionId,
+                  },
+                };
+              }
+              const requestId = ApprovalRequestId.make(crypto.randomUUID());
+              const runtimeRequestId = RuntimeRequestId.make(requestId);
+              const decision = yield* Deferred.make<ProviderApprovalDecision>();
+              input.pendingApprovals.set(requestId, {
+                decision,
+                kind: permissionRequest.kind,
+              });
+              yield* offerRuntimeEvent(
+                makeAcpRequestOpenedEvent({
+                  stamp: yield* makeEventStamp(),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId: input.getCurrentTurnId(),
+                  requestId: runtimeRequestId,
+                  permissionRequest,
+                  detail: permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000),
+                  args: params,
+                  source: "acp.jsonrpc",
+                  method: "session/request_permission",
+                  rawPayload: params,
+                }),
+              );
+              const resolved = yield* Deferred.await(decision);
+              input.pendingApprovals.delete(requestId);
+              yield* offerRuntimeEvent(
+                makeAcpRequestResolvedEvent({
+                  stamp: yield* makeEventStamp(),
+                  provider: PROVIDER,
+                  threadId: input.threadId,
+                  turnId: input.getCurrentTurnId(),
+                  requestId: runtimeRequestId,
+                  permissionRequest,
+                  decision: resolved,
+                }),
+              );
+              return {
+                outcome:
+                  resolved === "cancel"
+                    ? ({ outcome: "cancelled" } as const)
+                    : {
+                        outcome: "selected" as const,
+                        optionId: selectPermissionOptionForDecision(params, resolved),
+                      },
+              };
+            }),
+          );
+          yield* acp.handleElicitation((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "session/elicitation", params);
+              const requestId = ApprovalRequestId.make(crypto.randomUUID());
+              const runtimeRequestId = RuntimeRequestId.make(requestId);
+              const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+              input.pendingUserInputs.set(requestId, { answers });
+              yield* offerRuntimeEvent({
+                type: "user-input.requested",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId: input.getCurrentTurnId(),
+                requestId: runtimeRequestId,
+                payload: { questions: questionsFromElicitationRequest(params) },
+                raw: {
+                  source: "acp.jsonrpc",
+                  method: "session/elicitation",
+                  payload: params,
+                },
+              });
+              const resolved = yield* Deferred.await(answers);
+              input.pendingUserInputs.delete(requestId);
+              yield* offerRuntimeEvent({
+                type: "user-input.resolved",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId: input.getCurrentTurnId(),
+                requestId: runtimeRequestId,
+                payload: { answers: resolved },
+              });
+              return {
+                action: buildElicitationResponseAction(params, resolved),
+              };
+            }),
+          );
+          return yield* acp.start();
+        }).pipe(
+          Effect.mapError((error) =>
+            mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
+          ),
+        );
+
+        const notificationFiber = yield* Stream.runDrain(
+          Stream.mapEffect(acp.getEvents(), (rawEvent) =>
+            Effect.gen(function* () {
+              const normalizedEvents = normalizeCopilotParsedSessionEvent(rawEvent);
+              for (const event of normalizedEvents) {
+                switch (event._tag) {
+                  case "ModeChanged":
+                    break;
+                  case "AssistantItemStarted":
+                    yield* offerRuntimeEvent(
+                      makeAcpAssistantItemEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: input.getCurrentTurnId(),
+                        itemId: event.itemId,
+                        lifecycle: "item.started",
+                      }),
+                    );
+                    break;
+                  case "AssistantItemCompleted":
+                    yield* offerRuntimeEvent(
+                      makeAcpAssistantItemEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: input.getCurrentTurnId(),
+                        itemId: event.itemId,
+                        lifecycle: "item.completed",
+                      }),
+                    );
+                    break;
+                  case "PlanUpdated":
+                    yield* logNative(input.threadId, "session/update", event.rawPayload);
+                    yield* offerRuntimeEvent(
+                      makeAcpPlanUpdatedEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: input.getCurrentTurnId(),
+                        payload: event.payload,
+                        source: "acp.jsonrpc",
+                        method: "session/update",
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
+                    break;
+                  case "ToolCallUpdated":
+                    yield* logNative(input.threadId, "session/update", event.rawPayload);
+                    {
+                      const planUpdate = extractCopilotPlanUpdate(event.toolCall);
+                      if (planUpdate) {
+                        yield* offerRuntimeEvent(
+                          makeAcpPlanUpdatedEvent({
+                            stamp: yield* makeEventStamp(),
+                            provider: PROVIDER,
+                            threadId: input.threadId,
+                            turnId: input.getCurrentTurnId(),
+                            payload: planUpdate,
+                            source: "acp.jsonrpc",
+                            method: "session/update",
+                            rawPayload: event.rawPayload,
+                          }),
+                        );
+                      }
+                    }
+                    yield* offerRuntimeEvent(
+                      makeAcpToolCallEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: input.getCurrentTurnId(),
+                        toolCall: event.toolCall,
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
+                    break;
+                  case "ContentDelta":
+                    yield* logNative(input.threadId, "session/update", event.rawPayload);
+                    yield* offerRuntimeEvent(
+                      makeAcpContentDeltaEvent({
+                        stamp: yield* makeEventStamp(),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: input.getCurrentTurnId(),
+                        ...(event.itemId ? { itemId: event.itemId } : {}),
+                        text: event.text,
+                        rawPayload: event.rawPayload,
+                      }),
+                    );
+                    break;
+                }
+              }
+            }),
+          ),
+        ).pipe(Effect.forkChild);
+
+        sessionScopeTransferred = true;
+        return {
+          started,
+          scope: sessionScope,
+          acp,
+          notificationFiber,
+        } satisfies CopilotRuntimeResources;
+      }).pipe(Effect.scoped);
+
+    const restartRuntimeInternal = (ctx: CopilotSessionContext) =>
+      Effect.gen(function* () {
+        const resumeSessionId = parseCopilotResume(ctx.session.resumeCursor)?.sessionId;
+        const cwd = ctx.session.cwd;
+        if (!resumeSessionId) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            detail: "Copilot runtime restart requires a resumable session id.",
+          });
+        }
+        if (!cwd) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            detail: "Copilot runtime restart requires a working directory.",
+          });
+        }
+
+        yield* closeRuntimeInternal(ctx);
+        const runtime = yield* openRuntime({
+          threadId: ctx.threadId,
+          cwd,
+          runtimeMode: ctx.session.runtimeMode,
+          copilotSettings: ctx.copilotSettings,
+          pendingApprovals: ctx.pendingApprovals,
+          pendingUserInputs: ctx.pendingUserInputs,
+          fullAccessWarningKeys: ctx.fullAccessWarningKeys,
+          resumeSessionId,
+          getCurrentTurnId: () => ctx.activeTurnId,
+        }).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              ctx.stopped = true;
+              sessions.delete(ctx.threadId);
+            }),
+          ),
+        );
+
+        ctx.scope = runtime.scope;
+        ctx.acp = runtime.acp;
+        ctx.notificationFiber = runtime.notificationFiber;
+        ctx.session = {
+          ...ctx.session,
+          resumeCursor: {
+            schemaVersion: COPILOT_RESUME_VERSION,
+            sessionId: runtime.started.sessionId,
+          },
+          updatedAt: yield* nowIso,
+        };
       });
 
     const applyRequestedMode = (input: {
@@ -501,6 +1045,42 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             Effect.asVoid,
           )
         : Effect.void;
+
+    const applyRequestedReasoning = (input: {
+      readonly ctx: CopilotSessionContext | undefined;
+      readonly threadId: ThreadId;
+      readonly reasoning: string | undefined;
+    }) => {
+      const { ctx, reasoning, threadId } = input;
+      if (!ctx || !reasoning) {
+        return Effect.void;
+      }
+      return Effect.gen(function* () {
+        const configOptions = yield* ctx.acp.getConfigOptions;
+        const reasoningConfig = configOptions.find((option) => {
+          const id = option.id.trim().toLowerCase();
+          const name = option.name.trim().toLowerCase();
+          const category = option.category?.trim().toLowerCase() ?? "";
+          return (
+            option.type === "select" &&
+            (id === "reasoning_effort" ||
+              category === "thought_level" ||
+              name.includes("reasoning") ||
+              name.includes("effort"))
+          );
+        });
+        if (!reasoningConfig) {
+          return;
+        }
+        yield* ctx.acp
+          .setConfigOption(reasoningConfig.id, reasoning)
+          .pipe(
+            Effect.mapError((cause) =>
+              mapAcpToAdapterError(PROVIDER, threadId, "session/set_config_option", cause),
+            ),
+          );
+      }).pipe(Effect.asVoid);
+    };
 
     const startSession: CopilotAdapterShape["startSession"] = (input) =>
       withThreadLock(
@@ -551,145 +1131,20 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-          const sessionScope = yield* Scope.make("sequential");
-          let sessionScopeTransferred = false;
-          yield* Effect.addFinalizer(() =>
-            sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
-          );
-          let ctx!: CopilotSessionContext;
-
+          const fullAccessWarningKeys = new Set<string>();
+          let ctx: CopilotSessionContext | undefined;
           const resumeSessionId = parseCopilotResume(input.resumeCursor)?.sessionId;
-          const acpNativeLoggers = makeAcpNativeLoggers({
-            nativeEventLogger,
-            provider: PROVIDER,
+          const runtime = yield* openRuntime({
             threadId: input.threadId,
-          });
-
-          const acp = yield* makeCopilotAcpRuntime({
-            copilotSettings,
-            childProcessSpawner,
             cwd,
+            runtimeMode: input.runtimeMode,
+            copilotSettings: { binaryPath: copilotSettings.binaryPath },
+            pendingApprovals,
+            pendingUserInputs,
+            fullAccessWarningKeys,
             ...(resumeSessionId ? { resumeSessionId } : {}),
-            ...acpNativeLoggers,
-          }).pipe(
-            Effect.provideService(Scope.Scope, sessionScope),
-            Effect.mapError(
-              (cause) =>
-                new ProviderAdapterProcessError({
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  detail: cause.message,
-                  cause,
-                }),
-            ),
-          );
-
-          const started = yield* Effect.gen(function* () {
-            yield* acp.handleRequestPermission((params) =>
-              Effect.gen(function* () {
-                yield* logNative(input.threadId, "session/request_permission", params);
-                if (input.runtimeMode === "full-access") {
-                  const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
-                  if (autoApprovedOptionId !== undefined) {
-                    return {
-                      outcome: {
-                        outcome: "selected" as const,
-                        optionId: autoApprovedOptionId,
-                      },
-                    };
-                  }
-                }
-
-                const permissionRequest = normalizeCopilotPermissionRequest(params);
-                const requestId = ApprovalRequestId.make(crypto.randomUUID());
-                const runtimeRequestId = RuntimeRequestId.make(requestId);
-                const decision = yield* Deferred.make<ProviderApprovalDecision>();
-                pendingApprovals.set(requestId, {
-                  decision,
-                  kind: permissionRequest.kind,
-                });
-                yield* offerRuntimeEvent(
-                  makeAcpRequestOpenedEvent({
-                    stamp: yield* makeEventStamp(),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
-                    requestId: runtimeRequestId,
-                    permissionRequest,
-                    detail: permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000),
-                    args: params,
-                    source: "acp.jsonrpc",
-                    method: "session/request_permission",
-                    rawPayload: params,
-                  }),
-                );
-                const resolved = yield* Deferred.await(decision);
-                pendingApprovals.delete(requestId);
-                yield* offerRuntimeEvent(
-                  makeAcpRequestResolvedEvent({
-                    stamp: yield* makeEventStamp(),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
-                    requestId: runtimeRequestId,
-                    permissionRequest,
-                    decision: resolved,
-                  }),
-                );
-                return {
-                  outcome:
-                    resolved === "cancel"
-                      ? ({ outcome: "cancelled" } as const)
-                      : {
-                          outcome: "selected" as const,
-                          optionId: selectPermissionOptionForDecision(params, resolved),
-                        },
-                };
-              }),
-            );
-            yield* acp.handleElicitation((params) =>
-              Effect.gen(function* () {
-                yield* logNative(input.threadId, "session/elicitation", params);
-                const requestId = ApprovalRequestId.make(crypto.randomUUID());
-                const runtimeRequestId = RuntimeRequestId.make(requestId);
-                const answers = yield* Deferred.make<ProviderUserInputAnswers>();
-                pendingUserInputs.set(requestId, { answers });
-                yield* offerRuntimeEvent({
-                  type: "user-input.requested",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId: ctx?.activeTurnId,
-                  requestId: runtimeRequestId,
-                  payload: { questions: questionsFromElicitationRequest(params) },
-                  raw: {
-                    source: "acp.jsonrpc",
-                    method: "session/elicitation",
-                    payload: params,
-                  },
-                });
-                const resolved = yield* Deferred.await(answers);
-                pendingUserInputs.delete(requestId);
-                yield* offerRuntimeEvent({
-                  type: "user-input.resolved",
-                  ...(yield* makeEventStamp()),
-                  provider: PROVIDER,
-                  threadId: input.threadId,
-                  turnId: ctx?.activeTurnId,
-                  requestId: runtimeRequestId,
-                  payload: { answers: resolved },
-                });
-                return {
-                  action: buildElicitationResponseAction(params, resolved),
-                };
-              }),
-            );
-            return yield* acp.start();
-          }).pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
-            ),
-          );
+            getCurrentTurnId: () => ctx?.activeTurnId,
+          });
 
           const now = yield* nowIso;
           const session: ProviderSession = {
@@ -701,174 +1156,90 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             threadId: input.threadId,
             resumeCursor: {
               schemaVersion: COPILOT_RESUME_VERSION,
-              sessionId: started.sessionId,
+              sessionId: runtime.started.sessionId,
             },
             createdAt: now,
             updatedAt: now,
           };
 
-          ctx = {
-            threadId: input.threadId,
-            session,
-            scope: sessionScope,
-            acp,
-            notificationFiber: undefined,
-            pendingApprovals,
-            pendingUserInputs,
-            turns: [],
-            activeTurnId: undefined,
-            stopped: false,
-          };
+          return yield* Effect.gen(function* () {
+            ctx = {
+              threadId: input.threadId,
+              copilotSettings: { binaryPath: copilotSettings.binaryPath },
+              session,
+              scope: runtime.scope,
+              acp: runtime.acp,
+              notificationFiber: runtime.notificationFiber,
+              pendingApprovals,
+              pendingUserInputs,
+              fullAccessWarningKeys,
+              turns: [],
+              activeTurnId: undefined,
+              inFlightTurnId: undefined,
+              cancelRequestedTurnId: undefined,
+              stopped: false,
+            };
 
-          yield* applyRequestedMode({
-            ctx,
-            threadId: input.threadId,
-            interactionMode: input.interactionMode,
-          });
-          yield* applyRequestedModel({
-            ctx,
-            threadId: input.threadId,
-            model: effectiveModel,
-          });
+            yield* applyRequestedMode({
+              ctx,
+              threadId: input.threadId,
+              interactionMode: input.interactionMode,
+            });
+            yield* applyRequestedModel({
+              ctx,
+              threadId: input.threadId,
+              model: effectiveModel,
+            });
+            yield* applyRequestedReasoning({
+              ctx,
+              threadId: input.threadId,
+              reasoning: copilotModelSelection?.options?.reasoning,
+            });
 
-          const nf = yield* Stream.runDrain(
-            Stream.mapEffect(acp.getEvents(), (rawEvent) =>
-              Effect.gen(function* () {
-                const normalizedEvents = normalizeCopilotParsedSessionEvent(rawEvent);
-                for (const event of normalizedEvents) {
-                  switch (event._tag) {
-                    case "ModeChanged":
-                      break;
-                    case "AssistantItemStarted":
-                      yield* offerRuntimeEvent(
-                        makeAcpAssistantItemEvent({
-                          stamp: yield* makeEventStamp(),
-                          provider: PROVIDER,
-                          threadId: ctx.threadId,
-                          turnId: ctx.activeTurnId,
-                          itemId: event.itemId,
-                          lifecycle: "item.started",
-                        }),
-                      );
-                      break;
-                    case "AssistantItemCompleted":
-                      yield* offerRuntimeEvent(
-                        makeAcpAssistantItemEvent({
-                          stamp: yield* makeEventStamp(),
-                          provider: PROVIDER,
-                          threadId: ctx.threadId,
-                          turnId: ctx.activeTurnId,
-                          itemId: event.itemId,
-                          lifecycle: "item.completed",
-                        }),
-                      );
-                      break;
-                    case "PlanUpdated":
-                      yield* logNative(ctx.threadId, "session/update", event.rawPayload);
-                      yield* offerRuntimeEvent(
-                        makeAcpPlanUpdatedEvent({
-                          stamp: yield* makeEventStamp(),
-                          provider: PROVIDER,
-                          threadId: ctx.threadId,
-                          turnId: ctx.activeTurnId,
-                          payload: event.payload,
-                          source: "acp.jsonrpc",
-                          method: "session/update",
-                          rawPayload: event.rawPayload,
-                        }),
-                      );
-                      break;
-                    case "ToolCallUpdated":
-                      yield* logNative(ctx.threadId, "session/update", event.rawPayload);
-                      {
-                        const planUpdate = extractCopilotPlanUpdate(event.toolCall);
-                        if (planUpdate) {
-                          yield* offerRuntimeEvent(
-                            makeAcpPlanUpdatedEvent({
-                              stamp: yield* makeEventStamp(),
-                              provider: PROVIDER,
-                              threadId: ctx.threadId,
-                              turnId: ctx.activeTurnId,
-                              payload: planUpdate,
-                              source: "acp.jsonrpc",
-                              method: "session/update",
-                              rawPayload: event.rawPayload,
-                            }),
-                          );
-                        }
-                      }
-                      yield* offerRuntimeEvent(
-                        makeAcpToolCallEvent({
-                          stamp: yield* makeEventStamp(),
-                          provider: PROVIDER,
-                          threadId: ctx.threadId,
-                          turnId: ctx.activeTurnId,
-                          toolCall: event.toolCall,
-                          rawPayload: event.rawPayload,
-                        }),
-                      );
-                      break;
-                    case "ContentDelta":
-                      yield* logNative(ctx.threadId, "session/update", event.rawPayload);
-                      yield* offerRuntimeEvent(
-                        makeAcpContentDeltaEvent({
-                          stamp: yield* makeEventStamp(),
-                          provider: PROVIDER,
-                          threadId: ctx.threadId,
-                          turnId: ctx.activeTurnId,
-                          ...(event.itemId ? { itemId: event.itemId } : {}),
-                          text: event.text,
-                          rawPayload: event.rawPayload,
-                        }),
-                      );
-                      break;
-                  }
-                }
-              }),
-            ),
-          ).pipe(Effect.forkChild);
+            sessions.set(input.threadId, ctx);
 
-          ctx.notificationFiber = nf;
-          sessions.set(input.threadId, ctx);
-          sessionScopeTransferred = true;
-
-          yield* offerRuntimeEvent({
-            type: "session.started",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { resume: started.initializeResult },
-          });
-          yield* offerRuntimeEvent({
-            type: "session.state.changed",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { state: "ready", reason: "GitHub Copilot ACP session ready" },
-          });
-          yield* offerRuntimeEvent({
-            type: "thread.started",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { providerThreadId: started.sessionId },
-          });
-          for (const warning of copilotConfig.warnings) {
             yield* offerRuntimeEvent({
-              type: "config.warning",
+              type: "session.started",
               ...(yield* makeEventStamp()),
               provider: PROVIDER,
               threadId: input.threadId,
-              payload: {
-                summary: "GitHub Copilot config warning",
-                details: warning.message,
-                path: warning.path,
-              },
+              payload: { resume: runtime.started.initializeResult },
             });
-          }
+            yield* offerRuntimeEvent({
+              type: "session.state.changed",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: { state: "ready", reason: "GitHub Copilot ACP session ready" },
+            });
+            yield* offerRuntimeEvent({
+              type: "thread.started",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: { providerThreadId: runtime.started.sessionId },
+            });
+            for (const warning of copilotConfig.warnings) {
+              yield* offerRuntimeEvent({
+                type: "config.warning",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                payload: {
+                  summary: "GitHub Copilot config warning",
+                  details: warning.message,
+                  path: warning.path,
+                },
+              });
+            }
 
-          return session;
-        }).pipe(Effect.scoped),
+            return session;
+          }).pipe(
+            Effect.onError(() =>
+              sessions.get(input.threadId) === ctx ? Effect.void : closeRuntimeResources(runtime),
+            ),
+          );
+        }),
       );
 
     const sendTurn: CopilotAdapterShape["sendTurn"] = (input) =>
@@ -892,21 +1263,10 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           threadId: input.threadId,
           model,
         });
-
-        ctx.activeTurnId = turnId;
-        ctx.session = {
-          ...ctx.session,
-          activeTurnId: turnId,
-          updatedAt: yield* nowIso,
-        };
-
-        yield* offerRuntimeEvent({
-          type: "turn.started",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
+        yield* applyRequestedReasoning({
+          ctx,
           threadId: input.threadId,
-          turnId,
-          payload: { model: model ?? "auto" },
+          reasoning: turnModelSelection?.options?.reasoning,
         });
 
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
@@ -953,20 +1313,59 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           });
         }
 
-        const result = yield* ctx.acp
+        ctx.activeTurnId = turnId;
+        ctx.inFlightTurnId = turnId;
+        ctx.cancelRequestedTurnId = undefined;
+        ctx.session = {
+          ...ctx.session,
+          activeTurnId: turnId,
+          updatedAt: yield* nowIso,
+        };
+
+        yield* offerRuntimeEvent({
+          type: "turn.started",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: input.threadId,
+          turnId,
+          payload: { model: model ?? "auto" },
+        });
+
+        const promptOutcome = yield* ctx.acp
           .prompt({
             prompt: promptParts,
           })
           .pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
-            ),
+            Effect.matchCauseEffect({
+              onSuccess: (result) => Effect.succeed({ _tag: "completed" as const, result }),
+              onFailure: (cause) => {
+                const squashed = Cause.squash(cause);
+                const error = squashed instanceof Error ? squashed : new Error(String(squashed));
+                return ctx.cancelRequestedTurnId === turnId
+                  ? Effect.succeed({ _tag: "cancelled" as const })
+                  : Effect.fail(toProcessError(input.threadId, error));
+              },
+            }),
+            Effect.ensuring(Effect.sync(() => clearTurnState(ctx, turnId))),
           );
 
-        ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+        const stopReason =
+          promptOutcome._tag === "completed" ? promptOutcome.result.stopReason : "cancelled";
+        ctx.turns.push({
+          id: turnId,
+          items: [
+            {
+              prompt: retainedPromptParts(promptParts),
+              result:
+                promptOutcome._tag === "completed"
+                  ? retainedPromptResult(promptOutcome.result)
+                  : { stopReason: "cancelled" },
+            },
+          ],
+        });
         ctx.session = {
           ...ctx.session,
-          activeTurnId: turnId,
+          activeTurnId: undefined,
           updatedAt: yield* nowIso,
           model,
         };
@@ -978,8 +1377,8 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           threadId: input.threadId,
           turnId,
           payload: {
-            state: result.stopReason === "cancelled" ? "cancelled" : "completed",
-            stopReason: result.stopReason ?? null,
+            state: stopReason === "cancelled" ? "cancelled" : "completed",
+            stopReason: stopReason ?? null,
           },
         });
 
@@ -995,13 +1394,27 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         const ctx = yield* requireSession(threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
-        yield* Effect.ignore(
-          ctx.acp.cancel.pipe(
+        const turnId = ctx.inFlightTurnId;
+        if (!turnId || ctx.cancelRequestedTurnId === turnId) {
+          return;
+        }
+
+        ctx.cancelRequestedTurnId = turnId;
+        if (ctx.stopped) {
+          return;
+        }
+
+        yield* ctx.acp
+          .signalProcess("SIGINT")
+          .pipe(
             Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
+              mapAcpToAdapterError(PROVIDER, threadId, "process/signal", error),
             ),
-          ),
-        );
+          );
+        if (ctx.stopped) {
+          return;
+        }
+        yield* restartRuntimeInternal(ctx);
       });
 
     const respondToRequest: CopilotAdapterShape["respondToRequest"] = (
@@ -1020,6 +1433,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           });
         }
         yield* Deferred.succeed(pending.decision, decision);
+        ctx.pendingApprovals.delete(requestId);
       });
 
     const respondToUserInput: CopilotAdapterShape["respondToUserInput"] = (
@@ -1038,12 +1452,13 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           });
         }
         yield* Deferred.succeed(pending.answers, answers);
+        ctx.pendingUserInputs.delete(requestId);
       });
 
     const readThread: CopilotAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(threadId);
-        return { threadId, turns: ctx.turns };
+        return { threadId, turns: cloneCopilotTurns(ctx.turns) };
       });
 
     const rollbackThread: CopilotAdapterShape["rollbackThread"] = (threadId, numTurns) =>
@@ -1058,7 +1473,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         }
         const nextLength = Math.max(0, ctx.turns.length - numTurns);
         ctx.turns.splice(nextLength);
-        return { threadId, turns: ctx.turns };
+        return { threadId, turns: cloneCopilotTurns(ctx.turns) };
       });
 
     const stopSession: CopilotAdapterShape["stopSession"] = (threadId) =>
@@ -1068,7 +1483,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           const ctx = yield* requireSession(threadId);
           yield* stopSessionInternal(ctx);
         }),
-      );
+      ).pipe(Effect.ensuring(deleteThreadSemaphore(threadId)));
 
     const listSessions: CopilotAdapterShape["listSessions"] = () =>
       Effect.sync(() => Array.from(sessions.values(), (ctx) => ({ ...ctx.session })));
@@ -1080,10 +1495,18 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       });
 
     const stopAll: CopilotAdapterShape["stopAll"] = () =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
+      Effect.gen(function* () {
+        const contexts = [...sessions.values()];
+        yield* Effect.forEach(contexts, stopSessionInternal, { discard: true });
+        yield* clearThreadSemaphores;
+      });
 
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true }).pipe(
+      Effect.gen(function* () {
+        const contexts = [...sessions.values()];
+        yield* Effect.forEach(contexts, stopSessionInternal, { discard: true });
+        yield* clearThreadSemaphores;
+      }).pipe(
         Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
         Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
       ),
