@@ -40,9 +40,7 @@ describe("ServerSettingsPatch", () => {
       textGenerationModelSelection: {
         provider: "copilot",
         model: "gpt-5.4",
-        options: {
-          reasoning: "high",
-        },
+        options: [{ id: "reasoning", value: "high" }],
       },
       providers: {
         copilot: {
@@ -57,7 +55,9 @@ describe("ServerSettingsPatch", () => {
     if (parsed.textGenerationModelSelection?.provider !== "copilot") {
       throw new Error("Expected copilot textGenerationModelSelection");
     }
-    expect(parsed.textGenerationModelSelection.options?.reasoning).toBe("high");
+    expect(parsed.textGenerationModelSelection.options).toEqual([
+      { id: "reasoning", value: "high" },
+    ]);
     expect(parsed.providers?.copilot?.binaryPath).toBe("/opt/homebrew/bin/copilot");
   });
 });

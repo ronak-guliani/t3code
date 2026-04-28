@@ -73,6 +73,7 @@ import {
 } from "../acp/CopilotSettings.ts";
 import { CopilotAdapter, type CopilotAdapterShape } from "../Services/CopilotAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 const PROVIDER = "copilot" as const;
 const COPILOT_RESUME_VERSION = 1 as const;
@@ -1193,7 +1194,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             yield* applyRequestedReasoning({
               ctx,
               threadId: input.threadId,
-              reasoning: copilotModelSelection?.options?.reasoning,
+              reasoning: getModelSelectionStringOptionValue(copilotModelSelection, "reasoning"),
             });
 
             sessions.set(input.threadId, ctx);
@@ -1266,7 +1267,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         yield* applyRequestedReasoning({
           ctx,
           threadId: input.threadId,
-          reasoning: turnModelSelection?.options?.reasoning,
+          reasoning: getModelSelectionStringOptionValue(turnModelSelection, "reasoning"),
         });
 
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];

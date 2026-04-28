@@ -9,7 +9,7 @@ import {
   normalizeModelSlug,
   resolveSelectableModel,
 } from "@t3tools/shared/model";
-import { getComposerProviderState } from "./components/chat/composerProviderRegistry";
+import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import {
   getDefaultServerModel,
@@ -21,20 +21,20 @@ import { ModelEsque } from "./components/chat/providerIconUtils";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 
-export type ProviderCustomModelConfig = {
-  provider: ProviderKind;
-  title: string;
-  description: string;
-  placeholder: string;
-  example: string;
-};
-
 export interface AppModelOption {
   slug: string;
   name: string;
   shortName?: string;
   subProvider?: string;
   isCustom: boolean;
+}
+
+export interface ProviderCustomModelConfig {
+  provider: ProviderKind;
+  title: string;
+  description: string;
+  placeholder: string;
+  example: string;
 }
 
 const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConfig> = {
@@ -76,7 +76,6 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
 };
 
 export const MODEL_PROVIDER_SETTINGS = Object.values(PROVIDER_CUSTOM_MODEL_CONFIG);
-
 export function normalizeCustomModelSlugs(
   models: Iterable<string | null | undefined>,
   builtInModelSlugs: ReadonlySet<string>,
@@ -112,15 +111,20 @@ export function getAppModelOptions(
   provider: ProviderKind,
   selectedModel?: string | null,
 ): AppModelOption[] {
-  const options: AppModelOption[] = getProviderModels(providers, provider).map(
-    ({ slug, name, shortName, subProvider, isCustom }) => ({
-      slug,
-      name,
-      ...(shortName ? { shortName } : {}),
-      ...(subProvider ? { subProvider } : {}),
-      isCustom,
-    }),
-  );
+  const options: AppModelOption[] = getProviderModels(providers, provider).map((model) => {
+    const option: AppModelOption = {
+      slug: model.slug,
+      name: model.name,
+      isCustom: model.isCustom,
+    };
+    if (model.shortName) {
+      option.shortName = model.shortName;
+    }
+    if (model.subProvider) {
+      option.subProvider = model.subProvider;
+    }
+    return option;
+  });
   const seen = new Set(options.map((option) => option.slug));
   const trimmedSelectedModel = selectedModel?.trim().toLowerCase();
   const builtInModelSlugs = new Set(
@@ -235,9 +239,7 @@ export function resolveAppModelSelectionState(
     model,
     models: getProviderModels(providers, provider),
     prompt: "",
-    modelOptions: {
-      [provider]: provider === selection.provider ? selection.options : undefined,
-    },
+    modelOptions: provider === selection.provider ? selection.options : undefined,
   });
 
   return createModelSelection(provider, model, modelOptionsForDispatch);

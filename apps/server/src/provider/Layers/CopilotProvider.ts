@@ -6,6 +6,7 @@ import type {
   ServerProviderModel,
   ServerSettingsError,
 } from "@t3tools/contracts";
+import { createModelCapabilities } from "@t3tools/shared/model";
 import { Effect, Equal, Layer, Option, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
@@ -18,6 +19,7 @@ import {
 import { CopilotProvider } from "../Services/CopilotProvider.ts";
 import {
   buildServerProvider,
+  buildSelectOptionDescriptor,
   collectStreamAsString,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -26,39 +28,42 @@ import {
 } from "../providerSnapshot.ts";
 
 const PROVIDER = "copilot" as const;
+const COPILOT_PRESENTATION = {
+  displayName: "GitHub Copilot",
+  showInteractionModeToggle: true,
+} as const;
 const COPILOT_REFRESH_INTERVAL = "1 hour";
 const COPILOT_PROBE_TIMEOUT_MS = 4_000;
 
-const EMPTY_CAPABILITIES: ModelCapabilities = {
-  reasoningEffortLevels: [],
-  supportsFastMode: false,
-  supportsThinkingToggle: false,
-  contextWindowOptions: [],
-  promptInjectedEffortLevels: [],
-};
+const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
 
-const COPILOT_REASONING_LEVELS: ReadonlyArray<ModelCapabilities["reasoningEffortLevels"][number]> =
-  [
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium", isDefault: true },
-    { value: "high", label: "High" },
-  ];
+const COPILOT_REASONING_LEVELS = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium", isDefault: true },
+  { value: "high", label: "High" },
+] as const;
 
-const COPILOT_REASONING_LEVELS_WITH_XHIGH: ReadonlyArray<
-  ModelCapabilities["reasoningEffortLevels"][number]
-> = [...COPILOT_REASONING_LEVELS, { value: "xhigh", label: "Extra High" }];
+const COPILOT_REASONING_LEVELS_WITH_XHIGH = [
+  ...COPILOT_REASONING_LEVELS,
+  { value: "xhigh", label: "Extra High" },
+] as const;
 
 function supportsCopilotXHigh(slug: string): boolean {
   return /^gpt-5(?:[.-]|$)/u.test(slug);
 }
 
 function getCopilotModelCapabilities(slug: string): ModelCapabilities {
-  return {
-    ...EMPTY_CAPABILITIES,
-    reasoningEffortLevels: supportsCopilotXHigh(slug)
-      ? COPILOT_REASONING_LEVELS_WITH_XHIGH
-      : COPILOT_REASONING_LEVELS,
-  };
+  return createModelCapabilities({
+    optionDescriptors: [
+      buildSelectOptionDescriptor({
+        id: "reasoning",
+        label: "Reasoning",
+        options: supportsCopilotXHigh(slug)
+          ? COPILOT_REASONING_LEVELS_WITH_XHIGH
+          : COPILOT_REASONING_LEVELS,
+      }),
+    ],
+  });
 }
 
 function makeCopilotBuiltInModel(slug: string, name: string): ServerProviderModel {
@@ -133,6 +138,7 @@ function buildInitialCopilotProviderSnapshot(copilotSettings: CopilotSettings): 
   if (!copilotSettings.enabled) {
     return buildServerProvider({
       provider: PROVIDER,
+      presentation: COPILOT_PRESENTATION,
       enabled: false,
       checkedAt,
       models,
@@ -148,6 +154,7 @@ function buildInitialCopilotProviderSnapshot(copilotSettings: CopilotSettings): 
 
   return buildServerProvider({
     provider: PROVIDER,
+    presentation: COPILOT_PRESENTATION,
     enabled: true,
     checkedAt,
     models,
@@ -186,6 +193,7 @@ function missingCopilotProvider(input: {
 }): ServerProvider {
   return buildServerProvider({
     provider: PROVIDER,
+    presentation: COPILOT_PRESENTATION,
     enabled: input.settings.enabled,
     checkedAt: input.checkedAt,
     models: getCopilotFallbackModels(input.settings),
@@ -209,6 +217,7 @@ function installedCopilotProvider(input: {
 }): ServerProvider {
   return buildServerProvider({
     provider: PROVIDER,
+    presentation: COPILOT_PRESENTATION,
     enabled: input.settings.enabled,
     checkedAt: input.checkedAt,
     models: getCopilotFallbackModels(input.settings, input.configuredModel),
@@ -282,6 +291,7 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
       }
       return buildServerProvider({
         provider: PROVIDER,
+        presentation: COPILOT_PRESENTATION,
         enabled: copilotSettings.enabled,
         checkedAt,
         models: getCopilotFallbackModels(copilotSettings),
@@ -306,6 +316,7 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
     if (Option.isNone(helpProbe.success)) {
       return buildServerProvider({
         provider: PROVIDER,
+        presentation: COPILOT_PRESENTATION,
         enabled: copilotSettings.enabled,
         checkedAt,
         models: getCopilotFallbackModels(copilotSettings),
@@ -344,6 +355,7 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
 
     return buildServerProvider({
       provider: PROVIDER,
+      presentation: COPILOT_PRESENTATION,
       enabled: copilotSettings.enabled,
       checkedAt,
       models: getCopilotFallbackModels(copilotSettings),

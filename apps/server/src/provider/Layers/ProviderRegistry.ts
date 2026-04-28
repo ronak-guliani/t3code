@@ -31,14 +31,8 @@ import {
   resolveProviderStatusCachePath,
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
-
-type ProviderSnapshotSource = {
-  readonly provider: ProviderKind;
-  readonly getSnapshot: Effect.Effect<ServerProvider>;
-  readonly refresh: Effect.Effect<ServerProvider>;
-  readonly refreshForCwd?: (cwd: string) => Effect.Effect<ServerProvider>;
-  readonly streamChanges: Stream.Stream<ServerProvider>;
-};
+import { createBuiltInProviderSources } from "../builtInProviderCatalog.ts";
+import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
 function normalizeRefreshInput(input?: ProviderKind | ProviderRefreshInput): ProviderRefreshInput {
   return typeof input === "string" ? { provider: input } : (input ?? {});
@@ -52,11 +46,7 @@ const loadProviders = (
   });
 
 const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean =>
-  (model.capabilities?.reasoningEffortLevels.length ?? 0) > 0 ||
-  model.capabilities?.supportsFastMode === true ||
-  model.capabilities?.supportsThinkingToggle === true ||
-  (model.capabilities?.contextWindowOptions.length ?? 0) > 0 ||
-  (model.capabilities?.promptInjectedEffortLevels.length ?? 0) > 0;
+  (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
 
 const mergeProviderModels = (
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
@@ -110,39 +100,24 @@ const ProviderRegistryLiveBase = Layer.effect(
 
     const cursorProvider = yield* CursorProvider;
 
-    const providerSources = [
-      {
-        provider: "codex",
-        getSnapshot: codexProvider.getSnapshot,
-        refresh: codexProvider.refresh,
-        streamChanges: codexProvider.streamChanges,
-      },
-      {
-        provider: "claudeAgent",
-        getSnapshot: claudeProvider.getSnapshot,
-        refresh: claudeProvider.refresh,
-        streamChanges: claudeProvider.streamChanges,
-      },
-      {
-        provider: "opencode",
-        getSnapshot: openCodeProvider.getSnapshot,
-        refresh: openCodeProvider.refresh,
-        streamChanges: openCodeProvider.streamChanges,
-      },
-      {
-        provider: "cursor",
-        getSnapshot: cursorProvider.getSnapshot,
-        refresh: cursorProvider.refresh,
-        streamChanges: cursorProvider.streamChanges,
-      },
-      {
-        provider: "copilot",
-        getSnapshot: copilotProvider.getSnapshot,
-        refresh: copilotProvider.refresh,
+    const providerSources: ReadonlyArray<ProviderSnapshotSource> = createBuiltInProviderSources({
+      codex: codexProvider,
+      claudeAgent: claudeProvider,
+      opencode: openCodeProvider,
+      cursor: cursorProvider,
+      copilot: copilotProvider,
+    }).map((source) => {
+      if (source.provider !== "copilot") {
+        return source;
+      }
+      return {
+        provider: source.provider,
+        getSnapshot: source.getSnapshot,
+        refresh: source.refresh,
         refreshForCwd: copilotProvider.refreshForCwd,
-        streamChanges: copilotProvider.streamChanges,
-      },
-    ] satisfies ReadonlyArray<ProviderSnapshotSource>;
+        streamChanges: source.streamChanges,
+      };
+    });
     const activeProviders = PROVIDER_CACHE_IDS;
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<ReadonlyArray<ServerProvider>>(),

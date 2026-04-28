@@ -463,9 +463,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
           modelSelection: {
             provider: "copilot",
             model: "gpt-5.4",
-            options: {
-              reasoning: "xhigh",
-            },
+            options: [{ id: "reasoning", value: "xhigh" }],
           },
         });
 
