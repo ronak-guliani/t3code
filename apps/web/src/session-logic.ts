@@ -6,7 +6,7 @@ import {
   type OrchestrationLatestTurn,
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
-  type ProviderKind,
+  ProviderDriverKind,
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
@@ -22,7 +22,7 @@ import type {
   TurnDiffSummary,
 } from "./types";
 
-export type ProviderPickerKind = ProviderKind;
+export type ProviderPickerKind = ProviderDriverKind;
 
 export const PROVIDER_OPTIONS: Array<{
   value: ProviderPickerKind;
@@ -31,16 +31,24 @@ export const PROVIDER_OPTIONS: Array<{
   /** Shown on the model picker sidebar when relevant */
   pickerSidebarBadge?: "new" | "soon";
 }> = [
-  { value: "codex", label: "Codex", available: true },
-  { value: "claudeAgent", label: "Claude", available: true },
-  { value: "opencode", label: "OpenCode", available: true, pickerSidebarBadge: "new" },
-  { value: "cursor", label: "Cursor", available: true, pickerSidebarBadge: "new" },
-  { value: "copilot", label: "GitHub Copilot", available: true },
+  { value: ProviderDriverKind.make("codex"), label: "Codex", available: true },
+  { value: ProviderDriverKind.make("claudeAgent"), label: "Claude", available: true },
+  {
+    value: ProviderDriverKind.make("opencode"),
+    label: "OpenCode",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
+  {
+    value: ProviderDriverKind.make("cursor"),
+    label: "Cursor",
+    available: true,
+    pickerSidebarBadge: "new",
+  },
 ];
 
 export interface WorkLogEntry {
   id: string;
-  stableId?: string;
   createdAt: string;
   label: string;
   detail?: string;
@@ -574,11 +582,6 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   if (collapseKey) {
     entry.collapseKey = collapseKey;
   }
-  if (entry.toolCallId) {
-    entry.stableId = activity.turnId
-      ? `tool:${activity.turnId}:${entry.toolCallId}`
-      : `tool:${entry.toolCallId}`;
-  }
   return entry;
 }
 
@@ -586,56 +589,13 @@ function collapseDerivedWorkLogEntries(
   entries: ReadonlyArray<DerivedWorkLogEntry>,
 ): DerivedWorkLogEntry[] {
   const collapsed: DerivedWorkLogEntry[] = [];
-  const openToolEntryIndexByStableId = new Map<string, number>();
-
-  const trackOpenToolEntry = (entry: DerivedWorkLogEntry, index: number) => {
-    if (!entry.stableId) {
-      return;
-    }
-    if (entry.activityKind === "tool.completed") {
-      openToolEntryIndexByStableId.delete(entry.stableId);
-      return;
-    }
-    openToolEntryIndexByStableId.set(entry.stableId, index);
-  };
-
-  const removeCollapsedEntry = (index: number) => {
-    collapsed.splice(index, 1);
-    for (const [stableId, trackedIndex] of openToolEntryIndexByStableId) {
-      if (trackedIndex === index) {
-        openToolEntryIndexByStableId.delete(stableId);
-      } else if (trackedIndex > index) {
-        openToolEntryIndexByStableId.set(stableId, trackedIndex - 1);
-      }
-    }
-  };
-
   for (const entry of entries) {
-    const openToolEntryIndex =
-      entry.stableId !== undefined ? openToolEntryIndexByStableId.get(entry.stableId) : undefined;
-    const openToolEntry =
-      openToolEntryIndex !== undefined ? collapsed[openToolEntryIndex] : undefined;
-    if (
-      openToolEntryIndex !== undefined &&
-      openToolEntry &&
-      shouldCollapseToolLifecycleEntries(openToolEntry, entry)
-    ) {
-      const merged = mergeDerivedWorkLogEntries(openToolEntry, entry);
-      removeCollapsedEntry(openToolEntryIndex);
-      collapsed.push(merged);
-      trackOpenToolEntry(merged, collapsed.length - 1);
-      continue;
-    }
-
     const previous = collapsed.at(-1);
     if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
-      const merged = mergeDerivedWorkLogEntries(previous, entry);
-      collapsed[collapsed.length - 1] = merged;
-      trackOpenToolEntry(merged, collapsed.length - 1);
+      collapsed[collapsed.length - 1] = mergeDerivedWorkLogEntries(previous, entry);
       continue;
     }
     collapsed.push(entry);
-    trackOpenToolEntry(entry, collapsed.length - 1);
   }
   return collapsed;
 }
@@ -678,7 +638,6 @@ function mergeDerivedWorkLogEntries(
   const requestKind = next.requestKind ?? previous.requestKind;
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
-  const stableId = next.stableId ?? previous.stableId;
   return {
     ...previous,
     ...next,
@@ -691,7 +650,6 @@ function mergeDerivedWorkLogEntries(
     ...(requestKind ? { requestKind } : {}),
     ...(collapseKey ? { collapseKey } : {}),
     ...(toolCallId ? { toolCallId } : {}),
-    ...(stableId ? { stableId } : {}),
   };
 }
 
@@ -1216,7 +1174,7 @@ export function deriveTimelineEntries(
     proposedPlan,
   }));
   const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.stableId ?? entry.id,
+    id: entry.id,
     kind: "work",
     createdAt: entry.createdAt,
     entry,

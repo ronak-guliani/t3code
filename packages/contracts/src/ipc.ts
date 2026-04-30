@@ -25,11 +25,9 @@ import type {
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project.ts";
+import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
   ServerConfig,
-  ServerRefreshProvidersInput,
-  ServerProviderListCommandsInput,
-  ServerProviderListCommandsResult,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
@@ -218,10 +216,14 @@ export interface LocalApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
-    refreshProviders: (input: ServerRefreshProvidersInput) => Promise<ServerProviderUpdatedPayload>;
-    listProviderCommands: (
-      input: ServerProviderListCommandsInput,
-    ) => Promise<ServerProviderListCommandsResult>;
+    /**
+     * Refresh provider snapshots. When `input.instanceId` is supplied only that
+     * configured instance is probed; otherwise every configured instance is
+     * refreshed (legacy untargeted refresh).
+     */
+    refreshProviders: (input?: {
+      readonly instanceId?: ProviderInstanceId;
+    }) => Promise<ServerProviderUpdatedPayload>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
@@ -274,11 +276,6 @@ export interface EnvironmentApi {
         onResubscribe?: () => void;
       },
     ) => () => void;
-  };
-  server: {
-    listProviderCommands: (
-      input: ServerProviderListCommandsInput,
-    ) => Promise<ServerProviderListCommandsResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

@@ -21,14 +21,7 @@ export interface AcpSpawnInput {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
-  readonly env?: Readonly<Record<string, string>>;
-  readonly inheritEnv?: boolean;
-}
-
-export interface AcpSessionRuntimeAuthOptions {
-  readonly methodId: string;
-  readonly required?: boolean;
-  readonly missingMessage?: string;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -40,9 +33,7 @@ export interface AcpSessionRuntimeOptions {
     readonly name: string;
     readonly version: string;
   };
-  readonly auth?: AcpSessionRuntimeAuthOptions;
-  readonly authMethodId?: string;
-  readonly modeSwitchMethod?: "set_mode" | "config_option";
+  readonly authMethodId: string;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -93,9 +84,6 @@ export interface AcpSessionRuntimeShape {
     payload: Omit<EffectAcpSchema.PromptRequest, "sessionId">,
   ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
   readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
-  readonly signalProcess: (
-    signal?: ChildProcess.Signal,
-  ) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setMode: (
     modeId: string,
   ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
@@ -134,68 +122,6 @@ interface EnsureActiveAssistantSegmentResult {
   readonly startedEvent?: Extract<AcpParsedSessionEvent, { readonly _tag: "AssistantItemStarted" }>;
 }
 
-export const ACP_RESTRICTED_ENV_KEYS = [
-  "PATH",
-  "HOME",
-  "TERM",
-  "TMPDIR",
-  "SHELL",
-  "USER",
-  "LANG",
-  "LC_ALL",
-  "LC_CTYPE",
-  "SSH_AUTH_SOCK",
-  "GH_TOKEN",
-  "GITHUB_TOKEN",
-  "GITHUB_ENTERPRISE_TOKEN",
-] as const;
-
-function stringEnvEntries(
-  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
-): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string") {
-      result[key] = value;
-    }
-  }
-  return result;
-}
-
-export function buildRestrictedAcpSpawnEnv(
-  source: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>> = process.env,
-): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const key of ACP_RESTRICTED_ENV_KEYS) {
-    const value = source[key];
-    if (typeof value === "string") {
-      result[key] = value;
-    }
-  }
-  return result;
-}
-
-export function resolveAcpSpawnEnv(input: {
-  readonly inheritEnv?: boolean;
-  readonly env?: Readonly<Record<string, string>>;
-  readonly processEnv?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>;
-}): Record<string, string> | undefined {
-  const processEnv = input.processEnv ?? process.env;
-  if (input.inheritEnv === false) {
-    return {
-      ...buildRestrictedAcpSpawnEnv(processEnv),
-      ...input.env,
-    };
-  }
-  if (!input.env) {
-    return undefined;
-  }
-  return {
-    ...stringEnvEntries(processEnv),
-    ...input.env,
-  };
-}
-
 export class AcpSessionRuntime extends Context.Service<AcpSessionRuntime, AcpSessionRuntimeShape>()(
   "t3/provider/acp/AcpSessionRuntime",
 ) {
@@ -221,17 +147,11 @@ const makeAcpSessionRuntime = (
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
-    yield* Scope.addFinalizer(runtimeScope, Queue.shutdown(eventQueue));
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
-    const auth = options.auth ?? {
-      methodId: options.authMethodId ?? "",
-      required: false,
-    };
-    const modeSwitchMethod = options.modeSwitchMethod ?? "config_option";
 
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
@@ -268,7 +188,7 @@ const makeAcpSessionRuntime = (
       .spawn(
         ChildProcess.make(options.spawn.command, [...options.spawn.args], {
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-          ...(resolveAcpSpawnEnv(options.spawn) ? { env: resolveAcpSpawnEnv(options.spawn)! } : {}),
+          ...(options.spawn.env ? { env: { ...process.env, ...options.spawn.env } } : {}),
           shell: process.platform === "win32",
         }),
       )
@@ -445,31 +365,15 @@ const makeAcpSessionRuntime = (
         acp.agent.initialize(initializePayload),
       );
 
-      const authMethodExists =
-        !auth.methodId ||
-        (initializeResult.authMethods ?? []).some((method) => method.id === auth.methodId);
-      if (auth.required === true && !authMethodExists) {
-        return yield* EffectAcpErrors.AcpRequestError.authRequired(
-          auth.missingMessage ??
-            `Required ACP authentication method ${JSON.stringify(auth.methodId)} is unavailable.`,
-          {
-            methodId: auth.methodId,
-            availableMethodIds: (initializeResult.authMethods ?? []).map((method) => method.id),
-          },
-        );
-      }
-
       const authenticatePayload = {
-        methodId: auth.methodId,
+        methodId: options.authMethodId,
       } satisfies EffectAcpSchema.AuthenticateRequest;
 
-      if (auth.methodId) {
-        yield* runLoggedRequest(
-          "authenticate",
-          authenticatePayload,
-          acp.agent.authenticate(authenticatePayload),
-        );
-      }
+      yield* runLoggedRequest(
+        "authenticate",
+        authenticatePayload,
+        acp.agent.authenticate(authenticatePayload),
+      );
 
       let sessionId: string;
       let sessionSetupResult:
@@ -611,58 +515,11 @@ const makeAcpSessionRuntime = (
       cancel: getStartedState.pipe(
         Effect.flatMap((started) => acp.agent.cancel({ sessionId: started.sessionId })),
       ),
-      signalProcess: (signal = "SIGTERM") =>
-        getStartedState.pipe(
-          Effect.flatMap(() =>
-            (process.platform === "win32"
-              ? child.kill({ killSignal: signal })
-              : Effect.try({
-                  try: () => {
-                    process.kill(-Number(child.pid), signal);
-                  },
-                  catch: (cause) =>
-                    new EffectAcpErrors.AcpTransportError({
-                      detail: `Failed to signal ACP process group with ${signal}`,
-                      cause: cause instanceof Error ? cause : new Error(String(cause)),
-                    }),
-                }).pipe(
-                  Effect.matchEffect({
-                    onSuccess: () => Effect.void,
-                    onFailure: () => child.kill({ killSignal: signal }),
-                  }),
-                )
-            ).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new EffectAcpErrors.AcpTransportError({
-                    detail: `Failed to signal ACP process with ${signal}`,
-                    cause,
-                  }),
-              ),
-            ),
-          ),
-        ),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(
           Effect.flatMap((modeState) => {
             if (modeState?.currentModeId === modeId) {
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
-            }
-            if (modeSwitchMethod === "set_mode") {
-              return getStartedState.pipe(
-                Effect.flatMap((started) => {
-                  const requestPayload = {
-                    sessionId: started.sessionId,
-                    modeId,
-                  } satisfies EffectAcpSchema.SetSessionModeRequest;
-                  return runLoggedRequest(
-                    "session/set_mode",
-                    requestPayload,
-                    acp.agent.setSessionMode(requestPayload),
-                  );
-                }),
-                Effect.tap(() => updateCurrentModeId(modeId)),
-              );
             }
             return setConfigOption("mode", modeId).pipe(
               Effect.tap(() => updateCurrentModeId(modeId)),
