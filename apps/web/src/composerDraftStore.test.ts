@@ -1080,6 +1080,32 @@ describe("composerDraftStore modelSelection", () => {
     );
   });
 
+  it("keeps explicit Copilot reasoning overrides on the selection", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setModelSelection(
+      threadRef,
+      modelSelection("copilot", "gpt-5.5", {
+        reasoning: "medium",
+      }),
+    );
+
+    store.setProviderModelOptions(threadRef, "copilot", toSelections({ reasoning: "xhigh" }), {
+      persistSticky: true,
+    });
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider.copilot).toEqual(
+      modelSelection("copilot", "gpt-5.5", {
+        reasoning: "xhigh",
+      }),
+    );
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider.copilot).toEqual(
+      modelSelection("copilot", "gpt-5.5", {
+        reasoning: "xhigh",
+      }),
+    );
+  });
+
   it("preserves the selected Cursor model when only traits change", () => {
     const store = useComposerDraftStore.getState();
 

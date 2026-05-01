@@ -539,6 +539,8 @@ export function projectEvent(
             checkpointRef: payload.checkpointRef,
             status: payload.status,
             files: payload.files,
+            agentTouchedPaths: payload.agentTouchedPaths,
+            turnFiles: payload.turnFiles,
             assistantMessageId: payload.assistantMessageId,
             completedAt: payload.completedAt,
           },

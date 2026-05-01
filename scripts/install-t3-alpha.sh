@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 #
-# Build the arm64 macOS DMG and install it into /Applications, replacing any
-# previous installation. Quits the running app first, clears quarantine, and
-# launches the freshly installed build.
+# Build the arm64 macOS Alpha DMG and install it into /Applications, replacing
+# any previous Alpha installation. Use this after verifying changes in Dev via
+# scripts/install-t3-dev.sh.
 #
 # Usage:
-#   scripts/install-desktop-local.sh           # build + install + launch
-#   scripts/install-desktop-local.sh --no-build  # reuse the existing DMG
-#   scripts/install-desktop-local.sh --no-launch # skip the open at the end
+#   scripts/install-t3-alpha.sh              # build + install + launch Alpha
+#   scripts/install-t3-alpha.sh --no-build   # reuse the existing Alpha DMG
+#   scripts/install-t3-alpha.sh --no-launch  # skip the open at the end
 #
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_FLAVOR="alpha"
 APP_NAME="T3 Code (Alpha)"
+ARTIFACT_GLOB="T3-Code-[0-9]*-arm64.dmg"
 APP_BUNDLE="${APP_NAME}.app"
 INSTALL_DEST="/Applications/${APP_BUNDLE}"
 RELEASE_DIR="${REPO_ROOT}/release"
@@ -44,7 +46,7 @@ if [[ "$HOST_ARCH" != "arm64" ]]; then
   echo "Warning: host arch is ${HOST_ARCH}; this script builds an arm64 DMG." >&2
 fi
 
-log() { printf '\n[install-desktop] %s\n' "$*"; }
+log() { printf '\n[install-t3-alpha] %s\n' "$*"; }
 
 log "Quitting any running ${APP_NAME} instance..."
 osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
@@ -53,15 +55,15 @@ sleep 1
 pkill -f "${APP_BUNDLE}/Contents/MacOS/" >/dev/null 2>&1 || true
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
-  log "Building arm64 DMG (this takes ~1 minute)..."
-  rm -f "${RELEASE_DIR}"/T3-Code-*-arm64.dmg \
-        "${RELEASE_DIR}"/T3-Code-*-arm64.dmg.blockmap \
-        "${RELEASE_DIR}"/T3-Code-*-arm64.zip \
-        "${RELEASE_DIR}"/T3-Code-*-arm64.zip.blockmap
-  ( cd "$REPO_ROOT" && bun run dist:desktop:dmg:arm64 )
+  log "Building ${APP_FLAVOR} arm64 DMG (this takes ~1 minute)..."
+  rm -f "${RELEASE_DIR}"/T3-Code-[0-9]*-arm64.dmg \
+        "${RELEASE_DIR}"/T3-Code-[0-9]*-arm64.dmg.blockmap \
+        "${RELEASE_DIR}"/T3-Code-[0-9]*-arm64.zip \
+        "${RELEASE_DIR}"/T3-Code-[0-9]*-arm64.zip.blockmap
+  ( cd "$REPO_ROOT" && bun run dist:desktop:dmg:arm64 -- --flavor "$APP_FLAVOR" )
 fi
 
-DMG_PATH="$(ls -t "${RELEASE_DIR}"/T3-Code-*-arm64.dmg 2>/dev/null | head -n 1 || true)"
+DMG_PATH="$(ls -t "${RELEASE_DIR}"/${ARTIFACT_GLOB} 2>/dev/null | head -n 1 || true)"
 if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
   echo "No arm64 DMG found in ${RELEASE_DIR}." >&2
   echo "Re-run without --no-build to produce one." >&2
@@ -110,7 +112,7 @@ log "Installed ${APP_NAME} v${INSTALLED_VERSION}"
 
 if [[ "$DO_LAUNCH" -eq 1 ]]; then
   log "Launching..."
-  open -a "$INSTALL_DEST"
+  open "$INSTALL_DEST"
 fi
 
 log "Done."

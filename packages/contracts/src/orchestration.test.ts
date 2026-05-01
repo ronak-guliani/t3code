@@ -7,6 +7,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   ModelSelection,
   OrchestrationCommand,
+  OrchestrationCheckpointSummary,
   OrchestrationEvent,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
@@ -20,11 +21,16 @@ import {
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
+  ThreadTurnDiffCompletedPayload,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
+const decodeCheckpointSummary = Schema.decodeUnknownEffect(OrchestrationCheckpointSummary);
 const decodeThreadTurnDiff = Schema.decodeUnknownEffect(ThreadTurnDiff);
+const decodeThreadTurnDiffCompletedPayload = Schema.decodeUnknownEffect(
+  ThreadTurnDiffCompletedPayload,
+);
 const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateCommand);
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
@@ -56,6 +62,19 @@ it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
     });
     assert.strictEqual(parsed.fromTurnCount, 1);
     assert.strictEqual(parsed.toTurnCount, 2);
+    assert.strictEqual(parsed.scope, "snapshot");
+  }),
+);
+
+it.effect("parses turn diff input with explicit scope", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeTurnDiffInput({
+      threadId: "thread-1",
+      fromTurnCount: 1,
+      toTurnCount: 2,
+      scope: "turn",
+    });
+    assert.strictEqual(parsed.scope, "turn");
   }),
 );
 
@@ -69,6 +88,39 @@ it.effect("rejects turn diff input when fromTurnCount > toTurnCount", () =>
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("defaults scoped checkpoint fields for legacy checkpoint summaries", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeCheckpointSummary({
+      turnId: "turn-1",
+      checkpointTurnCount: 1,
+      checkpointRef: "checkpoint-1",
+      status: "ready",
+      files: [],
+      assistantMessageId: null,
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.deepStrictEqual(parsed.agentTouchedPaths, []);
+    assert.deepStrictEqual(parsed.turnFiles, []);
+  }),
+);
+
+it.effect("defaults scoped checkpoint fields for legacy turn-diff events", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnDiffCompletedPayload({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      checkpointTurnCount: 1,
+      checkpointRef: "checkpoint-1",
+      status: "ready",
+      files: [],
+      assistantMessageId: null,
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.deepStrictEqual(parsed.agentTouchedPaths, []);
+    assert.deepStrictEqual(parsed.turnFiles, []);
   }),
 );
 

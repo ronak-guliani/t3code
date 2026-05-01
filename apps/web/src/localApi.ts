@@ -68,13 +68,19 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
     persistence: {
       getClientSettings: async () => {
         if (window.desktopBridge) {
-          return window.desktopBridge.getClientSettings();
+          const settings = await window.desktopBridge.getClientSettings();
+          if (settings) {
+            writeBrowserClientSettings(settings);
+          }
+          return settings;
         }
         return readBrowserClientSettings();
       },
       setClientSettings: async (settings) => {
         if (window.desktopBridge) {
-          return window.desktopBridge.setClientSettings(settings);
+          await window.desktopBridge.setClientSettings(settings);
+          writeBrowserClientSettings(settings);
+          return;
         }
         writeBrowserClientSettings(settings);
       },

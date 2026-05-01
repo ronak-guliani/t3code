@@ -8,6 +8,7 @@ import {
   ProviderRuntimeEvent,
   ProviderSession,
   ProviderInstanceId,
+  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import {
   CommandId,
@@ -651,7 +652,10 @@ describe("CheckpointReactor", () => {
       payload: { state: "completed" },
     });
 
-    await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
+    const events = await waitForEvent(
+      harness.engine,
+      (event) => event.type === "thread.turn-diff-completed",
+    );
     const thread = await waitForThread(
       harness.engine,
       (entry) =>
@@ -663,6 +667,15 @@ describe("CheckpointReactor", () => {
     expect(
       thread.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
     ).toBe(true);
+    // When there is no assistant message in the completing turn, the reactor
+    // must omit assistantMessageId (decoded as null) instead of synthesizing
+    // a fake `assistant:<turnId>` id or borrowing one from another turn.
+    const turnDiffEvent = events.find(
+      (event): event is Extract<OrchestrationEvent, { type: "thread.turn-diff-completed" }> =>
+        event.type === "thread.turn-diff-completed",
+    );
+    expect(turnDiffEvent?.payload.assistantMessageId).toBeNull();
+    expect(thread.checkpoints[0]?.assistantMessageId).toBeNull();
   });
 
   it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {
@@ -887,6 +900,8 @@ describe("CheckpointReactor", () => {
         checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 1,
         createdAt,
       }),
@@ -901,6 +916,8 @@ describe("CheckpointReactor", () => {
         checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 2,
         createdAt,
       }),
@@ -965,6 +982,8 @@ describe("CheckpointReactor", () => {
         checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 1,
         createdAt,
       }),
@@ -979,6 +998,8 @@ describe("CheckpointReactor", () => {
         checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 2,
         createdAt,
       }),
@@ -1034,6 +1055,8 @@ describe("CheckpointReactor", () => {
         checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 1,
         createdAt,
       }),
@@ -1048,6 +1071,8 @@ describe("CheckpointReactor", () => {
         checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 2,
         createdAt,
       }),

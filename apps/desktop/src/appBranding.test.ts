@@ -21,6 +21,16 @@ describe("resolveDesktopAppStageLabel", () => {
     ).toBe("Nightly");
   });
 
+  it("uses Dev for packaged dev builds", () => {
+    expect(
+      resolveDesktopAppStageLabel({
+        isDevelopment: false,
+        appVersion: "0.0.17",
+        packageProductName: "T3 Code (Dev)",
+      }),
+    ).toBe("Dev");
+  });
+
   it("uses Alpha for packaged stable builds", () => {
     expect(
       resolveDesktopAppStageLabel({

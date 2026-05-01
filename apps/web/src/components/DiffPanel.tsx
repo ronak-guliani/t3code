@@ -3,7 +3,7 @@ import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/reac
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import type { TurnId } from "@t3tools/contracts";
+import type { TurnDiffScope, TurnId } from "@t3tools/contracts";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -36,6 +36,7 @@ import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { useSettings } from "../hooks/useSettings";
 import { formatShortTimestamp } from "../timestampFormat";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
+import { DiffScopeToggle } from "./chat/DiffScopeToggle";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
 
 type DiffRenderMode = "stacked" | "split";
@@ -221,14 +222,22 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
 
   const selectedTurnId = diffSearch.diffTurnId ?? null;
   const selectedFilePath = selectedTurnId !== null ? (diffSearch.diffFilePath ?? null) : null;
+  // Exact match only. If diffTurnId points at a turn that has no summary
+  // (deleted, never persisted, stale URL after revert), surface an explicit
+  // unavailable state below — do NOT silently render some other turn's diff.
   const selectedTurn =
     selectedTurnId === null
       ? undefined
-      : (orderedTurnDiffSummaries.find((summary) => summary.turnId === selectedTurnId) ??
-        orderedTurnDiffSummaries[0]);
-  const selectedCheckpointTurnCount =
-    selectedTurn &&
-    (selectedTurn.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[selectedTurn.turnId]);
+      : orderedTurnDiffSummaries.find((summary) => summary.turnId === selectedTurnId);
+  const selectedTurnRequestedButMissing = selectedTurnId !== null && selectedTurn === undefined;
+  // Server-bound queries require an actual persisted checkpointTurnCount. The
+  // client-inferred count (from summary order) is not safe for diff requests:
+  // missing checkpoints, reverts, or partial projection state can shift the
+  // inferred index off the real checkpoint and produce a valid-looking diff
+  // for the wrong turn.
+  const selectedCheckpointTurnCount = selectedTurn?.checkpointTurnCount;
+  const selectedTurnRangeMissing =
+    selectedTurn !== undefined && typeof selectedCheckpointTurnCount !== "number";
   const selectedCheckpointRange = useMemo(
     () =>
       typeof selectedCheckpointTurnCount === "number"
@@ -265,6 +274,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const activeCheckpointRange = selectedTurn
     ? selectedCheckpointRange
     : conversationCheckpointRange;
+  const selectedScope = selectedTurn ? (diffSearch.diffScope ?? "snapshot") : "snapshot";
   const conversationCacheScope = useMemo(() => {
     if (selectedTurn || orderedTurnDiffSummaries.length === 0) {
       return null;
@@ -277,8 +287,12 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       threadId: activeThreadId,
       fromTurnCount: activeCheckpointRange?.fromTurnCount ?? null,
       toTurnCount: activeCheckpointRange?.toTurnCount ?? null,
-      cacheScope: selectedTurn ? `turn:${selectedTurn.turnId}` : conversationCacheScope,
-      enabled: isGitRepo,
+      kind: selectedTurn ? "turn" : "conversation",
+      scope: selectedScope,
+      cacheScope: selectedTurn
+        ? `turn:${selectedTurn.turnId}:${selectedScope}`
+        : conversationCacheScope,
+      enabled: isGitRepo && !selectedTurnRequestedButMissing && !selectedTurnRangeMissing,
     }),
   );
   const selectedTurnCheckpointDiff = selectedTurn
@@ -363,6 +377,20 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         const rest = stripDiffSearchParams(previous);
         return { ...rest, diff: "1" };
       },
+    });
+  };
+  const setSelectedScope = (scope: TurnDiffScope) => {
+    if (!activeThread || !selectedTurnId) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(activeThread.environmentId, activeThread.id)),
+      search: (previous) => ({
+        ...stripDiffSearchParams(previous),
+        diff: "1",
+        diffTurnId: selectedTurnId,
+        ...(diffSearch.diffFilePath ? { diffFilePath: diffSearch.diffFilePath } : {}),
+        diffScope: scope,
+      }),
     });
   };
   const updateTurnStripScrollState = useCallback(() => {
@@ -520,6 +548,9 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
+        {selectedTurn && (
+          <DiffScopeToggle value={selectedScope} onChange={setSelectedScope} className="shrink-0" />
+        )}
         <ToggleGroup
           className="shrink-0"
           variant="outline"
@@ -568,6 +599,15 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       ) : orderedTurnDiffSummaries.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           No completed turns yet.
+        </div>
+      ) : selectedTurnRequestedButMissing ? (
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+          The selected turn is unavailable. It may have been removed by a revert or is no longer
+          present in this thread.
+        </div>
+      ) : selectedTurnRangeMissing ? (
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+          A diff for this turn is not yet available. Checkpoint metadata is missing.
         </div>
       ) : (
         <>

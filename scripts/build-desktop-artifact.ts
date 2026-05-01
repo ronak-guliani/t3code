@@ -27,6 +27,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
+const DesktopBuildFlavor = Schema.Literals(["alpha", "dev"]);
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -67,6 +68,7 @@ interface BuildCliInput {
   readonly platform: Option.Option<typeof BuildPlatform.Type>;
   readonly target: Option.Option<string>;
   readonly arch: Option.Option<typeof BuildArch.Type>;
+  readonly flavor: Option.Option<typeof DesktopBuildFlavor.Type>;
   readonly buildVersion: Option.Option<string>;
   readonly outputDir: Option.Option<string>;
   readonly skipBuild: Option.Option<boolean>;
@@ -198,6 +200,7 @@ interface ResolvedBuildOptions {
   readonly platform: typeof BuildPlatform.Type;
   readonly target: string;
   readonly arch: typeof BuildArch.Type;
+  readonly flavor: typeof DesktopBuildFlavor.Type;
   readonly version: string | undefined;
   readonly outputDir: string;
   readonly skipBuild: boolean;
@@ -243,6 +246,7 @@ const BuildEnvConfig = Config.all({
   platform: Config.schema(BuildPlatform, "T3CODE_DESKTOP_PLATFORM").pipe(Config.option),
   target: Config.string("T3CODE_DESKTOP_TARGET").pipe(Config.option),
   arch: Config.schema(BuildArch, "T3CODE_DESKTOP_ARCH").pipe(Config.option),
+  flavor: Config.schema(DesktopBuildFlavor, "T3CODE_DESKTOP_FLAVOR").pipe(Config.option),
   version: Config.string("T3CODE_DESKTOP_VERSION").pipe(Config.option),
   outputDir: Config.string("T3CODE_DESKTOP_OUTPUT_DIR").pipe(Config.option),
   skipBuild: Config.boolean("T3CODE_DESKTOP_SKIP_BUILD").pipe(Config.withDefault(false)),
@@ -296,6 +300,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
 
   const target = mergeOptions(input.target, env.target, PLATFORM_CONFIG[platform].defaultTarget);
   const arch = mergeOptions(input.arch, env.arch, getDefaultArch(platform));
+  const flavor = mergeOptions(input.flavor, env.flavor, "alpha");
   const version = mergeOptions(input.buildVersion, env.version, undefined);
   const releaseDir = resolveBooleanFlag(input.mockUpdates, env.mockUpdates)
     ? "release-mock"
@@ -327,6 +332,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     platform,
     target,
     arch,
+    flavor,
     version,
     outputDir,
     skipBuild,
@@ -552,24 +558,42 @@ export function resolveMockUpdateServerUrl(mockUpdateServerPort: number | undefi
   return `http://localhost:${mockUpdateServerPort ?? 3000}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopProductName(
+  version: string,
+  flavor: typeof DesktopBuildFlavor.Type = "alpha",
+): string {
+  if (flavor === "dev") {
+    return "T3 Code (Dev)";
+  }
+
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
+}
+
+export function resolveDesktopAppId(flavor: typeof DesktopBuildFlavor.Type): string {
+  return flavor === "dev" ? "com.t3tools.t3code.dev" : "com.t3tools.t3code";
+}
+
+export function resolveDesktopArtifactName(flavor: typeof DesktopBuildFlavor.Type): string {
+  return flavor === "dev"
+    ? "T3-Code-Dev-${version}-${arch}.${ext}"
+    : "T3-Code-${version}-${arch}.${ext}";
 }
 
 const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
   version: string,
+  flavor: typeof DesktopBuildFlavor.Type,
   signed: boolean,
   mockUpdates: boolean,
   mockUpdateServerPort: number | undefined,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: "com.t3tools.t3code",
-    productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    appId: resolveDesktopAppId(flavor),
+    productName: resolveDesktopProductName(version, flavor),
+    artifactName: resolveDesktopArtifactName(flavor),
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -790,6 +814,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.platform,
       options.target,
       appVersion,
+      options.flavor,
       options.signed,
       options.mockUpdates,
       options.mockUpdateServerPort,
@@ -902,6 +927,10 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
   arch: Flag.choice("arch", BuildArch.literals).pipe(
     Flag.withDescription("Build arch, for example arm64/x64/universal (env: T3CODE_DESKTOP_ARCH)."),
+    Flag.optional,
+  ),
+  flavor: Flag.choice("flavor", DesktopBuildFlavor.literals).pipe(
+    Flag.withDescription("Desktop app flavor: alpha or dev (env: T3CODE_DESKTOP_FLAVOR)."),
     Flag.optional,
   ),
   buildVersion: Flag.string("build-version").pipe(

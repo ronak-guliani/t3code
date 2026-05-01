@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type {
+import {
   CopilotSettings,
   ModelCapabilities,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ServerProvider,
   ServerProviderModel,
   ServerSettingsError,
@@ -28,6 +30,8 @@ import {
 } from "../providerSnapshot.ts";
 
 const PROVIDER = "copilot" as const;
+const DRIVER_KIND = ProviderDriverKind.make(PROVIDER);
+const DEFAULT_INSTANCE_ID = ProviderInstanceId.make(PROVIDER);
 const COPILOT_PRESENTATION = {
   displayName: "GitHub Copilot",
   showInteractionModeToggle: true,
@@ -36,6 +40,12 @@ const COPILOT_REFRESH_INTERVAL = "1 hour";
 const COPILOT_PROBE_TIMEOUT_MS = 4_000;
 
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
+
+const withDefaultCopilotIdentity = (snapshot: Omit<ServerProvider, "instanceId" | "driver">) => ({
+  ...snapshot,
+  instanceId: DEFAULT_INSTANCE_ID,
+  driver: DRIVER_KIND,
+});
 
 const COPILOT_REASONING_LEVELS = [
   { value: "low", label: "Low" },
@@ -77,6 +87,7 @@ function makeCopilotBuiltInModel(slug: string, name: string): ServerProviderMode
 
 const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("auto", "Auto"),
+  makeCopilotBuiltInModel("gpt-5.5", "GPT-5.5"),
   makeCopilotBuiltInModel("gpt-5.4", "GPT-5.4"),
   makeCopilotBuiltInModel("gpt-5.4-mini", "GPT-5.4 Mini"),
   makeCopilotBuiltInModel("gpt-5.3-codex", "GPT-5.3 Codex"),
@@ -131,15 +142,34 @@ function appendProviderMessage(
   return message ? `${message} ${addition}` : addition;
 }
 
-function buildInitialCopilotProviderSnapshot(copilotSettings: CopilotSettings): ServerProvider {
+export function buildInitialCopilotProviderSnapshot(
+  copilotSettings: CopilotSettings,
+): ServerProvider {
   const checkedAt = new Date().toISOString();
   const models = getCopilotFallbackModels(copilotSettings);
 
   if (!copilotSettings.enabled) {
-    return buildServerProvider({
-      provider: PROVIDER,
+    return withDefaultCopilotIdentity(
+      buildServerProvider({
+        presentation: COPILOT_PRESENTATION,
+        enabled: false,
+        checkedAt,
+        models,
+        probe: {
+          installed: false,
+          version: null,
+          status: "warning",
+          auth: { status: "unknown" },
+          message: "GitHub Copilot is disabled in T3 Code settings.",
+        },
+      }),
+    );
+  }
+
+  return withDefaultCopilotIdentity(
+    buildServerProvider({
       presentation: COPILOT_PRESENTATION,
-      enabled: false,
+      enabled: true,
       checkedAt,
       models,
       probe: {
@@ -147,25 +177,10 @@ function buildInitialCopilotProviderSnapshot(copilotSettings: CopilotSettings): 
         version: null,
         status: "warning",
         auth: { status: "unknown" },
-        message: "GitHub Copilot is disabled in T3 Code settings.",
+        message: "GitHub Copilot provider status has not been checked in this session yet.",
       },
-    });
-  }
-
-  return buildServerProvider({
-    provider: PROVIDER,
-    presentation: COPILOT_PRESENTATION,
-    enabled: true,
-    checkedAt,
-    models,
-    probe: {
-      installed: false,
-      version: null,
-      status: "warning",
-      auth: { status: "unknown" },
-      message: "GitHub Copilot provider status has not been checked in this session yet.",
-    },
-  });
+    }),
+  );
 }
 
 const runCopilotCommand = (settings: CopilotSettings, args: ReadonlyArray<string>) =>
@@ -191,21 +206,22 @@ function missingCopilotProvider(input: {
   readonly settings: CopilotSettings;
   readonly checkedAt: string;
 }): ServerProvider {
-  return buildServerProvider({
-    provider: PROVIDER,
-    presentation: COPILOT_PRESENTATION,
-    enabled: input.settings.enabled,
-    checkedAt: input.checkedAt,
-    models: getCopilotFallbackModels(input.settings),
-    probe: {
-      installed: false,
-      version: null,
-      status: "warning",
-      auth: { status: "unknown" },
-      message:
-        "GitHub Copilot CLI was not found. Install it or configure the binary path in T3 Code settings.",
-    },
-  });
+  return withDefaultCopilotIdentity(
+    buildServerProvider({
+      presentation: COPILOT_PRESENTATION,
+      enabled: input.settings.enabled,
+      checkedAt: input.checkedAt,
+      models: getCopilotFallbackModels(input.settings),
+      probe: {
+        installed: false,
+        version: null,
+        status: "warning",
+        auth: { status: "unknown" },
+        message:
+          "GitHub Copilot CLI was not found. Install it or configure the binary path in T3 Code settings.",
+      },
+    }),
+  );
 }
 
 function installedCopilotProvider(input: {
@@ -215,82 +231,78 @@ function installedCopilotProvider(input: {
   readonly configuredModel?: string | null;
   readonly message?: string;
 }): ServerProvider {
-  return buildServerProvider({
-    provider: PROVIDER,
-    presentation: COPILOT_PRESENTATION,
-    enabled: input.settings.enabled,
-    checkedAt: input.checkedAt,
-    models: getCopilotFallbackModels(input.settings, input.configuredModel),
-    probe: {
-      installed: true,
-      version: input.version,
-      status: input.message ? "warning" : "ready",
-      auth: { status: "unknown" },
-      ...(input.message ? { message: input.message } : {}),
-    },
-  });
+  return withDefaultCopilotIdentity(
+    buildServerProvider({
+      presentation: COPILOT_PRESENTATION,
+      enabled: input.settings.enabled,
+      checkedAt: input.checkedAt,
+      models: getCopilotFallbackModels(input.settings, input.configuredModel),
+      probe: {
+        installed: true,
+        version: input.version,
+        status: input.message ? "warning" : "ready",
+        auth: { status: "unknown" },
+        ...(input.message ? { message: input.message } : {}),
+      },
+    }),
+  );
 }
 
-export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(
-  function* (input?: {
-    readonly cwd?: string;
-  }): Effect.fn.Return<
-    ServerProvider,
-    ServerSettingsError,
-    ChildProcessSpawner.ChildProcessSpawner | ServerSettingsService
-  > {
-    const copilotSettings = yield* Effect.service(ServerSettingsService).pipe(
-      Effect.flatMap((service) => service.getSettings),
-      Effect.map((settings) => settings.providers.copilot),
-    );
-    const checkedAt = new Date().toISOString();
+export const checkCopilotProviderStatusForSettings = Effect.fn(
+  "checkCopilotProviderStatusForSettings",
+)(function* (input: {
+  readonly settings: CopilotSettings;
+  readonly cwd?: string;
+}): Effect.fn.Return<ServerProvider, never, ChildProcessSpawner.ChildProcessSpawner> {
+  const copilotSettings = input.settings;
+  const checkedAt = new Date().toISOString();
 
-    if (!copilotSettings.enabled) {
-      return buildInitialCopilotProviderSnapshot(copilotSettings);
+  if (!copilotSettings.enabled) {
+    return buildInitialCopilotProviderSnapshot(copilotSettings);
+  }
+
+  const mergedConfig = yield* readCopilotMergedSettings({
+    cwd: input.cwd ?? process.cwd(),
+  }).pipe(Effect.provide(NodeServices.layer));
+  const configWarning = mergedConfig.warnings[0];
+  const configWarningMessage = configWarning
+    ? `GitHub Copilot config warning: ${configWarning.message}`
+    : undefined;
+
+  const versionProbe = yield* runCopilotCommand(copilotSettings, ["--version"]).pipe(
+    Effect.timeoutOption(COPILOT_PROBE_TIMEOUT_MS),
+    Effect.result,
+  );
+
+  if (Result.isSuccess(versionProbe) && Option.isSome(versionProbe.success)) {
+    const result = versionProbe.success.value;
+    if (result.code === 0) {
+      return installedCopilotProvider({
+        settings: copilotSettings,
+        checkedAt,
+        version: parseGenericCliVersion(result.stdout) ?? parseGenericCliVersion(result.stderr),
+        ...(mergedConfig.model ? { configuredModel: mergedConfig.model } : {}),
+        ...(configWarningMessage ? { message: configWarningMessage } : {}),
+      });
     }
+  }
 
-    const mergedConfig = yield* readCopilotMergedSettings({
-      cwd: input?.cwd ?? process.cwd(),
-    }).pipe(Effect.provide(NodeServices.layer));
-    const configWarning = mergedConfig.warnings[0];
-    const configWarningMessage = configWarning
-      ? `GitHub Copilot config warning: ${configWarning.message}`
-      : undefined;
+  if (Result.isFailure(versionProbe) && isCommandMissingCause(versionProbe.failure)) {
+    return missingCopilotProvider({ settings: copilotSettings, checkedAt });
+  }
 
-    const versionProbe = yield* runCopilotCommand(copilotSettings, ["--version"]).pipe(
-      Effect.timeoutOption(COPILOT_PROBE_TIMEOUT_MS),
-      Effect.result,
-    );
+  const helpProbe = yield* runCopilotCommand(copilotSettings, ["--help"]).pipe(
+    Effect.timeoutOption(COPILOT_PROBE_TIMEOUT_MS),
+    Effect.result,
+  );
 
-    if (Result.isSuccess(versionProbe) && Option.isSome(versionProbe.success)) {
-      const result = versionProbe.success.value;
-      if (result.code === 0) {
-        return installedCopilotProvider({
-          settings: copilotSettings,
-          checkedAt,
-          version: parseGenericCliVersion(result.stdout) ?? parseGenericCliVersion(result.stderr),
-          ...(mergedConfig.model ? { configuredModel: mergedConfig.model } : {}),
-          ...(configWarningMessage ? { message: configWarningMessage } : {}),
-        });
-      }
-    }
-
-    if (Result.isFailure(versionProbe) && isCommandMissingCause(versionProbe.failure)) {
+  if (Result.isFailure(helpProbe)) {
+    const error = helpProbe.failure;
+    if (isCommandMissingCause(error)) {
       return missingCopilotProvider({ settings: copilotSettings, checkedAt });
     }
-
-    const helpProbe = yield* runCopilotCommand(copilotSettings, ["--help"]).pipe(
-      Effect.timeoutOption(COPILOT_PROBE_TIMEOUT_MS),
-      Effect.result,
-    );
-
-    if (Result.isFailure(helpProbe)) {
-      const error = helpProbe.failure;
-      if (isCommandMissingCause(error)) {
-        return missingCopilotProvider({ settings: copilotSettings, checkedAt });
-      }
-      return buildServerProvider({
-        provider: PROVIDER,
+    return withDefaultCopilotIdentity(
+      buildServerProvider({
         presentation: COPILOT_PRESENTATION,
         enabled: copilotSettings.enabled,
         checkedAt,
@@ -310,12 +322,13 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
             return message ? { message } : {};
           })(),
         },
-      });
-    }
+      }),
+    );
+  }
 
-    if (Option.isNone(helpProbe.success)) {
-      return buildServerProvider({
-        provider: PROVIDER,
+  if (Option.isNone(helpProbe.success)) {
+    return withDefaultCopilotIdentity(
+      buildServerProvider({
         presentation: COPILOT_PRESENTATION,
         enabled: copilotSettings.enabled,
         checkedAt,
@@ -333,28 +346,29 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
             return message ? { message } : {};
           })(),
         },
-      });
-    }
+      }),
+    );
+  }
 
-    const helpResult = helpProbe.success.value;
-    if (helpResult.code === 0) {
-      return installedCopilotProvider({
-        settings: copilotSettings,
-        checkedAt,
-        version: null,
-        ...(mergedConfig.model ? { configuredModel: mergedConfig.model } : {}),
-        ...(() => {
-          const message = appendProviderMessage(
-            "GitHub Copilot CLI version could not be determined.",
-            configWarningMessage,
-          );
-          return message ? { message } : {};
-        })(),
-      });
-    }
+  const helpResult = helpProbe.success.value;
+  if (helpResult.code === 0) {
+    return installedCopilotProvider({
+      settings: copilotSettings,
+      checkedAt,
+      version: null,
+      ...(mergedConfig.model ? { configuredModel: mergedConfig.model } : {}),
+      ...(() => {
+        const message = appendProviderMessage(
+          "GitHub Copilot CLI version could not be determined.",
+          configWarningMessage,
+        );
+        return message ? { message } : {};
+      })(),
+    });
+  }
 
-    return buildServerProvider({
-      provider: PROVIDER,
+  return withDefaultCopilotIdentity(
+    buildServerProvider({
       presentation: COPILOT_PRESENTATION,
       enabled: copilotSettings.enabled,
       checkedAt,
@@ -372,6 +386,25 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
           return message ? { message } : {};
         })(),
       },
+    }),
+  );
+});
+
+export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus")(
+  function* (input?: {
+    readonly cwd?: string;
+  }): Effect.fn.Return<
+    ServerProvider,
+    ServerSettingsError,
+    ChildProcessSpawner.ChildProcessSpawner | ServerSettingsService
+  > {
+    const copilotSettings = yield* Effect.service(ServerSettingsService).pipe(
+      Effect.flatMap((service) => service.getSettings),
+      Effect.map((settings) => settings.providers.copilot),
+    );
+    return yield* checkCopilotProviderStatusForSettings({
+      settings: copilotSettings,
+      cwd: input?.cwd,
     });
   },
 );

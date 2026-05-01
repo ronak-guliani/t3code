@@ -13,7 +13,7 @@ import {
   ProviderInstanceId,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
-  type ThreadId,
+  ThreadId,
   type TurnId,
   WS_METHODS,
   OrchestrationSessionStatus,
@@ -1393,6 +1393,19 @@ function dispatchChatNewShortcut(): void {
       cancelable: true,
     }),
   );
+}
+
+function dispatchChatFindShortcut(): KeyboardEvent {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  const event = new KeyboardEvent("keydown", {
+    key: "f",
+    metaKey: useMetaForMod,
+    ctrlKey: !useMetaForMod,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
 }
 
 function releaseModShortcut(key?: string): void {
@@ -3580,13 +3593,39 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("shows a pointer cursor for the running stop button", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stop-button-cursor" as MessageId,
+      targetText: "stop button cursor target",
+      sessionStatus: "running",
+    });
+    const runningTurnId = "turn-stop-button-cursor" as TurnId;
+    const runningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? Object.assign({}, thread, {
+              latestTurn: {
+                turnId: runningTurnId,
+                state: "running",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: null,
+                assistantMessageId: null,
+              },
+              session: thread.session
+                ? Object.assign({}, thread.session, {
+                    activeTurnId: runningTurnId,
+                    updatedAt: isoAt(101),
+                  })
+                : null,
+            })
+          : thread,
+      ),
+    };
+
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-stop-button-cursor" as MessageId,
-        targetText: "stop button cursor target",
-        sessionStatus: "running",
-      }),
+      snapshot: runningSnapshot,
     });
 
     try {
@@ -3596,6 +3635,111 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       expect(getComputedStyle(stopButton).cursor).toBe("pointer");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not show working UI for a completed turn after a stale running reload", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stale-running-reload" as MessageId,
+      targetText: "stale running reload target",
+      sessionStatus: "running",
+    });
+    const completedTurnId = "turn-stale-running-reload" as TurnId;
+    const staleRunningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              latestTurn: {
+                turnId: completedTurnId,
+                state: "completed",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: isoAt(120),
+                assistantMessageId: null,
+              },
+              session: thread.session
+                ? {
+                    ...thread.session,
+                    status: "running",
+                    activeTurnId: completedTurnId,
+                    updatedAt: isoAt(120),
+                  }
+                : null,
+            }
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: staleRunningSnapshot,
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("assistant filler 21");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(document.body.textContent).not.toContain("Working");
+      expect(document.querySelector('button[aria-label="Stop generation"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows working UI for an unfinished latest turn even when session state lags ready", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-unfinished-turn-ready-session" as MessageId,
+      targetText: "unfinished turn ready session target",
+      sessionStatus: "ready",
+    });
+    const runningTurnId = "turn-unfinished-ready-session" as TurnId;
+    const unfinishedTurnSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? Object.assign({}, thread, {
+              latestTurn: {
+                turnId: runningTurnId,
+                state: "running",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: null,
+                assistantMessageId: null,
+              },
+              session: thread.session
+                ? Object.assign({}, thread.session, {
+                    status: "ready",
+                    activeTurnId: null,
+                    updatedAt: isoAt(101),
+                  })
+                : null,
+            })
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: unfinishedTurnSnapshot,
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("Working");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(document.querySelector('button[aria-label="Stop generation"]')).not.toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -4226,6 +4370,224 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       expect(mounted.router.state.location.pathname).toBe(serverThreadPath(THREAD_ID));
       expect(Object.keys(useComposerDraftStore.getState().draftThreadsByThreadKey)).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens find in chat from the configured shortcut, prevents native find, and closes on Escape", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-chat-find-shortcut-test" as MessageId,
+        targetText: "Needle alpha",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const shortcutEvent = dispatchChatFindShortcut();
+      expect(shortcutEvent.defaultPrevented).toBe(true);
+
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+        "Find in chat input should open from the shortcut.",
+      );
+      input.focus();
+      await page.getByPlaceholder(input.placeholder).fill("needle");
+      await expect.element(page.getByText("1 of 1")).toBeVisible();
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle alpha",
+        );
+      });
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(document.querySelector('input[aria-label="Find in chat"]')).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("navigates between find matches with Enter and Shift+Enter", async () => {
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-chat-find-navigation-test" as MessageId,
+      targetText: "Needle alpha",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread, threadIndex) =>
+        threadIndex !== 0
+          ? thread
+          : {
+              ...thread,
+              messages: thread.messages.map((message, messageIndex) =>
+                messageIndex !== 10
+                  ? message
+                  : createUserMessage({
+                      id: "msg-user-chat-find-navigation-second" as MessageId,
+                      text: "Needle beta",
+                      offsetSeconds: 45,
+                    }),
+              ),
+            },
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      dispatchChatFindShortcut();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+        "Find in chat input should open for match navigation.",
+      );
+      input.focus();
+      await page.getByPlaceholder(input.placeholder).fill("needle");
+      await expect.element(page.getByText("1 of 2")).toBeVisible();
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle alpha",
+        );
+      });
+
+      const inputElement = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Find in chat"]',
+      );
+      expect(inputElement).not.toBeNull();
+      await dispatchInputKey(inputElement!, { key: "Enter" });
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle beta",
+        );
+      });
+      await expect.element(page.getByText("2 of 2")).toBeVisible();
+
+      await dispatchInputKey(inputElement!, { key: "Enter", shiftKey: true });
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle alpha",
+        );
+      });
+      await expect.element(page.getByText("1 of 2")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("resets the find surface when the active thread changes", async () => {
+    const secondThreadId = ThreadId.make("thread-find-reset");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-chat-find-reset-test" as MessageId,
+          targetText: "Needle reset",
+        }),
+        secondThreadId,
+      ),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      dispatchChatFindShortcut();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+        "Find in chat input should open before switching threads.",
+      );
+      input.focus();
+      await page.getByPlaceholder(input.placeholder).fill("needle");
+      await expect.element(page.getByText("1 of 1")).toBeVisible();
+
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: secondThreadId,
+        },
+      });
+      await waitForLayout();
+      await vi.waitFor(() => {
+        expect(document.querySelector('input[aria-label="Find in chat"]')).toBeNull();
+      });
     } finally {
       await mounted.cleanup();
     }

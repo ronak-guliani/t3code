@@ -63,6 +63,7 @@ const enabledCopilotSettings: Partial<CopilotSettings> = {
 
 const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "auto",
+  "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5.3-codex",
@@ -103,7 +104,7 @@ const withNodeServices = <E, A, R>(
 describe("CopilotProvider", () => {
   it("builds the full Copilot model catalog plus unique custom models", () => {
     const models = getCopilotFallbackModels({
-      customModels: ["custom-model", "gpt-5.4", "custom-model"],
+      customModels: ["custom-model", "gpt-5.4", "5.5", "custom-model"],
     });
 
     assert.deepStrictEqual(
@@ -111,10 +112,10 @@ describe("CopilotProvider", () => {
       [...EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS, "custom-model"],
     );
     assert.deepStrictEqual(
-      models.find((model) => model.slug === "gpt-5.2-codex"),
+      models.find((model) => model.slug === "gpt-5.5"),
       {
-        slug: "gpt-5.2-codex",
-        name: "GPT-5.2 Codex",
+        slug: "gpt-5.5",
+        name: "GPT-5.5",
         isCustom: false,
         capabilities: {
           reasoningEffortLevels: [

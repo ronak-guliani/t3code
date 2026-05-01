@@ -74,7 +74,7 @@ export const ServerProviderSlashCommand = Schema.Struct({
 export type ServerProviderSlashCommand = typeof ServerProviderSlashCommand.Type;
 
 export const ServerProviderListCommandsInput = Schema.Struct({
-  provider: ProviderKind,
+  provider: ProviderDriverKind,
   cwd: TrimmedNonEmptyString,
 });
 export type ServerProviderListCommandsInput = typeof ServerProviderListCommandsInput.Type;

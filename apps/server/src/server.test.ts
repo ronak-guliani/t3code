@@ -2964,6 +2964,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             threadId: ThreadId.make("thread-1"),
             fromTurnCount: 0,
             toTurnCount: 1,
+            scope: "snapshot",
           }),
         ),
       );

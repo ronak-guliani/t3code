@@ -708,6 +708,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           checkpointRef: command.checkpointRef,
           status: command.status,
           files: command.files,
+          agentTouchedPaths: command.agentTouchedPaths,
+          turnFiles: command.turnFiles,
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
         },

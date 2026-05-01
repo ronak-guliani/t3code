@@ -10,7 +10,11 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_UI_FONT,
+  DEFAULT_UNIFIED_SETTINGS,
+  type UiFont,
+} from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import { Equal } from "effect";
 import { APP_VERSION } from "../../branding";
@@ -113,6 +117,17 @@ function withoutProviderInstanceFavorites(
   return favorites.filter((favorite) => favorite.provider !== instanceId);
 }
 
+const UI_FONT_OPTIONS: ReadonlyArray<{ value: UiFont; label: string }> = [
+  {
+    value: "dm-sans",
+    label: "DM Sans",
+  },
+  {
+    value: "geist",
+    label: "Geist",
+  },
+];
+
 type InstallProviderSettings = {
   provider: ProviderDriverKind;
   title: string;
@@ -150,6 +165,12 @@ const PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
     badgeLabel: "Early Access",
     binaryPlaceholder: "Cursor agent binary path",
     binaryDescription: "Path to the Cursor agent binary",
+  },
+  {
+    provider: ProviderDriverKind.make("copilot"),
+    title: "GitHub Copilot",
+    binaryPlaceholder: "Copilot binary path",
+    binaryDescription: "Path to the GitHub Copilot CLI binary",
   },
   {
     provider: ProviderDriverKind.make("opencode"),
@@ -430,6 +451,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
+      ...(settings.uiFont !== DEFAULT_UNIFIED_SETTINGS.uiFont ? ["Interface font"] : []),
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
@@ -465,6 +487,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffWordWrap,
       settings.enableAssistantStreaming,
       settings.timestampFormat,
+      settings.uiFont,
       theme,
     ],
   );
@@ -911,7 +934,52 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+      </SettingsSection>
 
+      <SettingsSection title="Fonts">
+        <SettingsRow
+          title="Interface font"
+          description="Choose the sans-serif typeface used throughout the app UI."
+          resetAction={
+            settings.uiFont !== DEFAULT_UI_FONT ? (
+              <SettingResetButton
+                label="interface font"
+                onClick={() =>
+                  updateSettings({
+                    uiFont: DEFAULT_UI_FONT,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.uiFont}
+              onValueChange={(value) => {
+                if (value === "dm-sans" || value === "geist") {
+                  updateSettings({ uiFont: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Interface font">
+                <SelectValue>
+                  {UI_FONT_OPTIONS.find((option) => option.value === settings.uiFont)?.label ??
+                    "DM Sans"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {UI_FONT_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Preferences">
         <SettingsRow
           title="Diff line wrapping"
           description="Set the default wrap state when the diff panel opens."

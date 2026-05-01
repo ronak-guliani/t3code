@@ -1,7 +1,7 @@
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 
-import ChatView from "../components/ChatView";
+import { ChatSplitArea } from "../components/ChatSplitArea";
 import { threadHasStarted } from "../components/ChatView.logic";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import {
@@ -14,6 +14,7 @@ import { finalizePromotedDraftThreadByRef, useComposerDraftStore } from "../comp
 import {
   buildClosedDiffRouteSearch,
   type DiffRouteSearch,
+  mergeDiffRouteSearch,
   parseDiffRouteSearch,
   stripDiffSearchParams,
 } from "../diffRouteSearch";
@@ -21,7 +22,11 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createThreadSelectorByRef } from "../storeSelectors";
-import { resolveThreadRouteRef, buildThreadRouteParams } from "../threadRoutes";
+import {
+  resolveThreadRouteRef,
+  buildThreadRouteParams,
+  type ThreadRouteTarget,
+} from "../threadRoutes";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 
@@ -117,7 +122,7 @@ const DiffPanelInlineSidebar = (props: {
       defaultOpen={false}
       open={diffOpen}
       onOpenChange={onOpenChange}
-      className="w-auto min-h-0 flex-none bg-transparent"
+      className="w-auto min-h-0 flex-none bg-transparent [&_[data-slot=sidebar-gap]]:transition-none [&_[data-slot=sidebar-container]]:transition-none"
       style={{ "--sidebar-width": DIFF_INLINE_DEFAULT_WIDTH } as React.CSSProperties}
     >
       <Sidebar
@@ -143,6 +148,17 @@ function ChatThreadRouteView() {
     select: (params) => resolveThreadRouteRef(params),
   });
   const search = Route.useSearch();
+  // Stable route target — threadRef may be a new object on every render (useParams
+  // can return fresh refs), but the string values only change on actual navigation.
+  // An inline `{ kind, threadRef }` literal would be a new object every render,
+  // causing downstream effects in ChatSplitArea to fire unnecessarily.
+  const routeTarget = useMemo<ThreadRouteTarget | null>(
+    () => (threadRef ? { kind: "server", threadRef } : null),
+    // oxlint wants `threadRef` as the dep, but that defeats the purpose — threadRef
+    // is a new object on every render from useParams. We depend on the primitives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [threadRef?.environmentId, threadRef?.threadId],
+  );
   const bootstrapComplete = useStore(
     (store) => selectEnvironmentState(store, threadRef?.environmentId ?? null).bootstrapComplete,
   );
@@ -195,10 +211,7 @@ function ChatThreadRouteView() {
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(threadRef),
-      search: (previous) => ({
-        ...stripDiffSearchParams(previous),
-        ...buildClosedDiffRouteSearch(),
-      }),
+      search: (previous) => mergeDiffRouteSearch(previous, buildClosedDiffRouteSearch()),
     });
   }, [navigate, threadRef]);
   const openDiff = useCallback(() => {
@@ -233,23 +246,26 @@ function ChatThreadRouteView() {
     finalizePromotedDraftThreadByRef(threadRef);
   }, [draftThread?.promotedTo, serverThreadStarted, threadRef]);
 
-  if (!threadRef || !bootstrapComplete || !routeThreadExists) {
+  if (!threadRef || !routeTarget || !bootstrapComplete || !routeThreadExists) {
     return null;
   }
 
   const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
 
+  const splitArea = (
+    <ChatSplitArea
+      routeTarget={routeTarget}
+      routeDiffSearch={search}
+      onDiffPanelOpen={markDiffOpened}
+      reserveTitleBarControlInset={!shouldUseDiffSheet ? !diffOpen : true}
+    />
+  );
+
   if (!shouldUseDiffSheet) {
     return (
       <>
         <SidebarInset className="h-dvh  min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-          <ChatView
-            environmentId={threadRef.environmentId}
-            threadId={threadRef.threadId}
-            onDiffPanelOpen={markDiffOpened}
-            reserveTitleBarControlInset={!diffOpen}
-            routeKind="server"
-          />
+          {splitArea}
         </SidebarInset>
         <DiffPanelInlineSidebar
           diffOpen={diffOpen}
@@ -264,12 +280,7 @@ function ChatThreadRouteView() {
   return (
     <>
       <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-        <ChatView
-          environmentId={threadRef.environmentId}
-          threadId={threadRef.threadId}
-          onDiffPanelOpen={markDiffOpened}
-          routeKind="server"
-        />
+        {splitArea}
       </SidebarInset>
       <RightPanelSheet open={diffOpen} onClose={closeDiff}>
         {shouldRenderDiffContent ? <LazyDiffPanel mode="sheet" /> : null}

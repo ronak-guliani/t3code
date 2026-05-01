@@ -5,12 +5,14 @@ import { describe, it } from "vitest";
 import { ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
+import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 import {
+  buildUnsupportedDynamicToolCallResponse,
   buildTurnStartParams,
   isRecoverableThreadResumeError,
   openCodexThread,
@@ -191,6 +193,29 @@ describe("isRecoverableThreadResumeError", () => {
       ),
       false,
     );
+  });
+});
+
+describe("buildUnsupportedDynamicToolCallResponse", () => {
+  it("returns a protocol-valid failure output for unsupported dynamic tools", () => {
+    const response = buildUnsupportedDynamicToolCallResponse({
+      arguments: { query: "hello" },
+      callId: "call-1",
+      threadId: "provider-thread-1",
+      tool: "web_search",
+      turnId: "turn-1",
+    });
+
+    assert.deepStrictEqual(response, {
+      success: false,
+      contentItems: [
+        {
+          type: "inputText",
+          text: "Dynamic tool 'web_search' is not supported by this client.",
+        },
+      ],
+    });
+    assert.equal(Schema.is(EffectCodexSchema.DynamicToolCallResponse)(response), true);
   });
 });
 

@@ -1,5 +1,5 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
-import { ClaudeAI, CursorIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import { ClaudeAI, CursorIcon, GithubCopilotIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 /**
  * A single editable field exposed on a provider instance. `key` must match
@@ -106,6 +106,19 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         label: "API endpoint",
         placeholder: "https://…",
         description: "Override the Cursor API endpoint for this instance.",
+      },
+    ],
+  },
+  {
+    value: ProviderDriverKind.make("copilot"),
+    label: "GitHub Copilot",
+    icon: GithubCopilotIcon,
+    fields: [
+      {
+        key: "binaryPath",
+        label: "Binary path",
+        placeholder: "copilot",
+        description: "Path to the GitHub Copilot CLI binary.",
       },
     ],
   },

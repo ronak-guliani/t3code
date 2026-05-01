@@ -413,6 +413,7 @@ const make = Effect.gen(function* () {
             runtimeMode: desiredRuntimeMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
+            ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
           },
@@ -907,6 +908,9 @@ const make = Effect.gen(function* () {
           : {}),
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
+        ...(thread.session?.resumeCursor !== undefined
+          ? { resumeCursor: thread.session.resumeCursor }
+          : {}),
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
       },

@@ -41,6 +41,18 @@ const make = Effect.gen(function* () {
         return emptyDiff;
       }
 
+      // Turn-scoped diffs path-filter the [from..to] range by the file list of
+      // a single target checkpoint. That filtering only has well-defined
+      // semantics for a single checkpoint transition. Wider ranges silently
+      // drop changes outside the target turn's file list and look like a
+      // valid (but wrong) turn diff. Snapshot scope is unaffected.
+      if (input.scope === "turn" && input.toTurnCount !== input.fromTurnCount + 1) {
+        return yield* new CheckpointInvariantError({
+          operation,
+          detail: `Turn-scoped diff requires a single checkpoint transition (toTurnCount === fromTurnCount + 1); received fromTurnCount=${input.fromTurnCount}, toTurnCount=${input.toTurnCount}.`,
+        });
+      }
+
       const threadContext = yield* projectionSnapshotQuery.getThreadCheckpointContext(
         input.threadId,
       );
@@ -126,11 +138,34 @@ const make = Effect.gen(function* () {
         });
       }
 
+      const toCheckpoint = threadContext.value.checkpoints.find(
+        (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
+      );
+      const turnScopedPaths = input.scope === "turn" ? (toCheckpoint?.turnFiles ?? []) : null;
+      if (turnScopedPaths !== null && turnScopedPaths.length === 0) {
+        const turnDiff: OrchestrationGetTurnDiffResultType = {
+          threadId: input.threadId,
+          fromTurnCount: input.fromTurnCount,
+          toTurnCount: input.toTurnCount,
+          diff: "",
+        };
+        if (!isTurnDiffResult(turnDiff)) {
+          return yield* new CheckpointInvariantError({
+            operation,
+            detail: "Computed turn diff result does not satisfy contract schema.",
+          });
+        }
+        return turnDiff;
+      }
+
       const diff = yield* checkpointStore.diffCheckpoints({
         cwd: workspaceCwd,
         fromCheckpointRef,
         toCheckpointRef,
         fallbackFromToHead: false,
+        ...(turnScopedPaths !== null
+          ? { paths: Array.from(new Set(turnScopedPaths.map((file) => file.path))) }
+          : {}),
       });
 
       const turnDiff: OrchestrationGetTurnDiffResultType = {
@@ -157,6 +192,7 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       fromTurnCount: 0,
       toTurnCount: input.toTurnCount,
+      scope: "snapshot",
     }).pipe(Effect.map((result): OrchestrationGetFullThreadDiffResult => result));
 
   return {

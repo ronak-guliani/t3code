@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import type { AcpParsedSessionEvent, AcpToolCallState } from "./AcpRuntimeModel.ts";
 import {
+  copilotFatalToolCallErrorMessage,
+  detectCopilotFatalToolCallError,
   extractCopilotPlanUpdate,
   normalizeCopilotParsedSessionEvent,
   normalizeCopilotPermissionRequest,
@@ -203,5 +205,53 @@ describe("CopilotAcpRuntimeModel", () => {
     expect(normalized.itemType).toBe("dynamic_tool_call");
     expect(normalized.title).toBe("Tool");
     expect(normalized.data.itemType).toBe("dynamic_tool_call");
+  });
+
+  describe("detectCopilotFatalToolCallError", () => {
+    it("parses the canonical CAPIError missing-tool-output chunk", () => {
+      const detected = detectCopilotFatalToolCallError(
+        "Error: Execution failed: CAPIError: 400 No tool output found for function call call_fpjPy4PyTryz3X74XdaOaR69. (Request ID: F31F:7D36C:606E1:6EC73:69F04151)",
+      );
+
+      expect(detected).toEqual({
+        callId: "call_fpjPy4PyTryz3X74XdaOaR69",
+        statusCode: "400",
+        requestId: "F31F:7D36C:606E1:6EC73:69F04151",
+        originalText:
+          "Error: Execution failed: CAPIError: 400 No tool output found for function call call_fpjPy4PyTryz3X74XdaOaR69. (Request ID: F31F:7D36C:606E1:6EC73:69F04151)",
+      });
+    });
+
+    it("tolerates a missing Request ID suffix", () => {
+      const detected = detectCopilotFatalToolCallError(
+        "Execution failed: CAPIError: 400 No tool output found for function call call_abc.",
+      );
+
+      expect(detected).toMatchObject({
+        callId: "call_abc",
+        statusCode: "400",
+        requestId: undefined,
+      });
+    });
+
+    it("returns undefined for normal assistant text", () => {
+      expect(detectCopilotFatalToolCallError("All done. Tests pass.")).toBeUndefined();
+      expect(
+        detectCopilotFatalToolCallError(
+          "Info: Request failed (transient_bad_request). Retrying...",
+        ),
+      ).toBeUndefined();
+    });
+
+    it("formats a user-facing recovery message", () => {
+      const detected = detectCopilotFatalToolCallError(
+        "Error: Execution failed: CAPIError: 400 No tool output found for function call call_xyz. (Request ID: AAA:BBB)",
+      );
+      expect(detected).toBeDefined();
+      const message = copilotFatalToolCallErrorMessage(detected!);
+      expect(message).toContain("Copilot CLI hit a fatal API error");
+      expect(message).toContain("call_xyz");
+      expect(message).toContain("Start a new thread");
+    });
   });
 });

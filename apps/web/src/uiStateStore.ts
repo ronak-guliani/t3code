@@ -1,4 +1,5 @@
 import { Debouncer } from "@tanstack/react-pacer";
+import type { TurnDiffScope } from "@t3tools/contracts";
 import { create } from "zustand";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
@@ -20,6 +21,7 @@ export interface PersistedUiState {
   expandedProjectCwds?: string[];
   projectOrderCwds?: string[];
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
+  changedFilesDiffScope?: TurnDiffScope;
 }
 
 export interface UiProjectState {
@@ -30,6 +32,7 @@ export interface UiProjectState {
 export interface UiThreadState {
   threadLastVisitedAtById: Record<string, string>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
+  changedFilesDiffScope: TurnDiffScope;
 }
 
 export interface UiState extends UiProjectState, UiThreadState {}
@@ -52,6 +55,7 @@ const initialState: UiState = {
   projectOrder: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
+  changedFilesDiffScope: "turn",
 };
 
 const persistedCollapsedProjectCwds = new Set<string>();
@@ -91,10 +95,15 @@ function readPersistedState(): UiState {
       threadChangedFilesExpandedById: sanitizePersistedThreadChangedFilesExpanded(
         parsed.threadChangedFilesExpandedById,
       ),
+      changedFilesDiffScope: sanitizePersistedDiffScope(parsed.changedFilesDiffScope),
     };
   } catch {
     return initialState;
   }
+}
+
+function sanitizePersistedDiffScope(value: unknown): TurnDiffScope {
+  return value === "snapshot" ? "snapshot" : "turn";
 }
 
 function sanitizePersistedThreadChangedFilesExpanded(
@@ -180,6 +189,7 @@ export function persistState(state: UiState): void {
         expandedProjectCwds,
         projectOrderCwds,
         threadChangedFilesExpandedById,
+        changedFilesDiffScope: state.changedFilesDiffScope,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -532,6 +542,16 @@ export function setThreadChangedFilesExpanded(
   };
 }
 
+export function setChangedFilesDiffScope(state: UiState, scope: TurnDiffScope): UiState {
+  if (state.changedFilesDiffScope === scope) {
+    return state;
+  }
+  return {
+    ...state,
+    changedFilesDiffScope: scope,
+  };
+}
+
 export function toggleProject(state: UiState, projectId: string): UiState {
   const expanded = state.projectExpandedById[projectId] ?? true;
   return {
@@ -606,6 +626,7 @@ interface UiStateStore extends UiState {
   markThreadUnread: (threadId: string, latestTurnCompletedAt: string | null | undefined) => void;
   clearThreadUi: (threadId: string) => void;
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
+  setChangedFilesDiffScope: (scope: TurnDiffScope) => void;
   toggleProject: (projectId: string) => void;
   setProjectExpanded: (projectId: string, expanded: boolean) => void;
   reorderProjects: (
@@ -625,6 +646,7 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
   clearThreadUi: (threadId) => set((state) => clearThreadUi(state, threadId)),
   setThreadChangedFilesExpanded: (threadId, turnId, expanded) =>
     set((state) => setThreadChangedFilesExpanded(state, threadId, turnId, expanded)),
+  setChangedFilesDiffScope: (scope) => set((state) => setChangedFilesDiffScope(state, scope)),
   toggleProject: (projectId) => set((state) => toggleProject(state, projectId)),
   setProjectExpanded: (projectId, expanded) =>
     set((state) => setProjectExpanded(state, projectId, expanded)),

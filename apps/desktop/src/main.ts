@@ -113,13 +113,15 @@ const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const desktopAppBranding: DesktopAppBranding = resolveDesktopAppBranding({
   isDevelopment,
   appVersion: app.getVersion(),
+  packageProductName: app.getName(),
 });
 const APP_DISPLAY_NAME = desktopAppBranding.displayName;
-const APP_USER_MODEL_ID = isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code";
-const LINUX_DESKTOP_ENTRY_NAME = isDevelopment ? "t3code-dev.desktop" : "t3code.desktop";
-const LINUX_WM_CLASS = isDevelopment ? "t3code-dev" : "t3code";
-const USER_DATA_DIR_NAME = isDevelopment ? "t3code-dev" : "t3code";
-const LEGACY_USER_DATA_DIR_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
+const isDevAppFlavor = desktopAppBranding.stageLabel === "Dev";
+const APP_USER_MODEL_ID = isDevAppFlavor ? "com.t3tools.t3code.dev" : "com.t3tools.t3code";
+const LINUX_DESKTOP_ENTRY_NAME = isDevAppFlavor ? "t3code-dev.desktop" : "t3code.desktop";
+const LINUX_WM_CLASS = isDevAppFlavor ? "t3code-dev" : "t3code";
+const USER_DATA_DIR_NAME = isDevAppFlavor ? "t3code-dev" : "t3code";
+const LEGACY_USER_DATA_DIR_NAME = isDevAppFlavor ? "T3 Code (Dev)" : "T3 Code (Alpha)";
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
 const LOG_DIR = Path.join(STATE_DIR, "logs");

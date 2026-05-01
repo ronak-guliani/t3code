@@ -1513,6 +1513,8 @@ const make = Effect.gen(function* () {
               checkpointRef: CheckpointRef.make(`provider-diff:${event.eventId}`),
               status: "missing",
               files: [],
+              agentTouchedPaths: [],
+              turnFiles: [],
               assistantMessageId,
               checkpointTurnCount: maxTurnCount + 1,
               createdAt: now,

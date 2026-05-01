@@ -77,9 +77,19 @@ function describeRecoveredToast(
 
 function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): string {
   const count = requests.length;
-  const thresholdSeconds = Math.round((requests[0]?.thresholdMs ?? 0) / 1000);
+  const requestCountsByTag = new Map<string, number>();
 
-  return `${count} request${count === 1 ? "" : "s"} waiting longer than ${thresholdSeconds}s.`;
+  for (const request of requests) {
+    requestCountsByTag.set(request.tag, (requestCountsByTag.get(request.tag) ?? 0) + 1);
+  }
+
+  const topTags = Array.from(requestCountsByTag.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 3)
+    .map(([tag, tagCount]) => `${tag} x${tagCount}`)
+    .join(", ");
+
+  return `${count} request${count === 1 ? "" : "s"} waiting past the RPC ack threshold. Methods: ${topTags}.`;
 }
 
 function SlowRpcAckRequestDetails({ requests }: { requests: ReadonlyArray<SlowRpcAckRequest> }) {

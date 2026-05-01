@@ -245,11 +245,12 @@ export function normalizeModelSlug(
     return null;
   }
 
+  const normalizedInput = provider === "opencode" ? trimmed : trimmed.toLowerCase();
   const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[provider] ?? {};
-  const aliased = Object.prototype.hasOwnProperty.call(aliases, trimmed)
-    ? aliases[trimmed]
+  const aliased = Object.prototype.hasOwnProperty.call(aliases, normalizedInput)
+    ? aliases[normalizedInput]
     : undefined;
-  return typeof aliased === "string" ? aliased : trimmed;
+  return typeof aliased === "string" ? aliased : normalizedInput;
 }
 
 export function resolveSelectableModel(

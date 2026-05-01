@@ -14,6 +14,7 @@ import {
   type ProviderSession,
   type ProviderUserInputAnswers,
   RuntimeRequestId,
+  ProviderDriverKind,
   type ThreadId,
   TurnId,
   type UserInputQuestion,
@@ -63,6 +64,8 @@ import {
 import { makeAcpNativeLoggers } from "../acp/AcpNativeLogging.ts";
 import { makeCopilotAcpRuntime, resolveCopilotAcpModeId } from "../acp/CopilotAcpSupport.ts";
 import {
+  copilotFatalToolCallErrorMessage,
+  detectCopilotFatalToolCallError,
   extractCopilotPlanUpdate,
   normalizeCopilotParsedSessionEvent,
   normalizeCopilotPermissionRequest,
@@ -75,7 +78,7 @@ import { CopilotAdapter, type CopilotAdapterShape } from "../Services/CopilotAda
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
-const PROVIDER = "copilot" as const;
+const PROVIDER = ProviderDriverKind.make("copilot");
 const COPILOT_RESUME_VERSION = 1 as const;
 const COPILOT_RETAINED_TEXT_PREVIEW_LENGTH = 4096;
 
@@ -104,6 +107,11 @@ interface CopilotRuntimeResources {
   readonly notificationFiber: Fiber.Fiber<void, never>;
 }
 
+interface UnsupportedTerminalState {
+  readonly output: string;
+  readonly exitCode: number;
+}
+
 interface CopilotRetainedTurnSnapshot {
   readonly id: TurnId;
   readonly items: Array<unknown>;
@@ -123,6 +131,7 @@ interface CopilotSessionContext {
   activeTurnId: TurnId | undefined;
   inFlightTurnId: TurnId | undefined;
   cancelRequestedTurnId: TurnId | undefined;
+  readonly fatalErrorByTurnId: Map<TurnId, string>;
   stopped: boolean;
 }
 
@@ -511,6 +520,10 @@ function buildElicitationResponseAction(
   return { action: "accept", content };
 }
 
+function unsupportedClientToolOutput(toolName: string): string {
+  return `${toolName} is not supported by this client.`;
+}
+
 function resolveEffectiveCopilotModel(input: {
   readonly configuredModel: string | undefined;
   readonly selectedModel: string | undefined;
@@ -542,7 +555,7 @@ function clearTurnState(ctx: CopilotSessionContext, turnId: TurnId): void {
   }
 }
 
-function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
+export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -695,6 +708,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
       readonly fullAccessWarningKeys: Set<string>;
       readonly getCurrentTurnId: () => TurnId | undefined;
+      readonly onFatalCopilotError?: (turnId: TurnId, message: string) => void;
       readonly resumeSessionId?: string;
     }) =>
       Effect.gen(function* () {
@@ -847,6 +861,68 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               };
             }),
           );
+          const unsupportedTerminals = new Map<string, UnsupportedTerminalState>();
+          yield* acp.handleReadTextFile((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "fs/read_text_file", params);
+              return {
+                content: unsupportedClientToolOutput("fs/read_text_file"),
+              };
+            }),
+          );
+          yield* acp.handleWriteTextFile((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "fs/write_text_file", {
+                ...params,
+                contentLength: params.content.length,
+                content: undefined,
+              });
+              return {};
+            }),
+          );
+          yield* acp.handleCreateTerminal((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "terminal/create", params);
+              const terminalId = `unsupported:${crypto.randomUUID()}`;
+              unsupportedTerminals.set(terminalId, {
+                output: unsupportedClientToolOutput("terminal/create"),
+                exitCode: 1,
+              });
+              return { terminalId };
+            }),
+          );
+          yield* acp.handleTerminalOutput((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "terminal/output", params);
+              const terminal = unsupportedTerminals.get(params.terminalId);
+              return {
+                output: terminal?.output ?? unsupportedClientToolOutput("terminal/output"),
+                truncated: false,
+                exitStatus: { exitCode: terminal?.exitCode ?? 1 },
+              };
+            }),
+          );
+          yield* acp.handleTerminalWaitForExit((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "terminal/wait_for_exit", params);
+              return {
+                exitCode: unsupportedTerminals.get(params.terminalId)?.exitCode ?? 1,
+              };
+            }),
+          );
+          yield* acp.handleTerminalKill((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "terminal/kill", params);
+              return {};
+            }),
+          );
+          yield* acp.handleTerminalRelease((params) =>
+            Effect.gen(function* () {
+              yield* logNative(input.threadId, "terminal/release", params);
+              unsupportedTerminals.delete(params.terminalId);
+              return {};
+            }),
+          );
           return yield* acp.start();
         }).pipe(
           Effect.mapError((error) =>
@@ -931,8 +1007,12 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                       }),
                     );
                     break;
-                  case "ContentDelta":
+                  case "ContentDelta": {
                     yield* logNative(input.threadId, "session/update", event.rawPayload);
+                    const fatal = detectCopilotFatalToolCallError(event.text);
+                    const friendlyMessage = fatal
+                      ? copilotFatalToolCallErrorMessage(fatal)
+                      : undefined;
                     yield* offerRuntimeEvent(
                       makeAcpContentDeltaEvent({
                         stamp: yield* makeEventStamp(),
@@ -940,11 +1020,22 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                         threadId: input.threadId,
                         turnId: input.getCurrentTurnId(),
                         ...(event.itemId ? { itemId: event.itemId } : {}),
-                        text: event.text,
+                        text: friendlyMessage ?? event.text,
                         rawPayload: event.rawPayload,
                       }),
                     );
+                    if (fatal && friendlyMessage) {
+                      const fatalTurnId = input.getCurrentTurnId();
+                      if (fatalTurnId !== undefined) {
+                        input.onFatalCopilotError?.(fatalTurnId, friendlyMessage);
+                      }
+                      // Best-effort: SIGINT the Copilot CLI so the in-flight
+                      // session/prompt fails fast. The send-turn finalizer will
+                      // recreate the runtime so a fresh thread can recover.
+                      yield* acp.signalProcess("SIGINT").pipe(Effect.ignore);
+                    }
                     break;
+                  }
                 }
               }
             }),
@@ -990,6 +1081,12 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           fullAccessWarningKeys: ctx.fullAccessWarningKeys,
           resumeSessionId,
           getCurrentTurnId: () => ctx.activeTurnId,
+          onFatalCopilotError: (turnId, message) => {
+            ctx.fatalErrorByTurnId.set(turnId, message);
+            if (ctx.cancelRequestedTurnId !== turnId) {
+              ctx.cancelRequestedTurnId = turnId;
+            }
+          },
         }).pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
@@ -1104,7 +1201,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
           const cwd = nodePath.resolve(input.cwd.trim());
           const copilotModelSelection =
-            input.modelSelection?.provider === "copilot" ? input.modelSelection : undefined;
+            input.modelSelection?.instanceId === "copilot" ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing);
@@ -1145,6 +1242,13 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             fullAccessWarningKeys,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             getCurrentTurnId: () => ctx?.activeTurnId,
+            onFatalCopilotError: (turnId, message) => {
+              if (!ctx) return;
+              ctx.fatalErrorByTurnId.set(turnId, message);
+              if (ctx.cancelRequestedTurnId !== turnId) {
+                ctx.cancelRequestedTurnId = turnId;
+              }
+            },
           });
 
           const now = yield* nowIso;
@@ -1178,6 +1282,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               activeTurnId: undefined,
               inFlightTurnId: undefined,
               cancelRequestedTurnId: undefined,
+              fatalErrorByTurnId: new Map<TurnId, string>(),
               stopped: false,
             };
 
@@ -1248,7 +1353,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         const ctx = yield* requireSession(input.threadId);
         const turnId = TurnId.make(crypto.randomUUID());
         const turnModelSelection =
-          input.modelSelection?.provider === "copilot" ? input.modelSelection : undefined;
+          input.modelSelection?.instanceId === "copilot" ? input.modelSelection : undefined;
         const model = resolveEffectiveCopilotModel({
           configuredModel: ctx.session.model,
           selectedModel: turnModelSelection?.model,
@@ -1352,6 +1457,8 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
         const stopReason =
           promptOutcome._tag === "completed" ? promptOutcome.result.stopReason : "cancelled";
+        const fatalErrorMessage = ctx.fatalErrorByTurnId.get(turnId);
+        ctx.fatalErrorByTurnId.delete(turnId);
         ctx.turns.push({
           id: turnId,
           items: [
@@ -1360,7 +1467,7 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               result:
                 promptOutcome._tag === "completed"
                   ? retainedPromptResult(promptOutcome.result)
-                  : { stopReason: "cancelled" },
+                  : { stopReason: fatalErrorMessage ? "failed" : "cancelled" },
             },
           ],
         });
@@ -1371,16 +1478,31 @@ function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           model,
         };
 
+        if (fatalErrorMessage && !ctx.stopped) {
+          // The Copilot CLI's per-session conversation history is now poisoned
+          // by an orphaned tool call; restart the underlying process so the
+          // ACP transport is healthy for any follow-up operations on this
+          // thread (the user still needs to start a fresh thread to recover
+          // — communicated via the friendly error message).
+          yield* restartRuntimeInternal(ctx).pipe(Effect.ignore);
+        }
+
         yield* offerRuntimeEvent({
           type: "turn.completed",
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: input.threadId,
           turnId,
-          payload: {
-            state: stopReason === "cancelled" ? "cancelled" : "completed",
-            stopReason: stopReason ?? null,
-          },
+          payload: fatalErrorMessage
+            ? {
+                state: "failed",
+                stopReason: "copilot_fatal_capi_error",
+                errorMessage: fatalErrorMessage,
+              }
+            : {
+                state: stopReason === "cancelled" ? "cancelled" : "completed",
+                stopReason: stopReason ?? null,
+              },
         });
 
         return {

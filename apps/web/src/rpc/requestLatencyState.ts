@@ -1,11 +1,22 @@
 import { useAtomValue } from "@effect/atom-react";
+import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
 import { appAtomRegistry } from "./atomRegistry";
 
 export const SLOW_RPC_ACK_THRESHOLD_MS = 15_000;
+export const EXPECTED_LONG_RUNNING_RPC_ACK_THRESHOLD_MS = 120_000;
 export const MAX_TRACKED_RPC_ACK_REQUESTS = 256;
 let slowRpcAckThresholdMs = SLOW_RPC_ACK_THRESHOLD_MS;
+
+const expectedLongRunningRpcTags = new Set<string>([
+  ORCHESTRATION_WS_METHODS.dispatchCommand,
+  ORCHESTRATION_WS_METHODS.getTurnDiff,
+  ORCHESTRATION_WS_METHODS.getFullThreadDiff,
+  WS_METHODS.gitPreparePullRequestThread,
+  WS_METHODS.gitRunStackedAction,
+  WS_METHODS.serverRefreshProviders,
+]);
 
 export interface SlowRpcAckRequest {
   readonly requestId: string;
@@ -35,8 +46,18 @@ function getSlowRpcAckRequestsValue(): ReadonlyArray<SlowRpcAckRequest> {
   return appAtomRegistry.get(slowRpcAckRequestsAtom);
 }
 
-function shouldTrackRpcAck(tag: string): boolean {
-  return !tag.includes("subscribe");
+function getRpcAckThresholdMs(tag: string): number | null {
+  if (tag.includes("subscribe")) {
+    return null;
+  }
+
+  if (slowRpcAckThresholdMs !== SLOW_RPC_ACK_THRESHOLD_MS) {
+    return slowRpcAckThresholdMs;
+  }
+
+  return expectedLongRunningRpcTags.has(tag)
+    ? EXPECTED_LONG_RUNNING_RPC_ACK_THRESHOLD_MS
+    : SLOW_RPC_ACK_THRESHOLD_MS;
 }
 
 export function getSlowRpcAckRequests(): ReadonlyArray<SlowRpcAckRequest> {
@@ -44,7 +65,8 @@ export function getSlowRpcAckRequests(): ReadonlyArray<SlowRpcAckRequest> {
 }
 
 export function trackRpcRequestSent(requestId: string, tag: string): void {
-  if (!shouldTrackRpcAck(tag)) {
+  const thresholdMs = getRpcAckThresholdMs(tag);
+  if (thresholdMs === null) {
     return;
   }
 
@@ -57,12 +79,12 @@ export function trackRpcRequestSent(requestId: string, tag: string): void {
     startedAt: new Date(startedAtMs).toISOString(),
     startedAtMs,
     tag,
-    thresholdMs: slowRpcAckThresholdMs,
+    thresholdMs,
   };
   const timeoutId = setTimeout(() => {
     pendingRpcAckRequests.delete(requestId);
     appendSlowRpcAckRequest(request);
-  }, slowRpcAckThresholdMs);
+  }, thresholdMs);
 
   pendingRpcAckRequests.set(requestId, {
     request,

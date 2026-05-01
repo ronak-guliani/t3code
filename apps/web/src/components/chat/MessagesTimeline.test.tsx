@@ -1,4 +1,4 @@
-import { EnvironmentId, MessageId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -73,6 +73,7 @@ beforeAll(() => {
 });
 
 const ACTIVE_THREAD_ENVIRONMENT_ID = EnvironmentId.make("environment-local");
+const ACTIVE_THREAD_ID = ThreadId.make("thread-1");
 
 function buildProps() {
   return {
@@ -92,6 +93,7 @@ function buildProps() {
     isRevertingCheckpoint: false,
     onImageExpand: () => {},
     activeThreadEnvironmentId: ACTIVE_THREAD_ENVIRONMENT_ID,
+    activeThreadId: ACTIVE_THREAD_ID,
     markdownCwd: undefined,
     resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
@@ -213,5 +215,100 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33");
+  });
+
+  it("renders turn-scoped changed files by default", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const { useUiStateStore } = await import("../../uiStateStore");
+    useUiStateStore.setState({ changedFilesDiffScope: "turn" });
+    const assistantMessageId = MessageId.make("message-assistant");
+    const turnId = TurnId.make("turn-1");
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-04-22T19:00:45.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "All set.",
+              createdAt: "2026-04-22T19:00:45.000Z",
+              completedAt: "2026-04-22T19:03:33.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              assistantMessageId,
+              {
+                turnId,
+                completedAt: "2026-04-22T19:03:33.000Z",
+                files: [
+                  { path: "src/plan.md", additions: 5, deletions: 1 },
+                  { path: "src/unrelated.ts", additions: 10, deletions: 0 },
+                ],
+                turnFiles: [{ path: "src/plan.md", additions: 5, deletions: 1 }],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    expect(markup).toContain("Changed files (Turn) (1)");
+    expect(markup).toContain("plan.md");
+    expect(markup).not.toContain("unrelated.ts");
+  });
+
+  it("renders explicit empty-turn state without falling back to snapshot", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const { useUiStateStore } = await import("../../uiStateStore");
+    useUiStateStore.setState({ changedFilesDiffScope: "turn" });
+    const assistantMessageId = MessageId.make("message-assistant");
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-04-22T19:00:45.000Z",
+            message: {
+              id: assistantMessageId,
+              role: "assistant",
+              text: "All set.",
+              createdAt: "2026-04-22T19:00:45.000Z",
+              completedAt: "2026-04-22T19:03:33.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+        turnDiffSummaryByAssistantMessageId={
+          new Map([
+            [
+              assistantMessageId,
+              {
+                turnId: TurnId.make("turn-1"),
+                completedAt: "2026-04-22T19:03:33.000Z",
+                files: [{ path: "src/snapshot.ts", additions: 2, deletions: 0 }],
+                turnFiles: [],
+              },
+            ],
+          ])
+        }
+      />,
+    );
+
+    expect(markup).toContain("Changed files (Turn) (0)");
+    expect(markup).toContain("No turn-scoped file changes detected");
+    expect(markup).not.toContain("snapshot.ts");
+    expect(markup).toMatch(/disabled=""[^<]*>View diff/);
   });
 });

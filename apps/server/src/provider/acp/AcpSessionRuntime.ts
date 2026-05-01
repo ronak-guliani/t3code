@@ -33,7 +33,18 @@ export interface AcpSessionRuntimeOptions {
     readonly name: string;
     readonly version: string;
   };
-  readonly authMethodId: string;
+  /**
+   * Auth configuration. Preferred over the deprecated `authMethodId` field —
+   * supports asserting that the agent advertises the configured method during
+   * `initialize` before issuing `authenticate`.
+   */
+  readonly auth?: {
+    readonly methodId: string;
+    readonly required?: boolean;
+    readonly missingMessage?: string;
+  };
+  /** @deprecated Provide `auth.methodId` instead. */
+  readonly authMethodId?: string;
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -365,8 +376,34 @@ const makeAcpSessionRuntime = (
         acp.agent.initialize(initializePayload),
       );
 
+      const resolvedAuthMethodId = options.auth?.methodId ?? options.authMethodId;
+      if (!resolvedAuthMethodId) {
+        return yield* new EffectAcpErrors.AcpRequestError({
+          code: -32602,
+          errorMessage:
+            "ACP session runtime requires an auth method id (set `auth.methodId` in options).",
+        });
+      }
+
+      if (options.auth?.required) {
+        const advertised = initializeResult.authMethods ?? [];
+        const matched = advertised.some((method) => method.id === resolvedAuthMethodId);
+        if (!matched) {
+          return yield* new EffectAcpErrors.AcpRequestError({
+            code: -32000,
+            errorMessage:
+              options.auth.missingMessage ??
+              `ACP agent did not advertise required auth method "${resolvedAuthMethodId}".`,
+            data: {
+              expectedAuthMethodId: resolvedAuthMethodId,
+              advertisedAuthMethodIds: advertised.map((method) => method.id),
+            },
+          });
+        }
+      }
+
       const authenticatePayload = {
-        methodId: options.authMethodId,
+        methodId: resolvedAuthMethodId,
       } satisfies EffectAcpSchema.AuthenticateRequest;
 
       yield* runLoggedRequest(

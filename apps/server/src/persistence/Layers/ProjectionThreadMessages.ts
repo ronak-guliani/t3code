@@ -77,7 +77,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
         ON CONFLICT (message_id)
         DO UPDATE SET
           thread_id = excluded.thread_id,
-          turn_id = excluded.turn_id,
+          turn_id = COALESCE(excluded.turn_id, projection_thread_messages.turn_id),
           role = excluded.role,
           text = excluded.text,
           attachments_json = COALESCE(

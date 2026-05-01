@@ -18,6 +18,7 @@ import { GitCommandError } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@t3tools/contracts";
+import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
 
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 
@@ -243,10 +244,24 @@ const makeCheckpointStore = Effect.gen(function* () {
         });
       }
 
+      const paths = input.paths
+        ?.map((filePath) => normalizeChangedFilePath(filePath, { cwd: input.cwd }))
+        .filter((filePath): filePath is string => filePath !== null);
+      if (input.paths !== undefined && (paths?.length ?? 0) === 0) {
+        return "";
+      }
       const result = yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["diff", "--patch", "--minimal", "--no-color", fromCommitOid, toCommitOid],
+        args: [
+          "diff",
+          "--patch",
+          "--minimal",
+          "--no-color",
+          fromCommitOid,
+          toCommitOid,
+          ...(paths !== undefined && paths.length > 0 ? ["--", ...paths] : []),
+        ],
         maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
       });
 

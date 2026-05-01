@@ -121,16 +121,16 @@ describe("ProviderSessionStartInput", () => {
       runtimeMode: "full-access",
       interactionMode: "plan",
       modelSelection: {
-        provider: "copilot",
+        instanceId: "copilot",
         model: "gpt-5.4",
         options: [{ id: "reasoning", value: "high" }],
       },
     });
     expect(parsed.provider).toBe("copilot");
     expect(parsed.interactionMode).toBe("plan");
-    expect(parsed.modelSelection?.provider).toBe("copilot");
+    expect(parsed.modelSelection?.instanceId).toBe("copilot");
     expect(parsed.modelSelection?.model).toBe("gpt-5.4");
-    if (parsed.modelSelection?.provider !== "copilot") {
+    if (parsed.modelSelection?.instanceId !== "copilot") {
       throw new Error("Expected copilot modelSelection");
     }
     expect(getOptionValue(parsed.modelSelection.options, "reasoning")).toBe("high");
@@ -253,15 +253,15 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
     const parsed = decodeProviderSendTurnInput({
       threadId: "thread-1",
       modelSelection: {
-        provider: "copilot",
+        instanceId: "copilot",
         model: "gpt-5.4",
         options: [{ id: "reasoning", value: "xhigh" }],
       },
     });
 
-    expect(parsed.modelSelection?.provider).toBe("copilot");
+    expect(parsed.modelSelection?.instanceId).toBe("copilot");
     expect(parsed.modelSelection?.model).toBe("gpt-5.4");
-    if (parsed.modelSelection?.provider !== "copilot") {
+    if (parsed.modelSelection?.instanceId !== "copilot") {
       throw new Error("Expected copilot modelSelection");
     }
     expect(getOptionValue(parsed.modelSelection.options, "reasoning")).toBe("xhigh");

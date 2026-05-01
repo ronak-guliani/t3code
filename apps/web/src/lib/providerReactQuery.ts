@@ -5,6 +5,7 @@ import {
   type ProviderKind,
   type ServerProviderListCommandsResult,
   ThreadId,
+  type TurnDiffScope,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { Option, Schema } from "effect";
@@ -15,6 +16,8 @@ interface CheckpointDiffQueryInput {
   threadId: ThreadId | null;
   fromTurnCount: number | null;
   toTurnCount: number | null;
+  kind?: "turn" | "conversation";
+  scope?: TurnDiffScope | null;
   cacheScope?: string | null;
   enabled?: boolean;
 }
@@ -34,6 +37,8 @@ export const providerQueryKeys = {
       input.threadId,
       input.fromTurnCount,
       input.toTurnCount,
+      input.kind ?? "conversation",
+      input.scope ?? "snapshot",
       input.cacheScope ?? null,
     ] as const,
 };
@@ -43,7 +48,7 @@ const EMPTY_PROVIDER_COMMANDS_RESULT: ServerProviderListCommandsResult = {
 };
 
 function decodeCheckpointDiffRequest(input: CheckpointDiffQueryInput) {
-  if (input.fromTurnCount === 0) {
+  if ((input.kind ?? "conversation") === "conversation") {
     return Schema.decodeUnknownOption(OrchestrationGetFullThreadDiffInput)({
       threadId: input.threadId,
       toTurnCount: input.toTurnCount,
@@ -54,6 +59,7 @@ function decodeCheckpointDiffRequest(input: CheckpointDiffQueryInput) {
     threadId: input.threadId,
     fromTurnCount: input.fromTurnCount,
     toTurnCount: input.toTurnCount,
+    scope: input.scope ?? "snapshot",
   }).pipe(Option.map((fields) => ({ kind: "turnDiff" as const, input: fields })));
 }
 

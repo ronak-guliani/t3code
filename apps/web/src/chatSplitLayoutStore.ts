@@ -5,9 +5,12 @@ import { create } from "zustand";
 import type { DiffRouteSearch } from "./diffRouteSearch";
 import {
   type ChatSplitFocusDirection,
+  type ChatSplitDropPlacement,
   type ChatSplitLayout,
   type ChatSplitNode,
   type ChatSplitNodeId,
+  type ChatSplitOrientation,
+  buildChatSplitLayoutFromTargets,
   closeLeaf,
   countLeafNodes,
   createInitialChatSplitLayout,
@@ -23,6 +26,7 @@ import {
   setLeafDiff,
   setSplitRatio as setSplitRatioInLayout,
   splitLeaf,
+  splitLeafWithTarget,
   syncLayoutWithRouteTarget,
   toggleLeafMaximized,
 } from "./chatSplitLayout";
@@ -32,14 +36,144 @@ import type { DraftId } from "./composerDraftStore";
 export const CHAT_SPLIT_LAYOUT_STORAGE_KEY = "t3code:chat-split-layout:v1";
 export const DEFAULT_CHAT_SPLIT_LAYOUT_ID = "default";
 
+export function deriveChatSplitLayoutId(target: ThreadRouteTarget): string {
+  return target.kind === "server"
+    ? `environment:${target.threadRef.environmentId}`
+    : `draft:${target.draftId}`;
+}
+
+function isLayoutIdInTargetScope(layoutId: string, target: ThreadRouteTarget): boolean {
+  const baseLayoutId = deriveChatSplitLayoutId(target);
+  return target.kind === "server"
+    ? layoutId === baseLayoutId || layoutId.startsWith(`${baseLayoutId}:workspace:`)
+    : layoutId === baseLayoutId;
+}
+
+function createWorkspaceLayoutId(
+  target: ThreadRouteTarget,
+  existingLayouts: Record<string, ChatSplitLayout>,
+): string {
+  const baseLayoutId = deriveChatSplitLayoutId(target);
+  if (target.kind !== "server") {
+    return baseLayoutId;
+  }
+
+  let index = 1;
+  let nextLayoutId = `${baseLayoutId}:workspace:${index}`;
+  while (existingLayouts[nextLayoutId]) {
+    index += 1;
+    nextLayoutId = `${baseLayoutId}:workspace:${index}`;
+  }
+  return nextLayoutId;
+}
+
+function getScopedLayoutIds(
+  state: Pick<ChatSplitLayoutStoreState, "layoutsById">,
+  target: ThreadRouteTarget,
+): string[] {
+  return Object.keys(state.layoutsById).filter((layoutId) =>
+    isLayoutIdInTargetScope(layoutId, target),
+  );
+}
+
+function getLayoutActivationSequence(
+  state: Pick<ChatSplitLayoutStoreState, "layoutActivationSequenceById">,
+  layoutId: string,
+): number {
+  return state.layoutActivationSequenceById[layoutId] ?? 0;
+}
+
+function sortLayoutIdsByActivation(
+  state: Pick<ChatSplitLayoutStoreState, "layoutActivationSequenceById">,
+  layoutIds: readonly string[],
+): string[] {
+  return [...layoutIds].toSorted(
+    (left, right) =>
+      getLayoutActivationSequence(state, right) - getLayoutActivationSequence(state, left),
+  );
+}
+
+function activateLayout(
+  state: ChatSplitLayoutStoreState,
+  layoutId: string,
+): ChatSplitLayoutStoreState {
+  if (state.activeLayoutId === layoutId) {
+    return state;
+  }
+
+  const nextLayoutActivationSequence = state.nextLayoutActivationSequence + 1;
+  return {
+    ...state,
+    activeLayoutId: layoutId,
+    nextLayoutActivationSequence,
+    layoutActivationSequenceById: {
+      ...state.layoutActivationSequenceById,
+      [layoutId]: nextLayoutActivationSequence,
+    },
+  };
+}
+
+function pickPreferredLayoutIdForTarget(
+  state: Pick<
+    ChatSplitLayoutStoreState,
+    "activeLayoutId" | "layoutsById" | "layoutActivationSequenceById"
+  >,
+  target: ThreadRouteTarget,
+): string | null {
+  const scopedLayoutIds = getScopedLayoutIds(state, target);
+  if (scopedLayoutIds.length === 0) {
+    return null;
+  }
+
+  const activeLayoutId = isLayoutIdInTargetScope(state.activeLayoutId, target)
+    ? state.activeLayoutId
+    : null;
+  if (activeLayoutId) {
+    return activeLayoutId;
+  }
+
+  const baseLayoutId = deriveChatSplitLayoutId(target);
+  if (state.layoutsById[baseLayoutId]) {
+    return baseLayoutId;
+  }
+
+  return sortLayoutIdsByActivation(state, scopedLayoutIds)[0] ?? null;
+}
+
+function allTargetsShareSplitScope(targets: readonly ThreadRouteTarget[]): boolean {
+  const [firstTarget, ...remainingTargets] = targets;
+  if (!firstTarget) {
+    return false;
+  }
+  if (firstTarget.kind !== "server") {
+    return targets.length === 1;
+  }
+  return remainingTargets.every(
+    (target) =>
+      target.kind === "server" &&
+      target.threadRef.environmentId === firstTarget.threadRef.environmentId,
+  );
+}
+
+function layoutContainsAnyTarget(
+  layout: ChatSplitLayout,
+  targets: readonly ThreadRouteTarget[],
+): boolean {
+  return targets.some((target) => findLeafNodeByTarget(layout, target) !== null);
+}
+
 interface PersistedChatSplitLayoutDocument {
   activeLayoutId?: string;
   layoutsById?: Record<string, unknown>;
+  layoutActivationSequenceById?: Record<string, unknown>;
+  nextLayoutActivationSequence?: unknown;
 }
 
 interface ChatSplitLayoutStoreState {
   activeLayoutId: string;
   layoutsById: Record<string, ChatSplitLayout>;
+  layoutActivationSequenceById: Record<string, number>;
+  nextLayoutActivationSequence: number;
   syncRouteTarget: (target: ThreadRouteTarget, diff?: DiffRouteSearch) => void;
   focusLeaf: (leafId: ChatSplitNodeId) => ThreadRouteTarget | null;
   focusNeighbor: (direction: ChatSplitFocusDirection) => ThreadRouteTarget | null;
@@ -50,6 +184,16 @@ interface ChatSplitLayoutStoreState {
   ) => void;
   setFocusedLeafDiff: (diff: DiffRouteSearch) => void;
   splitFocusedLeaf: (orientation: "row" | "column") => void;
+  unsplitFocusedLeaf: () => ThreadRouteTarget | null;
+  openWorkspaceFromTargets: (
+    targets: readonly ThreadRouteTarget[],
+    orientation: ChatSplitOrientation,
+  ) => ThreadRouteTarget | null;
+  dropTargetIntoLeaf: (
+    leafId: ChatSplitNodeId,
+    target: ThreadRouteTarget,
+    placement: ChatSplitDropPlacement,
+  ) => ThreadRouteTarget | null;
   closeFocusedLeaf: () => ThreadRouteTarget | null;
   toggleFocusedLeafMaximized: () => void;
   setSplitRatio: (splitId: ChatSplitNodeId, ratio: number) => void;
@@ -106,8 +250,8 @@ function sanitizePersistedNode(nodeId: string, value: unknown): ChatSplitNode | 
   }
 
   if (value.kind === "leaf") {
-    const target = sanitizePersistedTarget(value.target);
-    if (!target) {
+    const target = value.target === null ? null : sanitizePersistedTarget(value.target);
+    if (value.target !== null && !target) {
       return null;
     }
     return {
@@ -228,12 +372,14 @@ function sanitizePersistedLayout(value: unknown): ChatSplitLayout | null {
 
 export function readPersistedChatSplitLayoutState(): Pick<
   ChatSplitLayoutStoreState,
-  "activeLayoutId" | "layoutsById"
+  "activeLayoutId" | "layoutsById" | "layoutActivationSequenceById" | "nextLayoutActivationSequence"
 > {
   if (typeof window === "undefined") {
     return {
       activeLayoutId: DEFAULT_CHAT_SPLIT_LAYOUT_ID,
       layoutsById: {},
+      layoutActivationSequenceById: {},
+      nextLayoutActivationSequence: 0,
     };
   }
 
@@ -243,6 +389,8 @@ export function readPersistedChatSplitLayoutState(): Pick<
       return {
         activeLayoutId: DEFAULT_CHAT_SPLIT_LAYOUT_ID,
         layoutsById: {},
+        layoutActivationSequenceById: {},
+        nextLayoutActivationSequence: 0,
       };
     }
 
@@ -258,20 +406,62 @@ export function readPersistedChatSplitLayoutState(): Pick<
         ? parsed.activeLayoutId
         : (Object.keys(layoutsById)[0] ?? DEFAULT_CHAT_SPLIT_LAYOUT_ID);
 
+    const rawActivationMap = isRecord(parsed.layoutActivationSequenceById)
+      ? parsed.layoutActivationSequenceById
+      : {};
+    const layoutActivationSequenceById = Object.fromEntries(
+      Object.keys(layoutsById).map((layoutId, index) => {
+        const rawSequence = rawActivationMap[layoutId];
+        return [
+          layoutId,
+          typeof rawSequence === "number" && Number.isFinite(rawSequence) && rawSequence > 0
+            ? rawSequence
+            : index + 1,
+        ] as const;
+      }),
+    );
+    const persistedNextActivationSequence =
+      typeof parsed.nextLayoutActivationSequence === "number" &&
+      Number.isFinite(parsed.nextLayoutActivationSequence) &&
+      parsed.nextLayoutActivationSequence > 0
+        ? parsed.nextLayoutActivationSequence
+        : 0;
+    const baseActivationSequence = Math.max(
+      persistedNextActivationSequence,
+      ...Object.values(layoutActivationSequenceById),
+    );
+    const nextLayoutActivationSequence =
+      activeLayoutId in layoutActivationSequenceById
+        ? baseActivationSequence + 1
+        : baseActivationSequence;
+    if (activeLayoutId in layoutActivationSequenceById) {
+      layoutActivationSequenceById[activeLayoutId] = nextLayoutActivationSequence;
+    }
+
     return {
       activeLayoutId,
       layoutsById,
+      layoutActivationSequenceById,
+      nextLayoutActivationSequence,
     };
   } catch {
     return {
       activeLayoutId: DEFAULT_CHAT_SPLIT_LAYOUT_ID,
       layoutsById: {},
+      layoutActivationSequenceById: {},
+      nextLayoutActivationSequence: 0,
     };
   }
 }
 
 export function persistChatSplitLayoutState(
-  state: Pick<ChatSplitLayoutStoreState, "activeLayoutId" | "layoutsById">,
+  state: Pick<
+    ChatSplitLayoutStoreState,
+    | "activeLayoutId"
+    | "layoutsById"
+    | "layoutActivationSequenceById"
+    | "nextLayoutActivationSequence"
+  >,
 ): void {
   if (typeof window === "undefined") {
     return;
@@ -283,6 +473,8 @@ export function persistChatSplitLayoutState(
       JSON.stringify({
         activeLayoutId: state.activeLayoutId,
         layoutsById: state.layoutsById,
+        layoutActivationSequenceById: state.layoutActivationSequenceById,
+        nextLayoutActivationSequence: state.nextLayoutActivationSequence,
       } satisfies PersistedChatSplitLayoutDocument),
     );
   } catch {
@@ -315,6 +507,17 @@ function updateActiveLayout(
   };
 }
 
+function createSingleLeafLayout(
+  target: ThreadRouteTarget,
+  diff?: DiffRouteSearch,
+): ChatSplitLayout {
+  return createInitialChatSplitLayout({
+    leafId: createNodeId(),
+    target,
+    ...(diff !== undefined ? { diff } : {}),
+  });
+}
+
 export function selectActiveChatSplitLayout(
   state: Pick<ChatSplitLayoutStoreState, "activeLayoutId" | "layoutsById">,
 ): ChatSplitLayout | null {
@@ -339,33 +542,42 @@ export const useChatSplitLayoutStore = create<ChatSplitLayoutStoreState>((set, g
   ...readPersistedChatSplitLayoutState(),
   syncRouteTarget: (target, diff) => {
     set((state) => {
-      const activeLayout = selectActiveChatSplitLayout(state);
+      const nextLayoutId =
+        pickPreferredLayoutIdForTarget(state, target) ?? deriveChatSplitLayoutId(target);
+      const activeLayout = state.layoutsById[nextLayoutId] ?? null;
       if (!activeLayout) {
-        const initialLeafId = createNodeId();
-        return {
+        const nextState = {
           ...state,
           layoutsById: {
             ...state.layoutsById,
-            [state.activeLayoutId]: createInitialChatSplitLayout({
-              leafId: initialLeafId,
-              target,
-              ...(diff !== undefined ? { diff } : {}),
-            }),
+            [nextLayoutId]: createSingleLeafLayout(target, diff),
           },
         };
+        return activateLayout(nextState, nextLayoutId);
       }
 
-      return updateActiveLayout(state, (layout) => syncLayoutWithRouteTarget(layout, target, diff));
+      const nextLayout = syncLayoutWithRouteTarget(activeLayout, target, diff);
+      if (nextLayout === activeLayout) {
+        return activateLayout(state, nextLayoutId);
+      }
+      const nextState = {
+        ...state,
+        layoutsById: {
+          ...state.layoutsById,
+          [nextLayoutId]: nextLayout,
+        },
+      };
+      return activateLayout(nextState, nextLayoutId);
     });
   },
   focusLeaf: (leafId) => {
     const activeLayout = selectActiveChatSplitLayout(get());
-    const nextTarget = activeLayout ? (getLeafNode(activeLayout, leafId)?.target ?? null) : null;
-    if (!nextTarget) {
+    const leaf = activeLayout ? getLeafNode(activeLayout, leafId) : null;
+    if (!leaf) {
       return null;
     }
     set((state) => updateActiveLayout(state, (layout) => focusLeafInLayout(layout, leafId)));
-    return nextTarget;
+    return leaf.target;
   },
   focusNeighbor: (direction) => {
     const activeLayout = selectActiveChatSplitLayout(get());
@@ -400,6 +612,92 @@ export const useChatSplitLayoutStore = create<ChatSplitLayoutStoreState>((set, g
       ),
     );
   },
+  unsplitFocusedLeaf: () => {
+    const activeLayout = selectActiveChatSplitLayout(get());
+    const focusedLeaf = activeLayout ? getFocusedLeaf(activeLayout) : null;
+    if (!focusedLeaf?.target) {
+      return null;
+    }
+    const target = focusedLeaf.target;
+    const diff = focusedLeaf.diff;
+
+    set((state) => updateActiveLayout(state, () => createSingleLeafLayout(target, diff)));
+    return target;
+  },
+  openWorkspaceFromTargets: (targets, orientation) => {
+    const [firstTarget] = targets;
+    if (!firstTarget || !allTargetsShareSplitScope(targets)) {
+      return null;
+    }
+
+    const nextLayout = buildChatSplitLayoutFromTargets({
+      targets,
+      orientation,
+      createId: createNodeId,
+    });
+    if (!nextLayout) {
+      return null;
+    }
+
+    const focusedTarget = getFocusedLeafTarget(nextLayout);
+    if (!focusedTarget) {
+      return null;
+    }
+
+    set((state) => {
+      const activeLayout = selectActiveChatSplitLayout(state);
+      const shouldReplaceActiveLayout =
+        activeLayout !== null &&
+        isLayoutIdInTargetScope(state.activeLayoutId, firstTarget) &&
+        layoutContainsAnyTarget(activeLayout, targets);
+      const nextLayoutId = shouldReplaceActiveLayout
+        ? state.activeLayoutId
+        : createWorkspaceLayoutId(firstTarget, state.layoutsById);
+      const nextState = {
+        ...state,
+        layoutsById: {
+          ...state.layoutsById,
+          [nextLayoutId]: nextLayout,
+        },
+      };
+      return activateLayout(nextState, nextLayoutId);
+    });
+
+    return focusedTarget;
+  },
+  dropTargetIntoLeaf: (leafId, target, placement) => {
+    const activeLayout = selectActiveChatSplitLayout(get());
+    if (!activeLayout || !isLayoutIdInTargetScope(get().activeLayoutId, target)) {
+      return null;
+    }
+
+    const existingLeaf = findLeafNodeByTarget(activeLayout, target);
+    if (existingLeaf) {
+      set((state) =>
+        updateActiveLayout(state, (layout) => focusLeafInLayout(layout, existingLeaf.id)),
+      );
+      return target;
+    }
+
+    const targetLeaf = getLeafNode(activeLayout, leafId);
+    if (!targetLeaf) {
+      return null;
+    }
+
+    if (!targetLeaf.target) {
+      set((state) =>
+        updateActiveLayout(state, (layout) => replaceLeafTargetInLayout(layout, leafId, target)),
+      );
+      return target;
+    }
+
+    set((state) =>
+      updateActiveLayout(state, (layout) =>
+        splitLeafWithTarget(layout, leafId, target, placement, createNodeId),
+      ),
+    );
+    return target;
+  },
   closeFocusedLeaf: () => {
     const activeLayout = selectActiveChatSplitLayout(get());
     if (!activeLayout || countLeafNodes(activeLayout) <= 1) {
@@ -408,9 +706,6 @@ export const useChatSplitLayoutStore = create<ChatSplitLayoutStoreState>((set, g
 
     const nextLayout = closeLeaf(activeLayout, activeLayout.focusedLeafId);
     const nextTarget = getFocusedLeafTarget(nextLayout);
-    if (!nextTarget) {
-      return null;
-    }
     set((state) => updateActiveLayout(state, () => nextLayout));
     return nextTarget;
   },
@@ -429,13 +724,17 @@ export const useChatSplitLayoutStore = create<ChatSplitLayoutStoreState>((set, g
 useChatSplitLayoutStore.subscribe((state, previous) => {
   if (
     state.activeLayoutId === previous.activeLayoutId &&
-    state.layoutsById === previous.layoutsById
+    state.layoutsById === previous.layoutsById &&
+    state.layoutActivationSequenceById === previous.layoutActivationSequenceById &&
+    state.nextLayoutActivationSequence === previous.nextLayoutActivationSequence
   ) {
     return;
   }
   debouncedPersistState.maybeExecute({
     activeLayoutId: state.activeLayoutId,
     layoutsById: state.layoutsById,
+    layoutActivationSequenceById: state.layoutActivationSequenceById,
+    nextLayoutActivationSequence: state.nextLayoutActivationSequence,
   });
 });
 

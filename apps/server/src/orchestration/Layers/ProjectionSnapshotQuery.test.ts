@@ -212,7 +212,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
-          checkpoint_files_json
+          checkpoint_files_json,
+          checkpoint_agent_touched_paths_json,
+          checkpoint_turn_files_json
         )
         VALUES (
           'thread-1',
@@ -228,6 +230,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           1,
           'checkpoint-1',
           'ready',
+          '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]',
+          '["README.md"]',
           '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]'
         )
       `;
@@ -347,6 +351,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               checkpointRef: asCheckpointRef("checkpoint-1"),
               status: "ready",
               files: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
+              agentTouchedPaths: ["README.md"],
+              turnFiles: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
               assistantMessageId: asMessageId("message-1"),
               completedAt: "2026-02-24T00:00:08.000Z",
             },
@@ -846,6 +852,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               checkpointRef: asCheckpointRef("checkpoint-a"),
               status: "ready",
               files: [],
+              agentTouchedPaths: [],
+              turnFiles: [],
               assistantMessageId: null,
               completedAt: "2026-03-02T00:00:04.000Z",
             },
@@ -855,6 +863,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               checkpointRef: asCheckpointRef("checkpoint-b"),
               status: "ready",
               files: [],
+              agentTouchedPaths: [],
+              turnFiles: [],
               assistantMessageId: null,
               completedAt: "2026-03-02T00:00:05.000Z",
             },
@@ -1087,7 +1097,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'default',
           NULL,
           NULL,
-          'turn-running',
+          'turn-completed',
           '2026-04-02T00:00:04.000Z',
           0,
           0,
@@ -1154,17 +1164,51 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const threadShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
       assert.equal(threadShell._tag, "Some");
       if (threadShell._tag === "Some") {
-        assert.equal(threadShell.value.latestTurn?.turnId, asTurnId("turn-running"));
-        assert.equal(threadShell.value.latestTurn?.state, "running");
-        assert.equal(threadShell.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+        assert.equal(threadShell.value.latestTurn?.turnId, asTurnId("turn-completed"));
+        assert.equal(threadShell.value.latestTurn?.state, "completed");
+        assert.equal(threadShell.value.latestTurn?.startedAt, "2026-04-02T00:00:06.000Z");
       }
 
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
-        assert.equal(threadDetail.value.latestTurn?.turnId, asTurnId("turn-running"));
-        assert.equal(threadDetail.value.latestTurn?.state, "running");
-        assert.equal(threadDetail.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+        assert.equal(threadDetail.value.latestTurn?.turnId, asTurnId("turn-completed"));
+        assert.equal(threadDetail.value.latestTurn?.state, "completed");
+        assert.equal(threadDetail.value.latestTurn?.startedAt, "2026-04-02T00:00:06.000Z");
+      }
+
+      yield* sql`
+        UPDATE projection_threads
+        SET latest_turn_id = NULL
+        WHERE thread_id = 'thread-1'
+      `;
+
+      const fallbackThreadShell = yield* snapshotQuery.getThreadShellById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(fallbackThreadShell._tag, "Some");
+      if (fallbackThreadShell._tag === "Some") {
+        assert.equal(fallbackThreadShell.value.latestTurn?.turnId, asTurnId("turn-running"));
+        assert.equal(fallbackThreadShell.value.latestTurn?.state, "running");
+        assert.equal(fallbackThreadShell.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+      }
+
+      const fallbackThreadDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(fallbackThreadDetail._tag, "Some");
+      if (fallbackThreadDetail._tag === "Some") {
+        assert.equal(fallbackThreadDetail.value.latestTurn?.turnId, asTurnId("turn-running"));
+        assert.equal(fallbackThreadDetail.value.latestTurn?.state, "running");
+        assert.equal(fallbackThreadDetail.value.latestTurn?.startedAt, "2026-04-02T00:00:30.000Z");
+      }
+
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      const shellThread = shellSnapshot.threads.find((thread) => thread.id === "thread-1");
+      assert.equal(shellThread?.latestTurn?.turnId, asTurnId("turn-running"));
+      assert.equal(shellThread?.latestTurn?.state, "running");
+      if (shellThread?.latestTurn) {
+        assert.equal(shellThread.latestTurn.startedAt, "2026-04-02T00:00:30.000Z");
       }
     }),
   );

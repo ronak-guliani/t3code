@@ -22,6 +22,7 @@ import {
   selectThreadExistsByRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  syncServerThreadDetail,
   type AppState,
   type EnvironmentState,
 } from "./store";
@@ -411,6 +412,56 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("preserves provider session resume cursors from thread detail snapshots", () => {
+    const threadId = ThreadId.make("thread-1");
+    const resumeCursor = {
+      schemaVersion: 1,
+      sessionId: "a7f0c803-7cce-4554-9ad6-dfd9df539e33",
+    };
+    const state = makeEmptyState();
+
+    const next = syncServerThreadDetail(
+      state,
+      {
+        id: threadId,
+        projectId: ProjectId.make("project-1"),
+        title: "Copilot thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("copilot"),
+          model: "gpt-5.4-mini",
+        },
+        runtimeMode: "full-access",
+        pendingRuntimeMode: null,
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-05-01T20:40:00.000Z",
+        updatedAt: "2026-05-01T20:40:15.000Z",
+        archivedAt: null,
+        deletedAt: null,
+        messages: [],
+        proposedPlans: [],
+        activities: [],
+        checkpoints: [],
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "copilot",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          resumeCursor,
+          lastError: null,
+          updatedAt: "2026-05-01T20:40:15.000Z",
+        },
+      },
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
+  });
+
   it("does not mark bootstrap complete for incremental events", () => {
     const state = withActiveEnvironmentState(localEnvironmentStateOf(makeState(makeThread())), {
       bootstrapComplete: false,
@@ -772,14 +823,22 @@ describe("incremental orchestration updates", () => {
         checkpointTurnCount: 1,
         checkpointRef: CheckpointRef.make("checkpoint-1"),
         status: "ready",
-        files: [],
+        files: [{ path: "snapshot.ts", kind: "modified", additions: 2, deletions: 1 }],
+        agentTouchedPaths: ["turn.ts"],
+        turnFiles: [{ path: "turn.ts", kind: "modified", additions: 1, deletions: 0 }],
         assistantMessageId: MessageId.make("assistant-1"),
         completedAt: "2026-02-27T00:00:04.000Z",
       }),
       localEnvironmentId,
     );
 
-    expect(threadsOf(next)[0]?.turnDiffSummaries).toHaveLength(1);
+    expect(threadsOf(next)[0]?.turnDiffSummaries).toMatchObject([
+      {
+        files: [{ path: "snapshot.ts", kind: "modified", additions: 2, deletions: 1 }],
+        agentTouchedPaths: ["turn.ts"],
+        turnFiles: [{ path: "turn.ts", kind: "modified", additions: 1, deletions: 0 }],
+      },
+    ]);
     expect(threadsOf(next)[0]?.latestTurn).toEqual(threadsOf(state)[0]?.latestTurn);
   });
 

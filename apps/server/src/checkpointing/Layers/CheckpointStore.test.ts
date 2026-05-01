@@ -118,5 +118,37 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         expect(diff).toContain("+line 04999");
       }),
     );
+
+    it.effect("limits checkpoint diffs to validated repo-relative paths", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-paths");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: fromCheckpointRef,
+        });
+        yield* writeTextFile(path.join(tmp, "README.md"), "# changed\n");
+        yield* writeTextFile(path.join(tmp, "other.md"), "# other\n");
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: toCheckpointRef,
+        });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          paths: ["README.md", ":!other.md", "../outside.md"],
+        });
+
+        expect(diff).toContain("diff --git a/README.md b/README.md");
+        expect(diff).not.toContain("other.md");
+      }),
+    );
   });
 });

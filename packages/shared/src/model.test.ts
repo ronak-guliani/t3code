@@ -74,8 +74,15 @@ describe("normalizeModelSlug", () => {
   it("maps known aliases to canonical slugs", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
     expect(normalizeModelSlug("gpt-5-codex")).toBe("gpt-5.4");
+    expect(normalizeModelSlug("GPT-5-Codex")).toBe("gpt-5.4");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-4-6");
+  });
+
+  it("preserves OpenCode model casing", () => {
+    expect(normalizeModelSlug("OpenAI/GPT-5", ProviderDriverKind.make("opencode"))).toBe(
+      "OpenAI/GPT-5",
+    );
   });
 
   it("returns null for empty or missing values", () => {
@@ -93,9 +100,6 @@ describe("resolveModelSlugForProvider", () => {
     );
     expect(resolveModelSlugForProvider(ProviderDriverKind.make("ollama"), undefined)).toBe(
       DEFAULT_MODEL,
-    );
-    expect(resolveModelSlugForProvider("copilot", undefined)).toBe(
-      DEFAULT_MODEL_BY_PROVIDER.copilot,
     );
   });
 

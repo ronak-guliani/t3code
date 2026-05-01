@@ -62,6 +62,7 @@ const clientSettings: ClientSettings = {
   sidebarProjectSortOrder: "manual",
   sidebarThreadSortOrder: "created_at",
   timestampFormat: "24-hour",
+  uiFont: "geist",
 };
 
 const savedRegistryRecord: PersistedSavedEnvironmentRecord = {

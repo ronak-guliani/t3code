@@ -569,6 +569,8 @@ describe("OrchestrationEngine", () => {
         checkpointRef: asCheckpointRef("refs/t3/checkpoints/thread-turn-diff/turn/1"),
         status: "ready",
         files: [],
+        agentTouchedPaths: [],
+        turnFiles: [],
         checkpointTurnCount: 1,
         createdAt,
       }),

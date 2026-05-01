@@ -13,6 +13,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
   type ThreadId,
+  type TurnDiffScope,
   type TurnId,
   type KeybindingCommand,
   OrchestrationThreadActivity,
@@ -35,7 +36,17 @@ import {
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
 import { Debouncer } from "@tanstack/react-pacer";
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { flushSync } from "react-dom";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
@@ -44,10 +55,10 @@ import { readEnvironmentApi } from "../environmentApi";
 import { isElectron } from "../env";
 import { readLocalApi } from "../localApi";
 import {
-  buildClosedDiffRouteSearch,
   type DiffRouteSearch,
+  mergeDiffRouteSearch,
+  normalizeDiffRouteSearch,
   parseDiffRouteSearch,
-  stripDiffSearchParams,
 } from "../diffRouteSearch";
 import {
   collapseExpandedComposerCursor,
@@ -66,10 +77,11 @@ import {
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   hasToolActivityForTurn,
+  isThreadActivelyWorking,
   isLatestTurnSettled,
   formatElapsed,
 } from "../session-logic";
-import { type LegendListRef } from "@legendapp/list/react";
+import { type LegendListRef, type LegendListState } from "@legendapp/list/react";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
@@ -109,7 +121,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, SearchIcon, XIcon } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -185,6 +197,10 @@ import {
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { RightPanelSheet } from "./RightPanelSheet";
+import { Input } from "./ui/input";
+import { Button } from "./ui/button";
+import { deriveMessagesTimelineRows } from "./chat/MessagesTimeline.logic";
+import { buildChatFindRows, findChatFindMatches, type ChatFindMatch } from "./chat/chatFind";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -192,13 +208,117 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_CHAT_FIND_MATCHED_ROW_IDS = new Set<string>();
+const TIMELINE_ROW_ESTIMATED_SIZE_PX = 90;
 
 type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
 
-function getCopilotResumeCommand(session: Thread["session"]): string | null {
-  if (!session || session.provider !== "copilot") {
+function escapeAttributeSelectorValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+}
+
+function FindInChatBar(props: {
+  inputId: string;
+  query: string;
+  onQueryChange: (nextValue: string) => void;
+  matchCount: number;
+  activeMatchIndex: number;
+  shortcutLabel: string | null;
+  onPrevious: () => void;
+  onNext: () => void;
+  onClose: () => void;
+}) {
+  const {
+    inputId,
+    query,
+    onQueryChange,
+    matchCount,
+    activeMatchIndex,
+    shortcutLabel,
+    onPrevious,
+    onNext,
+    onClose,
+  } = props;
+  const matchLabel =
+    query.trim().length === 0
+      ? "Type to search"
+      : matchCount === 0
+        ? "No matches"
+        : `${activeMatchIndex + 1} of ${matchCount}`;
+
+  return (
+    <div className="border-b border-border px-3 py-2 sm:px-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[16rem] flex-1">
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/60" />
+          <Input
+            id={inputId}
+            nativeInput
+            type="search"
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            placeholder={shortcutLabel ? `Find in chat (${shortcutLabel})` : "Find in chat"}
+            className="pl-8"
+            aria-label="Find in chat"
+            spellCheck={false}
+          />
+        </div>
+        <p className="min-w-20 text-right text-xs text-muted-foreground/70">{matchLabel}</p>
+        <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="outline"
+            onClick={onPrevious}
+            disabled={matchCount === 0}
+            aria-label="Previous match"
+          >
+            <ChevronUpIcon className="size-3.5" />
+          </Button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="outline"
+            onClick={onNext}
+            disabled={matchCount === 0}
+            aria-label="Next match"
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </Button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="outline"
+            onClick={onClose}
+            aria-label="Close find in chat"
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function getCopilotResumeCommand(
+  thread: Pick<Thread, "modelSelection" | "session"> | null,
+): string | null {
+  if (!thread) {
     return null;
   }
+  const session = thread.session;
+  if (!session) {
+    return null;
+  }
+  const isCopilotSession =
+    session.provider === "copilot" ||
+    session.providerInstanceId === "copilot" ||
+    thread.modelSelection.instanceId === "copilot";
+  if (!isCopilotSession) return null;
+
   const resumeCursor = session.resumeCursor;
   if (
     typeof resumeCursor !== "object" ||
@@ -338,11 +458,42 @@ function formatOutgoingPrompt(params: {
 }
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+const SCROLL_TO_BOTTOM_THRESHOLD_PX = 8;
+
+type ScrollAtEndMetrics = Pick<
+  LegendListState,
+  "contentLength" | "isAtEnd" | "scroll" | "scrollLength"
+>;
+
+export function isScrollMetricsAtEnd(
+  metrics: ScrollAtEndMetrics,
+  thresholdPx = SCROLL_TO_BOTTOM_THRESHOLD_PX,
+) {
+  if (metrics.isAtEnd) {
+    return true;
+  }
+
+  const remainingDistance = metrics.contentLength - metrics.scroll - metrics.scrollLength;
+  return Number.isFinite(remainingDistance) && remainingDistance <= thresholdPx;
+}
+
+function isElementScrolledToEnd(
+  element: HTMLElement | null | undefined,
+  thresholdPx = SCROLL_TO_BOTTOM_THRESHOLD_PX,
+) {
+  if (!element) {
+    return null;
+  }
+
+  const remainingDistance = element.scrollHeight - element.scrollTop - element.clientHeight;
+  return Number.isFinite(remainingDistance) && remainingDistance <= thresholdPx;
+}
 
 type ChatViewProps =
   | {
       environmentId: EnvironmentId;
       threadId: ThreadId;
+      isPaneFocused?: boolean;
       onDiffPanelOpen?: () => void;
       onDiffSearchChange?: (nextSearch: DiffRouteSearch) => void;
       reserveTitleBarControlInset?: boolean;
@@ -354,6 +505,7 @@ type ChatViewProps =
   | {
       environmentId: EnvironmentId;
       threadId: ThreadId;
+      isPaneFocused?: boolean;
       onDiffPanelOpen?: () => void;
       onDiffSearchChange?: (nextSearch: DiffRouteSearch) => void;
       reserveTitleBarControlInset?: boolean;
@@ -614,7 +766,20 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   );
 });
 
-export default function ChatView(props: ChatViewProps) {
+function RouteBoundChatView(props: ChatViewProps) {
+  const routeDiffSearch = useSearch({
+    strict: false,
+    select: (params) => parseDiffRouteSearch(params),
+  });
+
+  return <ChatViewBody {...props} resolvedDiffSearch={routeDiffSearch} />;
+}
+
+function ChatViewBody(
+  props: ChatViewProps & {
+    resolvedDiffSearch: DiffRouteSearch;
+  },
+) {
   const {
     environmentId,
     threadId,
@@ -624,6 +789,8 @@ export default function ChatView(props: ChatViewProps) {
     reserveTitleBarControlInset = true,
     diffSearch: controlledDiffSearch,
     paneActions,
+    resolvedDiffSearch,
+    isPaneFocused = true,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const routeThreadRef = useMemo(
@@ -651,11 +818,7 @@ export default function ChatView(props: ChatViewProps) {
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
   const navigate = useNavigate();
-  const routeDiffSearch = useSearch({
-    strict: false,
-    select: (params) => parseDiffRouteSearch(params),
-  });
-  const diffSearch = controlledDiffSearch ?? routeDiffSearch;
+  const diffSearch = controlledDiffSearch ?? resolvedDiffSearch;
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -712,6 +875,14 @@ export default function ChatView(props: ChatViewProps) {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
+  const [chatFindOpen, setChatFindOpen] = useState(false);
+  const [chatFindQuery, setChatFindQuery] = useState("");
+  const [activeChatFindMatchId, setActiveChatFindMatchId] = useState<string | null>(null);
+  const deferredChatFindQuery = useDeferredValue(chatFindQuery);
+  const chatFindInputId = useMemo(
+    () => `chat-find-${routeThreadKey.replace(/[^a-zA-Z0-9_-]/g, "-")}`,
+    [routeThreadKey],
+  );
   const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
     Record<string, Record<string, PendingUserInputDraftAnswer>>
   >({});
@@ -742,6 +913,7 @@ export default function ChatView(props: ChatViewProps) {
     LastInvokedScriptByProjectSchema,
   );
   const legendListRef = useRef<LegendListRef | null>(null);
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
   const isAtEndRef = useRef(true);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
@@ -866,6 +1038,10 @@ export default function ChatView(props: ChatViewProps) {
         : nextThreadIds;
     });
   }, [activeThreadKey, existingOpenTerminalThreadKeys, terminalState.terminalOpen]);
+  const sessionActivelyWorking = isThreadActivelyWorking(
+    activeLatestTurn,
+    activeThread?.session ?? null,
+  );
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProjectRef = activeThread
     ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
@@ -1093,7 +1269,12 @@ export default function ChatView(props: ChatViewProps) {
     selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
-  const phase = derivePhase(activeThread?.session ?? null);
+  const rawPhase = derivePhase(activeThread?.session ?? null);
+  const phase: SessionPhase = sessionActivelyWorking
+    ? "running"
+    : rawPhase === "running"
+      ? "ready"
+      : rawPhase;
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
@@ -1397,12 +1578,33 @@ export default function ChatView(props: ChatViewProps) {
     useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
     const byMessageId = new Map<MessageId, TurnDiffSummary>();
+    const byTurnId = new Map<string, TurnDiffSummary>();
+    const assignedSummaries = new WeakSet<TurnDiffSummary>();
     for (const summary of turnDiffSummaries) {
-      if (!summary.assistantMessageId) continue;
-      byMessageId.set(summary.assistantMessageId, summary);
+      if (summary.assistantMessageId && !byMessageId.has(summary.assistantMessageId)) {
+        byMessageId.set(summary.assistantMessageId, summary);
+        assignedSummaries.add(summary);
+      }
+      byTurnId.set(summary.turnId, summary);
+    }
+    // Defensive fallback: if the persisted assistantMessageId does not match any
+    // rendered message (e.g. server fell back to a synthetic id, or an upstream
+    // adapter assigned a different id than what was stored), attach the summary
+    // to the LAST assistant message in the matching turn.
+    const lastAssistantByTurnId = new Map<string, MessageId>();
+    for (const message of timelineMessages) {
+      if (message.role !== "assistant" || !message.turnId) continue;
+      lastAssistantByTurnId.set(message.turnId, message.id);
+    }
+    for (const [turnId, messageId] of lastAssistantByTurnId) {
+      if (byMessageId.has(messageId)) continue;
+      const summary = byTurnId.get(turnId);
+      if (!summary || assignedSummaries.has(summary)) continue;
+      byMessageId.set(messageId, summary);
+      assignedSummaries.add(summary);
     }
     return byMessageId;
-  }, [turnDiffSummaries]);
+  }, [turnDiffSummaries, timelineMessages]);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
     for (let index = 0; index < timelineEntries.length; index += 1) {
@@ -1438,6 +1640,8 @@ export default function ChatView(props: ChatViewProps) {
 
   const completionSummary = useMemo(() => {
     if (!latestTurnSettled) return null;
+    if (sessionActivelyWorking) return null;
+    if (isSendBusy) return null;
     if (!activeLatestTurn?.startedAt) return null;
     if (!activeLatestTurn.completedAt) return null;
     if (!latestTurnHasToolActivity) return null;
@@ -1447,18 +1651,54 @@ export default function ChatView(props: ChatViewProps) {
   }, [
     activeLatestTurn?.completedAt,
     activeLatestTurn?.startedAt,
+    isSendBusy,
     latestTurnHasToolActivity,
     latestTurnSettled,
+    sessionActivelyWorking,
   ]);
   const completionDividerBeforeEntryId = useMemo(() => {
     if (!latestTurnSettled) return null;
     if (!completionSummary) return null;
     return deriveCompletionDividerBeforeEntryId(timelineEntries, activeLatestTurn);
   }, [activeLatestTurn, completionSummary, latestTurnSettled, timelineEntries]);
-  const copilotResumeCommand = useMemo(
-    () => getCopilotResumeCommand(activeThread?.session ?? null),
-    [activeThread?.session],
+  const timelineRows = useMemo(
+    () =>
+      deriveMessagesTimelineRows({
+        timelineEntries,
+        completionDividerBeforeEntryId,
+        isWorking,
+        activeTurnStartedAt: activeWorkStartedAt,
+        turnDiffSummaryByAssistantMessageId,
+        revertTurnCountByUserMessageId,
+      }),
+    [
+      activeWorkStartedAt,
+      completionDividerBeforeEntryId,
+      isWorking,
+      revertTurnCountByUserMessageId,
+      timelineEntries,
+      turnDiffSummaryByAssistantMessageId,
+    ],
   );
+  const chatFindRows = useMemo(() => buildChatFindRows(timelineRows), [timelineRows]);
+  const chatFindMatches = useMemo(
+    () => findChatFindMatches(chatFindRows, deferredChatFindQuery),
+    [chatFindRows, deferredChatFindQuery],
+  );
+  const matchedChatFindRowIds = useMemo(
+    () =>
+      chatFindMatches.length === 0
+        ? EMPTY_CHAT_FIND_MATCHED_ROW_IDS
+        : new Set(chatFindMatches.map((match) => match.rowId)),
+    [chatFindMatches],
+  );
+  const activeChatFindMatchIndex = useMemo(
+    () => chatFindMatches.findIndex((match) => match.id === activeChatFindMatchId),
+    [activeChatFindMatchId, chatFindMatches],
+  );
+  const activeChatFindMatch =
+    activeChatFindMatchIndex >= 0 ? (chatFindMatches[activeChatFindMatchIndex] ?? null) : null;
+  const copilotResumeCommand = getCopilotResumeCommand(activeThread ?? null);
   const gitCwd = activeProject
     ? projectScriptCwd({
         project: { cwd: activeProject.cwd },
@@ -1533,22 +1773,50 @@ export default function ChatView(props: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "diff.toggle", nonTerminalShortcutLabelOptions),
     [keybindings, nonTerminalShortcutLabelOptions],
   );
+  const chatFindShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "chat.find", nonTerminalShortcutLabelOptions),
+    [keybindings, nonTerminalShortcutLabelOptions],
+  );
+  const focusChatFindInput = useCallback(() => {
+    const input = document.getElementById(chatFindInputId) as HTMLInputElement | null;
+    if (!input) {
+      return;
+    }
+    input.focus();
+    input.select();
+  }, [chatFindInputId]);
+  const openChatFind = useCallback(() => {
+    setChatFindOpen(true);
+    focusChatFindInput();
+  }, [focusChatFindInput]);
+  const closeChatFind = useCallback(() => {
+    setChatFindOpen(false);
+  }, []);
+  const selectChatFindMatch = useCallback((match: ChatFindMatch | null) => {
+    setActiveChatFindMatchId(match?.id ?? null);
+  }, []);
+  const cycleChatFindMatch = useCallback(
+    (direction: -1 | 1) => {
+      if (chatFindMatches.length === 0) {
+        return;
+      }
+      const nextIndex =
+        activeChatFindMatchIndex >= 0
+          ? (activeChatFindMatchIndex + direction + chatFindMatches.length) % chatFindMatches.length
+          : direction > 0
+            ? 0
+            : chatFindMatches.length - 1;
+      selectChatFindMatch(chatFindMatches[nextIndex] ?? null);
+    },
+    [activeChatFindMatchIndex, chatFindMatches, selectChatFindMatch],
+  );
   const updateDiffSearch = useCallback(
     (nextDiffSearch: DiffRouteSearch) => {
       if (!isServerThread) {
         return;
       }
 
-      const sanitizedDiffSearch =
-        nextDiffSearch.diff === "1"
-          ? {
-              diff: "1" as const,
-              ...(nextDiffSearch.diffTurnId ? { diffTurnId: nextDiffSearch.diffTurnId } : {}),
-              ...(nextDiffSearch.diffTurnId && nextDiffSearch.diffFilePath
-                ? { diffFilePath: nextDiffSearch.diffFilePath }
-                : {}),
-            }
-          : buildClosedDiffRouteSearch();
+      const sanitizedDiffSearch = normalizeDiffRouteSearch(nextDiffSearch);
 
       if (onDiffSearchChange) {
         onDiffSearchChange(sanitizedDiffSearch);
@@ -1562,10 +1830,7 @@ export default function ChatView(props: ChatViewProps) {
           threadId,
         },
         replace: true,
-        search: (previous) => ({
-          ...stripDiffSearchParams(previous),
-          ...sanitizedDiffSearch,
-        }),
+        search: (previous) => mergeDiffRouteSearch(previous, sanitizedDiffSearch),
       });
     },
     [environmentId, isServerThread, navigate, onDiffSearchChange, threadId],
@@ -2074,22 +2339,181 @@ export default function ChatView(props: ChatViewProps) {
   const showScrollDebouncer = useRef(
     new Debouncer(() => setShowScrollToBottom(true), { wait: 150 }),
   );
-  const onIsAtEndChange = useCallback((isAtEnd: boolean) => {
-    if (isAtEndRef.current === isAtEnd) return;
-    isAtEndRef.current = isAtEnd;
-    if (isAtEnd) {
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-    } else {
-      showScrollDebouncer.current.maybeExecute();
-    }
+
+  const scrollSubmittedMessageToEnd = useCallback(() => {
+    isAtEndRef.current = true;
+    showScrollDebouncer.current.cancel();
+    setShowScrollToBottom(false);
+    legendListRef.current?.scrollToEnd?.({ animated: false });
+
+    window.requestAnimationFrame(() => {
+      legendListRef.current?.scrollToEnd?.({ animated: false });
+      window.requestAnimationFrame(() => {
+        legendListRef.current?.scrollToEnd?.({ animated: false });
+      });
+    });
   }, []);
+
+  const getEffectiveIsAtEnd = useCallback((reportedIsAtEnd: boolean) => {
+    if (reportedIsAtEnd) {
+      return true;
+    }
+
+    const state = legendListRef.current?.getState?.();
+    if (state && isScrollMetricsAtEnd(state)) {
+      return true;
+    }
+
+    const scrollableNode = legendListRef.current?.getScrollableNode?.() ?? null;
+    return isElementScrolledToEnd(scrollableNode) ?? false;
+  }, []);
+
+  const onIsAtEndChange = useCallback(
+    (reportedIsAtEnd: boolean) => {
+      const isAtEnd = getEffectiveIsAtEnd(reportedIsAtEnd);
+      if (isAtEndRef.current === isAtEnd) return;
+      isAtEndRef.current = isAtEnd;
+      if (isAtEnd) {
+        showScrollDebouncer.current.cancel();
+        setShowScrollToBottom(false);
+      } else {
+        showScrollDebouncer.current.maybeExecute();
+      }
+    },
+    [getEffectiveIsAtEnd],
+  );
+
+  useEffect(() => {
+    isAtEndRef.current = true;
+    showScrollDebouncer.current.cancel();
+    setShowScrollToBottom(false);
+  }, [routeThreadKey]);
+
+  useEffect(() => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const syncAtEndState = () => {
+      const state = legendListRef.current?.getState?.();
+      if (state) {
+        onIsAtEndChange(isScrollMetricsAtEnd(state));
+        return;
+      }
+
+      const scrollableNode = legendListRef.current?.getScrollableNode?.() ?? null;
+      const isAtEnd = isElementScrolledToEnd(scrollableNode);
+      if (isAtEnd !== null) {
+        onIsAtEndChange(isAtEnd);
+      }
+    };
+    syncAtEndState();
+    const observer = new ResizeObserver(syncAtEndState);
+    observer.observe(viewport);
+    return () => {
+      observer.disconnect();
+    };
+  }, [onIsAtEndChange]);
+
+  useEffect(() => {
+    const scrollableNode = legendListRef.current?.getScrollableNode?.() ?? null;
+    if (!scrollableNode) {
+      return;
+    }
+
+    const handleScroll = () => {
+      const isAtEnd = isElementScrolledToEnd(scrollableNode);
+      if (isAtEnd !== null) {
+        onIsAtEndChange(isAtEnd);
+      }
+    };
+
+    scrollableNode.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      scrollableNode.removeEventListener("scroll", handleScroll);
+    };
+  }, [onIsAtEndChange, routeThreadKey]);
+
+  const scrollChatFindMatchIntoView = useCallback((match: ChatFindMatch | null) => {
+    if (!match) {
+      return;
+    }
+
+    const rowSelector = `[data-timeline-row-id="${escapeAttributeSelectorValue(match.rowId)}"]`;
+    const tryScroll = (attempt: number, offsetScrolled: boolean) => {
+      const rowElement = document.querySelector<HTMLElement>(rowSelector);
+      if (rowElement) {
+        rowElement.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+
+      if (!offsetScrolled) {
+        legendListRef.current?.scrollToOffset?.({
+          offset: match.rowIndex * TIMELINE_ROW_ESTIMATED_SIZE_PX,
+          animated: false,
+        });
+      }
+
+      if (attempt <= 0) {
+        return;
+      }
+      window.requestAnimationFrame(() => tryScroll(attempt - 1, true));
+    };
+
+    window.requestAnimationFrame(() => tryScroll(3, false));
+  }, []);
+
+  useEffect(() => {
+    if (!chatFindOpen) {
+      return;
+    }
+    const input = document.getElementById(chatFindInputId) as HTMLInputElement | null;
+    if (!input) {
+      return;
+    }
+    const frameId = window.requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [chatFindInputId, chatFindOpen]);
+
+  useEffect(() => {
+    if (!chatFindOpen) {
+      return;
+    }
+    if (chatFindMatches.length === 0) {
+      if (activeChatFindMatchId !== null) {
+        setActiveChatFindMatchId(null);
+      }
+      return;
+    }
+    if (
+      activeChatFindMatchId &&
+      chatFindMatches.some((match) => match.id === activeChatFindMatchId)
+    ) {
+      return;
+    }
+    setActiveChatFindMatchId(chatFindMatches[0]?.id ?? null);
+  }, [activeChatFindMatchId, chatFindMatches, chatFindOpen]);
+
+  useEffect(() => {
+    if (!chatFindOpen) {
+      return;
+    }
+    scrollChatFindMatchIntoView(activeChatFindMatch);
+  }, [activeChatFindMatch, chatFindOpen, scrollChatFindMatchIntoView]);
 
   useEffect(() => {
     setPullRequestDialogState(null);
     isAtEndRef.current = true;
     showScrollDebouncer.current.cancel();
     setShowScrollToBottom(false);
+    setChatFindOpen(false);
+    setChatFindQuery("");
+    setActiveChatFindMatchId(null);
     if (planSidebarOpenOnNextThreadRef.current) {
       planSidebarOpenOnNextThreadRef.current = false;
       setPlanSidebarOpen(true);
@@ -2322,8 +2746,29 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (!activeThreadId || useCommandPaletteStore.getState().open || event.defaultPrevented) {
+      if (
+        !isPaneFocused ||
+        !activeThreadId ||
+        useCommandPaletteStore.getState().open ||
+        event.defaultPrevented
+      ) {
         return;
+      }
+      const activeElement = document.activeElement as HTMLElement | null;
+      const searchInputFocused = activeElement?.id === chatFindInputId;
+      if (chatFindOpen && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          closeChatFind();
+          return;
+        }
+        if (searchInputFocused && event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          cycleChatFindMatch(event.shiftKey ? -1 : 1);
+          return;
+        }
       }
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
@@ -2385,6 +2830,13 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
 
+      if (command === "chat.find") {
+        event.preventDefault();
+        event.stopPropagation();
+        openChatFind();
+        return;
+      }
+
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
       const script = activeProject.scripts.find((entry) => entry.id === scriptId);
@@ -2400,8 +2852,14 @@ export default function ChatView(props: ChatViewProps) {
     terminalState.terminalOpen,
     terminalState.activeTerminalId,
     activeThreadId,
+    chatFindInputId,
+    chatFindOpen,
     closeTerminal,
+    closeChatFind,
     createNewTerminal,
+    cycleChatFindMatch,
+    isPaneFocused,
+    openChatFind,
     setTerminalOpen,
     runProjectScript,
     splitTerminal,
@@ -2549,7 +3007,10 @@ export default function ChatView(props: ChatViewProps) {
     }
 
     sendInFlightRef.current = true;
-    beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+    flushSync(() => {
+      setThreadError(threadIdForSend, null);
+      beginLocalDispatch({ preparingWorktree: Boolean(baseBranchForWorktree) });
+    });
 
     const composerImagesSnapshot = [...composerImages];
     const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
@@ -2583,13 +3044,7 @@ export default function ChatView(props: ChatViewProps) {
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
     }));
-    // Scroll to the current end *before* adding the optimistic message.
-    // This sets LegendList's internal isAtEnd=true so maintainScrollAtEnd
-    // automatically pins to the new item when the data changes.
-    isAtEndRef.current = true;
-    showScrollDebouncer.current.cancel();
-    setShowScrollToBottom(false);
-    await legendListRef.current?.scrollToEnd?.({ animated: false });
+    scrollSubmittedMessageToEnd();
 
     setOptimisticUserMessages((existing) => [
       ...existing,
@@ -2602,8 +3057,8 @@ export default function ChatView(props: ChatViewProps) {
         streaming: false,
       },
     ]);
+    scrollSubmittedMessageToEnd();
 
-    setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
         expiredTerminalContextCount,
@@ -2977,14 +3432,12 @@ export default function ChatView(props: ChatViewProps) {
       });
 
       sendInFlightRef.current = true;
-      beginLocalDispatch({ preparingWorktree: false });
-      setThreadError(threadIdForSend, null);
+      flushSync(() => {
+        setThreadError(threadIdForSend, null);
+        beginLocalDispatch({ preparingWorktree: false });
+      });
 
-      // Scroll to the current end *before* adding the optimistic message.
-      isAtEndRef.current = true;
-      showScrollDebouncer.current.cancel();
-      setShowScrollToBottom(false);
-      await legendListRef.current?.scrollToEnd?.({ animated: false });
+      scrollSubmittedMessageToEnd();
 
       setOptimisticUserMessages((existing) => [
         ...existing,
@@ -2996,6 +3449,7 @@ export default function ChatView(props: ChatViewProps) {
           streaming: false,
         },
       ]);
+      scrollSubmittedMessageToEnd();
 
       try {
         await persistThreadSettingsForNextTurn({
@@ -3298,15 +3752,15 @@ export default function ChatView(props: ChatViewProps) {
     setExpandedImage(preview);
   }, []);
   const onOpenTurnDiff = useCallback(
-    (turnId: TurnId, filePath?: string) => {
+    (turnId: TurnId, filePath?: string, scope: TurnDiffScope = "snapshot") => {
       if (!isServerThread) {
         return;
       }
       onDiffPanelOpen?.();
       updateDiffSearch(
         filePath
-          ? { diff: "1", diffTurnId: turnId, diffFilePath: filePath }
-          : { diff: "1", diffTurnId: turnId },
+          ? { diff: "1", diffTurnId: turnId, diffFilePath: filePath, diffScope: scope }
+          : { diff: "1", diffTurnId: turnId, diffScope: scope },
       );
     },
     [isServerThread, onDiffPanelOpen, updateDiffSearch],
@@ -3374,6 +3828,19 @@ export default function ChatView(props: ChatViewProps) {
           paneActions={paneActions}
         />
       </header>
+      {chatFindOpen ? (
+        <FindInChatBar
+          inputId={chatFindInputId}
+          query={chatFindQuery}
+          onQueryChange={setChatFindQuery}
+          matchCount={chatFindMatches.length}
+          activeMatchIndex={activeChatFindMatchIndex >= 0 ? activeChatFindMatchIndex : 0}
+          shortcutLabel={chatFindShortcutLabel}
+          onPrevious={() => cycleChatFindMatch(-1)}
+          onNext={() => cycleChatFindMatch(1)}
+          onClose={closeChatFind}
+        />
+      ) : null}
 
       {/* Error banner */}
       <ProviderStatusBanner status={activeProviderStatus} />
@@ -3386,10 +3853,11 @@ export default function ChatView(props: ChatViewProps) {
         {/* Chat column */}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Messages Wrapper */}
-          <div className="relative flex min-h-0 flex-1 flex-col">
+          <div ref={messagesViewportRef} className="relative flex min-h-0 flex-1 flex-col">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
             <MessagesTimeline
               key={activeThread.id}
+              rows={timelineRows}
               isWorking={isWorking}
               activeTurnInProgress={isWorking || !latestTurnSettled}
               activeTurnId={activeLatestTurn?.turnId ?? null}
@@ -3401,6 +3869,7 @@ export default function ChatView(props: ChatViewProps) {
               copilotResumeCommand={copilotResumeCommand}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
               activeThreadEnvironmentId={activeThread.environmentId}
+              activeThreadId={activeThread.id}
               routeThreadKey={routeThreadKey}
               onOpenTurnDiff={onOpenTurnDiff}
               revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
@@ -3412,6 +3881,9 @@ export default function ChatView(props: ChatViewProps) {
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
               onIsAtEndChange={onIsAtEndChange}
+              chatFindQuery={deferredChatFindQuery}
+              matchedRowIds={matchedChatFindRowIds}
+              activeMatchRowId={activeChatFindMatch?.rowId ?? null}
             />
 
             {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
@@ -3601,4 +4073,11 @@ export default function ChatView(props: ChatViewProps) {
       )}
     </div>
   );
+}
+
+export default function ChatView(props: ChatViewProps) {
+  if (props.diffSearch !== undefined) {
+    return <ChatViewBody {...props} resolvedDiffSearch={props.diffSearch} />;
+  }
+  return <RouteBoundChatView {...props} />;
 }

@@ -22,6 +22,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadId,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -77,10 +78,16 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    resumeCursor: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
+  }),
+);
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
+    agentTouchedPaths: Schema.fromJsonString(Schema.Array(TrimmedNonEmptyString)),
+    turnFiles: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
   }),
 );
 const ProjectionLatestTurnDbRowSchema = Schema.Struct({
@@ -198,6 +205,7 @@ function mapSessionRow(
     ...(row.providerInstanceId !== null ? { providerInstanceId: row.providerInstanceId } : {}),
     runtimeMode: row.runtimeMode,
     activeTurnId: row.activeTurnId,
+    ...(row.resumeCursor !== null ? { resumeCursor: row.resumeCursor } : {}),
     lastError: row.lastError,
     updatedAt: row.updatedAt,
   };
@@ -261,6 +269,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
+          pending_runtime_mode AS "pendingRuntimeMode",
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -348,18 +357,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: () =>
       sql`
         SELECT
-          thread_id AS "threadId",
-          status,
-          provider_name AS "providerName",
-          provider_instance_id AS "providerInstanceId",
-          provider_session_id AS "providerSessionId",
-          provider_thread_id AS "providerThreadId",
-          runtime_mode AS "runtimeMode",
-          active_turn_id AS "activeTurnId",
-          last_error AS "lastError",
-          updated_at AS "updatedAt"
-        FROM projection_thread_sessions
-        ORDER BY thread_id ASC
+          s.thread_id AS "threadId",
+          s.status,
+          s.provider_name AS "providerName",
+          s.provider_instance_id AS "providerInstanceId",
+          s.provider_session_id AS "providerSessionId",
+          s.provider_thread_id AS "providerThreadId",
+          s.runtime_mode AS "runtimeMode",
+          s.active_turn_id AS "activeTurnId",
+          COALESCE(s.resume_cursor_json, r.resume_cursor_json) AS "resumeCursor",
+          s.last_error AS "lastError",
+          s.updated_at AS "updatedAt"
+        FROM projection_thread_sessions s
+        LEFT JOIN provider_session_runtime r
+          ON r.thread_id = s.thread_id
+        ORDER BY s.thread_id ASC
       `,
   });
 
@@ -375,6 +387,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
+          checkpoint_agent_touched_paths_json AS "agentTouchedPaths",
+          checkpoint_turn_files_json AS "turnFiles",
           assistant_message_id AS "assistantMessageId",
           completed_at AS "completedAt"
         FROM projection_turns
@@ -516,6 +530,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
+          pending_runtime_mode AS "pendingRuntimeMode",
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -607,16 +622,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
-          thread_id AS "threadId",
-          status,
-          provider_name AS "providerName",
-          provider_instance_id AS "providerInstanceId",
-          runtime_mode AS "runtimeMode",
-          active_turn_id AS "activeTurnId",
-          last_error AS "lastError",
-          updated_at AS "updatedAt"
-        FROM projection_thread_sessions
-        WHERE thread_id = ${threadId}
+          s.thread_id AS "threadId",
+          s.status,
+          s.provider_name AS "providerName",
+          s.provider_instance_id AS "providerInstanceId",
+          s.runtime_mode AS "runtimeMode",
+          s.active_turn_id AS "activeTurnId",
+          COALESCE(s.resume_cursor_json, r.resume_cursor_json) AS "resumeCursor",
+          s.last_error AS "lastError",
+          s.updated_at AS "updatedAt"
+        FROM projection_thread_sessions s
+        LEFT JOIN provider_session_runtime r
+          ON r.thread_id = s.thread_id
+        WHERE s.thread_id = ${threadId}
         LIMIT 1
       `,
   });
@@ -639,9 +657,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads threads
         JOIN projection_turns turns
           ON turns.thread_id = threads.thread_id
-          AND turns.turn_id = threads.latest_turn_id
         WHERE threads.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
+          AND turns.turn_id IS NOT NULL
+        ORDER BY
+          CASE WHEN turns.turn_id = threads.latest_turn_id THEN 0 ELSE 1 END ASC,
+          turns.requested_at DESC,
+          turns.turn_id DESC
         LIMIT 1
       `,
   });
@@ -658,6 +680,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
+          checkpoint_agent_touched_paths_json AS "agentTouchedPaths",
+          checkpoint_turn_files_json AS "turnFiles",
           assistant_message_id AS "assistantMessageId",
           completed_at AS "completedAt"
         FROM projection_turns
@@ -834,6 +858,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   checkpointRef: row.checkpointRef,
                   status: row.status,
                   files: row.files,
+                  agentTouchedPaths: row.agentTouchedPaths,
+                  turnFiles: row.turnFiles,
                   assistantMessageId: row.assistantMessageId,
                   completedAt: row.completedAt,
                 });
@@ -887,6 +913,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     : {}),
                   runtimeMode: row.runtimeMode,
                   activeTurnId: row.activeTurnId,
+                  ...(row.resumeCursor !== null ? { resumeCursor: row.resumeCursor } : {}),
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
                 });
@@ -1213,6 +1240,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             checkpointRef: row.checkpointRef,
             status: row.status,
             files: row.files,
+            agentTouchedPaths: row.agentTouchedPaths,
+            turnFiles: row.turnFiles,
             assistantMessageId: row.assistantMessageId,
             completedAt: row.completedAt,
           }),
@@ -1406,6 +1435,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpointRef: row.checkpointRef,
           status: row.status,
           files: row.files,
+          agentTouchedPaths: row.agentTouchedPaths,
+          turnFiles: row.turnFiles,
           assistantMessageId: row.assistantMessageId,
           completedAt: row.completedAt,
         })),

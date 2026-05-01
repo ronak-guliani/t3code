@@ -4,12 +4,13 @@ import { type ThreadRouteTarget, threadRouteTargetsEqual } from "./threadRoutes"
 export type ChatSplitNodeId = string;
 export type ChatSplitOrientation = "row" | "column";
 export type ChatSplitFocusDirection = "left" | "right" | "up" | "down";
+export type ChatSplitDropPlacement = "left" | "right" | "top" | "bottom";
 
 export type ChatSplitNode =
   | {
       kind: "leaf";
       id: ChatSplitNodeId;
-      target: ThreadRouteTarget;
+      target: ThreadRouteTarget | null;
       diff: DiffRouteSearch;
     }
   | {
@@ -61,6 +62,7 @@ export function sanitizeDiffRouteState(diff: DiffRouteSearch | null | undefined)
     diff: "1",
     ...(diff.diffTurnId ? { diffTurnId: diff.diffTurnId } : {}),
     ...(diff.diffTurnId && diff.diffFilePath ? { diffFilePath: diff.diffFilePath } : {}),
+    ...(diff.diffTurnId && diff.diffScope ? { diffScope: diff.diffScope } : {}),
   };
 }
 
@@ -73,7 +75,8 @@ export function diffRouteStatesEqual(
   return (
     nextLeft.diff === nextRight.diff &&
     nextLeft.diffTurnId === nextRight.diffTurnId &&
-    nextLeft.diffFilePath === nextRight.diffFilePath
+    nextLeft.diffFilePath === nextRight.diffFilePath &&
+    nextLeft.diffScope === nextRight.diffScope
   );
 }
 
@@ -180,8 +183,20 @@ export function findLeafNodeByTarget(
   target: ThreadRouteTarget,
 ): Extract<ChatSplitNode, { kind: "leaf" }> | null {
   for (const node of Object.values(layout.nodesById)) {
-    if (node.kind === "leaf" && threadRouteTargetsEqual(node.target, target)) {
+    if (node.kind === "leaf" && node.target && threadRouteTargetsEqual(node.target, target)) {
       return node;
+    }
+  }
+  return null;
+}
+
+export function findEmptyLeafNode(
+  layout: ChatSplitLayout,
+): Extract<ChatSplitNode, { kind: "leaf" }> | null {
+  for (const { leafId } of getLeafTargetsInRenderOrder(layout)) {
+    const leaf = getLeafNode(layout, leafId);
+    if (leaf && !leaf.target) {
+      return leaf;
     }
   }
   return null;
@@ -311,6 +326,7 @@ export function replaceLeafTarget(
   }
 
   if (
+    leafNode.target &&
     threadRouteTargetsEqual(leafNode.target, target) &&
     diffRouteStatesEqual(leafNode.diff, nextDiff)
   ) {
@@ -373,8 +389,8 @@ export function splitLeaf(
       [newLeafId]: {
         kind: "leaf",
         id: newLeafId,
-        target: cloneTarget(leafNode.target),
-        diff: sanitizeDiffRouteState(leafNode.diff),
+        target: null,
+        diff: {},
       } satisfies ChatSplitNode,
       [splitNodeId]: {
         kind: "split",
@@ -401,6 +417,84 @@ export function splitLeaf(
     return nextLayout;
   }
   return replaceChildReference(nextLayout, parentStep.splitId, parentStep.branch, splitNodeId);
+}
+
+export function splitLeafWithTarget(
+  layout: ChatSplitLayout,
+  leafId: ChatSplitNodeId,
+  target: ThreadRouteTarget,
+  placement: ChatSplitDropPlacement,
+  createId: () => ChatSplitNodeId,
+): ChatSplitLayout {
+  const leafNode = getLeafNode(layout, leafId);
+  if (!leafNode) {
+    return layout;
+  }
+
+  const orientation: ChatSplitOrientation =
+    placement === "left" || placement === "right" ? "row" : "column";
+  const splitNodeId = createId();
+  const newLeafId = createId();
+  const insertedFirst = placement === "left" || placement === "top";
+  const nextLayout = {
+    ...layout,
+    nodesById: {
+      ...layout.nodesById,
+      [newLeafId]: {
+        kind: "leaf",
+        id: newLeafId,
+        target: cloneTarget(target),
+        diff: {},
+      } satisfies ChatSplitNode,
+      [splitNodeId]: {
+        kind: "split",
+        id: splitNodeId,
+        orientation,
+        ratio: DEFAULT_SPLIT_RATIO,
+        first: insertedFirst ? newLeafId : leafId,
+        second: insertedFirst ? leafId : newLeafId,
+      } satisfies ChatSplitNode,
+    },
+    focusedLeafId: newLeafId,
+    maximizedLeafId: null,
+  } satisfies ChatSplitLayout;
+  const path = findLeafPath(layout, leafId);
+  if (!path || path.length === 0) {
+    return {
+      ...nextLayout,
+      rootId: splitNodeId,
+    };
+  }
+
+  const parentStep = path.at(-1);
+  if (!parentStep) {
+    return nextLayout;
+  }
+  return replaceChildReference(nextLayout, parentStep.splitId, parentStep.branch, splitNodeId);
+}
+
+export function buildChatSplitLayoutFromTargets(params: {
+  targets: readonly ThreadRouteTarget[];
+  orientation: ChatSplitOrientation;
+  createId: () => ChatSplitNodeId;
+}): ChatSplitLayout | null {
+  const { targets, orientation, createId } = params;
+  const [firstTarget, ...remainingTargets] = targets;
+  if (!firstTarget) {
+    return null;
+  }
+
+  let layout = createInitialChatSplitLayout({
+    leafId: createId(),
+    target: firstTarget,
+  });
+
+  for (const target of remainingTargets) {
+    const splitLayout = splitLeaf(layout, layout.focusedLeafId, orientation, createId);
+    layout = replaceLeafTarget(splitLayout, splitLayout.focusedLeafId, target);
+  }
+
+  return layout;
 }
 
 export function closeLeaf(layout: ChatSplitLayout, leafId: ChatSplitNodeId): ChatSplitLayout {
@@ -504,13 +598,35 @@ export function syncLayoutWithRouteTarget(
   diff?: DiffRouteSearch,
 ): ChatSplitLayout {
   const matchedLeaf = findLeafNodeByTarget(layout, target);
-  const nextDiff = sanitizeDiffRouteState(diff);
   if (matchedLeaf) {
-    const nextLayout = focusLeaf(layout, matchedLeaf.id);
-    return setLeafDiff(nextLayout, matchedLeaf.id, nextDiff);
+    let nextLayout = focusLeaf(layout, matchedLeaf.id);
+    if (nextLayout.maximizedLeafId && nextLayout.maximizedLeafId !== matchedLeaf.id) {
+      nextLayout = {
+        ...nextLayout,
+        maximizedLeafId: matchedLeaf.id,
+      };
+    }
+    // Only overwrite leaf diff state when the caller explicitly provided one,
+    // so navigations that omit diff params don't silently close an open diff.
+    return diff === undefined ? nextLayout : setLeafDiff(nextLayout, matchedLeaf.id, diff);
   }
 
-  return replaceLeafTarget(layout, layout.focusedLeafId, target, nextDiff);
+  const emptyLeaf = findEmptyLeafNode(layout);
+  if (emptyLeaf) {
+    const nextDiff = diff === undefined ? {} : diff;
+    return replaceLeafTarget(focusLeaf(layout, emptyLeaf.id), emptyLeaf.id, target, nextDiff);
+  }
+
+  // When replacing the focused leaf's target, preserve its existing diff if no
+  // new diff was supplied — same reasoning as above.
+  const replacementLeafId = layout.maximizedLeafId ?? layout.focusedLeafId;
+  const nextDiff = diff === undefined ? (getLeafNode(layout, replacementLeafId)?.diff ?? {}) : diff;
+  return replaceLeafTarget(
+    focusLeaf(layout, replacementLeafId),
+    replacementLeafId,
+    target,
+    nextDiff,
+  );
 }
 
 export function getFocusedLeafTarget(layout: ChatSplitLayout): ThreadRouteTarget | null {
@@ -528,4 +644,29 @@ export function getLeafIds(layout: ChatSplitLayout): ChatSplitNodeId[] {
   return Object.values(layout.nodesById)
     .flatMap((node) => (node.kind === "leaf" ? [node.id] : []))
     .toSorted();
+}
+
+export interface ChatSplitLeafTarget {
+  leafId: ChatSplitNodeId;
+  target: ThreadRouteTarget | null;
+}
+
+export function getLeafTargetsInRenderOrder(layout: ChatSplitLayout): ChatSplitLeafTarget[] {
+  const targets: ChatSplitLeafTarget[] = [];
+
+  const walk = (nodeId: ChatSplitNodeId) => {
+    const node = layout.nodesById[nodeId];
+    if (!node) {
+      return;
+    }
+    if (node.kind === "leaf") {
+      targets.push({ leafId: node.id, target: node.target });
+      return;
+    }
+    walk(node.first);
+    walk(node.second);
+  };
+
+  walk(layout.rootId);
+  return targets;
 }

@@ -346,6 +346,53 @@ export function normalizeCopilotParsedSessionEvent(
   ];
 }
 
+/**
+ * Detects the upstream Copilot CLI failure mode where the model API rejects a
+ * request because a previous tool call's output was never delivered (CAPIError
+ * 400 "No tool output found for function call …"). When this surfaces as an
+ * `agent_message_chunk`, the Copilot CLI's per-session conversation state is
+ * permanently broken — every subsequent prompt on the same session/thread will
+ * fail with the same error until the CLI process is restarted with a fresh
+ * session. The adapter uses this detector to abort the in-flight turn,
+ * surface a clear error to the user, and reset the CLI process.
+ */
+export interface CopilotFatalToolCallError {
+  readonly callId: string;
+  readonly statusCode: string;
+  readonly requestId: string | undefined;
+  readonly originalText: string;
+}
+
+const COPILOT_FATAL_TOOL_CALL_ERROR_PATTERN =
+  /Execution failed:\s*CAPIError:\s*(?<status>\d+)\s+No tool output found for function call\s+(?<call>\S+?)\.\s*(?:\(Request ID:\s*(?<request>[^)]+)\))?/u;
+
+export function detectCopilotFatalToolCallError(
+  text: string,
+): CopilotFatalToolCallError | undefined {
+  const match = COPILOT_FATAL_TOOL_CALL_ERROR_PATTERN.exec(text);
+  if (!match?.groups) {
+    return undefined;
+  }
+  const { status, call, request } = match.groups;
+  if (!status || !call) {
+    return undefined;
+  }
+  return {
+    callId: call,
+    statusCode: status,
+    requestId: request?.trim() || undefined,
+    originalText: text,
+  };
+}
+
+export function copilotFatalToolCallErrorMessage(error: CopilotFatalToolCallError): string {
+  return (
+    `Copilot CLI hit a fatal API error and the conversation can no longer continue. ` +
+    `(CAPIError ${error.statusCode}: missing tool output for ${error.callId}.) ` +
+    `Start a new thread to continue working with Copilot.`
+  );
+}
+
 export function normalizeCopilotPermissionRequest(
   params: Parameters<typeof parsePermissionRequest>[0],
 ): AcpPermissionRequest {

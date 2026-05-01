@@ -76,6 +76,8 @@ export interface TurnDiffSummary {
   completedAt: string;
   status?: string | undefined;
   files: TurnDiffFileChange[];
+  agentTouchedPaths?: string[] | undefined;
+  turnFiles?: TurnDiffFileChange[] | undefined;
   checkpointRef?: CheckpointRef | undefined;
   assistantMessageId?: MessageId | undefined;
   checkpointTurnCount?: number | undefined;

@@ -88,6 +88,43 @@ describe("providerQueryKeys.checkpointDiff", () => {
       }),
     );
   });
+
+  it("includes diff kind and scope so selected turn and snapshot caches do not collide", () => {
+    const baseInput = {
+      environmentId,
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      cacheScope: "turn:first",
+    } as const;
+
+    expect(
+      providerQueryKeys.checkpointDiff({
+        ...baseInput,
+        kind: "turn",
+        scope: "turn",
+      }),
+    ).not.toEqual(
+      providerQueryKeys.checkpointDiff({
+        ...baseInput,
+        kind: "turn",
+        scope: "snapshot",
+      }),
+    );
+    expect(
+      providerQueryKeys.checkpointDiff({
+        ...baseInput,
+        kind: "turn",
+        scope: "turn",
+      }),
+    ).not.toEqual(
+      providerQueryKeys.checkpointDiff({
+        ...baseInput,
+        kind: "conversation",
+        scope: "snapshot",
+      }),
+    );
+  });
 });
 
 describe("checkpointDiffQueryOptions", () => {
@@ -101,6 +138,8 @@ describe("checkpointDiffQueryOptions", () => {
       threadId,
       fromTurnCount: 3,
       toTurnCount: 4,
+      kind: "turn",
+      scope: "turn",
       cacheScope: "turn:abc",
     });
 
@@ -111,6 +150,7 @@ describe("checkpointDiffQueryOptions", () => {
       threadId,
       fromTurnCount: 3,
       toTurnCount: 4,
+      scope: "turn",
     });
     expect(getFullThreadDiff).not.toHaveBeenCalled();
   });
@@ -125,6 +165,7 @@ describe("checkpointDiffQueryOptions", () => {
       threadId,
       fromTurnCount: 0,
       toTurnCount: 2,
+      kind: "conversation",
       cacheScope: "thread:all",
     });
 
@@ -138,6 +179,33 @@ describe("checkpointDiffQueryOptions", () => {
     expect(getTurnDiff).not.toHaveBeenCalled();
   });
 
+  it("uses turn diff API for an explicitly selected first turn", async () => {
+    const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
+    const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });
+    mockNativeApi({ getTurnDiff, getFullThreadDiff });
+
+    const options = checkpointDiffQueryOptions({
+      environmentId,
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      kind: "turn",
+      scope: "turn",
+      cacheScope: "turn:first:turn",
+    });
+
+    const queryClient = new QueryClient();
+    await queryClient.fetchQuery(options);
+
+    expect(getTurnDiff).toHaveBeenCalledWith({
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      scope: "turn",
+    });
+    expect(getFullThreadDiff).not.toHaveBeenCalled();
+  });
+
   it("fails fast on invalid range and does not call provider RPC", async () => {
     const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
     const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });
@@ -148,6 +216,7 @@ describe("checkpointDiffQueryOptions", () => {
       threadId,
       fromTurnCount: 4,
       toTurnCount: 3,
+      kind: "turn",
       cacheScope: "turn:invalid",
     });
 

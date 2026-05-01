@@ -370,6 +370,20 @@ export function buildTurnStartParams(input: {
   );
 }
 
+export function buildUnsupportedDynamicToolCallResponse(
+  payload: EffectCodexSchema.DynamicToolCallParams,
+): EffectCodexSchema.DynamicToolCallResponse {
+  return {
+    success: false,
+    contentItems: [
+      {
+        type: "inputText",
+        text: `Dynamic tool '${payload.tool}' is not supported by this client.`,
+      },
+    ],
+  };
+}
+
 function classifyCodexStderrLine(rawLine: string): { readonly message: string } | null {
   const line = rawLine.replaceAll(ANSI_ESCAPE_REGEX, "").trim();
   if (!line) {
@@ -1065,6 +1079,26 @@ export const makeCodexSessionRuntime = (
             ),
           ),
         } satisfies EffectCodexSchema.ToolRequestUserInputResponse;
+      }),
+    );
+
+    yield* client.handleServerRequest("item/tool/call", (payload) =>
+      Effect.gen(function* () {
+        const requestId = ApprovalRequestId.make(randomUUID());
+        const turnId = TurnId.make(payload.turnId);
+        const itemId = ProviderItemId.make(payload.callId);
+
+        yield* emitEvent({
+          kind: "request",
+          threadId: options.threadId,
+          method: "item/tool/call",
+          requestId,
+          ...(turnId ? { turnId } : {}),
+          ...(itemId ? { itemId } : {}),
+          payload,
+        });
+
+        return buildUnsupportedDynamicToolCallResponse(payload);
       }),
     );
 

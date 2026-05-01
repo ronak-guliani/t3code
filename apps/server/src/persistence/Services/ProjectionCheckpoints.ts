@@ -14,6 +14,7 @@ import {
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
   ThreadId,
+  TrimmedNonEmptyString,
   TurnId,
 } from "@t3tools/contracts";
 import { Option, Context, Schema } from "effect";
@@ -28,6 +29,8 @@ export const ProjectionCheckpoint = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: Schema.Array(OrchestrationCheckpointFile),
+  agentTouchedPaths: Schema.Array(TrimmedNonEmptyString),
+  turnFiles: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });

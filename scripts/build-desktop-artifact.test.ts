@@ -4,6 +4,8 @@ import { ConfigProvider, Effect, Option } from "effect";
 
 import {
   resolveBuildOptions,
+  resolveDesktopAppId,
+  resolveDesktopArtifactName,
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
   resolveDesktopUpdateChannel,
@@ -21,6 +23,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
   it("switches desktop packaging product names to nightly for nightly builds", () => {
     assert.equal(resolveDesktopProductName("0.0.17"), "T3 Code (Alpha)");
     assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
+    assert.equal(resolveDesktopProductName("0.0.17", "dev"), "T3 Code (Dev)");
+  });
+
+  it("uses separate bundle identity and artifact names for dev builds", () => {
+    assert.equal(resolveDesktopAppId("alpha"), "com.t3tools.t3code");
+    assert.equal(resolveDesktopAppId("dev"), "com.t3tools.t3code.dev");
+    assert.equal(resolveDesktopArtifactName("alpha"), "T3-Code-${version}-${arch}.${ext}");
+    assert.equal(resolveDesktopArtifactName("dev"), "T3-Code-Dev-${version}-${arch}.${ext}");
   });
 
   it("switches desktop packaging icons to the nightly artwork for nightly versions", () => {
@@ -67,6 +77,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         platform: Option.some("mac"),
         target: Option.none(),
         arch: Option.some("arm64"),
+        flavor: Option.none(),
         buildVersion: Option.none(),
         outputDir: Option.some("release-test"),
         skipBuild: Option.some(false),

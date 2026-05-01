@@ -8,12 +8,36 @@ describe("parseDiffRouteSearch", () => {
       diff: "1",
       diffTurnId: "turn-1",
       diffFilePath: "src/app.ts",
+      diffScope: "turn",
     });
 
     expect(parsed).toEqual({
       diff: "1",
       diffTurnId: "turn-1",
       diffFilePath: "src/app.ts",
+      diffScope: "turn",
+    });
+  });
+
+  it("drops invalid scope values and scope without a selected turn", () => {
+    expect(
+      parseDiffRouteSearch({
+        diff: "1",
+        diffTurnId: "turn-1",
+        diffScope: "invalid",
+      }),
+    ).toEqual({
+      diff: "1",
+      diffTurnId: "turn-1",
+    });
+
+    expect(
+      parseDiffRouteSearch({
+        diff: "1",
+        diffScope: "turn",
+      }),
+    ).toEqual({
+      diff: "1",
     });
   });
 
@@ -79,6 +103,7 @@ describe("buildClosedDiffRouteSearch", () => {
       diff: undefined,
       diffTurnId: undefined,
       diffFilePath: undefined,
+      diffScope: undefined,
     });
   });
 });

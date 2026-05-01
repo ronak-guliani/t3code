@@ -258,6 +258,7 @@ export const OrchestrationSession = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
+  resumeCursor: Schema.optional(Schema.Unknown),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
@@ -270,6 +271,8 @@ export const OrchestrationCheckpointFile = Schema.Struct({
   deletions: NonNegativeInt,
 });
 export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Type;
+const OrchestrationCheckpointFiles = Schema.Array(OrchestrationCheckpointFile);
+const OrchestrationAgentTouchedPaths = Schema.Array(TrimmedNonEmptyString);
 
 export const OrchestrationCheckpointStatus = Schema.Literals(["ready", "missing", "error"]);
 export type OrchestrationCheckpointStatus = typeof OrchestrationCheckpointStatus.Type;
@@ -279,7 +282,11 @@ export const OrchestrationCheckpointSummary = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: Schema.Array(OrchestrationCheckpointFile),
+  files: OrchestrationCheckpointFiles,
+  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -330,6 +337,9 @@ export const OrchestrationThread = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -525,6 +535,14 @@ const ThreadRuntimeModeSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadPendingRuntimeModeSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.pending-runtime-mode.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  runtimeMode: RuntimeMode,
+  createdAt: IsoDateTime,
+});
+
 const ThreadInteractionModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.interaction-mode.set"),
   commandId: CommandId,
@@ -649,6 +667,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
+  ThreadPendingRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -670,6 +689,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
+  ThreadPendingRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -723,7 +743,11 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   completedAt: IsoDateTime,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: Schema.Array(OrchestrationCheckpointFile),
+  files: OrchestrationCheckpointFiles,
+  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   assistantMessageId: Schema.optional(MessageId),
   checkpointTurnCount: NonNegativeInt,
   createdAt: IsoDateTime,
@@ -772,6 +796,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.meta-updated",
   "thread.runtime-mode-set",
+  "thread.pending-runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
@@ -824,6 +849,9 @@ export const ThreadCreatedPayload = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -859,6 +887,12 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
 });
 
 export const ThreadRuntimeModeSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  runtimeMode: RuntimeMode,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadPendingRuntimeModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   runtimeMode: RuntimeMode,
   updatedAt: IsoDateTime,
@@ -949,7 +983,11 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: Schema.Array(OrchestrationCheckpointFile),
+  files: OrchestrationCheckpointFiles,
+  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -1025,6 +1063,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.runtime-mode-set"),
     payload: ThreadRuntimeModeSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pending-runtime-mode-set"),
+    payload: ThreadPendingRuntimeModeSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1131,6 +1174,9 @@ export const ThreadTurnDiff = TurnCountRange.mapFields(
   { unsafePreserveChecks: true },
 );
 
+export const TurnDiffScope = Schema.Literals(["turn", "snapshot"]);
+export type TurnDiffScope = typeof TurnDiffScope.Type;
+
 export const ProviderSessionRuntimeStatus = Schema.Literals([
   "starting",
   "running",
@@ -1153,7 +1199,11 @@ const ProjectionCheckpointRow = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: Schema.Array(OrchestrationCheckpointFile),
+  files: OrchestrationCheckpointFiles,
+  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -1171,7 +1221,10 @@ export const DispatchResult = Schema.Struct({
 export type DispatchResult = typeof DispatchResult.Type;
 
 export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
-  Struct.assign({ threadId: ThreadId }),
+  Struct.assign({
+    threadId: ThreadId,
+    scope: TurnDiffScope.pipe(Schema.withDecodingDefault(Effect.succeed("snapshot" as const))),
+  }),
   { unsafePreserveChecks: true },
 );
 export type OrchestrationGetTurnDiffInput = typeof OrchestrationGetTurnDiffInput.Type;

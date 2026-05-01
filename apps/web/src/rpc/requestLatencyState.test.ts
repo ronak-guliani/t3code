@@ -1,12 +1,14 @@
+import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   acknowledgeRpcRequest,
+  EXPECTED_LONG_RUNNING_RPC_ACK_THRESHOLD_MS,
   getSlowRpcAckRequests,
-  resetRequestLatencyStateForTests,
-  trackRpcRequestSent,
-  SLOW_RPC_ACK_THRESHOLD_MS,
   MAX_TRACKED_RPC_ACK_REQUESTS,
+  resetRequestLatencyStateForTests,
+  SLOW_RPC_ACK_THRESHOLD_MS,
+  trackRpcRequestSent,
 } from "./requestLatencyState";
 
 describe("requestLatencyState", () => {
@@ -48,6 +50,23 @@ describe("requestLatencyState", () => {
     vi.advanceTimersByTime(SLOW_RPC_ACK_THRESHOLD_MS * 2);
 
     expect(getSlowRpcAckRequests()).toEqual([]);
+  });
+
+  it("uses a longer threshold for RPCs expected to run for provider turns", () => {
+    trackRpcRequestSent("1", ORCHESTRATION_WS_METHODS.dispatchCommand);
+    vi.advanceTimersByTime(SLOW_RPC_ACK_THRESHOLD_MS * 2);
+    expect(getSlowRpcAckRequests()).toEqual([]);
+
+    vi.advanceTimersByTime(
+      EXPECTED_LONG_RUNNING_RPC_ACK_THRESHOLD_MS - SLOW_RPC_ACK_THRESHOLD_MS * 2,
+    );
+    expect(getSlowRpcAckRequests()).toMatchObject([
+      {
+        requestId: "1",
+        tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+        thresholdMs: EXPECTED_LONG_RUNNING_RPC_ACK_THRESHOLD_MS,
+      },
+    ]);
   });
 
   it("evicts the oldest pending requests once the tracker reaches capacity", () => {

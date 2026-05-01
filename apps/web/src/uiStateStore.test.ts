@@ -10,6 +10,7 @@ import {
   type PersistedUiState,
   persistState,
   reorderProjects,
+  setChangedFilesDiffScope,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
   syncProjects,
@@ -23,6 +24,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    changedFilesDiffScope: "turn",
     ...overrides,
   };
 }
@@ -48,6 +50,15 @@ describe("uiStateStore pure functions", () => {
     const next = markThreadVisited(initialState, threadId, "2026-02-25T12:30:00.000Z");
 
     expect(next).toBe(initialState);
+  });
+
+  it("setChangedFilesDiffScope updates the inline changed-files preference", () => {
+    const initialState = makeUiState();
+
+    const next = setChangedFilesDiffScope(initialState, "snapshot");
+
+    expect(next.changedFilesDiffScope).toBe("snapshot");
+    expect(setChangedFilesDiffScope(next, "snapshot")).toBe(next);
   });
 
   it("markThreadUnread moves lastVisitedAt before completion for a completed thread", () => {

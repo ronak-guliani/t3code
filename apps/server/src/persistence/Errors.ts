@@ -34,9 +34,34 @@ export function toPersistenceSqlError(operation: string) {
   return (cause: unknown): PersistenceSqlError =>
     new PersistenceSqlError({
       operation,
-      detail: `Failed to execute ${operation}`,
+      detail: describeCause(cause) ?? `Failed to execute ${operation}`,
       cause,
     });
+}
+
+function describeCause(cause: unknown): string | undefined {
+  if (cause === null || cause === undefined) return undefined;
+  if (typeof cause === "string") return cause;
+  if (cause instanceof Error) {
+    const inner = (cause as { cause?: unknown }).cause;
+    const innerMessage = inner instanceof Error ? inner.message : undefined;
+    return innerMessage && innerMessage !== cause.message
+      ? `${cause.message} (cause: ${innerMessage})`
+      : cause.message;
+  }
+  if (typeof cause === "object") {
+    const candidate = cause as { message?: unknown; _tag?: unknown; detail?: unknown };
+    const parts = [candidate._tag, candidate.detail ?? candidate.message].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    );
+    if (parts.length > 0) return parts.join(": ");
+    try {
+      return JSON.stringify(cause);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 export function toPersistenceDecodeError(operation: string) {
@@ -52,7 +77,7 @@ export function toPersistenceDecodeCauseError(operation: string) {
   return (cause: unknown): PersistenceDecodeError =>
     new PersistenceDecodeError({
       operation,
-      issue: `Failed to execute ${operation}`,
+      issue: describeCause(cause) ?? `Failed to execute ${operation}`,
       cause,
     });
 }

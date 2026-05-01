@@ -41,6 +41,10 @@ import Migration0025 from "./Migrations/025_CleanupInvalidProjectionPendingAppro
 import Migration0026 from "./Migrations/026_CanonicalizeModelSelectionOptions.ts";
 import Migration0027 from "./Migrations/027_ProviderSessionRuntimeInstanceId.ts";
 import Migration0028 from "./Migrations/028_ProjectionThreadSessionInstanceId.ts";
+import Migration0029 from "./Migrations/026_ProjectionThreadSessionResumeCursor.ts";
+import Migration0030 from "./Migrations/027_ProjectionThreadsPendingRuntimeMode.ts";
+import Migration0031 from "./Migrations/028_ProjectionTurnScopedFiles.ts";
+import Migration0032 from "./Migrations/032_EnsureProviderInstanceIdColumns.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -81,6 +85,10 @@ export const migrationEntries = [
   [26, "CanonicalizeModelSelectionOptions", Migration0026],
   [27, "ProviderSessionRuntimeInstanceId", Migration0027],
   [28, "ProjectionThreadSessionInstanceId", Migration0028],
+  [29, "ProjectionThreadSessionResumeCursor", Migration0029],
+  [30, "ProjectionThreadsPendingRuntimeMode", Migration0030],
+  [31, "ProjectionTurnScopedFiles", Migration0031],
+  [32, "EnsureProviderInstanceIdColumns", Migration0032],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -6,12 +6,14 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
+import { deriveTurnScopedCheckpointFiles } from "../../checkpointing/TurnScopedFiles.ts";
 import {
   checkpointRefForThreadTurn,
   resolveThreadWorkspaceCwd,
@@ -199,6 +201,7 @@ const make = Effect.gen(function* () {
         readonly role: string;
         readonly turnId: TurnId | null;
       }>;
+      readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
     };
     readonly cwd: string;
     readonly turnCount: number;
@@ -265,12 +268,18 @@ const make = Effect.gen(function* () {
         ),
       );
 
+    const { agentTouchedPaths, turnFiles } = deriveTurnScopedCheckpointFiles({
+      snapshotFiles: files,
+      activities: input.thread.activities,
+      turnId: input.turnId,
+      cwd: input.cwd,
+    });
+
+    const reversedMessages = input.thread.messages.toReversed();
     const assistantMessageId =
       input.assistantMessageId ??
-      input.thread.messages
-        .toReversed()
-        .find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)?.id ??
-      MessageId.make(`assistant:${input.turnId}`);
+      reversedMessages.find((entry) => entry.role === "assistant" && entry.turnId === input.turnId)
+        ?.id;
 
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.diff.complete",
@@ -281,7 +290,9 @@ const make = Effect.gen(function* () {
       checkpointRef: targetCheckpointRef,
       status: input.status,
       files,
-      assistantMessageId,
+      agentTouchedPaths,
+      turnFiles,
+      ...(assistantMessageId !== undefined ? { assistantMessageId } : {}),
       checkpointTurnCount: input.turnCount,
       createdAt: input.createdAt,
     });
