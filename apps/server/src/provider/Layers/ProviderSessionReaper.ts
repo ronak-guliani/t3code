@@ -1,3 +1,4 @@
+import { CommandId, type ProviderSession, type ThreadId } from "@t3tools/contracts";
 import { Duration, Effect, Layer, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
@@ -10,6 +11,17 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+const serverCommandId = (tag: string): CommandId =>
+  CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
+
+function sessionKeepsTurnActive(
+  session: ProviderSession | undefined,
+  activeTurnId: string,
+): boolean {
+  if (!session) return false;
+  return session.status === "running" && session.activeTurnId === activeTurnId;
+}
 
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
@@ -32,10 +44,69 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       const readModel = yield* orchestrationEngine.getReadModel();
       const threadsById = new Map(readModel.threads.map((thread) => [thread.id, thread] as const));
       const bindings = yield* directory.listBindings();
+      const activeSessions = yield* providerService
+        .listSessions()
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider.session.reaper.list-sessions-failed", { cause }).pipe(
+              Effect.as(null),
+            ),
+          ),
+        );
+      const activeSessionsByThreadId =
+        activeSessions === null
+          ? null
+          : new Map<ThreadId, ProviderSession>(
+              activeSessions.map((session) => [session.threadId, session] as const),
+            );
       const now = Date.now();
       let reapedCount = 0;
 
       for (const binding of bindings) {
+        const thread = threadsById.get(binding.threadId);
+        if (thread?.session?.activeTurnId != null) {
+          if (activeSessionsByThreadId === null) {
+            yield* Effect.logDebug("provider.session.reaper.skipped-active-turn-reconcile", {
+              threadId: binding.threadId,
+              activeTurnId: thread.session.activeTurnId,
+              reason: "active_sessions_unavailable",
+            });
+            continue;
+          }
+          const activeSession = activeSessionsByThreadId.get(binding.threadId);
+          if (!sessionKeepsTurnActive(activeSession, thread.session.activeTurnId)) {
+            const updatedAt = new Date().toISOString();
+            const lastSeenMs = Date.parse(binding.lastSeenAt);
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: serverCommandId("provider-session-reaper-stale-active-turn"),
+              threadId: binding.threadId,
+              session: {
+                ...thread.session,
+                status: "interrupted",
+                activeTurnId: null,
+                lastError: "Provider session is no longer active.",
+                updatedAt,
+              },
+              createdAt: updatedAt,
+            });
+            yield* Effect.logWarning("provider.session.reaper.cleared-stale-active-turn", {
+              threadId: binding.threadId,
+              provider: binding.provider,
+              activeTurnId: thread.session.activeTurnId,
+              idleDurationMs: Number.isNaN(lastSeenMs) ? null : now - lastSeenMs,
+              activeProviderSessionStatus: activeSession?.status ?? null,
+              activeProviderSessionTurnId: activeSession?.activeTurnId ?? null,
+            });
+            continue;
+          }
+          yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
+            threadId: binding.threadId,
+            activeTurnId: thread.session.activeTurnId,
+          });
+          continue;
+        }
+
         if (binding.status === "stopped") {
           continue;
         }
@@ -52,16 +123,6 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
         const idleDurationMs = now - lastSeenMs;
         if (idleDurationMs < inactivityThresholdMs) {
-          continue;
-        }
-
-        const thread = threadsById.get(binding.threadId);
-        if (thread?.session?.activeTurnId != null) {
-          yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
-            threadId: binding.threadId,
-            activeTurnId: thread.session.activeTurnId,
-            idleDurationMs,
-          });
           continue;
         }
 

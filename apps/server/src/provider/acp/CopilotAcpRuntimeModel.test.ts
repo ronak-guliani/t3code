@@ -63,7 +63,7 @@ describe("CopilotAcpRuntimeModel", () => {
     });
     expect(edit.itemType).toBe("file_change");
     expect(edit.kind).toBe("edit");
-    expect(edit.title).toBe("Changed files");
+    expect(edit.title).toBe("Edited 1 file");
     expect(edit.detail).toBe("src/app.ts");
 
     const search = normalizeCopilotToolCallState({

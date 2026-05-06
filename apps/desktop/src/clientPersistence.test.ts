@@ -52,6 +52,7 @@ const clientSettings: ClientSettings = {
   autoOpenPlanSidebar: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
+  codeFont: "jetbrains-mono",
   diffWordWrap: true,
   favorites: [],
   providerModelPreferences: {},

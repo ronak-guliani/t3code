@@ -14,6 +14,7 @@ const MAX_TURN_SCOPED_PATHS = 500;
 export interface DeriveTurnScopedCheckpointFilesInput {
   readonly snapshotFiles: ReadonlyArray<OrchestrationCheckpointFile>;
   readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly providerTouchedPaths?: ReadonlyArray<string>;
   readonly turnId: TurnId;
   readonly cwd: string;
 }
@@ -27,8 +28,21 @@ export function deriveTurnScopedCheckpointFiles(
   input: DeriveTurnScopedCheckpointFilesInput,
 ): DeriveTurnScopedCheckpointFilesResult {
   const touched = new Set<string>();
+  for (const filePath of input.providerTouchedPaths ?? []) {
+    const normalizedPath = normalizeChangedFilePath(filePath, { cwd: input.cwd });
+    if (normalizedPath === null) {
+      continue;
+    }
+    touched.add(normalizedPath);
+    if (touched.size >= MAX_TURN_SCOPED_PATHS) {
+      break;
+    }
+  }
 
   for (const activity of input.activities) {
+    if (touched.size >= MAX_TURN_SCOPED_PATHS) {
+      break;
+    }
     if (activity.turnId !== input.turnId || !TURN_SCOPED_ACTIVITY_KINDS.has(activity.kind)) {
       continue;
     }

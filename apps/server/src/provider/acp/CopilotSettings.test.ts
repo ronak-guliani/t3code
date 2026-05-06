@@ -78,6 +78,83 @@ it.layer(TestLayer)("CopilotSettings", (it) => {
       }),
     );
 
+    it.effect("extracts Copilot auth user from user config", () =>
+      Effect.gen(function* () {
+        const homeDir = yield* makeTempDir();
+        const cwd = yield* makeTempDir();
+        yield* writeTextFile(
+          homeDir,
+          ".copilot/config.json",
+          JSON.stringify({
+            lastLoggedInUser: {
+              host: " https://github.com ",
+              login: " octocat ",
+            },
+          }),
+        );
+
+        const settings = yield* readCopilotMergedSettings({ cwd, homeDir });
+
+        expect(settings.auth).toEqual({
+          host: "https://github.com",
+          login: "octocat",
+        });
+      }),
+    );
+
+    it.effect("falls back to first logged-in Copilot user", () =>
+      Effect.gen(function* () {
+        const homeDir = yield* makeTempDir();
+        const cwd = yield* makeTempDir();
+        yield* writeTextFile(
+          homeDir,
+          ".copilot/config.json",
+          JSON.stringify({
+            loggedInUsers: [
+              {
+                host: "https://github.com",
+                login: "octocat",
+              },
+            ],
+          }),
+        );
+
+        const settings = yield* readCopilotMergedSettings({ cwd, homeDir });
+
+        expect(settings.auth).toEqual({
+          host: "https://github.com",
+          login: "octocat",
+        });
+      }),
+    );
+
+    it.effect("ignores invalid Copilot auth user entries", () =>
+      Effect.gen(function* () {
+        const homeDir = yield* makeTempDir();
+        const cwd = yield* makeTempDir();
+        yield* writeTextFile(
+          homeDir,
+          ".copilot/config.json",
+          JSON.stringify({
+            lastLoggedInUser: {
+              host: "https://github.com",
+              login: " ",
+            },
+            loggedInUsers: [
+              {
+                host: "https://github.com",
+                login: "",
+              },
+            ],
+          }),
+        );
+
+        const settings = yield* readCopilotMergedSettings({ cwd, homeDir });
+
+        expect(settings.auth).toBeUndefined();
+      }),
+    );
+
     it.effect("accepts commented Copilot config files", () =>
       Effect.gen(function* () {
         const homeDir = yield* makeTempDir();

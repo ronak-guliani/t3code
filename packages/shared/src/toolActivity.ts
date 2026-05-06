@@ -1,4 +1,10 @@
 import type { ToolLifecycleItemType } from "@t3tools/contracts";
+import {
+  extractNormalizedChangedFilePathsFromToolPayload,
+  normalizeChangedFilePath,
+} from "./toolChangedFiles.ts";
+
+type FileChangeOperation = "edit" | "create" | "delete" | "rename" | "mixed";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -150,6 +156,163 @@ function isEquivalent(left: string | undefined, right: string | undefined): bool
   return normalizedLeft !== undefined && normalizedLeft === normalizedRight;
 }
 
+function collectSearchableText(value: unknown, chunks: string[], depth: number): void {
+  if (depth > 4 || chunks.length >= 80) {
+    return;
+  }
+  if (typeof value === "string") {
+    chunks.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectSearchableText(entry, chunks, depth + 1);
+      if (chunks.length >= 80) return;
+    }
+    return;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return;
+  }
+  for (const entry of Object.values(record)) {
+    collectSearchableText(entry, chunks, depth + 1);
+    if (chunks.length >= 80) return;
+  }
+}
+
+function inferPatchOperation(text: string): FileChangeOperation | undefined {
+  const operations = new Set<FileChangeOperation>();
+  if (/^\*\*\*\s+Add\s+File:/gmu.test(text)) operations.add("create");
+  if (/^\*\*\*\s+Delete\s+File:/gmu.test(text)) operations.add("delete");
+  if (/^\*\*\*\s+(?:Move|Rename)\s+File:/gmu.test(text)) operations.add("rename");
+  if (/^\*\*\*\s+Update\s+File:/gmu.test(text)) operations.add("edit");
+  if (operations.size === 0) {
+    return undefined;
+  }
+  return operations.size === 1 ? [...operations][0] : "mixed";
+}
+
+function inferFileChangeOperation(input: {
+  readonly title?: string | undefined;
+  readonly data?: Record<string, unknown> | undefined;
+}): FileChangeOperation {
+  const kind = asTrimmedString(input.data?.kind)?.toLowerCase();
+  switch (kind) {
+    case "delete":
+      return "delete";
+    case "move":
+      return "rename";
+    case "write":
+      break;
+    case "edit":
+      return "edit";
+  }
+
+  const chunks: string[] = [];
+  collectSearchableText(input.title, chunks, 0);
+  collectSearchableText(input.data, chunks, 0);
+  const text = chunks.join(" ").toLowerCase();
+  const patchOperation = inferPatchOperation(chunks.join("\n"));
+  if (patchOperation) {
+    return patchOperation;
+  }
+  if (/\b(?:delete|remove)\b/u.test(text)) return "delete";
+  if (/\b(?:move|rename)\b/u.test(text)) return "rename";
+  if (/\b(?:create|create_file|add file|new file)\b/u.test(text)) return "create";
+  return kind === "write" ? "create" : "edit";
+}
+
+function fileNoun(count: number): string {
+  return count === 1 ? "file" : "files";
+}
+
+function fileChangeVerb(operation: FileChangeOperation): string {
+  switch (operation) {
+    case "create":
+      return "Created";
+    case "delete":
+      return "Deleted";
+    case "rename":
+      return "Renamed";
+    case "edit":
+      return "Edited";
+    case "mixed":
+      return "Changed";
+  }
+}
+
+function fileChangeCount(operation: FileChangeOperation, pathCount: number): number {
+  if (operation === "rename") {
+    return Math.max(1, Math.ceil(pathCount / 2));
+  }
+  return pathCount;
+}
+
+function deriveFileChangeSummary(operation: FileChangeOperation, pathCount: number): string {
+  const verb = fileChangeVerb(operation);
+  if (pathCount === 0) {
+    return `${verb} files`;
+  }
+  const count = fileChangeCount(operation, pathCount);
+  if (operation === "create" || operation === "delete" || operation === "rename") {
+    return count === 1 ? `${verb} file` : `${verb} ${count} files`;
+  }
+  return `${verb} ${count} ${fileNoun(count)}`;
+}
+
+function findNormalizedPathByKey(
+  value: unknown,
+  key: "oldPath" | "newPath",
+  depth: number,
+): string | undefined {
+  if (depth > 4) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const result = findNormalizedPathByKey(entry, key, depth + 1);
+      if (result) return result;
+    }
+    return undefined;
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const direct = asTrimmedString(record[key]);
+  if (direct) {
+    const normalized = normalizeChangedFilePath(direct);
+    if (normalized) return normalized;
+  }
+  for (const nestedKey of ["item", "result", "input", "data", "rawInput", "changes", "files"]) {
+    const result = findNormalizedPathByKey(record[nestedKey], key, depth + 1);
+    if (result) return result;
+  }
+  return undefined;
+}
+
+function deriveFileChangeDetail(
+  operation: FileChangeOperation,
+  paths: ReadonlyArray<string>,
+  fallbackPrimaryPath: string | undefined,
+  data: Record<string, unknown> | undefined,
+): string | undefined {
+  if (operation === "rename" && paths.length >= 2) {
+    const oldPath = findNormalizedPathByKey(data, "oldPath", 0) ?? paths[0];
+    const newPath = findNormalizedPathByKey(data, "newPath", 0) ?? paths[1];
+    const renameCount = fileChangeCount(operation, paths.length);
+    return renameCount === 1
+      ? `${oldPath} -> ${newPath}`
+      : `${oldPath} -> ${newPath} +${renameCount - 1} more`;
+  }
+  const [firstPath] = paths;
+  if (firstPath) {
+    return paths.length === 1 ? firstPath : `${firstPath} +${paths.length - 1} more`;
+  }
+  return fallbackPrimaryPath;
+}
+
 function classifyToolAction(input: {
   readonly itemType?: ToolLifecycleItemType | null | undefined;
   readonly title?: string | undefined;
@@ -227,9 +390,15 @@ export function deriveToolActivityPresentation(
   }
 
   if (action === "file_change") {
+    const changedPaths = extractNormalizedChangedFilePathsFromToolPayload(data, {
+      maxDepth: 4,
+      maxPaths: 12,
+    });
+    const operation = inferFileChangeOperation({ title, data });
+    const detail = deriveFileChangeDetail(operation, changedPaths, primaryPath, data);
     return {
-      summary: "Changed files",
-      ...(primaryPath ? { detail: primaryPath } : {}),
+      summary: deriveFileChangeSummary(operation, changedPaths.length),
+      ...(detail ? { detail } : {}),
     };
   }
 

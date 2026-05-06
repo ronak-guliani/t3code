@@ -2278,6 +2278,34 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.requestType).toBe("command_execution_approval");
   });
 
+  it("keeps the session running when a provider request resolves back into a turn", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "request.resolved",
+      eventId: asEventId("evt-request-resolved-running-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-request-resume"),
+      requestId: ApprovalRequestId.make("req-request-resume"),
+      payload: {
+        requestType: "command_execution_approval",
+        decision: "accept",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "running" &&
+        entry.session?.activeTurnId === "turn-request-resume",
+    );
+    expect(thread.session?.status).toBe("running");
+    expect(thread.session?.activeTurnId).toBe("turn-request-resume");
+  });
+
   it("maps runtime.error into errored session state", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -2331,7 +2359,7 @@ describe("ProviderRuntimeIngestion", () => {
     harness.emit({
       type: "runtime.error",
       eventId: asEventId("evt-runtime-error-preserve-resume-cursor"),
-      provider: "codex",
+      provider: ProviderDriverKind.make("codex"),
       createdAt: new Date().toISOString(),
       threadId: asThreadId("thread-1"),
       payload: {
@@ -2550,7 +2578,16 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-p1"),
       itemId: asItemId("item-p1-assistant"),
       payload: {
-        unifiedDiff: "diff --git a/file.txt b/file.txt\n+hello\n",
+        unifiedDiff: [
+          "diff --git a/apps/web/src/components/Sidebar.tsx b/apps/web/src/components/Sidebar.tsx",
+          "index 1111111..2222222 100644",
+          "--- a/apps/web/src/components/Sidebar.tsx",
+          "+++ b/apps/web/src/components/Sidebar.tsx",
+          "@@ -1,2 +1 @@",
+          "-old badge",
+          "-version",
+          "+sidebar",
+        ].join("\n"),
       },
     });
 
@@ -2611,6 +2648,15 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.status).toBe("missing");
     expect(checkpoint?.assistantMessageId).toBe("assistant:item-p1-assistant");
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
+    expect(checkpoint?.agentTouchedPaths).toEqual(["apps/web/src/components/Sidebar.tsx"]);
+    expect(checkpoint?.turnFiles).toEqual([
+      {
+        path: "apps/web/src/components/Sidebar.tsx",
+        kind: "modified",
+        additions: 1,
+        deletions: 2,
+      },
+    ]);
   });
 
   it("projects context window updates into normalized thread activities", async () => {
@@ -2966,6 +3012,35 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.answers).toEqual({
       sandbox_mode: "workspace-write",
     });
+  });
+
+  it("keeps the session running when user input resolves back into a turn", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "user-input.resolved",
+      eventId: asEventId("evt-user-input-resolved-running-turn"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-user-input-resume"),
+      requestId: ApprovalRequestId.make("req-user-input-resume"),
+      payload: {
+        answers: {
+          skill: "mattpocock/skills",
+        },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "running" &&
+        entry.session?.activeTurnId === "turn-user-input-resume",
+    );
+    expect(thread.session?.status).toBe("running");
+    expect(thread.session?.activeTurnId).toBe("turn-user-input-resume");
   });
 
   it("continues processing runtime events after a single event handler failure", async () => {

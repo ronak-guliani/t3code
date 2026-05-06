@@ -311,23 +311,32 @@ describe("CheckpointDiffQueryLive", () => {
   it("allows snapshot-scoped diffs across wider checkpoint ranges", async () => {
     const projectId = ProjectId.make("project-1");
     const threadId = ThreadId.make("thread-1");
-    const diffCheckpointsCalls: Array<ReadonlyArray<string> | undefined> = [];
+    const diffCheckpointsCalls: Array<{
+      readonly fromCheckpointRef: CheckpointRef;
+      readonly toCheckpointRef: CheckpointRef;
+      readonly paths?: ReadonlyArray<string>;
+    }> = [];
+    const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
     const threadCheckpointContext = makeThreadCheckpointContext({
       projectId,
       threadId,
       workspaceRoot: "/tmp/workspace",
       worktreePath: null,
       checkpointTurnCount: 2,
-      checkpointRef: checkpointRefForThreadTurn(threadId, 2),
+      checkpointRef: toCheckpointRef,
     });
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
       captureCheckpoint: () => Effect.void,
       hasCheckpointRef: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: ({ paths }) =>
+      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, paths }) =>
         Effect.sync(() => {
-          diffCheckpointsCalls.push(paths);
+          diffCheckpointsCalls.push({
+            fromCheckpointRef,
+            toCheckpointRef,
+            ...(paths !== undefined ? { paths } : {}),
+          });
           return "snapshot patch";
         }),
       deleteCheckpointRefs: () => Effect.void,
@@ -355,14 +364,19 @@ describe("CheckpointDiffQueryLive", () => {
         const query = yield* CheckpointDiffQuery;
         return yield* query.getTurnDiff({
           threadId,
-          fromTurnCount: 0,
+          fromTurnCount: 1,
           toTurnCount: 2,
           scope: "snapshot",
         });
       }).pipe(Effect.provide(layer)),
     );
 
-    expect(diffCheckpointsCalls).toEqual([undefined]);
+    expect(diffCheckpointsCalls).toEqual([
+      {
+        fromCheckpointRef: checkpointRefForThreadTurn(threadId, 0),
+        toCheckpointRef,
+      },
+    ]);
     expect(result.diff).toBe("snapshot patch");
   });
 

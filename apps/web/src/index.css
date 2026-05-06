@@ -6,7 +6,7 @@
 
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
-  --font-mono: "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --font-mono: var(--app-font-mono-stack);
   --font-sans: var(--app-font-sans-stack);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
@@ -73,6 +73,8 @@
   color-scheme: light;
   --app-font-sans-stack:
     "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --app-font-mono-stack:
+    "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace, monospace;
   --radius: 0.625rem;
   --background: var(--color-white);
   --app-chrome-background: var(--background);
@@ -137,6 +139,22 @@ html[data-ui-font="geist"] {
     "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
+html[data-code-font="sf-mono"] {
+  --app-font-mono-stack:
+    "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace, monospace;
+}
+
+html[data-code-font="menlo"] {
+  --app-font-mono-stack:
+    Menlo, Monaco, "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+}
+
+html[data-code-font="jetbrains-mono"] {
+  --app-font-mono-stack:
+    "JetBrains Mono", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace,
+    monospace;
+}
+
 body {
   font-family: var(--app-font-sans-stack);
   margin: 0;
@@ -169,7 +187,7 @@ body::after {
 
 pre,
 code {
-  font-family: var(--font-mono);
+  font-family: var(--app-font-mono-stack);
 }
 
 /* Window drag region (frameless titlebar) */
@@ -336,7 +354,7 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--muted) 88%, var(--background));
   padding: 0.08rem 0.34rem;
   color: var(--foreground);
-  font-family: var(--font-mono, ui-monospace, monospace);
+  font-family: var(--app-font-mono-stack);
   font-size: 0.75rem;
   line-height: 1.15;
   vertical-align: text-bottom;

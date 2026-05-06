@@ -48,6 +48,8 @@ import {
 import { readEnvironmentApi } from "~/environmentApi";
 import { readLocalApi } from "~/localApi";
 import { selectTerminalEventEntries, useTerminalStateStore } from "../terminalStateStore";
+import { CODE_FONT_STACKS } from "../hooks/useAppFont";
+import { useSettings } from "../hooks/useSettings";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -293,6 +295,7 @@ export function TerminalViewport({
   const keybindingsRef = useRef(keybindings);
   const lastAppliedTerminalEventIdRef = useRef(0);
   const terminalHydratedRef = useRef(false);
+  const codeFont = useSettings((settings) => settings.codeFont);
   const handleSessionExited = useEffectEvent(() => {
     onSessionExited();
   });
@@ -300,10 +303,18 @@ export function TerminalViewport({
     onAddTerminalContext(selection);
   });
   const readTerminalLabel = useEffectEvent(() => terminalLabel);
+  const readCodeFontStack = useEffectEvent(() => CODE_FONT_STACKS[codeFont]);
 
   useEffect(() => {
     keybindingsRef.current = keybindings;
   }, [keybindings]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.fontFamily = CODE_FONT_STACKS[codeFont];
+    fitAddonRef.current?.fit();
+  }, [codeFont]);
 
   useEffect(() => {
     const mount = containerRef.current;
@@ -320,7 +331,7 @@ export function TerminalViewport({
       lineHeight: 1.2,
       fontSize: 12,
       scrollback: 5_000,
-      fontFamily: '"SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: readCodeFontStack(),
       theme: terminalThemeFromApp(mount),
     });
     terminal.loadAddon(fitAddon);

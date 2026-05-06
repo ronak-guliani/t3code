@@ -15,11 +15,18 @@ export interface CopilotConfigFile {
   readonly model: string | undefined;
 }
 
+export interface CopilotAuthUser {
+  readonly login: string;
+  readonly host: string;
+}
+
 export interface CopilotMergedSettings {
   readonly userConfig: CopilotConfigFile | undefined;
   readonly projectConfig: CopilotConfigFile | undefined;
   readonly model: string | undefined;
   readonly warnings: ReadonlyArray<CopilotConfigReadWarning>;
+  /** Authenticated user extracted from ~/.copilot/config.json, if present. */
+  readonly auth: CopilotAuthUser | undefined;
 }
 
 export interface CopilotConfigPaths {
@@ -43,11 +50,15 @@ function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function normalizeModel(value: unknown): string | undefined {
+function normalizeNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
   return value.trim() || undefined;
+}
+
+function normalizeModel(value: unknown): string | undefined {
+  return normalizeNonEmptyString(value);
 }
 
 export function extractCopilotConfiguredModel(
@@ -107,6 +118,42 @@ function isConfigFile(
   value: CopilotConfigFile | CopilotConfigReadWarning,
 ): value is CopilotConfigFile {
   return "raw" in value;
+}
+
+function extractCopilotAuthUser(
+  config: Readonly<Record<string, unknown>> | undefined,
+): CopilotAuthUser | undefined {
+  if (!config) {
+    return undefined;
+  }
+  const lastLoggedInUser = config.lastLoggedInUser;
+  const lastLoggedInLogin = isJsonRecord(lastLoggedInUser)
+    ? normalizeNonEmptyString(lastLoggedInUser.login)
+    : undefined;
+  const lastLoggedInHost = isJsonRecord(lastLoggedInUser)
+    ? normalizeNonEmptyString(lastLoggedInUser.host)
+    : undefined;
+  if (lastLoggedInLogin && lastLoggedInHost) {
+    return {
+      login: lastLoggedInLogin,
+      host: lastLoggedInHost,
+    };
+  }
+  const loggedInUsers = config.loggedInUsers;
+  const firstLoggedInUser = Array.isArray(loggedInUsers) ? loggedInUsers[0] : undefined;
+  const firstLoggedInLogin = isJsonRecord(firstLoggedInUser)
+    ? normalizeNonEmptyString(firstLoggedInUser.login)
+    : undefined;
+  const firstLoggedInHost = isJsonRecord(firstLoggedInUser)
+    ? normalizeNonEmptyString(firstLoggedInUser.host)
+    : undefined;
+  if (firstLoggedInLogin && firstLoggedInHost) {
+    return {
+      login: firstLoggedInLogin,
+      host: firstLoggedInHost,
+    };
+  }
+  return undefined;
 }
 
 export function resolveCopilotConfigPaths(
@@ -174,6 +221,7 @@ export function readCopilotMergedSettings(
       projectConfig,
       model: projectConfig?.model ?? userConfig?.model,
       warnings,
+      auth: extractCopilotAuthUser(userConfig?.raw),
     };
   });
 }

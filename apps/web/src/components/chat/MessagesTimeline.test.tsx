@@ -103,6 +103,48 @@ function buildProps() {
 }
 
 describe("MessagesTimeline", () => {
+  it("highlights matching substrings in open chat search results", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        chatFindQuery="needle"
+        matchedRowIds={new Set(["entry-1", "entry-2"])}
+        activeMatchRowId="entry-1"
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            message: {
+              id: MessageId.make("message-user"),
+              role: "user",
+              text: "Needle alpha",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            message: {
+              id: MessageId.make("message-assistant"),
+              role: "assistant",
+              text: "Found another needle in markdown.",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              streaming: false,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("<mark");
+    expect(markup).toContain(">Needle</mark>");
+    expect(markup).toContain(">needle</mark>");
+  });
+
   it("renders inline terminal labels with the composer chip UI", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

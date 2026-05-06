@@ -8,6 +8,8 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   Columns2Icon,
+  MinusIcon,
+  PlusIcon,
   Rows3Icon,
   TextWrapIcon,
 } from "lucide-react";
@@ -41,6 +43,22 @@ import { ToggleGroup, Toggle } from "./ui/toggle-group";
 
 type DiffRenderMode = "stacked" | "split";
 type DiffThemeType = "light" | "dark";
+
+const DIFF_ZOOM_MIN = 50;
+const DIFF_ZOOM_MAX = 200;
+const DIFF_ZOOM_STEP = 10;
+const DIFF_ZOOM_DEFAULT = 100;
+// Base font size that 100% maps to, in px
+const DIFF_ZOOM_BASE_PX = 11;
+
+function diffZoomFontSizePx(zoom: number): number {
+  return Math.round((DIFF_ZOOM_BASE_PX * zoom) / 100);
+}
+
+function diffZoomLineHeight(zoom: number): number {
+  // Slightly tighter at small sizes, looser at large
+  return zoom <= 75 ? 1.4 : zoom <= 100 ? 1.55 : 1.6;
+}
 
 const DIFF_PANEL_UNSAFE_CSS = `
 [data-diffs-header],
@@ -105,6 +123,28 @@ const DIFF_PANEL_UNSAFE_CSS = `
   text-decoration-color: currentColor;
 }
 `;
+
+function buildDiffPanelUnsafeCss(zoom: number): string {
+  const fontSizePx = diffZoomFontSizePx(zoom);
+  const lineHeight = diffZoomLineHeight(zoom);
+  return `${DIFF_PANEL_UNSAFE_CSS}
+
+[data-diff],
+[data-file],
+[data-file-info],
+[data-line],
+[data-code],
+[data-code] *,
+[data-line] *,
+[data-diff] pre,
+[data-diff] code,
+[data-diff] table,
+[data-diff] td {
+  font-size: ${fontSizePx}px !important;
+  line-height: ${lineHeight} !important;
+}
+`;
+}
 
 type RenderablePatch =
   | {
@@ -173,6 +213,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const settings = useSettings();
   const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
   const [diffWordWrap, setDiffWordWrap] = useState(settings.diffWordWrap);
+  const [diffZoom, setDiffZoom] = useState(DIFF_ZOOM_DEFAULT);
   const patchViewportRef = useRef<HTMLDivElement>(null);
   const turnStripRef = useRef<HTMLDivElement>(null);
   const previousDiffOpenRef = useRef(false);
@@ -327,6 +368,14 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       }),
     );
   }, [renderablePatch]);
+  const diffUnsafeCss = useMemo(() => buildDiffPanelUnsafeCss(diffZoom), [diffZoom]);
+  const diffRawTextStyle = useMemo(
+    () => ({
+      fontSize: `${diffZoomFontSizePx(diffZoom)}px`,
+      lineHeight: diffZoomLineHeight(diffZoom),
+    }),
+    [diffZoom],
+  );
 
   useEffect(() => {
     if (diffOpen && !previousDiffOpenRef.current) {
@@ -582,6 +631,31 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         >
           <TextWrapIcon className="size-3" />
         </Toggle>
+        <div className="flex shrink-0 items-center rounded-md border border-border/70 text-[10px]">
+          <button
+            type="button"
+            aria-label="Zoom out diff"
+            title="Zoom out"
+            disabled={diffZoom <= DIFF_ZOOM_MIN}
+            onClick={() => setDiffZoom((z) => Math.max(DIFF_ZOOM_MIN, z - DIFF_ZOOM_STEP))}
+            className="flex size-6 items-center justify-center rounded-l-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <MinusIcon className="size-2.5" />
+          </button>
+          <span className="min-w-[2.6rem] select-none text-center font-medium tabular-nums text-muted-foreground">
+            {diffZoom}%
+          </span>
+          <button
+            type="button"
+            aria-label="Zoom in diff"
+            title="Zoom in"
+            disabled={diffZoom >= DIFF_ZOOM_MAX}
+            onClick={() => setDiffZoom((z) => Math.min(DIFF_ZOOM_MAX, z + DIFF_ZOOM_STEP))}
+            className="flex size-6 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <PlusIcon className="size-2.5" />
+          </button>
+        </div>
       </div>
     </>
   );
@@ -668,7 +742,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                           overflow: diffWordWrap ? "wrap" : "scroll",
                           theme: resolveDiffThemeName(resolvedTheme),
                           themeType: resolvedTheme as DiffThemeType,
-                          unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
+                          unsafeCSS: diffUnsafeCss,
                         }}
                       />
                     </div>
@@ -681,11 +755,12 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                   <p className="text-[11px] text-muted-foreground/75">{renderablePatch.reason}</p>
                   <pre
                     className={cn(
-                      "max-h-[72vh] rounded-md border border-border/70 bg-background/70 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground/90",
+                      "max-h-[72vh] rounded-md border border-border/70 bg-background/70 p-3 font-mono text-muted-foreground/90",
                       diffWordWrap
                         ? "overflow-auto whitespace-pre-wrap wrap-break-word"
                         : "overflow-auto",
                     )}
+                    style={diffRawTextStyle}
                   >
                     {renderablePatch.text}
                   </pre>

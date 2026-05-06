@@ -4,6 +4,7 @@ import {
   CommandId,
   MessageId,
   type OrchestrationEvent,
+  type OrchestrationCheckpointFile,
   type OrchestrationProposedPlanId,
   CheckpointRef,
   isToolLifecycleItemType,
@@ -13,9 +14,11 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
+import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 
+import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
@@ -46,6 +49,8 @@ const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+
+type ProviderTurnDiffFile = OrchestrationCheckpointFile;
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -138,6 +143,45 @@ function normalizeRuntimeTurnState(
     default:
       return "completed";
   }
+}
+
+function mergeProviderTurnDiffFiles(
+  current: ReadonlyArray<ProviderTurnDiffFile>,
+  next: ReadonlyArray<ProviderTurnDiffFile>,
+): ProviderTurnDiffFile[] {
+  const byPath = new Map<string, ProviderTurnDiffFile>();
+  for (const file of current) {
+    byPath.set(file.path, file);
+  }
+  for (const file of next) {
+    byPath.set(file.path, file);
+  }
+  return [...byPath.values()].toSorted((left, right) => left.path.localeCompare(right.path));
+}
+
+function parseProviderTurnDiffFiles(
+  unifiedDiff: string,
+  cwd: string,
+): ReadonlyArray<ProviderTurnDiffFile> {
+  const parsedFiles = parseTurnDiffFilesFromUnifiedDiff(unifiedDiff);
+  const result: ProviderTurnDiffFile[] = [];
+  const seen = new Set<string>();
+
+  for (const file of parsedFiles) {
+    const normalizedPath = normalizeChangedFilePath(file.path, { cwd });
+    if (normalizedPath === null || seen.has(normalizedPath)) {
+      continue;
+    }
+    seen.add(normalizedPath);
+    result.push({
+      path: normalizedPath,
+      kind: "modified",
+      additions: file.additions,
+      deletions: file.deletions,
+    });
+  }
+
+  return result;
 }
 
 function orchestrationSessionStatusFromRuntimeState(
@@ -553,20 +597,22 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
-  const isGitRepoForThread = Effect.fn("isGitRepoForThread")(function* (threadId: ThreadId) {
+  const resolveGitRepositoryCwdForThread = Effect.fn("resolveGitRepositoryCwdForThread")(function* (
+    threadId: ThreadId,
+  ) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
-      return false;
+      return null;
     }
     const workspaceCwd = resolveThreadWorkspaceCwd({
       thread,
       projects: readModel.projects,
     });
     if (!workspaceCwd) {
-      return false;
+      return null;
     }
-    return isGitRepository(workspaceCwd);
+    return isGitRepository(workspaceCwd) ? workspaceCwd : null;
   });
 
   const rememberAssistantMessageId = (threadId: ThreadId, turnId: TurnId, messageId: MessageId) =>
@@ -1227,6 +1273,40 @@ const make = Effect.gen(function* () {
         }
       }
 
+      if (
+        (event.type === "request.opened" ||
+          event.type === "request.resolved" ||
+          event.type === "user-input.requested" ||
+          event.type === "user-input.resolved") &&
+        eventTurnId !== undefined &&
+        thread.session?.status !== "stopped" &&
+        (!STRICT_PROVIDER_LIFECYCLE_GUARD ||
+          activeTurnId === null ||
+          sameId(activeTurnId, eventTurnId))
+      ) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: providerCommandId(event, "request-lifecycle-session-set"),
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "running",
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            activeTurnId: eventTurnId,
+            ...(thread.session?.resumeCursor !== undefined
+              ? { resumeCursor: thread.session.resumeCursor }
+              : {}),
+            lastError: thread.session?.lastError ?? null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+      }
+
       const assistantDelta =
         event.type === "content.delta" && event.payload.streamKind === "assistant_text"
           ? event.payload.delta
@@ -1489,14 +1569,22 @@ const make = Effect.gen(function* () {
 
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
-        if (turnId && (yield* isGitRepoForThread(thread.id))) {
-          // Skip if a checkpoint already exists for this turn. A real
-          // (non-placeholder) capture from CheckpointReactor should not
-          // be clobbered, and dispatching a duplicate placeholder for the
-          // same turnId would produce an unstable checkpointTurnCount.
-          if (thread.checkpoints.some((c) => c.turnId === turnId)) {
-            // Already tracked; no-op.
+        const workspaceCwd = yield* resolveGitRepositoryCwdForThread(thread.id);
+        if (turnId && workspaceCwd !== null) {
+          const existingCheckpoint = thread.checkpoints.find((c) => c.turnId === turnId);
+          if (existingCheckpoint !== undefined && existingCheckpoint.status !== "missing") {
+            // A real capture from CheckpointReactor should not be clobbered by
+            // subsequent provider diff updates for the same turn.
           } else {
+            const providerTurnFiles = parseProviderTurnDiffFiles(
+              event.payload.unifiedDiff,
+              workspaceCwd,
+            );
+            const turnFiles =
+              existingCheckpoint === undefined
+                ? providerTurnFiles
+                : mergeProviderTurnDiffFiles(existingCheckpoint.turnFiles, providerTurnFiles);
+            const agentTouchedPaths = [...new Set(turnFiles.map((file) => file.path))];
             const assistantMessageId = MessageId.make(
               `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
             );
@@ -1510,13 +1598,15 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               turnId,
               completedAt: now,
-              checkpointRef: CheckpointRef.make(`provider-diff:${event.eventId}`),
+              checkpointRef:
+                existingCheckpoint?.checkpointRef ??
+                CheckpointRef.make(`provider-diff:${event.eventId}`),
               status: "missing",
               files: [],
-              agentTouchedPaths: [],
-              turnFiles: [],
+              agentTouchedPaths,
+              turnFiles,
               assistantMessageId,
-              checkpointTurnCount: maxTurnCount + 1,
+              checkpointTurnCount: existingCheckpoint?.checkpointTurnCount ?? maxTurnCount + 1,
               createdAt: now,
             });
           }

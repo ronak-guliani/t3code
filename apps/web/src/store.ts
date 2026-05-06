@@ -276,7 +276,7 @@ function mapThreadShell(
     title: thread.title,
     modelSelection: normalizeModelSelection(thread.modelSelection),
     runtimeMode: thread.runtimeMode,
-    pendingRuntimeMode: thread.pendingRuntimeMode,
+    pendingRuntimeMode: null,
     interactionMode: thread.interactionMode,
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,

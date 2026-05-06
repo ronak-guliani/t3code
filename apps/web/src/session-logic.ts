@@ -176,8 +176,9 @@ export function isLatestTurnSettled(
   if (!latestTurn?.startedAt) return false;
   if (!latestTurn.completedAt) return false;
   if (!session) return true;
-  if (session.orchestrationStatus === "running") return false;
-  return true;
+  if (session.orchestrationStatus !== "running") return true;
+  if (!session.activeTurnId) return true;
+  return session.activeTurnId === latestTurn.turnId;
 }
 
 export function deriveActiveWorkStartedAt(

@@ -83,17 +83,18 @@ const make = Effect.gen(function* () {
         });
       }
 
+      const effectiveFromTurnCount = input.scope === "snapshot" ? 0 : input.fromTurnCount;
       const fromCheckpointRef =
-        input.fromTurnCount === 0
+        effectiveFromTurnCount === 0
           ? checkpointRefForThreadTurn(input.threadId, 0)
           : threadContext.value.checkpoints.find(
-              (checkpoint) => checkpoint.checkpointTurnCount === input.fromTurnCount,
+              (checkpoint) => checkpoint.checkpointTurnCount === effectiveFromTurnCount,
             )?.checkpointRef;
       if (!fromCheckpointRef) {
         return yield* new CheckpointUnavailableError({
           threadId: input.threadId,
-          turnCount: input.fromTurnCount,
-          detail: `Checkpoint ref is unavailable for turn ${input.fromTurnCount}.`,
+          turnCount: effectiveFromTurnCount,
+          detail: `Checkpoint ref is unavailable for turn ${effectiveFromTurnCount}.`,
         });
       }
 

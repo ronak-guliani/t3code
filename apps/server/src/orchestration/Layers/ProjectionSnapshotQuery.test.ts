@@ -297,10 +297,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           worktreePath: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
-            state: "completed",
+            state: "running",
             requestedAt: "2026-02-24T00:00:08.000Z",
             startedAt: "2026-02-24T00:00:08.000Z",
-            completedAt: "2026-02-24T00:00:08.000Z",
+            completedAt: null,
             assistantMessageId: asMessageId("message-1"),
             sourceProposedPlan: {
               threadId: ThreadId.make("thread-1"),
@@ -405,15 +405,14 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
-          pendingRuntimeMode: null,
           branch: null,
           worktreePath: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
-            state: "completed",
+            state: "running",
             requestedAt: "2026-02-24T00:00:08.000Z",
             startedAt: "2026-02-24T00:00:08.000Z",
-            completedAt: "2026-02-24T00:00:08.000Z",
+            completedAt: null,
             assistantMessageId: asMessageId("message-1"),
             sourceProposedPlan: {
               threadId: ThreadId.make("thread-1"),

@@ -52,6 +52,37 @@ describe("deriveTurnScopedCheckpointFiles", () => {
     });
   });
 
+  it("uses provider diff paths before falling back to tool activity paths", () => {
+    const turnId = TurnId.make("turn-1");
+    const result = deriveTurnScopedCheckpointFiles({
+      cwd: "/repo",
+      turnId,
+      providerTouchedPaths: ["apps/web/src/components/Sidebar.tsx"],
+      snapshotFiles: [
+        {
+          path: "apps/web/src/components/Sidebar.tsx",
+          kind: "modified",
+          additions: 1,
+          deletions: 37,
+        },
+        { path: "src/other.ts", kind: "modified", additions: 1, deletions: 0 },
+      ],
+      activities: [],
+    });
+
+    expect(result).toEqual({
+      agentTouchedPaths: ["apps/web/src/components/Sidebar.tsx"],
+      turnFiles: [
+        {
+          path: "apps/web/src/components/Sidebar.tsx",
+          kind: "modified",
+          additions: 1,
+          deletions: 37,
+        },
+      ],
+    });
+  });
+
   it("keeps touched-path provenance even when there is no net checkpoint diff", () => {
     const turnId = TurnId.make("turn-1");
     const result = deriveTurnScopedCheckpointFiles({

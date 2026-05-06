@@ -11,8 +11,10 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
+  DEFAULT_CODE_FONT,
   DEFAULT_UI_FONT,
   DEFAULT_UNIFIED_SETTINGS,
+  type CodeFont,
   type UiFont,
 } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -127,6 +129,29 @@ const UI_FONT_OPTIONS: ReadonlyArray<{ value: UiFont; label: string }> = [
     label: "Geist",
   },
 ];
+
+const CODE_FONT_OPTIONS: ReadonlyArray<{ value: CodeFont; label: string }> = [
+  {
+    value: "system-mono",
+    label: "System mono",
+  },
+  {
+    value: "sf-mono",
+    label: "SF Mono",
+  },
+  {
+    value: "menlo",
+    label: "Menlo",
+  },
+  {
+    value: "jetbrains-mono",
+    label: "JetBrains Mono",
+  },
+];
+
+function isCodeFont(value: unknown): value is CodeFont {
+  return CODE_FONT_OPTIONS.some((option) => option.value === value);
+}
 
 type InstallProviderSettings = {
   provider: ProviderDriverKind;
@@ -452,6 +477,7 @@ export function useSettingsRestore(onRestored?: () => void) {
         ? ["Time format"]
         : []),
       ...(settings.uiFont !== DEFAULT_UNIFIED_SETTINGS.uiFont ? ["Interface font"] : []),
+      ...(settings.codeFont !== DEFAULT_UNIFIED_SETTINGS.codeFont ? ["Code font"] : []),
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
@@ -483,6 +509,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
+      settings.codeFont,
       settings.defaultThreadEnvMode,
       settings.diffWordWrap,
       settings.enableAssistantStreaming,
@@ -969,6 +996,46 @@ export function GeneralSettingsPanel() {
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
                 {UI_FONT_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Code font"
+          description="Choose the monospace typeface used for code blocks, diffs, and terminals."
+          resetAction={
+            settings.codeFont !== DEFAULT_CODE_FONT ? (
+              <SettingResetButton
+                label="code font"
+                onClick={() =>
+                  updateSettings({
+                    codeFont: DEFAULT_CODE_FONT,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.codeFont}
+              onValueChange={(value) => {
+                if (isCodeFont(value)) {
+                  updateSettings({ codeFont: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Code font">
+                <SelectValue>
+                  {CODE_FONT_OPTIONS.find((option) => option.value === settings.codeFont)?.label ??
+                    "System mono"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {CODE_FONT_OPTIONS.map((option) => (
                   <SelectItem hideIndicator key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>

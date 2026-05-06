@@ -19,6 +19,7 @@ const NESTED_FIELD_KEYS = [
   "patch",
   "patches",
   "operations",
+  "rawInput",
 ] as const;
 
 // String fields where providers (notably Codex/Copilot apply_patch) embed
@@ -161,7 +162,7 @@ function posixRelative(from: string, to: string): string {
     commonLength += 1;
   }
 
-  const upSegments = new Array(fromSegments.length - commonLength).fill("..");
+  const upSegments = Array.from({ length: fromSegments.length - commonLength }, () => "..");
   const downSegments = toSegments.slice(commonLength);
   return [...upSegments, ...downSegments].join("/");
 }
@@ -367,7 +368,12 @@ export function buildInlineUnifiedDiffPreview(
   const maxLines = options.maxLines ?? 80;
   const visibleLines: Array<string> = [];
 
-  for (const rawLine of diff.split("\n")) {
+  const diffLines = diff.split("\n");
+  for (let index = 0; index < diffLines.length; index += 1) {
+    const rawLine = diffLines[index] ?? "";
+    if (index === diffLines.length - 1 && rawLine === "") {
+      continue;
+    }
     const line = rawLine.replace(/\r$/u, "");
     const filePath = parseDiffGitPath(line);
     if (filePath) {

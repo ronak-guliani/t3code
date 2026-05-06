@@ -9,8 +9,10 @@ import {
   ProviderSession,
   ProviderInstanceId,
   type OrchestrationEvent,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import {
+  CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -133,19 +135,11 @@ function createProviderServiceHarness(
 
 async function waitForThread(
   engine: OrchestrationEngineShape,
-  predicate: (thread: {
-    latestTurn: { turnId: string } | null;
-    checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
-    activities: ReadonlyArray<{ kind: string }>;
-  }) => boolean,
+  predicate: (thread: OrchestrationThread) => boolean,
   timeoutMs = 15_000,
 ) {
   const deadline = Date.now() + timeoutMs;
-  const poll = async (): Promise<{
-    latestTurn: { turnId: string } | null;
-    checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
-    activities: ReadonlyArray<{ kind: string }>;
-  }> => {
+  const poll = async (): Promise<OrchestrationThread> => {
     const readModel = await Effect.runPromise(engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     if (thread && predicate(thread)) {
@@ -462,6 +456,221 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v2\n");
+  });
+
+  it("promotes provider turn diff paths into the real checkpoint turn file list", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = new Date().toISOString();
+    const turnId = asTurnId("turn-sidebar");
+    const sidebarPath = path.join(harness.cwd, "apps/web/src/components/Sidebar.tsx");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-provider-diff-paths"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-provider-diff-paths"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId: ThreadId.make("thread-1"),
+      turnId,
+    });
+    await waitForGitRefExists(
+      harness.cwd,
+      checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
+    );
+
+    fs.mkdirSync(path.dirname(sidebarPath), { recursive: true });
+    fs.writeFileSync(sidebarPath, "export function Sidebar() {}\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-provider-diff-placeholder"),
+        threadId: ThreadId.make("thread-1"),
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: CheckpointRef.make("provider-diff:evt-sidebar"),
+        status: "missing",
+        files: [],
+        agentTouchedPaths: ["apps/web/src/components/Sidebar.tsx"],
+        turnFiles: [
+          {
+            path: "apps/web/src/components/Sidebar.tsx",
+            kind: "modified",
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        assistantMessageId: MessageId.make("assistant:item-sidebar"),
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-sidebar" &&
+        entry.checkpoints.some(
+          (checkpoint) => checkpoint.checkpointTurnCount === 1 && checkpoint.status === "ready",
+        ),
+    );
+    const checkpoint = thread.checkpoints.find((entry) => entry.turnId === turnId);
+
+    expect(checkpoint?.files).toEqual([
+      {
+        path: "apps/web/src/components/Sidebar.tsx",
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      },
+    ]);
+    expect(checkpoint?.agentTouchedPaths).toEqual(["apps/web/src/components/Sidebar.tsx"]);
+    expect(checkpoint?.turnFiles).toEqual([
+      {
+        path: "apps/web/src/components/Sidebar.tsx",
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      },
+    ]);
+  });
+
+  it("stores snapshot files from baseline while keeping turn files scoped to the current turn", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = new Date().toISOString();
+    const threadId = ThreadId.make("thread-1");
+    const turnId = asTurnId("turn-sidebar");
+    const readmePath = path.join(harness.cwd, "README.md");
+    const sidebarPath = path.join(harness.cwd, "apps/web/src/components/Sidebar.tsx");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-cumulative-snapshot"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-readme"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-readme"),
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+
+    fs.writeFileSync(readmePath, "v2\n", "utf8");
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-readme"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId: asTurnId("turn-readme"),
+      payload: { state: "completed" },
+    });
+
+    await waitForThread(harness.engine, (entry) =>
+      entry.checkpoints.some(
+        (checkpoint) => checkpoint.checkpointTurnCount === 1 && checkpoint.status === "ready",
+      ),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.make("cmd-provider-diff-placeholder-cumulative"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: CheckpointRef.make("provider-diff:evt-sidebar-cumulative"),
+        status: "missing",
+        files: [],
+        agentTouchedPaths: ["apps/web/src/components/Sidebar.tsx"],
+        turnFiles: [
+          {
+            path: "apps/web/src/components/Sidebar.tsx",
+            kind: "modified",
+            additions: 1,
+            deletions: 0,
+          },
+        ],
+        checkpointTurnCount: 2,
+        createdAt,
+      }),
+    );
+
+    fs.mkdirSync(path.dirname(sidebarPath), { recursive: true });
+    fs.writeFileSync(sidebarPath, "export function Sidebar() {}\n", "utf8");
+
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.make("evt-turn-completed-cumulative-snapshot"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId,
+      turnId,
+      payload: { state: "completed" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.latestTurn?.turnId === "turn-sidebar" &&
+        entry.checkpoints.some(
+          (checkpoint) => checkpoint.checkpointTurnCount === 2 && checkpoint.status === "ready",
+        ),
+    );
+    const checkpoint = thread.checkpoints.find((entry) => entry.turnId === turnId);
+
+    expect(
+      checkpoint?.files.toSorted((left, right) => left.path.localeCompare(right.path)),
+    ).toEqual([
+      {
+        path: "apps/web/src/components/Sidebar.tsx",
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      },
+      { path: "README.md", kind: "modified", additions: 1, deletions: 1 },
+    ]);
+    expect(checkpoint?.turnFiles).toEqual([
+      {
+        path: "apps/web/src/components/Sidebar.tsx",
+        kind: "modified",
+        additions: 1,
+        deletions: 0,
+      },
+    ]);
   });
 
   it("refreshes local git status state on turn completion using the session cwd", async () => {

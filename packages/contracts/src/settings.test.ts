@@ -2,10 +2,37 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import {
+  ClientSettingsPatch,
+  ClientSettingsSchema,
+  DEFAULT_CLIENT_SETTINGS,
+  DEFAULT_CODE_FONT,
+  DEFAULT_SERVER_SETTINGS,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings.ts";
 
+const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+
+describe("ClientSettings.codeFont", () => {
+  it("defaults to the existing monospace stack selection", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.codeFont).toBe(DEFAULT_CODE_FONT);
+    expect(decodeClientSettings({}).codeFont).toBe(DEFAULT_CODE_FONT);
+  });
+
+  it("accepts known code font options in patches", () => {
+    expect(decodeClientSettingsPatch({ codeFont: "jetbrains-mono" }).codeFont).toBe(
+      "jetbrains-mono",
+    );
+  });
+
+  it("rejects unknown code font options in patches", () => {
+    expect(() => decodeClientSettingsPatch({ codeFont: "not-a-font" })).toThrow();
+  });
+});
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {

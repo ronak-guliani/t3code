@@ -2178,6 +2178,132 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-latest-turn-session-stop-")))(
   "OrchestrationProjectionPipeline latest turn session state",
   (it) => {
+    it.effect("reopens a completed latest turn when the provider session resumes it", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-session-resume");
+        const turnId = TurnId.make("turn-session-resume");
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-session-resume-created"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T16:00:00.000Z",
+          commandId: CommandId.make("cmd-session-resume-created"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-session-resume-created"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-session-resume"),
+            title: "Session resume",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("copilot"),
+              model: "auto",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            pendingRuntimeMode: null,
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-02-26T16:00:00.000Z",
+            updatedAt: "2026-02-26T16:00:00.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-session-resume-running"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T16:00:01.000Z",
+          commandId: CommandId.make("cmd-session-resume-running"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-session-resume-running"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "copilot",
+              runtimeMode: "full-access",
+              activeTurnId: turnId,
+              lastError: null,
+              updatedAt: "2026-02-26T16:00:01.000Z",
+            },
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.message-sent",
+          eventId: EventId.make("evt-session-resume-assistant-complete"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T16:00:02.000Z",
+          commandId: CommandId.make("cmd-session-resume-assistant-complete"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-session-resume-assistant-complete"),
+          metadata: {},
+          payload: {
+            threadId,
+            messageId: MessageId.make("message-session-resume-assistant"),
+            role: "assistant",
+            text: "Waiting for user input.",
+            turnId,
+            streaming: false,
+            createdAt: "2026-02-26T16:00:02.000Z",
+            updatedAt: "2026-02-26T16:00:02.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-session-resume-running-again"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-02-26T16:00:03.000Z",
+          commandId: CommandId.make("cmd-session-resume-running-again"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-session-resume-running-again"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "copilot",
+              runtimeMode: "full-access",
+              activeTurnId: turnId,
+              lastError: null,
+              updatedAt: "2026-02-26T16:00:03.000Z",
+            },
+          },
+        });
+
+        const rows = yield* sql<{
+          readonly state: string;
+          readonly completedAt: string | null;
+        }>`
+          SELECT
+            state,
+            completed_at AS "completedAt"
+          FROM projection_turns
+          WHERE thread_id = ${threadId}
+            AND turn_id = ${turnId}
+        `;
+        assert.deepEqual(rows, [{ state: "running", completedAt: null }]);
+      }),
+    );
+
     it.effect("preserves latest_turn_id when a session stops without an active turn", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -2206,7 +2332,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-latest-turn-ses
             projectId: ProjectId.make("project-session-stop"),
             title: "Session stop",
             modelSelection: {
-              provider: "codex",
+              instanceId: ProviderInstanceId.make("codex"),
               model: "gpt-5-codex",
             },
             runtimeMode: "full-access",

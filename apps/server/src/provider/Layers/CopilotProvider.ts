@@ -17,6 +17,7 @@ import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   applyCopilotConfiguredModelMetadata,
   readCopilotMergedSettings,
+  type CopilotAuthUser,
 } from "../acp/CopilotSettings.ts";
 import { CopilotProvider } from "../Services/CopilotProvider.ts";
 import {
@@ -230,7 +231,11 @@ function installedCopilotProvider(input: {
   readonly version: string | null;
   readonly configuredModel?: string | null;
   readonly message?: string;
+  readonly authUser?: CopilotAuthUser | undefined;
 }): ServerProvider {
+  const auth: ServerProvider["auth"] = input.authUser
+    ? { status: "authenticated", label: input.authUser.login }
+    : { status: "unknown" };
   return withDefaultCopilotIdentity(
     buildServerProvider({
       presentation: COPILOT_PRESENTATION,
@@ -241,7 +246,7 @@ function installedCopilotProvider(input: {
         installed: true,
         version: input.version,
         status: input.message ? "warning" : "ready",
-        auth: { status: "unknown" },
+        auth,
         ...(input.message ? { message: input.message } : {}),
       },
     }),
@@ -283,6 +288,7 @@ export const checkCopilotProviderStatusForSettings = Effect.fn(
         version: parseGenericCliVersion(result.stdout) ?? parseGenericCliVersion(result.stderr),
         ...(mergedConfig.model ? { configuredModel: mergedConfig.model } : {}),
         ...(configWarningMessage ? { message: configWarningMessage } : {}),
+        authUser: mergedConfig.auth,
       });
     }
   }
@@ -364,6 +370,7 @@ export const checkCopilotProviderStatusForSettings = Effect.fn(
         );
         return message ? { message } : {};
       })(),
+      authUser: mergedConfig.auth,
     });
   }
 

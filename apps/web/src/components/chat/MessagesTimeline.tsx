@@ -68,6 +68,7 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
+import { highlightPlainText, normalizeChatHighlightQuery } from "./chatHighlight";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -160,7 +161,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   timestampFormat,
   workspaceRoot,
   onIsAtEndChange,
-  chatFindQuery: _chatFindQuery,
+  chatFindQuery,
   matchedRowIds,
   activeMatchRowId,
 }: MessagesTimelineProps) {
@@ -262,10 +263,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           row={item}
           isChatFindMatch={matchedRowIds?.has(item.id) ?? false}
           isActiveChatFindMatch={activeMatchRowId === item.id}
+          chatFindQuery={chatFindQuery}
         />
       </div>
     ),
-    [activeMatchRowId, matchedRowIds],
+    [activeMatchRowId, chatFindQuery, matchedRowIds],
   );
 
   if (rows.length === 0 && !isWorking) {
@@ -316,9 +318,13 @@ function TimelineRowContent(props: {
   row: TimelineRow;
   isChatFindMatch: boolean;
   isActiveChatFindMatch: boolean;
+  chatFindQuery: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
   const { row, isChatFindMatch, isActiveChatFindMatch } = props;
+  const highlightQuery = isChatFindMatch
+    ? normalizeChatHighlightQuery(props.chatFindQuery)
+    : undefined;
 
   return (
     <div
@@ -335,7 +341,9 @@ function TimelineRowContent(props: {
       data-message-id={row.kind === "message" ? row.message.id : undefined}
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
-      {row.kind === "work" && <WorkGroupSection groupedEntries={row.groupedEntries} />}
+      {row.kind === "work" && (
+        <WorkGroupSection groupedEntries={row.groupedEntries} highlightQuery={highlightQuery} />
+      )}
 
       {row.kind === "message" &&
         row.message.role === "user" &&
@@ -387,6 +395,7 @@ function TimelineRowContent(props: {
                   <UserMessageBody
                     text={displayedUserMessage.visibleText}
                     terminalContexts={terminalContexts}
+                    highlightQuery={highlightQuery}
                   />
                 )}
                 <div className="mt-1.5 flex items-center justify-end gap-2">
@@ -446,6 +455,7 @@ function TimelineRowContent(props: {
                   text={messageText}
                   cwd={ctx.markdownCwd}
                   isStreaming={Boolean(row.message.streaming)}
+                  highlightQuery={highlightQuery}
                 />
                 <AssistantChangedFilesSection
                   turnSummary={row.assistantTurnDiffSummary}
@@ -499,6 +509,7 @@ function TimelineRowContent(props: {
             environmentId={ctx.activeThreadEnvironmentId}
             cwd={ctx.markdownCwd}
             workspaceRoot={ctx.workspaceRoot}
+            highlightQuery={highlightQuery}
           />
         </div>
       )}
@@ -573,8 +584,10 @@ function LiveMessageMeta({
  *  State resets on unmount which is fine — work groups start collapsed. */
 const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries,
+  highlightQuery,
 }: {
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
+  highlightQuery: string | undefined;
 }) {
   const { workspaceRoot } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -609,9 +622,10 @@ const WorkGroupSection = memo(function WorkGroupSection({
       <div className="space-y-0.5">
         {visibleEntries.map((workEntry) => (
           <SimpleWorkEntryRow
-            key={`work-row:${workEntry.stableId ?? workEntry.id}`}
+            key={`work-row:${workEntry.id}`}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
+            highlightQuery={highlightQuery}
           />
         ))}
       </div>
@@ -734,6 +748,7 @@ const UserMessageTerminalContextInlineLabel = memo(
 const UserMessageBody = memo(function UserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  highlightQuery?: string | undefined;
 }) {
   if (props.terminalContexts.length > 0) {
     const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
@@ -756,7 +771,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              {props.text.slice(cursor, matchIndex)}
+              {highlightPlainText(props.text.slice(cursor, matchIndex), props.highlightQuery)}
             </span>,
           );
         }
@@ -773,7 +788,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (cursor < props.text.length) {
           inlineNodes.push(
             <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              {props.text.slice(cursor)}
+              {highlightPlainText(props.text.slice(cursor), props.highlightQuery)}
             </span>,
           );
         }
@@ -801,7 +816,11 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     }
 
     if (props.text.length > 0) {
-      inlineNodes.push(<span key="user-message-terminal-context-inline-text">{props.text}</span>);
+      inlineNodes.push(
+        <span key="user-message-terminal-context-inline-text">
+          {highlightPlainText(props.text, props.highlightQuery)}
+        </span>,
+      );
     } else if (inlinePrefix.length === 0) {
       return null;
     }
@@ -819,7 +838,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
   return (
     <div className="whitespace-pre-wrap wrap-break-word text-sm leading-relaxed text-foreground">
-      {props.text}
+      {highlightPlainText(props.text, props.highlightQuery)}
     </div>
   );
 });
@@ -983,8 +1002,9 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
+  highlightQuery: string | undefined;
 }) {
-  const { workEntry, workspaceRoot } = props;
+  const { workEntry, workspaceRoot, highlightQuery } = props;
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
@@ -1020,7 +1040,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 title={displayText}
               >
                 <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                  {heading}
+                  {highlightPlainText(heading, highlightQuery)}
                 </span>
                 {preview && (
                   <Tooltip>
@@ -1030,7 +1050,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                       render={
                         <span className="max-w-full cursor-default text-muted-foreground/55 transition-colors hover:text-muted-foreground/75 focus-visible:text-muted-foreground/75">
                           {" "}
-                          - {preview}
+                          - {highlightPlainText(preview, highlightQuery)}
                         </span>
                       }
                     />
@@ -1062,9 +1082,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                   )}
                 >
                   <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                    {heading}
+                    {highlightPlainText(heading, highlightQuery)}
                   </span>
-                  {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
+                  {preview && (
+                    <span className="text-muted-foreground/55">
+                      {" "}
+                      - {highlightPlainText(preview, highlightQuery)}
+                    </span>
+                  )}
                 </p>
               </TooltipTrigger>
               <TooltipPopup className="max-w-[min(720px,calc(100vw-2rem))]">
@@ -1082,11 +1107,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             const displayPath = formatWorkspaceRelativePath(filePath, workspaceRoot);
             return (
               <span
-                key={`${workEntry.stableId ?? workEntry.id}:${filePath}`}
+                key={`${workEntry.id}:${filePath}`}
                 className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
                 title={displayPath}
               >
-                {displayPath}
+                {highlightPlainText(displayPath, highlightQuery)}
               </span>
             );
           })}

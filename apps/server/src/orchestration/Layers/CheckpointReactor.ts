@@ -6,6 +6,7 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  type OrchestrationCheckpointSummary,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
@@ -202,6 +203,7 @@ const make = Effect.gen(function* () {
         readonly turnId: TurnId | null;
       }>;
       readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+      readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
     };
     readonly cwd: string;
     readonly turnCount: number;
@@ -234,7 +236,7 @@ const make = Effect.gen(function* () {
     // reflects files created or deleted during this turn.
     yield* workspaceEntries.invalidate(input.cwd);
 
-    const files = yield* checkpointStore
+    const transitionFiles = yield* checkpointStore
       .diffCheckpoints({
         cwd: input.cwd,
         fromCheckpointRef,
@@ -268,9 +270,57 @@ const make = Effect.gen(function* () {
         ),
       );
 
+    const baselineCheckpointRef = checkpointRefForThreadTurn(input.threadId, 0);
+    const snapshotFiles =
+      input.turnCount === 0
+        ? []
+        : yield* checkpointStore
+            .diffCheckpoints({
+              cwd: input.cwd,
+              fromCheckpointRef: baselineCheckpointRef,
+              toCheckpointRef: targetCheckpointRef,
+              fallbackFromToHead: false,
+            })
+            .pipe(
+              Effect.map((diff) =>
+                parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+                  path: file.path,
+                  kind: "modified" as const,
+                  additions: file.additions,
+                  deletions: file.deletions,
+                })),
+              ),
+              Effect.tapError((error) =>
+                appendCaptureFailureActivity({
+                  threadId: input.threadId,
+                  turnId: input.turnId,
+                  detail: `Checkpoint captured, but snapshot diff summary is unavailable: ${error.message}`,
+                  createdAt: input.createdAt,
+                }),
+              ),
+              Effect.catch((error) =>
+                Effect.logWarning("failed to derive checkpoint snapshot file summary", {
+                  threadId: input.threadId,
+                  turnId: input.turnId,
+                  turnCount: input.turnCount,
+                  detail: error.message,
+                }).pipe(Effect.as([])),
+              ),
+            );
+
+    const priorCheckpointForTurn = input.thread.checkpoints.find(
+      (checkpoint) => checkpoint.turnId === input.turnId,
+    );
+    const providerTouchedPaths = priorCheckpointForTurn
+      ? [
+          ...priorCheckpointForTurn.agentTouchedPaths,
+          ...priorCheckpointForTurn.turnFiles.map((file) => file.path),
+        ]
+      : [];
     const { agentTouchedPaths, turnFiles } = deriveTurnScopedCheckpointFiles({
-      snapshotFiles: files,
+      snapshotFiles: transitionFiles,
       activities: input.thread.activities,
+      providerTouchedPaths,
       turnId: input.turnId,
       cwd: input.cwd,
     });
@@ -289,7 +339,7 @@ const make = Effect.gen(function* () {
       completedAt: input.createdAt,
       checkpointRef: targetCheckpointRef,
       status: input.status,
-      files,
+      files: snapshotFiles,
       agentTouchedPaths,
       turnFiles,
       ...(assistantMessageId !== undefined ? { assistantMessageId } : {}),
