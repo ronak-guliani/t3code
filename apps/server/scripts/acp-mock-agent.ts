@@ -34,8 +34,10 @@ const authMethods = (process.env.T3_ACP_AUTH_METHODS ?? "")
   .map((method) => method.trim())
   .filter((method) => method.length > 0);
 const sessionId = "mock-session-1";
+const COPILOT_AGENT_MODE_ID = "https://agentclientprotocol.com/protocol/session-modes#agent";
+const COPILOT_PLAN_MODE_ID = "https://agentclientprotocol.com/protocol/session-modes#plan";
 
-let currentModeId = "ask";
+let currentModeId = COPILOT_AGENT_MODE_ID;
 let currentModelId = "default";
 let parameterizedModelPicker = false;
 let currentReasoning = "medium";
@@ -263,19 +265,14 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
 
 const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [
   {
-    id: "ask",
-    name: "Ask",
-    description: "Request permission before making any changes",
+    id: COPILOT_AGENT_MODE_ID,
+    name: "Agent",
+    description: "Write and modify code with tool access",
   },
   {
-    id: "architect",
-    name: "Architect",
+    id: COPILOT_PLAN_MODE_ID,
+    name: "Plan",
     description: "Design and plan software systems without implementation",
-  },
-  {
-    id: "code",
-    name: "Code",
-    description: "Write and modify code with full tool access",
   },
 ];
 

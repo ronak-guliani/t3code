@@ -24,6 +24,8 @@ import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
   CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   CircleAlertIcon,
   EyeIcon,
   GlobeIcon,
@@ -439,6 +441,8 @@ function TimelineRowContent(props: {
             showCopyButton: row.showAssistantCopyButton,
             streaming: row.message.streaming || assistantTurnStillInProgress,
           });
+          const showCopilotResumeCommand =
+            row.showAssistantTerminalMetadata && ctx.copilotResumeCommand;
           return (
             <>
               {row.showCompletionDivider && (
@@ -478,12 +482,12 @@ function TimelineRowContent(props: {
                       )
                     )}
                   </p>
-                  {ctx.copilotResumeCommand ? (
+                  {showCopilotResumeCommand ? (
                     <span
                       className="min-w-0 truncate font-mono text-[10px] text-muted-foreground/30"
-                      title={ctx.copilotResumeCommand}
+                      title={showCopilotResumeCommand}
                     >
-                      {ctx.copilotResumeCommand}
+                      {showCopilotResumeCommand}
                     </span>
                   ) : null}
                   {assistantCopyState.visible ? (
@@ -589,17 +593,38 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
   highlightQuery: string | undefined;
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const { activeTurnInProgress, workspaceRoot } = use(TimelineRowCtx);
+  const onlyToolEntries =
+    groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
+  const isToolCallGroup = onlyToolEntries && groupedEntries.length > 1;
+  const isCompletedToolGroup =
+    isToolCallGroup &&
+    (!activeTurnInProgress || groupedEntries.every((entry) => entry.isComplete === true));
+  const [isExpanded, setIsExpanded] = useState(() => !isCompletedToolGroup);
+  useEffect(() => {
+    if (isCompletedToolGroup) {
+      setIsExpanded(false);
+    }
+  }, [isCompletedToolGroup]);
   const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
   const visibleEntries =
-    hasOverflow && !isExpanded
-      ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-      : groupedEntries;
+    isCompletedToolGroup && !isExpanded
+      ? []
+      : hasOverflow && !isExpanded
+        ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
+        : groupedEntries;
   const hiddenCount = groupedEntries.length - visibleEntries.length;
-  const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
-  const showHeader = hasOverflow || !onlyToolEntries;
+  const showHeader = isCompletedToolGroup || hasOverflow || !onlyToolEntries;
   const groupLabel = onlyToolEntries ? "Tool calls" : "Work log";
+  const showCollapseToggle = isCompletedToolGroup || hasOverflow;
+  const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
+  const toggleLabel = isCompletedToolGroup
+    ? isExpanded
+      ? "Collapse"
+      : "Expand"
+    : isExpanded
+      ? "Show less"
+      : `Show ${hiddenCount} more`;
 
   return (
     <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
@@ -608,13 +633,15 @@ const WorkGroupSection = memo(function WorkGroupSection({
           <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
             {groupLabel} ({groupedEntries.length})
           </p>
-          {hasOverflow && (
+          {showCollapseToggle && (
             <button
               type="button"
-              className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+              className="inline-flex items-center gap-1 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
               onClick={() => setIsExpanded((v) => !v)}
+              aria-expanded={isExpanded}
             >
-              {isExpanded ? "Show less" : `Show ${hiddenCount} more`}
+              <CollapseIcon className="size-3" />
+              {toggleLabel}
             </button>
           )}
         </div>

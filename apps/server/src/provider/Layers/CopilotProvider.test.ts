@@ -1,4 +1,4 @@
-import type { CopilotSettings } from "@t3tools/contracts";
+import { ProviderDriverKind, type CopilotSettings } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it, assert } from "@effect/vitest";
 import * as PlatformError from "effect/PlatformError";
@@ -60,6 +60,7 @@ function failingSpawnerLayer(description: string) {
 const enabledCopilotSettings: Partial<CopilotSettings> = {
   enabled: true,
 };
+const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 
 const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "auto",
@@ -101,6 +102,25 @@ const withNodeServices = <E, A, R>(
     Exclude<R, FileSystem.FileSystem | Path.Path>
   >;
 
+function reasoningCapabilities(includeXHigh: boolean) {
+  return {
+    optionDescriptors: [
+      {
+        id: "reasoning",
+        label: "Reasoning",
+        type: "select" as const,
+        currentValue: "medium",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "high", label: "High" },
+          ...(includeXHigh ? [{ id: "xhigh", label: "Extra High" }] : []),
+        ],
+      },
+    ],
+  };
+}
+
 describe("CopilotProvider", () => {
   it("builds the full Copilot model catalog plus unique custom models", () => {
     const models = getCopilotFallbackModels({
@@ -117,18 +137,7 @@ describe("CopilotProvider", () => {
         slug: "gpt-5.5",
         name: "GPT-5.5",
         isCustom: false,
-        capabilities: {
-          reasoningEffortLevels: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium", isDefault: true },
-            { value: "high", label: "High" },
-            { value: "xhigh", label: "Extra High" },
-          ],
-          supportsFastMode: false,
-          supportsThinkingToggle: false,
-          contextWindowOptions: [],
-          promptInjectedEffortLevels: [],
-        },
+        capabilities: reasoningCapabilities(true),
       },
     );
     assert.deepStrictEqual(
@@ -137,17 +146,7 @@ describe("CopilotProvider", () => {
         slug: "auto",
         name: "Auto",
         isCustom: false,
-        capabilities: {
-          reasoningEffortLevels: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium", isDefault: true },
-            { value: "high", label: "High" },
-          ],
-          supportsFastMode: false,
-          supportsThinkingToggle: false,
-          contextWindowOptions: [],
-          promptInjectedEffortLevels: [],
-        },
+        capabilities: reasoningCapabilities(false),
       },
     );
     assert.deepStrictEqual(
@@ -156,30 +155,14 @@ describe("CopilotProvider", () => {
         slug: "claude-sonnet-4.6",
         name: "Claude Sonnet 4.6",
         isCustom: false,
-        capabilities: {
-          reasoningEffortLevels: [
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium", isDefault: true },
-            { value: "high", label: "High" },
-          ],
-          supportsFastMode: false,
-          supportsThinkingToggle: false,
-          contextWindowOptions: [],
-          promptInjectedEffortLevels: [],
-        },
+        capabilities: reasoningCapabilities(false),
       },
     );
     assert.deepStrictEqual(models.at(-1), {
       slug: "custom-model",
       name: "custom-model",
       isCustom: true,
-      capabilities: {
-        reasoningEffortLevels: [],
-        supportsFastMode: false,
-        supportsThinkingToggle: false,
-        contextWindowOptions: [],
-        promptInjectedEffortLevels: [],
-      },
+      capabilities: { optionDescriptors: [] },
     });
   });
 
@@ -187,7 +170,7 @@ describe("CopilotProvider", () => {
     Effect.gen(function* () {
       const status = yield* checkCopilotProviderStatus();
 
-      assert.strictEqual(status.provider, "copilot");
+      assert.strictEqual(status.driver, COPILOT_DRIVER);
       assert.strictEqual(status.enabled, false);
       assert.strictEqual(status.status, "disabled");
       assert.strictEqual(status.installed, false);
@@ -231,7 +214,7 @@ describe("CopilotProvider", () => {
 
       const status = yield* checkCopilotProviderStatus();
 
-      assert.strictEqual(status.provider, "copilot");
+      assert.strictEqual(status.driver, COPILOT_DRIVER);
       assert.strictEqual(status.enabled, true);
       assert.strictEqual(status.status, "ready");
       assert.strictEqual(status.installed, true);
@@ -261,7 +244,7 @@ describe("CopilotProvider", () => {
     Effect.gen(function* () {
       const status = yield* checkCopilotProviderStatus();
 
-      assert.strictEqual(status.provider, "copilot");
+      assert.strictEqual(status.driver, COPILOT_DRIVER);
       assert.strictEqual(status.enabled, true);
       assert.strictEqual(status.status, "warning");
       assert.strictEqual(status.installed, false);
@@ -307,7 +290,7 @@ describe("CopilotProvider", () => {
       const status = yield* checkCopilotProviderStatus();
 
       assert.deepStrictEqual(calls, ["copilot --version", "copilot --help"]);
-      assert.strictEqual(status.provider, "copilot");
+      assert.strictEqual(status.driver, COPILOT_DRIVER);
       assert.strictEqual(status.status, "warning");
       assert.strictEqual(status.installed, true);
       assert.strictEqual(status.version, null);

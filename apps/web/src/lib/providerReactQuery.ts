@@ -2,7 +2,7 @@ import {
   type EnvironmentId,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
-  type ProviderKind,
+  type ProviderDriverKind,
   type ServerProviderListCommandsResult,
   ThreadId,
   type TurnDiffScope,
@@ -26,7 +26,7 @@ export const providerQueryKeys = {
   all: ["providers"] as const,
   commands: (
     environmentId: EnvironmentId | null,
-    provider: ProviderKind | null,
+    provider: ProviderDriverKind | null,
     cwd: string | null,
   ) => ["providers", "commands", environmentId ?? null, provider ?? null, cwd ?? null] as const,
   checkpointDiff: (input: CheckpointDiffQueryInput) =>
@@ -149,7 +149,7 @@ export function checkpointDiffQueryOptions(input: CheckpointDiffQueryInput) {
 
 export function providerCommandsQueryOptions(input: {
   environmentId: EnvironmentId | null;
-  provider: ProviderKind | null;
+  provider: ProviderDriverKind | null;
   cwd: string | null;
   enabled?: boolean;
 }) {

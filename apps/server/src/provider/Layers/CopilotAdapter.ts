@@ -1,5 +1,5 @@
 /**
- * CopilotAdapterLive — GitHub Copilot CLI (`copilot --acp --stdio`) via ACP.
+ * CopilotAdapterLive — GitHub Copilot CLI (`copilot --acp`) via ACP.
  *
  * @module CopilotAdapterLive
  */
@@ -32,11 +32,13 @@ import {
   PubSub,
   Random,
   Scope,
+  Schema,
   Semaphore,
   Stream,
   SynchronizedRef,
 } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -133,6 +135,34 @@ interface CopilotSessionContext {
   cancelRequestedTurnId: TurnId | undefined;
   readonly fatalErrorByTurnId: Map<TurnId, string>;
   stopped: boolean;
+}
+
+function stringifyCause(value: unknown): string {
+  if (value instanceof Error) {
+    return `${value.name}: ${value.message}`;
+  }
+  return typeof value === "string" ? value : String(value);
+}
+
+function copilotAcpExitMatch(cause: Error): RegExpMatchArray | null {
+  const parts = [cause.message];
+  if (Schema.is(EffectAcpErrors.AcpTransportError)(cause)) {
+    parts.push(cause.detail, stringifyCause(cause.cause));
+  }
+  const combined = parts.filter((part) => part.trim().length > 0).join("\n");
+  return combined.match(/ACP process exited(?: with code (\d+))?/i);
+}
+
+function formatCopilotStartupError(cause: Error): string {
+  const exitedMatch = copilotAcpExitMatch(cause);
+  if (exitedMatch) {
+    const exitText = exitedMatch[1] ? `exited with code ${exitedMatch[1]}` : "exited";
+    return `GitHub Copilot ACP process ${exitText} before completing startup. Update the Copilot CLI with "copilot update", restart T3 Code, then try again. If it still fails, run "copilot login" in a terminal and verify "copilot --version" reports a version with working ACP support.`;
+  }
+  if (Schema.is(EffectAcpErrors.AcpTransportError)(cause) && cause.detail.trim().length > 0) {
+    return `GitHub Copilot ACP transport failed during startup: ${cause.detail}`;
+  }
+  return cause.message.trim() || "GitHub Copilot ACP process failed during startup.";
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -652,7 +682,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       new ProviderAdapterProcessError({
         provider: PROVIDER,
         threadId,
-        detail: cause.message,
+        detail: formatCopilotStartupError(cause),
         cause,
       });
 
@@ -925,9 +955,17 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           );
           return yield* acp.start();
         }).pipe(
-          Effect.mapError((error) =>
-            mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
-          ),
+          Effect.mapError((error) => {
+            if (Schema.is(EffectAcpErrors.AcpTransportError)(error) && copilotAcpExitMatch(error)) {
+              return new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: formatCopilotStartupError(error),
+                cause: error,
+              });
+            }
+            return mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error);
+          }),
         );
 
         const notificationFiber = yield* Stream.runDrain(
@@ -1424,6 +1462,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         ctx.cancelRequestedTurnId = undefined;
         ctx.session = {
           ...ctx.session,
+          status: "running",
           activeTurnId: turnId,
           updatedAt: yield* nowIso,
         };
@@ -1473,6 +1512,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         });
         ctx.session = {
           ...ctx.session,
+          status: "ready",
           activeTurnId: undefined,
           updatedAt: yield* nowIso,
           model,

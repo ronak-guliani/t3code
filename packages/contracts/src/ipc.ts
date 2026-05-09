@@ -28,6 +28,9 @@ import type {
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
   ServerConfig,
+  ServerListSkillsResult,
+  ServerProviderListCommandsInput,
+  ServerProviderListCommandsResult,
   ServerProviderUpdatedPayload,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
@@ -224,6 +227,10 @@ export interface LocalApi {
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
     }) => Promise<ServerProviderUpdatedPayload>;
+    listProviderCommands: (
+      input: ServerProviderListCommandsInput,
+    ) => Promise<ServerProviderListCommandsResult>;
+    listSkills: () => Promise<ServerListSkillsResult>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
@@ -276,6 +283,11 @@ export interface EnvironmentApi {
         onResubscribe?: () => void;
       },
     ) => () => void;
+  };
+  server: {
+    listProviderCommands: (
+      input: ServerProviderListCommandsInput,
+    ) => Promise<ServerProviderListCommandsResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

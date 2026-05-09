@@ -772,7 +772,7 @@ it.effect("OpenCodeAdapterLive stops active sessions when the adapter layer is r
       Effect.gen(function* () {
         const adapter = yield* OpenCodeAdapter;
         yield* adapter.startSession({
-          provider: "opencode",
+          provider: ProviderDriverKind.make("opencode"),
           threadId: asThreadId("thread-finalizer"),
           runtimeMode: "full-access",
         });

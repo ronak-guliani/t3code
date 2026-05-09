@@ -124,7 +124,7 @@ export function getCopilotFallbackModels(
   return applyCopilotConfiguredModelMetadata({
     models: providerModelsFromSettings(
       COPILOT_BUILT_IN_MODELS,
-      PROVIDER,
+      DRIVER_KIND,
       copilotSettings.customModels,
       EMPTY_CAPABILITIES,
     ),
@@ -411,7 +411,7 @@ export const checkCopilotProviderStatus = Effect.fn("checkCopilotProviderStatus"
     );
     return yield* checkCopilotProviderStatusForSettings({
       settings: copilotSettings,
-      cwd: input?.cwd,
+      ...(input?.cwd !== undefined ? { cwd: input.cwd } : {}),
     });
   },
 );

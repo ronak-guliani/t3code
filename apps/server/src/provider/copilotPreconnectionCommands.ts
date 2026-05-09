@@ -2,6 +2,7 @@ import type { ServerProviderSlashCommand } from "@t3tools/contracts";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { parseSkillFrontmatter } from "../skills/skillFrontmatter.ts";
 
 type CommandEntry = ServerProviderSlashCommand & {
   readonly path: string;
@@ -10,53 +11,6 @@ type CommandEntry = ServerProviderSlashCommand & {
 const AGENTS_DIR = ".agents";
 const SKILL_FILE_NAME = "SKILL.md";
 const FLAT_AGENT_SUFFIX = ".agent.md";
-
-function trimYamlScalar(value: string): string {
-  return value
-    .trim()
-    .replace(/^["']|["']$/g, "")
-    .trim();
-}
-
-function extractFrontmatter(content: string): string | null {
-  const lines = content.split(/\r?\n/);
-  if (lines[0] !== "---") {
-    return null;
-  }
-  const endIndex = lines.findIndex((line, index) => index > 0 && line === "---");
-  if (endIndex < 2) {
-    return null;
-  }
-  return lines.slice(1, endIndex).join("\n");
-}
-
-function parseSkillMetadata(content: string): { name?: string; description?: string } | null {
-  const frontmatter = extractFrontmatter(content);
-  if (!frontmatter) {
-    return null;
-  }
-
-  let name: string | undefined;
-  let description: string | undefined;
-  for (const line of frontmatter.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("name:")) {
-      const value = trimYamlScalar(trimmed.slice("name:".length));
-      if (value.length > 0) {
-        name = value;
-      }
-      continue;
-    }
-    if (trimmed.startsWith("description:")) {
-      const value = trimYamlScalar(trimmed.slice("description:".length));
-      if (value.length > 0) {
-        description = value;
-      }
-    }
-  }
-
-  return { ...(name ? { name } : {}), ...(description ? { description } : {}) };
-}
 
 async function readSortedDirectoryEntries(root: string) {
   try {
@@ -84,7 +38,7 @@ async function loadNestedCommandsFromRoot(root: string): Promise<CommandEntry[]>
       continue;
     }
 
-    const metadata = parseSkillMetadata(content);
+    const metadata = parseSkillFrontmatter(content);
     if (!metadata?.name || !metadata.description) {
       continue;
     }
@@ -129,7 +83,7 @@ async function loadFlatAgentCommandsFromRoot(root: string): Promise<CommandEntry
       continue;
     }
 
-    const description = parseSkillMetadata(content)?.description;
+    const description = parseSkillFrontmatter(content)?.description;
     if (!description) {
       continue;
     }

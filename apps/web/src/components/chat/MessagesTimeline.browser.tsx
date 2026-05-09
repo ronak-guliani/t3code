@@ -160,7 +160,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("renders the Copilot resume command beside assistant metadata", async () => {
+  it("renders the Copilot resume command beside terminal assistant metadata", async () => {
     const screen = await render(
       <MessagesTimeline
         {...buildProps()}
@@ -176,6 +176,7 @@ describe("MessagesTimeline", () => {
               text: "Done.",
               createdAt: "2026-04-22T19:00:45.000Z",
               completedAt: "2026-04-22T19:03:33.000Z",
+              turnId: "turn-1" as never,
               streaming: false,
             },
           },

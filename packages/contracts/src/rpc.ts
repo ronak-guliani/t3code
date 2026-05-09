@@ -72,7 +72,11 @@ import {
   ServerConfigStreamEvent,
   ServerConfig,
   ServerLifecycleStreamEvent,
+  ServerProviderListCommandsError,
+  ServerProviderListCommandsInput,
+  ServerProviderListCommandsResult,
   ServerProviderUpdatedPayload,
+  ServerListSkillsResult,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server.ts";
@@ -116,6 +120,8 @@ export const WS_METHODS = {
   // Server meta
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
+  serverListProviderCommands: "server.listProviderCommands",
+  serverListSkills: "server.listSkills",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
@@ -151,6 +157,17 @@ export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProv
     instanceId: Schema.optional(ProviderInstanceId),
   }),
   success: ServerProviderUpdatedPayload,
+});
+
+export const WsServerListProviderCommandsRpc = Rpc.make(WS_METHODS.serverListProviderCommands, {
+  payload: ServerProviderListCommandsInput,
+  success: ServerProviderListCommandsResult,
+  error: ServerProviderListCommandsError,
+});
+
+export const WsServerListSkillsRpc = Rpc.make(WS_METHODS.serverListSkills, {
+  payload: Schema.Struct({}),
+  success: ServerListSkillsResult,
 });
 
 export const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
@@ -367,6 +384,8 @@ export const WsSubscribeAuthAccessRpc = Rpc.make(WS_METHODS.subscribeAuthAccess,
 export const WsRpcGroup = RpcGroup.make(
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
+  WsServerListProviderCommandsRpc,
+  WsServerListSkillsRpc,
   WsServerUpsertKeybindingRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,

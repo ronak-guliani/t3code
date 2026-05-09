@@ -18,6 +18,7 @@ import {
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
+  ServerProviderListCommandsError,
   ThreadId,
   type TerminalEvent,
   WS_METHODS,
@@ -43,9 +44,11 @@ import {
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
+import { listCopilotPreconnectionCommands } from "./provider/copilotPreconnectionCommands.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { listServerSkills } from "./skills/skillCatalog.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
 import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
@@ -756,6 +759,28 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               ? providerRegistry.refreshInstance(input.instanceId)
               : providerRegistry.refresh()
             ).pipe(Effect.map((providers) => ({ providers }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverListProviderCommands]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListProviderCommands,
+            (input.provider === "copilot"
+              ? Effect.tryPromise({
+                  try: () => listCopilotPreconnectionCommands({ cwd: input.cwd }),
+                  catch: (cause) =>
+                    new ServerProviderListCommandsError({
+                      message: "Failed to list provider commands",
+                      cause,
+                    }),
+                })
+              : Effect.succeed([])
+            ).pipe(Effect.map((commands) => ({ commands }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverListSkills]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListSkills,
+            Effect.promise(() => listServerSkills()),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>

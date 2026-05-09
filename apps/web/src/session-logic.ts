@@ -60,6 +60,7 @@ export interface WorkLogEntry {
   toolTitle?: string;
   itemType?: ToolLifecycleItemType;
   requestKind?: PendingApproval["requestKind"];
+  isComplete?: boolean;
 }
 
 interface DerivedWorkLogEntry extends WorkLogEntry {
@@ -576,6 +577,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           ? "info"
           : activity.tone,
     activityKind: activity.kind,
+    isComplete: activity.kind === "tool.completed" || activity.kind === "task.completed",
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);

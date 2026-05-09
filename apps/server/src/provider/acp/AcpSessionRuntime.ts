@@ -45,6 +45,7 @@ export interface AcpSessionRuntimeOptions {
   };
   /** @deprecated Provide `auth.methodId` instead. */
   readonly authMethodId?: string;
+  readonly modeSwitchMethod?: "set_config_option" | "set_mode";
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -98,6 +99,7 @@ export interface AcpSessionRuntimeShape {
   readonly setMode: (
     modeId: string,
   ) => Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError>;
+  readonly signalProcess: (signal: NodeJS.Signals) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly setConfigOption: (
     configId: string,
     value: string | boolean,
@@ -363,6 +365,23 @@ const makeAcpSessionRuntime = (
         ),
       );
 
+    const setModeViaSessionMethod = (
+      modeId: string,
+    ): Effect.Effect<EffectAcpSchema.SetSessionModeResponse, EffectAcpErrors.AcpError> =>
+      getStartedState.pipe(
+        Effect.flatMap((started) => {
+          const requestPayload = {
+            sessionId: started.sessionId,
+            modeId,
+          } satisfies EffectAcpSchema.SetSessionModeRequest;
+          return runLoggedRequest(
+            "session/set_mode",
+            requestPayload,
+            acp.agent.setSessionMode(requestPayload),
+          ).pipe(Effect.tap(() => updateCurrentModeId(modeId)));
+        }),
+      );
+
     const startOnce = Effect.gen(function* () {
       const initializePayload = {
         protocolVersion: 1,
@@ -558,11 +577,24 @@ const makeAcpSessionRuntime = (
             if (modeState?.currentModeId === modeId) {
               return Effect.succeed({} satisfies EffectAcpSchema.SetSessionModeResponse);
             }
+            if (options.modeSwitchMethod === "set_mode") {
+              return setModeViaSessionMethod(modeId);
+            }
             return setConfigOption("mode", modeId).pipe(
               Effect.tap(() => updateCurrentModeId(modeId)),
               Effect.as({} satisfies EffectAcpSchema.SetSessionModeResponse),
             );
           }),
+        ),
+      signalProcess: (signal) =>
+        child.kill({ killSignal: signal }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new EffectAcpErrors.AcpTransportError({
+                detail: `Failed to signal ACP process with ${signal}`,
+                cause,
+              }),
+          ),
         ),
       setConfigOption,
       setModel: (model) =>

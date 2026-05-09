@@ -23,9 +23,11 @@ import { createModelSelection } from "@t3tools/shared/model";
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CLAUDE_AGENT_INSTANCE = ProviderInstanceId.make("claudeAgent");
 const CURSOR_INSTANCE = ProviderInstanceId.make("cursor");
+const COPILOT_INSTANCE = ProviderInstanceId.make("copilot");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 
 type ProviderOptionSelectionBag = ReadonlyArray<ProviderOptionSelection>;
 type ProviderOptionSelectionsByProvider = Partial<Record<string, ProviderOptionSelectionBag>>;
@@ -1085,22 +1087,26 @@ describe("composerDraftStore modelSelection", () => {
 
     store.setModelSelection(
       threadRef,
-      modelSelection("copilot", "gpt-5.5", {
+      modelSelection(COPILOT_DRIVER, "gpt-5.5", {
         reasoning: "medium",
       }),
     );
 
-    store.setProviderModelOptions(threadRef, "copilot", toSelections({ reasoning: "xhigh" }), {
+    store.setProviderModelOptions(threadRef, COPILOT_DRIVER, toSelections({ reasoning: "xhigh" }), {
       persistSticky: true,
     });
 
-    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider.copilot).toEqual(
-      modelSelection("copilot", "gpt-5.5", {
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[COPILOT_INSTANCE],
+    ).toEqual(
+      modelSelection(COPILOT_DRIVER, "gpt-5.5", {
         reasoning: "xhigh",
       }),
     );
-    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider.copilot).toEqual(
-      modelSelection("copilot", "gpt-5.5", {
+    expect(
+      useComposerDraftStore.getState().stickyModelSelectionByProvider[COPILOT_INSTANCE],
+    ).toEqual(
+      modelSelection(COPILOT_DRIVER, "gpt-5.5", {
         reasoning: "xhigh",
       }),
     );

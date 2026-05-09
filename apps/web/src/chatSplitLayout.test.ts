@@ -8,37 +8,28 @@ import {
   closeLeaf,
   countLeafNodes,
   createInitialChatSplitLayout,
-  findLeafNodeByTarget,
   findNeighborLeafId,
   focusLeaf,
   focusNeighbor,
   getFocusedLeaf,
   getLeafIds,
   getLeafTargetsInRenderOrder,
-  isLeafNode,
   isSplitNode,
   replaceLeafTarget,
   setSplitRatio,
   splitLeaf,
   splitLeafWithTarget,
-  syncLayoutWithRouteTarget,
   toggleLeafMaximized,
 } from "./chatSplitLayout";
-import { DraftId } from "./composerDraftStore";
 import type { ThreadRouteTarget } from "./threadRoutes";
 
 const envA = EnvironmentId.make("env-a");
-const envB = EnvironmentId.make("env-b");
 
 function serverTarget(env: EnvironmentId, thread: string): ThreadRouteTarget {
   return {
     kind: "server",
     threadRef: { environmentId: env, threadId: ThreadId.make(thread) },
   };
-}
-
-function draftTarget(id: string): ThreadRouteTarget {
-  return { kind: "draft", draftId: DraftId.make(id) };
 }
 
 function makeIdFactory(prefix = "n"): () => ChatSplitNodeId {
@@ -239,107 +230,5 @@ describe("chatSplitLayout — maximize", () => {
     layout = toggleLeafMaximized(layout, focused);
     layout = closeLeaf(layout, focused);
     expect(layout.maximizedLeafId).toBeNull();
-  });
-});
-
-describe("chatSplitLayout — syncLayoutWithRouteTarget", () => {
-  it("focuses an existing matching leaf instead of replacing the focused one", () => {
-    const id = makeIdFactory();
-    let layout = initial();
-    layout = splitLeaf(layout, "root", "row", id); // focus on new leaf, target = t-1
-    // Replace the new leaf's target so the two leaves differ.
-    const focusedId = layout.focusedLeafId;
-    const targetB = serverTarget(envA, "t-2");
-    layout = syncLayoutWithRouteTarget(layout, targetB);
-    expect(findLeafNodeByTarget(layout, targetB)?.id).toBe(focusedId);
-
-    // Now focus the original leaf, then sync with t-2 again — must focus, not replace.
-    layout = focusLeaf(layout, "root");
-    const before = layout;
-    const next = syncLayoutWithRouteTarget(layout, targetB);
-    expect(next.focusedLeafId).toBe(focusedId);
-    // root leaf still holds t-1
-    const rootLeaf = next.nodesById["root"]!;
-    if (!isLeafNode(rootLeaf)) throw new Error("expected leaf");
-    expect(rootLeaf.target).toEqual(serverTarget(envA, "t-1"));
-    expect(next).not.toBe(before);
-  });
-
-  it("does not clobber leaf diff state when diff is omitted", () => {
-    let layout = initial();
-    layout = syncLayoutWithRouteTarget(layout, serverTarget(envA, "t-1"), {
-      diff: "1",
-    });
-    const before = (layout.nodesById["root"] as { diff: { diff?: string } }).diff;
-    expect(before.diff).toBe("1");
-    layout = syncLayoutWithRouteTarget(layout, serverTarget(envA, "t-1"));
-    const after = (layout.nodesById["root"] as { diff: { diff?: string } }).diff;
-    expect(after.diff).toBe("1");
-  });
-
-  it("idempotent re-sync with the same target returns the same layout reference", () => {
-    const layout = initial();
-    const next = syncLayoutWithRouteTarget(layout, serverTarget(envA, "t-1"));
-    expect(next).toBe(layout);
-  });
-
-  it("replaces the focused leaf's target when no matching leaf exists", () => {
-    const layout = initial();
-    const next = syncLayoutWithRouteTarget(layout, draftTarget("d-1"));
-    const focused = getFocusedLeaf(next)!;
-    expect(focused.target).toEqual(draftTarget("d-1"));
-  });
-
-  it("fills an empty split leaf before replacing a focused chat leaf", () => {
-    const id = makeIdFactory();
-    let layout = splitLeaf(initial(), "root", "row", id);
-    const emptyLeafId = layout.focusedLeafId;
-    layout = focusLeaf(layout, "root");
-
-    const next = syncLayoutWithRouteTarget(layout, serverTarget(envA, "t-2"));
-
-    expect(next.focusedLeafId).toBe(emptyLeafId);
-    expect(findLeafNodeByTarget(next, serverTarget(envA, "t-1"))).not.toBeNull();
-    expect(findLeafNodeByTarget(next, serverTarget(envA, "t-2"))?.id).toBe(emptyLeafId);
-  });
-
-  it("moves the maximized pane when routing to an existing hidden split leaf", () => {
-    const id = makeIdFactory();
-    let layout = splitLeaf(initial(), "root", "row", id);
-    const rightLeafId = layout.focusedLeafId;
-    const targetB = serverTarget(envA, "t-2");
-    layout = replaceLeafTarget(layout, rightLeafId, targetB);
-    layout = focusLeaf(layout, "root");
-    layout = toggleLeafMaximized(layout, "root");
-
-    const next = syncLayoutWithRouteTarget(layout, targetB);
-
-    expect(next.focusedLeafId).toBe(rightLeafId);
-    expect(next.maximizedLeafId).toBe(rightLeafId);
-  });
-
-  it("replaces the visible maximized pane when routing to a new target", () => {
-    const id = makeIdFactory();
-    let layout = splitLeaf(initial(), "root", "row", id);
-    const rightLeafId = layout.focusedLeafId;
-    layout = replaceLeafTarget(layout, rightLeafId, serverTarget(envA, "t-2"));
-    layout = focusLeaf(layout, "root");
-    layout = toggleLeafMaximized(layout, "root");
-
-    const next = syncLayoutWithRouteTarget(layout, serverTarget(envA, "t-3"));
-
-    expect(next.focusedLeafId).toBe("root");
-    expect(next.maximizedLeafId).toBe("root");
-    expect(findLeafNodeByTarget(next, serverTarget(envA, "t-3"))?.id).toBe("root");
-    expect(findLeafNodeByTarget(next, serverTarget(envA, "t-2"))?.id).toBe(rightLeafId);
-  });
-
-  it("works across two environments", () => {
-    const id = makeIdFactory();
-    let layout = initial();
-    layout = splitLeaf(layout, "root", "row", id);
-    layout = syncLayoutWithRouteTarget(layout, serverTarget(envB, "t-9"));
-    expect(findLeafNodeByTarget(layout, serverTarget(envB, "t-9"))).not.toBeNull();
-    expect(findLeafNodeByTarget(layout, serverTarget(envA, "t-1"))).not.toBeNull();
   });
 });

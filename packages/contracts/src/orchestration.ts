@@ -386,6 +386,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
+  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),

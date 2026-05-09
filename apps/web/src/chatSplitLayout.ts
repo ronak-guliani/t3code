@@ -190,18 +190,6 @@ export function findLeafNodeByTarget(
   return null;
 }
 
-export function findEmptyLeafNode(
-  layout: ChatSplitLayout,
-): Extract<ChatSplitNode, { kind: "leaf" }> | null {
-  for (const { leafId } of getLeafTargetsInRenderOrder(layout)) {
-    const leaf = getLeafNode(layout, leafId);
-    if (leaf && !leaf.target) {
-      return leaf;
-    }
-  }
-  return null;
-}
-
 function replaceChildReference(
   layout: ChatSplitLayout,
   splitId: ChatSplitNodeId,
@@ -592,52 +580,8 @@ export function toggleLeafMaximized(
   };
 }
 
-export function syncLayoutWithRouteTarget(
-  layout: ChatSplitLayout,
-  target: ThreadRouteTarget,
-  diff?: DiffRouteSearch,
-): ChatSplitLayout {
-  const matchedLeaf = findLeafNodeByTarget(layout, target);
-  if (matchedLeaf) {
-    let nextLayout = focusLeaf(layout, matchedLeaf.id);
-    if (nextLayout.maximizedLeafId && nextLayout.maximizedLeafId !== matchedLeaf.id) {
-      nextLayout = {
-        ...nextLayout,
-        maximizedLeafId: matchedLeaf.id,
-      };
-    }
-    // Only overwrite leaf diff state when the caller explicitly provided one,
-    // so navigations that omit diff params don't silently close an open diff.
-    return diff === undefined ? nextLayout : setLeafDiff(nextLayout, matchedLeaf.id, diff);
-  }
-
-  const emptyLeaf = findEmptyLeafNode(layout);
-  if (emptyLeaf) {
-    const nextDiff = diff === undefined ? {} : diff;
-    return replaceLeafTarget(focusLeaf(layout, emptyLeaf.id), emptyLeaf.id, target, nextDiff);
-  }
-
-  // When replacing the focused leaf's target, preserve its existing diff if no
-  // new diff was supplied — same reasoning as above.
-  const replacementLeafId = layout.maximizedLeafId ?? layout.focusedLeafId;
-  const nextDiff = diff === undefined ? (getLeafNode(layout, replacementLeafId)?.diff ?? {}) : diff;
-  return replaceLeafTarget(
-    focusLeaf(layout, replacementLeafId),
-    replacementLeafId,
-    target,
-    nextDiff,
-  );
-}
-
 export function getFocusedLeafTarget(layout: ChatSplitLayout): ThreadRouteTarget | null {
   return getFocusedLeaf(layout)?.target ?? null;
-}
-
-export function getLeafDiffState(
-  layout: ChatSplitLayout,
-  leafId: ChatSplitNodeId,
-): DiffRouteSearch {
-  return getLeafNode(layout, leafId)?.diff ?? {};
 }
 
 export function getLeafIds(layout: ChatSplitLayout): ChatSplitNodeId[] {

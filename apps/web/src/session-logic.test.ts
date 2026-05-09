@@ -939,6 +939,23 @@ describe("deriveWorkLogEntries", () => {
     expect(entry?.detail).toBeUndefined();
   });
 
+  it("marks completed tool work entries as complete", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "read-file-complete",
+        kind: "tool.completed",
+        summary: "Read File",
+        payload: {
+          itemType: "dynamic_tool_call",
+          title: "Read File",
+        },
+      }),
+    ];
+
+    const [entry] = deriveWorkLogEntries(activities, undefined);
+    expect(entry?.isComplete).toBe(true);
+  });
+
   it("uses grep raw output summaries instead of repeating the generic tool label", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

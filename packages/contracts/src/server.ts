@@ -172,6 +172,58 @@ export type ServerProvider = typeof ServerProvider.Type;
 export const ServerProviders = Schema.Array(ServerProvider);
 export type ServerProviders = typeof ServerProviders.Type;
 
+export const ServerSkillAgentId = Schema.Literals([
+  "claude-code",
+  "codex",
+  "gemini-cli",
+  "copilot-cli",
+  "opencode",
+  "antigravity",
+  "cursor",
+  "kiro",
+  "codebuddy",
+  "openclaw",
+  "trae",
+  "qoder",
+  "shared",
+]);
+export type ServerSkillAgentId = typeof ServerSkillAgentId.Type;
+
+export const ServerSkillInstallation = Schema.Struct({
+  agentId: ServerSkillAgentId,
+  agentName: TrimmedNonEmptyString,
+  path: TrimmedNonEmptyString,
+  source: Schema.Literals(["primary", "readable", "shared"]),
+});
+export type ServerSkillInstallation = typeof ServerSkillInstallation.Type;
+
+export const ServerSkillCatalogIssue = Schema.Struct({
+  kind: Schema.Literals(["directory-unreadable", "skill-unreadable", "skill-malformed"]),
+  path: TrimmedNonEmptyString,
+  message: TrimmedNonEmptyString,
+});
+export type ServerSkillCatalogIssue = typeof ServerSkillCatalogIssue.Type;
+
+export const ServerSkillCatalogEntry = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  displayName: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+  shortDescription: Schema.optional(TrimmedNonEmptyString),
+  prompt: Schema.optional(TrimmedNonEmptyString),
+  canonicalPath: TrimmedNonEmptyString,
+  paths: Schema.Array(TrimmedNonEmptyString),
+  installations: Schema.Array(ServerSkillInstallation),
+  hasPathConflict: Schema.Boolean,
+});
+export type ServerSkillCatalogEntry = typeof ServerSkillCatalogEntry.Type;
+
+export const ServerListSkillsResult = Schema.Struct({
+  skills: Schema.Array(ServerSkillCatalogEntry),
+  issues: Schema.Array(ServerSkillCatalogIssue),
+});
+export type ServerListSkillsResult = typeof ServerListSkillsResult.Type;
+
 /**
  * Treat the optional `availability` as "available" when absent. This is
  * the rule legacy producers (which omit the field) and new producers

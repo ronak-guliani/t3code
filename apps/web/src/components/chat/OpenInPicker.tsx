@@ -134,12 +134,11 @@ export const OpenInPicker = memo(function OpenInPicker({
         size="xs"
         variant="outline"
         disabled={!preferredEditor || !openInCwd}
+        aria-label={primaryOption ? `Open in ${primaryOption.label}` : "Open in editor"}
+        title={primaryOption ? `Open in ${primaryOption.label}` : "Open in editor"}
         onClick={() => openInEditor(preferredEditor)}
       >
         {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
-        <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-          Open
-        </span>
       </Button>
       <GroupSeparator className="hidden @3xl/header-actions:block" />
       <Menu>

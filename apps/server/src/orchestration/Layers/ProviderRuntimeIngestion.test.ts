@@ -706,6 +706,83 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
+  it("scopes Copilot assistant segment item ids by turn", async () => {
+    const harness = await createHarness();
+    const reusedItemId = asItemId("assistant:copilot-session:segment:9");
+    const firstCreatedAt = "2026-05-09T01:14:12.000Z";
+    const secondCreatedAt = "2026-05-09T01:33:57.000Z";
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reused-assistant-item-first-delta"),
+      provider: ProviderDriverKind.make("copilot"),
+      createdAt: firstCreatedAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-first"),
+      itemId: reusedItemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "old response",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reused-assistant-item-first-complete"),
+      provider: ProviderDriverKind.make("copilot"),
+      createdAt: firstCreatedAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-first"),
+      itemId: reusedItemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-reused-assistant-item-second-delta"),
+      provider: ProviderDriverKind.make("copilot"),
+      createdAt: secondCreatedAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-second"),
+      itemId: reusedItemId,
+      payload: {
+        streamKind: "assistant_text",
+        delta: "new response",
+      },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-reused-assistant-item-second-complete"),
+      provider: ProviderDriverKind.make("copilot"),
+      createdAt: secondCreatedAt,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-reused-item-second"),
+      itemId: reusedItemId,
+      payload: {
+        itemType: "assistant_message",
+        status: "completed",
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.messages.filter((message) => message.id.includes("assistant:copilot-session"))
+          .length === 2,
+    );
+    const messages = thread.messages
+      .filter((message) => message.id.includes("assistant:copilot-session"))
+      .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+
+    expect(messages.map((message) => message.turnId)).toEqual([
+      "turn-reused-item-first",
+      "turn-reused-item-second",
+    ]);
+    expect(messages.map((message) => message.text)).toEqual(["old response", "new response"]);
+    expect(messages.map((message) => message.createdAt)).toEqual([firstCreatedAt, secondCreatedAt]);
+  });
+
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

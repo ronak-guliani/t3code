@@ -1741,10 +1741,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -1855,10 +1855,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -1901,10 +1901,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -2060,10 +2060,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);

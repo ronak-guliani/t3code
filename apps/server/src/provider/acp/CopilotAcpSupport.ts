@@ -66,9 +66,8 @@ export function buildCopilotAcpSpawnInput(
 ): AcpSpawnInput {
   return {
     command: copilotSettings?.binaryPath || "copilot",
-    args: ["--acp", "--stdio", ...buildCopilotRuntimeModeArgs(runtimeMode)],
+    args: ["--acp", ...buildCopilotRuntimeModeArgs(runtimeMode)],
     cwd,
-    inheritEnv: false,
   };
 }
 

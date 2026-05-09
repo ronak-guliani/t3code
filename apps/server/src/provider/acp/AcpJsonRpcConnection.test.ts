@@ -8,12 +8,7 @@ import { it } from "@effect/vitest";
 import { Effect, Stream } from "effect";
 import { describe, expect } from "vitest";
 
-import {
-  buildRestrictedAcpSpawnEnv,
-  AcpSessionRuntime,
-  resolveAcpSpawnEnv,
-  type AcpSessionRequestLogEvent,
-} from "./AcpSessionRuntime.ts";
+import { AcpSessionRuntime, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,41 +16,6 @@ const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts")
 const bunExe = "bun";
 
 describe("AcpSessionRuntime", () => {
-  it("builds restricted ACP spawn environments from an allowlist", () => {
-    const processEnv = {
-      PATH: "/usr/bin",
-      HOME: "/Users/test",
-      GH_TOKEN: "gh-token",
-      OPENAI_API_KEY: "secret",
-      ANTHROPIC_API_KEY: "secret",
-    };
-
-    expect(buildRestrictedAcpSpawnEnv(processEnv)).toEqual({
-      PATH: "/usr/bin",
-      HOME: "/Users/test",
-      GH_TOKEN: "gh-token",
-    });
-    expect(
-      resolveAcpSpawnEnv({
-        inheritEnv: false,
-        env: { T3_PROVIDER: "copilot" },
-        processEnv,
-      }),
-    ).toEqual({
-      PATH: "/usr/bin",
-      HOME: "/Users/test",
-      GH_TOKEN: "gh-token",
-      T3_PROVIDER: "copilot",
-    });
-    expect(
-      resolveAcpSpawnEnv({
-        inheritEnv: true,
-        env: { T3_PROVIDER: "cursor" },
-        processEnv,
-      })?.OPENAI_API_KEY,
-    ).toBe("secret");
-  });
-
   it.effect("merges custom initialize client capabilities into the ACP handshake", () => {
     const requestEvents: Array<AcpSessionRequestLogEvent> = [];
     return Effect.gen(function* () {

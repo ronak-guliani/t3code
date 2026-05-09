@@ -55,7 +55,7 @@ export type ComposerCommandItem =
   | {
       id: string;
       type: "model";
-      provider: ProviderKind;
+      provider: ProviderDriverKind;
       model: string;
       label: string;
       description: string;

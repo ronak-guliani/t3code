@@ -55,7 +55,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadMessages: "projection.thread-messages",
   threadProposedPlans: "projection.thread-proposed-plans",
   threadActivities: "projection.thread-activities",
-  threadSessions: "projection.thread-sessions",
+  threadSessions: "projection.thread-sessions.v2",
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
@@ -958,6 +958,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       if (event.type !== "thread.session-set") {
         return;
       }
+      const existingSession = yield* projectionThreadSessionRepository.getByThreadId({
+        threadId: event.payload.threadId,
+      });
+      const resumeCursor = Object.hasOwn(event.payload.session, "resumeCursor")
+        ? (event.payload.session.resumeCursor ?? null)
+        : Option.match(existingSession, {
+            onNone: () => null,
+            onSome: (session) => session.resumeCursor,
+          });
       yield* projectionThreadSessionRepository.upsert({
         threadId: event.payload.threadId,
         status: event.payload.session.status,
@@ -965,7 +974,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         providerInstanceId: event.payload.session.providerInstanceId ?? null,
         runtimeMode: event.payload.session.runtimeMode,
         activeTurnId: event.payload.session.activeTurnId,
-        resumeCursor: event.payload.session.resumeCursor ?? null,
+        resumeCursor,
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });

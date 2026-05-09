@@ -14,12 +14,11 @@ import {
 } from "./CopilotAcpSupport.ts";
 
 describe("buildCopilotAcpSpawnInput", () => {
-  it("builds the default GitHub Copilot ACP command with restricted inherited env", () => {
+  it("builds the default GitHub Copilot ACP command", () => {
     expect(buildCopilotAcpSpawnInput(undefined, "/tmp/project", "approval-required")).toEqual({
       command: "copilot",
-      args: ["--acp", "--stdio"],
+      args: ["--acp"],
       cwd: "/tmp/project",
-      inheritEnv: false,
     });
   });
 
@@ -28,9 +27,8 @@ describe("buildCopilotAcpSpawnInput", () => {
       buildCopilotAcpSpawnInput({ binaryPath: "/opt/bin/copilot" }, "/tmp/project", "full-access"),
     ).toEqual({
       command: "/opt/bin/copilot",
-      args: ["--acp", "--stdio", "--allow-all"],
+      args: ["--acp", "--allow-all"],
       cwd: "/tmp/project",
-      inheritEnv: false,
     });
   });
 });

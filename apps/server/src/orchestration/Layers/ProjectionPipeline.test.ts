@@ -2401,6 +2401,111 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-latest-turn-ses
         assert.deepEqual(rows, [{ latestTurnId: "turn-session-stop" }]);
       }),
     );
+
+    it.effect("preserves session resume cursor when later lifecycle updates omit it", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-resume-cursor-preserve");
+        const resumeCursor = {
+          schemaVersion: 1,
+          sessionId: "cf7b03af-afea-47af-8fc1-871efeb11b23",
+        };
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "thread.created",
+          eventId: EventId.make("evt-resume-cursor-created"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-05-08T18:33:12.000Z",
+          commandId: CommandId.make("cmd-resume-cursor-created"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-resume-cursor-created"),
+          metadata: {},
+          payload: {
+            threadId,
+            projectId: ProjectId.make("project-resume-cursor"),
+            title: "Resume cursor",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("copilot"),
+              model: "auto",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            pendingRuntimeMode: null,
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-05-08T18:33:12.000Z",
+            updatedAt: "2026-05-08T18:33:12.000Z",
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-resume-cursor-initial"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-05-08T18:33:15.000Z",
+          commandId: CommandId.make("cmd-resume-cursor-initial"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-resume-cursor-initial"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "copilot",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              resumeCursor,
+              lastError: null,
+              updatedAt: "2026-05-08T18:33:15.000Z",
+            },
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-resume-cursor-lifecycle"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-05-08T18:33:16.000Z",
+          commandId: CommandId.make("cmd-resume-cursor-lifecycle"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-resume-cursor-lifecycle"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "copilot",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.make("turn-resume-cursor"),
+              lastError: null,
+              updatedAt: "2026-05-08T18:33:16.000Z",
+            },
+          },
+        });
+
+        const rows = yield* sql<{ readonly resumeCursor: string | null }>`
+          SELECT resume_cursor_json AS "resumeCursor"
+          FROM projection_thread_sessions
+          WHERE thread_id = ${threadId}
+        `;
+
+        assert.deepEqual(JSON.parse(rows[0]?.resumeCursor ?? "null"), resumeCursor);
+      }),
+    );
   },
 );
 

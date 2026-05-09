@@ -7,17 +7,24 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Stream } from "effect";
 
-import { ApprovalRequestId, ThreadId } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { COPILOT_AGENT_MODE_ID, COPILOT_PLAN_MODE_ID } from "../acp/CopilotAcpSupport.ts";
+import { COPILOT_PLAN_MODE_ID } from "../acp/CopilotAcpSupport.ts";
 import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
 import { makeCopilotAdapterLive } from "./CopilotAdapter.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const bunExe = "bun";
+const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
+const COPILOT_INSTANCE_ID = ProviderInstanceId.make("copilot");
 
 const isolateCopilotHome = Effect.fn("isolateCopilotHome")(function* () {
   const previousHome = process.env.HOME;
@@ -57,6 +64,17 @@ printf '\\n' >> ${JSON.stringify(options.argvLogPath)}`
 ${argvLog}
 ${envExports}
 exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
+`;
+  await writeFile(wrapperPath, script, "utf8");
+  await chmod(wrapperPath, 0o755);
+  return wrapperPath;
+}
+
+async function makeExitingCopilotWrapper(exitCode: number) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "copilot-acp-exit-"));
+  const wrapperPath = path.join(dir, "fake-copilot-exit.sh");
+  const script = `#!/bin/sh
+exit ${exitCode}
 `;
   await writeFile(wrapperPath, script, "utf8");
   await chmod(wrapperPath, 0o755);
@@ -112,10 +130,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       const session = yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       assert.equal(session.provider, "copilot");
@@ -158,6 +176,94 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
+  it.effect("reports running status while a Copilot prompt is in flight", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-in-flight-status-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({ T3_ACP_PROMPT_DELAY_MS: "1000" }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
+      });
+
+      const turnStartedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.started"),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const turnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "slow mock",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const turnStarted = Array.from(yield* Fiber.join(turnStartedFiber))[0];
+      assert.isDefined(turnStarted);
+      if (turnStarted?.type !== "turn.started") {
+        assert.fail("Expected turn.started event");
+        return;
+      }
+
+      const inFlightSessions = yield* adapter.listSessions();
+      const inFlightSession = inFlightSessions.find((session) => session.threadId === threadId);
+      assert.equal(inFlightSession?.status, "running");
+      assert.equal(inFlightSession?.activeTurnId, turnStarted.turnId);
+
+      yield* Fiber.join(turnFiber);
+
+      const settledSessions = yield* adapter.listSessions();
+      const settledSession = settledSessions.find((session) => session.threadId === threadId);
+      assert.equal(settledSession?.status, "ready");
+      assert.isUndefined(settledSession?.activeTurnId);
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("reports an actionable startup error when Copilot ACP exits before initialize", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-acp-exit-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() => makeExitingCopilotWrapper(0));
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const error = yield* adapter
+        .startSession({
+          threadId,
+          provider: COPILOT_DRIVER,
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(error._tag, "ProviderAdapterProcessError");
+      if (error._tag === "ProviderAdapterProcessError") {
+        assert.include(error.detail, "GitHub Copilot ACP process exited with code 0");
+        assert.include(error.detail, "copilot update");
+        assert.include(error.detail, "restart T3 Code");
+      }
+    }),
+  );
+
   it.effect("keeps Copilot read snapshots from retaining base64 attachment payloads", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
@@ -179,10 +285,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       yield* adapter.sendTurn({
@@ -212,7 +318,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
-  it.effect("starts Copilot with ACP stdio args and switches modes via session/set_mode", () =>
+  it.effect("starts Copilot with ACP args and switches modes via session/set_mode", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
       const settings = yield* ServerSettingsService;
@@ -238,10 +344,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
       yield* adapter.sendTurn({
         threadId,
@@ -251,7 +357,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       });
 
       const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
-      assert.deepEqual(argv[0], ["--acp", "--stdio", "--allow-all"]);
+      assert.deepEqual(argv[0], ["--acp", "--allow-all"]);
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
       const methods = requests.map((request) => request.method);
@@ -266,7 +372,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         .map((request) => request.params as { readonly modeId?: string });
       assert.deepEqual(
         setModePayloads.map((payload) => payload.modeId),
-        [COPILOT_AGENT_MODE_ID, COPILOT_PLAN_MODE_ID],
+        [COPILOT_PLAN_MODE_ID],
       );
 
       yield* adapter.stopSession(threadId);
@@ -288,25 +394,25 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       yield* adapter.startSession({
         threadId: ThreadId.make("copilot-approval-required-thread"),
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
       yield* adapter.stopSession(ThreadId.make("copilot-approval-required-thread"));
 
       yield* adapter.startSession({
         threadId: ThreadId.make("copilot-auto-accept-thread"),
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "auto-accept-edits",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
       yield* adapter.stopSession(ThreadId.make("copilot-auto-accept-thread"));
 
       const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
-      assert.deepEqual(argv[0], ["--acp", "--stdio"]);
-      assert.deepEqual(argv[1], ["--acp", "--stdio"]);
+      assert.deepEqual(argv[0], ["--acp"]);
+      assert.deepEqual(argv[1], ["--acp"]);
     }),
   );
 
@@ -328,10 +434,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       const relevantEventsFiber = yield* adapter.streamEvents.pipe(
@@ -380,10 +486,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       const requestedEventFiber = yield* adapter.streamEvents.pipe(
@@ -451,17 +557,17 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
         yield* adapter.startSession({
           threadId,
-          provider: "copilot",
+          provider: COPILOT_DRIVER,
           cwd: projectDir,
           runtimeMode: "full-access",
-          modelSelection: { provider: "copilot", model: "auto" },
+          modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
         });
         yield* adapter.sendTurn({
           threadId,
           input: "use configured model",
           attachments: [],
           modelSelection: {
-            provider: "copilot",
+            instanceId: COPILOT_INSTANCE_ID,
             model: "gpt-5.4",
             options: [{ id: "reasoning", value: "xhigh" }],
           },
@@ -508,10 +614,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       const session = yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       const requestedEventFiber = yield* adapter.streamEvents.pipe(
@@ -615,10 +721,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       const session = yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       const interruptedTurnFiber = yield* adapter
@@ -680,26 +786,26 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       const initialSession = yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "approval-required",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
       yield* adapter.stopSession(threadId);
 
       yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "full-access",
         resumeCursor: initialSession.resumeCursor,
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
       yield* adapter.stopSession(threadId);
 
       const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
-      assert.deepEqual(argv[0], ["--acp", "--stdio"]);
-      assert.deepEqual(argv[1], ["--acp", "--stdio", "--allow-all"]);
+      assert.deepEqual(argv[0], ["--acp"]);
+      assert.deepEqual(argv[1], ["--acp", "--allow-all"]);
     }),
   );
 
@@ -723,10 +829,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       const session = yield* adapter.startSession({
         threadId,
-        provider: "copilot",
+        provider: COPILOT_DRIVER,
         cwd: process.cwd(),
         runtimeMode: "full-access",
-        modelSelection: { provider: "copilot", model: "auto" },
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
       });
 
       assert.equal(session.provider, "copilot");

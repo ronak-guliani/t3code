@@ -119,6 +119,7 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
       getConfig: rpcClient.server.getConfig,
       refreshProviders: rpcClient.server.refreshProviders,
       listProviderCommands: rpcClient.server.listProviderCommands,
+      listSkills: rpcClient.server.listSkills,
       upsertKeybinding: rpcClient.server.upsertKeybinding,
       getSettings: rpcClient.server.getSettings,
       updateSettings: rpcClient.server.updateSettings,

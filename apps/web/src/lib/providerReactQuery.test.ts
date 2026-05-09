@@ -1,4 +1,9 @@
-import { EnvironmentId, ThreadId, type EnvironmentApi } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ThreadId,
+  type EnvironmentApi,
+} from "@t3tools/contracts";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +15,7 @@ import * as environmentApi from "../environmentApi";
 
 const threadId = ThreadId.make("thread-id");
 const environmentId = EnvironmentId.make("environment-local");
+const copilotDriver = ProviderDriverKind.make("copilot");
 
 function mockNativeApi(input: {
   getTurnDiff: ReturnType<typeof vi.fn>;
@@ -44,7 +50,7 @@ describe("providerCommandsQueryOptions", () => {
 
     const options = providerCommandsQueryOptions({
       environmentId,
-      provider: "copilot",
+      provider: copilotDriver,
       cwd: "/repo/project",
     });
 
@@ -57,11 +63,11 @@ describe("providerCommandsQueryOptions", () => {
       "providers",
       "commands",
       environmentId,
-      "copilot",
+      copilotDriver,
       "/repo/project",
     ]);
     expect(listProviderCommands).toHaveBeenCalledWith({
-      provider: "copilot",
+      provider: copilotDriver,
       cwd: "/repo/project",
     });
   });

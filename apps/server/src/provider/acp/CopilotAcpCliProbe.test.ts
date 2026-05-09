@@ -1,5 +1,5 @@
 /**
- * Optional integration check against a real `copilot --acp --stdio` install.
+ * Optional integration check against a real `copilot --acp` install.
  * Enable with: T3_COPILOT_ACP_PROBE=1 bun run test --filter CopilotAcpCliProbe
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";

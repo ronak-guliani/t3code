@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { createInitialChatSplitLayout, replaceLeafTarget, splitLeaf } from "../chatSplitLayout";
-import { deriveChatSplitLayoutId, useChatSplitLayoutStore } from "../chatSplitLayoutStore";
+import { useChatSplitLayoutStore } from "../chatSplitLayoutStore";
 
 const { navigateSpy } = vi.hoisted(() => ({
   navigateSpy: vi.fn(async () => undefined),
@@ -96,18 +96,16 @@ describe("ChatSplitArea", () => {
 
     let layout = createInitialChatSplitLayout({ leafId: "root", target: targetA });
     layout = splitLeaf(layout, "root", "row", createId);
-    layout = replaceLeafTarget(layout, "root", targetB);
+    layout = replaceLeafTarget(layout, layout.focusedLeafId, targetB);
+    layout = { ...layout, focusedLeafId: "root" };
+
+    const screen = await render(<ChatSplitArea routeTarget={targetA} routeDiffSearch={{}} />);
+    await expect.poll(() => document.querySelectorAll('[data-testid="chat-view"]').length).toBe(1);
 
     useChatSplitLayoutStore.setState((state) => ({
       ...state,
-      activeLayoutId: deriveChatSplitLayoutId(targetA),
-      layoutsById: {
-        ...state.layoutsById,
-        [deriveChatSplitLayoutId(targetA)]: layout,
-      },
+      layout,
     }));
-
-    const screen = await render(<ChatSplitArea routeTarget={targetA} routeDiffSearch={{}} />);
 
     await expect.poll(() => document.querySelectorAll('[data-testid="chat-view"]').length).toBe(2);
     navigateSpy.mockClear();

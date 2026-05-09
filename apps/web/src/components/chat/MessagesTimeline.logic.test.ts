@@ -205,7 +205,7 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
-  it("only enables assistant copy for the terminal assistant message in a turn", () => {
+  it("only enables terminal assistant affordances for the final assistant message in a turn", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [
         {
@@ -264,7 +264,9 @@ describe("deriveMessagesTimelineRows", () => {
 
     expect(assistantRows).toHaveLength(2);
     expect(assistantRows[0]?.showAssistantCopyButton).toBe(false);
+    expect(assistantRows[0]?.showAssistantTerminalMetadata).toBe(false);
     expect(assistantRows[1]?.showAssistantCopyButton).toBe(true);
+    expect(assistantRows[1]?.showAssistantTerminalMetadata).toBe(true);
     expect(assistantRows[1]?.showCompletionDivider).toBe(true);
   });
 

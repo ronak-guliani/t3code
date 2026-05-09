@@ -20,7 +20,7 @@ function sessionKeepsTurnActive(
   activeTurnId: string,
 ): boolean {
   if (!session) return false;
-  return session.status === "running" && session.activeTurnId === activeTurnId;
+  return session.activeTurnId === activeTurnId;
 }
 
 export interface ProviderSessionReaperLiveOptions {

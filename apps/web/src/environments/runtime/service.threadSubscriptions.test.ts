@@ -103,6 +103,7 @@ function makeThreadShellSnapshot(params: {
           model: "gpt-5-codex",
         },
         runtimeMode: "full-access",
+        pendingRuntimeMode: null,
         interactionMode: "default",
         branch: null,
         worktreePath: null,

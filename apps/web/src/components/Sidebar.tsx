@@ -6,6 +6,7 @@ import {
   GitPullRequestIcon,
   FolderPlusIcon,
   SearchIcon,
+  SparklesIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -2480,6 +2481,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     attachProjectListAutoAnimateRef,
     projectsLength,
   } = props;
+  const navigate = useNavigate();
 
   const handleProjectSortOrderChange = useCallback(
     (sortOrder: SidebarProjectSortOrder) => {
@@ -2499,6 +2501,9 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     },
     [updateSettings],
   );
+  const handleSkillsClick = useCallback(() => {
+    void navigate({ to: "/skills" });
+  }, [navigate]);
 
   return (
     <SidebarContent className="gap-0">
@@ -2522,6 +2527,16 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 </Kbd>
               ) : null}
             </CommandDialogTrigger>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              size="sm"
+              className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
+              onClick={handleSkillsClick}
+            >
+              <SparklesIcon className="size-3.5" />
+              <span className="flex-1 truncate text-left text-xs">Skills</span>
+            </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroup>

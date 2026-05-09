@@ -125,7 +125,8 @@ describe("createLocalApi", () => {
   it("forwards provider refresh requests to the RPC client", async () => {
     const nextProviders = [
       {
-        provider: "copilot",
+        instanceId: ProviderInstanceId.make("copilot"),
+        driver: ProviderDriverKind.make("copilot"),
         enabled: true,
         installed: true,
         version: "1.0.0",
@@ -137,7 +138,7 @@ describe("createLocalApi", () => {
         skills: [],
       },
     ] satisfies ReadonlyArray<ServerProvider>;
-    const input = { cwd: "/repo/project" };
+    const input = {};
 
     rpcClientMock.server.refreshProviders.mockResolvedValue({ providers: nextProviders });
     const { createLocalApi } = await import("./localApi");
@@ -340,7 +341,7 @@ describe("wsApi", () => {
     const { createLocalApi } = await import("./localApi");
 
     const api = createLocalApi(rpcClientMock as never);
-    const input = { provider: "copilot" as const, cwd: "/repo" };
+    const input = { provider: ProviderDriverKind.make("copilot"), cwd: "/repo" };
 
     await expect(api.server.listProviderCommands(input)).resolves.toEqual({
       commands: [{ name: "review", description: "Review changes" }],

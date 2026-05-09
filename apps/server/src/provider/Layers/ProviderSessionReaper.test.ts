@@ -482,6 +482,67 @@ describe("ProviderSessionReaper", () => {
     expect(Option.isSome(remaining)).toBe(true);
   });
 
+  it("keeps active turns when a provider session reports the same turn id with a stale ready status", async () => {
+    const threadId = ThreadId.make("thread-reaper-ready-active-turn");
+    const turnId = TurnId.make("turn-reaper-ready-active");
+    const now = new Date().toISOString();
+    const harness = await createHarness({
+      activeSessions: [
+        {
+          provider: ProviderDriverKind.make("claudeAgent"),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          status: "ready",
+          runtimeMode: "full-access",
+          threadId,
+          activeTurnId: turnId,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: turnId,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: "2026-04-14T00:00:00.000Z",
+        resumeCursor: {
+          opaque: "resume-ready-active-turn",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.dispatchedCommands).toHaveLength(0);
+    const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
+    expect(Option.isSome(remaining)).toBe(true);
+  });
+
   it("does not keep active turns alive from a running provider session without a matching turn id", async () => {
     const threadId = ThreadId.make("thread-reaper-running-missing-turn");
     const turnId = TurnId.make("turn-reaper-running-missing-turn");

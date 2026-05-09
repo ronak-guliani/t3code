@@ -405,6 +405,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           },
           interactionMode: "default",
           runtimeMode: "full-access",
+          pendingRuntimeMode: null,
           branch: null,
           worktreePath: null,
           latestTurn: {

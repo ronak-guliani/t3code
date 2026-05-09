@@ -205,6 +205,47 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Work log");
   });
 
+  it("collapses completed tool-call groups to an expandable header", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-1",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-1",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Read file",
+              tone: "tool",
+              isComplete: true,
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-2",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Ran command",
+              tone: "tool",
+              isComplete: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Tool calls (2)");
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain("Expand");
+    expect(markup).not.toContain("Read file");
+    expect(markup).not.toContain("Ran command");
+  });
+
   it("formats changed file paths from the workspace root", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -232,23 +273,39 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 
-  it("renders the Copilot resume command in assistant message metadata", async () => {
+  it("renders the Copilot resume command only in terminal assistant message metadata", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
+    const copilotResumeCommand = "copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33";
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
-        copilotResumeCommand="copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33"
+        copilotResumeCommand={copilotResumeCommand}
         timelineEntries={[
           {
             id: "entry-1",
             kind: "message",
             createdAt: "2026-04-22T19:00:45.000Z",
             message: {
-              id: MessageId.make("message-assistant"),
+              id: MessageId.make("message-assistant-1"),
+              role: "assistant",
+              text: "I am checking this.",
+              createdAt: "2026-04-22T19:00:45.000Z",
+              completedAt: "2026-04-22T19:01:00.000Z",
+              turnId: TurnId.make("turn-1"),
+              streaming: false,
+            },
+          },
+          {
+            id: "entry-2",
+            kind: "message",
+            createdAt: "2026-04-22T19:03:33.000Z",
+            message: {
+              id: MessageId.make("message-assistant-2"),
               role: "assistant",
               text: "All set.",
-              createdAt: "2026-04-22T19:00:45.000Z",
-              completedAt: "2026-04-22T19:03:33.000Z",
+              createdAt: "2026-04-22T19:03:33.000Z",
+              completedAt: "2026-04-22T19:03:40.000Z",
+              turnId: TurnId.make("turn-1"),
               streaming: false,
             },
           },
@@ -256,7 +313,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("copilot --resume=a7f0c803-7cce-4554-9ad6-dfd9df539e33");
+    expect(markup.match(new RegExp(`>${copilotResumeCommand}</span>`, "g"))).toHaveLength(1);
+    expect(markup.indexOf(copilotResumeCommand)).toBeGreaterThan(markup.indexOf("All set."));
   });
 
   it("renders turn-scoped changed files by default", async () => {
