@@ -69,7 +69,7 @@ import {
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { readMcpProviderSession } from "../../mcp/Services/McpProviderSession.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -2874,7 +2874,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
       };
-      const mcpSession = readMcpProviderSession(input.threadId);
+      const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
