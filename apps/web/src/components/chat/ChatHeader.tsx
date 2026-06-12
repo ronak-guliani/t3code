@@ -1,37 +1,21 @@
 import {
   type EnvironmentId,
   type EditorId,
-  type GitResolvedPullRequest,
   type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { memo, type ReactNode } from "react";
+import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
-import {
-  ActivityIcon,
-  DiffIcon,
-  FileDownIcon,
-  GlobeIcon,
-  LoaderIcon,
-  TerminalSquareIcon,
-} from "lucide-react";
-import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
+import { PanelRightIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
 import { Toggle } from "../ui/toggle";
 import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary";
-import {
-  AgentWorkflowHeaderActions,
-  type AgentWorkflowHeaderAction,
-  type AgentWorkflowRunRequest,
-} from "./AgentWorkflowHeaderActions";
-import { WorkflowRunsButton, type WorkflowRunPresentation } from "./WorkflowRunSummary";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -39,37 +23,31 @@ interface ChatHeaderProps {
   draftId?: DraftId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
-  isGitRepo: boolean;
   openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
-  terminalAvailable: boolean;
-  terminalOpen: boolean;
-  browserPreviewOpen: boolean;
-  insightsOpen: boolean;
-  exportingThread: boolean;
-  exportThreadDisabledReason: string | null;
-  terminalToggleShortcutLabel: string | null;
-  diffToggleShortcutLabel: string | null;
+  rightPanelAvailable: boolean;
+  rightPanelOpen: boolean;
   gitCwd: string | null;
-  diffOpen: boolean;
-  workflowActions: ReadonlyArray<AgentWorkflowHeaderAction>;
-  workflowRuns: ReadonlyArray<WorkflowRunPresentation>;
   onRunProjectScript: (script: ProjectScript) => void;
-  onRunWorkflow: (request: AgentWorkflowRunRequest) => void;
-  onListOpenPullRequests: () => Promise<ReadonlyArray<GitResolvedPullRequest>>;
-  onNavigateThread: (threadId: ThreadId) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
-  onExportThread: () => void;
-  onToggleTerminal: () => void;
-  onToggleBrowserPreview: () => void;
-  onToggleInsights: () => void;
-  onToggleDiff: () => void;
-  paneActions?: ReactNode;
+  onToggleRightPanel: () => void;
+}
+
+export function shouldShowOpenInPicker(input: {
+  readonly activeProjectName: string | undefined;
+  readonly activeThreadEnvironmentId: EnvironmentId;
+  readonly primaryEnvironmentId: EnvironmentId | null;
+}): boolean {
+  return (
+    Boolean(input.activeProjectName) &&
+    input.primaryEnvironmentId !== null &&
+    input.activeThreadEnvironmentId === input.primaryEnvironmentId
+  );
 }
 
 export const ChatHeader = memo(function ChatHeader({
@@ -78,60 +56,46 @@ export const ChatHeader = memo(function ChatHeader({
   draftId,
   activeThreadTitle,
   activeProjectName,
-  isGitRepo,
   openInCwd,
   activeProjectScripts,
   preferredScriptId,
   keybindings,
   availableEditors,
-  terminalAvailable,
-  terminalOpen,
-  browserPreviewOpen,
-  insightsOpen,
-  exportingThread,
-  exportThreadDisabledReason,
-  terminalToggleShortcutLabel,
-  diffToggleShortcutLabel,
+  rightPanelAvailable,
+  rightPanelOpen,
   gitCwd,
-  diffOpen,
-  workflowActions,
-  workflowRuns,
   onRunProjectScript,
-  onRunWorkflow,
-  onListOpenPullRequests,
-  onNavigateThread,
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
-  onExportThread,
-  onToggleTerminal,
-  onToggleBrowserPreview,
-  onToggleInsights,
-  onToggleDiff,
-  paneActions,
+  onToggleRightPanel,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const isRemoteEnvironment =
-    primaryEnvironmentId !== null && activeThreadEnvironmentId !== primaryEnvironmentId;
+  const showOpenInPicker = shouldShowOpenInPicker({
+    activeProjectName,
+    activeThreadEnvironmentId,
+    primaryEnvironmentId,
+  });
 
   return (
-    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+    <div className="@container/header-actions flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 overflow-hidden sm:flex-1 sm:flex-nowrap sm:gap-3">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-        <h2
-          className="min-w-0 shrink truncate font-medium text-foreground"
-          style={{ fontSize: "var(--app-chat-font-size)" }}
-          title={activeThreadTitle}
-        >
-          {activeThreadTitle}
-        </h2>
-        {activeProjectName && !isGitRepo && (
-          <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
-            No Git
-          </Badge>
-        )}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <h2
+                aria-label={activeThreadTitle}
+                className="min-w-0 flex-1 basis-40 truncate text-sm font-medium text-foreground"
+              >
+                {activeThreadTitle}
+              </h2>
+            }
+          />
+          <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
+        </Tooltip>
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-1">
+      <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 sm:shrink-0 sm:justify-end @3xl/header-actions:gap-3">
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
@@ -143,7 +107,7 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
-        {activeProjectName && !isRemoteEnvironment && (
+        {showOpenInPicker && (
           <OpenInPicker
             keybindings={keybindings}
             availableEditors={availableEditors}
@@ -157,118 +121,26 @@ export const ChatHeader = memo(function ChatHeader({
             {...(draftId ? { draftId } : {})}
           />
         )}
-        <AgentWorkflowHeaderActions
-          actions={workflowActions}
-          onRun={onRunWorkflow}
-          onListOpenPullRequests={onListOpenPullRequests}
-        />
-        <WorkflowRunsButton runs={workflowRuns} onNavigateThread={onNavigateThread} />
         <Tooltip>
           <TooltipTrigger
             render={
               <Toggle
-                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
-                pressed={insightsOpen}
-                onPressedChange={onToggleInsights}
-                aria-label="Toggle insights panel"
-                variant="outline"
+                className="shrink-0"
+                pressed={rightPanelOpen}
+                onPressedChange={onToggleRightPanel}
+                aria-label="Toggle right panel"
+                variant="ghost"
                 size="xs"
+                disabled={!rightPanelAvailable}
               >
-                <ActivityIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">Toggle insights panel</TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
-                variant="outline"
-                size="icon-xs"
-                onClick={onExportThread}
-                aria-label="Export chat"
-                disabled={exportingThread || exportThreadDisabledReason !== null}
-              >
-                {exportingThread ? (
-                  <LoaderIcon className="size-3 animate-spin" />
-                ) : (
-                  <FileDownIcon className="size-3" />
-                )}
-              </Button>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {exportThreadDisabledReason ?? (exportingThread ? "Exporting chat..." : "Export chat")}
-          </TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
-                pressed={browserPreviewOpen}
-                onPressedChange={onToggleBrowserPreview}
-                aria-label="Toggle browser preview"
-                variant="outline"
-                size="xs"
-              >
-                <GlobeIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">Toggle browser preview</TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
-                pressed={terminalOpen}
-                onPressedChange={onToggleTerminal}
-                aria-label="Toggle terminal drawer"
-                variant="outline"
-                size="xs"
-                disabled={!terminalAvailable}
-              >
-                <TerminalSquareIcon className="size-3" />
+                <PanelRightIcon className="size-3.5" />
               </Toggle>
             }
           />
           <TooltipPopup side="bottom">
-            {!terminalAvailable
-              ? "Terminal is unavailable until this thread has an active project."
-              : terminalToggleShortcutLabel
-                ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-                : "Toggle terminal drawer"}
+            {rightPanelAvailable ? "Toggle right panel" : "Right panel is unavailable"}
           </TooltipPopup>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
-                pressed={diffOpen}
-                onPressedChange={onToggleDiff}
-                aria-label="Toggle diff panel"
-                variant="outline"
-                size="xs"
-                disabled={!isGitRepo && !diffOpen}
-              >
-                <DiffIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {!isGitRepo && !diffOpen
-              ? "Diff panel is unavailable because this project is not a git repository."
-              : diffToggleShortcutLabel
-                ? `Toggle diff panel (${diffToggleShortcutLabel})`
-                : "Toggle diff panel"}
-          </TooltipPopup>
-        </Tooltip>
-        {paneActions}
       </div>
     </div>
   );
