@@ -2,7 +2,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { watch } from "node:fs";
 import { join } from "node:path";
 
-import { desktopDir, resolveElectronPath } from "./electron-launcher.mjs";
+import {
+  desktopDir,
+  resolveDevProtocolClient,
+  resolveElectronLaunchCommand,
+} from "./electron-launcher.mjs";
 import { waitForResources } from "./wait-for-resources.mjs";
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL?.trim();
@@ -28,6 +32,7 @@ const watchedDirectories = [
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
 const childTreeGracePeriodMs = 1_200;
+const remoteDebuggingPort = process.env.T3CODE_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
 
 await waitForResources({
   baseDir: desktopDir,
@@ -38,6 +43,11 @@ await waitForResources({
 
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
+const devProtocolClient = resolveDevProtocolClient();
+if (devProtocolClient) {
+  childEnv.T3CODE_DESKTOP_APP_USER_MODEL_ID = devProtocolClient.appBundleId;
+  childEnv.T3CODE_DESKTOP_PROTOCOL_REGISTRATION_MANAGED = "1";
+}
 
 let shuttingDown = false;
 let restartTimer = null;
@@ -67,15 +77,18 @@ function startApp() {
     return;
   }
 
-  const app = spawn(
-    resolveElectronPath(),
-    [`--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs"],
-    {
-      cwd: desktopDir,
-      env: childEnv,
-      stdio: "inherit",
-    },
-  );
+  const electronArgs = remoteDebuggingPort
+    ? [`--remote-debugging-port=${remoteDebuggingPort}`]
+    : [];
+  const launchArgs = devProtocolClient
+    ? electronArgs
+    : [...electronArgs, `--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs"];
+  const electronCommand = resolveElectronLaunchCommand(launchArgs);
+  const app = spawn(electronCommand.electronPath, electronCommand.args, {
+    cwd: desktopDir,
+    env: childEnv,
+    stdio: "inherit",
+  });
 
   currentApp = app;
 
@@ -125,6 +138,7 @@ async function stopApp() {
     app.once("exit", finish);
     app.kill("SIGTERM");
     killChildTreeByPid(app.pid, "TERM");
+    cleanupStaleDevApps();
 
     setTimeout(() => {
       if (settled) {
@@ -133,6 +147,7 @@ async function stopApp() {
 
       app.kill("SIGKILL");
       killChildTreeByPid(app.pid, "KILL");
+      cleanupStaleDevApps();
       finish();
     }, forcedShutdownTimeoutMs).unref();
   });

@@ -4,12 +4,14 @@ import {
   type GitRunStackedActionResult,
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
+  type RelayClientInstallProgressEvent,
+  type RelayClientStatus,
   type ServerSettingsPatch,
   type VcsStatusResult,
   type VcsStatusStreamEvent,
   WS_METHODS,
 } from "@t3tools/contracts";
-import { applyVcsStatusStreamEvent } from "@t3tools/shared/git";
+import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
@@ -76,6 +78,22 @@ export interface WsRpcClient {
     readonly close: RpcUnaryMethod<typeof WS_METHODS.terminalClose>;
     readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalEvents>;
     readonly onMetadata: RpcStreamMethod<typeof WS_METHODS.subscribeTerminalMetadata>;
+  };
+  readonly preview: {
+    readonly open: RpcUnaryMethod<typeof WS_METHODS.previewOpen>;
+    readonly navigate: RpcUnaryMethod<typeof WS_METHODS.previewNavigate>;
+    readonly refresh: RpcUnaryMethod<typeof WS_METHODS.previewRefresh>;
+    readonly close: RpcUnaryMethod<typeof WS_METHODS.previewClose>;
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.previewList>;
+    readonly reportStatus: RpcUnaryMethod<typeof WS_METHODS.previewReportStatus>;
+    readonly automation: {
+      readonly connect: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnect>;
+      readonly respond: RpcUnaryMethod<typeof WS_METHODS.previewAutomationRespond>;
+      readonly reportOwner: RpcUnaryMethod<typeof WS_METHODS.previewAutomationReportOwner>;
+      readonly clearOwner: RpcUnaryMethod<typeof WS_METHODS.previewAutomationClearOwner>;
+    };
+    readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribePreviewEvents>;
+    readonly subscribePorts: RpcStreamMethod<typeof WS_METHODS.subscribeDiscoveredLocalServers>;
   };
   readonly projects: {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
@@ -150,6 +168,12 @@ export interface WsRpcClient {
     >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
   };
+  readonly cloud: {
+    readonly getRelayClientStatus: RpcUnaryNoArgMethod<typeof WS_METHODS.cloudGetRelayClientStatus>;
+    readonly installRelayClient: (
+      onProgress?: (event: RelayClientInstallProgressEvent) => void,
+    ) => Promise<RelayClientStatus>;
+  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly getTurnDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnDiff>;
@@ -204,6 +228,41 @@ export function createWsRpcClient(
           subscriptionOptions(options, WS_METHODS.subscribeTerminalMetadata),
         ),
     },
+    preview: {
+      open: (input) => transport.request((client) => client[WS_METHODS.previewOpen](input)),
+      navigate: (input) => transport.request((client) => client[WS_METHODS.previewNavigate](input)),
+      refresh: (input) => transport.request((client) => client[WS_METHODS.previewRefresh](input)),
+      close: (input) => transport.request((client) => client[WS_METHODS.previewClose](input)),
+      list: (input) => transport.request((client) => client[WS_METHODS.previewList](input)),
+      reportStatus: (input) =>
+        transport.request((client) => client[WS_METHODS.previewReportStatus](input)),
+      automation: {
+        connect: (input, listener, options) =>
+          transport.subscribe(
+            (client) => client[WS_METHODS.previewAutomationConnect](input),
+            listener,
+            subscriptionOptions(options, WS_METHODS.previewAutomationConnect),
+          ),
+        respond: (input) =>
+          transport.request((client) => client[WS_METHODS.previewAutomationRespond](input)),
+        reportOwner: (input) =>
+          transport.request((client) => client[WS_METHODS.previewAutomationReportOwner](input)),
+        clearOwner: (input) =>
+          transport.request((client) => client[WS_METHODS.previewAutomationClearOwner](input)),
+      },
+      onEvent: (listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.subscribePreviewEvents]({}),
+          listener,
+          options,
+        ),
+      subscribePorts: (listener, options) =>
+        transport.subscribe(
+          (client) => client[WS_METHODS.subscribeDiscoveredLocalServers]({}),
+          listener,
+          options,
+        ),
+    },
     projects: {
       searchEntries: (input) =>
         transport.request((client) => client[WS_METHODS.projectsSearchEntries](input)),
@@ -234,7 +293,7 @@ export function createWsRpcClient(
         return transport.subscribe(
           (client) => client[WS_METHODS.subscribeVcsStatus](input),
           (event: VcsStatusStreamEvent) => {
-            current = applyVcsStatusStreamEvent(current, event);
+            current = applyGitStatusStreamEvent(current, event);
             listener(current);
           },
           subscriptionOptions(options, WS_METHODS.subscribeVcsStatus),
@@ -319,6 +378,26 @@ export function createWsRpcClient(
         transport.request((client) => client[WS_METHODS.serverGetProcessResourceHistory](input)),
       signalProcess: (input) =>
         transport.request((client) => client[WS_METHODS.serverSignalProcess](input)),
+    },
+    cloud: {
+      getRelayClientStatus: () =>
+        transport.request((client) => client[WS_METHODS.cloudGetRelayClientStatus]({})),
+      installRelayClient: async (onProgress) => {
+        let installed: RelayClientStatus | null = null;
+        await transport.requestStream(
+          (client) => client[WS_METHODS.cloudInstallRelayClient]({}),
+          (event) => {
+            onProgress?.(event);
+            if (event.type === "complete") {
+              installed = event.status;
+            }
+          },
+        );
+        if (installed) {
+          return installed;
+        }
+        throw new Error("Relay client install stream completed without a final status.");
+      },
     },
     orchestration: {
       dispatchCommand: (input) =>
