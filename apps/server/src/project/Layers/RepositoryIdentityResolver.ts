@@ -131,11 +131,18 @@ export const makeRepositoryIdentityResolver = Effect.fn("makeRepositoryIdentityR
         }),
       },
     );
+    const repositoryIdentityCacheKeyCache = yield* Cache.makeWith<string, string>(
+      (cwd) => Effect.promise(() => resolveRepositoryIdentityCacheKey(cwd)),
+      {
+        capacity: options.cacheCapacity ?? DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY,
+        timeToLive: () => options.positiveCacheTtl ?? DEFAULT_POSITIVE_CACHE_TTL,
+      },
+    );
 
     const resolve: RepositoryIdentityResolverShape["resolve"] = Effect.fn(
       "RepositoryIdentityResolver.resolve",
     )(function* (cwd) {
-      const cacheKey = yield* Effect.promise(() => resolveRepositoryIdentityCacheKey(cwd));
+      const cacheKey = yield* Cache.get(repositoryIdentityCacheKeyCache, cwd);
       return yield* Cache.get(repositoryIdentityCache, cacheKey);
     });
 
