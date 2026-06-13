@@ -49,6 +49,16 @@ const EMPTY_THREAD_PREVIEW_STATE: ThreadPreviewState = Object.freeze({
   recentlySeenUrls: [] as string[],
 });
 
+const revisionByThreadKey = new Map<string, number>();
+
+const bumpPreviewStateRevision = (threadKey: string): void => {
+  revisionByThreadKey.set(threadKey, (revisionByThreadKey.get(threadKey) ?? 0) + 1);
+};
+
+export function readPreviewStateRevision(ref: ScopedThreadRef): number {
+  return revisionByThreadKey.get(scopedThreadKey(ref)) ?? 0;
+}
+
 export interface PreviewStateStoreState {
   byThreadKey: Record<string, ThreadPreviewState>;
   applyServerEvent: (ref: ScopedThreadRef, event: PreviewEvent) => void;
@@ -58,6 +68,7 @@ export interface PreviewStateStoreState {
     tabId: string,
     overlay: DesktopPreviewOverlay | null,
   ) => void;
+  removeSession: (ref: ScopedThreadRef, tabId: string) => void;
   setActiveTab: (ref: ScopedThreadRef, tabId: string) => void;
   rememberUrl: (ref: ScopedThreadRef, url: string) => void;
   removeThread: (ref: ScopedThreadRef) => void;
@@ -93,11 +104,33 @@ const dedupeRecentUrls = (existing: string[], url: string): string[] => {
   return next.slice(0, PREVIEW_RECENT_URL_LIMIT);
 };
 
+const removeSession = (current: ThreadPreviewState, tabId: string): ThreadPreviewState => {
+  if (!current.sessions[tabId]) return current;
+  const { [tabId]: _closed, ...sessions } = current.sessions;
+  const { [tabId]: _desktop, ...desktopByTabId } = current.desktopByTabId;
+  const nextSnapshot =
+    Object.values(sessions)
+      .toSorted((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+      .at(-1) ?? null;
+  const activeTabId =
+    current.activeTabId === tabId ? (nextSnapshot?.tabId ?? null) : current.activeTabId;
+  const snapshot = activeTabId ? (sessions[activeTabId] ?? nextSnapshot) : nextSnapshot;
+  return {
+    ...current,
+    sessions,
+    desktopByTabId,
+    activeTabId: snapshot?.tabId ?? null,
+    snapshot,
+    desktopOverlay: snapshot ? (desktopByTabId[snapshot.tabId] ?? null) : null,
+  };
+};
+
 export const usePreviewStateStore = create<PreviewStateStoreState>()((set) => ({
   byThreadKey: {},
   applyServerEvent: (ref, event) =>
     set((state) => {
       const threadKey = scopedThreadKey(ref);
+      bumpPreviewStateRevision(threadKey);
       let nextByThread = state.byThreadKey;
       switch (event.type) {
         case "opened":
@@ -145,28 +178,9 @@ export const usePreviewStateStore = create<PreviewStateStoreState>()((set) => ({
           });
           break;
         case "closed":
-          nextByThread = updateThread(state, threadKey, (current) => {
-            if (!current.sessions[event.tabId]) return current;
-            const { [event.tabId]: _closed, ...sessions } = current.sessions;
-            const { [event.tabId]: _desktop, ...desktopByTabId } = current.desktopByTabId;
-            const nextSnapshot =
-              Object.values(sessions)
-                .toSorted((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-                .at(-1) ?? null;
-            const activeTabId =
-              current.activeTabId === event.tabId
-                ? (nextSnapshot?.tabId ?? null)
-                : current.activeTabId;
-            const snapshot = activeTabId ? (sessions[activeTabId] ?? nextSnapshot) : nextSnapshot;
-            return {
-              ...current,
-              sessions,
-              desktopByTabId,
-              activeTabId: snapshot?.tabId ?? null,
-              snapshot,
-              desktopOverlay: snapshot ? (desktopByTabId[snapshot.tabId] ?? null) : null,
-            };
-          });
+          nextByThread = updateThread(state, threadKey, (current) =>
+            removeSession(current, event.tabId),
+          );
           break;
       }
       return { byThreadKey: nextByThread };
@@ -174,6 +188,7 @@ export const usePreviewStateStore = create<PreviewStateStoreState>()((set) => ({
   applyServerSnapshot: (ref, snapshot) =>
     set((state) => {
       const threadKey = scopedThreadKey(ref);
+      bumpPreviewStateRevision(threadKey);
       const nextByThread = updateThread(state, threadKey, (current) => {
         if (!snapshot && current.snapshot === null) return current;
         if (!snapshot) {
@@ -220,6 +235,14 @@ export const usePreviewStateStore = create<PreviewStateStoreState>()((set) => ({
       });
       return { byThreadKey: nextByThread };
     }),
+  removeSession: (ref, tabId) =>
+    set((state) => {
+      const threadKey = scopedThreadKey(ref);
+      bumpPreviewStateRevision(threadKey);
+      return {
+        byThreadKey: updateThread(state, threadKey, (current) => removeSession(current, tabId)),
+      };
+    }),
   setActiveTab: (ref, tabId) =>
     set((state) => {
       const threadKey = scopedThreadKey(ref);
@@ -248,6 +271,7 @@ export const usePreviewStateStore = create<PreviewStateStoreState>()((set) => ({
   removeThread: (ref) =>
     set((state) => {
       const threadKey = scopedThreadKey(ref);
+      bumpPreviewStateRevision(threadKey);
       if (!(threadKey in state.byThreadKey)) return state;
       return { byThreadKey: removeThreadKey(state.byThreadKey, threadKey) };
     }),
