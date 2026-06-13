@@ -8,6 +8,8 @@
  * here). Single layer-scoped browser session partition.
  */
 import type {
+  DesktopPreviewAnnotationTheme,
+  DesktopPreviewPointerEvent,
   PreviewAnnotationPayload,
   PreviewAnnotationRect,
   DesktopPreviewRecordingArtifact,
@@ -26,27 +28,35 @@ import type {
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
-import { app, type BrowserWindow, type Session, session, webContents } from "electron";
+import {
+  type BrowserWindow,
+  type Session,
+  clipboard,
+  nativeImage,
+  shell,
+  webContents,
+} from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import * as Context from "effect/Context";
+import * as Data from "effect/Data";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import type * as Scope from "effect/Scope";
 
-import { isPreviewAnnotationPayload } from "./picked-element-payload.ts";
-import { playwrightInjectedRuntimeInstallExpression } from "./playwright-injected-runtime.ts";
-
-const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
-const START_PICK_CHANNEL = "preview:start-pick";
-const CANCEL_PICK_CHANNEL = "preview:cancel-pick";
-const ELEMENT_PICKED_CHANNEL = "preview:element-picked";
-const ANNOTATION_CAPTURED_CHANNEL = "preview:annotation-captured";
-const HUMAN_INPUT_CHANNEL = "preview:human-input";
-
-// Re-export the guest webview security posture from its dedicated module so
-// the constant is unit-testable in isolation. See
-// `preview-webview-preferences.ts` for the full security rationale.
-export { PREVIEW_WEBVIEW_PREFERENCES } from "./preview-webview-preferences.ts";
-import { PREVIEW_WEBVIEW_PREFERENCES } from "./preview-webview-preferences.ts";
+import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as BrowserSession from "./BrowserSession.ts";
+import {
+  ANNOTATION_CAPTURED_CHANNEL,
+  ANNOTATION_THEME_CHANNEL,
+  CANCEL_PICK_CHANNEL,
+  ELEMENT_PICKED_CHANNEL,
+  HUMAN_INPUT_CHANNEL,
+  START_PICK_CHANNEL,
+} from "./GuestProtocol.ts";
+import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
+import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -83,6 +93,43 @@ const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
 const DIAGNOSTIC_BUFFER_LIMIT = 200;
+const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
+const AGENT_CURSOR_MOVE_MS = 160;
+const AGENT_CURSOR_CLICK_LEAD_MS = 40;
+const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
+  colorScheme: "light",
+  radius: "0.625rem",
+  background: "white",
+  foreground: "oklch(0.269 0 0)",
+  popover: "white",
+  popoverForeground: "oklch(0.269 0 0)",
+  primary: "oklch(0.488 0.217 264)",
+  primaryForeground: "white",
+  muted: "rgb(0 0 0 / 4%)",
+  mutedForeground: "oklch(0.556 0 0)",
+  accent: "rgb(0 0 0 / 4%)",
+  accentForeground: "oklch(0.269 0 0)",
+  border: "rgb(0 0 0 / 8%)",
+  input: "rgb(0 0 0 / 10%)",
+  ring: "oklch(0.488 0.217 264)",
+  fontSans: "system-ui, sans-serif",
+  fontMono: "ui-monospace, monospace",
+};
+
+const artifactSiteSlug = (rawUrl: string): string => {
+  try {
+    const url = new URL(rawUrl);
+    const slug = url.hostname
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, MAX_ARTIFACT_SITE_SLUG_LENGTH)
+      .replace(/-+$/g, "");
+    return slug || "site";
+  } catch {
+    return "site";
+  }
+};
 
 interface CdpEvaluationResult {
   readonly result?: {
@@ -182,10 +229,15 @@ const nextZoomLevel = (current: number, direction: "in" | "out"): number => {
 type Listener = (tabId: string, state: PreviewTabState) => void;
 type RecordingFrameListener = (frame: DesktopPreviewRecordingFrame) => void;
 
+type PreviewInputSignal =
+  | { readonly kind: "pointer"; readonly x: number; readonly y: number; readonly button: number }
+  | { readonly kind: "key"; readonly key: string; readonly code: string };
+
 interface ManagedListeners {
   navigate: () => void;
   failed: (event: Event, code: number, description: string) => void;
-  humanInput: () => void;
+  humanInput: (_event: unknown, signal?: unknown) => void;
+  beforeInput: (event: Electron.Event, input: Electron.Input) => void;
 }
 
 interface PickSession {
@@ -197,12 +249,24 @@ interface BrowserControlSession {
   readonly webContentsId: number;
   tail: Promise<void>;
   initialized: Promise<void>;
+  readonly onMessage: (
+    event: Electron.Event,
+    method: string,
+    params: Record<string, unknown>,
+  ) => void;
 }
 
 interface BrowserDiagnostics {
   readonly consoleEntries: PreviewAutomationConsoleEntry[];
   readonly networkEntries: PreviewAutomationNetworkEntry[];
   readonly requests: Map<string, { url: string; method: string }>;
+}
+
+type PointerEventListener = (event: DesktopPreviewPointerEvent) => void;
+
+interface ExpectedAgentInput {
+  readonly signal: PreviewInputSignal;
+  readonly expiresAt: number;
 }
 
 const APP_FORWARDED_SHORTCUTS: ReadonlyArray<{
@@ -221,62 +285,117 @@ const APP_FORWARDED_SHORTCUTS: ReadonlyArray<{
   { key: "w", meta: true, shift: false, control: false },
 ]);
 
-export class PreviewViewManager {
+const isPreviewInputSignal = (value: unknown): value is PreviewInputSignal => {
+  if (typeof value !== "object" || value === null || !("kind" in value)) return false;
+  if (value.kind === "pointer") {
+    return (
+      "x" in value &&
+      typeof value.x === "number" &&
+      "y" in value &&
+      typeof value.y === "number" &&
+      "button" in value &&
+      typeof value.button === "number"
+    );
+  }
+  return (
+    value.kind === "key" &&
+    "key" in value &&
+    typeof value.key === "string" &&
+    "code" in value &&
+    typeof value.code === "string"
+  );
+};
+
+const inputSignalsMatch = (left: PreviewInputSignal, right: PreviewInputSignal): boolean => {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "pointer" && right.kind === "pointer") {
+    return (
+      Math.abs(left.x - right.x) <= 1 &&
+      Math.abs(left.y - right.y) <= 1 &&
+      left.button === right.button
+    );
+  }
+  return (
+    left.kind === "key" &&
+    right.kind === "key" &&
+    left.key === right.key &&
+    left.code === right.code
+  );
+};
+
+class PreviewViewManager {
+  private annotationTheme = DEFAULT_ANNOTATION_THEME;
+  private artifactDirectory: string | null = null;
   private mainWindow: BrowserWindow | null = null;
   private readonly tabs = new Map<string, PreviewTabState>();
   private readonly attached = new Map<number, ManagedListeners>();
-  private readonly browserSessions = new Map<string, Session>();
   private readonly listeners = new Set<Listener>();
+  private readonly pointerEventListeners = new Set<PointerEventListener>();
   private readonly recordingFrameListeners = new Set<RecordingFrameListener>();
   /** In-flight preview annotation sessions, keyed by tabId. */
   private readonly pickSessions = new Map<string, PickSession>();
   /** One long-lived CDP attachment and serialized command queue per guest. */
   private readonly controlSessions = new Map<number, BrowserControlSession>();
   private readonly diagnostics = new Map<number, BrowserDiagnostics>();
+  private readonly expectedAgentInputs = new Map<string, ExpectedAgentInput[]>();
   private readonly controlEpoch = new Map<string, number>();
   private readonly actionTimeline = new Map<string, PreviewAutomationActionEvent[]>();
   private actionSequence = 0;
+  private pointerSequence = 0;
   private recordingTabId: string | null = null;
+
+  configureArtifactDirectory(directory: string): void {
+    this.artifactDirectory = resolve(directory);
+  }
+
+  private requireArtifactDirectory(): string {
+    if (!this.artifactDirectory) {
+      throw new Error("Preview artifact directory is not configured.");
+    }
+    return this.artifactDirectory;
+  }
+
+  private resolveArtifactPath(path: string): string {
+    const directory = this.requireArtifactDirectory();
+    const resolvedPath = resolve(path);
+    const relativePath = relative(directory, resolvedPath);
+    if (
+      relativePath.length === 0 ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${sep}`) ||
+      isAbsolute(relativePath)
+    ) {
+      throw new Error("Preview artifact path is outside the configured artifact directory.");
+    }
+    return resolvedPath;
+  }
+
+  revealArtifact(path: string): void {
+    const resolvedPath = this.resolveArtifactPath(path);
+    shell.showItemInFolder(resolvedPath);
+  }
+
+  copyArtifactToClipboard(path: string): void {
+    const resolvedPath = this.resolveArtifactPath(path);
+    const image = nativeImage.createFromPath(resolvedPath);
+    if (image.isEmpty()) {
+      throw new Error("Preview artifact could not be loaded as an image.");
+    }
+    clipboard.writeImage(image);
+  }
+
+  setAnnotationTheme(theme: DesktopPreviewAnnotationTheme): void {
+    this.annotationTheme = theme;
+    for (const tab of this.tabs.values()) {
+      if (tab.webContentsId == null) continue;
+      const wc = webContents.fromId(tab.webContentsId);
+      if (!wc || wc.isDestroyed()) continue;
+      wc.send(ANNOTATION_THEME_CHANNEL, theme);
+    }
+  }
 
   setMainWindow(window: BrowserWindow): void {
     this.mainWindow = window;
-  }
-
-  getBrowserPartition(scope = "shared"): string {
-    const digest = createHash("sha256").update(scope).digest("hex").slice(0, 20);
-    return `${PREVIEW_PARTITION_PREFIX}${digest}`;
-  }
-
-  isBrowserPartition(partition: string): boolean {
-    return partition.startsWith(PREVIEW_PARTITION_PREFIX);
-  }
-
-  /**
-   * Returns the canonical `<webview webpreferences="...">` string. Renderer
-   * fetches this via the desktop bridge so the security posture for guest
-   * surfaces lives in exactly one place (here) and any future guest webview
-   * (docs panel, OAuth popup, etc.) can opt in by calling the same getter.
-   */
-  getWebviewPreferences(): string {
-    return PREVIEW_WEBVIEW_PREFERENCES;
-  }
-
-  getBrowserSession(scope = "shared"): Session {
-    const partition = this.getBrowserPartition(scope);
-    const existing = this.browserSessions.get(partition);
-    if (existing) return existing;
-    const sess = session.fromPartition(partition);
-    const ua = sess
-      .getUserAgent()
-      .replace(/Electron\/[\d.]+ /, "")
-      .replace(/\s*t3code\/[\d.]+/, "");
-    sess.setUserAgent(ua);
-    sess.setPermissionRequestHandler((_wc, perm, callback) => {
-      const allow = ["clipboard-read", "clipboard-write", "notifications", "geolocation"];
-      callback(allow.includes(perm));
-    });
-    this.browserSessions.set(partition, sess);
-    return sess;
   }
 
   createTab(tabId: string): PreviewTabState {
@@ -338,6 +457,7 @@ export class PreviewViewManager {
       throw new PreviewWebContentsNotFoundError(tabId, webContentsId);
     }
     if (tab.webContentsId === webContentsId && this.attached.has(webContentsId)) {
+      wc.send(ANNOTATION_THEME_CHANNEL, this.annotationTheme);
       return;
     }
     if (tab.webContentsId != null && tab.webContentsId !== webContentsId) {
@@ -366,6 +486,7 @@ export class PreviewViewManager {
       canGoForward: wc.navigationHistory.canGoForward(),
       zoomFactor: tab.zoomFactor,
     });
+    wc.send(ANNOTATION_THEME_CHANNEL, this.annotationTheme);
   }
 
   async navigate(tabId: string, rawUrl: string): Promise<void> {
@@ -418,25 +539,6 @@ export class PreviewViewManager {
       if (!wc.isDestroyed()) void this.ensureControlSession(wc).catch(() => undefined);
     });
     wc.openDevTools({ mode: "detach" });
-  }
-
-  /**
-   * Drop cookies/localStorage/etc. for the preview partition. Affects every
-   * preview tab since they all share `persist:t3code-preview`.
-   */
-  async clearCookies(): Promise<void> {
-    await Promise.all(
-      [...this.browserSessions.values()].map((sess) =>
-        sess.clearStorageData({
-          storages: ["cookies", "localstorage", "indexdb", "websql", "serviceworkers"],
-        }),
-      ),
-    );
-  }
-
-  /** Drop the HTTP cache for the preview partition. */
-  async clearCache(): Promise<void> {
-    await Promise.all([...this.browserSessions.values()].map((sess) => sess.clearCache()));
   }
 
   /**
@@ -513,7 +615,7 @@ export class PreviewViewManager {
         // wc may be torn down; the next try/catch settles.
       }
       try {
-        wc.send(START_PICK_CHANNEL);
+        wc.send(START_PICK_CHANNEL, this.annotationTheme);
       } catch {
         settle(null);
       }
@@ -561,8 +663,8 @@ export class PreviewViewManager {
   async captureScreenshot(tabId: string): Promise<DesktopPreviewScreenshotArtifact> {
     const wc = this.requireWebContents(tabId);
     const createdAt = new Date().toISOString();
-    const id = `browser-screenshot-${Date.now().toString(36)}`;
-    const directory = join(app.getPath("userData"), "browser-artifacts");
+    const id = `browser-screenshot-${artifactSiteSlug(wc.getURL())}-${Date.now().toString(36)}`;
+    const directory = this.requireArtifactDirectory();
     const path = join(directory, `${id}.png`);
     const data = (await wc.capturePage()).toPNG();
     await mkdir(directory, { recursive: true });
@@ -587,7 +689,7 @@ export class PreviewViewManager {
     const createdAt = new Date().toISOString();
     const id = `browser-recording-${Date.now().toString(36)}`;
     const extension = mimeType.includes("mp4") ? "mp4" : "webm";
-    const directory = join(app.getPath("userData"), "browser-artifacts");
+    const directory = this.requireArtifactDirectory();
     const path = join(directory, `${id}.${extension}`);
     await mkdir(directory, { recursive: true });
     await writeFile(path, data);
@@ -793,6 +895,25 @@ export class PreviewViewManager {
           `Click coordinates (${x}, ${y}) are outside the preview viewport.`,
         );
       }
+      this.emitPointerEvent({
+        tabId,
+        phase: "move",
+        x,
+        y,
+        sequence: this.pointerSequence++,
+        createdAt: new Date().toISOString(),
+      });
+      await sleep(AGENT_CURSOR_MOVE_MS);
+      this.emitPointerEvent({
+        tabId,
+        phase: "click",
+        x,
+        y,
+        sequence: this.pointerSequence++,
+        createdAt: new Date().toISOString(),
+      });
+      await sleep(AGENT_CURSOR_CLICK_LEAD_MS);
+      this.expectAgentInput(tabId, { kind: "pointer", x, y, button: 0 });
       await send("Input.dispatchMouseEvent", {
         type: "mousePressed",
         x,
@@ -886,6 +1007,7 @@ export class PreviewViewManager {
         modifiers,
         ...(text ? { text, unmodifiedText: text } : {}),
       };
+      this.expectAgentInput(tabId, { kind: "key", key, code: params.code });
       await send("Input.dispatchKeyEvent", { type: "keyDown", ...params });
       await send("Input.dispatchKeyEvent", { type: "keyUp", ...params });
     });
@@ -1115,20 +1237,15 @@ export class PreviewViewManager {
         "Preview control cannot attach because another debugger owns this page.",
       );
     }
-    const control: BrowserControlSession = {
-      webContentsId: wc.id,
-      tail: Promise.resolve(),
-      initialized: Promise.resolve(),
-    };
     const diagnostics: BrowserDiagnostics = {
       consoleEntries: [],
       networkEntries: [],
       requests: new Map(),
     };
     this.diagnostics.set(wc.id, diagnostics);
-    wc.debugger.on("message", (_event, method, params) => {
+    const onMessage: BrowserControlSession["onMessage"] = (_event, method, params) => {
       if (method === "Page.screencastFrame") {
-        const frame = params as Record<string, unknown>;
+        const frame = params;
         const sessionId = frame["sessionId"];
         if (typeof sessionId === "number") {
           void wc.debugger
@@ -1151,8 +1268,15 @@ export class PreviewViewManager {
           for (const listener of this.recordingFrameListeners) listener(payload);
         }
       }
-      this.captureDiagnosticMessage(diagnostics, method, params as Record<string, unknown>);
-    });
+      this.captureDiagnosticMessage(diagnostics, method, params);
+    };
+    const control: BrowserControlSession = {
+      webContentsId: wc.id,
+      tail: Promise.resolve(),
+      initialized: Promise.resolve(),
+      onMessage,
+    };
+    wc.debugger.on("message", onMessage);
     control.initialized = (async () => {
       wc.debugger.attach("1.3");
       await Promise.all([
@@ -1173,10 +1297,15 @@ export class PreviewViewManager {
   }
 
   private detachControlSession(webContentsId: number): void {
+    const control = this.controlSessions.get(webContentsId);
     this.controlSessions.delete(webContentsId);
     this.diagnostics.delete(webContentsId);
     const wc = webContents.fromId(webContentsId);
-    if (!wc || wc.isDestroyed() || !wc.debugger.isAttached()) return;
+    if (!wc || wc.isDestroyed()) return;
+    if (control) {
+      wc.debugger.off("message", control.onMessage);
+    }
+    if (!wc.debugger.isAttached()) return;
     try {
       wc.debugger.detach();
     } catch {
@@ -1345,11 +1474,50 @@ export class PreviewViewManager {
     };
   }
 
+  onPointerEvent(listener: PointerEventListener): () => void {
+    this.pointerEventListeners.add(listener);
+    return () => {
+      this.pointerEventListeners.delete(listener);
+    };
+  }
+
+  private emitPointerEvent(event: DesktopPreviewPointerEvent): void {
+    for (const listener of this.pointerEventListeners) listener(event);
+  }
+
+  private expectAgentInput(tabId: string, signal: PreviewInputSignal): void {
+    const now = Date.now();
+    const pending = (this.expectedAgentInputs.get(tabId) ?? []).filter(
+      (expected) => expected.expiresAt > now,
+    );
+    pending.push({ signal, expiresAt: now + 1_000 });
+    this.expectedAgentInputs.set(tabId, pending);
+  }
+
+  private consumeExpectedAgentInput(tabId: string, signal: PreviewInputSignal): boolean {
+    const now = Date.now();
+    const pending = (this.expectedAgentInputs.get(tabId) ?? []).filter(
+      (expected) => expected.expiresAt > now,
+    );
+    const index = pending.findIndex((expected) => inputSignalsMatch(expected.signal, signal));
+    if (index < 0) {
+      if (pending.length === 0) this.expectedAgentInputs.delete(tabId);
+      else this.expectedAgentInputs.set(tabId, pending);
+      return false;
+    }
+    pending.splice(index, 1);
+    if (pending.length === 0) this.expectedAgentInputs.delete(tabId);
+    else this.expectedAgentInputs.set(tabId, pending);
+    return true;
+  }
+
   destroy(): void {
     for (const tabId of Array.from(this.tabs.keys())) {
       this.closeTab(tabId);
     }
     this.listeners.clear();
+    this.expectedAgentInputs.clear();
+    this.pointerEventListeners.clear();
     this.recordingFrameListeners.clear();
   }
 
@@ -1375,7 +1543,10 @@ export class PreviewViewManager {
         },
       });
     };
-    const humanInput = (): void => {
+    const humanInput = (_event: unknown, rawSignal?: unknown): void => {
+      if (isPreviewInputSignal(rawSignal) && this.consumeExpectedAgentInput(tabId, rawSignal)) {
+        return;
+      }
       this.controlEpoch.set(tabId, (this.controlEpoch.get(tabId) ?? 0) + 1);
       this.update(tabId, { controller: "human" });
       void sleep(750).then(() => {
@@ -1401,7 +1572,7 @@ export class PreviewViewManager {
 
     // Forward app-level shortcuts to the main window so mod+shift+J etc.
     // still toggles the preview panel even when the webview has focus.
-    wc.on("before-input-event", (event, input) => {
+    const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
       if (this.isAppShortcut(input) && this.mainWindow && !this.mainWindow.isDestroyed()) {
         event.preventDefault();
         this.mainWindow.webContents.sendInputEvent({
@@ -1415,9 +1586,10 @@ export class PreviewViewManager {
           ],
         });
       }
-    });
+    };
+    wc.on("before-input-event", beforeInput);
 
-    this.attached.set(wc.id, { navigate: sync, failed, humanInput });
+    this.attached.set(wc.id, { navigate: sync, failed, humanInput, beforeInput });
   }
 
   private detachListeners(webContentsId: number): void {
@@ -1432,6 +1604,7 @@ export class PreviewViewManager {
     wc.off("did-start-loading", handlers.navigate);
     wc.off("did-stop-loading", handlers.navigate);
     wc.off("did-fail-load", handlers.failed as never);
+    wc.off("before-input-event", handlers.beforeInput);
     wc.ipc.off(HUMAN_INPUT_CHANNEL, handlers.humanInput);
   }
 
@@ -1522,4 +1695,255 @@ export class PreviewWebviewNotInitializedError extends Error {
   }
 }
 
-export const previewViewManager = new PreviewViewManager();
+export class PreviewManagerError extends Data.TaggedError("PreviewManagerError")<{
+  readonly operation: string;
+  readonly cause: unknown;
+}> {
+  override get message() {
+    return `Desktop preview operation failed: ${this.operation}`;
+  }
+}
+
+export interface PreviewManagerShape {
+  readonly setMainWindow: (window: BrowserWindow) => Effect.Effect<void, PreviewManagerError>;
+  readonly getBrowserSession: (scope?: string) => Effect.Effect<Session, PreviewManagerError>;
+  readonly isBrowserPartition: (partition: string) => boolean;
+  readonly createTab: (tabId: string) => Effect.Effect<PreviewTabState, PreviewManagerError>;
+  readonly closeTab: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly registerWebview: (
+    tabId: string,
+    webContentsId: number,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly navigate: (tabId: string, url: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly goBack: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly goForward: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly refresh: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly zoomIn: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly zoomOut: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly resetZoom: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly hardReload: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly openDevTools: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly clearCookies: () => Effect.Effect<void, PreviewManagerError>;
+  readonly clearCache: () => Effect.Effect<void, PreviewManagerError>;
+  readonly getBrowserPartition: (scope?: string) => string;
+  readonly setAnnotationTheme: (
+    theme: DesktopPreviewAnnotationTheme,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly pickElement: (
+    tabId: string,
+  ) => Effect.Effect<PreviewAnnotationPayload | null, PreviewManagerError>;
+  readonly cancelPickElement: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly captureScreenshot: (
+    tabId: string,
+  ) => Effect.Effect<DesktopPreviewScreenshotArtifact, PreviewManagerError>;
+  readonly revealArtifact: (path: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly copyArtifactToClipboard: (path: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly startRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly stopRecording: (tabId: string) => Effect.Effect<void, PreviewManagerError>;
+  readonly saveRecording: (
+    tabId: string,
+    mimeType: string,
+    data: Uint8Array,
+  ) => Effect.Effect<DesktopPreviewRecordingArtifact, PreviewManagerError>;
+  readonly automationStatus: (
+    tabId: string,
+  ) => Effect.Effect<PreviewAutomationStatus, PreviewManagerError>;
+  readonly automationSnapshot: (
+    tabId: string,
+  ) => Effect.Effect<PreviewAutomationSnapshot, PreviewManagerError>;
+  readonly automationClick: (
+    tabId: string,
+    input: PreviewAutomationClickInput,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly automationType: (
+    tabId: string,
+    input: PreviewAutomationTypeInput,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly automationPress: (
+    tabId: string,
+    input: PreviewAutomationPressInput,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly automationScroll: (
+    tabId: string,
+    input: PreviewAutomationScrollInput,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly automationEvaluate: (
+    tabId: string,
+    input: PreviewAutomationEvaluateInput,
+  ) => Effect.Effect<unknown, PreviewManagerError>;
+  readonly automationWaitFor: (
+    tabId: string,
+    input: PreviewAutomationWaitForInput,
+  ) => Effect.Effect<void, PreviewManagerError>;
+  readonly subscribeStateChanges: (listener: Listener) => Effect.Effect<void, never, Scope.Scope>;
+  readonly subscribePointerEvents: (
+    listener: PointerEventListener,
+  ) => Effect.Effect<void, never, Scope.Scope>;
+  readonly subscribeRecordingFrames: (
+    listener: RecordingFrameListener,
+  ) => Effect.Effect<void, never, Scope.Scope>;
+}
+
+export class PreviewManager extends Context.Service<PreviewManager, PreviewManagerShape>()(
+  "@t3tools/desktop/preview/Manager/PreviewManager",
+) {}
+
+const make = Effect.fn("PreviewManager.make")(function* () {
+  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const browserSession = yield* BrowserSession.BrowserSession;
+  const manager = new PreviewViewManager();
+  manager.configureArtifactDirectory(environment.browserArtifactsDir);
+  yield* Effect.addFinalizer(() => Effect.sync(() => manager.destroy()));
+
+  const attempt = <A>(
+    operation: string,
+    evaluate: () => A,
+  ): Effect.Effect<A, PreviewManagerError> =>
+    Effect.try({
+      try: evaluate,
+      catch: (cause) => new PreviewManagerError({ operation, cause }),
+    });
+  const attemptPromise = <A>(
+    operation: string,
+    evaluate: () => Promise<A>,
+  ): Effect.Effect<A, PreviewManagerError> =>
+    Effect.tryPromise({
+      try: evaluate,
+      catch: (cause) => new PreviewManagerError({ operation, cause }),
+    });
+  const browserSessionEffect = <A>(
+    operation: string,
+    effect: Effect.Effect<A, BrowserSession.BrowserSessionError>,
+  ): Effect.Effect<A, PreviewManagerError> =>
+    effect.pipe(Effect.mapError((cause) => new PreviewManagerError({ operation, cause })));
+
+  return PreviewManager.of({
+    setMainWindow: Effect.fn("PreviewManager.setMainWindow")(function* (window) {
+      yield* attempt("setMainWindow", () => manager.setMainWindow(window));
+    }),
+    getBrowserSession: Effect.fn("PreviewManager.getBrowserSession")(function* (scope) {
+      return yield* browserSessionEffect("getBrowserSession", browserSession.getSession(scope));
+    }),
+    isBrowserPartition: browserSession.isPartition,
+    createTab: Effect.fn("PreviewManager.createTab")(function* (tabId) {
+      return yield* attempt("createTab", () => manager.createTab(tabId));
+    }),
+    closeTab: Effect.fn("PreviewManager.closeTab")(function* (tabId) {
+      yield* attempt("closeTab", () => manager.closeTab(tabId));
+    }),
+    registerWebview: Effect.fn("PreviewManager.registerWebview")(function* (tabId, webContentsId) {
+      yield* attempt("registerWebview", () => manager.registerWebview(tabId, webContentsId));
+    }),
+    navigate: Effect.fn("PreviewManager.navigate")(function* (tabId, url) {
+      yield* attemptPromise("navigate", () => manager.navigate(tabId, url));
+    }),
+    goBack: Effect.fn("PreviewManager.goBack")(function* (tabId) {
+      yield* attempt("goBack", () => manager.goBack(tabId));
+    }),
+    goForward: Effect.fn("PreviewManager.goForward")(function* (tabId) {
+      yield* attempt("goForward", () => manager.goForward(tabId));
+    }),
+    refresh: Effect.fn("PreviewManager.refresh")(function* (tabId) {
+      yield* attempt("refresh", () => manager.refresh(tabId));
+    }),
+    zoomIn: Effect.fn("PreviewManager.zoomIn")(function* (tabId) {
+      yield* attempt("zoomIn", () => manager.zoomIn(tabId));
+    }),
+    zoomOut: Effect.fn("PreviewManager.zoomOut")(function* (tabId) {
+      yield* attempt("zoomOut", () => manager.zoomOut(tabId));
+    }),
+    resetZoom: Effect.fn("PreviewManager.resetZoom")(function* (tabId) {
+      yield* attempt("resetZoom", () => manager.resetZoom(tabId));
+    }),
+    hardReload: Effect.fn("PreviewManager.hardReload")(function* (tabId) {
+      yield* attempt("hardReload", () => manager.hardReload(tabId));
+    }),
+    openDevTools: Effect.fn("PreviewManager.openDevTools")(function* (tabId) {
+      yield* attempt("openDevTools", () => manager.openDevTools(tabId));
+    }),
+    clearCookies: Effect.fn("PreviewManager.clearCookies")(function* () {
+      yield* browserSessionEffect("clearCookies", browserSession.clearCookies());
+    }),
+    clearCache: Effect.fn("PreviewManager.clearCache")(function* () {
+      yield* browserSessionEffect("clearCache", browserSession.clearCache());
+    }),
+    getBrowserPartition: browserSession.getPartition,
+    setAnnotationTheme: Effect.fn("PreviewManager.setAnnotationTheme")(function* (theme) {
+      yield* attempt("setAnnotationTheme", () => manager.setAnnotationTheme(theme));
+    }),
+    pickElement: Effect.fn("PreviewManager.pickElement")(function* (tabId) {
+      return yield* attemptPromise("pickElement", () => manager.pickElement(tabId));
+    }),
+    cancelPickElement: Effect.fn("PreviewManager.cancelPickElement")(function* (tabId) {
+      yield* attempt("cancelPickElement", () => manager.cancelPickElement(tabId));
+    }),
+    captureScreenshot: Effect.fn("PreviewManager.captureScreenshot")(function* (tabId) {
+      return yield* attemptPromise("captureScreenshot", () => manager.captureScreenshot(tabId));
+    }),
+    revealArtifact: Effect.fn("PreviewManager.revealArtifact")(function* (path) {
+      yield* attempt("revealArtifact", () => manager.revealArtifact(path));
+    }),
+    copyArtifactToClipboard: Effect.fn("PreviewManager.copyArtifactToClipboard")(function* (path) {
+      yield* attempt("copyArtifactToClipboard", () => manager.copyArtifactToClipboard(path));
+    }),
+    startRecording: Effect.fn("PreviewManager.startRecording")(function* (tabId) {
+      yield* attemptPromise("startRecording", () => manager.startRecording(tabId));
+    }),
+    stopRecording: Effect.fn("PreviewManager.stopRecording")(function* (tabId) {
+      yield* attemptPromise("stopRecording", () => manager.stopRecording(tabId));
+    }),
+    saveRecording: Effect.fn("PreviewManager.saveRecording")(function* (tabId, mimeType, data) {
+      return yield* attemptPromise("saveRecording", () =>
+        manager.saveRecording(tabId, mimeType, data),
+      );
+    }),
+    automationStatus: Effect.fn("PreviewManager.automationStatus")(function* (tabId) {
+      return yield* attempt("automationStatus", () => manager.automationStatus(tabId));
+    }),
+    automationSnapshot: Effect.fn("PreviewManager.automationSnapshot")(function* (tabId) {
+      return yield* attemptPromise("automationSnapshot", () => manager.automationSnapshot(tabId));
+    }),
+    automationClick: Effect.fn("PreviewManager.automationClick")(function* (tabId, input) {
+      yield* attemptPromise("automationClick", () => manager.automationClick(tabId, input));
+    }),
+    automationType: Effect.fn("PreviewManager.automationType")(function* (tabId, input) {
+      yield* attemptPromise("automationType", () => manager.automationType(tabId, input));
+    }),
+    automationPress: Effect.fn("PreviewManager.automationPress")(function* (tabId, input) {
+      yield* attemptPromise("automationPress", () => manager.automationPress(tabId, input));
+    }),
+    automationScroll: Effect.fn("PreviewManager.automationScroll")(function* (tabId, input) {
+      yield* attemptPromise("automationScroll", () => manager.automationScroll(tabId, input));
+    }),
+    automationEvaluate: Effect.fn("PreviewManager.automationEvaluate")(function* (tabId, input) {
+      return yield* attemptPromise("automationEvaluate", () =>
+        manager.automationEvaluate(tabId, input),
+      );
+    }),
+    automationWaitFor: Effect.fn("PreviewManager.automationWaitFor")(function* (tabId, input) {
+      yield* attemptPromise("automationWaitFor", () => manager.automationWaitFor(tabId, input));
+    }),
+    subscribeStateChanges: (listener) =>
+      Effect.acquireRelease(
+        Effect.sync(() => manager.onStateChange(listener)),
+        (unsubscribe) => Effect.sync(unsubscribe),
+      ).pipe(Effect.asVoid),
+    subscribePointerEvents: (listener) =>
+      Effect.acquireRelease(
+        Effect.sync(() => manager.onPointerEvent(listener)),
+        (unsubscribe) => Effect.sync(unsubscribe),
+      ).pipe(Effect.asVoid),
+    subscribeRecordingFrames: (listener) =>
+      Effect.acquireRelease(
+        Effect.sync(() => manager.onRecordingFrame(listener)),
+        (unsubscribe) => Effect.sync(unsubscribe),
+      ).pipe(Effect.asVoid),
+  });
+});
+
+export const layer = Layer.effect(PreviewManager, make());
+
+/** Exposed for tests. */
+export const __testing = {
+  PreviewViewManager,
+};
