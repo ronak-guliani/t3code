@@ -1192,50 +1192,54 @@ const make = Effect.gen(function* () {
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
 
-      if (
+      const isThreadLifecycleEvent =
         event.type === "session.started" ||
         event.type === "session.state.changed" ||
         event.type === "session.exited" ||
         event.type === "thread.started" ||
         event.type === "turn.started" ||
-        event.type === "turn.completed"
-      ) {
-        const nextActiveTurnId =
-          event.type === "turn.started"
-            ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
-              ? null
-              : activeTurnId;
-        const status = (() => {
-          switch (event.type) {
-            case "session.state.changed":
-              return orchestrationSessionStatusFromRuntimeState(event.payload.state);
-            case "turn.started":
-              return "running";
-            case "session.exited":
-              return "stopped";
-            case "turn.completed":
-              return normalizeRuntimeTurnState(event.payload.state) === "failed"
-                ? "error"
-                : "ready";
-            case "session.started":
-            case "thread.started":
-              // Provider thread/session start notifications can arrive during an
-              // active turn; preserve turn-running state in that case.
-              return activeTurnId !== null ? "running" : "ready";
+        event.type === "turn.completed";
+      const dispatchThreadLifecycleUpdate = () =>
+        Effect.gen(function* () {
+          if (!isThreadLifecycleEvent || !shouldApplyThreadLifecycle) {
+            return;
           }
-        })();
-        const lastError =
-          event.type === "session.state.changed" && event.payload.state === "error"
-            ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
-            : event.type === "turn.completed" &&
-                normalizeRuntimeTurnState(event.payload.state) === "failed"
-              ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
-              : status === "ready"
-                ? null
-                : (thread.session?.lastError ?? null);
 
-        if (shouldApplyThreadLifecycle) {
+          const nextActiveTurnId =
+            event.type === "turn.started"
+              ? (eventTurnId ?? null)
+              : event.type === "turn.completed" || event.type === "session.exited"
+                ? null
+                : activeTurnId;
+          const status = (() => {
+            switch (event.type) {
+              case "session.state.changed":
+                return orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              case "turn.started":
+                return "running";
+              case "session.exited":
+                return "stopped";
+              case "turn.completed":
+                return normalizeRuntimeTurnState(event.payload.state) === "failed"
+                  ? "error"
+                  : "ready";
+              case "session.started":
+              case "thread.started":
+                // Provider thread/session start notifications can arrive during an
+                // active turn; preserve turn-running state in that case.
+                return activeTurnId !== null ? "running" : "ready";
+            }
+          })();
+          const lastError =
+            event.type === "session.state.changed" && event.payload.state === "error"
+              ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
+              : event.type === "turn.completed" &&
+                  normalizeRuntimeTurnState(event.payload.state) === "failed"
+                ? (event.payload.errorMessage ?? thread.session?.lastError ?? "Turn failed")
+                : status === "ready"
+                  ? null
+                  : (thread.session?.lastError ?? null);
+
           if (event.type === "turn.started" && acceptedTurnStartedSourcePlan !== null) {
             yield* markSourceProposedPlanImplemented(
               acceptedTurnStartedSourcePlan.sourceThreadId,
@@ -1277,7 +1281,10 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
-        }
+        });
+
+      if (isThreadLifecycleEvent && event.type !== "turn.completed") {
+        yield* dispatchThreadLifecycleUpdate();
       }
 
       if (
@@ -1525,6 +1532,8 @@ const make = Effect.gen(function* () {
             updatedAt: now,
           });
         }
+
+        yield* dispatchThreadLifecycleUpdate();
       }
 
       if (event.type === "session.exited") {
