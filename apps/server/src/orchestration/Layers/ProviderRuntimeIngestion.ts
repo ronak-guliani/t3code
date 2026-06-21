@@ -1283,7 +1283,45 @@ const make = Effect.gen(function* () {
           });
         });
 
-      if (isThreadLifecycleEvent && event.type !== "turn.completed") {
+      if (isThreadLifecycleEvent) {
+        if (event.type === "turn.completed") {
+          const completedTurnId = toTurnId(event.turnId);
+          if (completedTurnId) {
+            const assistantMessageIds = yield* getAssistantMessageIdsForTurn(
+              thread.id,
+              completedTurnId,
+            );
+            yield* Effect.forEach(
+              assistantMessageIds,
+              (assistantMessageId) =>
+                finalizeAssistantMessage({
+                  event,
+                  threadId: thread.id,
+                  messageId: assistantMessageId,
+                  turnId: completedTurnId,
+                  createdAt: now,
+                  commandTag: "assistant-complete-finalize",
+                  finalDeltaCommandTag: "assistant-delta-finalize-fallback",
+                  hasProjectedMessage: thread.messages.some(
+                    (entry) => entry.id === assistantMessageId,
+                  ),
+                }),
+              { concurrency: 1 },
+            ).pipe(Effect.asVoid);
+            yield* clearAssistantMessageIdsForTurn(thread.id, completedTurnId);
+            yield* clearAssistantSegmentStateForTurn(thread.id, completedTurnId);
+
+            yield* finalizeBufferedProposedPlan({
+              event,
+              threadId: thread.id,
+              threadProposedPlans: thread.proposedPlans,
+              planId: proposedPlanIdForTurn(thread.id, completedTurnId),
+              turnId: completedTurnId,
+              updatedAt: now,
+            });
+          }
+        }
+
         yield* dispatchThreadLifecycleUpdate();
       }
 
@@ -1497,43 +1535,6 @@ const make = Effect.gen(function* () {
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
           updatedAt: now,
         });
-      }
-
-      if (event.type === "turn.completed") {
-        const turnId = toTurnId(event.turnId);
-        if (turnId) {
-          const assistantMessageIds = yield* getAssistantMessageIdsForTurn(thread.id, turnId);
-          yield* Effect.forEach(
-            assistantMessageIds,
-            (assistantMessageId) =>
-              finalizeAssistantMessage({
-                event,
-                threadId: thread.id,
-                messageId: assistantMessageId,
-                turnId,
-                createdAt: now,
-                commandTag: "assistant-complete-finalize",
-                finalDeltaCommandTag: "assistant-delta-finalize-fallback",
-                hasProjectedMessage: thread.messages.some(
-                  (entry) => entry.id === assistantMessageId,
-                ),
-              }),
-            { concurrency: 1 },
-          ).pipe(Effect.asVoid);
-          yield* clearAssistantMessageIdsForTurn(thread.id, turnId);
-          yield* clearAssistantSegmentStateForTurn(thread.id, turnId);
-
-          yield* finalizeBufferedProposedPlan({
-            event,
-            threadId: thread.id,
-            threadProposedPlans: thread.proposedPlans,
-            planId: proposedPlanIdForTurn(thread.id, turnId),
-            turnId,
-            updatedAt: now,
-          });
-        }
-
-        yield* dispatchThreadLifecycleUpdate();
       }
 
       if (event.type === "session.exited") {
