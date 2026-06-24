@@ -83,8 +83,9 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
 import {
+  selectExistingThreadKeys,
   selectProjectsAcrossEnvironments,
-  selectThreadsAcrossEnvironments,
+  type AppState,
   useStore,
 } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
@@ -766,10 +767,11 @@ function ChatViewBody(
   const storeNewTerminal = useTerminalStateStore((s) => s.newTerminal);
   const storeSetActiveTerminal = useTerminalStateStore((s) => s.setActiveTerminal);
   const storeCloseTerminal = useTerminalStateStore((s) => s.closeTerminal);
-  const serverThreadKeys = useStore(
-    useShallow((state) =>
-      selectThreadsAcrossEnvironments(state).map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+  const openServerTerminalThreadKeys = useStore(
+    useShallow(
+      useMemo(
+        () => (state: AppState) => selectExistingThreadKeys(state, openTerminalThreadKeys),
+        [openTerminalThreadKeys],
       ),
     ),
   );
@@ -837,9 +839,13 @@ function ChatViewBody(
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const existingOpenTerminalThreadKeys = useMemo(() => {
-    const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
-    return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
-  }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
+    const existingServerThreadKeys = new Set(openServerTerminalThreadKeys);
+    const existingDraftThreadKeys = new Set(draftThreadKeys);
+    return openTerminalThreadKeys.filter(
+      (nextThreadKey) =>
+        existingServerThreadKeys.has(nextThreadKey) || existingDraftThreadKeys.has(nextThreadKey),
+    );
+  }, [draftThreadKeys, openServerTerminalThreadKeys, openTerminalThreadKeys]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const threadPlanCatalog = useThreadPlanCatalog(
     useMemo(() => {
