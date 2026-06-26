@@ -13,6 +13,7 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
+import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import {
   GitActionProgressEvent,
   VcsSwitchRefInput,
@@ -64,6 +65,12 @@ import {
   RelayClientStatusSchema,
 } from "./relayClient.ts";
 import {
+  ProjectListEntriesError,
+  ProjectListEntriesInput,
+  ProjectListEntriesResult,
+  ProjectReadFileError,
+  ProjectReadFileInput,
+  ProjectReadFileResult,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -96,13 +103,15 @@ import {
   PreviewOpenInput,
   PreviewRefreshInput,
   PreviewReportStatusInput,
+  PreviewResizeInput,
   PreviewSessionSnapshot,
 } from "./preview.ts";
 import {
   PreviewAutomationError,
-  PreviewAutomationOwner,
-  PreviewAutomationRequest,
+  PreviewAutomationHost,
+  PreviewAutomationHostFocus,
   PreviewAutomationResponse,
+  PreviewAutomationStreamEvent,
 } from "./previewAutomation.ts";
 import {
   ServerConfigStreamEvent,
@@ -140,6 +149,8 @@ export const WS_METHODS = {
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
+  projectsListEntries: "projects.listEntries",
+  projectsReadFile: "projects.readFile",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
 
@@ -148,6 +159,7 @@ export const WS_METHODS = {
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
+  assetsCreateUrl: "assets.createUrl",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -179,14 +191,14 @@ export const WS_METHODS = {
   // Preview methods
   previewOpen: "preview.open",
   previewNavigate: "preview.navigate",
+  previewResize: "preview.resize",
   previewRefresh: "preview.refresh",
   previewClose: "preview.close",
   previewList: "preview.list",
   previewReportStatus: "preview.reportStatus",
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
-  previewAutomationReportOwner: "previewAutomation.reportOwner",
-  previewAutomationClearOwner: "previewAutomation.clearOwner",
+  previewAutomationFocusHost: "previewAutomation.focusHost",
 
   // Server meta
   serverGetConfig: "server.getConfig",
@@ -348,6 +360,18 @@ export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntr
   error: Schema.Union([ProjectSearchEntriesError, EnvironmentAuthorizationError]),
 });
 
+export const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries, {
+  payload: ProjectListEntriesInput,
+  success: ProjectListEntriesResult,
+  error: Schema.Union([ProjectListEntriesError, EnvironmentAuthorizationError]),
+});
+
+export const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
+  payload: ProjectReadFileInput,
+  success: ProjectReadFileResult,
+  error: Schema.Union([ProjectReadFileError, EnvironmentAuthorizationError]),
+});
+
 export const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
@@ -363,6 +387,12 @@ export const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   payload: FilesystemBrowseInput,
   success: FilesystemBrowseResult,
   error: Schema.Union([FilesystemBrowseError, EnvironmentAuthorizationError]),
+});
+
+export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
+  payload: AssetCreateUrlInput,
+  success: AssetCreateUrlResult,
+  error: Schema.Union([AssetAccessError, EnvironmentAuthorizationError]),
 });
 
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
@@ -499,6 +529,12 @@ export const WsPreviewNavigateRpc = Rpc.make(WS_METHODS.previewNavigate, {
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
 });
 
+export const WsPreviewResizeRpc = Rpc.make(WS_METHODS.previewResize, {
+  payload: PreviewResizeInput,
+  success: PreviewSessionSnapshot,
+  error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
+});
+
 export const WsPreviewRefreshRpc = Rpc.make(WS_METHODS.previewRefresh, {
   payload: PreviewRefreshInput,
   error: Schema.Union([PreviewError, EnvironmentAuthorizationError]),
@@ -521,8 +557,8 @@ export const WsPreviewReportStatusRpc = Rpc.make(WS_METHODS.previewReportStatus,
 });
 
 export const WsPreviewAutomationConnectRpc = Rpc.make(WS_METHODS.previewAutomationConnect, {
-  payload: Schema.Struct({ clientId: Schema.String }),
-  success: PreviewAutomationRequest,
+  payload: PreviewAutomationHost,
+  success: PreviewAutomationStreamEvent,
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
   stream: true,
 });
@@ -532,14 +568,9 @@ export const WsPreviewAutomationRespondRpc = Rpc.make(WS_METHODS.previewAutomati
   error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
 });
 
-export const WsPreviewAutomationReportOwnerRpc = Rpc.make(WS_METHODS.previewAutomationReportOwner, {
-  payload: PreviewAutomationOwner,
-  error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
-});
-
-export const WsPreviewAutomationClearOwnerRpc = Rpc.make(WS_METHODS.previewAutomationClearOwner, {
-  payload: Schema.Struct({ clientId: Schema.String }),
-  error: Schema.Union([PreviewAutomationError, EnvironmentAuthorizationError]),
+export const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutomationFocusHost, {
+  payload: PreviewAutomationHostFocus,
+  error: EnvironmentAuthorizationError,
 });
 
 export const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
@@ -668,10 +699,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
+  WsProjectsListEntriesRpc,
+  WsProjectsReadFileRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
+  WsAssetsCreateUrlRpc,
   WsSubscribeVcsStatusRpc,
   WsVcsPullRpc,
   WsVcsRefreshStatusRpc,
@@ -696,14 +730,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeTerminalMetadataRpc,
   WsPreviewOpenRpc,
   WsPreviewNavigateRpc,
+  WsPreviewResizeRpc,
   WsPreviewRefreshRpc,
   WsPreviewCloseRpc,
   WsPreviewListRpc,
   WsPreviewReportStatusRpc,
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
-  WsPreviewAutomationReportOwnerRpc,
-  WsPreviewAutomationClearOwnerRpc,
+  WsPreviewAutomationFocusHostRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsSubscribeServerConfigRpc,
