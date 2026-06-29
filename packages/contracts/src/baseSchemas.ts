@@ -1,5 +1,15 @@
 import { Schema } from "effect";
 
+const resolveDefectSchema = (): typeof Schema.Unknown => {
+  const candidate = Schema.Defect as unknown;
+  if (typeof candidate === "function") {
+    return (candidate as () => typeof Schema.Unknown)();
+  }
+  return (candidate as typeof Schema.Unknown | undefined) ?? Schema.Unknown;
+};
+
+export const DefectSchema = resolveDefectSchema();
+
 export const TrimmedString = Schema.Trim;
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());
 

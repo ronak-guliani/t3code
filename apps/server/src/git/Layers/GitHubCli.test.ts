@@ -224,4 +224,27 @@ layer("GitHubCliLive", (it) => {
       assert.equal(error.message.includes("Pull request not found"), true);
     }),
   );
+
+  it.effect("surfaces a friendly error when branches share no common history", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockRejectedValueOnce(
+        new Error(
+          "pull request create failed: GraphQL: The master branch has no history in common with main (createPullRequest)",
+        ),
+      );
+
+      const error = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.createPullRequest({
+          cwd: "/repo",
+          baseBranch: "main",
+          headSelector: "master",
+          title: "Title",
+          bodyFile: "/tmp/body.md",
+        });
+      }).pipe(Effect.flip);
+
+      assert.equal(error.message.includes("share no common history"), true);
+    }),
+  );
 });

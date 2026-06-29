@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
+  DefectSchema,
   IsoDateTime,
   NonNegativeInt,
   PositiveInt,
@@ -94,7 +95,7 @@ export class ServerProviderListCommandsError extends Schema.TaggedErrorClass<Ser
   "ServerProviderListCommandsError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {}
 
@@ -283,7 +284,7 @@ export class ServerExportThreadMarkdownError extends Schema.TaggedErrorClass<Ser
   "ServerExportThreadMarkdownError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {}
 
@@ -408,7 +409,7 @@ export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerPro
   {
     provider: ProviderDriverKind,
     reason: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {

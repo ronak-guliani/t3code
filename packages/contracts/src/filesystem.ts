@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { DefectSchema, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const FILESYSTEM_PATH_MAX_LENGTH = 512;
 
@@ -25,6 +25,6 @@ export class FilesystemBrowseError extends Schema.TaggedErrorClass<FilesystemBro
   "FilesystemBrowseError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {}

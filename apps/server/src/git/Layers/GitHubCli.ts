@@ -53,6 +53,17 @@ function normalizeGitHubCliError(operation: "execute" | "stdout", error: unknown
       });
     }
 
+    if (lower.includes("has no history in common with")) {
+      return new GitHubCliError({
+        operation,
+        detail:
+          "Cannot open a pull request: the head and base branches share no common history. " +
+          "This usually means the base branch is wrong (e.g. an unrelated default branch). " +
+          "Set the intended base with `git config branch.<branch>.gh-merge-base <base>` or push a branch that descends from the base.",
+        cause: error,
+      });
+    }
+
     return new GitHubCliError({
       operation,
       detail: `GitHub CLI command failed: ${error.message}`,

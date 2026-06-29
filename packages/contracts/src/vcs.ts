@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { DefectSchema, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const VcsDriverKind = Schema.Literals(["git", "jj", "unknown"]);
 export type VcsDriverKind = typeof VcsDriverKind.Type;
@@ -92,7 +92,7 @@ export class VcsProcessSpawnError extends Schema.TaggedErrorClass<VcsProcessSpaw
     operation: Schema.String,
     command: Schema.String,
     cwd: Schema.String,
-    cause: Schema.Defect,
+    cause: DefectSchema,
   },
 ) {
   override get message(): string {
@@ -150,7 +150,7 @@ export class VcsOutputDecodeError extends Schema.TaggedErrorClass<VcsOutputDecod
     command: Schema.String,
     cwd: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {
@@ -200,7 +200,7 @@ export class VcsRepositoryDetectionError extends Schema.TaggedErrorClass<VcsRepo
     operation: Schema.String,
     cwd: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {

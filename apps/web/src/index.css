@@ -108,7 +108,9 @@
   --sidebar-backdrop-blur: 0px;
   --sidebar-backdrop-saturation: 1;
 
-  /* Density tokens (default, mobile-first) */
+  /* Density tokens (default, mobile-first). Keep density scoped to
+     explicit consumers; changing Tailwind's global --spacing forces
+     app-wide layout recalculation and makes sidebar interactions flicker. */
   --density-chat-header-px: 0.75rem;
   --density-chat-header-py: 0.5rem;
   --density-composer-outer-px: 0.75rem;

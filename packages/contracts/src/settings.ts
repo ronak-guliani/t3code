@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { DefectSchema, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -30,7 +30,7 @@ export const DEFAULT_TOOL_FONT_SIZE: FontSize = 12 as FontSize;
 export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 12 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
 
-export const UiDensity = Schema.Literals(["compact", "default", "spacious"]);
+export const UiDensity = Schema.Literals(["compact", "default", "comfortable", "spacious"]);
 export type UiDensity = typeof UiDensity.Type;
 export const DEFAULT_UI_DENSITY: UiDensity = "default";
 
@@ -260,7 +260,7 @@ export class ServerSettingsError extends Schema.TaggedErrorClass<ServerSettingsE
   {
     settingsPath: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {

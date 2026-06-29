@@ -1,5 +1,11 @@
 import { Schema } from "effect";
-import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  DefectSchema,
+  NonNegativeInt,
+  PositiveInt,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const GIT_LIST_BRANCHES_MAX_LIMIT = 200;
@@ -326,7 +332,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
   command: Schema.String,
   cwd: Schema.String,
   detail: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(DefectSchema),
 }) {
   override get message(): string {
     return `Git command failed in ${this.operation}: ${this.command} (${this.cwd}) - ${this.detail}`;
@@ -336,7 +342,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
 export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("GitHubCliError", {
   operation: Schema.String,
   detail: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(DefectSchema),
 }) {
   override get message(): string {
     return `GitHub CLI failed in ${this.operation}: ${this.detail}`;
@@ -348,7 +354,7 @@ export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationE
   {
     operation: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {
@@ -359,7 +365,7 @@ export class TextGenerationError extends Schema.TaggedErrorClass<TextGenerationE
 export class GitManagerError extends Schema.TaggedErrorClass<GitManagerError>()("GitManagerError", {
   operation: Schema.String,
   detail: Schema.String,
-  cause: Schema.optional(Schema.Defect),
+  cause: Schema.optional(DefectSchema),
 }) {
   override get message(): string {
     return `Git manager failed in ${this.operation}: ${this.detail}`;

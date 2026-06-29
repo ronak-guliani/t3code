@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { TrimmedString } from "./baseSchemas.ts";
+import { DefectSchema, TrimmedString } from "./baseSchemas.ts";
 
 export const MAX_KEYBINDING_VALUE_LENGTH = 64;
 const MAX_KEYBINDING_WHEN_LENGTH = 256;
@@ -154,7 +154,7 @@ export class KeybindingsConfigError extends Schema.TaggedErrorClass<KeybindingsC
   {
     configPath: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {

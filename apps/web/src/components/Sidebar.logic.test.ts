@@ -695,6 +695,13 @@ describe("resolveThreadStatusPill", () => {
 });
 
 describe("resolveThreadRowClassName", () => {
+  it("keeps row sizing on scoped density tokens instead of global spacing", () => {
+    const className = resolveThreadRowClassName({ isActive: false, isSelected: false });
+    expect(className).toContain("h-[var(--density-sidebar-row-h)]");
+    expect(className).toContain("px-[var(--density-sidebar-row-px)]");
+    expect(className).not.toContain("--spacing");
+  });
+
   it("uses the darker selected palette when a thread is both selected and active", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
     expect(className).toContain("bg-primary/22");

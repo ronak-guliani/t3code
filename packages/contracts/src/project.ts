@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { DefectSchema, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
@@ -30,7 +30,7 @@ export class ProjectSearchEntriesError extends Schema.TaggedErrorClass<ProjectSe
   "ProjectSearchEntriesError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {}
 
@@ -50,6 +50,6 @@ export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteF
   "ProjectWriteFileError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {}

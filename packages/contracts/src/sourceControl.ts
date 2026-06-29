@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { DefectSchema, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
 export const SourceControlProviderKind = Schema.Literals([
@@ -156,7 +156,7 @@ export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceCo
     provider: SourceControlProviderKind,
     operation: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {
@@ -170,7 +170,7 @@ export class SourceControlRepositoryError extends Schema.TaggedErrorClass<Source
     provider: SourceControlProviderKind,
     operation: Schema.String,
     detail: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(DefectSchema),
   },
 ) {
   override get message(): string {
