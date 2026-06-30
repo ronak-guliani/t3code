@@ -2463,25 +2463,11 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 
   return isElectron ? (
-    <SidebarHeader
-      className="drag-region h-[52px] flex-row items-center py-0 pl-[90px] wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]"
-      style={{
-        gap: "var(--density-sidebar-chrome-gap)",
-        paddingRight: "var(--density-sidebar-chrome-px)",
-      }}
-    >
+    <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-3 py-0 pr-3 pl-[90px] sm:gap-2.5 sm:pr-4 wco:h-[env(titlebar-area-height)] wco:pl-[calc(env(titlebar-area-x)+1em)]">
       {wordmark}
     </SidebarHeader>
   ) : (
-    <SidebarHeader
-      style={{
-        gap: "var(--density-sidebar-chrome-gap)",
-        paddingLeft: "var(--density-sidebar-chrome-px)",
-        paddingRight: "var(--density-sidebar-chrome-px)",
-        paddingTop: "var(--density-sidebar-chrome-py)",
-        paddingBottom: "var(--density-sidebar-chrome-py)",
-      }}
-    >
+    <SidebarHeader className="gap-3 px-3 py-1 sm:gap-2.5 sm:px-4 sm:py-1.5">
       {wordmark}
     </SidebarHeader>
   );
@@ -2498,20 +2484,13 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   }, [isMobile, navigate, setOpenMobile]);
 
   return (
-    <SidebarFooter style={{ padding: "var(--density-sidebar-footer-p)" }}>
+    <SidebarFooter className="p-2">
       <SidebarUpdatePill />
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton
             size="sm"
-            className="text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-            style={{
-              gap: "var(--density-sidebar-action-gap)",
-              paddingLeft: "var(--density-sidebar-action-px)",
-              paddingRight: "var(--density-sidebar-action-px)",
-              paddingTop: "var(--density-sidebar-action-py)",
-              paddingBottom: "var(--density-sidebar-action-py)",
-            }}
+            className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
             onClick={handleSettingsClick}
           >
             <SettingsIcon className="size-3.5" />
@@ -2625,28 +2604,14 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 
   return (
     <SidebarContent className="gap-0">
-      <SidebarGroup
-        style={{
-          paddingLeft: "var(--density-sidebar-group-px)",
-          paddingRight: "var(--density-sidebar-group-px)",
-          paddingTop: "var(--density-sidebar-group-py)",
-          paddingBottom: "var(--density-sidebar-group-pb-tight)",
-        }}
-      >
+      <SidebarGroup className="px-2 pt-2 pb-1">
         <SidebarMenu>
           <SidebarMenuItem>
             <CommandDialogTrigger
               render={
                 <SidebarMenuButton
                   size="sm"
-                  className="text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
-                  style={{
-                    gap: "var(--density-sidebar-action-gap)",
-                    paddingLeft: "var(--density-sidebar-action-px)",
-                    paddingRight: "var(--density-sidebar-action-px)",
-                    paddingTop: "var(--density-sidebar-action-py)",
-                    paddingBottom: "var(--density-sidebar-action-py)",
-                  }}
+                  className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
                   data-testid="command-palette-trigger"
                 />
               }
@@ -2663,14 +2628,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           <SidebarMenuItem>
             <SidebarMenuButton
               size="sm"
-              className="text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
-              style={{
-                gap: "var(--density-sidebar-action-gap)",
-                paddingLeft: "var(--density-sidebar-action-px)",
-                paddingRight: "var(--density-sidebar-action-px)",
-                paddingTop: "var(--density-sidebar-action-py)",
-                paddingBottom: "var(--density-sidebar-action-py)",
-              }}
+              className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
               onClick={handleSkillsClick}
             >
               <SparklesIcon className="size-3.5" />
@@ -2680,14 +2638,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
         </SidebarMenu>
       </SidebarGroup>
       {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
-        <SidebarGroup
-          style={{
-            paddingLeft: "var(--density-sidebar-group-px)",
-            paddingRight: "var(--density-sidebar-group-px)",
-            paddingTop: "var(--density-sidebar-group-py)",
-            paddingBottom: 0,
-          }}
-        >
+        <SidebarGroup className="px-2 pt-2 pb-0">
           <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
             <TriangleAlertIcon />
             <AlertTitle>Intel build on Apple Silicon</AlertTitle>
@@ -2709,14 +2660,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </Alert>
         </SidebarGroup>
       ) : null}
-      <SidebarGroup
-        style={{
-          paddingLeft: "var(--density-sidebar-group-px)",
-          paddingRight: "var(--density-sidebar-group-px)",
-          paddingTop: "var(--density-sidebar-group-py)",
-          paddingBottom: "var(--density-sidebar-group-py)",
-        }}
-      >
+      <SidebarGroup className="p-2">
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
           <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
             Projects
