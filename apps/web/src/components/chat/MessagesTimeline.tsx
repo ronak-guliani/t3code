@@ -782,7 +782,7 @@ function AssistantChangedFilesSectionInner({
             type="button"
             size="xs"
             variant="outline"
-            className="h-[1.5em] px-[0.4em] sm:h-[1.5em]"
+            className="h-[1.5em] px-[0.4em] text-[inherit] sm:h-[1.5em] sm:text-[inherit]"
             disabled={visibleFiles.length === 0}
             onClick={() => onOpenTurnDiff(turnSummary.turnId, visibleFiles[0]?.path, selectedScope)}
           >
@@ -792,7 +792,7 @@ function AssistantChangedFilesSectionInner({
             type="button"
             size="xs"
             variant="ghost"
-            className="size-[1.5em] p-0 sm:h-[1.5em]"
+            className="size-[1.5em] p-0 text-[inherit] sm:h-[1.5em] sm:text-[inherit]"
             onClick={() => setCollapsed((c) => !c)}
             aria-label={collapsed ? "Expand changed files" : "Collapse changed files"}
           >
