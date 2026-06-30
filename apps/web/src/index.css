@@ -268,6 +268,7 @@ html[data-code-font="jetbrains-mono"] {
    `default` intentionally inherits Tailwind's 0.25rem. */
 html[data-ui-density="compact"] {
   --spacing: 0.22rem;
+  font-size: 14px;
 }
 
 html[data-ui-density="comfortable"] {
@@ -276,6 +277,7 @@ html[data-ui-density="comfortable"] {
 
 html[data-ui-density="spacious"] {
   --spacing: 0.31rem;
+  font-size: 16.5px;
 }
 
 body {

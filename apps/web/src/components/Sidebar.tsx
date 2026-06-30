@@ -2467,9 +2467,7 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
       {wordmark}
     </SidebarHeader>
   ) : (
-    <SidebarHeader className="gap-3 px-3 py-1 sm:gap-2.5 sm:px-4 sm:py-1.5">
-      {wordmark}
-    </SidebarHeader>
+    <SidebarHeader className="gap-2 px-2 py-0 sm:px-2">{wordmark}</SidebarHeader>
   );
 });
 
@@ -2604,7 +2602,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 
   return (
     <SidebarContent className="gap-0">
-      <SidebarGroup className="px-2 pt-2 pb-1">
+      <SidebarGroup className="px-2 pt-0 pb-1">
         <SidebarMenu>
           <SidebarMenuItem>
             <CommandDialogTrigger
@@ -2662,9 +2660,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       ) : null}
       <SidebarGroup className="p-2">
         <div className="mb-1 flex items-center justify-between pl-2 pr-1.5">
-          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-            Projects
-          </span>
+          <span className="text-[11px] font-medium text-muted-foreground/60">Projects</span>
           <div className="flex items-center gap-1">
             <ProjectSortMenu
               projectSortOrder={projectSortOrder}

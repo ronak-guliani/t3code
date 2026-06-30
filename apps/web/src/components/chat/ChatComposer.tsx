@@ -1991,7 +1991,7 @@ export const ChatComposer = memo(
       <form
         ref={composerFormRef}
         onSubmit={submitComposer}
-        className="mx-auto w-full min-w-0 max-w-208"
+        className="mx-auto w-full min-w-0 max-w-3xl"
         data-chat-composer-form="true"
       >
         <div

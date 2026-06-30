@@ -3796,7 +3796,6 @@ function ChatViewBody(
       {/* Top bar */}
       <header
         className={cn(
-          "border-b border-border",
           isElectron
             ? cn(
                 "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
