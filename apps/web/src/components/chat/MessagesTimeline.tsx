@@ -533,7 +533,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
 
       {row.kind === "working" && (
         <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
+          <div className="flex items-center gap-2 pt-1 text-[10px] text-muted-foreground/50">
             <span className="inline-flex items-center gap-[3px]">
               <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
               <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
@@ -680,12 +680,12 @@ const ReasoningSection = memo(function ReasoningSection({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="inline-flex shrink-0 items-center gap-1 text-sm text-muted-foreground/70 transition-colors hover:text-foreground/80"
+          className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground/50 transition-colors hover:text-foreground/70"
           onClick={() => setIsExpanded((value) => !value)}
           aria-expanded={isExpanded}
         >
           <span>{label}</span>
-          <CollapseIcon className="size-4" />
+          <CollapseIcon className="size-3" />
         </button>
         <span className="h-px flex-1 bg-border" />
       </div>
@@ -755,7 +755,7 @@ function AssistantChangedFilesSectionInner({
     >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-2 rounded-t-2xl bg-card/72 p-2 backdrop-blur-md">
         <div className="min-w-0">
-          <p className="flex items-center gap-1 font-medium text-foreground text-[0.8em] leading-4">
+          <p className="flex items-center gap-1 font-medium text-foreground leading-4">
             <span>
               Changed files ({selectedScope === "turn" ? "Turn" : "Snapshot"}) (
               {changedFileCountLabel})
@@ -763,14 +763,14 @@ function AssistantChangedFilesSectionInner({
             {hasNonZeroStat(summaryStat) && (
               <DiffStatLabel
                 additions={summaryStat.additions}
-                className="text-[0.85em] leading-4"
+                className="leading-4"
                 deletions={summaryStat.deletions}
                 layout="inline"
               />
             )}
           </p>
           {selectedScope === "turn" && turnFiles.length === 0 && (
-            <p className="mt-1 text-[0.9em] text-muted-foreground/70">
+            <p className="mt-1 text-muted-foreground/70">
               No turn-scoped file changes detected. Snapshot has {snapshotFiles.length} changed{" "}
               {snapshotFiles.length === 1 ? "file" : "files"}.
             </p>
@@ -782,7 +782,7 @@ function AssistantChangedFilesSectionInner({
             type="button"
             size="xs"
             variant="outline"
-            className="h-[1.5em] px-[0.4em] text-[0.8em] sm:h-[1.5em] sm:text-[0.8em]"
+            className="h-[1.5em] px-[0.4em] sm:h-[1.5em]"
             disabled={visibleFiles.length === 0}
             onClick={() => onOpenTurnDiff(turnSummary.turnId, visibleFiles[0]?.path, selectedScope)}
           >

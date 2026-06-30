@@ -103,7 +103,7 @@ export const ChatHeader = memo(function ChatHeader({
           </Badge>
         )}
       </div>
-      <div className="flex shrink-0 items-center justify-end gap-2 @3xl/header-actions:gap-3">
+      <div className="flex shrink-0 items-center justify-end gap-1">
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
@@ -133,7 +133,7 @@ export const ChatHeader = memo(function ChatHeader({
           <TooltipTrigger
             render={
               <Button
-                className="shrink-0"
+                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
                 variant="outline"
                 size="icon-xs"
                 onClick={onExportThread}
@@ -156,7 +156,7 @@ export const ChatHeader = memo(function ChatHeader({
           <TooltipTrigger
             render={
               <Toggle
-                className="shrink-0"
+                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
                 pressed={terminalOpen}
                 onPressedChange={onToggleTerminal}
                 aria-label="Toggle terminal drawer"
@@ -180,7 +180,7 @@ export const ChatHeader = memo(function ChatHeader({
           <TooltipTrigger
             render={
               <Toggle
-                className="shrink-0"
+                className="shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5"
                 pressed={diffOpen}
                 onPressedChange={onToggleDiff}
                 aria-label="Toggle diff panel"
