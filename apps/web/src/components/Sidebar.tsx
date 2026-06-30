@@ -952,7 +952,10 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
   );
 
   const content = (
-    <SidebarMenuSub className="mx-1 my-0 w-full translate-x-0 gap-0.5 overflow-hidden px-1.5 py-0">
+    <SidebarMenuSub
+      className="mx-1 my-0 w-full translate-x-0 gap-0.5 overflow-hidden px-1.5 py-0"
+      style={{ animation: "none", transition: "none" }}
+    >
       {showEmptyThreadState ? (
         <SidebarMenuSubItem className="w-full" data-thread-selection-safe>
           <div
@@ -971,7 +974,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
             render={showMoreButtonRender}
             data-thread-selection-safe
             size="sm"
-            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
+            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 transition-none hover:bg-accent hover:text-muted-foreground/80"
             onClick={() => {
               expandThreadListForProject(projectKey);
             }}
@@ -989,7 +992,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
             render={showLessButtonRender}
             data-thread-selection-safe
             size="sm"
-            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
+            className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 transition-none hover:bg-accent hover:text-muted-foreground/80"
             onClick={() => {
               collapseThreadListForProject(projectKey);
             }}

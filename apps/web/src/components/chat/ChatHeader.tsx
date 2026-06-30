@@ -87,7 +87,8 @@ export const ChatHeader = memo(function ChatHeader({
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
         <h2
-          className="min-w-0 shrink truncate text-sm font-medium text-foreground"
+          className="min-w-0 shrink truncate font-medium text-foreground"
+          style={{ fontSize: "var(--app-chat-font-size)" }}
           title={activeThreadTitle}
         >
           {activeThreadTitle}

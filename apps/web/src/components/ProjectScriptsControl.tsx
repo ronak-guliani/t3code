@@ -273,7 +273,8 @@ export default function ProjectScriptsControl({
           <Button
             size="xs"
             variant="outline"
-            className="h-6 border-transparent px-2 text-xs shadow-none hover:border-input hover:shadow-xs/5"
+            className="h-6 border-transparent px-2 shadow-none hover:border-input hover:shadow-xs/5"
+            style={{ fontSize: "var(--app-chat-font-size)" }}
             onClick={() => onRunScript(primaryScript)}
             title={`Run ${primaryScript.name}`}
           >
