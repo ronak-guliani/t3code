@@ -1120,6 +1120,28 @@ function updateThreadState(
   return writeThreadState(state, nextThread, currentThread);
 }
 
+function updateSidebarThreadSummaryState(
+  state: EnvironmentState,
+  threadId: ThreadId,
+  updater: (summary: SidebarThreadSummary) => SidebarThreadSummary,
+): EnvironmentState {
+  const currentSummary = state.sidebarThreadSummaryById[threadId];
+  if (!currentSummary) {
+    return state;
+  }
+  const nextSummary = updater(currentSummary);
+  if (sidebarThreadSummariesEqual(currentSummary, nextSummary)) {
+    return state;
+  }
+  return {
+    ...state,
+    sidebarThreadSummaryById: {
+      ...state.sidebarThreadSummaryById,
+      [threadId]: nextSummary,
+    },
+  };
+}
+
 function buildProjectState(
   projects: ReadonlyArray<Project>,
 ): Pick<EnvironmentState, "projectIds" | "projectById"> {
@@ -1368,19 +1390,31 @@ function applyEnvironmentOrchestrationEvent(
     case "thread.deleted":
       return removeThreadState(state, event.payload.threadId);
 
-    case "thread.archived":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
+    case "thread.archived": {
+      const nextState = updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         archivedAt: event.payload.archivedAt,
         updatedAt: event.payload.updatedAt,
       }));
+      return updateSidebarThreadSummaryState(nextState, event.payload.threadId, (summary) => ({
+        ...summary,
+        archivedAt: event.payload.archivedAt,
+        updatedAt: event.payload.updatedAt,
+      }));
+    }
 
-    case "thread.unarchived":
-      return updateThreadState(state, event.payload.threadId, (thread) => ({
+    case "thread.unarchived": {
+      const nextState = updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         archivedAt: null,
         updatedAt: event.payload.updatedAt,
       }));
+      return updateSidebarThreadSummaryState(nextState, event.payload.threadId, (summary) => ({
+        ...summary,
+        archivedAt: null,
+        updatedAt: event.payload.updatedAt,
+      }));
+    }
 
     case "thread.meta-updated":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

@@ -1,4 +1,9 @@
-import { parseScopedThreadKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import {
+  parseScopedThreadKey,
+  scopedThreadKey,
+  scopeProjectRef,
+  scopeThreadRef,
+} from "@t3tools/client-runtime";
 import { type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
@@ -39,6 +44,7 @@ export function useThreadActions() {
   // sidebar row via archiveThread → attemptArchiveThread.
   const handleNewThreadRef = useRef(handleNewThread);
   handleNewThreadRef.current = handleNewThread;
+  const archivingThreadKeysRef = useRef(new Set<string>());
   const queryClient = useQueryClient();
 
   const resolveThreadTarget = useCallback((target: ScopedThreadRef) => {
@@ -64,15 +70,27 @@ export function useThreadActions() {
       const resolved = resolveThreadTarget(target);
       if (!resolved) return;
       const { thread, threadRef } = resolved;
+      if (thread.archivedAt !== null) {
+        return;
+      }
       if (thread.session?.status === "running" && thread.session.activeTurnId != null) {
         throw new Error("Cannot archive a running thread.");
       }
 
-      await api.orchestration.dispatchCommand({
-        type: "thread.archive",
-        commandId: newCommandId(),
-        threadId: threadRef.threadId,
-      });
+      const threadKey = scopedThreadKey(threadRef);
+      if (archivingThreadKeysRef.current.has(threadKey)) {
+        return;
+      }
+      archivingThreadKeysRef.current.add(threadKey);
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.archive",
+          commandId: newCommandId(),
+          threadId: threadRef.threadId,
+        });
+      } finally {
+        archivingThreadKeysRef.current.delete(threadKey);
+      }
       const currentRouteThreadRef = getCurrentRouteThreadRef();
 
       if (

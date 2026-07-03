@@ -14,6 +14,7 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
+const RECOVERED_CONNECTION_TOAST_MIN_DISCONNECTED_MS = 2_000;
 type WsAutoReconnectTrigger = "focus" | "online";
 
 const connectionTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -73,6 +74,38 @@ function describeRecoveredToast(
   }
 
   return "Connection restored.";
+}
+
+function parseConnectionMomentMs(isoDate: string | null): number | null {
+  if (isoDate === null) {
+    return null;
+  }
+
+  const timestampMs = new Date(isoDate).getTime();
+  return Number.isFinite(timestampMs) ? timestampMs : null;
+}
+
+export function shouldShowRecoveredConnectionToast(input: {
+  readonly connectedAt: string | null;
+  readonly previousDisconnectedAt: string | null;
+  readonly previousUiState: WsConnectionUiState;
+  readonly uiState: WsConnectionUiState;
+}): boolean {
+  if (
+    input.uiState !== "connected" ||
+    (input.previousUiState !== "offline" && input.previousUiState !== "reconnecting") ||
+    input.previousDisconnectedAt === null
+  ) {
+    return false;
+  }
+
+  const disconnectedAtMs = parseConnectionMomentMs(input.previousDisconnectedAt);
+  const connectedAtMs = parseConnectionMomentMs(input.connectedAt);
+  if (disconnectedAtMs === null || connectedAtMs === null) {
+    return true;
+  }
+
+  return connectedAtMs - disconnectedAtMs >= RECOVERED_CONNECTION_TOAST_MIN_DISCONNECTED_MS;
 }
 
 function describeSlowRpcAckToast(requests: ReadonlyArray<SlowRpcAckRequest>): string {
@@ -338,9 +371,12 @@ export function WebSocketConnectionCoordinator() {
     }
 
     if (
-      uiState === "connected" &&
-      (previousUiState === "offline" || previousUiState === "reconnecting") &&
-      previousDisconnectedAt !== null
+      shouldShowRecoveredConnectionToast({
+        connectedAt: status.connectedAt,
+        previousDisconnectedAt,
+        previousUiState,
+        uiState,
+      })
     ) {
       const successToast = {
         description: describeRecoveredToast(previousDisconnectedAt, status.connectedAt),

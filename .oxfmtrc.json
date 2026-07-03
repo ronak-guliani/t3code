@@ -6,6 +6,7 @@
     "dist",
     "dist-electron",
     "node_modules",
+    "apps/mobile/.build",
     "bun.lock",
     "*.tsbuildinfo",
     "**/routeTree.gen.ts",

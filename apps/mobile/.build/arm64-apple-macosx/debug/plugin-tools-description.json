@@ -21,7 +21,7 @@
 
   ],
   "swiftCommands" : {
-    "C.T3MobilePackageTests-arm64-apple-macosx26.0-debug.module" : {
+    "C.T3MobilePackageTests-arm64-apple-macosx28.0-debug.module" : {
       "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
       "fileList" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/T3MobilePackageTests.build/sources",
       "importPath" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/Modules",
@@ -122,7 +122,7 @@
       "tempsPath" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/T3MobilePackageTests.build",
       "wholeModuleOptimization" : false
     },
-    "C.T3MobileProtocol-arm64-apple-macosx26.0-debug.module" : {
+    "C.T3MobileProtocol-arm64-apple-macosx28.0-debug.module" : {
       "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
       "fileList" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/T3MobileProtocol.build/sources",
       "importPath" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/Modules",
@@ -249,7 +249,7 @@
       "tempsPath" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/T3MobileProtocol.build",
       "wholeModuleOptimization" : false
     },
-    "C.T3MobileProtocolTests-arm64-apple-macosx26.0-debug.module" : {
+    "C.T3MobileProtocolTests-arm64-apple-macosx28.0-debug.module" : {
       "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
       "fileList" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/T3MobileProtocolTests.build/sources",
       "importPath" : "/Users/ronakguliani/code/t3code/apps/mobile/.build/arm64-apple-macosx/debug/Modules",

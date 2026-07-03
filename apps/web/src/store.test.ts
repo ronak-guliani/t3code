@@ -1,4 +1,4 @@
-import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import {
   CheckpointRef,
   DEFAULT_MODEL,
@@ -21,6 +21,7 @@ import {
   selectExistingThreadKeys,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadsForProjectRef,
   selectSidebarThreadsAcrossEnvironments,
   selectThreadByRef,
   selectThreadExistsByRef,
@@ -905,6 +906,65 @@ describe("incremental orchestration updates", () => {
     const sidebarThreads = selectSidebarThreadsAcrossEnvironments(state);
     const child = sidebarThreads.find((thread) => thread.id === childThreadId);
     expect(child?.parentThreadId).toBe(parentThreadId);
+  });
+
+  it("applies archive lifecycle events to sidebar summaries immediately", () => {
+    const threadId = ThreadId.make("thread-archive-target");
+    const thread = makeThread({ id: threadId });
+    const state = withActiveEnvironmentState(localEnvironmentStateOf(makeState(thread)), {
+      sidebarThreadSummaryById: {
+        [threadId]: makeSidebarThreadSummary(thread),
+      },
+    });
+
+    const archivedAt = "2026-02-27T00:00:01.000Z";
+    const afterArchive = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.archived", {
+        threadId,
+        archivedAt,
+        updatedAt: archivedAt,
+      }),
+      localEnvironmentId,
+    );
+
+    expect(
+      selectThreadByRef(afterArchive, scopeThreadRef(localEnvironmentId, threadId))?.archivedAt,
+    ).toBe(archivedAt);
+    expect(
+      selectSidebarThreadsAcrossEnvironments(afterArchive).find((entry) => entry.id === threadId)
+        ?.archivedAt,
+    ).toBe(archivedAt);
+    expect(
+      selectSidebarThreadsForProjectRef(
+        afterArchive,
+        scopeProjectRef(localEnvironmentId, thread.projectId),
+      ).find((entry) => entry.id === threadId)?.archivedAt,
+    ).toBe(archivedAt);
+
+    const unarchivedAt = "2026-02-27T00:00:02.000Z";
+    const afterUnarchive = applyOrchestrationEvent(
+      afterArchive,
+      makeEvent("thread.unarchived", {
+        threadId,
+        updatedAt: unarchivedAt,
+      }),
+      localEnvironmentId,
+    );
+
+    expect(
+      selectThreadByRef(afterUnarchive, scopeThreadRef(localEnvironmentId, threadId))?.archivedAt,
+    ).toBeNull();
+    expect(
+      selectSidebarThreadsAcrossEnvironments(afterUnarchive).find((entry) => entry.id === threadId)
+        ?.archivedAt,
+    ).toBeNull();
+    expect(
+      selectSidebarThreadsForProjectRef(
+        afterUnarchive,
+        scopeProjectRef(localEnvironmentId, thread.projectId),
+      ).find((entry) => entry.id === threadId)?.archivedAt,
+    ).toBeNull();
   });
 
   it("updates only the affected thread for message events", () => {

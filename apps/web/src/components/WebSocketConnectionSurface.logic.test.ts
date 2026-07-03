@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { WsConnectionStatus } from "../rpc/wsConnectionState";
-import { shouldAutoReconnect, shouldRestartStalledReconnect } from "./WebSocketConnectionSurface";
+import {
+  shouldAutoReconnect,
+  shouldShowRecoveredConnectionToast,
+  shouldRestartStalledReconnect,
+} from "./WebSocketConnectionSurface";
 
 function makeStatus(overrides: Partial<WsConnectionStatus> = {}): WsConnectionStatus {
   return {
@@ -109,5 +113,27 @@ describe("WebSocketConnectionSurface.logic", () => {
         "2026-04-03T20:00:01.000Z",
       ),
     ).toBe(false);
+  });
+
+  it("suppresses recovered toasts for transient reconnects", () => {
+    expect(
+      shouldShowRecoveredConnectionToast({
+        connectedAt: "2026-04-03T20:00:01.000Z",
+        previousDisconnectedAt: "2026-04-03T20:00:00.000Z",
+        previousUiState: "reconnecting",
+        uiState: "connected",
+      }),
+    ).toBe(false);
+  });
+
+  it("shows recovered toasts for sustained disconnects", () => {
+    expect(
+      shouldShowRecoveredConnectionToast({
+        connectedAt: "2026-04-03T20:00:03.000Z",
+        previousDisconnectedAt: "2026-04-03T20:00:00.000Z",
+        previousUiState: "reconnecting",
+        uiState: "connected",
+      }),
+    ).toBe(true);
   });
 });

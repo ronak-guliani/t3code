@@ -718,16 +718,49 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.kind": routed.adapter.provider,
         ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
       });
-      const turn = yield* routed.adapter.sendTurn(input);
+      const activeSession = yield* routed.adapter
+        .listSessions()
+        .pipe(
+          Effect.map(
+            (sessions) => sessions.find((session) => session.threadId === input.threadId) ?? null,
+          ),
+        );
       yield* directory.upsert({
         threadId: input.threadId,
         provider: routed.adapter.provider,
         providerInstanceId: routed.instanceId,
         status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+        ...(activeSession?.resumeCursor !== undefined
+          ? { resumeCursor: activeSession.resumeCursor }
+          : {}),
         runtimePayload: {
           ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
+          activeTurnId: activeSession?.activeTurnId ?? null,
+          lastRuntimeEvent: "provider.sendTurn.started",
+          lastRuntimeEventAt: new Date().toISOString(),
+        },
+      });
+      const turn = yield* routed.adapter.sendTurn(input);
+      const settledSession = yield* routed.adapter
+        .listSessions()
+        .pipe(
+          Effect.map(
+            (sessions) => sessions.find((session) => session.threadId === input.threadId) ?? null,
+          ),
+        );
+      yield* directory.upsert({
+        threadId: input.threadId,
+        provider: routed.adapter.provider,
+        providerInstanceId: routed.instanceId,
+        status: settledSession ? toRuntimeStatus(settledSession) : "running",
+        ...(turn.resumeCursor !== undefined
+          ? { resumeCursor: turn.resumeCursor }
+          : settledSession?.resumeCursor !== undefined
+            ? { resumeCursor: settledSession.resumeCursor }
+            : {}),
+        runtimePayload: {
+          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+          activeTurnId: settledSession?.activeTurnId ?? null,
           lastRuntimeEvent: "provider.sendTurn",
           lastRuntimeEventAt: new Date().toISOString(),
         },

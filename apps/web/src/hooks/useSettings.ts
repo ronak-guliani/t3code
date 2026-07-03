@@ -9,7 +9,7 @@
  * write. The hook transparently routes reads/writes to the correct backing
  * store.
  */
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
 import { ServerSettings, type ServerSettingsPatch } from "@t3tools/contracts";
 import {
   type ClientSettingsPatch,
@@ -22,6 +22,7 @@ import { ensureLocalApi } from "~/localApi";
 import { Struct } from "effect";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { applySettingsUpdated, getServerConfig, useServerSettings } from "~/rpc/serverState";
+import { reuseShallowEqualSettingsSelection } from "./settingsSelectorStability";
 
 const CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE = "[CLIENT_SETTINGS]";
 
@@ -134,6 +135,7 @@ export function getClientSettings(): ClientSettings {
 
 export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings) => T): T {
   const serverSettings = useServerSettings();
+  const selectedSettingsRef = useRef<{ value: T } | null>(null);
   const clientSettings = useSyncExternalStore(
     subscribeClientSettings,
     getClientSettingsSnapshot,
@@ -148,7 +150,14 @@ export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings)
     [clientSettings, serverSettings],
   );
 
-  return useMemo(() => (selector ? selector(merged) : (merged as T)), [merged, selector]);
+  return useMemo(() => {
+    const next = selector ? selector(merged) : (merged as T);
+    const selected = reuseShallowEqualSettingsSelection(selectedSettingsRef.current, next);
+    if (!selectedSettingsRef.current || selectedSettingsRef.current.value !== selected) {
+      selectedSettingsRef.current = { value: selected };
+    }
+    return selected;
+  }, [merged, selector]);
 }
 
 /**
