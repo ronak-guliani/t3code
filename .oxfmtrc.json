@@ -12,15 +12,15 @@
     "**/routeTree.gen.ts",
     "apps/web/public/mockServiceWorker.js",
     "apps/web/src/lib/vendor/qrcodegen.ts",
-    "*.icon/**"
+    "*.icon/**",
   ],
   "sortPackageJson": {},
   "overrides": [
     {
       "files": [".devcontainer/devcontainer.json"],
       "options": {
-        "trailingComma": "none"
-      }
-    }
-  ]
+        "trailingComma": "none",
+      },
+    },
+  ],
 }
