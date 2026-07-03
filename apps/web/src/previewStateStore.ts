@@ -432,6 +432,8 @@ export function usePreviewSession(
   useEffect(() => {
     const api = readEnvironmentApi(ref.environmentId);
     if (!api) {
+      // A reconnect or environment switch can temporarily leave this ref
+      // without an API. The next effect run subscribes when one is available.
       onError?.(new Error("Environment disconnected."));
       return;
     }

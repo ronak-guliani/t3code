@@ -1,8 +1,6 @@
 import {
-  type DesktopPreviewBridge,
   type EnvironmentId,
   type PreviewDiscoveredLocalServer,
-  type PreviewNavStatus,
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
   type ScopedThreadRef,
@@ -18,14 +16,10 @@ import {
   ExternalLinkIcon,
   LoaderIcon,
   MinusIcon,
-  MonitorIcon,
   MousePointer2Icon,
   PlusIcon,
   RefreshCwIcon,
   RotateCcwIcon,
-  SearchIcon,
-  SmartphoneIcon,
-  TabletIcon,
   VideoIcon,
   XIcon,
 } from "lucide-react";
@@ -43,7 +37,12 @@ import {
 import { readEnvironmentApi } from "~/environmentApi";
 import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
-import { clampPreviewTitle, previewPartitionForEnvironment } from "@t3tools/shared/preview";
+import { previewPartitionForEnvironment } from "@t3tools/shared/preview";
+import {
+  getDesktopPreviewBridge,
+  statusFromWebview,
+  type PreviewWebviewElement,
+} from "~/previewWebview";
 import {
   applyPreviewDesktopState,
   applyPreviewServerSnapshot,
@@ -60,6 +59,7 @@ import {
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { PreviewDeviceBar, PreviewTabStrip } from "./BrowserPreviewBars";
 
 interface BrowserPreviewPanelProps {
   environmentId: EnvironmentId;
@@ -67,60 +67,7 @@ interface BrowserPreviewPanelProps {
   onClose: () => void;
 }
 
-type PreviewWebviewElement = HTMLElement & {
-  src: string;
-  getURL?: () => string;
-  getTitle?: () => string;
-  canGoBack?: () => boolean;
-  canGoForward?: () => boolean;
-  goBack?: () => void;
-  goForward?: () => void;
-  reload?: () => void;
-  getWebContentsId?: () => number;
-};
-
 const DEFAULT_PREVIEW_URL = "http://localhost:3000";
-const PREVIEW_DEVICE_PRESETS = [
-  { id: "fill", label: "Fill", icon: MonitorIcon, viewport: { _tag: "fill" } },
-  {
-    id: "mobile",
-    label: "390 x 844",
-    icon: SmartphoneIcon,
-    viewport: { _tag: "freeform", width: 390, height: 844 },
-  },
-  {
-    id: "tablet",
-    label: "768 x 1024",
-    icon: TabletIcon,
-    viewport: { _tag: "freeform", width: 768, height: 1024 },
-  },
-  {
-    id: "desktop",
-    label: "1440 x 900",
-    icon: MonitorIcon,
-    viewport: { _tag: "freeform", width: 1440, height: 900 },
-  },
-] as const satisfies ReadonlyArray<{
-  readonly id: string;
-  readonly label: string;
-  readonly icon: typeof MonitorIcon;
-  readonly viewport: PreviewViewportSetting;
-}>;
-
-function statusFromWebview(
-  webview: PreviewWebviewElement | null,
-  fallbackUrl: string,
-  tag: PreviewNavStatus["_tag"],
-): PreviewNavStatus {
-  const url = webview?.getURL?.() || fallbackUrl;
-  const title = clampPreviewTitle(webview?.getTitle?.() || url);
-  return tag === "Loading" ? { _tag: "Loading", url, title } : { _tag: "Success", url, title };
-}
-
-function getDesktopPreviewBridge(): DesktopPreviewBridge | null {
-  return window.desktopBridge?.preview ?? null;
-}
-
 function useCanHostDesktopPreview(): boolean {
   const [canHost, setCanHost] = useState(() => isElectron && getDesktopPreviewBridge() !== null);
 
@@ -231,6 +178,8 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
     readonly PreviewDiscoveredLocalServer[]
   >([]);
   const [isRecording, setIsRecording] = useState(false);
+  const [selectorAction, setSelectorAction] = useState<"annotate" | "click" | null>(null);
+  const [selectorInput, setSelectorInput] = useState("");
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -644,47 +593,50 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
     if (!snapshot) {
       return;
     }
-    const selector = window.prompt("CSS selector to annotate", "body");
-    if (!selector) {
-      return;
-    }
-    void getDesktopPreviewBridge()
-      ?.annotateElement({ tabId: snapshot.tabId, selector })
-      .catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not annotate preview",
-            description:
-              error instanceof Error
-                ? error.message
-                : "The selected element could not be annotated.",
-          }),
-        );
-      });
+    setSelectorInput("body");
+    setSelectorAction("annotate");
   }, [snapshot]);
 
   const runPreviewAutomation = useCallback(() => {
     if (!snapshot) {
       return;
     }
-    const selector = window.prompt("CSS selector to click", "button");
-    if (!selector) {
-      return;
-    }
-    void getDesktopPreviewBridge()
-      ?.runAutomation({ type: "click", tabId: snapshot.tabId, selector })
-      .catch((error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not run preview automation",
-            description:
-              error instanceof Error ? error.message : "The preview automation command failed.",
-          }),
-        );
-      });
+    setSelectorInput("button");
+    setSelectorAction("click");
   }, [snapshot]);
+
+  const submitSelectorAction = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const selector = selectorInput.trim();
+      if (!snapshot || !selectorAction || !selector) return;
+
+      const operation =
+        selectorAction === "annotate"
+          ? getDesktopPreviewBridge()?.annotateElement({ tabId: snapshot.tabId, selector })
+          : getDesktopPreviewBridge()?.runAutomation({
+              type: "click",
+              tabId: snapshot.tabId,
+              selector,
+            });
+      void operation
+        ?.then(() => setSelectorAction(null))
+        .catch((error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title:
+                selectorAction === "annotate"
+                  ? "Could not annotate preview"
+                  : "Could not click element",
+              description:
+                error instanceof Error ? error.message : "The selector operation failed.",
+            }),
+          );
+        });
+    },
+    [selectorAction, selectorInput, snapshot],
+  );
 
   const submitAddress = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -811,41 +763,12 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
           <XIcon className="size-3.5" />
         </Button>
       </div>
-      {previewState.sessions.length > 0 ? (
-        <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2">
-          {previewState.sessions.map((session) => {
-            const selected = session.tabId === snapshot?.tabId;
-            return (
-              <div
-                key={session.tabId}
-                className={cn(
-                  "flex min-w-0 shrink-0 items-center rounded-md border text-xs",
-                  selected
-                    ? "border-border bg-muted text-foreground"
-                    : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                )}
-              >
-                <button
-                  type="button"
-                  className="max-w-44 truncate px-2 py-1.5"
-                  title={getPreviewSnapshotTitle(session)}
-                  onClick={() => activatePreviewTab(threadRef, session.tabId)}
-                >
-                  {getPreviewSnapshotTitle(session)}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-r-md px-1.5 py-1.5 hover:bg-background/80"
-                  aria-label={`Close ${getPreviewSnapshotTitle(session)}`}
-                  onClick={() => closeTab(session.tabId)}
-                >
-                  <XIcon className="size-3" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
+      <PreviewTabStrip
+        threadRef={threadRef}
+        sessions={previewState.sessions}
+        activeTabId={snapshot?.tabId}
+        onCloseTab={closeTab}
+      />
       {snapshot ? (
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-xs text-muted-foreground">
           <span
@@ -959,46 +882,39 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
           ) : null}
         </div>
       ) : null}
-      {snapshot ? (
-        <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2">
-          {PREVIEW_DEVICE_PRESETS.map((preset) => {
-            const Icon = preset.icon;
-            const selected =
-              (snapshot.viewport ?? { _tag: "fill" })._tag === preset.viewport._tag &&
-              (preset.viewport._tag === "fill" ||
-                (snapshot.viewport?._tag === "freeform" &&
-                  snapshot.viewport.width === preset.viewport.width &&
-                  snapshot.viewport.height === preset.viewport.height));
-            return (
-              <Button
-                key={preset.id}
-                type="button"
-                variant={selected ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 shrink-0 gap-1 px-2 text-xs"
-                onClick={() => resizePreview(preset.viewport)}
-                title={preset.label}
-              >
-                <Icon className="size-3" />
-                {preset.label}
-              </Button>
-            );
-          })}
+      {snapshot && selectorAction ? (
+        <form
+          className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3"
+          onSubmit={submitSelectorAction}
+        >
+          <Input
+            autoFocus
+            value={selectorInput}
+            onChange={(event) => setSelectorInput(event.target.value)}
+            className="h-7 flex-1 font-mono text-xs"
+            aria-label={`CSS selector to ${selectorAction}`}
+          />
+          <Button type="submit" size="sm" className="h-7">
+            {selectorAction === "annotate" ? "Annotate" : "Click"}
+          </Button>
           <Button
             type="button"
             variant="ghost"
-            size="icon"
-            className="ml-auto size-7 shrink-0"
-            onClick={() => void discoverLocalServers()}
-            aria-label="Discover local servers"
+            size="sm"
+            className="h-7"
+            onClick={() => setSelectorAction(null)}
           >
-            {isDiscoveringServers ? (
-              <LoaderIcon className="size-3 animate-spin" />
-            ) : (
-              <SearchIcon className="size-3" />
-            )}
+            Cancel
           </Button>
-        </div>
+        </form>
+      ) : null}
+      {snapshot ? (
+        <PreviewDeviceBar
+          viewport={snapshot.viewport}
+          isDiscoveringServers={isDiscoveringServers}
+          onResize={resizePreview}
+          onDiscoverServers={() => void discoverLocalServers()}
+        />
       ) : null}
       {discoveredServers.length > 0 ? (
         <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2">

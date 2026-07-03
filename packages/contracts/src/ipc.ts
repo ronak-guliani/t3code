@@ -272,8 +272,7 @@ export interface DesktopPreviewAnnotationInput extends DesktopPreviewTabInput {
 export type DesktopPreviewAutomationCommand =
   | { type: "click"; tabId: string; selector: string }
   | { type: "type"; tabId: string; selector: string; text: string }
-  | { type: "key"; tabId: string; key: string }
-  | { type: "evaluate"; tabId: string; script: string };
+  | { type: "key"; tabId: string; key: string };
 
 export interface DesktopPreviewAutomationResult {
   ok: boolean;

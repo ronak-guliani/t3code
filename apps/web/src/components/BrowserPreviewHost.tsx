@@ -1,10 +1,14 @@
-import type { DesktopPreviewBridge, PreviewNavStatus } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { clampPreviewTitle, previewPartitionForEnvironment } from "@t3tools/shared/preview";
+import { previewPartitionForEnvironment } from "@t3tools/shared/preview";
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 
 import { readEnvironmentApi } from "~/environmentApi";
 import { isElectron } from "~/env";
+import {
+  getDesktopPreviewBridge,
+  statusFromWebview,
+  type PreviewWebviewElement,
+} from "~/previewWebview";
 import {
   applyPreviewDesktopState,
   desktopPreviewNavStatusToPreviewNavStatus,
@@ -15,28 +19,6 @@ import {
   type HostedPreviewSurface,
   useHostedPreviewSurfaces,
 } from "~/previewStateStore";
-
-type PreviewWebviewElement = HTMLElement & {
-  getURL?: () => string;
-  getTitle?: () => string;
-  canGoBack?: () => boolean;
-  canGoForward?: () => boolean;
-  getWebContentsId?: () => number;
-};
-
-function getDesktopPreviewBridge(): DesktopPreviewBridge | null {
-  return window.desktopBridge?.preview ?? null;
-}
-
-function statusFromWebview(
-  webview: PreviewWebviewElement | null,
-  fallbackUrl: string,
-  tag: "Loading" | "Success",
-): PreviewNavStatus {
-  const url = webview?.getURL?.() || fallbackUrl;
-  const title = clampPreviewTitle(webview?.getTitle?.() || url);
-  return tag === "Loading" ? { _tag: "Loading", url, title } : { _tag: "Success", url, title };
-}
 
 function reportPreviewStatus(
   api: ReturnType<typeof readEnvironmentApi>,

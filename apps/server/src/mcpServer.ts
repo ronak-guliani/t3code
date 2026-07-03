@@ -306,12 +306,12 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   },
   {
     name: "preview_screenshot",
-    description: "Return the status of the desktop browser screenshot bridge.",
+    description: "Capture the current desktop browser preview tab as a screenshot.",
     inputSchema: { type: "object", properties: { tabId: { type: "string" } } },
   },
   {
     name: "preview_click",
-    description: "Return the status of the desktop browser click automation bridge.",
+    description: "Click the element matching a CSS selector in a desktop browser preview tab.",
     inputSchema: {
       type: "object",
       properties: { tabId: { type: "string" }, selector: { type: "string" } },
@@ -319,7 +319,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   },
   {
     name: "preview_type",
-    description: "Return the status of the desktop browser type automation bridge.",
+    description: "Replace the text in an element matching a CSS selector in a preview tab.",
     inputSchema: {
       type: "object",
       properties: {
@@ -331,7 +331,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   },
   {
     name: "preview_annotate",
-    description: "Return the status of the desktop browser annotation bridge.",
+    description: "Highlight and label the element matching a CSS selector in a preview tab.",
     inputSchema: {
       type: "object",
       properties: { tabId: { type: "string" }, selector: { type: "string" } },

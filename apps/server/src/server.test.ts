@@ -494,6 +494,7 @@ const buildAppUnderTest = (options?: {
           refresh: () => Effect.void,
           close: () => Effect.void,
           list: () => Effect.succeed({ sessions: [] }),
+          discoverLocalServers: () => Effect.succeed({ servers: [] }),
           subscribe: () => Stream.empty,
         }),
       ),
