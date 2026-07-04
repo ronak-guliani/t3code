@@ -1,10 +1,9 @@
 import { ProviderDriverKind, RuntimeRequestId, TurnId } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
-  makeAcpModeChangedEvent,
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
@@ -150,46 +149,6 @@ describe("AcpCoreRuntimeEvents", () => {
       payload: {
         itemType: "assistant_message",
         status: "inProgress",
-      },
-    });
-
-    expect(
-      makeAcpContentDeltaEvent({
-        stamp,
-        provider: ProviderDriverKind.make("cursor"),
-        threadId: "thread-1" as never,
-        turnId,
-        itemId: "assistant:session-1:segment:0",
-        streamKind: "reasoning_text",
-        text: "thinking",
-        rawPayload: { sessionId: "session-1" },
-      }),
-    ).toMatchObject({
-      type: "content.delta",
-      payload: {
-        streamKind: "reasoning_text",
-        delta: "thinking",
-      },
-    });
-
-    expect(
-      makeAcpModeChangedEvent({
-        stamp,
-        provider: ProviderDriverKind.make("cursor"),
-        threadId: "thread-1" as never,
-        turnId,
-        modeId: "agent",
-        rawPayload: { sessionId: "session-1" },
-      }),
-    ).toMatchObject({
-      type: "session.configured",
-      payload: {
-        config: {
-          currentModeId: "agent",
-        },
-      },
-      raw: {
-        method: "session/update",
       },
     });
   });

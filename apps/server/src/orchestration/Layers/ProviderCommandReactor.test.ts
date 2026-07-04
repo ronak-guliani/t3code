@@ -1,6 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import {
   ModelSelection,
@@ -12,7 +13,6 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import {
   ApprovalRequestId,
-  CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
@@ -21,8 +21,15 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as PubSub from "effect/PubSub";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import { it as effectIt } from "@effect/vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveServerPaths, ServerConfig } from "../../config.ts";
 import { TextGenerationError } from "@t3tools/contracts";
@@ -34,18 +41,9 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
-import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
-import {
-  CheckpointStore,
-  type CheckpointStoreShape,
-} from "../../checkpointing/Services/CheckpointStore.ts";
-import { checkpointRefForThreadTurn } from "../../checkpointing/Utils.ts";
-import {
-  GitStatusBroadcaster,
-  type GitStatusBroadcasterShape,
-} from "../../git/Services/GitStatusBroadcaster.ts";
-import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
-import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
+import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
+import { TextGeneration, type TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
+import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -56,8 +54,12 @@ import {
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
+import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -69,17 +71,17 @@ const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  timeoutMs = 10_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
   const poll = async (): Promise<void> => {
     if (await predicate()) {
       return;
     }
-    if (Date.now() >= deadline) {
+    if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for expectation.");
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await Effect.runPromise(Effect.yieldNow);
     return poll();
   };
 
@@ -88,7 +90,7 @@ async function waitFor(
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderCommandReactor,
+    OrchestrationEngineService | ProviderCommandReactor | ProjectionSnapshotQuery,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -105,11 +107,11 @@ describe("ProviderCommandReactor", () => {
     }
     runtime = null;
     for (const stateDir of createdStateDirs) {
-      fs.rmSync(stateDir, { recursive: true, force: true });
+      NodeFS.rmSync(stateDir, { recursive: true, force: true });
     }
     createdStateDirs.clear();
     for (const baseDir of createdBaseDirs) {
-      fs.rmSync(baseDir, { recursive: true, force: true });
+      NodeFS.rmSync(baseDir, { recursive: true, force: true });
     }
     createdBaseDirs.clear();
   });
@@ -142,11 +144,11 @@ describe("ProviderCommandReactor", () => {
     readonly baseDir?: string;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
-    readonly checkpointIsGitRepository?: boolean;
-    readonly checkpointRefExists?: boolean;
+    readonly requiresNewThreadForModelChange?: boolean;
   }) {
-    const now = new Date().toISOString();
-    const baseDir = input?.baseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
+    const now = "2026-01-01T00:00:00.000Z";
+    const baseDir =
+      input?.baseDir ?? NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-reactor-"));
     createdBaseDirs.add(baseDir);
     const { stateDir } = deriveServerPathsSync(baseDir, undefined);
     createdStateDirs.add(stateDir);
@@ -157,7 +159,6 @@ describe("ProviderCommandReactor", () => {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
     };
-    const turnStartOrder: string[] = [];
     const startSession = vi.fn((_: unknown, input: unknown) => {
       const sessionIndex = nextSessionIndex++;
       const resumeCursor =
@@ -215,12 +216,9 @@ describe("ProviderCommandReactor", () => {
       return Effect.succeed(session);
     });
     const sendTurn = vi.fn((_: unknown) =>
-      Effect.sync(() => {
-        turnStartOrder.push("sendTurn");
-        return {
-          threadId: ThreadId.make("thread-1"),
-          turnId: asTurnId("turn-1"),
-        };
+      Effect.succeed({
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-1"),
       }),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
@@ -255,9 +253,9 @@ describe("ProviderCommandReactor", () => {
     const refreshStatus = vi.fn((_: string) =>
       Effect.succeed({
         isRepo: true,
-        hasOriginRemote: true,
-        isDefaultBranch: false,
-        branch: "renamed-branch",
+        hasPrimaryRemote: true,
+        isDefaultRef: false,
+        refName: "renamed-branch",
         hasWorkingTreeChanges: false,
         workingTree: {
           files: [],
@@ -286,25 +284,18 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
     );
-    const checkpointStore: CheckpointStoreShape = {
-      isGitRepository: vi.fn(() => Effect.succeed(input?.checkpointIsGitRepository ?? false)),
-      hasCheckpointRef: vi.fn(() => Effect.succeed(input?.checkpointRefExists ?? false)),
-      captureCheckpoint: vi.fn((_) =>
-        Effect.sync(() => {
-          turnStartOrder.push("captureCheckpoint");
-        }),
-      ),
-      restoreCheckpoint: () => Effect.die(new Error("restoreCheckpoint should not be called")),
-      diffCheckpoints: () => Effect.die(new Error("diffCheckpoints should not be called")),
-      diffCheckpointFiles: () => Effect.die(new Error("diffCheckpointFiles should not be called")),
-      deleteCheckpointRefs: () =>
-        Effect.die(new Error("deleteCheckpointRefs should not be called")),
-    };
+    const providerSnapshots = [
+      {
+        instanceId: modelSelection.instanceId,
+        ...(input?.requiresNewThreadForModelChange === true
+          ? { requiresNewThreadForModelChange: true }
+          : {}),
+      },
+    ];
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
-      forkSession: unsupported as ProviderServiceShape["forkSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
@@ -345,22 +336,31 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationProjectionPipelineLive),
       Layer.provide(OrchestrationEventStoreLive),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-      Layer.provide(RepositoryIdentityResolverLive),
+      Layer.provide(RepositoryIdentityResolver.layer),
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
-      Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
-      Layer.provideMerge(Layer.succeed(GitCore, { renameBranch } as unknown as GitCoreShape)),
+      Layer.provideMerge(makeProviderRegistryLayer(providerSnapshots as never)),
       Layer.provideMerge(
-        Layer.succeed(GitStatusBroadcaster, {
+        Layer.mock(GitWorkflowService.GitWorkflowService)({
+          renameBranch,
+        } satisfies Partial<GitWorkflowService.GitWorkflowService["Service"]>),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(VcsStatusBroadcaster, {
           getStatus: () => Effect.die("getStatus should not be called in this test"),
           refreshLocalStatus: () =>
             Effect.die("refreshLocalStatus should not be called in this test"),
           refreshStatus,
           streamStatus: () => Stream.die("streamStatus should not be called in this test"),
-        } satisfies GitStatusBroadcasterShape),
+        }),
       ),
       Layer.provideMerge(
         Layer.mock(TextGeneration, {
@@ -375,6 +375,7 @@ describe("ProviderCommandReactor", () => {
     runtime = ManagedRuntime.make(layer);
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
@@ -409,6 +410,7 @@ describe("ProviderCommandReactor", () => {
 
     return {
       engine,
+      readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
       sendTurn,
       interruptTurn,
@@ -419,44 +421,15 @@ describe("ProviderCommandReactor", () => {
       refreshStatus,
       generateBranchName,
       generateThreadTitle,
-      checkpointStore,
-      turnStartOrder,
       runtimeSessions,
       stateDir,
       drain,
     };
   }
 
-  async function completeTurnForNextStart(
-    harness: Awaited<ReturnType<typeof createHarness>>,
-    input: {
-      readonly commandId: string;
-      readonly turnId?: TurnId;
-      readonly completedAt?: string;
-    },
-  ): Promise<void> {
-    const completedAt = input.completedAt ?? new Date().toISOString();
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.diff.complete",
-        commandId: CommandId.make(input.commandId),
-        threadId: ThreadId.make("thread-1"),
-        turnId: input.turnId ?? asTurnId("turn-1"),
-        checkpointRef: CheckpointRef.make(`refs/t3/checkpoints/thread-1/${input.commandId}`),
-        status: "ready",
-        files: [],
-        agentTouchedPaths: [],
-        turnFiles: [],
-        checkpointTurnCount: 1,
-        completedAt,
-        createdAt: completedAt,
-      }),
-    );
-  }
-
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -487,45 +460,15 @@ describe("ProviderCommandReactor", () => {
       runtimeMode: "approval-required",
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
 
-  it("captures the pre-turn checkpoint before sending the provider turn", async () => {
-    const harness = await createHarness({ checkpointIsGitRepository: true });
-    const now = new Date().toISOString();
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-checkpoint-baseline"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-checkpoint-baseline"),
-          role: "user",
-          text: "change files",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
-
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-
-    expect(harness.checkpointStore.captureCheckpoint).toHaveBeenCalledWith({
-      cwd: "/tmp/provider-project",
-      checkpointRef: checkpointRefForThreadTurn(ThreadId.make("thread-1"), 0),
-    });
-    expect(harness.turnStartOrder).toEqual(["captureCheckpoint", "sendTurn"]);
-  });
-
   it("generates a thread title on the first turn", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Please investigate reconnect failures after restar...";
     harness.generateThreadTitle.mockReturnValue(Effect.succeed({ title: "Generated title" }));
 
@@ -562,20 +505,20 @@ describe("ProviderCommandReactor", () => {
     });
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       return (
         readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.title ===
         "Generated title"
       );
     });
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.title).toBe("Generated title");
   });
 
   it("does not overwrite an existing custom thread title on the first turn", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Please investigate reconnect failures after restar...";
 
     await Effect.runPromise(
@@ -608,14 +551,14 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.generateThreadTitle).not.toHaveBeenCalled();
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.title).toBe("Keep this custom title");
   });
 
   it("matches the client-seeded title even when the outgoing prompt is reformatted", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Fix reconnect spinner on resume";
     harness.generateThreadTitle.mockReturnValue(
       Effect.succeed({
@@ -652,21 +595,21 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       return (
         readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.title ===
         "Reconnect spinner resume bug"
       );
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.title).toBe("Reconnect spinner resume bug");
   });
 
   it("generates a worktree branch name for the first turn", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -720,7 +663,7 @@ describe("ProviderCommandReactor", () => {
 
   it("forwards codex model options through session start and turn send", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -767,7 +710,7 @@ describe("ProviderCommandReactor", () => {
         model: "claude-sonnet-4-6",
       },
     });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -817,7 +760,7 @@ describe("ProviderCommandReactor", () => {
         model: "claude-opus-4-6",
       },
     });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -862,7 +805,7 @@ describe("ProviderCommandReactor", () => {
 
   it("forwards plan interaction mode to the provider turn request", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -900,7 +843,7 @@ describe("ProviderCommandReactor", () => {
 
   it("preserves the active session model when in-session model switching is unsupported", async () => {
     const harness = await createHarness({ sessionModelSwitch: "unsupported" });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -920,7 +863,6 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-unsupported-1" });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -950,11 +892,85 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  effectIt.effect(
+    "rejects changing models after start when the provider requires a new thread",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ requiresNewThreadForModelChange: true }),
+        );
+        const now = "2026-01-01T00:00:00.000Z";
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-restricted-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-restricted-1"),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        });
+
+        yield* Effect.promise(() => waitFor(() => harness.sendTurn.mock.calls.length === 1));
+
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-restricted-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-restricted-2"),
+            role: "user",
+            text: "second",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.1-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        });
+
+        yield* Effect.promise(() =>
+          waitFor(async () => {
+            const readModel = await harness.readModel();
+            const thread = readModel.threads.find(
+              (entry) => entry.id === ThreadId.make("thread-1"),
+            );
+            return (
+              thread?.activities.some(
+                (activity) => activity.kind === "provider.turn.start.failed",
+              ) ?? false
+            );
+          }),
+        );
+
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+        const readModel = yield* Effect.promise(() => harness.readModel());
+        const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+        expect(
+          thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+        ).toMatchObject({
+          payload: {
+            detail: expect.stringContaining(
+              "cannot switch models after the conversation has started",
+            ),
+          },
+        });
+      }),
+  );
+
   it("starts a first turn on the requested provider instance even when it differs from the thread model", async () => {
     const harness = await createHarness({
       threadModelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
     });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -989,7 +1005,7 @@ describe("ProviderCommandReactor", () => {
       },
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.providerName).toBe("claudeAgent");
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("claudeAgent"));
@@ -1000,7 +1016,7 @@ describe("ProviderCommandReactor", () => {
 
   it("reuses the same provider session when runtime mode is unchanged", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1021,7 +1037,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-unchanged-1" });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1047,7 +1062,7 @@ describe("ProviderCommandReactor", () => {
 
   it("restarts an existing Codex thread on a compatible requested instance", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1071,7 +1086,6 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-compatible-codex-1" });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1090,7 +1104,7 @@ describe("ProviderCommandReactor", () => {
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
-        createdAt: new Date().toISOString(),
+        createdAt: "2026-01-01T00:00:00.000Z",
       }),
     );
 
@@ -1103,7 +1117,7 @@ describe("ProviderCommandReactor", () => {
       resumeCursor: { opaque: "resume-1" },
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
   });
@@ -1115,7 +1129,7 @@ describe("ProviderCommandReactor", () => {
         model: "claude-sonnet-4-6",
       },
     });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1136,7 +1150,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-workspace-1" });
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
       cwd: "/tmp/provider-project",
     });
@@ -1189,7 +1202,7 @@ describe("ProviderCommandReactor", () => {
         model: "claude-sonnet-4-6",
       },
     });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1215,7 +1228,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-claude-effort-1" });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1253,7 +1265,7 @@ describe("ProviderCommandReactor", () => {
 
   it("restarts the provider session when runtime mode is updated on the thread", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1284,7 +1296,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-runtime-mode-1" });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1297,7 +1308,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       return thread?.runtimeMode === "approval-required";
     });
@@ -1331,7 +1342,7 @@ describe("ProviderCommandReactor", () => {
       threadId: ThreadId.make("thread-1"),
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
@@ -1344,7 +1355,7 @@ describe("ProviderCommandReactor", () => {
         model: "claude-opus-4-6",
       },
     });
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1387,7 +1398,7 @@ describe("ProviderCommandReactor", () => {
 
   it("does not stop the active session when restart fails before rebind", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1420,7 +1431,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
 
     harness.startSession.mockImplementationOnce(
-      (_: unknown, __: unknown) => Effect.fail(new Error("simulated restart failure")) as never,
+      (_: unknown, __: unknown) => Effect.fail("simulated restart failure") as never,
     );
 
     await Effect.runPromise(
@@ -1434,7 +1445,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       return thread?.runtimeMode === "approval-required";
     });
@@ -1444,7 +1455,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
     expect(harness.sendTurn.mock.calls.length).toBe(1);
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("full-access");
@@ -1452,7 +1463,7 @@ describe("ProviderCommandReactor", () => {
 
   it("rejects provider changes after a thread is already bound to a session provider", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1473,7 +1484,6 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    await completeTurnForNextStart(harness, { commandId: "cmd-complete-provider-switch-1" });
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1497,7 +1507,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       return (
         thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
@@ -1509,7 +1519,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls.length).toBe(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.providerName).toBe("codex");
@@ -1525,7 +1535,7 @@ describe("ProviderCommandReactor", () => {
 
   it("rejects cross-driver provider changes after the existing thread session has stopped", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1568,7 +1578,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       return (
         thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
@@ -1578,7 +1588,7 @@ describe("ProviderCommandReactor", () => {
 
     expect(harness.startSession.mock.calls.length).toBe(0);
     expect(harness.sendTurn.mock.calls.length).toBe(0);
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
@@ -1591,7 +1601,7 @@ describe("ProviderCommandReactor", () => {
 
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1629,7 +1639,7 @@ describe("ProviderCommandReactor", () => {
 
   it("starts a fresh session when only projected session state exists", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1684,7 +1694,7 @@ describe("ProviderCommandReactor", () => {
 
   it("rejects active runtime sessions that are missing provider instance ids", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1732,7 +1742,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       return (
         thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
@@ -1742,7 +1752,7 @@ describe("ProviderCommandReactor", () => {
 
     expect(harness.startSession.mock.calls.length).toBe(0);
     expect(harness.sendTurn.mock.calls.length).toBe(0);
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
@@ -1755,7 +1765,7 @@ describe("ProviderCommandReactor", () => {
 
   it("reacts to thread.approval.respond by forwarding provider approval response", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1796,7 +1806,7 @@ describe("ProviderCommandReactor", () => {
 
   it("reacts to thread.user-input.respond by forwarding structured user input answers", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1841,7 +1851,7 @@ describe("ProviderCommandReactor", () => {
 
   it("surfaces stale provider approval request failures without faking approval resolution", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
     harness.respondToRequest.mockImplementation(() =>
       Effect.fail(
         new ProviderAdapterRequestError({
@@ -1903,7 +1913,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       if (!thread) return false;
       return thread.activities.some(
@@ -1911,7 +1921,7 @@ describe("ProviderCommandReactor", () => {
       );
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread).toBeDefined();
 
@@ -1934,15 +1944,15 @@ describe("ProviderCommandReactor", () => {
     expect(resolvedActivity).toBeUndefined();
   });
 
-  it("surfaces stale provider user-input failures without faking user-input resolution", async () => {
+  it("surfaces non-resumable provider user-input callbacks as stale failures", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
     harness.respondToUserInput.mockImplementation(() =>
       Effect.fail(
         new ProviderAdapterRequestError({
           provider: ProviderDriverKind.make("claudeAgent"),
           method: "item/tool/respondToUserInput",
-          detail: "Unknown pending user-input request: user-input-request-1",
+          detail: "Unknown pending Codex user input request: user-input-request-1",
         }),
       ),
     );
@@ -2012,7 +2022,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(async () => {
-      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const readModel = await harness.readModel();
       const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       if (!thread) return false;
       return thread.activities.some(
@@ -2020,7 +2030,7 @@ describe("ProviderCommandReactor", () => {
       );
     });
 
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread).toBeDefined();
 
@@ -2045,7 +2055,7 @@ describe("ProviderCommandReactor", () => {
 
   it("reacts to thread.session.stop by stopping provider session and clearing thread session state", async () => {
     const harness = await createHarness();
-    const now = new Date().toISOString();
+    const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -2076,7 +2086,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.stopSession.mock.calls.length === 1);
-    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.session).not.toBeNull();
     expect(thread?.session?.status).toBe("stopped");

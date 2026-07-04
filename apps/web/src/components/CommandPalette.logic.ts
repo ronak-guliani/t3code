@@ -1,5 +1,7 @@
 import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
+import * as Arr from "effect/Array";
+import * as Result from "effect/Result";
 import { type ReactNode } from "react";
 import { sortThreads } from "../lib/threadSort";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -13,21 +15,16 @@ export interface CommandPaletteItem {
   readonly kind: "action" | "submenu";
   readonly value: string;
   readonly searchTerms: ReadonlyArray<string>;
-  readonly searchIndex?: CommandPaletteSearchIndex;
   readonly title: ReactNode;
   readonly description?: string;
   readonly timestamp?: string;
   readonly icon: ReactNode;
+  readonly disabled?: boolean;
   /** Optional content rendered inline before the title text. */
   readonly titleLeadingContent?: ReactNode;
   /** Optional content rendered inline after the title text (before the timestamp). */
   readonly titleTrailingContent?: ReactNode;
   readonly shortcutCommand?: KeybindingCommand;
-}
-
-export interface CommandPaletteSearchIndex {
-  readonly normalizedTerms: ReadonlyArray<string>;
-  readonly haystack: string;
 }
 
 export interface CommandPaletteActionItem extends CommandPaletteItem {
@@ -93,46 +90,32 @@ export function normalizeSearchText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export function buildCommandPaletteSearchIndex(
-  searchTerms: ReadonlyArray<string>,
-): CommandPaletteSearchIndex {
-  return {
-    normalizedTerms: searchTerms
-      .filter((term) => term.length > 0)
-      .map((term) => normalizeSearchText(term)),
-    haystack: normalizeSearchText(searchTerms.join(" ")),
-  };
-}
-
 export function buildProjectActionItems(input: {
   projects: ReadonlyArray<Project>;
   valuePrefix: string;
   icon: (project: Project) => ReactNode;
   runProject: (project: Project) => Promise<void>;
+  shortcutCommand?: KeybindingCommand;
 }): CommandPaletteActionItem[] {
-  return input.projects.map((project) => {
-    const searchTerms = [project.name, project.cwd];
-
-    return {
-      kind: "action",
-      value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
-      searchTerms,
-      searchIndex: buildCommandPaletteSearchIndex(searchTerms),
-      title: project.name,
-      description: project.cwd,
-      icon: input.icon(project),
-      run: async () => {
-        await input.runProject(project);
-      },
-    };
-  });
+  return input.projects.map((project) => ({
+    kind: "action",
+    value: `${input.valuePrefix}:${project.environmentId}:${project.id}`,
+    searchTerms: [project.title, project.workspaceRoot],
+    title: project.title,
+    description: project.workspaceRoot,
+    icon: input.icon(project),
+    ...(input.shortcutCommand !== undefined ? { shortcutCommand: input.shortcutCommand } : {}),
+    run: async () => {
+      await input.runProject(project);
+    },
+  }));
 }
 
 export type BuildThreadActionItemsThread = Pick<
   SidebarThreadSummary,
   "archivedAt" | "branch" | "createdAt" | "environmentId" | "id" | "projectId" | "title"
 > & {
-  updatedAt?: string | undefined;
+  updatedAt: string;
   latestUserMessageAt?: string | null;
 };
 
@@ -172,14 +155,12 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
 
     const leadingContent = input.renderLeadingContent?.(thread);
     const trailingContent = input.renderTrailingContent?.(thread);
-    const searchTerms = [thread.title, projectTitle ?? ``, thread.branch ?? ``];
 
     return Object.assign(
       {
         kind: "action" as const,
         value: `thread:${thread.id}`,
-        searchTerms,
-        searchIndex: buildCommandPaletteSearchIndex(searchTerms),
+        searchTerms: [thread.title, projectTitle ?? ``, thread.branch ?? ``],
         title: thread.title,
         description: descriptionParts.join(` · `),
         timestamp: formatRelativeTimeLabel(
@@ -198,7 +179,8 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
   });
 }
 
-function rankNormalizedSearchFieldMatch(normalizedField: string, normalizedQuery: string): number {
+function rankSearchFieldMatch(field: string, normalizedQuery: string): number {
+  const normalizedField = normalizeSearchText(field);
   if (normalizedField.length === 0 || !normalizedField.includes(normalizedQuery)) {
     return Number.NEGATIVE_INFINITY;
   }
@@ -211,24 +193,19 @@ function rankNormalizedSearchFieldMatch(normalizedField: string, normalizedQuery
   return 1;
 }
 
-function getCommandPaletteSearchIndex(
+function rankCommandPaletteItemMatch(
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem,
-): CommandPaletteSearchIndex {
-  return item.searchIndex ?? buildCommandPaletteSearchIndex(item.searchTerms);
-}
-
-function rankCommandPaletteSearchIndexMatch(
-  index: CommandPaletteSearchIndex,
   normalizedQuery: string,
 ): number {
-  if (index.normalizedTerms.length === 0) {
+  const terms = item.searchTerms.filter((term) => term.length > 0);
+  if (terms.length === 0) {
     return 0;
   }
 
-  for (const [termIndex, normalizedField] of index.normalizedTerms.entries()) {
-    const fieldRank = rankNormalizedSearchFieldMatch(normalizedField, normalizedQuery);
+  for (const [index, field] of terms.entries()) {
+    const fieldRank = rankSearchFieldMatch(field, normalizedQuery);
     if (fieldRank !== Number.NEGATIVE_INFINITY) {
-      return 1_000 - termIndex * 100 + fieldRank;
+      return 1_000 - index * 100 + fieldRank;
     }
   }
 
@@ -279,23 +256,18 @@ export function filterCommandPaletteGroups(input: {
   }
 
   return searchableGroups.flatMap((group) => {
-    const items = group.items
-      .map((item, index) => {
-        const searchIndex = getCommandPaletteSearchIndex(item);
-        if (!searchIndex.haystack.includes(normalizedQuery)) {
-          return null;
-        }
+    const items = Arr.filterMap(group.items, (item, index) => {
+      const haystack = normalizeSearchText(item.searchTerms.join(" "));
+      if (!haystack.includes(normalizedQuery)) {
+        return Result.failVoid;
+      }
 
-        return {
-          item,
-          index,
-          rank: rankCommandPaletteSearchIndexMatch(searchIndex, normalizedQuery),
-        };
-      })
-      .filter(
-        (entry): entry is { item: (typeof group.items)[number]; index: number; rank: number } =>
-          entry !== null,
-      )
+      return Result.succeed({
+        item,
+        index,
+        rank: rankCommandPaletteItemMatch(item, normalizedQuery),
+      });
+    })
       .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
       .map((entry) => entry.item);
 

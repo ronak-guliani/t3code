@@ -1,6 +1,5 @@
 import Stack from "expo-router/stack";
 import { useResolveClassNames } from "uniwind";
-
 import { useThemeColor } from "../../lib/useThemeColor";
 
 export const unstable_settings = {
@@ -9,8 +8,8 @@ export const unstable_settings = {
 
 export default function ConnectionsLayout() {
   const contentStyle = useResolveClassNames("bg-sheet");
-  const connSheetBg = String(useThemeColor("--color-sheet"));
-  const headerTint = String(useThemeColor("--color-icon"));
+  const connSheetBg = useThemeColor("--color-sheet");
+  const headerTint = useThemeColor("--color-foreground");
 
   return (
     <Stack

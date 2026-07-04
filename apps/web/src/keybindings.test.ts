@@ -1,4 +1,4 @@
-import { assert, describe, it } from "vitest";
+import { assert, describe, it } from "vite-plus/test";
 
 import {
   type KeybindingCommand,
@@ -18,6 +18,7 @@ import {
   isTerminalCloseShortcut,
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
+  isTerminalSplitVerticalShortcut,
   isTerminalToggleShortcut,
   resolveShortcutCommand,
   shouldShowModelPickerJumpHints,
@@ -84,7 +85,9 @@ function compile(bindings: TestBinding[]): ResolvedKeybindingsConfig {
 }
 
 const DEFAULT_BINDINGS = compile([
+  { shortcut: modShortcut("b"), command: "sidebar.toggle" },
   { shortcut: modShortcut("j"), command: "terminal.toggle" },
+  { shortcut: modShortcut("b", { altKey: true }), command: "rightPanel.toggle" },
   {
     shortcut: modShortcut("d"),
     command: "terminal.split",
@@ -92,6 +95,11 @@ const DEFAULT_BINDINGS = compile([
   },
   {
     shortcut: modShortcut("d", { shiftKey: true }),
+    command: "terminal.splitVertical",
+    whenAst: whenIdentifier("terminalFocus"),
+  },
+  {
+    shortcut: modShortcut("n"),
     command: "terminal.new",
     whenAst: whenIdentifier("terminalFocus"),
   },
@@ -108,11 +116,6 @@ const DEFAULT_BINDINGS = compile([
   {
     shortcut: modShortcut("k"),
     command: "commandPalette.toggle",
-    whenAst: whenNot(whenIdentifier("terminalFocus")),
-  },
-  {
-    shortcut: modShortcut("f"),
-    command: "chat.find",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
   {
@@ -179,7 +182,17 @@ describe("split/new/close terminal shortcuts", () => {
       }),
     );
     assert.isFalse(
-      isTerminalNewShortcut(event({ key: "d", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+      isTerminalSplitVerticalShortcut(
+        event({ key: "d", metaKey: true, shiftKey: true }),
+        DEFAULT_BINDINGS,
+        {
+          platform: "MacIntel",
+          context: { terminalFocus: false },
+        },
+      ),
+    );
+    assert.isFalse(
+      isTerminalNewShortcut(event({ key: "n", ctrlKey: true }), DEFAULT_BINDINGS, {
         platform: "Linux",
         context: { terminalFocus: false },
       }),
@@ -200,7 +213,17 @@ describe("split/new/close terminal shortcuts", () => {
       }),
     );
     assert.isTrue(
-      isTerminalNewShortcut(event({ key: "d", ctrlKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+      isTerminalSplitVerticalShortcut(
+        event({ key: "d", metaKey: true, shiftKey: true }),
+        DEFAULT_BINDINGS,
+        {
+          platform: "MacIntel",
+          context: { terminalFocus: true },
+        },
+      ),
+    );
+    assert.isTrue(
+      isTerminalNewShortcut(event({ key: "n", ctrlKey: true }), DEFAULT_BINDINGS, {
         platform: "Linux",
         context: { terminalFocus: true },
       }),
@@ -266,28 +289,6 @@ describe("split/new/close terminal shortcuts", () => {
   });
 });
 
-describe("chat find shortcut", () => {
-  it("matches mod+f when the terminal is not focused", () => {
-    assert.strictEqual(
-      resolveShortcutCommand(event({ key: "f", metaKey: true }), DEFAULT_BINDINGS, {
-        platform: "MacIntel",
-        context: { terminalFocus: false },
-      }),
-      "chat.find",
-    );
-  });
-
-  it("does not match while the terminal is focused", () => {
-    assert.notStrictEqual(
-      resolveShortcutCommand(event({ key: "f", ctrlKey: true }), DEFAULT_BINDINGS, {
-        platform: "Linux",
-        context: { terminalFocus: true },
-      }),
-      "chat.find",
-    );
-  });
-});
-
 describe("shortcutLabelForCommand", () => {
   it("returns the effective binding label", () => {
     const bindings = compile([
@@ -312,8 +313,16 @@ describe("shortcutLabelForCommand", () => {
   });
 
   it("returns effective labels for non-terminal commands", () => {
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "sidebar.toggle", "MacIntel"),
+      "⌘B",
+    );
     assert.strictEqual(shortcutLabelForCommand(DEFAULT_BINDINGS, "chat.new", "MacIntel"), "⇧⌘O");
     assert.strictEqual(shortcutLabelForCommand(DEFAULT_BINDINGS, "diff.toggle", "Linux"), "Ctrl+D");
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "rightPanel.toggle", "MacIntel"),
+      "⌥⌘B",
+    );
     assert.strictEqual(
       shortcutLabelForCommand(DEFAULT_BINDINGS, "commandPalette.toggle", "MacIntel"),
       "⌘K",
@@ -615,6 +624,17 @@ describe("resolveShortcutCommand", () => {
         },
       ),
       "thread.next",
+    );
+  });
+
+  it("matches Option-modified letters using the physical key code on macOS", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(
+        event({ key: "∫", code: "KeyB", metaKey: true, altKey: true }),
+        DEFAULT_BINDINGS,
+        { platform: "MacIntel" },
+      ),
+      "rightPanel.toggle",
     );
   });
 });

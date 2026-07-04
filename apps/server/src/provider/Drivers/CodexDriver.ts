@@ -22,11 +22,18 @@
  * @module provider/Drivers/CodexDriver
  */
 import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import * as Duration from "effect/Duration";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
+import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
@@ -36,14 +43,30 @@ import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
+  enrichProviderSnapshotWithVersionAdvisory,
+  makePackageManagedProviderMaintenanceResolver,
+  resolveProviderMaintenanceCapabilitiesEffect,
+} from "../providerMaintenance.ts";
+import {
+  haveProviderSnapshotSettingsChanged,
+  makeProviderSnapshotSettingsSource,
+  type ProviderSnapshotSettings,
+} from "../providerUpdateSettings.ts";
+import {
   codexContinuationIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const UPDATE = makePackageManagedProviderMaintenanceResolver({
+  provider: DRIVER_KIND,
+  npmPackageName: "@openai/codex",
+  homebrewFormula: "codex",
+  nativeUpdate: null,
+});
 
 /**
  * Services the driver needs to materialize an instance. Surfaced as the
@@ -52,10 +75,13 @@ const decodeCodexSettings = Schema.decodeSync(CodexSettings);
  */
 export type CodexDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
-  | ServerConfig;
+  | ServerConfig
+  | ServerSettingsService;
 
 /**
  * Stamp instance identity onto a `ServerProvider` snapshot produced by the
@@ -90,6 +116,8 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const httpClient = yield* HttpClient.HttpClient;
+      const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
@@ -116,6 +144,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         homePath: homeLayout.effectiveHomePath ?? "",
       } satisfies CodexSettings;
+      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
+        binaryPath: effectiveConfig.binaryPath,
+        env: processEnv,
+      });
 
       // `makeCodexAdapter` and `makeCodexTextGeneration` have `never` error
       // channels at construction time — their failure modes are all on the
@@ -138,13 +170,22 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );
-      const snapshot = yield* makeManagedServerProvider<CodexSettings>({
-        getSettings: Effect.succeed(effectiveConfig),
-        streamSettings: Stream.never,
-        haveSettingsChanged: () => false,
-        initialSnapshot: (settings) => stampIdentity(makePendingCodexProvider(settings)),
+      const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
+      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CodexSettings>>({
+        maintenanceCapabilities,
+        getSettings: snapshotSettings.getSettings,
+        streamSettings: snapshotSettings.streamSettings,
+        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+        initialSnapshot: (settings) =>
+          makePendingCodexProvider(settings.provider).pipe(Effect.map(stampIdentity)),
         checkProvider,
-        startInitialRefresh: false,
+        enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
+            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+          }).pipe(
+            Effect.provideService(HttpClient.HttpClient, httpClient),
+            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+          ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(

@@ -1,10 +1,12 @@
 import { ServerSettings, type ServerSettingsPatch } from "@t3tools/contracts";
-import { Schema } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
 import { createModelSelection } from "./model.ts";
 
 const ServerSettingsJson = fromLenientJson(ServerSettings);
+const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
 
 export interface PersistedServerObservabilitySettings {
   readonly otlpTracesUrl: string | undefined;
@@ -33,12 +35,11 @@ export function extractPersistedServerObservabilitySettings(input: {
 export function parsePersistedServerObservabilitySettings(
   raw: string,
 ): PersistedServerObservabilitySettings {
-  try {
-    const decoded = Schema.decodeUnknownSync(ServerSettingsJson)(raw);
-    return extractPersistedServerObservabilitySettings(decoded);
-  } catch {
-    return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined };
+  const decoded = decodeServerSettingsJson(raw);
+  if (Option.isSome(decoded)) {
+    return extractPersistedServerObservabilitySettings(decoded.value);
   }
+  return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined };
 }
 
 function shouldReplaceTextGenerationModelSelection(
@@ -65,24 +66,6 @@ function mergeModelSelectionOptionsById(input: {
   return [...merged.entries()].map(([id, value]) => ({ id, value }));
 }
 
-function applyProviderInstanceMutations(
-  settings: ServerSettings,
-  mutations: ServerSettingsPatch["providerInstanceMutations"],
-): ServerSettings {
-  if (mutations === undefined || mutations.length === 0) {
-    return settings;
-  }
-  const providerInstances = { ...settings.providerInstances };
-  for (const mutation of mutations) {
-    if (mutation.config === null) {
-      delete providerInstances[mutation.instanceId];
-    } else {
-      providerInstances[mutation.instanceId] = mutation.config;
-    }
-  }
-  return { ...settings, providerInstances };
-}
-
 /**
  * Applies a server settings patch while treating textGenerationModelSelection as
  * replace-on-provider/model updates. This prevents stale nested options from
@@ -93,17 +76,17 @@ export function applyServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
-  const { providerInstanceMutations, ...mergeablePatch } = patch;
-  const next = deepMerge(current, mergeablePatch);
-  const nextWithReplacements =
-    patch.providerInstances !== undefined
-      ? {
-          ...next,
-          providerInstances: patch.providerInstances,
-        }
-      : next;
+  const { automaticGitFetchInterval, ...patchForMerge } = patch;
+  const next = deepMerge(current, patchForMerge);
+  const nextWithReplacements = {
+    ...next,
+    ...(patch.providerInstances !== undefined
+      ? { providerInstances: patch.providerInstances }
+      : {}),
+    ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
+  };
   if (!selectionPatch) {
-    return applyProviderInstanceMutations(nextWithReplacements, providerInstanceMutations);
+    return nextWithReplacements;
   }
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
@@ -115,11 +98,8 @@ export function applyServerSettingsPatch(
         patch: selectionPatch.options,
       });
 
-  return applyProviderInstanceMutations(
-    {
-      ...nextWithReplacements,
-      textGenerationModelSelection: createModelSelection(instanceId, model, options),
-    },
-    providerInstanceMutations,
-  );
+  return {
+    ...nextWithReplacements,
+    textGenerationModelSelection: createModelSelection(instanceId, model, options),
+  };
 }

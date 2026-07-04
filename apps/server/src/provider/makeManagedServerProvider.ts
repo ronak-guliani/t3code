@@ -1,5 +1,12 @@
 import type { ServerProvider } from "@t3tools/contracts";
-import { Duration, Effect, Equal, Fiber, PubSub, Ref, Scope, Stream } from "effect";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
+import * as Fiber from "effect/Fiber";
+import * as PubSub from "effect/PubSub";
+import * as Ref from "effect/Ref";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
@@ -13,10 +20,11 @@ interface ProviderSnapshotState {
 export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(function* <
   Settings,
 >(input: {
-  readonly getSettings: Effect.Effect<Settings>;
+  readonly maintenanceCapabilities: ServerProviderShape["maintenanceCapabilities"];
+  readonly getSettings: Effect.Effect<Settings, ServerSettingsError>;
   readonly streamSettings: Stream.Stream<Settings>;
   readonly haveSettingsChanged: (previous: Settings, next: Settings) => boolean;
-  readonly initialSnapshot: (settings: Settings) => ServerProvider;
+  readonly initialSnapshot: (settings: Settings) => Effect.Effect<ServerProvider>;
   readonly checkProvider: Effect.Effect<ServerProvider, ServerSettingsError>;
   readonly enrichSnapshot?: (input: {
     readonly settings: Settings;
@@ -24,7 +32,6 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     readonly getSnapshot: Effect.Effect<ServerProvider>;
     readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
-  readonly startInitialRefresh?: boolean;
   readonly refreshInterval?: Duration.Input;
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
   const refreshSemaphore = yield* Semaphore.make(1);
@@ -33,7 +40,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     PubSub.shutdown,
   );
   const initialSettings = yield* input.getSettings;
-  const initialSnapshot = input.initialSnapshot(initialSettings);
+  const initialSnapshot = yield* input.initialSnapshot(initialSettings);
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
     enrichmentGeneration: 0,
@@ -138,19 +145,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     ),
   ).pipe(Effect.forkScoped);
 
-  if (input.startInitialRefresh !== false) {
-    yield* applySnapshot(initialSettings, { forceRefresh: true }).pipe(
-      Effect.ignoreCause({ log: true }),
-      Effect.forkScoped,
-    );
-  }
+  yield* applySnapshot(initialSettings, { forceRefresh: true }).pipe(
+    Effect.ignoreCause({ log: true }),
+    Effect.forkScoped,
+  );
 
   return {
-    getSnapshot: input.getSettings.pipe(
-      Effect.flatMap(applySnapshot),
-      Effect.tapError(Effect.logError),
-      Effect.orDie,
-    ),
+    maintenanceCapabilities: input.maintenanceCapabilities,
+    getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

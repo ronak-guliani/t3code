@@ -2,28 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["node"],
-    "lib": ["ESNext", "esnext.disposable"],
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "namespaceImportPackages": ["@effect/platform-node"],
-        "diagnosticSeverity": {
-          "importFromBarrel": "error",
-          "anyUnknownInErrorContext": "off",
-          "instanceOfSchema": "warning",
-          "deterministicKeys": "off",
-          "preferSchemaOverJson": "off",
-          "globalErrorInEffectFailure": "off",
-          "catchToOrElseSucceed": "off",
-          "lazyEffect": "off",
-          "redundantMapError": "off",
-          "returnEffectInGen": "off",
-          "schemaSyncInEffect": "off",
-          "unnecessaryEffectGen": "off",
-          "unnecessaryTypeofType": "off"
-        }
-      }
-    ]
+    "lib": ["ESNext", "esnext.disposable"]
   },
   "include": ["src", "vite.config.ts", "scripts", "integration", "../../scripts/lib"]
 }

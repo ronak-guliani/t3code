@@ -1,9 +1,17 @@
-import assert from "node:assert/strict";
-
+import * as NodeAssert from "node:assert/strict";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Context, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } from "effect";
-import { beforeEach } from "vitest";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { beforeEach } from "vite-plus/test";
 
 import {
   OpenCodeSettings,
@@ -29,7 +37,7 @@ import {
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
 class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterShape>()(
-  "test/OpenCodeAdapter",
+  "t3/provider/Layers/OpenCodeAdapter.test/OpenCodeAdapter",
 ) {}
 
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
@@ -193,9 +201,7 @@ const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
 
 const OpenCodeAdapterTestLayer = Layer.effect(
   OpenCodeAdapter,
-  Effect.gen(function* () {
-    return yield* makeOpenCodeAdapter(openCodeAdapterTestSettings);
-  }),
+  makeOpenCodeAdapter(openCodeAdapterTestSettings),
 ).pipe(
   Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -218,8 +224,8 @@ beforeEach(() => {
   runtimeMock.reset();
 });
 
-const sleep = (ms: number) =>
-  Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+const advanceTestClock = (ms: number) =>
+  TestClock.adjust(`${ms} millis`).pipe(Effect.andThen(Effect.yieldNow));
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
@@ -232,11 +238,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         runtimeMode: "full-access",
       });
 
-      assert.equal(session.provider, "opencode");
-      assert.equal(session.threadId, "thread-opencode");
-      assert.deepEqual(runtimeMock.state.startCalls, []);
-      assert.deepEqual(runtimeMock.state.sessionCreateUrls, ["http://127.0.0.1:9999"]);
-      assert.deepEqual(runtimeMock.state.authHeaders, [
+      NodeAssert.equal(session.provider, "opencode");
+      NodeAssert.equal(session.threadId, "thread-opencode");
+      NodeAssert.deepEqual(runtimeMock.state.startCalls, []);
+      NodeAssert.deepEqual(runtimeMock.state.sessionCreateUrls, ["http://127.0.0.1:9999"]);
+      NodeAssert.deepEqual(runtimeMock.state.authHeaders, [
         `Basic ${btoa("opencode:secret-password")}`,
       ]);
     }),
@@ -253,8 +259,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       yield* adapter.stopSession(asThreadId("thread-opencode"));
 
-      assert.deepEqual(runtimeMock.state.startCalls, []);
-      assert.deepEqual(
+      NodeAssert.deepEqual(runtimeMock.state.startCalls, []);
+      NodeAssert.deepEqual(
         runtimeMock.state.abortCalls.includes("http://127.0.0.1:9999/session"),
         true,
       );
@@ -280,7 +286,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       yield* adapter.stopSession(threadId);
 
       const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
-      assert.deepEqual(
+      NodeAssert.deepEqual(
         events.map((event) => event.type),
         ["session.started", "thread.started", "session.exited"],
       );
@@ -310,11 +316,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       yield* Effect.exit(adapter.stopAll());
       const sessions = yield* adapter.listSessions();
 
-      assert.deepEqual(runtimeMock.state.closeCalls, [
+      NodeAssert.deepEqual(runtimeMock.state.closeCalls, [
         "http://127.0.0.1:9999",
         "http://127.0.0.1:9999",
       ]);
-      assert.deepEqual(sessions, []);
+      NodeAssert.deepEqual(sessions, []);
     }),
   );
 
@@ -342,7 +348,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         scopeClosed = true;
 
         const exit = yield* Fiber.await(eventsFiber).pipe(Effect.timeout("1 second"));
-        assert.equal(Exit.hasInterrupts(exit), true);
+        NodeAssert.equal(Exit.hasInterrupts(exit), true);
       } finally {
         if (!scopeClosed) {
           yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
@@ -373,31 +379,106 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         .pipe(Effect.flip);
       const sessions = yield* adapter.listSessions();
 
-      assert.equal(error._tag, "ProviderAdapterRequestError");
+      NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
       if (error._tag !== "ProviderAdapterRequestError") {
         throw new Error("Unexpected error type");
       }
-      assert.equal(error.detail, "prompt failed");
-      assert.equal(
+      NodeAssert.equal(error.detail, "prompt failed");
+      NodeAssert.equal(
         error.message,
         "Provider adapter request failed (opencode) for session.promptAsync: prompt failed",
       );
-      assert.equal(sessions.length, 1);
-      assert.equal(sessions[0]?.status, "ready");
-      assert.equal(sessions[0]?.activeTurnId, undefined);
-      assert.equal(sessions[0]?.lastError, "prompt failed");
+      NodeAssert.equal(sessions.length, 1);
+      NodeAssert.equal(sessions[0]?.status, "ready");
+      NodeAssert.equal(sessions[0]?.activeTurnId, undefined);
+      NodeAssert.equal(sessions[0]?.lastError, "prompt failed");
+    }),
+  );
+
+  it.effect("steers a running turn instead of opening a new one on mid-turn sendTurn", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-steer");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "run 5 commands",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+
+      // Steer: OpenCode queues the prompt into the busy session, so the
+      // active turn id is reused instead of opening a new turn.
+      const steeredTurn = yield* adapter.sendTurn({
+        threadId,
+        input: "actually run 15",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      NodeAssert.equal(String(steeredTurn.turnId), String(turn.turnId));
+
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "running");
+      NodeAssert.equal(String(session?.activeTurnId), String(turn.turnId));
+      NodeAssert.equal(runtimeMock.state.promptCalls.length, 2);
+    }),
+  );
+
+  it.effect("keeps the running turn when a steer prompt fails", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-steer-failure");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "run 5 commands",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+
+      runtimeMock.state.promptAsyncError = new Error("steer failed");
+      const error = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "actually run 15",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "openai/gpt-5",
+          },
+        })
+        .pipe(Effect.flip);
+
+      // The original turn keeps running — only the steer prompt failed.
+      NodeAssert.equal(error._tag, "ProviderAdapterRequestError");
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "running");
+      NodeAssert.equal(String(session?.activeTurnId), String(turn.turnId));
     }),
   );
 
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
-    const customInstanceId = ProviderInstanceId.make("opencode_zen");
+    const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
       OpenCodeAdapter,
-      Effect.gen(function* () {
-        return yield* makeOpenCodeAdapter(openCodeAdapterTestSettings, {
-          instanceId: customInstanceId,
-        });
-      }),
+      makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
     ).pipe(
       Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -427,7 +508,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         ),
       });
 
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+      NodeAssert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "anthropic",
@@ -441,14 +522,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   });
 
   it.effect("uses the bound custom instance id for fallback sendTurn model selection", () => {
-    const customInstanceId = ProviderInstanceId.make("opencode_zen");
+    const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
       OpenCodeAdapter,
-      Effect.gen(function* () {
-        return yield* makeOpenCodeAdapter(openCodeAdapterTestSettings, {
-          instanceId: customInstanceId,
-        });
-      }),
+      makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
     ).pipe(
       Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -475,7 +552,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         input: "Fix it",
       });
 
-      assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+      NodeAssert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "anthropic",
@@ -487,14 +564,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
   });
 
   it.effect("rejects sendTurn model selections for another instance id", () => {
-    const customInstanceId = ProviderInstanceId.make("opencode_zen");
+    const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(
       OpenCodeAdapter,
-      Effect.gen(function* () {
-        return yield* makeOpenCodeAdapter(openCodeAdapterTestSettings, {
-          instanceId: customInstanceId,
-        });
-      }),
+      makeOpenCodeAdapter(openCodeAdapterTestSettings, { instanceId }),
     ).pipe(
       Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -523,15 +596,15 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         })
         .pipe(Effect.flip);
 
-      assert.equal(error._tag, "ProviderAdapterValidationError");
+      NodeAssert.equal(error._tag, "ProviderAdapterValidationError");
       if (error._tag !== "ProviderAdapterValidationError") {
         throw new Error("Unexpected error type");
       }
-      assert.equal(
+      NodeAssert.equal(
         error.issue,
         "OpenCode model selection is bound to instance 'opencode', expected 'opencode_zen'.",
       );
-      assert.deepEqual(runtimeMock.state.promptCalls, []);
+      NodeAssert.deepEqual(runtimeMock.state.promptCalls, []);
     }).pipe(Effect.provide(adapterLayer));
   });
 
@@ -558,10 +631,10 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       const snapshot = yield* adapter.rollbackThread(threadId, 2);
 
-      assert.deepEqual(runtimeMock.state.revertCalls, [
+      NodeAssert.deepEqual(runtimeMock.state.revertCalls, [
         { sessionID: "http://127.0.0.1:9999/session" },
       ]);
-      assert.deepEqual(snapshot.turns, []);
+      NodeAssert.deepEqual(snapshot.turns, []);
     }),
   );
 
@@ -571,11 +644,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const overlapDelta = appendOpenCodeAssistantTextDelta(firstUpdate.latestText, "lo world");
       const secondUpdate = mergeOpenCodeAssistantText(overlapDelta.nextText, "Hellolo world");
 
-      assert.deepEqual(
+      NodeAssert.deepEqual(
         [firstUpdate.deltaToEmit, overlapDelta.deltaToEmit, secondUpdate.deltaToEmit],
         ["Hello", "lo world", ""],
       );
-      assert.equal(secondUpdate.latestText, "Hellolo world");
+      NodeAssert.equal(secondUpdate.latestText, "Hellolo world");
     }),
   );
 
@@ -648,14 +721,14 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
       const deltas = events.filter((event) => event.type === "content.delta");
-      assert.deepEqual(
+      NodeAssert.deepEqual(
         deltas.map((event) => (event.type === "content.delta" ? event.payload.delta : "")),
         ["A B", "Bonus"],
       );
-      assert.equal(events.at(-1)?.type, "item.completed");
+      NodeAssert.equal(events.at(-1)?.type, "item.completed");
       const completed = events.at(-1);
       if (completed?.type === "item.completed") {
-        assert.equal(completed.payload.detail, "A BBonus");
+        NodeAssert.equal(completed.payload.detail, "A BBonus");
       }
     }),
   );
@@ -715,10 +788,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       const adapterLayer = Layer.effect(
         OpenCodeAdapter,
-        Effect.gen(function* () {
-          return yield* makeOpenCodeAdapter(openCodeAdapterTestSettings, {
-            nativeEventLogger,
-          });
+        makeOpenCodeAdapter(openCodeAdapterTestSettings, {
+          nativeEventLogger,
         }),
       ).pipe(
         Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
@@ -745,31 +816,31 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           threadId: asThreadId("thread-native-log"),
           runtimeMode: "full-access",
         });
-        yield* sleep(10);
+        yield* advanceTestClock(10);
         return started;
       }).pipe(Effect.provide(adapterLayer));
 
-      assert.equal(session.threadId, "thread-native-log");
-      assert.equal(nativeEvents.length, 1);
-      assert.equal(
+      NodeAssert.equal(session.threadId, "thread-native-log");
+      NodeAssert.equal(nativeEvents.length, 1);
+      NodeAssert.equal(
         nativeEvents.some((record) => record.event?.provider === "opencode"),
         true,
       );
-      assert.equal(
+      NodeAssert.equal(
         nativeEvents.some(
           (record) => record.event?.providerThreadId === "http://127.0.0.1:9999/session",
         ),
         true,
       );
-      assert.equal(
+      NodeAssert.equal(
         nativeEvents.some((record) => record.event?.threadId === "thread-native-log"),
         true,
       );
-      assert.equal(
+      NodeAssert.equal(
         nativeEvents.some((record) => record.event?.type === "message.updated"),
         true,
       );
-      assert.equal(
+      NodeAssert.equal(
         nativeThreadIds.every((threadId) => threadId === "thread-native-log"),
         true,
       );
@@ -833,34 +904,16 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           threadId: asThreadId("thread-native-log-failure"),
           runtimeMode: "full-access",
         });
-        yield* sleep(10);
+        yield* advanceTestClock(10);
         return {
           sessions: yield* adapter.listSessions(),
           closeCallsDuringRun: [...runtimeMock.state.closeCalls],
         };
       }).pipe(Effect.provide(adapterLayer));
 
-      assert.equal(sessions.length, 1);
-      assert.equal(sessions[0]?.threadId, "thread-native-log-failure");
-      assert.deepEqual(closeCallsDuringRun, []);
+      NodeAssert.equal(sessions.length, 1);
+      NodeAssert.equal(sessions[0]?.threadId, "thread-native-log-failure");
+      NodeAssert.deepEqual(closeCallsDuringRun, []);
     }),
   );
 });
-
-it.effect("OpenCodeAdapterLive stops active sessions when the adapter layer is released", () =>
-  Effect.gen(function* () {
-    yield* Effect.scoped(
-      Effect.gen(function* () {
-        const adapter = yield* OpenCodeAdapter;
-        yield* adapter.startSession({
-          provider: ProviderDriverKind.make("opencode"),
-          threadId: asThreadId("thread-finalizer"),
-          runtimeMode: "full-access",
-        });
-      }).pipe(Effect.provide(OpenCodeAdapterTestLayer)),
-    );
-
-    assert.deepEqual(runtimeMock.state.abortCalls, ["http://127.0.0.1:9999/session"]);
-    assert.deepEqual(runtimeMock.state.closeCalls, ["http://127.0.0.1:9999"]);
-  }),
-);

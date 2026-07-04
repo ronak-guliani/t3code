@@ -1,4 +1,9 @@
-import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaTransformation from "effect/SchemaTransformation";
+import * as Struct from "effect/Struct";
 import { ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity } from "./environment.ts";
 import {
@@ -11,7 +16,6 @@ import {
   NonNegativeInt,
   ProjectId,
   ProviderItemId,
-  QueuedTurnId,
   ThreadId,
   TrimmedNonEmptyString,
   TurnId,
@@ -22,8 +26,6 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
-  getTurnDiffState: "orchestration.getTurnDiffState",
-  getFullThreadDiffState: "orchestration.getFullThreadDiffState",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -192,6 +194,17 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  /**
+   * URL to open in the in-app browser preview when this script runs (or
+   * when the user explicitly requests a preview). Optional; only honored on
+   * the desktop build.
+   */
+  previewUrl: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * When true, automatically open the preview panel pointed at `previewUrl`
+   * the moment this script starts. Ignored without `previewUrl` or on web.
+   */
+  autoOpenPreview: Schema.optional(Schema.Boolean),
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
@@ -244,41 +257,6 @@ const SourceProposedPlanReference = Schema.Struct({
   planId: OrchestrationProposedPlanId,
 });
 
-const QueuedTurnMessage = Schema.Struct({
-  messageId: MessageId,
-  role: Schema.Literal("user"),
-  text: Schema.String,
-  attachments: Schema.Array(ChatAttachment),
-});
-export type QueuedTurnMessage = typeof QueuedTurnMessage.Type;
-
-const UploadQueuedTurnMessage = Schema.Struct({
-  messageId: MessageId,
-  role: Schema.Literal("user"),
-  text: Schema.String,
-  attachments: Schema.Array(UploadChatAttachment),
-});
-
-export const OrchestrationQueuedTurn = Schema.Struct({
-  id: QueuedTurnId,
-  threadId: ThreadId,
-  message: QueuedTurnMessage,
-  modelSelection: Schema.optional(ModelSelection),
-  titleSeed: Schema.optional(TrimmedNonEmptyString),
-  runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  interactionMode: ProviderInteractionMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
-  ),
-  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
-  failedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  failureMessage: Schema.NullOr(TrimmedNonEmptyString).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
-});
-export type OrchestrationQueuedTurn = typeof OrchestrationQueuedTurn.Type;
-
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -297,7 +275,6 @@ export const OrchestrationSession = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
-  resumeCursor: Schema.optional(Schema.Unknown),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
@@ -310,15 +287,8 @@ export const OrchestrationCheckpointFile = Schema.Struct({
   deletions: NonNegativeInt,
 });
 export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Type;
-const OrchestrationCheckpointFiles = Schema.Array(OrchestrationCheckpointFile);
-const OrchestrationAgentTouchedPaths = Schema.Array(TrimmedNonEmptyString);
 
-export const OrchestrationCheckpointStatus = Schema.Literals([
-  "ready",
-  "missing",
-  "speculative",
-  "error",
-]);
+export const OrchestrationCheckpointStatus = Schema.Literals(["ready", "missing", "error"]);
 export type OrchestrationCheckpointStatus = typeof OrchestrationCheckpointStatus.Type;
 
 export const OrchestrationCheckpointSummary = Schema.Struct({
@@ -326,11 +296,7 @@ export const OrchestrationCheckpointSummary = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -378,13 +344,9 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
-  parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -399,7 +361,6 @@ export const OrchestrationThread = Schema.Struct({
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
-  queuedTurns: Schema.optionalKey(Schema.Array(OrchestrationQueuedTurn)),
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
@@ -429,13 +390,9 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
-  parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -538,7 +495,6 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
-  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -578,25 +534,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
-const ThreadForkCommand = Schema.Struct({
-  type: Schema.Literal("thread.fork"),
-  commandId: CommandId,
-  sourceThreadId: ThreadId,
-  threadId: ThreadId,
-  targetMessageId: MessageId,
-  createdAt: IsoDateTime,
-});
-
 const ThreadRuntimeModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.runtime-mode.set"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  runtimeMode: RuntimeMode,
-  createdAt: IsoDateTime,
-});
-
-const ThreadPendingRuntimeModeSetCommand = Schema.Struct({
-  type: Schema.Literal("thread.pending-runtime-mode.set"),
   commandId: CommandId,
   threadId: ThreadId,
   runtimeMode: RuntimeMode,
@@ -613,7 +552,6 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   projectId: ProjectId,
-  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -627,6 +565,7 @@ const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: TrimmedNonEmptyString,
   baseBranch: TrimmedNonEmptyString,
   branch: Schema.optional(TrimmedNonEmptyString),
+  startFromOrigin: Schema.optional(Schema.Boolean),
 });
 
 const ThreadTurnStartBootstrap = Schema.Struct({
@@ -675,68 +614,6 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
-});
-
-const ThreadQueuedTurnCreateCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-turn.create"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  message: QueuedTurnMessage,
-  modelSelection: Schema.optional(ModelSelection),
-  titleSeed: Schema.optional(TrimmedNonEmptyString),
-  runtimeMode: RuntimeMode,
-  interactionMode: ProviderInteractionMode,
-  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  createdAt: IsoDateTime,
-});
-
-const ClientThreadQueuedTurnCreateCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-turn.create"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  message: UploadQueuedTurnMessage,
-  modelSelection: Schema.optional(ModelSelection),
-  titleSeed: Schema.optional(TrimmedNonEmptyString),
-  runtimeMode: RuntimeMode,
-  interactionMode: ProviderInteractionMode,
-  sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  createdAt: IsoDateTime,
-});
-
-const ThreadQueuedTurnUpdateCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-turn.update"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  text: Schema.String,
-  updatedAt: IsoDateTime,
-});
-
-const ThreadQueuedTurnDeleteCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-turn.delete"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  deletedAt: IsoDateTime,
-});
-
-const ThreadQueuedTurnDispatchCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-turn.dispatch"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  dispatchedAt: IsoDateTime,
-});
-
-const ThreadQueuedTurnFailCommand = Schema.Struct({
-  type: Schema.Literal("thread.queued-turn.fail"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  failureMessage: TrimmedNonEmptyString,
-  failedAt: IsoDateTime,
 });
 
 const ThreadTurnInterruptCommand = Schema.Struct({
@@ -789,15 +666,9 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
   ThreadMetaUpdateCommand,
-  ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
-  ThreadPendingRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
-  ThreadQueuedTurnCreateCommand,
-  ThreadQueuedTurnUpdateCommand,
-  ThreadQueuedTurnDeleteCommand,
-  ThreadQueuedTurnDispatchCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -816,15 +687,9 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
   ThreadMetaUpdateCommand,
-  ThreadForkCommand,
   ThreadRuntimeModeSetCommand,
-  ThreadPendingRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
-  ClientThreadQueuedTurnCreateCommand,
-  ThreadQueuedTurnUpdateCommand,
-  ThreadQueuedTurnDeleteCommand,
-  ThreadQueuedTurnDispatchCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
@@ -876,11 +741,7 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   completedAt: IsoDateTime,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.optional(MessageId),
   checkpointTurnCount: NonNegativeInt,
   createdAt: IsoDateTime,
@@ -910,8 +771,6 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
-  ThreadQueuedTurnDispatchCommand,
-  ThreadQueuedTurnFailCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;
 
@@ -931,16 +790,9 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.meta-updated",
   "thread.runtime-mode-set",
-  "thread.pending-runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
-  "thread.queued-turn-created",
-  "thread.queued-turn-updated",
-  "thread.queued-turn-deleted",
-  "thread.queued-turn-dispatched",
-  "thread.queued-turn-failed",
-  "thread.provider-fork-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
@@ -987,13 +839,9 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
-  parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
-  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
@@ -1034,12 +882,6 @@ export const ThreadRuntimeModeSetPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
-export const ThreadPendingRuntimeModeSetPayload = Schema.Struct({
-  threadId: ThreadId,
-  runtimeMode: RuntimeMode,
-  updatedAt: IsoDateTime,
-});
-
 export const ThreadInteractionModeSetPayload = Schema.Struct({
   threadId: ThreadId,
   interactionMode: ProviderInteractionMode.pipe(
@@ -1070,47 +912,6 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
-  createdAt: IsoDateTime,
-});
-
-export const ThreadQueuedTurnCreatedPayload = Schema.Struct({
-  threadId: ThreadId,
-  queuedTurn: OrchestrationQueuedTurn,
-});
-
-export const ThreadQueuedTurnUpdatedPayload = Schema.Struct({
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  text: Schema.String,
-  updatedAt: IsoDateTime,
-});
-
-export const ThreadQueuedTurnDeletedPayload = Schema.Struct({
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  deletedAt: IsoDateTime,
-});
-
-export const ThreadQueuedTurnDispatchedPayload = Schema.Struct({
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  messageId: MessageId,
-  dispatchedAt: IsoDateTime,
-});
-
-export const ThreadQueuedTurnFailedPayload = Schema.Struct({
-  threadId: ThreadId,
-  queuedTurnId: QueuedTurnId,
-  failureMessage: TrimmedNonEmptyString,
-  failedAt: IsoDateTime,
-});
-
-export const ThreadProviderForkRequestedPayload = Schema.Struct({
-  sourceThreadId: ThreadId,
-  threadId: ThreadId,
-  targetMessageId: MessageId,
-  targetTurnId: Schema.NullOr(TurnId),
-  targetTurnCount: NonNegativeInt,
   createdAt: IsoDateTime,
 });
 
@@ -1166,11 +967,7 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -1249,11 +1046,6 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
-    type: Schema.Literal("thread.pending-runtime-mode-set"),
-    payload: ThreadPendingRuntimeModeSetPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
     type: Schema.Literal("thread.interaction-mode-set"),
     payload: ThreadInteractionModeSetPayload,
   }),
@@ -1266,36 +1058,6 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-start-requested"),
     payload: ThreadTurnStartRequestedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.queued-turn-created"),
-    payload: ThreadQueuedTurnCreatedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.queued-turn-updated"),
-    payload: ThreadQueuedTurnUpdatedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.queued-turn-deleted"),
-    payload: ThreadQueuedTurnDeletedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.queued-turn-dispatched"),
-    payload: ThreadQueuedTurnDispatchedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.queued-turn-failed"),
-    payload: ThreadQueuedTurnFailedPayload,
-  }),
-  Schema.Struct({
-    ...EventBaseFields,
-    type: Schema.Literal("thread.provider-fork-requested"),
-    payload: ThreadProviderForkRequestedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1387,144 +1149,6 @@ export const ThreadTurnDiff = TurnCountRange.mapFields(
   { unsafePreserveChecks: true },
 );
 
-export const TurnDiffScope = Schema.Literals(["turn", "snapshot"]);
-export type TurnDiffScope = typeof TurnDiffScope.Type;
-
-export const DiffLineType = Schema.Literals(["context", "add", "delete", "hunk"]);
-export type DiffLineType = typeof DiffLineType.Type;
-
-export const DiffLine = Schema.Struct({
-  type: DiffLineType,
-  oldLineNumber: Schema.NullOr(NonNegativeInt),
-  newLineNumber: Schema.NullOr(NonNegativeInt),
-  text: Schema.String,
-});
-export type DiffLine = typeof DiffLine.Type;
-
-export const DiffHunk = Schema.Struct({
-  oldStartLine: NonNegativeInt,
-  oldLineCount: NonNegativeInt,
-  newStartLine: NonNegativeInt,
-  newLineCount: NonNegativeInt,
-  lines: Schema.Array(DiffLine),
-});
-export type DiffHunk = typeof DiffHunk.Type;
-
-export const DiffFileStatus = Schema.Literals([
-  "new",
-  "modified",
-  "deleted",
-  "renamed",
-  "copied",
-  "untracked",
-  "conflicted",
-  "unknown",
-]);
-export type DiffFileStatus = typeof DiffFileStatus.Type;
-
-export const DiffSize = Schema.Literals(["normal", "large", "unrenderable"]);
-export type DiffSize = typeof DiffSize.Type;
-
-export const DiffFile = Schema.Struct({
-  path: TrimmedNonEmptyString,
-  previousPath: Schema.NullOr(TrimmedNonEmptyString),
-  status: DiffFileStatus,
-  additions: NonNegativeInt,
-  deletions: NonNegativeInt,
-  hunks: Schema.Array(DiffHunk),
-  isBinary: Schema.Boolean,
-  size: DiffSize,
-  hasHiddenBidiChars: Schema.Boolean,
-});
-export type DiffFile = typeof DiffFile.Type;
-
-export const DiffMetadata = Schema.Struct({
-  filesChanged: NonNegativeInt,
-  totalAdditions: NonNegativeInt,
-  totalDeletions: NonNegativeInt,
-  largeFiles: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
-  unrenderableFiles: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
-});
-export type DiffMetadata = typeof DiffMetadata.Type;
-
-export const DiffMetadataRefreshed = TurnCountRange.mapFields(
-  Struct.assign({
-    threadId: ThreadId,
-    scope: TurnDiffScope,
-    metadata: DiffMetadata,
-    files: Schema.Array(DiffFile),
-  }),
-  { unsafePreserveChecks: true },
-);
-export type DiffMetadataRefreshed = typeof DiffMetadataRefreshed.Type;
-
-export const DiffFileDelta = TurnCountRange.mapFields(
-  Struct.assign({
-    threadId: ThreadId,
-    scope: TurnDiffScope,
-    path: TrimmedNonEmptyString,
-    file: Schema.NullOr(DiffFile),
-    metadata: DiffMetadata,
-  }),
-  { unsafePreserveChecks: true },
-);
-export type DiffFileDelta = typeof DiffFileDelta.Type;
-
-export const DiffSnapshot = TurnCountRange.mapFields(
-  Struct.assign({
-    threadId: ThreadId,
-    scope: TurnDiffScope,
-    patch: Schema.String,
-    metadata: DiffMetadata,
-    files: Schema.Array(DiffFile),
-  }),
-  { unsafePreserveChecks: true },
-);
-export type DiffSnapshot = typeof DiffSnapshot.Type;
-
-const DiffLoadingState = TurnCountRange.mapFields(
-  Struct.assign({
-    _tag: Schema.Literal("loading"),
-    threadId: ThreadId,
-    scope: TurnDiffScope,
-  }),
-  { unsafePreserveChecks: true },
-);
-
-const DiffUnavailableState = TurnCountRange.mapFields(
-  Struct.assign({
-    _tag: Schema.Literal("unavailable"),
-    threadId: ThreadId,
-    scope: TurnDiffScope,
-    message: TrimmedNonEmptyString,
-  }),
-  { unsafePreserveChecks: true },
-);
-
-const DiffErrorState = TurnCountRange.mapFields(
-  Struct.assign({
-    _tag: Schema.Literal("error"),
-    threadId: ThreadId,
-    scope: TurnDiffScope,
-    message: TrimmedNonEmptyString,
-  }),
-  { unsafePreserveChecks: true },
-);
-
-export const DiffState = Schema.Union([
-  Schema.TaggedStruct("ready", {
-    snapshot: DiffSnapshot,
-  }),
-  Schema.TaggedStruct("stale", {
-    snapshot: DiffSnapshot,
-    message: TrimmedNonEmptyString,
-  }),
-  DiffLoadingState,
-  DiffUnavailableState,
-  DiffErrorState,
-]);
-export type DiffState = typeof DiffState.Type;
-
 export const ProviderSessionRuntimeStatus = Schema.Literals([
   "starting",
   "running",
@@ -1547,11 +1171,7 @@ const ProjectionCheckpointRow = Schema.Struct({
   checkpointTurnCount: NonNegativeInt,
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
-  files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: OrchestrationAgentTouchedPaths.pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  turnFiles: OrchestrationCheckpointFiles.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  files: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
   completedAt: IsoDateTime,
 });
@@ -1571,7 +1191,6 @@ export type DispatchResult = typeof DispatchResult.Type;
 export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
   Struct.assign({
     threadId: ThreadId,
-    scope: TurnDiffScope.pipe(Schema.withDecodingDefault(Effect.succeed("snapshot" as const))),
     ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
   }),
   { unsafePreserveChecks: true },
@@ -1590,33 +1209,6 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
-
-export const OrchestrationGetTurnDiffStateInput = OrchestrationGetTurnDiffInput;
-export type OrchestrationGetTurnDiffStateInput = typeof OrchestrationGetTurnDiffStateInput.Type;
-
-export const OrchestrationGetTurnDiffStateResult = DiffState;
-export type OrchestrationGetTurnDiffStateResult = typeof OrchestrationGetTurnDiffStateResult.Type;
-
-export const OrchestrationGetTurnDiffFileDeltaInput = OrchestrationGetTurnDiffInput.mapFields(
-  Struct.assign({
-    path: TrimmedNonEmptyString,
-  }),
-  { unsafePreserveChecks: true },
-);
-export type OrchestrationGetTurnDiffFileDeltaInput =
-  typeof OrchestrationGetTurnDiffFileDeltaInput.Type;
-
-export const OrchestrationGetTurnDiffFileDeltaResult = DiffFileDelta;
-export type OrchestrationGetTurnDiffFileDeltaResult =
-  typeof OrchestrationGetTurnDiffFileDeltaResult.Type;
-
-export const OrchestrationGetFullThreadDiffStateInput = OrchestrationGetFullThreadDiffInput;
-export type OrchestrationGetFullThreadDiffStateInput =
-  typeof OrchestrationGetFullThreadDiffStateInput.Type;
-
-export const OrchestrationGetFullThreadDiffStateResult = DiffState;
-export type OrchestrationGetFullThreadDiffStateResult =
-  typeof OrchestrationGetFullThreadDiffStateResult.Type;
 
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
@@ -1638,14 +1230,6 @@ export const OrchestrationRpcSchemas = {
   getFullThreadDiff: {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
-  },
-  getTurnDiffState: {
-    input: OrchestrationGetTurnDiffStateInput,
-    output: OrchestrationGetTurnDiffStateResult,
-  },
-  getFullThreadDiffState: {
-    input: OrchestrationGetFullThreadDiffStateInput,
-    output: OrchestrationGetFullThreadDiffStateResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
@@ -1669,7 +1253,7 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<Orche
   "OrchestrationGetSnapshotError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -1677,7 +1261,7 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<O
   "OrchestrationDispatchCommandError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -1685,7 +1269,7 @@ export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<Orche
   "OrchestrationGetTurnDiffError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -1693,23 +1277,7 @@ export class OrchestrationGetFullThreadDiffError extends Schema.TaggedErrorClass
   "OrchestrationGetFullThreadDiffError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
-  },
-) {}
-
-export class OrchestrationGetTurnDiffStateError extends Schema.TaggedErrorClass<OrchestrationGetTurnDiffStateError>()(
-  "OrchestrationGetTurnDiffStateError",
-  {
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
-  },
-) {}
-
-export class OrchestrationGetFullThreadDiffStateError extends Schema.TaggedErrorClass<OrchestrationGetFullThreadDiffStateError>()(
-  "OrchestrationGetFullThreadDiffStateError",
-  {
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}
 
@@ -1717,6 +1285,6 @@ export class OrchestrationReplayEventsError extends Schema.TaggedErrorClass<Orch
   "OrchestrationReplayEventsError",
   {
     message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {}

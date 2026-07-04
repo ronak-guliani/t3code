@@ -4,14 +4,16 @@ import {
   ProjectId,
   type ModelSelection,
   type ProviderDriverKind,
+  type ServerProvider,
   type ScopedThreadRef,
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { type ChatMessage, type SessionPhase, type Thread, type ThreadSession } from "../types";
+import { type ChatMessage, type SessionPhase, type Thread } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
-import { Schema } from "effect";
-import { type AppState, type EnvironmentState, selectThreadByRef, useStore } from "../store";
+import * as Schema from "effect/Schema";
+import { appAtomRegistry } from "../rpc/atomRegistry";
+import { environmentThreadDetails } from "../state/threads";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -21,175 +23,33 @@ import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
+export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
-
-const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
-
-export type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
-
-type CachedThreadPlanCatalogEntry = {
-  environmentId: EnvironmentId | null;
-  shell: object | null;
-  proposedPlanIds: readonly string[] | undefined;
-  proposedPlansById: Record<string, Thread["proposedPlans"][number]> | undefined;
-  entry: ThreadPlanCatalogEntry;
-};
-
-function findThreadPlanCatalogSource(
-  state: AppState,
-  threadId: ThreadId,
-  previous: CachedThreadPlanCatalogEntry | undefined,
-):
-  | {
-      environmentId: EnvironmentId;
-      environmentState: EnvironmentState;
-      shell: object;
-    }
-  | undefined {
-  if (previous?.environmentId) {
-    const environmentState = state.environmentStateById[previous.environmentId];
-    const shell = environmentState?.threadShellById[threadId];
-    if (shell) {
-      return {
-        environmentId: previous.environmentId,
-        environmentState,
-        shell,
-      };
-    }
-  }
-
-  for (const [environmentId, environmentState] of Object.entries(
-    state.environmentStateById,
-  ) as Array<[EnvironmentId, EnvironmentState]>) {
-    const shell = environmentState.threadShellById[threadId];
-    if (shell) {
-      return {
-        environmentId,
-        environmentState,
-        shell,
-      };
-    }
-  }
-
-  return undefined;
-}
-
-export function createThreadPlanCatalogSelector(
-  threadIds: readonly ThreadId[],
-): (state: AppState) => ThreadPlanCatalogEntry[] {
-  let previousThreadIds: readonly ThreadId[] = [];
-  let previousResult: ThreadPlanCatalogEntry[] = [];
-  let previousEntries = new Map<ThreadId, CachedThreadPlanCatalogEntry>();
-
-  return (state) => {
-    const sameThreadIds =
-      previousThreadIds.length === threadIds.length &&
-      previousThreadIds.every((id, index) => id === threadIds[index]);
-    const nextEntries = new Map<ThreadId, CachedThreadPlanCatalogEntry>();
-    const nextResult: ThreadPlanCatalogEntry[] = [];
-    let changed = !sameThreadIds;
-
-    for (const threadId of threadIds) {
-      const previous = previousEntries.get(threadId);
-      const source = findThreadPlanCatalogSource(state, threadId, previous);
-
-      if (!source) {
-        if (
-          previous &&
-          previous.environmentId === null &&
-          previous.shell === null &&
-          previous.proposedPlanIds === undefined &&
-          previous.proposedPlansById === undefined
-        ) {
-          nextEntries.set(threadId, previous);
-          continue;
-        }
-        changed = true;
-        nextEntries.set(threadId, {
-          environmentId: null,
-          shell: null,
-          proposedPlanIds: undefined,
-          proposedPlansById: undefined,
-          entry: { id: threadId, proposedPlans: EMPTY_PROPOSED_PLANS },
-        });
-        continue;
-      }
-
-      const proposedPlanIds = source.environmentState.proposedPlanIdsByThreadId[threadId];
-      const proposedPlansById = source.environmentState.proposedPlanByThreadId[threadId] as
-        | Record<string, Thread["proposedPlans"][number]>
-        | undefined;
-
-      if (
-        previous &&
-        previous.environmentId === source.environmentId &&
-        previous.shell === source.shell &&
-        previous.proposedPlanIds === proposedPlanIds &&
-        previous.proposedPlansById === proposedPlansById
-      ) {
-        nextEntries.set(threadId, previous);
-        nextResult.push(previous.entry);
-        continue;
-      }
-
-      changed = true;
-      const proposedPlans =
-        proposedPlanIds && proposedPlanIds.length > 0 && proposedPlansById
-          ? proposedPlanIds.flatMap((planId) => {
-              const proposedPlan = proposedPlansById[planId];
-              return proposedPlan ? [proposedPlan] : [];
-            })
-          : EMPTY_PROPOSED_PLANS;
-      const entry = { id: threadId, proposedPlans };
-      nextEntries.set(threadId, {
-        environmentId: source.environmentId,
-        shell: source.shell,
-        proposedPlanIds,
-        proposedPlansById,
-        entry,
-      });
-      nextResult.push(entry);
-    }
-
-    if (!changed && previousResult.length === nextResult.length) {
-      return previousResult;
-    }
-
-    previousThreadIds = threadIds;
-    previousEntries = nextEntries;
-    previousResult = nextResult;
-    return nextResult;
-  };
-}
 
 export function buildLocalDraftThread(
   threadId: ThreadId,
   draftThread: DraftThreadState,
   fallbackModelSelection: ModelSelection,
-  error: string | null,
 ): Thread {
   return {
     id: threadId,
     environmentId: draftThread.environmentId,
-    codexThreadId: null,
     projectId: draftThread.projectId,
-    parentThreadId: null,
     title: "New thread",
     modelSelection: fallbackModelSelection,
     runtimeMode: draftThread.runtimeMode,
-    pendingRuntimeMode: null,
     interactionMode: draftThread.interactionMode,
     session: null,
     messages: [],
-    queuedTurns: [],
-    error,
     createdAt: draftThread.createdAt,
+    updatedAt: draftThread.createdAt,
     archivedAt: null,
+    deletedAt: null,
     latestTurn: null,
     branch: draftThread.branch,
     worktreePath: draftThread.worktreePath,
-    turnDiffSummaries: [],
+    checkpoints: [],
     activities: [],
     proposedPlans: [],
   };
@@ -214,6 +74,17 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   );
 }
 
+export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
+  threadId: ThreadId;
+  turnId?: TurnId;
+} {
+  const runningTurnId = thread.session?.status === "running" ? thread.session.activeTurnId : null;
+  return {
+    threadId: thread.id,
+    ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
+  };
+}
+
 export function reconcileMountedTerminalThreadIds(input: {
   currentThreadIds: ReadonlyArray<string>;
   openThreadIds: ReadonlyArray<string>;
@@ -221,14 +92,30 @@ export function reconcileMountedTerminalThreadIds(input: {
   activeThreadTerminalOpen: boolean;
   maxHiddenThreadCount?: number;
 }): string[] {
+  return reconcileRetainedMountedThreadIds({
+    currentThreadIds: input.currentThreadIds,
+    openThreadIds: input.openThreadIds,
+    activeThreadId: input.activeThreadId,
+    activeThreadOpen: input.activeThreadTerminalOpen,
+    maxHiddenThreadCount: input.maxHiddenThreadCount ?? MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  });
+}
+
+export function reconcileRetainedMountedThreadIds(input: {
+  currentThreadIds: ReadonlyArray<string>;
+  openThreadIds: ReadonlyArray<string>;
+  activeThreadId: string | null;
+  activeThreadOpen: boolean;
+  maxHiddenThreadCount: number;
+  retainInactiveActiveThread?: boolean;
+}): string[] {
   const openThreadIdSet = new Set(input.openThreadIds);
   const hiddenThreadIds = input.currentThreadIds.filter(
-    (threadId) => threadId !== input.activeThreadId && openThreadIdSet.has(threadId),
+    (threadId) =>
+      (threadId !== input.activeThreadId || input.retainInactiveActiveThread === true) &&
+      openThreadIdSet.has(threadId),
   );
-  const maxHiddenThreadCount = Math.max(
-    0,
-    input.maxHiddenThreadCount ?? MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
-  );
+  const maxHiddenThreadCount = Math.max(0, input.maxHiddenThreadCount);
   const nextThreadIds =
     hiddenThreadIds.length > maxHiddenThreadCount
       ? hiddenThreadIds.slice(-maxHiddenThreadCount)
@@ -236,7 +123,7 @@ export function reconcileMountedTerminalThreadIds(input: {
 
   if (
     input.activeThreadId &&
-    input.activeThreadTerminalOpen &&
+    input.activeThreadOpen &&
     !nextThreadIds.includes(input.activeThreadId)
   ) {
     nextThreadIds.push(input.activeThreadId);
@@ -326,6 +213,12 @@ export function deriveComposerSendState(options: {
   prompt: string;
   imageCount: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  /**
+   * Optional element-pick attachment count. Element contexts contribute to
+   * "sendable content" exactly like images and (text-bearing) terminal
+   * contexts do: a prompt of just element chips is still a valid send.
+   */
+  elementContextCount?: number;
 }): {
   trimmedPrompt: string;
   sendableTerminalContexts: TerminalContextDraft[];
@@ -336,24 +229,17 @@ export function deriveComposerSendState(options: {
   const sendableTerminalContexts = filterTerminalContextsWithText(options.terminalContexts);
   const expiredTerminalContextCount =
     options.terminalContexts.length - sendableTerminalContexts.length;
+  const elementContextCount = options.elementContextCount ?? 0;
   return {
     trimmedPrompt,
     sendableTerminalContexts,
     expiredTerminalContextCount,
     hasSendableContent:
-      trimmedPrompt.length > 0 || options.imageCount > 0 || sendableTerminalContexts.length > 0,
+      trimmedPrompt.length > 0 ||
+      options.imageCount > 0 ||
+      sendableTerminalContexts.length > 0 ||
+      elementContextCount > 0,
   };
-}
-
-export function canStartThreadTurn(input: {
-  phase: SessionPhase;
-  isSendBusy: boolean;
-  isConnecting: boolean;
-  sendInFlight: boolean;
-}): boolean {
-  return (
-    input.phase !== "running" && !input.isSendBusy && !input.isConnecting && !input.sendInFlight
-  );
 }
 
 export function buildExpiredTerminalContextToastCopy(
@@ -400,8 +286,8 @@ export function deriveLockedProvider(input: {
   if (!threadHasStarted(input.thread)) {
     return null;
   }
-  const sessionProvider = input.thread?.session?.provider ?? null;
-  if (sessionProvider) {
+  const sessionProvider = input.thread?.session?.providerName ?? null;
+  if (sessionProvider && isProviderDriverKind(sessionProvider)) {
     return sessionProvider;
   }
   const narrowedThreadProvider =
@@ -415,11 +301,50 @@ export function deriveLockedProvider(input: {
   return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
 }
 
+export function getStartedThreadModelChangeBlockReason(input: {
+  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange">>;
+  hasStartedSession: boolean;
+  currentModelSelection: ModelSelection;
+  currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
+  nextModelSelection: ModelSelection;
+}): { title: string; description: string } | null {
+  if (!input.hasStartedSession) {
+    return null;
+  }
+  const currentModelSelection = {
+    ...input.currentModelSelection,
+    instanceId: input.currentProviderInstanceId ?? input.currentModelSelection.instanceId,
+  };
+  if (
+    currentModelSelection.instanceId === input.nextModelSelection.instanceId &&
+    currentModelSelection.model === input.nextModelSelection.model
+  ) {
+    return null;
+  }
+  const currentProvider = input.providers.find(
+    (snapshot) => snapshot.instanceId === currentModelSelection.instanceId,
+  );
+  const nextProvider = input.providers.find(
+    (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,
+  );
+  if (
+    currentProvider?.requiresNewThreadForModelChange !== true &&
+    nextProvider?.requiresNewThreadForModelChange !== true
+  ) {
+    return null;
+  }
+  return {
+    title: "Start a new chat to change models",
+    description: "This provider does not allow switching models after a conversation has started.",
+  };
+}
+
 export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
   timeoutMs = 1_000,
 ): Promise<boolean> {
-  const getThread = () => selectThreadByRef(useStore.getState(), threadRef);
+  const threadAtom = environmentThreadDetails.detailAtom(threadRef);
+  const getThread = () => appAtomRegistry.get(threadAtom);
   const thread = getThread();
 
   if (threadHasStarted(thread)) {
@@ -441,8 +366,8 @@ export async function waitForStartedServerThread(
       resolve(result);
     };
 
-    const unsubscribe = useStore.subscribe((state) => {
-      if (!threadHasStarted(selectThreadByRef(state, threadRef))) {
+    const unsubscribe = appAtomRegistry.subscribe(threadAtom, (thread) => {
+      if (!threadHasStarted(thread)) {
         return;
       }
       finish(true);
@@ -466,7 +391,7 @@ export interface LocalDispatchSnapshot {
   latestTurnRequestedAt: string | null;
   latestTurnStartedAt: string | null;
   latestTurnCompletedAt: string | null;
-  sessionOrchestrationStatus: ThreadSession["orchestrationStatus"] | null;
+  sessionStatus: NonNullable<Thread["session"]>["status"] | null;
   sessionUpdatedAt: string | null;
 }
 
@@ -483,7 +408,7 @@ export function createLocalDispatchSnapshot(
     latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
     latestTurnStartedAt: latestTurn?.startedAt ?? null,
     latestTurnCompletedAt: latestTurn?.completedAt ?? null,
-    sessionOrchestrationStatus: session?.orchestrationStatus ?? null,
+    sessionStatus: session?.status ?? null,
     sessionUpdatedAt: session?.updatedAt ?? null,
   };
 }
@@ -520,8 +445,8 @@ export function hasServerAcknowledgedLocalDispatch(input: {
       return false;
     }
     if (
+      session?.activeTurnId !== null &&
       session?.activeTurnId !== undefined &&
-      session.activeTurnId !== null &&
       latestTurn?.turnId !== session.activeTurnId
     ) {
       return false;
@@ -531,7 +456,7 @@ export function hasServerAcknowledgedLocalDispatch(input: {
 
   return (
     latestTurnChanged ||
-    input.localDispatch.sessionOrchestrationStatus !== (session?.orchestrationStatus ?? null) ||
+    input.localDispatch.sessionStatus !== (session?.status ?? null) ||
     input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
   );
 }

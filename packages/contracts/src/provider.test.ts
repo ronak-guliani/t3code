@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Schema } from "effect";
+import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 
 import {
   ProviderEvent,
@@ -111,29 +111,6 @@ describe("ProviderSessionStartInput", () => {
     expect(parsed.provider).toBe("ollama");
     expect(parsed.providerInstanceId).toBe("ollama_local");
     expect(parsed.modelSelection?.instanceId).toBe("ollama_local");
-  });
-
-  it("accepts copilot provider", () => {
-    const parsed = decodeProviderSessionStartInput({
-      threadId: "thread-1",
-      provider: "copilot",
-      cwd: "/tmp/workspace",
-      runtimeMode: "full-access",
-      interactionMode: "plan",
-      modelSelection: {
-        instanceId: "copilot",
-        model: "gpt-5.4",
-        options: [{ id: "reasoning", value: "high" }],
-      },
-    });
-    expect(parsed.provider).toBe("copilot");
-    expect(parsed.interactionMode).toBe("plan");
-    expect(parsed.modelSelection?.instanceId).toBe("copilot");
-    expect(parsed.modelSelection?.model).toBe("gpt-5.4");
-    if (parsed.modelSelection?.instanceId !== "copilot") {
-      throw new Error("Expected copilot modelSelection");
-    }
-    expect(getOptionValue(parsed.modelSelection.options, "reasoning")).toBe("high");
   });
 });
 
@@ -247,23 +224,5 @@ describe("providerInstanceId routing key (slice-2 invariant)", () => {
         runtimeMode: "full-access",
       }),
     ).toThrow();
-  });
-
-  it("accepts copilot modelSelection", () => {
-    const parsed = decodeProviderSendTurnInput({
-      threadId: "thread-1",
-      modelSelection: {
-        instanceId: "copilot",
-        model: "gpt-5.4",
-        options: [{ id: "reasoning", value: "xhigh" }],
-      },
-    });
-
-    expect(parsed.modelSelection?.instanceId).toBe("copilot");
-    expect(parsed.modelSelection?.model).toBe("gpt-5.4");
-    if (parsed.modelSelection?.instanceId !== "copilot") {
-      throw new Error("Expected copilot modelSelection");
-    }
-    expect(getOptionValue(parsed.modelSelection.options, "reasoning")).toBe("xhigh");
   });
 });

@@ -1,8 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vite-plus/test";
 
-import { ComposerPrimaryActions, formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
+import { formatPendingPrimaryActionLabel } from "./ComposerPrimaryActions";
 
 describe("formatPendingPrimaryActionLabel", () => {
   it("returns 'Submitting...' while responding", () => {
@@ -91,27 +89,5 @@ describe("formatPendingPrimaryActionLabel", () => {
         questionIndex: 5,
       }),
     ).toBe("Submit answers");
-  });
-
-  it("renders the send action when pointer focus preservation is enabled", () => {
-    const markup = renderToStaticMarkup(
-      createElement(ComposerPrimaryActions, {
-        compact: false,
-        pendingAction: null,
-        isRunning: false,
-        showPlanFollowUpPrompt: false,
-        promptHasText: true,
-        isSendBusy: false,
-        isConnecting: false,
-        isPreparingWorktree: false,
-        hasSendableContent: true,
-        preserveComposerFocusOnPointerDown: true,
-        onPreviousPendingQuestion: () => undefined,
-        onInterrupt: () => undefined,
-        onImplementPlanInNewThread: () => undefined,
-      }),
-    );
-
-    expect(markup).toContain('aria-label="Send message"');
   });
 });

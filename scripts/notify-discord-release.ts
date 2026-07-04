@@ -2,7 +2,12 @@
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Data, Effect, Layer, Logger, Schema } from "effect";
+import * as Config from "effect/Config";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import {
   FetchHttpClient,
@@ -13,7 +18,7 @@ import {
 
 export type DiscordReleaseTarget = "prerelease" | "latest";
 
-interface DiscordReleaseAnnouncementOptions {
+export interface DiscordReleaseAnnouncementOptions {
   readonly target: DiscordReleaseTarget;
   readonly roleId: string;
   readonly releaseName: string;
@@ -46,10 +51,51 @@ const DISCORD_RELEASE_TARGETS = ["prerelease", "latest"] as const;
 const DiscordRoleIdSchema = Schema.String.check(Schema.isPattern(/^\d+$/));
 const DiscordWebhookUrl = Config.url("DISCORD_WEBHOOK_URL");
 
-class DiscordReleaseAnnouncementError extends Data.TaggedError("DiscordReleaseAnnouncementError")<{
-  readonly message: string;
-  readonly cause?: unknown;
-}> {}
+const discordReleaseErrorContext = {
+  target: Schema.Literals(["prerelease", "latest"]),
+  releaseName: Schema.String,
+  version: Schema.String,
+  tag: Schema.String,
+  releaseUrl: Schema.String,
+  webhookOrigin: Schema.String,
+  webhookPathnameSegmentCount: Schema.Number,
+  contentLength: Schema.Number,
+  embedCount: Schema.Number,
+  allowedRoleMentionCount: Schema.Number,
+  hasRoleMentionSyntax: Schema.Boolean,
+};
+
+export class DiscordReleaseWebhookRequestError extends Schema.TaggedErrorClass<DiscordReleaseWebhookRequestError>()(
+  "DiscordReleaseWebhookRequestError",
+  {
+    ...discordReleaseErrorContext,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Failed to post Discord ${this.target} release announcement for "${this.tag}" to ${this.webhookOrigin}.`;
+  }
+}
+
+export class DiscordReleaseWebhookResponseError extends Schema.TaggedErrorClass<DiscordReleaseWebhookResponseError>()(
+  "DiscordReleaseWebhookResponseError",
+  {
+    ...discordReleaseErrorContext,
+    status: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Discord ${this.target} release webhook for "${this.tag}" returned status ${this.status}.`;
+  }
+}
+
+export const DiscordReleaseAnnouncementError = Schema.Union([
+  DiscordReleaseWebhookRequestError,
+  DiscordReleaseWebhookResponseError,
+]);
+export type DiscordReleaseAnnouncementError = typeof DiscordReleaseAnnouncementError.Type;
+export const isDiscordReleaseAnnouncementError = Schema.is(DiscordReleaseAnnouncementError);
 
 const targetLabels = {
   prerelease: "Prerelease",
@@ -111,9 +157,10 @@ export const buildDiscordReleaseAnnouncement = (
   ],
 });
 
-const postDiscordWebhook = Effect.fn("postDiscordWebhook")(function* (
+export const postDiscordWebhook = Effect.fn("postDiscordWebhook")(function* (
   webhookUrl: URL,
   payload: DiscordWebhookPayload,
+  announcement: DiscordReleaseAnnouncementOptions,
 ) {
   const httpClient = (yield* HttpClient.HttpClient).pipe(
     HttpClient.retryTransient({
@@ -129,13 +176,24 @@ const postDiscordWebhook = Effect.fn("postDiscordWebhook")(function* (
     }),
   );
 
+  const errorContext = {
+    target: announcement.target,
+    releaseName: announcement.releaseName,
+    version: announcement.version,
+    tag: announcement.tag,
+    releaseUrl: announcement.releaseUrl.href,
+    webhookOrigin: webhookUrl.origin,
+    webhookPathnameSegmentCount: webhookUrl.pathname.split("/").filter(Boolean).length,
+    ...summarizePayload(payload),
+  } as const;
+
   const response = yield* HttpClientRequest.post(webhookUrl).pipe(
     HttpClientRequest.bodyJson(payload),
     Effect.flatMap(httpClient.execute),
     Effect.mapError(
       (cause) =>
-        new DiscordReleaseAnnouncementError({
-          message: "Failed to post Discord release announcement.",
+        new DiscordReleaseWebhookRequestError({
+          ...errorContext,
           cause,
         }),
     ),
@@ -151,8 +209,9 @@ const postDiscordWebhook = Effect.fn("postDiscordWebhook")(function* (
   yield* HttpClientResponse.filterStatusOk(response).pipe(
     Effect.mapError(
       (cause) =>
-        new DiscordReleaseAnnouncementError({
-          message: `Discord webhook returned status ${response.status}.`,
+        new DiscordReleaseWebhookResponseError({
+          ...errorContext,
+          status: response.status,
           cause,
         }),
     ),
@@ -201,20 +260,22 @@ export const notifyDiscordReleaseCommand = Command.make(
       );
 
       const webhookUrl = yield* DiscordWebhookUrl;
-      const payload = buildDiscordReleaseAnnouncement({
+      const timestamp = DateTime.formatIso(yield* DateTime.now);
+      const announcement = {
         target,
         roleId,
         releaseName,
         version: releaseVersion,
         tag,
         releaseUrl,
-        timestamp: new Date().toISOString(),
-      });
+        timestamp,
+      } satisfies DiscordReleaseAnnouncementOptions;
+      const payload = buildDiscordReleaseAnnouncement(announcement);
 
       yield* Effect.logInfo("discord release announcement payload built").pipe(
         Effect.annotateLogs(summarizePayload(payload)),
       );
-      yield* postDiscordWebhook(webhookUrl, payload);
+      yield* postDiscordWebhook(webhookUrl, payload, announcement);
       yield* Effect.logInfo("discord release announcement completed");
     }),
 ).pipe(Command.withDescription("Post a T3 Code release announcement to Discord."));

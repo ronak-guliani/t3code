@@ -19,14 +19,14 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
-  ProviderSessionForkInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ThreadId,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
-import { Context } from "effect";
-import type { Effect, Stream } from "effect";
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
+import type * as Stream from "effect/Stream";
 
 import type { ProviderServiceError } from "../Errors.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
@@ -42,10 +42,6 @@ export interface ProviderServiceShape {
   readonly startSession: (
     threadId: ThreadId,
     input: ProviderSessionStartInput,
-  ) => Effect.Effect<ProviderSession, ProviderServiceError>;
-
-  readonly forkSession: (
-    input: ProviderSessionForkInput,
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
   /**

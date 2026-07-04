@@ -13,11 +13,18 @@
  * @module provider/Drivers/OpenCodeDriver
  */
 import { OpenCodeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import * as Duration from "effect/Duration";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { makeOpenCodeTextGeneration } from "../../git/Layers/OpenCodeTextGeneration.ts";
+import { makeOpenCodeTextGeneration } from "../../textGeneration/OpenCodeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import {
@@ -34,18 +41,52 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import {
+  enrichProviderSnapshotWithVersionAdvisory,
+  makePackageManagedProviderMaintenanceResolver,
+  normalizeCommandPath,
+  resolveProviderMaintenanceCapabilitiesEffect,
+} from "../providerMaintenance.ts";
+import {
+  haveProviderSnapshotSettingsChanged,
+  makeProviderSnapshotSettingsSource,
+  type ProviderSnapshotSettings,
+} from "../providerUpdateSettings.ts";
+const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("opencode");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
+
+function isOpenCodeNativeCommandPath(commandPath: string): boolean {
+  const normalized = normalizeCommandPath(commandPath);
+  return (
+    normalized.endsWith("/.opencode/bin/opencode") ||
+    normalized.endsWith("/.opencode/bin/opencode.exe")
+  );
+}
+
+const UPDATE = makePackageManagedProviderMaintenanceResolver({
+  provider: DRIVER_KIND,
+  npmPackageName: "opencode-ai",
+  homebrewFormula: "anomalyco/tap/opencode",
+  nativeUpdate: {
+    executable: "opencode",
+    args: ["upgrade"],
+    lockKey: "opencode-native",
+    isCommandPath: isOpenCodeNativeCommandPath,
+  },
+});
 
 export type OpenCodeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
   | FileSystem.FileSystem
+  | HttpClient.HttpClient
   | OpenCodeRuntime
   | Path.Path
   | ProviderEventLoggers
-  | ServerConfig;
+  | ServerConfig
+  | ServerSettingsService;
 
 const withInstanceIdentity =
   (input: {
@@ -75,6 +116,8 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
     Effect.gen(function* () {
       const openCodeRuntime = yield* OpenCodeRuntime;
       const serverConfig = yield* ServerConfig;
+      const httpClient = yield* HttpClient.HttpClient;
+      const serverSettings = yield* ServerSettingsService;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
@@ -88,6 +131,10 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         continuationGroupKey: continuationIdentity.continuationKey,
       });
       const effectiveConfig = { ...config, enabled } satisfies OpenCodeSettings;
+      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
+        binaryPath: effectiveConfig.binaryPath,
+        env: processEnv,
+      });
 
       const adapter = yield* makeOpenCodeAdapter(effectiveConfig, {
         instanceId,
@@ -102,15 +149,26 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         processEnv,
       ).pipe(Effect.map(stampIdentity), Effect.provideService(OpenCodeRuntime, openCodeRuntime));
 
-      const snapshot = yield* makeManagedServerProvider<OpenCodeSettings>({
-        getSettings: Effect.succeed(effectiveConfig),
-        streamSettings: Stream.never,
-        haveSettingsChanged: () => false,
-        initialSnapshot: (settings) => stampIdentity(makePendingOpenCodeProvider(settings)),
-        checkProvider,
-        startInitialRefresh: false,
-        refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
-      }).pipe(
+      const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
+      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<OpenCodeSettings>>(
+        {
+          maintenanceCapabilities,
+          getSettings: snapshotSettings.getSettings,
+          streamSettings: snapshotSettings.streamSettings,
+          haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+          initialSnapshot: (settings) =>
+            makePendingOpenCodeProvider(settings.provider).pipe(Effect.map(stampIdentity)),
+          checkProvider,
+          enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+            enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
+              enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+            }).pipe(
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+            ),
+          refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
+        },
+      ).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({

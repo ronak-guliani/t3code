@@ -1,15 +1,5 @@
-import { Encoding } from "effect";
-import {
-  CheckpointRef,
-  type OrchestrationCheckpointStatus,
-  ProjectId,
-  type ThreadId,
-} from "@t3tools/contracts";
-
-export interface CheckpointTurnCountSummary {
-  readonly checkpointTurnCount: number;
-  readonly status: OrchestrationCheckpointStatus;
-}
+import * as Encoding from "effect/Encoding";
+import { CheckpointRef, ProjectId, type ThreadId } from "@t3tools/contracts";
 
 export const CHECKPOINT_REFS_PREFIX = "refs/t3/checkpoints";
 
@@ -35,16 +25,4 @@ export function resolveThreadWorkspaceCwd(input: {
   }
 
   return input.projects.find((project) => project.id === input.thread.projectId)?.workspaceRoot;
-}
-
-export function latestCapturedCheckpointTurnCount(
-  checkpoints: ReadonlyArray<CheckpointTurnCountSummary>,
-): number {
-  return checkpoints.reduce(
-    (maxTurnCount, checkpoint) =>
-      checkpoint.status === "missing" || checkpoint.status === "speculative"
-        ? maxTurnCount
-        : Math.max(maxTurnCount, checkpoint.checkpointTurnCount),
-    0,
-  );
 }

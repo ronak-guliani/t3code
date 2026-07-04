@@ -1,15 +1,14 @@
-import assert from "node:assert/strict";
-import { it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
-  DiffState,
   ModelSelection,
   OrchestrationCommand,
-  OrchestrationCheckpointSummary,
   OrchestrationEvent,
+  OrchestrationGetFullThreadDiffInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
   ProjectCreatedPayload,
@@ -22,17 +21,12 @@ import {
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
-  ThreadTurnDiffCompletedPayload,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
-const decodeDiffState = Schema.decodeUnknownEffect(DiffState);
-const decodeCheckpointSummary = Schema.decodeUnknownEffect(OrchestrationCheckpointSummary);
+const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
 const decodeThreadTurnDiff = Schema.decodeUnknownEffect(ThreadTurnDiff);
-const decodeThreadTurnDiffCompletedPayload = Schema.decodeUnknownEffect(
-  ThreadTurnDiffCompletedPayload,
-);
 const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateCommand);
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
@@ -43,6 +37,7 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -54,7 +49,6 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
-const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
@@ -65,19 +59,29 @@ it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
     });
     assert.strictEqual(parsed.fromTurnCount, 1);
     assert.strictEqual(parsed.toTurnCount, 2);
-    assert.strictEqual(parsed.scope, "snapshot");
   }),
 );
 
-it.effect("parses turn diff input with explicit scope", () =>
+it.effect("parses turn diff input with whitespace ignoring enabled", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeTurnDiffInput({
       threadId: "thread-1",
       fromTurnCount: 1,
       toTurnCount: 2,
-      scope: "turn",
+      ignoreWhitespace: true,
     });
-    assert.strictEqual(parsed.scope, "turn");
+    assert.strictEqual(parsed.ignoreWhitespace, true);
+  }),
+);
+
+it.effect("parses full thread diff input with whitespace ignoring enabled", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeFullThreadDiffInput({
+      threadId: "thread-1",
+      toTurnCount: 2,
+      ignoreWhitespace: true,
+    });
+    assert.strictEqual(parsed.ignoreWhitespace, true);
   }),
 );
 
@@ -94,39 +98,6 @@ it.effect("rejects turn diff input when fromTurnCount > toTurnCount", () =>
   }),
 );
 
-it.effect("defaults scoped checkpoint fields for legacy checkpoint summaries", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decodeCheckpointSummary({
-      turnId: "turn-1",
-      checkpointTurnCount: 1,
-      checkpointRef: "checkpoint-1",
-      status: "ready",
-      files: [],
-      assistantMessageId: null,
-      completedAt: "2026-01-01T00:00:00.000Z",
-    });
-    assert.deepStrictEqual(parsed.agentTouchedPaths, []);
-    assert.deepStrictEqual(parsed.turnFiles, []);
-  }),
-);
-
-it.effect("defaults scoped checkpoint fields for legacy turn-diff events", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decodeThreadTurnDiffCompletedPayload({
-      threadId: "thread-1",
-      turnId: "turn-1",
-      checkpointTurnCount: 1,
-      checkpointRef: "checkpoint-1",
-      status: "ready",
-      files: [],
-      assistantMessageId: null,
-      completedAt: "2026-01-01T00:00:00.000Z",
-    });
-    assert.deepStrictEqual(parsed.agentTouchedPaths, []);
-    assert.deepStrictEqual(parsed.turnFiles, []);
-  }),
-);
-
 it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(
@@ -137,93 +108,6 @@ it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
         diff: "patch",
       }),
     );
-
-    assert.strictEqual(result._tag, "Failure");
-  }),
-);
-
-it.effect("parses ready diff state snapshots", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decodeDiffState({
-      _tag: "ready",
-      snapshot: {
-        threadId: "thread-1",
-        fromTurnCount: 0,
-        toTurnCount: 1,
-        scope: "snapshot",
-        patch: "diff --git a/a.ts b/a.ts",
-        metadata: {
-          filesChanged: 1,
-          totalAdditions: 2,
-          totalDeletions: 1,
-          largeFiles: 0,
-          unrenderableFiles: 0,
-        },
-        files: [
-          {
-            path: "a.ts",
-            previousPath: null,
-            status: "modified",
-            additions: 2,
-            deletions: 1,
-            hunks: [],
-            isBinary: false,
-            size: "normal",
-            hasHiddenBidiChars: false,
-          },
-        ],
-      },
-    });
-
-    if (parsed._tag !== "ready") {
-      assert.fail(`expected ready diff state, got ${parsed._tag}`);
-    }
-    assert.strictEqual(parsed.snapshot.files[0]?.path, "a.ts");
-  }),
-);
-
-it.effect("parses stale diff state snapshots with a message", () =>
-  Effect.gen(function* () {
-    const parsed = yield* decodeDiffState({
-      _tag: "stale",
-      message: "Showing the last loaded diff while the latest checkpoint is unavailable.",
-      snapshot: {
-        threadId: "thread-1",
-        fromTurnCount: 0,
-        toTurnCount: 1,
-        scope: "snapshot",
-        patch: "",
-        metadata: {
-          filesChanged: 0,
-          totalAdditions: 0,
-          totalDeletions: 0,
-          largeFiles: 0,
-          unrenderableFiles: 0,
-        },
-        files: [],
-      },
-    });
-
-    if (parsed._tag !== "stale") {
-      assert.fail(`expected stale diff state, got ${parsed._tag}`);
-    }
-    assert.strictEqual(parsed.snapshot.threadId, "thread-1");
-  }),
-);
-
-it.effect("rejects unavailable diff state when fromTurnCount > toTurnCount", () =>
-  Effect.gen(function* () {
-    const result = yield* Effect.exit(
-      decodeDiffState({
-        _tag: "unavailable",
-        threadId: "thread-1",
-        fromTurnCount: 3,
-        toTurnCount: 2,
-        scope: "snapshot",
-        message: "Checkpoint is unavailable.",
-      }),
-    );
-
     assert.strictEqual(result._tag, "Failure");
   }),
 );
@@ -338,60 +222,6 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
   }),
 );
 
-it.effect("decodes queued turn commands and events", () =>
-  Effect.gen(function* () {
-    const command = yield* decodeOrchestrationCommand({
-      type: "thread.queued-turn.create",
-      commandId: "cmd-queue-create",
-      threadId: "thread-1",
-      queuedTurnId: "queued-turn-1",
-      message: {
-        messageId: "message-queued-1",
-        role: "user",
-        text: "run this next",
-        attachments: [],
-      },
-      runtimeMode: DEFAULT_RUNTIME_MODE,
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-      createdAt: "2026-03-01T00:00:00.000Z",
-    });
-    assert.strictEqual(command.type, "thread.queued-turn.create");
-
-    const event = yield* decodeOrchestrationEvent({
-      sequence: 1,
-      eventId: "event-queued-turn-created",
-      aggregateKind: "thread",
-      aggregateId: "thread-1",
-      type: "thread.queued-turn-created",
-      occurredAt: "2026-03-01T00:00:00.000Z",
-      commandId: "cmd-queue-create",
-      causationEventId: null,
-      correlationId: "cmd-queue-create",
-      metadata: {},
-      payload: {
-        threadId: "thread-1",
-        queuedTurn: {
-          id: "queued-turn-1",
-          threadId: "thread-1",
-          message: {
-            messageId: "message-queued-1",
-            role: "user",
-            text: "run this next",
-            attachments: [],
-          },
-          runtimeMode: DEFAULT_RUNTIME_MODE,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          createdAt: "2026-03-01T00:00:00.000Z",
-          updatedAt: "2026-03-01T00:00:00.000Z",
-          failedAt: null,
-          failureMessage: null,
-        },
-      },
-    });
-    assert.strictEqual(event.type, "thread.queued-turn-created");
-  }),
-);
-
 it.effect("preserves explicit provider and runtime mode in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({
@@ -447,6 +277,7 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
           projectCwd: "/tmp/workspace",
           baseBranch: "main",
           branch: "t3code/example",
+          startFromOrigin: true,
         },
         runSetupScript: true,
       },
@@ -454,6 +285,7 @@ it.effect("accepts bootstrap metadata in thread.turn.start", () =>
     });
     assert.strictEqual(parsed.bootstrap?.createThread?.projectId, "project-1");
     assert.strictEqual(parsed.bootstrap?.prepareWorktree?.baseBranch, "main");
+    assert.strictEqual(parsed.bootstrap?.prepareWorktree?.startFromOrigin, true);
     assert.strictEqual(parsed.bootstrap?.runSetupScript, true);
   }),
 );
@@ -549,7 +381,7 @@ it.effect("decodes thread archived and unarchived events", () =>
     });
 
     if (archived.type !== "thread.archived") {
-      assert.fail(`expected thread.archived event, got ${archived.type}`);
+      assert.fail(`Expected thread.archived event, received ${archived.type}.`);
     }
     assert.strictEqual(archived.payload.archivedAt, "2026-01-01T00:00:00.000Z");
     assert.strictEqual(unarchived.type, "thread.unarchived");

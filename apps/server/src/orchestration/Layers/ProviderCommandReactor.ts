@@ -5,44 +5,50 @@ import {
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
+  type ProjectId,
   type OrchestrationSession,
-  type OrchestrationThread,
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTemporaryWorktreeBranch, WORKTREE_BRANCH_PREFIX } from "@t3tools/shared/git";
-import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } from "effect";
+import * as Cache from "effect/Cache";
+import * as Cause from "effect/Cause";
+import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
-import {
-  checkpointRefForThreadTurn,
-  latestCapturedCheckpointTurnCount,
-  resolveThreadWorkspaceCwd,
-} from "../../checkpointing/Utils.ts";
-import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
-import { GitCore } from "../../git/Services/GitCore.ts";
-import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
+import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
-import { TextGeneration } from "../../git/Services/TextGeneration.ts";
+import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { assistantTurnCount } from "../Utils.ts";
+import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
+import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
+const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
     type:
       | "thread.runtime-mode-set"
-      | "thread.provider-fork-requested"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
@@ -76,9 +82,6 @@ function mapProviderSessionStatusToOrchestrationStatus(
 
 const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
   event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
-
-const serverCommandId = (tag: string): CommandId =>
-  CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
 
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
@@ -116,7 +119,7 @@ function findProviderAdapterRequestError(
   cause: Cause.Cause<ProviderServiceError>,
 ): ProviderAdapterRequestError | undefined {
   const failReason = cause.reasons.find(Cause.isFailReason);
-  return Schema.is(ProviderAdapterRequestError)(failReason?.error) ? failReason.error : undefined;
+  return isProviderAdapterRequestError(failReason?.error) ? failReason.error : undefined;
 }
 
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
@@ -138,9 +141,19 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
 function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
   if (error) {
-    return error.detail.toLowerCase().includes("unknown pending user-input request");
+    const detail = error.detail.toLowerCase();
+    return (
+      detail.includes("unknown pending user-input request") ||
+      detail.includes("unknown pending user input request") ||
+      detail.includes("unknown pending codex user input request")
+    );
   }
-  return Cause.pretty(cause).toLowerCase().includes("unknown pending user-input request");
+  const message = Cause.pretty(cause).toLowerCase();
+  return (
+    message.includes("unknown pending user-input request") ||
+    message.includes("unknown pending user input request") ||
+    message.includes("unknown pending codex user input request")
+  );
 }
 
 function stalePendingRequestDetail(
@@ -174,13 +187,18 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 }
 
 const make = Effect.gen(function* () {
+  const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
-  const checkpointStore = yield* CheckpointStore;
-  const git = yield* GitCore;
-  const gitStatusBroadcaster = yield* GitStatusBroadcaster;
+  const providerRegistry = yield* ProviderRegistry;
+  const gitWorkflow = yield* GitWorkflowService;
+  const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const serverCommandId = (tag: string) =>
+    crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
+  const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -203,7 +221,6 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.fork.failed"
       | "provider.session.stop.failed";
     readonly summary: string;
     readonly detail: string;
@@ -211,28 +228,35 @@ const make = Effect.gen(function* () {
     readonly createdAt: string;
     readonly requestId?: string;
   }) =>
-    orchestrationEngine.dispatch({
-      type: "thread.activity.append",
+    Effect.all({
       commandId: serverCommandId("provider-failure-activity"),
-      threadId: input.threadId,
-      activity: {
-        id: EventId.make(crypto.randomUUID()),
-        tone: "error",
-        kind: input.kind,
-        summary: input.summary,
-        payload: {
-          detail: input.detail,
-          ...(input.requestId ? { requestId: input.requestId } : {}),
-        },
-        turnId: input.turnId,
-        createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
-    });
+      eventId: serverEventId(),
+    }).pipe(
+      Effect.flatMap(({ commandId, eventId }) =>
+        orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId,
+          threadId: input.threadId,
+          activity: {
+            id: eventId,
+            tone: "error",
+            kind: input.kind,
+            summary: input.summary,
+            payload: {
+              detail: input.detail,
+              ...(input.requestId ? { requestId: input.requestId } : {}),
+            },
+            turnId: input.turnId,
+            createdAt: input.createdAt,
+          },
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
 
   const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
     const failReason = cause.reasons.find(Cause.isFailReason);
-    const providerError = Schema.is(ProviderAdapterRequestError)(failReason?.error)
+    const providerError = isProviderAdapterRequestError(failReason?.error)
       ? failReason.error
       : undefined;
     if (providerError) {
@@ -246,13 +270,17 @@ const make = Effect.gen(function* () {
     readonly session: OrchestrationSession;
     readonly createdAt: string;
   }) =>
-    orchestrationEngine.dispatch({
-      type: "thread.session.set",
-      commandId: serverCommandId("provider-session-set"),
-      threadId: input.threadId,
-      session: input.session,
-      createdAt: input.createdAt,
-    });
+    serverCommandId("provider-session-set").pipe(
+      Effect.flatMap((commandId) =>
+        orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId,
+          threadId: input.threadId,
+          session: input.session,
+          createdAt: input.createdAt,
+        }),
+      ),
+    );
 
   const setThreadSessionErrorOnTurnStartFailure = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -277,46 +305,47 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const readModel = yield* orchestrationEngine.getReadModel();
-    return readModel.threads.find((entry) => entry.id === threadId);
+  const resolveProject = Effect.fnUntraced(function* (projectId: ProjectId) {
+    return yield* projectionSnapshotQuery
+      .getProjectShellById(projectId)
+      .pipe(Effect.map(Option.getOrUndefined));
   });
 
-  const ensurePreTurnBaselineForThread = Effect.fn("ensurePreTurnBaselineForThread")(function* (
-    threadId: ThreadId,
-  ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
-    if (!thread) {
+  const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+    return yield* projectionSnapshotQuery
+      .getThreadDetailById(threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
+  });
+
+  const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly currentModelSelection: ModelSelection;
+    readonly requestedModelSelection: ModelSelection | undefined;
+  }) {
+    const requestedModelSelection = input.requestedModelSelection;
+    if (
+      requestedModelSelection === undefined ||
+      (input.currentModelSelection.instanceId === requestedModelSelection.instanceId &&
+        input.currentModelSelection.model === requestedModelSelection.model)
+    ) {
       return;
     }
-
-    const cwd = resolveThreadWorkspaceCwd({
-      thread,
-      projects: readModel.projects,
-    });
-    if (!cwd) {
+    const providers = yield* providerRegistry.getProviders;
+    const requiresNewThread =
+      providers.find((snapshot) => snapshot.instanceId === input.currentModelSelection.instanceId)
+        ?.requiresNewThreadForModelChange === true ||
+      providers.find((snapshot) => snapshot.instanceId === requestedModelSelection.instanceId)
+        ?.requiresNewThreadForModelChange === true;
+    if (!requiresNewThread) {
       return;
     }
-
-    const isRepo = yield* checkpointStore.isGitRepository(cwd);
-    if (!isRepo) {
-      return;
-    }
-
-    const checkpointTurnCount = latestCapturedCheckpointTurnCount(thread.checkpoints);
-    const checkpointRef = checkpointRefForThreadTurn(thread.id, checkpointTurnCount);
-    const baselineExists = yield* checkpointStore.hasCheckpointRef({
-      cwd,
-      checkpointRef,
-    });
-    if (baselineExists) {
-      return;
-    }
-
-    yield* checkpointStore.captureCheckpoint({
-      cwd,
-      checkpointRef,
+    return yield* new ProviderAdapterRequestError({
+      provider: providerErrorLabelFromInstanceHint({
+        instanceId: String(requestedModelSelection.instanceId),
+        modelSelectionInstanceId: String(input.currentModelSelection.instanceId),
+      }),
+      method: "thread.turn.start",
+      detail: `Thread '${input.threadId}' cannot switch models after the conversation has started. Start a new thread to use '${requestedModelSelection.model}'.`,
     });
   });
 
@@ -327,8 +356,7 @@ const make = Effect.gen(function* () {
       readonly modelSelection?: ModelSelection;
     },
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    const thread = yield* resolveThread(threadId);
     if (!thread) {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
@@ -341,22 +369,6 @@ const make = Effect.gen(function* () {
         .pipe(Effect.map((sessions) => sessions.find((session) => session.threadId === threadId)));
 
     const activeSession = yield* resolveActiveSession(threadId);
-    if (thread.session?.status === "starting" && !activeSession) {
-      return yield* new ProviderAdapterRequestError({
-        provider: providerErrorLabel(thread.session.providerName ?? undefined),
-        method: "thread.turn.start",
-        detail: `Thread '${threadId}' is still preparing its forked provider session. Try again once the fork finishes.`,
-      });
-    }
-    if (thread.session?.status === "error" && !activeSession) {
-      return yield* new ProviderAdapterRequestError({
-        provider: providerErrorLabel(thread.session.providerName ?? undefined),
-        method: "thread.turn.start",
-        detail:
-          thread.session.lastError ??
-          `Thread '${threadId}' has no recoverable provider session. Stop the session before starting a new provider context.`,
-      });
-    }
     const activeThreadSession =
       thread.session !== null && thread.session.status !== "stopped" && activeSession
         ? thread.session
@@ -408,7 +420,7 @@ const make = Effect.gen(function* () {
       ),
     );
     const desiredDriverKind = desiredInfo.driverKind;
-    if (!Schema.is(ProviderDriverKind)(desiredDriverKind)) {
+    if (!isProviderDriverKind(desiredDriverKind)) {
       return yield* new ProviderAdapterRequestError({
         provider: providerErrorLabel(String(desiredDriverKind)),
         method: "thread.turn.start",
@@ -416,6 +428,20 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
+    if (thread.session !== null) {
+      yield* rejectStartedThreadModelChangeIfRequired({
+        threadId,
+        currentModelSelection:
+          activeSession?.model !== undefined
+            ? {
+                ...thread.modelSelection,
+                instanceId: currentInstanceId,
+                model: activeSession.model,
+              }
+            : thread.modelSelection,
+        requestedModelSelection,
+      });
+    }
     if (
       thread.session !== null &&
       requestedModelSelection !== undefined &&
@@ -439,9 +465,10 @@ const make = Effect.gen(function* () {
         });
       }
     }
+    const project = yield* resolveProject(thread.projectId);
     const effectiveCwd = resolveThreadWorkspaceCwd({
       thread,
-      projects: readModel.projects,
+      projects: project ? [project] : [],
     });
 
     const startProviderSession = (input?: {
@@ -477,7 +504,6 @@ const make = Effect.gen(function* () {
             runtimeMode: desiredRuntimeMode,
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
-            ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
           },
@@ -652,15 +678,15 @@ const make = Effect.gen(function* () {
       const targetBranch = buildGeneratedWorktreeBranchName(generated.branch);
       if (targetBranch === oldBranch) return;
 
-      const renamed = yield* git.renameBranch({ cwd, oldBranch, newBranch: targetBranch });
+      const renamed = yield* gitWorkflow.renameBranch({ cwd, oldBranch, newBranch: targetBranch });
       yield* orchestrationEngine.dispatch({
         type: "thread.meta.update",
-        commandId: serverCommandId("worktree-branch-rename"),
+        commandId: yield* serverCommandId("worktree-branch-rename"),
         threadId: input.threadId,
         branch: renamed.branch,
         worktreePath: cwd,
       });
-      yield* gitStatusBroadcaster.refreshStatus(cwd).pipe(Effect.ignoreCause({ log: true }));
+      yield* vcsStatusBroadcaster.refreshStatus(cwd).pipe(Effect.ignoreCause({ log: true }));
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("provider command reactor failed to generate or rename worktree branch", {
@@ -702,7 +728,7 @@ const make = Effect.gen(function* () {
 
         yield* orchestrationEngine.dispatch({
           type: "thread.meta.update",
-          commandId: serverCommandId("thread-title-rename"),
+          commandId: yield* serverCommandId("thread-title-rename"),
           threadId: input.threadId,
           title: generated.title,
         });
@@ -717,167 +743,6 @@ const make = Effect.gen(function* () {
       );
     },
   );
-
-  const processProviderForkRequested = Effect.fn("processProviderForkRequested")(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.provider-fork-requested" }>,
-  ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const sourceThread = readModel.threads.find(
-      (entry) => entry.id === event.payload.sourceThreadId,
-    );
-    const targetThread = readModel.threads.find((entry) => entry.id === event.payload.threadId);
-    if (!sourceThread || !targetThread) {
-      return;
-    }
-
-    const sourceSession = sourceThread.session;
-    if (!sourceSession || sourceSession.status === "stopped") {
-      const detail = `Source thread '${event.payload.sourceThreadId}' has no active provider session to fork.`;
-      yield* setThreadSession({
-        threadId: event.payload.threadId,
-        session: {
-          threadId: event.payload.threadId,
-          status: "error",
-          providerName: sourceSession?.providerName ?? null,
-          ...(sourceSession?.providerInstanceId !== undefined
-            ? { providerInstanceId: sourceSession.providerInstanceId }
-            : {}),
-          runtimeMode: targetThread.runtimeMode,
-          activeTurnId: null,
-          lastError: detail,
-          updatedAt: event.payload.createdAt,
-        },
-        createdAt: event.payload.createdAt,
-      });
-      return yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.session.fork.failed",
-        summary: "Provider fork failed",
-        detail,
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
-    }
-
-    const sourceAssistantTurnCount = assistantTurnCount(sourceThread.messages);
-    if (event.payload.targetTurnCount !== sourceAssistantTurnCount) {
-      const detail =
-        "Copilot native forking currently supports only the latest completed assistant response. Mid-conversation forks keep visible T3 history but cannot safely reuse provider context.";
-      yield* setThreadSession({
-        threadId: event.payload.threadId,
-        session: {
-          threadId: event.payload.threadId,
-          status: "error",
-          providerName: sourceSession.providerName,
-          ...(sourceSession.providerInstanceId !== undefined
-            ? { providerInstanceId: sourceSession.providerInstanceId }
-            : {}),
-          runtimeMode: targetThread.runtimeMode,
-          activeTurnId: null,
-          lastError: detail,
-          updatedAt: event.payload.createdAt,
-        },
-        createdAt: event.payload.createdAt,
-      });
-      return yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.session.fork.failed",
-        summary: "Provider fork unavailable",
-        detail,
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
-    }
-
-    yield* setThreadSession({
-      threadId: event.payload.threadId,
-      session: {
-        threadId: event.payload.threadId,
-        status: "starting",
-        providerName: sourceSession.providerName,
-        ...(sourceSession.providerInstanceId !== undefined
-          ? { providerInstanceId: sourceSession.providerInstanceId }
-          : {}),
-        runtimeMode: targetThread.runtimeMode,
-        activeTurnId: null,
-        lastError: null,
-        updatedAt: event.payload.createdAt,
-      },
-      createdAt: event.payload.createdAt,
-    });
-
-    const cwd = resolveThreadWorkspaceCwd({
-      thread: targetThread,
-      projects: readModel.projects,
-    });
-
-    yield* providerService
-      .forkSession({
-        sourceThreadId: event.payload.sourceThreadId,
-        threadId: event.payload.threadId,
-        ...(sourceSession.providerName !== null
-          ? { provider: ProviderDriverKind.make(sourceSession.providerName) }
-          : {}),
-        ...(sourceSession.providerInstanceId !== undefined
-          ? { providerInstanceId: sourceSession.providerInstanceId }
-          : {}),
-        ...(cwd !== undefined ? { cwd } : {}),
-        modelSelection: targetThread.modelSelection,
-        interactionMode: targetThread.interactionMode,
-        runtimeMode: targetThread.runtimeMode,
-      })
-      .pipe(
-        Effect.flatMap((session) =>
-          setThreadSession({
-            threadId: event.payload.threadId,
-            session: {
-              threadId: event.payload.threadId,
-              status: mapProviderSessionStatusToOrchestrationStatus(session.status),
-              providerName: session.provider,
-              ...(session.providerInstanceId !== undefined
-                ? { providerInstanceId: session.providerInstanceId }
-                : {}),
-              runtimeMode: session.runtimeMode,
-              activeTurnId: null,
-              ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
-              lastError: session.lastError ?? null,
-              updatedAt: session.updatedAt,
-            },
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.catchCause((cause) => {
-          const detail = formatFailureDetail(cause);
-          return setThreadSession({
-            threadId: event.payload.threadId,
-            session: {
-              threadId: event.payload.threadId,
-              status: "error",
-              providerName: sourceSession.providerName,
-              ...(sourceSession.providerInstanceId !== undefined
-                ? { providerInstanceId: sourceSession.providerInstanceId }
-                : {}),
-              runtimeMode: targetThread.runtimeMode,
-              activeTurnId: null,
-              lastError: detail,
-              updatedAt: event.payload.createdAt,
-            },
-            createdAt: event.payload.createdAt,
-          }).pipe(
-            Effect.flatMap(() =>
-              appendProviderFailureActivity({
-                threadId: event.payload.threadId,
-                kind: "provider.session.fork.failed",
-                summary: "Provider fork failed",
-                detail,
-                turnId: null,
-                createdAt: event.payload.createdAt,
-              }),
-            ),
-          );
-        }),
-      );
-  });
 
   const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
@@ -908,10 +773,11 @@ const make = Effect.gen(function* () {
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
+      const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({
           thread,
-          projects: (yield* orchestrationEngine.getReadModel()).projects,
+          projects: project ? [project] : [],
         }) ?? process.cwd();
       const generationInput = {
         messageText: message.text,
@@ -970,15 +836,6 @@ const make = Effect.gen(function* () {
           }),
         ),
       );
-
-    yield* ensurePreTurnBaselineForThread(event.payload.threadId).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("provider command reactor failed to capture pre-turn checkpoint", {
-          threadId: event.payload.threadId,
-          detail: error.message,
-        }),
-      ),
-    );
 
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
@@ -1054,20 +911,16 @@ const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.catchCause((cause) =>
-          Effect.gen(function* () {
-            yield* appendProviderFailureActivity({
-              threadId: event.payload.threadId,
-              kind: "provider.approval.respond.failed",
-              summary: "Provider approval response failed",
-              detail: isUnknownPendingApprovalRequestError(cause)
-                ? stalePendingRequestDetail("approval", event.payload.requestId)
-                : Cause.pretty(cause),
-              turnId: null,
-              createdAt: event.payload.createdAt,
-              requestId: event.payload.requestId,
-            });
-
-            if (!isUnknownPendingApprovalRequestError(cause)) return;
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.approval.respond.failed",
+            summary: "Provider approval response failed",
+            detail: isUnknownPendingApprovalRequestError(cause)
+              ? stalePendingRequestDetail("approval", event.payload.requestId)
+              : Cause.pretty(cause),
+            turnId: null,
+            createdAt: event.payload.createdAt,
+            requestId: event.payload.requestId,
           }),
         ),
       );
@@ -1142,9 +995,6 @@ const make = Effect.gen(function* () {
           : {}),
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
-        ...(thread.session?.resumeCursor !== undefined
-          ? { resumeCursor: thread.session.resumeCursor }
-          : {}),
         lastError: thread.session?.lastError ?? null,
         updatedAt: now,
       },
@@ -1164,9 +1014,6 @@ const make = Effect.gen(function* () {
       eventType: event.type,
     });
     switch (event.type) {
-      case "thread.provider-fork-requested":
-        yield* processProviderForkRequested(event);
-        return;
       case "thread.runtime-mode-set": {
         const thread = yield* resolveThread(event.payload.threadId);
         if (!thread?.session || thread.session.status === "stopped") {
@@ -1217,7 +1064,6 @@ const make = Effect.gen(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         event.type === "thread.runtime-mode-set" ||
-        event.type === "thread.provider-fork-requested" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||

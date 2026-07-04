@@ -1,13 +1,12 @@
 import type {
   OrchestrationCommand,
-  OrchestrationQueuedTurn,
   OrchestrationProject,
   OrchestrationReadModel,
   OrchestrationThread,
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 
@@ -85,118 +84,6 @@ export function requireThread(input: {
     invariantError(
       input.command.type,
       `Thread '${input.threadId}' does not exist for command '${input.command.type}'.`,
-    ),
-  );
-}
-
-export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
-  if (thread.latestTurn?.state === "running") {
-    return true;
-  }
-
-  if (thread.session?.status === "running" && thread.session.activeTurnId !== null) {
-    return true;
-  }
-
-  const latestMessage = thread.messages.at(-1);
-  if (latestMessage?.role !== "user") {
-    return false;
-  }
-  if (thread.latestTurn === null || thread.latestTurn.completedAt === null) {
-    return true;
-  }
-  return latestMessage.createdAt >= thread.latestTurn.completedAt;
-}
-
-function activityRequestId(payload: unknown): string | null {
-  if (typeof payload !== "object" || payload === null) {
-    return null;
-  }
-  const requestId = (payload as Record<string, unknown>).requestId;
-  return typeof requestId === "string" ? requestId : null;
-}
-
-function threadHasUnresolvedActivity(
-  thread: OrchestrationThread,
-  requestedKind: string,
-  resolvedKind: string,
-): boolean {
-  const pending = new Set<string>();
-  for (const activity of thread.activities
-    .slice()
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
-    const requestId = activityRequestId(activity.payload);
-    if (requestId === null) continue;
-    if (activity.kind === requestedKind) {
-      pending.add(requestId);
-    } else if (activity.kind === resolvedKind) {
-      pending.delete(requestId);
-    }
-  }
-  return pending.size > 0;
-}
-
-export function threadHasPendingInteraction(thread: OrchestrationThread): boolean {
-  return (
-    threadHasUnresolvedActivity(thread, "approval.requested", "approval.resolved") ||
-    threadHasUnresolvedActivity(thread, "user-input.requested", "user-input.resolved")
-  );
-}
-
-export function isThreadReadyForQueuedDispatch(thread: OrchestrationThread): boolean {
-  return !threadHasInFlightTurn(thread) && !threadHasPendingInteraction(thread);
-}
-
-export function findQueuedTurnById(
-  thread: OrchestrationThread,
-  queuedTurnId: string,
-): OrchestrationQueuedTurn | undefined {
-  return (thread.queuedTurns ?? []).find((queuedTurn) => queuedTurn.id === queuedTurnId);
-}
-
-export function requireQueuedTurn(input: {
-  readonly readModel: OrchestrationReadModel;
-  readonly command: OrchestrationCommand;
-  readonly threadId: ThreadId;
-  readonly queuedTurnId: string;
-}): Effect.Effect<
-  { readonly thread: OrchestrationThread; readonly queuedTurn: OrchestrationQueuedTurn },
-  OrchestrationCommandInvariantError
-> {
-  return requireThread({
-    readModel: input.readModel,
-    command: input.command,
-    threadId: input.threadId,
-  }).pipe(
-    Effect.flatMap((thread) => {
-      const queuedTurn = findQueuedTurnById(thread, input.queuedTurnId);
-      return queuedTurn
-        ? Effect.succeed({ thread, queuedTurn })
-        : Effect.fail(
-            invariantError(
-              input.command.type,
-              `Queued turn '${input.queuedTurnId}' does not exist on thread '${input.threadId}'.`,
-            ),
-          );
-    }),
-  );
-}
-
-export function requireThreadReadyForTurnStart(input: {
-  readonly readModel: OrchestrationReadModel;
-  readonly command: OrchestrationCommand;
-  readonly threadId: ThreadId;
-}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
-  return requireThread(input).pipe(
-    Effect.flatMap((thread) =>
-      threadHasInFlightTurn(thread)
-        ? Effect.fail(
-            invariantError(
-              input.command.type,
-              `Thread '${input.threadId}' already has a turn in flight. Wait for it to finish or interrupt it before starting another turn.`,
-            ),
-          )
-        : Effect.succeed(thread),
     ),
   );
 }

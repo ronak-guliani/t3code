@@ -17,6 +17,7 @@ export default function ThreadLayout() {
           headerShown: true,
           headerTransparent: true,
           headerShadowVisible: false,
+          headerTitle: "",
         }}
       />
       <Stack.Screen
@@ -49,6 +50,32 @@ export default function ThreadLayout() {
           headerBackButtonDisplayMode: "minimal",
           headerShown: true,
           headerTitle: "Files changed",
+          headerBackTitle: "",
+          headerShadowVisible: false,
+          headerStyle: headerBg,
+        }}
+      />
+      <Stack.Screen
+        name="files/index"
+        options={{
+          animation: "slide_from_right",
+          contentStyle: sheetStyle,
+          headerBackButtonDisplayMode: "minimal",
+          headerShown: true,
+          headerTitle: "Files",
+          headerBackTitle: "",
+          headerShadowVisible: false,
+          headerStyle: headerBg,
+        }}
+      />
+      <Stack.Screen
+        name="files/[...path]"
+        options={{
+          animation: "slide_from_right",
+          contentStyle: sheetStyle,
+          headerBackButtonDisplayMode: "minimal",
+          headerShown: true,
+          headerTitle: "File",
           headerBackTitle: "",
           headerShadowVisible: false,
           headerStyle: headerBg,

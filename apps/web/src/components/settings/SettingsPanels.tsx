@@ -1,48 +1,30 @@
+import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { useAtomValue } from "@effect/atom-react";
 import {
-  ArchiveIcon,
-  ArchiveX,
-  FolderOpenIcon,
-  LoaderIcon,
-  PlusIcon,
-  RefreshCwIcon,
-} from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE,
-  DEFAULT_REVIEW_CHANGES_SCOPE,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
+  PROVIDER_DISPLAY_NAMES,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
-  type ReviewChangesScope,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import {
-  DEFAULT_CHAT_FONT_SIZE,
-  DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
-  DEFAULT_CODE_FONT,
-  DEFAULT_CODE_FONT_SIZE,
-  DEFAULT_INPUT_FONT_SIZE,
-  DEFAULT_SIDEBAR_FONT_SIZE,
-  DEFAULT_SIDEBAR_TRANSLUCENCY,
-  DEFAULT_TOOL_FONT_SIZE,
-  DEFAULT_THREAD_COMPLETION_NOTIFICATION_MODE,
-  DEFAULT_UI_DENSITY,
-  DEFAULT_UI_FONT,
-  DEFAULT_UNIFIED_SETTINGS,
-  type CodeFont,
-  type FontSize,
-  type SidebarTranslucency,
-  type ThreadCompletionNotificationMode,
-  type UiDensity,
-  type UiFont,
-} from "@t3tools/contracts/settings";
+  isAtomCommandInterrupted,
+  settlePromise,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
-import { Equal } from "effect";
-import { APP_VERSION } from "../../branding";
+import * as Arr from "effect/Array";
+import * as Duration from "effect/Duration";
+import * as Equal from "effect/Equal";
+import * as Result from "effect/Result";
+import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
 import {
   canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
@@ -52,43 +34,51 @@ import {
 } from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
-import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
+import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import { useTheme } from "../../hooks/useTheme";
-import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
-import {
-  setDesktopUpdateStateQueryData,
-  useDesktopUpdateState,
-} from "../../lib/desktopUpdateReactQuery";
+import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
 } from "../../modelSelection";
 import {
+  applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
-import { useShallow } from "zustand/react/shallow";
 import {
-  selectProjectsAcrossEnvironments,
-  selectThreadShellsAcrossEnvironments,
-  useStore,
-} from "../../store";
+  primaryServerObservabilityAtom,
+  primaryServerProvidersAtom,
+  serverEnvironment,
+} from "../../state/server";
+import { usePrimaryEnvironment } from "../../state/environments";
+import { useProjects } from "../../state/entities";
+import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { DraftInput } from "../ui/draft-input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
-import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import {
+  canOneClickUpdateProviderCandidate,
+  collectProviderUpdateCandidates,
+  hasOneClickUpdateProviderCandidate,
+  isProviderUpdateActive,
+  type ProviderUpdateCandidate,
+} from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
-import { getDriverOption } from "./providerDriverMeta";
-import { buildProviderInstanceUpdatePatch } from "./SettingsPanels.logic";
+import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
+import {
+  buildProviderInstanceUpdatePatch,
+  formatDiagnosticsDescription,
+} from "./SettingsPanels.logic";
 import {
   SettingResetButton,
   SettingsPageContainer,
@@ -97,12 +87,7 @@ import {
   useRelativeTimeTick,
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
-import {
-  useServerAvailableEditors,
-  useServerKeybindingsConfigPath,
-  useServerObservability,
-  useServerProviders,
-} from "../../rpc/serverState";
+import { useAtomCommand } from "../../state/use-atom-command";
 
 const THEME_OPTIONS = [
   {
@@ -125,42 +110,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const UI_DENSITY_OPTIONS: ReadonlyArray<{ value: UiDensity; label: string; hint: string }> = [
-  { value: "compact", label: "Compact", hint: "— tighter spacing" },
-  { value: "default", label: "Default", hint: "— balanced" },
-  { value: "comfortable", label: "Comfortable", hint: "— relaxed spacing" },
-  { value: "spacious", label: "Spacious", hint: "— more breathing room" },
-];
-
-const SIDEBAR_TRANSLUCENCY_OPTIONS: ReadonlyArray<{
-  value: SidebarTranslucency;
-  label: string;
-  hint: string;
-}> = [
-  { value: "off", label: "Off", hint: "— opaque, fastest" },
-  { value: "subtle", label: "Subtle", hint: "— light frosted tint" },
-  { value: "medium", label: "Medium", hint: "— balanced translucency" },
-  { value: "strong", label: "Strong", hint: "— most see-through" },
-  { value: "liquid-glass", label: "Liquid Glass", hint: "— ultra-clear, highest blur" },
-];
-
-const THREAD_COMPLETION_NOTIFICATION_OPTIONS: ReadonlyArray<{
-  value: ThreadCompletionNotificationMode;
-  label: string;
-}> = [
-  { value: "background-only", label: "Background only" },
-  { value: "all", label: "All completions" },
-  { value: "off", label: "Off" },
-];
-
-const REVIEW_CHANGES_SCOPE_OPTIONS: ReadonlyArray<{
-  value: ReviewChangesScope;
-  label: string;
-}> = [
-  { value: "uncommitted", label: "Uncommitted changes" },
-  { value: "against-base", label: "Against base branch" },
-];
-
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
 
 function withoutProviderInstanceKey<V>(
@@ -179,160 +128,9 @@ function withoutProviderInstanceFavorites(
   return favorites.filter((favorite) => favorite.provider !== instanceId);
 }
 
-const UI_FONT_OPTIONS: ReadonlyArray<{ value: UiFont; label: string }> = [
-  {
-    value: "dm-sans",
-    label: "DM Sans",
-  },
-  {
-    value: "geist",
-    label: "Geist",
-  },
-];
-
-const CODE_FONT_OPTIONS: ReadonlyArray<{ value: CodeFont; label: string }> = [
-  {
-    value: "system-mono",
-    label: "System mono",
-  },
-  {
-    value: "sf-mono",
-    label: "SF Mono",
-  },
-  {
-    value: "menlo",
-    label: "Menlo",
-  },
-  {
-    value: "jetbrains-mono",
-    label: "JetBrains Mono",
-  },
-];
-
-function isCodeFont(value: unknown): value is CodeFont {
-  return CODE_FONT_OPTIONS.some((option) => option.value === value);
-}
-
-const FONT_SIZE_OPTIONS: ReadonlyArray<{ value: FontSize; label: string }> = [
-  { value: 6, label: "6px" },
-  { value: 7, label: "7px" },
-  { value: 8, label: "8px" },
-  { value: 9, label: "9px" },
-  { value: 10, label: "10px" },
-  { value: 11, label: "11px" },
-  { value: 12, label: "12px" },
-  { value: 13, label: "13px" },
-  { value: 14, label: "14px" },
-  { value: 15, label: "15px" },
-  { value: 16, label: "16px" },
-  { value: 18, label: "18px" },
-  { value: 20, label: "20px" },
-  { value: 22, label: "22px" },
-  { value: 24, label: "24px" },
-];
-
-function isFontSize(value: unknown): value is FontSize {
-  return FONT_SIZE_OPTIONS.some((option) => String(option.value) === String(value));
-}
-
-function isReviewChangesScope(value: unknown): value is ReviewChangesScope {
-  return REVIEW_CHANGES_SCOPE_OPTIONS.some((option) => option.value === value);
-}
-
-function ReviewPromptTemplateEditor({
-  value,
-  onCommit,
-}: {
-  value: string;
-  onCommit: (nextValue: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-
-  const commitDraft = useCallback(() => {
-    if (draft !== value) {
-      onCommit(draft);
-    }
-  }, [draft, onCommit, value]);
-
-  return (
-    <Textarea
-      className="mt-4 w-full"
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={commitDraft}
-      onKeyDown={(event) => {
-        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-          event.currentTarget.blur();
-        }
-      }}
-      placeholder={DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE}
-      aria-label="Review Code prompt template"
-      spellCheck={false}
-      rows={9}
-    />
-  );
-}
-
-type InstallProviderSettings = {
-  provider: ProviderDriverKind;
-  title: string;
-  badgeLabel?: string;
-  binaryPlaceholder: string;
-  binaryDescription: ReactNode;
-  serverUrlPlaceholder?: string;
-  serverUrlDescription?: ReactNode;
-  serverPasswordPlaceholder?: string;
-  serverPasswordDescription?: ReactNode;
-  homePathKey?: "codexHomePath";
-  homePlaceholder?: string;
-  homeDescription?: ReactNode;
-};
-
-const PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
-  {
-    provider: ProviderDriverKind.make("codex"),
-    title: "Codex",
-    binaryPlaceholder: "Codex binary path",
-    binaryDescription: "Path to the Codex binary",
-    homePathKey: "codexHomePath",
-    homePlaceholder: "CODEX_HOME",
-    homeDescription: "Optional custom Codex home and config directory.",
-  },
-  {
-    provider: ProviderDriverKind.make("claudeAgent"),
-    title: "Claude",
-    binaryPlaceholder: "Claude binary path",
-    binaryDescription: "Path to the Claude binary",
-  },
-  {
-    provider: ProviderDriverKind.make("cursor"),
-    title: "Cursor",
-    badgeLabel: "Early Access",
-    binaryPlaceholder: "Cursor agent binary path",
-    binaryDescription: "Path to the Cursor agent binary",
-  },
-  {
-    provider: ProviderDriverKind.make("copilot"),
-    title: "GitHub Copilot",
-    binaryPlaceholder: "Copilot binary path",
-    binaryDescription: "Path to the GitHub Copilot CLI binary",
-  },
-  {
-    provider: ProviderDriverKind.make("opencode"),
-    title: "OpenCode",
-    binaryPlaceholder: "OpenCode binary path",
-    binaryDescription: "Path to the OpenCode binary",
-    serverUrlPlaceholder: "http://127.0.0.1:4096",
-    serverUrlDescription: "Leave blank to let T3 Code spawn the server when needed",
-    serverPasswordPlaceholder: "Server password (optional)",
-    serverPasswordDescription:
-      "If your OpenCode server requires authentication, enter the password here. NOTE: Stored in plain text on disk",
-  },
-] as const;
+const PROVIDER_SETTINGS = DRIVER_OPTIONS.map((definition) => ({
+  provider: definition.value,
+}));
 
 function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }) {
   useRelativeTimeTick();
@@ -366,13 +164,12 @@ function AboutVersionTitle() {
 }
 
 function AboutVersionSection() {
-  const queryClient = useQueryClient();
-  const updateStateQuery = useDesktopUpdateState();
+  const updateState = useDesktopUpdateState();
   const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
 
-  const updateState = updateStateQuery.data ?? null;
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
   const selectedUpdateChannel = updateState?.channel ?? "latest";
+  const selectedHostedAppChannel = hasDesktopBridge ? null : HOSTED_APP_CHANNEL;
 
   const handleUpdateChannelChange = useCallback(
     (channel: DesktopUpdateChannel) => {
@@ -388,9 +185,6 @@ function AboutVersionSection() {
       setIsChangingUpdateChannel(true);
       void bridge
         .setUpdateChannel(channel)
-        .then((state) => {
-          setDesktopUpdateStateQueryData(queryClient, state);
-        })
         .catch((error: unknown) => {
           toastManager.add(
             stackedThreadToast({
@@ -404,7 +198,7 @@ function AboutVersionSection() {
           setIsChangingUpdateChannel(false);
         });
     },
-    [queryClient, selectedUpdateChannel],
+    [selectedUpdateChannel],
   );
 
   const handleButtonClick = useCallback(() => {
@@ -414,20 +208,15 @@ function AboutVersionSection() {
     const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
 
     if (action === "download") {
-      void bridge
-        .downloadUpdate()
-        .then((result) => {
-          setDesktopUpdateStateQueryData(queryClient, result.state);
-        })
-        .catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not download update",
-              description: error instanceof Error ? error.message : "Download failed.",
-            }),
-          );
-        });
+      void bridge.downloadUpdate().catch((error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not download update",
+            description: error instanceof Error ? error.message : "Download failed.",
+          }),
+        );
+      });
       return;
     }
 
@@ -438,20 +227,15 @@ function AboutVersionSection() {
         ),
       );
       if (!confirmed) return;
-      void bridge
-        .installUpdate()
-        .then((result) => {
-          setDesktopUpdateStateQueryData(queryClient, result.state);
-        })
-        .catch((error: unknown) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not install update",
-              description: error instanceof Error ? error.message : "Install failed.",
-            }),
-          );
-        });
+      void bridge.installUpdate().catch((error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not install update",
+            description: error instanceof Error ? error.message : "Install failed.",
+          }),
+        );
+      });
       return;
     }
 
@@ -459,7 +243,6 @@ function AboutVersionSection() {
     void bridge
       .checkForUpdate()
       .then((result) => {
-        setDesktopUpdateStateQueryData(queryClient, result.state);
         if (!result.checked) {
           toastManager.add(
             stackedThreadToast({
@@ -480,7 +263,7 @@ function AboutVersionSection() {
           }),
         );
       });
-  }, [queryClient, updateState]);
+  }, [updateState]);
 
   const action = updateState ? resolveDesktopUpdateButtonAction(updateState) : "none";
   const buttonTooltip = updateState ? getDesktopUpdateButtonTooltip(updateState) : null;
@@ -525,74 +308,79 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
-      <SettingsRow
-        title="Update track"
-        description="Stable follows full releases. Nightly follows the nightly desktop channel and can switch back to stable immediately."
-        control={
-          <Select
-            value={selectedUpdateChannel}
-            onValueChange={(value) => {
-              handleUpdateChannelChange(value as DesktopUpdateChannel);
-            }}
-          >
-            <SelectTrigger
-              className="w-full sm:w-40"
-              aria-label="Update track"
-              disabled={!hasDesktopBridge || isChangingUpdateChannel}
+      {hasDesktopBridge ? (
+        <SettingsRow
+          title="Update track"
+          description="Stable follows full releases. Nightly follows the nightly desktop channel and can switch back to stable immediately."
+          control={
+            <Select
+              value={selectedUpdateChannel}
+              onValueChange={(value) => {
+                handleUpdateChannelChange(value as DesktopUpdateChannel);
+              }}
             >
-              <SelectValue>
-                {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup align="end" alignItemWithTrigger={false}>
-              <SelectItem hideIndicator value="latest">
-                Stable
-              </SelectItem>
-              <SelectItem hideIndicator value="nightly">
-                Nightly
-              </SelectItem>
-            </SelectPopup>
-          </Select>
-        }
-      />
+              <SelectTrigger
+                className="w-full sm:w-40"
+                aria-label="Update track"
+                disabled={isChangingUpdateChannel}
+              >
+                <SelectValue>
+                  {selectedUpdateChannel === "nightly" ? "Nightly" : "Stable"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="latest">
+                  Stable
+                </SelectItem>
+                <SelectItem hideIndicator value="nightly">
+                  Nightly
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+      ) : selectedHostedAppChannel ? (
+        <SettingsRow
+          title="Update track"
+          description="Switches the hosted app release channel."
+          control={
+            <Select
+              value={selectedHostedAppChannel}
+              onValueChange={(value) => {
+                if (value === selectedHostedAppChannel) return;
+                window.location.assign(
+                  buildHostedChannelSelectionUrl({ channel: value as HostedAppChannel }),
+                );
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Update track">
+                <SelectValue>{HOSTED_APP_CHANNEL_LABEL}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="latest">
+                  Latest
+                </SelectItem>
+                <SelectItem hideIndicator value="nightly">
+                  Nightly
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+      ) : null}
     </>
   );
 }
 
 export function useSettingsRestore(onRestored?: () => void) {
   const { theme, setTheme } = useTheme();
-  const settings = useSettings();
-  const { resetSettings } = useUpdateSettings();
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
 
   const isGitWritingModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
-  // A provider surface is "dirty" if either the legacy per-kind
-  // `settings.providers[kind]` struct differs from defaults (for users
-  // on pre-migration data) or the new `settings.providerInstances` map
-  // has any entries (every edit to a default slot promotes it into an
-  // explicit entry, so any key in that map represents user intent to
-  // diverge from factory defaults). Checking both keeps the Restore
-  // Defaults chip accurate throughout the legacy→instance migration.
-  const areProviderSettingsDirty =
-    PROVIDER_SETTINGS.some((providerSettings) => {
-      type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
-      const currentProviders = settings.providers as Record<
-        string,
-        LegacyProviderSettings | undefined
-      >;
-      const defaultProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
-        string,
-        LegacyProviderSettings | undefined
-      >;
-      const currentSettings = currentProviders[providerSettings.provider];
-      const defaultSettings = defaultProviders[providerSettings.provider];
-      return !Equal.equals(currentSettings, defaultSettings);
-    }) ||
-    Object.keys(settings.providerInstances ?? {}).length > 0 ||
-    Object.keys(settings.providerModelPreferences ?? {}).length > 0 ||
-    (settings.favorites ?? []).length > 0;
 
   const changedSettingLabels = useMemo(
     () => [
@@ -600,29 +388,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
-      ...(settings.uiDensity !== DEFAULT_UNIFIED_SETTINGS.uiDensity ? ["UI density"] : []),
-      ...(settings.sidebarTranslucency !== DEFAULT_UNIFIED_SETTINGS.sidebarTranslucency
-        ? ["Sidebar translucency"]
+      ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
+        ? ["Visible threads"]
         : []),
-      ...(settings.uiFont !== DEFAULT_UNIFIED_SETTINGS.uiFont ? ["Interface font"] : []),
-      ...(settings.codeFont !== DEFAULT_UNIFIED_SETTINGS.codeFont ? ["Code font"] : []),
-      ...(settings.codeFontSize !== DEFAULT_UNIFIED_SETTINGS.codeFontSize
-        ? ["Code font size"]
-        : []),
-      ...(settings.chatFontSize !== DEFAULT_UNIFIED_SETTINGS.chatFontSize
-        ? ["Chat font size"]
-        : []),
-      ...(settings.inputFontSize !== DEFAULT_UNIFIED_SETTINGS.inputFontSize
-        ? ["Input font size"]
-        : []),
-      ...(settings.sidebarFontSize !== DEFAULT_UNIFIED_SETTINGS.sidebarFontSize
-        ? ["Sidebar font size"]
-        : []),
-      ...(settings.toolFontSize !== DEFAULT_UNIFIED_SETTINGS.toolFontSize
-        ? ["Tool font size"]
-        : []),
-      ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
-        ? ["Diff line wrapping"]
+      ...(settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? ["Word wrap"] : []),
+      ...(settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace
+        ? ["Diff whitespace changes"]
         : []),
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
@@ -630,8 +401,16 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
+      Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
+        ? ["Automatic Git fetch interval"]
+        : []),
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["New thread mode"]
+        : []),
+      ...(settings.newWorktreesStartFromOrigin !==
+      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
+        ? ["New worktrees start from origin"]
         : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
@@ -642,41 +421,22 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
-      ...(settings.threadCompletionNotifications !==
-      DEFAULT_UNIFIED_SETTINGS.threadCompletionNotifications
-        ? ["Completion notifications"]
-        : []),
-      ...(!Equal.equals(
-        settings.agentWorkflows.reviewChanges,
-        DEFAULT_UNIFIED_SETTINGS.agentWorkflows.reviewChanges,
-      )
-        ? ["Review Code workflow"]
-        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
-      ...(areProviderSettingsDirty ? ["Providers"] : []),
     ],
     [
-      areProviderSettingsDirty,
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
-      settings.chatFontSize,
-      settings.codeFontSize,
-      settings.inputFontSize,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.addProjectBaseDirectory,
-      settings.codeFont,
       settings.defaultThreadEnvMode,
-      settings.diffWordWrap,
+      settings.newWorktreesStartFromOrigin,
+      settings.diffIgnoreWhitespace,
+      settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
-      settings.agentWorkflows.reviewChanges,
-      settings.sidebarFontSize,
-      settings.sidebarTranslucency,
-      settings.threadCompletionNotifications,
+      settings.sidebarThreadPreviewCount,
       settings.timestampFormat,
-      settings.toolFontSize,
-      settings.uiDensity,
-      settings.uiFont,
+      settings.wordWrap,
       theme,
     ],
   );
@@ -692,9 +452,23 @@ export function useSettingsRestore(onRestored?: () => void) {
     if (!confirmed) return;
 
     setTheme("system");
-    resetSettings();
+    updateSettings({
+      timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
+      diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+      sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
+      autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+      enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
+      defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+      newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+      addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+      confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
+      confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+    });
     onRestored?.();
-  }, [changedSettingLabels, onRestored, resetSettings, setTheme]);
+  }, [changedSettingLabels, onRestored, setTheme, updateSettings]);
 
   return {
     changedSettingLabels,
@@ -704,73 +478,24 @@ export function useSettingsRestore(onRestored?: () => void) {
 
 export function GeneralSettingsPanel() {
   const { theme, setTheme } = useTheme();
-  const settings = useSettings();
-  const { updateSettings } = useUpdateSettings();
-  const [openingPathByTarget, setOpeningPathByTarget] = useState({
-    keybindings: false,
-    logsDirectory: false,
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
+  const observability = useAtomValue(primaryServerObservabilityAtom);
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const diagnosticsDescription = formatDiagnosticsDescription({
+    localTracingEnabled: observability?.localTracingEnabled ?? false,
+    otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
+    otlpTracesUrl: observability?.otlpTracesUrl,
+    otlpMetricsEnabled: observability?.otlpMetricsEnabled ?? false,
+    otlpMetricsUrl: observability?.otlpMetricsUrl,
   });
-  const [openPathErrorByTarget, setOpenPathErrorByTarget] = useState<
-    Partial<Record<"keybindings" | "logsDirectory", string | null>>
-  >({});
-  const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
-  const [isPickingChatExportDirectory, setIsPickingChatExportDirectory] = useState(false);
-  const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
-  // Collapsible state per provider-instance card, keyed by the instance id.
-  // `Record<string, boolean>` so we don't need to preseed an entry for every
-  // configured instance — an absent key reads as collapsed. Default-slot
-  // rows share this state: their id is the driver slug
-  // (`defaultInstanceIdForDriver(driver)`), which is also `ProviderDriverKind` at
-  // runtime, so a pre-existing open key for e.g. "codex" persists across
-  // the legacy/unified render swap.
-  const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
-  const refreshingRef = useRef(false);
-  const refreshProviders = useCallback(() => {
-    if (refreshingRef.current) return;
-    refreshingRef.current = true;
-    setIsRefreshingProviders(true);
-    void ensureLocalApi()
-      .server.refreshProviders()
-      .catch((error: unknown) => {
-        console.warn("Failed to refresh providers", error);
-      })
-      .finally(() => {
-        refreshingRef.current = false;
-        setIsRefreshingProviders(false);
-      });
-  }, []);
-
-  const keybindingsConfigPath = useServerKeybindingsConfigPath();
-  const availableEditors = useServerAvailableEditors();
-  const observability = useServerObservability();
-  const serverProviders = useServerProviders();
-  const visibleProviderSettings = PROVIDER_SETTINGS.filter(
-    (providerSettings) =>
-      providerSettings.provider !== "cursor" ||
-      serverProviders.some(
-        (provider) =>
-          provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
-      ),
-  );
-  const logsDirectoryPath = observability?.logsDirectoryPath ?? null;
-  const diagnosticsDescription = (() => {
-    const exports: string[] = [];
-    if (observability?.otlpTracesEnabled && observability.otlpTracesUrl) {
-      exports.push(`traces to ${observability.otlpTracesUrl}`);
-    }
-    if (observability?.otlpMetricsEnabled && observability.otlpMetricsUrl) {
-      exports.push(`metrics to ${observability.otlpMetricsUrl}`);
-    }
-    const mode = observability?.localTracingEnabled ? "Local trace file" : "Terminal logs only";
-    return exports.length > 0 ? `${mode}. OTLP exporting ${exports.join(" and ")}.` : `${mode}.`;
-  })();
 
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;
   const textGenModel = textGenerationModelSelection.model;
   const textGenModelOptions = textGenerationModelSelection.options;
   const gitModelInstanceEntries = sortProviderInstanceEntries(
-    deriveProviderInstanceEntries(serverProviders),
+    applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
   );
   const textGenInstanceEntry = gitModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
@@ -787,318 +512,6 @@ export function GeneralSettingsPanel() {
     settings.textGenerationModelSelection ?? null,
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
-
-  const openInPreferredEditor = useCallback(
-    (target: "keybindings" | "logsDirectory", path: string | null, failureMessage: string) => {
-      if (!path) return;
-      setOpenPathErrorByTarget((existing) => ({ ...existing, [target]: null }));
-      setOpeningPathByTarget((existing) => ({ ...existing, [target]: true }));
-
-      const editor = resolveAndPersistPreferredEditor(availableEditors ?? []);
-      if (!editor) {
-        setOpenPathErrorByTarget((existing) => ({
-          ...existing,
-          [target]: "No available editors found.",
-        }));
-        setOpeningPathByTarget((existing) => ({ ...existing, [target]: false }));
-        return;
-      }
-
-      void ensureLocalApi()
-        .shell.openInEditor(path, editor)
-        .catch((error) => {
-          setOpenPathErrorByTarget((existing) => ({
-            ...existing,
-            [target]: error instanceof Error ? error.message : failureMessage,
-          }));
-        })
-        .finally(() => {
-          setOpeningPathByTarget((existing) => ({ ...existing, [target]: false }));
-        });
-    },
-    [availableEditors],
-  );
-
-  const openKeybindingsFile = useCallback(() => {
-    openInPreferredEditor("keybindings", keybindingsConfigPath, "Unable to open keybindings file.");
-  }, [keybindingsConfigPath, openInPreferredEditor]);
-
-  const openLogsDirectory = useCallback(() => {
-    openInPreferredEditor("logsDirectory", logsDirectoryPath, "Unable to open logs folder.");
-  }, [logsDirectoryPath, openInPreferredEditor]);
-
-  const chooseChatExportDirectory = useCallback(async () => {
-    if (isPickingChatExportDirectory) {
-      return;
-    }
-    setIsPickingChatExportDirectory(true);
-    try {
-      const pickedPath = await ensureLocalApi().dialogs.pickFolder(
-        settings.chatExportDirectory ? { initialPath: settings.chatExportDirectory } : undefined,
-      );
-      if (pickedPath) {
-        updateSettings({ chatExportDirectory: pickedPath });
-      }
-    } catch (error) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Unable to choose export directory",
-          description:
-            error instanceof Error ? error.message : "An error occurred while opening the picker.",
-        }),
-      );
-    } finally {
-      setIsPickingChatExportDirectory(false);
-    }
-  }, [isPickingChatExportDirectory, settings.chatExportDirectory, updateSettings]);
-
-  const updateChatExportDetail = useCallback(
-    (patch: Partial<typeof settings.chatExportDetail>) => {
-      updateSettings({
-        chatExportDetail: {
-          ...settings.chatExportDetail,
-          ...patch,
-        },
-      });
-    },
-    [settings.chatExportDetail, updateSettings],
-  );
-
-  const updateReviewChangesWorkflow = useCallback(
-    (patch: Partial<typeof settings.agentWorkflows.reviewChanges>) => {
-      updateSettings({
-        agentWorkflows: {
-          ...settings.agentWorkflows,
-          reviewChanges: {
-            ...settings.agentWorkflows.reviewChanges,
-            ...patch,
-          },
-        },
-      });
-    },
-    [settings.agentWorkflows, updateSettings],
-  );
-
-  const openKeybindingsError = openPathErrorByTarget.keybindings ?? null;
-  const openDiagnosticsError = openPathErrorByTarget.logsDirectory ?? null;
-  const isOpeningKeybindings = openingPathByTarget.keybindings;
-  const isOpeningLogsDirectory = openingPathByTarget.logsDirectory;
-
-  const lastCheckedAt =
-    serverProviders.length > 0
-      ? serverProviders.reduce(
-          (latest, provider) => (provider.checkedAt > latest ? provider.checkedAt : latest),
-          serverProviders[0]!.checkedAt,
-        )
-      : null;
-
-  /**
-   * Build the list of rows to render, one per configured instance. Each
-   * row carries enough context to drive `ProviderInstanceCard` without
-   * threading storage concerns: whether it's a built-in default slot (in
-   * which case `isDefault` is true, deletion is gated off, and the
-   * effective envelope may have been synthesized from legacy just for
-   * this render), the driver kind narrow for the in-card model-slug
-   * normalization, and whether a reset-to-factory action is warranted.
-   *
-   * Ordering mirrors the prior split: visible built-in default slots
-   * first (one per visible kind), then user-authored custom instances
-   * grouped by driver after their default sibling, then orphan instances
-   * whose driver isn't in the visible-defaults set.
-   */
-  interface InstanceRow {
-    readonly instanceId: ProviderInstanceId;
-    readonly instance: ProviderInstanceConfig;
-    readonly driver: ProviderDriverKind;
-    /** True for the slot whose id is `defaultInstanceIdForDriver(driver)`. */
-    readonly isDefault: boolean;
-    /**
-     * True when this default slot differs from the factory defaults —
-     * either through an explicit `providerInstances[defaultId]` entry,
-     * or through a non-default legacy `settings.providers[kind]` struct
-     * that we're still bridging. Used to show the reset-to-factory
-     * affordance. Undefined for custom rows (they have a delete button
-     * instead; "factory defaults" isn't meaningful).
-     */
-    readonly isDirty?: boolean;
-  }
-
-  const instancesByDriver = new Map<
-    ProviderDriverKind,
-    Array<[ProviderInstanceId, ProviderInstanceConfig]>
-  >();
-  for (const [rawId, instance] of Object.entries(settings.providerInstances ?? {})) {
-    const driver = instance.driver;
-    const list = instancesByDriver.get(driver) ?? [];
-    list.push([rawId as ProviderInstanceId, instance]);
-    instancesByDriver.set(driver, list);
-  }
-
-  const defaultSlotIdsBySource = new Set<string>(
-    visibleProviderSettings.map((providerSettings) =>
-      String(defaultInstanceIdForDriver(providerSettings.provider)),
-    ),
-  );
-
-  const rows: InstanceRow[] = [];
-  const visibleDriverKinds = new Set<ProviderDriverKind>(
-    visibleProviderSettings.map((providerSettings) => providerSettings.provider),
-  );
-
-  for (const providerSettings of visibleProviderSettings) {
-    type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
-    const legacyProviders = settings.providers as Record<string, LegacyProviderSettings>;
-    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
-      string,
-      LegacyProviderSettings
-    >;
-    const driver = providerSettings.provider;
-    const defaultInstanceId = defaultInstanceIdForDriver(driver);
-    // Prefer an explicit `providerInstances[defaultId]` entry when one
-    // exists (every edit via this UI promotes the default slot into
-    // that map); fall back to synthesizing one from the legacy
-    // `settings.providers[kind]` struct so first-time viewers still see
-    // their persisted config.
-    const explicitInstance = settings.providerInstances?.[defaultInstanceId];
-    const legacyConfig = legacyProviders[providerSettings.provider]!;
-    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider]!;
-    const effectiveInstance: ProviderInstanceConfig =
-      explicitInstance ??
-      ({
-        driver,
-        enabled: legacyConfig.enabled,
-        config: legacyConfig,
-      } satisfies ProviderInstanceConfig);
-    const isDirty =
-      explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
-    rows.push({
-      instanceId: defaultInstanceId,
-      instance: effectiveInstance,
-      driver,
-      isDefault: true,
-      isDirty,
-    });
-    // Non-default customs for this driver kind follow their default.
-    for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
-      if (id === defaultInstanceId) continue;
-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
-    }
-  }
-  // Orphan instances: drivers the visible-defaults list doesn't cover
-  // (e.g. Cursor when the server hasn't reported it but the user has
-  // authored a Cursor instance anyway, or fork drivers not shipped by
-  // this build). Preserve insertion order within each driver.
-  for (const [driver, list] of instancesByDriver) {
-    if (visibleDriverKinds.has(driver)) continue;
-    for (const [id, instance] of list) {
-      const isDefaultSlot = defaultSlotIdsBySource.has(String(id));
-      rows.push({
-        instanceId: id,
-        instance,
-        driver: instance.driver,
-        isDefault: isDefaultSlot,
-      });
-    }
-  }
-
-  const updateProviderInstance = (
-    row: InstanceRow,
-    next: ProviderInstanceConfig,
-    options?: {
-      readonly textGenerationModelSelection?: Parameters<
-        typeof buildProviderInstanceUpdatePatch
-      >[0]["textGenerationModelSelection"];
-    },
-  ) => {
-    updateSettings(
-      buildProviderInstanceUpdatePatch({
-        settings,
-        instanceId: row.instanceId,
-        instance: next,
-        driver: row.driver,
-        isDefault: row.isDefault,
-        textGenerationModelSelection: options?.textGenerationModelSelection,
-      }),
-    );
-  };
-
-  const deleteProviderInstance = (id: ProviderInstanceId) => {
-    updateSettings({
-      providerInstances: withoutProviderInstanceKey(settings.providerInstances, id),
-      providerModelPreferences: withoutProviderInstanceKey(settings.providerModelPreferences, id),
-      favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], id),
-    });
-  };
-
-  const updateProviderModelPreferences = (
-    instanceId: ProviderInstanceId,
-    next: {
-      readonly hiddenModels: ReadonlyArray<string>;
-      readonly modelOrder: ReadonlyArray<string>;
-    },
-  ) => {
-    const hiddenModels = [...new Set(next.hiddenModels.filter((slug) => slug.trim().length > 0))];
-    const modelOrder = [...new Set(next.modelOrder.filter((slug) => slug.trim().length > 0))];
-    const rest = withoutProviderInstanceKey(settings.providerModelPreferences, instanceId);
-    updateSettings({
-      providerModelPreferences:
-        hiddenModels.length === 0 && modelOrder.length === 0
-          ? rest
-          : {
-              ...rest,
-              [instanceId]: {
-                hiddenModels,
-                modelOrder,
-              },
-            },
-    });
-  };
-
-  const updateProviderFavoriteModels = (
-    instanceId: ProviderInstanceId,
-    nextFavoriteModels: ReadonlyArray<string>,
-  ) => {
-    const favoriteModels = [
-      ...new Set(nextFavoriteModels.map((slug) => slug.trim()).filter((slug) => slug.length > 0)),
-    ];
-    updateSettings({
-      favorites: [
-        ...withoutProviderInstanceFavorites(settings.favorites ?? [], instanceId),
-        ...favoriteModels.map((model) => ({ provider: instanceId, model })),
-      ],
-    });
-  };
-
-  /**
-   * Reset a built-in default slot back to factory defaults. Clears both
-   * the legacy `settings.providers[kind]` struct and any explicit
-   * `providerInstances[defaultId]` entry that has promoted legacy into
-   * the new map, so hydration re-synthesizes a clean envelope on next
-   * load. Safe to call on drivers that have never been edited.
-   */
-  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
-    type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
-    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
-      string,
-      LegacyProviderSettings | undefined
-    >;
-    const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
-    const defaultLegacyProvider = defaultLegacyProviders[driverKind];
-    if (defaultLegacyProvider === undefined) return;
-    updateSettings({
-      providers: {
-        ...settings.providers,
-        [driverKind]: defaultLegacyProvider,
-      } as typeof settings.providers,
-      providerInstances: withoutProviderInstanceKey(settings.providerInstances, defaultInstanceId),
-      providerModelPreferences: withoutProviderInstanceKey(
-        settings.providerModelPreferences,
-        defaultInstanceId,
-      ),
-      favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], defaultInstanceId),
-    });
-  };
 
   return (
     <SettingsPageContainer>
@@ -1179,394 +592,15 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="UI density"
-          description="Control spacing across the entire interface — sidebar, chat, composer, and toolbars."
+          title="Word wrap"
+          description="Wrap long lines in code blocks, tables, diffs, and file previews by default."
           resetAction={
-            settings.uiDensity !== DEFAULT_UI_DENSITY ? (
+            settings.wordWrap !== DEFAULT_UNIFIED_SETTINGS.wordWrap ? (
               <SettingResetButton
-                label="UI density"
-                onClick={() => updateSettings({ uiDensity: DEFAULT_UI_DENSITY })}
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.uiDensity}
-              onValueChange={(value) => {
-                if (UI_DENSITY_OPTIONS.some((option) => option.value === value)) {
-                  updateSettings({ uiDensity: value as UiDensity });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="UI density">
-                <SelectValue>
-                  {UI_DENSITY_OPTIONS.find((option) => option.value === settings.uiDensity)
-                    ?.label ?? "Default"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {UI_DENSITY_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    <div>
-                      <span className="font-medium">{option.label}</span>
-                      <span className="ml-2 text-muted-foreground/70">{option.hint}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Sidebar translucency"
-          description="Control the sidebar's frosted tint. Desktop builds use native vibrancy when available; browsers fall back to CSS blur."
-          resetAction={
-            settings.sidebarTranslucency !== DEFAULT_SIDEBAR_TRANSLUCENCY ? (
-              <SettingResetButton
-                label="sidebar translucency"
-                onClick={() =>
-                  updateSettings({ sidebarTranslucency: DEFAULT_SIDEBAR_TRANSLUCENCY })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.sidebarTranslucency}
-              onValueChange={(value) => {
-                if (
-                  value === "off" ||
-                  value === "subtle" ||
-                  value === "medium" ||
-                  value === "strong" ||
-                  value === "liquid-glass"
-                ) {
-                  updateSettings({ sidebarTranslucency: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Sidebar translucency">
-                <SelectValue>
-                  {SIDEBAR_TRANSLUCENCY_OPTIONS.find(
-                    (option) => option.value === settings.sidebarTranslucency,
-                  )?.label ?? "Off"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {SIDEBAR_TRANSLUCENCY_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    <div>
-                      <span className="font-medium">{option.label}</span>
-                      <span className="ml-2 text-muted-foreground/70">{option.hint}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Fonts">
-        <SettingsRow
-          title="Interface font"
-          description="Choose the sans-serif typeface used throughout the app UI."
-          resetAction={
-            settings.uiFont !== DEFAULT_UI_FONT ? (
-              <SettingResetButton
-                label="interface font"
+                label="word wrapping"
                 onClick={() =>
                   updateSettings({
-                    uiFont: DEFAULT_UI_FONT,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.uiFont}
-              onValueChange={(value) => {
-                if (value === "dm-sans" || value === "geist") {
-                  updateSettings({ uiFont: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Interface font">
-                <SelectValue>
-                  {UI_FONT_OPTIONS.find((option) => option.value === settings.uiFont)?.label ??
-                    "DM Sans"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {UI_FONT_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Code font"
-          description="Choose the monospace typeface used for code blocks, diffs, and terminals."
-          resetAction={
-            settings.codeFont !== DEFAULT_CODE_FONT ? (
-              <SettingResetButton
-                label="code font"
-                onClick={() =>
-                  updateSettings({
-                    codeFont: DEFAULT_CODE_FONT,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.codeFont}
-              onValueChange={(value) => {
-                if (isCodeFont(value)) {
-                  updateSettings({ codeFont: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Code font">
-                <SelectValue>
-                  {CODE_FONT_OPTIONS.find((option) => option.value === settings.codeFont)?.label ??
-                    "System mono"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {CODE_FONT_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Code font size"
-          description="Font size for code blocks, diffs, and terminals."
-          resetAction={
-            settings.codeFontSize !== DEFAULT_CODE_FONT_SIZE ? (
-              <SettingResetButton
-                label="code font size"
-                onClick={() =>
-                  updateSettings({
-                    codeFontSize: DEFAULT_CODE_FONT_SIZE,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={String(settings.codeFontSize)}
-              onValueChange={(value) => {
-                const num = Number(value);
-                if (isFontSize(num)) {
-                  updateSettings({ codeFontSize: num });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Code font size">
-                <SelectValue>
-                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.codeFontSize)
-                    ?.label ?? `${DEFAULT_CODE_FONT_SIZE}px`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Chat font size"
-          description="Font size for assistant and user messages in the chat."
-          resetAction={
-            settings.chatFontSize !== DEFAULT_CHAT_FONT_SIZE ? (
-              <SettingResetButton
-                label="chat font size"
-                onClick={() =>
-                  updateSettings({
-                    chatFontSize: DEFAULT_CHAT_FONT_SIZE,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={String(settings.chatFontSize)}
-              onValueChange={(value) => {
-                const num = Number(value);
-                if (isFontSize(num)) {
-                  updateSettings({ chatFontSize: num });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Chat font size">
-                <SelectValue>
-                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.chatFontSize)
-                    ?.label ?? `${DEFAULT_CHAT_FONT_SIZE}px`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Input font size"
-          description="Font size for the message composer, its controls, and menus."
-          resetAction={
-            settings.inputFontSize !== DEFAULT_INPUT_FONT_SIZE ? (
-              <SettingResetButton
-                label="input font size"
-                onClick={() =>
-                  updateSettings({
-                    inputFontSize: DEFAULT_INPUT_FONT_SIZE,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={String(settings.inputFontSize)}
-              onValueChange={(value) => {
-                const num = Number(value);
-                if (isFontSize(num)) {
-                  updateSettings({ inputFontSize: num });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Input font size">
-                <SelectValue>
-                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.inputFontSize)
-                    ?.label ?? `${DEFAULT_INPUT_FONT_SIZE}px`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Sidebar font size"
-          description="Font size for project and chat titles in the sidebar."
-          resetAction={
-            settings.sidebarFontSize !== DEFAULT_SIDEBAR_FONT_SIZE ? (
-              <SettingResetButton
-                label="sidebar font size"
-                onClick={() =>
-                  updateSettings({
-                    sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={String(settings.sidebarFontSize)}
-              onValueChange={(value) => {
-                const num = Number(value);
-                if (isFontSize(num)) {
-                  updateSettings({ sidebarFontSize: num });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Sidebar font size">
-                <SelectValue>
-                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.sidebarFontSize)
-                    ?.label ?? `${DEFAULT_SIDEBAR_FONT_SIZE}px`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-        <SettingsRow
-          title="Tool output font size"
-          description="Font size for work log entries and tool call output."
-          resetAction={
-            settings.toolFontSize !== DEFAULT_TOOL_FONT_SIZE ? (
-              <SettingResetButton
-                label="tool output font size"
-                onClick={() =>
-                  updateSettings({
-                    toolFontSize: DEFAULT_TOOL_FONT_SIZE,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={String(settings.toolFontSize)}
-              onValueChange={(value) => {
-                const num = Number(value);
-                if (isFontSize(num)) {
-                  updateSettings({ toolFontSize: num });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Tool output font size">
-                <SelectValue>
-                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.toolFontSize)
-                    ?.label ?? `${DEFAULT_TOOL_FONT_SIZE}px`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {FONT_SIZE_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Preferences">
-        <SettingsRow
-          title="Diff line wrapping"
-          description="Set the default wrap state when the diff panel opens."
-          resetAction={
-            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
-              <SettingResetButton
-                label="diff line wrapping"
-                onClick={() =>
-                  updateSettings({
-                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
+                    wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
                   })
                 }
               />
@@ -1574,9 +608,35 @@ export function GeneralSettingsPanel() {
           }
           control={
             <Switch
-              checked={settings.diffWordWrap}
-              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
-              aria-label="Wrap diff lines by default"
+              checked={settings.wordWrap}
+              onCheckedChange={(checked) => updateSettings({ wordWrap: Boolean(checked) })}
+              aria-label="Wrap code, tables, diffs, and file previews by default"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Hide whitespace changes"
+          description="Set whether the diff panel ignores whitespace-only edits by default."
+          resetAction={
+            settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
+              <SettingResetButton
+                label="diff whitespace changes"
+                onClick={() =>
+                  updateSettings({
+                    diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.diffIgnoreWhitespace}
+              onCheckedChange={(checked) =>
+                updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
+              }
+              aria-label="Hide whitespace changes by default"
             />
           }
         />
@@ -1609,45 +669,29 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Completion notifications"
-          description="Show macOS notifications when a chat finishes."
+          title="Provider update checks"
+          description="Check installed provider CLIs for newer available versions."
           resetAction={
-            settings.threadCompletionNotifications !==
-            DEFAULT_THREAD_COMPLETION_NOTIFICATION_MODE ? (
+            settings.enableProviderUpdateChecks !==
+            DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks ? (
               <SettingResetButton
-                label="completion notifications"
+                label="provider update checks"
                 onClick={() =>
                   updateSettings({
-                    threadCompletionNotifications: DEFAULT_THREAD_COMPLETION_NOTIFICATION_MODE,
+                    enableProviderUpdateChecks: DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks,
                   })
                 }
               />
             ) : null
           }
           control={
-            <Select
-              value={settings.threadCompletionNotifications}
-              onValueChange={(value) => {
-                if (value === "off" || value === "background-only" || value === "all") {
-                  updateSettings({ threadCompletionNotifications: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-44" aria-label="Completion notifications">
-                <SelectValue>
-                  {THREAD_COMPLETION_NOTIFICATION_OPTIONS.find(
-                    (option) => option.value === settings.threadCompletionNotifications,
-                  )?.label ?? "Background only"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THREAD_COMPLETION_NOTIFICATION_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
+            <Switch
+              checked={settings.enableProviderUpdateChecks}
+              onCheckedChange={(checked) =>
+                updateSettings({ enableProviderUpdateChecks: Boolean(checked) })
+              }
+              aria-label="Check provider versions"
+            />
           }
         />
 
@@ -1672,7 +716,7 @@ export function GeneralSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ autoOpenPlanSidebar: Boolean(checked) })
               }
-              aria-label="Open the task sidebar automatically"
+              aria-label="Open the task panel automatically"
             />
           }
         />
@@ -1681,12 +725,16 @@ export function GeneralSettingsPanel() {
           title="New threads"
           description="Pick the default workspace mode for newly created draft threads."
           resetAction={
-            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
+            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ||
+            settings.newWorktreesStartFromOrigin !==
+              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
               <SettingResetButton
                 label="new threads"
                 onClick={() =>
                   updateSettings({
                     defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+                    newWorktreesStartFromOrigin:
+                      DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
                   })
                 }
               />
@@ -1718,6 +766,37 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        {settings.defaultThreadEnvMode === "worktree" ? (
+          <SettingsRow
+            className="bg-muted/20 sm:pl-9"
+            title="Start from origin"
+            description="Creates the worktree from the latest matching branch on origin instead of your local branch."
+            resetAction={
+              settings.newWorktreesStartFromOrigin !==
+              DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin ? (
+                <SettingResetButton
+                  label="new worktrees start from origin"
+                  onClick={() =>
+                    updateSettings({
+                      newWorktreesStartFromOrigin:
+                        DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.newWorktreesStartFromOrigin}
+                onCheckedChange={(checked) =>
+                  updateSettings({ newWorktreesStartFromOrigin: Boolean(checked) })
+                }
+                aria-label="Start new worktrees from origin by default"
+              />
+            }
+          />
+        ) : null}
+
         <SettingsRow
           title="Add project starts in"
           description='Leave empty to use "~/" when the Add Project browser opens.'
@@ -1743,120 +822,6 @@ export function GeneralSettingsPanel() {
               spellCheck={false}
               aria-label="Add project base directory"
             />
-          }
-        />
-
-        <SettingsRow
-          title="Chat export directory"
-          description="Markdown chat exports are saved here before opening in your preferred editor."
-          resetAction={
-            settings.chatExportDirectory !== DEFAULT_UNIFIED_SETTINGS.chatExportDirectory ? (
-              <SettingResetButton
-                label="chat export directory"
-                onClick={() =>
-                  updateSettings({
-                    chatExportDirectory: DEFAULT_UNIFIED_SETTINGS.chatExportDirectory,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-              <DraftInput
-                className="w-full sm:w-72"
-                value={settings.chatExportDirectory}
-                onCommit={(next) => updateSettings({ chatExportDirectory: next })}
-                placeholder="~/t3-chat-exports"
-                spellCheck={false}
-                aria-label="Chat export directory"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void chooseChatExportDirectory()}
-                disabled={isPickingChatExportDirectory}
-              >
-                {isPickingChatExportDirectory ? (
-                  <LoaderIcon className="size-3.5 animate-spin" />
-                ) : (
-                  <FolderOpenIcon className="size-3.5" />
-                )}
-                Choose
-              </Button>
-            </div>
-          }
-        />
-
-        <SettingsRow
-          title="Chat export details"
-          description="Choose which extra sections are included in exported Markdown chat files."
-          resetAction={
-            !Equal.equals(settings.chatExportDetail, DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS) ? (
-              <SettingResetButton
-                label="chat export details"
-                onClick={() =>
-                  updateSettings({
-                    chatExportDetail: DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="grid w-full gap-2 sm:w-80">
-              <label className="flex items-center justify-between gap-4 text-xs text-foreground">
-                <span>Thread and session metadata</span>
-                <Switch
-                  checked={settings.chatExportDetail.includeMetadata}
-                  onCheckedChange={(checked) =>
-                    updateChatExportDetail({ includeMetadata: Boolean(checked) })
-                  }
-                  aria-label="Include metadata in chat exports"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-4 text-xs text-foreground">
-                <span>Tool calls and activity</span>
-                <Switch
-                  checked={settings.chatExportDetail.includeToolCalls}
-                  onCheckedChange={(checked) =>
-                    updateChatExportDetail({ includeToolCalls: Boolean(checked) })
-                  }
-                  aria-label="Include tool calls in chat exports"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-4 text-xs text-foreground">
-                <span>Diffs and checkpoints</span>
-                <Switch
-                  checked={settings.chatExportDetail.includeDiffs}
-                  onCheckedChange={(checked) =>
-                    updateChatExportDetail({ includeDiffs: Boolean(checked) })
-                  }
-                  aria-label="Include diffs in chat exports"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-4 text-xs text-foreground">
-                <span>Proposed plans</span>
-                <Switch
-                  checked={settings.chatExportDetail.includePlans}
-                  onCheckedChange={(checked) =>
-                    updateChatExportDetail({ includePlans: Boolean(checked) })
-                  }
-                  aria-label="Include proposed plans in chat exports"
-                />
-              </label>
-              <label className="flex items-center justify-between gap-4 text-xs text-foreground">
-                <span>Queued turns</span>
-                <Switch
-                  checked={settings.chatExportDetail.includeQueuedTurns}
-                  onCheckedChange={(checked) =>
-                    updateChatExportDetail({ includeQueuedTurns: Boolean(checked) })
-                  }
-                  aria-label="Include queued turns in chat exports"
-                />
-              </label>
-            </div>
           }
         />
 
@@ -1987,100 +952,322 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Agent workflows">
-        <SettingsRow
-          title="Review Code"
-          description="Show the Review Code header action and allow it to create review chats."
-          resetAction={
-            settings.agentWorkflows.reviewChanges.enabled !==
-            DEFAULT_UNIFIED_SETTINGS.agentWorkflows.reviewChanges.enabled ? (
-              <SettingResetButton
-                label="Review Code workflow enabled state"
-                onClick={() =>
-                  updateReviewChangesWorkflow({
-                    enabled: DEFAULT_UNIFIED_SETTINGS.agentWorkflows.reviewChanges.enabled,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.agentWorkflows.reviewChanges.enabled}
-              onCheckedChange={(checked) =>
-                updateReviewChangesWorkflow({ enabled: Boolean(checked) })
-              }
-              aria-label="Enable Review Code workflow"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Review scope"
-          description="Default scope for the Review Code button. The dropdown can still run either scope."
-          resetAction={
-            settings.agentWorkflows.reviewChanges.defaultScope !== DEFAULT_REVIEW_CHANGES_SCOPE ? (
-              <SettingResetButton
-                label="Review Code default scope"
-                onClick={() =>
-                  updateReviewChangesWorkflow({
-                    defaultScope: DEFAULT_REVIEW_CHANGES_SCOPE,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.agentWorkflows.reviewChanges.defaultScope}
-              onValueChange={(value) => {
-                if (isReviewChangesScope(value)) {
-                  updateReviewChangesWorkflow({ defaultScope: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-48" aria-label="Review Code default scope">
-                <SelectValue>
-                  {REVIEW_CHANGES_SCOPE_OPTIONS.find(
-                    (option) => option.value === settings.agentWorkflows.reviewChanges.defaultScope,
-                  )?.label ?? "Uncommitted changes"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {REVIEW_CHANGES_SCOPE_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Review prompt"
-          description="Instructions inserted after the fixed scope context. Leave blank to use the built-in default prompt."
-          resetAction={
-            settings.agentWorkflows.reviewChanges.promptTemplate !==
-            DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE ? (
-              <SettingResetButton
-                label="Review Code prompt"
-                onClick={() =>
-                  updateReviewChangesWorkflow({
-                    promptTemplate: DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE,
-                  })
-                }
-              />
-            ) : null
-          }
-        >
-          <ReviewPromptTemplateEditor
-            value={settings.agentWorkflows.reviewChanges.promptTemplate}
-            onCommit={(promptTemplate) => updateReviewChangesWorkflow({ promptTemplate })}
+      <SettingsSection title="About">
+        {isElectron || HOSTED_APP_CHANNEL ? (
+          <AboutVersionSection />
+        ) : (
+          <SettingsRow
+            title={<AboutVersionTitle />}
+            description="Current version of the application."
           />
-        </SettingsRow>
+        )}
+        <SettingsRow
+          title="Diagnostics"
+          description={diagnosticsDescription}
+          control={
+            <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
+              View diagnostics
+            </Button>
+          }
+        />
       </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
 
+export function ProviderSettingsPanel() {
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
+  const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const primaryEnvironment = usePrimaryEnvironment();
+  const refreshServerProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const updateProvider = useAtomCommand(serverEnvironment.updateProvider, {
+    reportFailure: false,
+  });
+  const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
+    ReadonlySet<ProviderDriverKind>
+  >(() => new Set());
+  const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  const refreshingRef = useRef(false);
+
+  const providerUpdateCandidates = useMemo(
+    () => collectProviderUpdateCandidates(serverProviders),
+    [serverProviders],
+  );
+  const providerUpdateCandidateByInstanceId = useMemo(
+    () => new Map(providerUpdateCandidates.map((candidate) => [candidate.instanceId, candidate])),
+    [providerUpdateCandidates],
+  );
+  const visibleProviderSettings = PROVIDER_SETTINGS.filter(
+    (providerSettings) =>
+      providerSettings.provider !== "cursor" ||
+      serverProviders.some(
+        (provider) =>
+          provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
+      ),
+  );
+  const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
+  const textGenInstanceId = textGenerationModelSelection.instanceId;
+  const lastCheckedAt =
+    serverProviders.length > 0
+      ? serverProviders.reduce(
+          (latest, provider) => (provider.checkedAt > latest ? provider.checkedAt : latest),
+          serverProviders[0]!.checkedAt,
+        )
+      : null;
+
+  const refreshProviders = useCallback(() => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    setIsRefreshingProviders(true);
+    if (!primaryEnvironment) {
+      refreshingRef.current = false;
+      setIsRefreshingProviders(false);
+      return;
+    }
+    void (async () => {
+      const result = await refreshServerProviders({
+        environmentId: primaryEnvironment.environmentId,
+        input: {},
+      });
+      refreshingRef.current = false;
+      setIsRefreshingProviders(false);
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        console.warn("Failed to refresh providers", {
+          operation: "refresh-providers",
+          environmentId: primaryEnvironment.environmentId,
+          ...safeErrorLogAttributes(squashAtomCommandFailure(result)),
+        });
+      }
+    })();
+  }, [primaryEnvironment, refreshServerProviders]);
+
+  const runProviderUpdate = useCallback(
+    async (candidate: ProviderUpdateCandidate) => {
+      if (!primaryEnvironment) return;
+      let started = false;
+      setUpdatingProviderDrivers((previous) => {
+        if (previous.has(candidate.driver)) {
+          return previous;
+        }
+        started = true;
+        const next = new Set(previous);
+        next.add(candidate.driver);
+        return next;
+      });
+      if (!started) {
+        return;
+      }
+
+      const result = await updateProvider({
+        environmentId: primaryEnvironment.environmentId,
+        input: {
+          provider: candidate.driver,
+          instanceId: candidate.instanceId,
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Could not update ${PROVIDER_DISPLAY_NAMES[candidate.driver] ?? candidate.driver}`,
+            description:
+              error instanceof Error
+                ? error.message
+                : "The provider update command could not be started.",
+          }),
+        );
+      }
+      setUpdatingProviderDrivers((previous) => {
+        if (!previous.has(candidate.driver)) {
+          return previous;
+        }
+        const next = new Set(previous);
+        next.delete(candidate.driver);
+        return next;
+      });
+    },
+    [primaryEnvironment, updateProvider],
+  );
+
+  interface InstanceRow {
+    readonly instanceId: ProviderInstanceId;
+    readonly instance: ProviderInstanceConfig;
+    readonly driver: ProviderDriverKind;
+    readonly isDefault: boolean;
+    readonly isDirty?: boolean;
+  }
+
+  const instancesByDriver = new Map<
+    ProviderDriverKind,
+    Array<[ProviderInstanceId, ProviderInstanceConfig]>
+  >();
+  for (const [rawId, instance] of Object.entries(settings.providerInstances ?? {})) {
+    const driver = instance.driver;
+    const list = instancesByDriver.get(driver) ?? [];
+    list.push([rawId as ProviderInstanceId, instance]);
+    instancesByDriver.set(driver, list);
+  }
+
+  const defaultSlotIdsBySource = new Set<string>(
+    visibleProviderSettings.map((providerSettings) =>
+      String(defaultInstanceIdForDriver(providerSettings.provider)),
+    ),
+  );
+
+  const rows: InstanceRow[] = [];
+  const visibleDriverKinds = new Set<ProviderDriverKind>(
+    visibleProviderSettings.map((providerSettings) => providerSettings.provider),
+  );
+
+  for (const providerSettings of visibleProviderSettings) {
+    type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
+    const legacyProviders = settings.providers as Record<string, LegacyProviderSettings>;
+    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
+      string,
+      LegacyProviderSettings
+    >;
+    const driver = providerSettings.provider;
+    const defaultInstanceId = defaultInstanceIdForDriver(driver);
+    const explicitInstance = settings.providerInstances?.[defaultInstanceId];
+    const legacyConfig = legacyProviders[providerSettings.provider]!;
+    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider]!;
+    const effectiveInstance: ProviderInstanceConfig =
+      explicitInstance ??
+      ({
+        driver,
+        enabled: legacyConfig.enabled,
+        config: legacyConfig,
+      } satisfies ProviderInstanceConfig);
+    const isDirty =
+      explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
+    rows.push({
+      instanceId: defaultInstanceId,
+      instance: effectiveInstance,
+      driver,
+      isDefault: true,
+      isDirty,
+    });
+    for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
+      if (id === defaultInstanceId) continue;
+      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
+    }
+  }
+  for (const [driver, list] of instancesByDriver) {
+    if (visibleDriverKinds.has(driver)) continue;
+    for (const [id, instance] of list) {
+      rows.push({
+        instanceId: id,
+        instance,
+        driver: instance.driver,
+        isDefault: defaultSlotIdsBySource.has(String(id)),
+      });
+    }
+  }
+
+  const updateProviderInstance = (
+    row: InstanceRow,
+    next: ProviderInstanceConfig,
+    options?: {
+      readonly textGenerationModelSelection?: Parameters<
+        typeof buildProviderInstanceUpdatePatch
+      >[0]["textGenerationModelSelection"];
+    },
+  ) => {
+    updateSettings(
+      buildProviderInstanceUpdatePatch({
+        settings,
+        instanceId: row.instanceId,
+        instance: next,
+        driver: row.driver,
+        isDefault: row.isDefault,
+        textGenerationModelSelection: options?.textGenerationModelSelection,
+      }),
+    );
+  };
+
+  const deleteProviderInstance = (id: ProviderInstanceId) => {
+    updateSettings({
+      providerInstances: withoutProviderInstanceKey(settings.providerInstances, id),
+      providerModelPreferences: withoutProviderInstanceKey(settings.providerModelPreferences, id),
+      favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], id),
+    });
+  };
+
+  const updateProviderModelPreferences = (
+    instanceId: ProviderInstanceId,
+    next: {
+      readonly hiddenModels: ReadonlyArray<string>;
+      readonly modelOrder: ReadonlyArray<string>;
+    },
+  ) => {
+    const hiddenModels = [...new Set(next.hiddenModels.filter((slug) => slug.trim().length > 0))];
+    const modelOrder = [...new Set(next.modelOrder.filter((slug) => slug.trim().length > 0))];
+    const rest = withoutProviderInstanceKey(settings.providerModelPreferences, instanceId);
+    updateSettings({
+      providerModelPreferences:
+        hiddenModels.length === 0 && modelOrder.length === 0
+          ? rest
+          : {
+              ...rest,
+              [instanceId]: {
+                hiddenModels,
+                modelOrder,
+              },
+            },
+    });
+  };
+
+  const updateProviderFavoriteModels = (
+    instanceId: ProviderInstanceId,
+    nextFavoriteModels: ReadonlyArray<string>,
+  ) => {
+    const favoriteModels = [
+      ...new Set(
+        Arr.filterMap(nextFavoriteModels, (slug) => {
+          const trimmedSlug = slug.trim();
+          return trimmedSlug.length > 0 ? Result.succeed(trimmedSlug) : Result.failVoid;
+        }),
+      ),
+    ];
+    updateSettings({
+      favorites: [
+        ...withoutProviderInstanceFavorites(settings.favorites ?? [], instanceId),
+        ...favoriteModels.map((model) => ({ provider: instanceId, model })),
+      ],
+    });
+  };
+
+  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
+    type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
+    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
+      string,
+      LegacyProviderSettings | undefined
+    >;
+    const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
+    const defaultLegacyProvider = defaultLegacyProviders[driverKind];
+    if (defaultLegacyProvider === undefined) return;
+    updateSettings({
+      providers: {
+        ...settings.providers,
+        [driverKind]: defaultLegacyProvider,
+      } as typeof settings.providers,
+      providerInstances: withoutProviderInstanceKey(settings.providerInstances, defaultInstanceId),
+      providerModelPreferences: withoutProviderInstanceKey(
+        settings.providerModelPreferences,
+        defaultInstanceId,
+      ),
+      favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], defaultInstanceId),
+    });
+  };
+
+  return (
+    <SettingsPageContainer>
       <SettingsSection
         title="Providers"
         headerAction={
@@ -2131,13 +1318,30 @@ export function GeneralSettingsPanel() {
           const liveProvider = serverProviders.find(
             (candidate) => candidate.instanceId === row.instanceId,
           );
+          const updateCandidate = liveProvider
+            ? providerUpdateCandidateByInstanceId.get(liveProvider.instanceId)
+            : undefined;
+          const isDriverUpdateRunning =
+            updateCandidate !== undefined &&
+            (updatingProviderDrivers.has(updateCandidate.driver) ||
+              serverProviders.some(
+                (provider) =>
+                  provider.driver === updateCandidate.driver && isProviderUpdateActive(provider),
+              ));
+          const showInlineUpdateButton =
+            updateCandidate !== undefined &&
+            hasOneClickUpdateProviderCandidate(updateCandidate, serverProviders);
+          const canRunInlineUpdate =
+            updateCandidate !== undefined &&
+            canOneClickUpdateProviderCandidate(updateCandidate, serverProviders) &&
+            !updatingProviderDrivers.has(updateCandidate.driver);
           const modelPreferences = settings.providerModelPreferences?.[row.instanceId] ?? {
             hiddenModels: [],
             modelOrder: [],
           };
-          const favoriteModels = (settings.favorites ?? [])
-            .filter((favorite) => favorite.provider === row.instanceId)
-            .map((favorite) => favorite.model);
+          const favoriteModels = Arr.filterMap(settings.favorites ?? [], (favorite) =>
+            favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
+          );
           const resetLabel = driverOption?.label ?? String(row.driver);
           const headerAction =
             row.isDefault && row.isDirty ? (
@@ -2161,13 +1365,6 @@ export function GeneralSettingsPanel() {
                 }))
               }
               onUpdate={(next) => {
-                // When the user disables the exact instance the text-gen
-                // selection points at, fall back to the global default so we
-                // don't leave the selection dangling on a disabled instance.
-                // Prior kind-level behavior cleared on any kind-matching
-                // disable; instance-level addressing makes this narrower and
-                // more accurate (other instances of the same kind stay
-                // untouched).
                 const wasEnabled = row.instance.enabled ?? true;
                 const isDisabling = next.enabled === false && wasEnabled;
                 const shouldClearTextGen = isDisabling && textGenInstanceId === row.instanceId;
@@ -2200,101 +1397,92 @@ export function GeneralSettingsPanel() {
                   modelOrder,
                 })
               }
+              onRunUpdate={
+                showInlineUpdateButton && updateCandidate
+                  ? () => {
+                      if (!canRunInlineUpdate) {
+                        return;
+                      }
+                      void runProviderUpdate(updateCandidate);
+                    }
+                  : undefined
+              }
+              isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
             />
           );
         })}
       </SettingsSection>
 
-      <AddProviderInstanceDialog
-        open={isAddInstanceDialogOpen}
-        onOpenChange={setIsAddInstanceDialogOpen}
-      />
-
-      <SettingsSection title="Advanced">
-        <SettingsRow
-          title="Keybindings"
-          description="Open the persisted `keybindings.json` file to edit advanced bindings directly."
-          status={
-            <>
-              <span className="block break-all font-mono text-[11px] text-foreground">
-                {keybindingsConfigPath ?? "Resolving keybindings path..."}
-              </span>
-              {openKeybindingsError ? (
-                <span className="mt-1 block text-destructive">{openKeybindingsError}</span>
-              ) : (
-                <span className="mt-1 block">Opens in your preferred editor.</span>
-              )}
-            </>
-          }
-          control={
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={!keybindingsConfigPath || isOpeningKeybindings}
-              onClick={openKeybindingsFile}
-            >
-              {isOpeningKeybindings ? "Opening..." : "Open file"}
-            </Button>
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="About">
-        {isElectron ? (
-          <AboutVersionSection />
-        ) : (
-          <SettingsRow
-            title={<AboutVersionTitle />}
-            description="Current version of the application."
-          />
-        )}
-        <SettingsRow
-          title="Diagnostics"
-          description={diagnosticsDescription}
-          status={
-            <>
-              <span className="block break-all font-mono text-[11px] text-foreground">
-                {logsDirectoryPath ?? "Resolving logs directory..."}
-              </span>
-              {openDiagnosticsError ? (
-                <span className="mt-1 block text-destructive">{openDiagnosticsError}</span>
-              ) : null}
-            </>
-          }
-          control={
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={!logsDirectoryPath || isOpeningLogsDirectory}
-              onClick={openLogsDirectory}
-            >
-              {isOpeningLogsDirectory ? "Opening..." : "Open logs folder"}
-            </Button>
-          }
-        />
-      </SettingsSection>
+      {isAddInstanceDialogOpen ? (
+        <AddProviderInstanceDialog open onOpenChange={setIsAddInstanceDialogOpen} />
+      ) : null}
     </SettingsPageContainer>
   );
 }
 
 export function ArchivedThreadsPanel() {
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const threads = useStore(useShallow(selectThreadShellsAcrossEnvironments));
+  const projects = useProjects();
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const environmentIds = useMemo(
+    () => [...new Set(projects.map((project) => project.environmentId))],
+    [projects],
+  );
+  const {
+    snapshots: archivedSnapshots,
+    error: archiveError,
+    isLoading: isLoadingArchive,
+    refresh: refreshArchivedThreads,
+  } = useArchivedThreadSnapshots(environmentIds);
+
   const archivedGroups = useMemo(() => {
-    return projects
-      .map((project) => ({
-        project,
-        threads: threads
-          .filter((thread) => thread.projectId === project.id && thread.archivedAt !== null)
-          .toSorted((left, right) => {
+    const projectsByEnvironmentAndId = new Map(
+      archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
+        snapshot.projects.map(
+          (project) =>
+            [
+              `${environmentId}:${project.id}`,
+              {
+                id: project.id,
+                environmentId,
+                name: project.title,
+                cwd: project.workspaceRoot,
+              },
+            ] as const,
+        ),
+      ),
+    );
+    const threads = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
+      snapshot.threads.map((thread) => ({
+        ...thread,
+        environmentId,
+      })),
+    );
+
+    const archivedProjects = Array.from(projectsByEnvironmentAndId.values());
+    const groups: Array<{
+      readonly project: (typeof archivedProjects)[number];
+      readonly threads: Array<(typeof threads)[number]>;
+    }> = [];
+    for (const project of archivedProjects) {
+      const projectThreads: Array<(typeof threads)[number]> = [];
+      for (const thread of threads) {
+        if (thread.projectId === project.id && thread.environmentId === project.environmentId) {
+          projectThreads.push(thread);
+        }
+      }
+      if (projectThreads.length > 0) {
+        groups.push({
+          project,
+          threads: projectThreads.toSorted((left, right) => {
             const leftKey = left.archivedAt ?? left.createdAt;
             const rightKey = right.archivedAt ?? right.createdAt;
             return rightKey.localeCompare(leftKey) || right.id.localeCompare(left.id);
           }),
-      }))
-      .filter((group) => group.threads.length > 0);
-  }, [projects, threads]);
+        });
+      }
+    }
+    return groups;
+  }, [archivedSnapshots]);
 
   const handleArchivedThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
@@ -2309,9 +1497,11 @@ export function ArchivedThreadsPanel() {
       );
 
       if (clicked === "unarchive") {
-        try {
-          await unarchiveThread(threadRef);
-        } catch (error) {
+        const result = await unarchiveThread(threadRef);
+        if (result._tag === "Success") {
+          refreshArchivedThreads();
+        } else if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
           toastManager.add(
             stackedThreadToast({
               type: "error",
@@ -2324,25 +1514,49 @@ export function ArchivedThreadsPanel() {
       }
 
       if (clicked === "delete") {
-        await confirmAndDeleteThread(threadRef);
+        const result = await confirmAndDeleteThread(threadRef);
+        if (result._tag === "Success") {
+          refreshArchivedThreads();
+        } else if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to delete thread",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
       }
     },
-    [confirmAndDeleteThread, unarchiveThread],
+    [confirmAndDeleteThread, refreshArchivedThreads, unarchiveThread],
   );
 
   return (
     <SettingsPageContainer>
       {archivedGroups.length === 0 ? (
         <SettingsSection title="Archived threads">
-          <Empty className="min-h-88">
-            <EmptyMedia variant="icon">
-              <ArchiveIcon />
-            </EmptyMedia>
-            <EmptyHeader>
-              <EmptyTitle>No archived threads</EmptyTitle>
-              <EmptyDescription>Archived threads will appear here.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <SettingsRow
+            title={
+              <span className="inline-flex items-center gap-2">
+                {isLoadingArchive ? (
+                  <LoaderIcon className="size-3.5 animate-spin text-muted-foreground" />
+                ) : (
+                  <ArchiveIcon className="size-3.5 text-muted-foreground" />
+                )}
+                {isLoadingArchive
+                  ? "Loading archived threads"
+                  : archiveError
+                    ? "Could not load archived threads"
+                    : "No archived threads"}
+              </span>
+            }
+            description={
+              isLoadingArchive
+                ? "Checking connected environments."
+                : (archiveError ?? "Archived threads will appear here.")
+            }
+          />
         </SettingsSection>
       ) : (
         archivedGroups.map(({ project, threads: projectThreads }) => (
@@ -2352,52 +1566,75 @@ export function ArchivedThreadsPanel() {
             icon={<ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />}
           >
             {projectThreads.map((thread) => (
-              <div
+              <SettingsRow
                 key={thread.id}
-                className="flex items-center justify-between gap-3 border-t border-border px-4 py-3 first:border-t-0 sm:px-5"
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  void handleArchivedThreadContextMenu(
-                    scopeThreadRef(thread.environmentId, thread.id),
-                    {
-                      x: event.clientX,
-                      y: event.clientY,
-                    },
-                  );
+                  void (async () => {
+                    const result = await settlePromise(() =>
+                      handleArchivedThreadContextMenu(
+                        scopeThreadRef(thread.environmentId, thread.id),
+                        {
+                          x: event.clientX,
+                          y: event.clientY,
+                        },
+                      ),
+                    );
+                    if (result._tag === "Failure") {
+                      const error = squashAtomCommandFailure(result);
+                      toastManager.add(
+                        stackedThreadToast({
+                          type: "error",
+                          title: "Archived thread action failed",
+                          description:
+                            error instanceof Error ? error.message : "An error occurred.",
+                        }),
+                      );
+                    }
+                  })();
                 }}
-              >
-                <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-sm font-medium text-foreground">{thread.title}</h3>
-                  <p className="text-xs text-muted-foreground">
+                title={thread.title}
+                description={
+                  <>
                     Archived {formatRelativeTimeLabel(thread.archivedAt ?? thread.createdAt)}
                     {" \u00b7 Created "}
                     {formatRelativeTimeLabel(thread.createdAt)}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
-                  onClick={() =>
-                    void unarchiveThread(scopeThreadRef(thread.environmentId, thread.id)).catch(
-                      (error) => {
-                        toastManager.add(
-                          stackedThreadToast({
-                            type: "error",
-                            title: "Failed to unarchive thread",
-                            description:
-                              error instanceof Error ? error.message : "An error occurred.",
-                          }),
+                  </>
+                }
+                control={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
+                    onClick={() => {
+                      void (async () => {
+                        const result = await unarchiveThread(
+                          scopeThreadRef(thread.environmentId, thread.id),
                         );
-                      },
-                    )
-                  }
-                >
-                  <ArchiveX className="size-3.5" />
-                  <span>Unarchive</span>
-                </Button>
-              </div>
+                        if (result._tag === "Success") {
+                          refreshArchivedThreads();
+                          return;
+                        }
+                        if (!isAtomCommandInterrupted(result)) {
+                          const error = squashAtomCommandFailure(result);
+                          toastManager.add(
+                            stackedThreadToast({
+                              type: "error",
+                              title: "Failed to unarchive thread",
+                              description:
+                                error instanceof Error ? error.message : "An error occurred.",
+                            }),
+                          );
+                        }
+                      })();
+                    }}
+                  >
+                    <ArchiveX className="size-3.5" />
+                    <span>Unarchive</span>
+                  </Button>
+                }
+              />
             ))}
           </SettingsSection>
         ))

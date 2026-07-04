@@ -16,20 +16,19 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Option, Schema, Context } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
-  parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
   title: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
-  pendingRuntimeMode: Schema.NullOr(RuntimeMode).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),

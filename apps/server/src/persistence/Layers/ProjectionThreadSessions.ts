@@ -1,6 +1,7 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { Effect, Layer, Schema, Struct } from "effect";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -14,14 +15,9 @@ import {
 
 const makeProjectionThreadSessionRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
-    Struct.assign({
-      resumeCursor: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
-    }),
-  );
 
   const upsertProjectionThreadSessionRow = SqlSchema.void({
-    Request: ProjectionThreadSessionDbRowSchema,
+    Request: ProjectionThreadSession,
     execute: (row) =>
       sql`
         INSERT INTO projection_thread_sessions (
@@ -31,7 +27,6 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_instance_id,
           runtime_mode,
           active_turn_id,
-          resume_cursor_json,
           last_error,
           updated_at
         )
@@ -42,7 +37,6 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.providerInstanceId},
           ${row.runtimeMode},
           ${row.activeTurnId},
-          ${row.resumeCursor},
           ${row.lastError},
           ${row.updatedAt}
         )
@@ -53,7 +47,6 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_instance_id = excluded.provider_instance_id,
           runtime_mode = excluded.runtime_mode,
           active_turn_id = excluded.active_turn_id,
-          resume_cursor_json = excluded.resume_cursor_json,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
       `,
@@ -61,7 +54,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getProjectionThreadSessionRow = SqlSchema.findOneOption({
     Request: GetProjectionThreadSessionInput,
-    Result: ProjectionThreadSessionDbRowSchema,
+    Result: ProjectionThreadSession,
     execute: ({ threadId }) =>
       sql`
         SELECT
@@ -71,7 +64,6 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           provider_instance_id AS "providerInstanceId",
           runtime_mode AS "runtimeMode",
           active_turn_id AS "activeTurnId",
-          resume_cursor_json AS "resumeCursor",
           last_error AS "lastError",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions

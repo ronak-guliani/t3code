@@ -1,6 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import type { SpawnSyncReturns } from "node:child_process";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import { killProcessTree, type KillableProcess } from "./processTree.ts";
 

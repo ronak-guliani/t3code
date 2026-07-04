@@ -15,11 +15,12 @@ import {
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
   ThreadId,
-  TrimmedNonEmptyString,
   TurnId,
 } from "@t3tools/contracts";
-import { Option, Schema, Context } from "effect";
-import type { Effect } from "effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as Context from "effect/Context";
+import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
@@ -47,8 +48,6 @@ export const ProjectionTurn = Schema.Struct({
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
   checkpointFiles: Schema.Array(OrchestrationCheckpointFile),
-  checkpointAgentTouchedPaths: Schema.Array(TrimmedNonEmptyString),
-  checkpointTurnFiles: Schema.Array(OrchestrationCheckpointFile),
 });
 export type ProjectionTurn = typeof ProjectionTurn.Type;
 
@@ -67,8 +66,6 @@ export const ProjectionTurnById = Schema.Struct({
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
   checkpointFiles: Schema.Array(OrchestrationCheckpointFile),
-  checkpointAgentTouchedPaths: Schema.Array(TrimmedNonEmptyString),
-  checkpointTurnFiles: Schema.Array(OrchestrationCheckpointFile),
 });
 export type ProjectionTurnById = typeof ProjectionTurnById.Type;
 

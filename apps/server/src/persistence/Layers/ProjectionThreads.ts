@@ -1,6 +1,9 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { Effect, Layer, Schema, Struct } from "effect";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -30,11 +33,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         INSERT INTO projection_threads (
           thread_id,
           project_id,
-          parent_thread_id,
           title,
           model_selection_json,
           runtime_mode,
-          pending_runtime_mode,
           interaction_mode,
           branch,
           worktree_path,
@@ -51,11 +52,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         VALUES (
           ${row.threadId},
           ${row.projectId},
-          ${row.parentThreadId ?? null},
           ${row.title},
           ${JSON.stringify(row.modelSelection)},
           ${row.runtimeMode},
-          ${row.pendingRuntimeMode},
           ${row.interactionMode},
           ${row.branch},
           ${row.worktreePath},
@@ -72,11 +71,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           project_id = excluded.project_id,
-          parent_thread_id = excluded.parent_thread_id,
           title = excluded.title,
           model_selection_json = excluded.model_selection_json,
           runtime_mode = excluded.runtime_mode,
-          pending_runtime_mode = excluded.pending_runtime_mode,
           interaction_mode = excluded.interaction_mode,
           branch = excluded.branch,
           worktree_path = excluded.worktree_path,
@@ -100,11 +97,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
-          parent_thread_id AS "parentThreadId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
-          pending_runtime_mode AS "pendingRuntimeMode",
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -130,11 +125,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
-          parent_thread_id AS "parentThreadId",
           title,
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
-          pending_runtime_mode AS "pendingRuntimeMode",
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",

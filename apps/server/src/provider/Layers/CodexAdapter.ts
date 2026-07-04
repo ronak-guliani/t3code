@@ -24,15 +24,22 @@ import {
   ThreadId,
   ProviderSendTurnInput,
 } from "@t3tools/contracts";
-import { Effect, Exit, Fiber, FileSystem, Queue, Schema, Scope, Stream } from "effect";
+import * as Effect from "effect/Effect";
+import * as Crypto from "effect/Crypto";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import {
-  getModelSelectionBooleanOptionValue,
-  getModelSelectionStringOptionValue,
-} from "@t3tools/shared/model";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -54,6 +61,12 @@ import {
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
+const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
+const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
+  CodexSessionRuntimeThreadIdMissingError,
+);
+const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -84,10 +97,7 @@ function mapCodexRuntimeError(
   method: string,
   error: CodexSessionRuntimeError,
 ): ProviderAdapterError {
-  if (
-    Schema.is(CodexErrors.CodexAppServerProcessExitedError)(error) ||
-    Schema.is(CodexErrors.CodexAppServerTransportError)(error)
-  ) {
+  if (isCodexAppServerProcessExitedError(error) || isCodexAppServerTransportError(error)) {
     return new ProviderAdapterSessionClosedError({
       provider: PROVIDER,
       threadId,
@@ -95,7 +105,7 @@ function mapCodexRuntimeError(
     });
   }
 
-  if (Schema.is(CodexSessionRuntimeThreadIdMissingError)(error)) {
+  if (isCodexSessionRuntimeThreadIdMissingError(error)) {
     return new ProviderAdapterSessionNotFoundError({
       provider: PROVIDER,
       threadId,
@@ -127,7 +137,8 @@ function readPayload<A>(
   schema: Schema.Schema<A>,
   payload: ProviderEvent["payload"],
 ): A | undefined {
-  return Schema.is(schema)(payload) ? payload : undefined;
+  const isPayload = Schema.is(schema);
+  return isPayload(payload) ? payload : undefined;
 }
 
 function trimText(value: string | undefined | null): string | undefined {
@@ -224,7 +235,10 @@ function toCanonicalItemType(raw: string | undefined | null): CanonicalItemType 
   return "unknown";
 }
 
-function itemTitle(itemType: CanonicalItemType): string | undefined {
+function itemTitle(itemType: CanonicalItemType, item?: CodexLifecycleItem): string | undefined {
+  if (itemType === "mcp_tool_call" && item?.type === "mcpToolCall") {
+    return `${item.server} · ${item.tool}`;
+  }
   switch (itemType) {
     case "assistant_message":
       return "Assistant message";
@@ -465,7 +479,7 @@ function mapItemLifecycle(
     payload: {
       itemType,
       ...(status ? { status } : {}),
-      ...(itemTitle(itemType) ? { title: itemTitle(itemType) } : {}),
+      ...(itemTitle(itemType, item) ? { title: itemTitle(itemType, item) } : {}),
       ...(detail ? { detail } : {}),
       ...(event.payload !== undefined ? { data: event.payload } : {}),
     },
@@ -1338,6 +1352,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const fileSystem = yield* FileSystem.FileSystem;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
   const nativeEventLogger =
     options?.nativeEventLogger ??
@@ -1367,6 +1382,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           yield* Effect.suspend(() => stopSessionInternal(existing));
         }
 
+        const serviceTier =
+          input.modelSelection?.instanceId === boundInstanceId
+            ? getCodexServiceTierOptionValue(input.modelSelection)
+            : undefined;
+        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
@@ -1374,16 +1394,27 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           binaryPath: codexConfig.binaryPath,
           ...(options?.environment ? { environment: options.environment } : {}),
           ...(codexConfig.homePath ? { homePath: codexConfig.homePath } : {}),
-          ...(Schema.is(CodexResumeCursorSchema)(input.resumeCursor)
+          ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }
             : {}),
-          ...(input.modelSelection?.instanceId === boundInstanceId &&
-          getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode") === true
-            ? { serviceTier: "fast" }
+          ...(serviceTier ? { serviceTier } : {}),
+          ...(mcpSession
+            ? {
+                environment: {
+                  ...(options?.environment ?? process.env),
+                  T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
+                },
+                appServerArgs: [
+                  "-c",
+                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
+                  "-c",
+                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+                ],
+              }
             : {}),
         };
         const sessionScope = yield* Scope.make("sequential");
@@ -1395,6 +1426,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         const runtime = yield* createRuntime(runtimeInput).pipe(
           Effect.provideService(Scope.Scope, sessionScope),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          Effect.provideService(Crypto.Crypto, crypto),
           Effect.mapError(
             (cause) =>
               new ProviderAdapterProcessError({
@@ -1499,9 +1531,9 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
         : undefined;
-    const fastMode =
+    const serviceTier =
       input.modelSelection?.instanceId === boundInstanceId
-        ? getModelSelectionBooleanOptionValue(input.modelSelection, "fastMode")
+        ? getCodexServiceTierOptionValue(input.modelSelection)
         : undefined;
     return yield* session.runtime
       .sendTurn({
@@ -1514,7 +1546,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
               effort: reasoningEffort as EffectCodexSchema.V2TurnStartParams__ReasoningEffort,
             }
           : {}),
-        ...(fastMode === true ? { serviceTier: "fast" } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
         ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
         ...(codexAttachments.length > 0 ? { attachments: codexAttachments } : {}),
       })
@@ -1644,15 +1676,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const hasSession: CodexAdapterShape["hasSession"] = (threadId) =>
     Effect.succeed(Boolean(sessions.get(threadId) && !sessions.get(threadId)?.stopped));
 
-  const forkSession: CodexAdapterShape["forkSession"] = (input) =>
-    Effect.fail(
-      new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "thread/fork",
-        detail: `Provider '${PROVIDER}' native forking is not wired yet for thread '${input.sourceThreadId}'.`,
-      }),
-    );
-
   const stopAll: CodexAdapterShape["stopAll"] = () =>
     Effect.forEach(Array.from(sessions.values()), stopSessionInternal, {
       concurrency: 1,
@@ -1673,7 +1696,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       sessionModelSwitch: "in-session",
     },
     startSession,
-    forkSession,
     sendTurn,
     interruptTurn,
     readThread,

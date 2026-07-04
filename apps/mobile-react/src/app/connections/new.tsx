@@ -1,8 +1,8 @@
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { SymbolView } from "expo-symbols";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, View } from "react-native";
+import { Alert, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 
@@ -31,7 +31,6 @@ export default function ConnectionsNewRouteScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [scannerLocked, setScannerLocked] = useState(false);
 
-  const textColor = useThemeColor("--color-icon");
   const placeholderColor = useThemeColor("--color-placeholder");
 
   const connectDisabled = isSubmitting || hostInput.trim().length === 0;
@@ -113,12 +112,12 @@ export default function ConnectionsNewRouteScreen() {
   const handleSubmit = useCallback(async () => {
     setIsSubmitting(true);
 
-    try {
-      const pairingUrl = buildPairingUrl(hostInput, codeInput);
-      onChangeConnectionPairingUrl(pairingUrl);
-      await onConnectPress(pairingUrl);
+    const pairingUrl = buildPairingUrl(hostInput, codeInput);
+    onChangeConnectionPairingUrl(pairingUrl);
+    const result = await onConnectPress(pairingUrl);
+    if (AsyncResult.isSuccess(result)) {
       dismissRoute(router);
-    } catch {
+    } else {
       setIsSubmitting(false);
     }
   }, [codeInput, hostInput, onChangeConnectionPairingUrl, onConnectPress, router]);
@@ -128,28 +127,21 @@ export default function ConnectionsNewRouteScreen() {
       <Stack.Screen
         options={{
           title: showScanner ? "Scan QR Code" : "Add Environment",
-          headerRight: () => (
-            <Pressable
-              className="h-10 w-10 items-center justify-center rounded-full border border-border bg-secondary"
-              onPress={() => {
-                if (showScanner) {
-                  closeScanner();
-                } else {
-                  void openScanner();
-                }
-              }}
-            >
-              <SymbolView
-                name={showScanner ? "xmark" : "qrcode.viewfinder"}
-                size={showScanner ? 14 : 18}
-                tintColor={textColor}
-                type="monochrome"
-                weight="semibold"
-              />
-            </Pressable>
-          ),
         }}
       />
+      <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Button
+          icon={showScanner ? "xmark" : "qrcode.viewfinder"}
+          onPress={() => {
+            if (showScanner) {
+              closeScanner();
+            } else {
+              void openScanner();
+            }
+          }}
+          separateBackground
+        />
+      </Stack.Toolbar>
 
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
@@ -179,7 +171,7 @@ export default function ConnectionsNewRouteScreen() {
                 className="items-center gap-3 rounded-[24px] bg-card px-5 py-8"
                 style={{ borderCurve: "continuous" }}
               >
-                <Text className="text-center text-[14px] leading-[20px] text-foreground-muted">
+                <Text className="text-center text-sm leading-[20px] text-foreground-muted">
                   Camera permission is required to scan a QR code.
                 </Text>
                 <ConnectionSheetButton
@@ -197,7 +189,7 @@ export default function ConnectionsNewRouteScreen() {
             <View collapsable={false} className="gap-4 rounded-[24px] bg-card p-4">
               <View collapsable={false} className="gap-1.5">
                 <Text
-                  className="text-[11px] font-t3-bold uppercase text-foreground-muted"
+                  className="text-2xs font-t3-bold uppercase text-foreground-muted"
                   style={{ letterSpacing: 0.8 }}
                 >
                   Host
@@ -210,13 +202,13 @@ export default function ConnectionsNewRouteScreen() {
                   placeholderTextColor={placeholderColor}
                   value={hostInput}
                   onChangeText={handleHostChange}
-                  className="rounded-[14px] border border-input-border bg-input px-4 py-3.5 text-[15px] text-foreground"
+                  className="rounded-[14px] border border-input-border bg-input px-4 py-3.5 text-base text-foreground"
                 />
               </View>
 
               <View collapsable={false} className="gap-1.5">
                 <Text
-                  className="text-[11px] font-t3-bold uppercase text-foreground-muted"
+                  className="text-2xs font-t3-bold uppercase text-foreground-muted"
                   style={{ letterSpacing: 0.8 }}
                 >
                   Pairing code
@@ -228,7 +220,7 @@ export default function ConnectionsNewRouteScreen() {
                   placeholderTextColor={placeholderColor}
                   value={codeInput}
                   onChangeText={handleCodeChange}
-                  className="rounded-[14px] border border-input-border bg-input px-4 py-3.5 text-[15px] text-foreground"
+                  className="rounded-[14px] border border-input-border bg-input px-4 py-3.5 text-base text-foreground"
                 />
               </View>
 

@@ -1,94 +1,37 @@
-import { describe, expect, it } from "vitest";
-import { Schema } from "effect";
+import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
-  ClientSettingsPatch,
   ClientSettingsSchema,
-  DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
-  DEFAULT_CLIENT_SETTINGS,
-  DEFAULT_CODE_FONT,
-  DEFAULT_SIDEBAR_FONT_SIZE,
-  DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_SERVER_SETTINGS,
   ServerSettings,
   ServerSettingsPatch,
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
-const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const encodeServerSettings = Schema.encodeSync(ServerSettings);
 
-describe("ClientSettings.codeFont", () => {
-  it("defaults to the existing monospace stack selection", () => {
-    expect(DEFAULT_CLIENT_SETTINGS.codeFont).toBe(DEFAULT_CODE_FONT);
-    expect(decodeClientSettings({}).codeFont).toBe(DEFAULT_CODE_FONT);
+describe("ClientSettings word wrap", () => {
+  it("defaults word wrap on", () => {
+    expect(decodeClientSettings({}).wordWrap).toBe(true);
   });
 
-  it("accepts known code font options in patches", () => {
-    expect(decodeClientSettingsPatch({ codeFont: "jetbrains-mono" }).codeFont).toBe(
-      "jetbrains-mono",
-    );
-  });
-
-  it("rejects unknown code font options in patches", () => {
-    expect(() => decodeClientSettingsPatch({ codeFont: "not-a-font" })).toThrow();
-  });
-});
-
-describe("ClientSettings.sidebarFontSize", () => {
-  it("defaults to the sidebar title font size", () => {
-    expect(DEFAULT_CLIENT_SETTINGS.sidebarFontSize).toBe(DEFAULT_SIDEBAR_FONT_SIZE);
-    expect(decodeClientSettings({}).sidebarFontSize).toBe(DEFAULT_SIDEBAR_FONT_SIZE);
-  });
-
-  describe("ClientSettings.sidebarTranslucency", () => {
-    it("defaults to the opaque sidebar", () => {
-      expect(DEFAULT_CLIENT_SETTINGS.sidebarTranslucency).toBe(DEFAULT_SIDEBAR_TRANSLUCENCY);
-      expect(decodeClientSettings({}).sidebarTranslucency).toBe(DEFAULT_SIDEBAR_TRANSLUCENCY);
+  it("ignores obsolete wrapping preferences", () => {
+    const decoded = decodeClientSettings({
+      chatWordWrap: false,
+      diffWordWrap: false,
     });
 
-    it("accepts known sidebar translucency levels in patches", () => {
-      expect(decodeClientSettingsPatch({ sidebarTranslucency: "medium" }).sidebarTranslucency).toBe(
-        "medium",
-      );
-      expect(
-        decodeClientSettingsPatch({ sidebarTranslucency: "liquid-glass" }).sidebarTranslucency,
-      ).toBe("liquid-glass");
-    });
-
-    it("rejects unknown sidebar translucency levels in patches", () => {
-      expect(() => decodeClientSettingsPatch({ sidebarTranslucency: "glass" })).toThrow();
-    });
-  });
-
-  it("accepts valid sidebar font size patches", () => {
-    expect(decodeClientSettingsPatch({ sidebarFontSize: 13 }).sidebarFontSize).toBe(13);
-  });
-
-  it("rejects invalid sidebar font size patches", () => {
-    expect(() => decodeClientSettingsPatch({ sidebarFontSize: 25 })).toThrow();
+    expect(decoded.wordWrap).toBe(true);
+    expect(decoded).not.toHaveProperty("chatWordWrap");
+    expect(decoded).not.toHaveProperty("diffWordWrap");
   });
 });
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
-  it("defaults chat exports to no configured directory", () => {
-    expect(DEFAULT_SERVER_SETTINGS.chatExportDirectory).toBe("");
-    expect(decodeServerSettings({}).chatExportDirectory).toBe("");
-  });
-
-  it("defaults chat exports to full detail", () => {
-    expect(DEFAULT_SERVER_SETTINGS.chatExportDetail).toEqual(DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS);
-    expect(decodeServerSettings({}).chatExportDetail).toEqual({
-      includeMetadata: true,
-      includeToolCalls: true,
-      includeDiffs: true,
-      includePlans: true,
-      includeQueuedTurns: true,
-    });
-  });
-
   it("defaults to an empty record so legacy configs without the key still decode", () => {
     expect(DEFAULT_SERVER_SETTINGS.providerInstances).toEqual({});
   });
@@ -144,22 +87,19 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   });
 });
 
+describe("ServerSettings worktree defaults", () => {
+  it("defaults start-from-origin off for legacy configs", () => {
+    expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(false);
+  });
+
+  it("accepts start-from-origin updates", () => {
+    expect(
+      decodeServerSettingsPatch({ newWorktreesStartFromOrigin: true }).newWorktreesStartFromOrigin,
+    ).toBe(true);
+  });
+});
+
 describe("ServerSettingsPatch.providerInstances", () => {
-  it("accepts chat export directory updates", () => {
-    const patch = decodeServerSettingsPatch({ chatExportDirectory: "~/t3-exports" });
-    expect(patch.chatExportDirectory).toBe("~/t3-exports");
-  });
-
-  it("accepts partial chat export detail updates", () => {
-    const patch = decodeServerSettingsPatch({
-      chatExportDetail: { includeToolCalls: false, includeDiffs: false },
-    });
-    expect(patch.chatExportDetail).toEqual({
-      includeToolCalls: false,
-      includeDiffs: false,
-    });
-  });
-
   it("treats providerInstances as an optional whole-map replacement", () => {
     const patch = decodeServerSettingsPatch({});
     expect(patch.providerInstances).toBeUndefined();
@@ -186,5 +126,63 @@ describe("ServerSettingsPatch.providerInstances", () => {
     });
     const ollamaId = ProviderInstanceId.make("ollama_local");
     expect(patch.providerInstances?.[ollamaId]?.driver).toBe("ollama");
+  });
+});
+
+describe("ServerSettingsPatch string normalization", () => {
+  it("trims string settings while decoding patches", () => {
+    const patch = decodeServerSettingsPatch({
+      addProjectBaseDirectory: "  ~/Development  ",
+      textGenerationModelSelection: { model: "  gpt-5.4-mini  " },
+      observability: {
+        otlpTracesUrl: "  http://localhost:4318/v1/traces  ",
+      },
+      providers: {
+        codex: {
+          binaryPath: "  /opt/homebrew/bin/codex  ",
+          homePath: "  ~/.codex  ",
+        },
+      },
+      providerInstances: {
+        codex_personal: {
+          driver: "  codex  ",
+          displayName: "  Codex Personal  ",
+          config: { homePath: "  ~/.codex-personal  " },
+        },
+      },
+    });
+
+    expect(patch.addProjectBaseDirectory).toBe("~/Development");
+    expect(patch.textGenerationModelSelection?.model).toBe("gpt-5.4-mini");
+    expect(patch.observability?.otlpTracesUrl).toBe("http://localhost:4318/v1/traces");
+    expect(patch.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
+    expect(patch.providers?.codex?.homePath).toBe("~/.codex");
+    expect(patch.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.driver).toBe(
+      "codex",
+    );
+    expect(patch.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.displayName).toBe(
+      "Codex Personal",
+    );
+    expect(patch.providerInstances?.[ProviderInstanceId.make("codex_personal")]?.config).toEqual({
+      homePath: "  ~/.codex-personal  ",
+    });
+  });
+
+  it("trims encoded server settings values before validation", () => {
+    const defaultSettings = decodeServerSettings({});
+    const encoded = encodeServerSettings({
+      ...defaultSettings,
+      addProjectBaseDirectory: "  ~/Development  ",
+      providers: {
+        ...defaultSettings.providers,
+        codex: {
+          ...defaultSettings.providers.codex,
+          binaryPath: "  /opt/homebrew/bin/codex  ",
+        },
+      },
+    });
+
+    expect(encoded.addProjectBaseDirectory).toBe("~/Development");
+    expect(encoded.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
   });
 });

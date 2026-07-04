@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Schema } from "effect";
+import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 
 import { ProviderRuntimeEvent } from "./providerRuntime.ts";
 

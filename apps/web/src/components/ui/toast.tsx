@@ -6,6 +6,7 @@ import {
   useMemo,
   useState,
   type CSSProperties,
+  type ComponentPropsWithoutRef,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -34,13 +35,29 @@ import {
   shouldHideCollapsedToastContent,
   shouldRenderThreadScopedToast,
 } from "./toast.logic";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./tooltip";
 
 export type ThreadToastData = {
   threadRef?: ScopedThreadRef | null;
   threadId?: ThreadId | null;
+  leadingIcon?: ReactNode;
   tooltipStyle?: boolean;
+  onClose?: (() => void) | undefined;
   dismissAfterVisibleMs?: number;
   hideCopyButton?: boolean;
+  additionalActions?: ReadonlyArray<{
+    id: string;
+    props: ComponentPropsWithoutRef<"button">;
+  }>;
+  secondaryActionProps?: ComponentPropsWithoutRef<"button">;
+  secondaryActionVariant?:
+    | "default"
+    | "destructive"
+    | "destructive-outline"
+    | "ghost"
+    | "link"
+    | "outline"
+    | "secondary";
   /** Optional extra body shown after toggling “Show details” (e.g. a list of pending RPCs). */
   expandableContent?: ReactNode;
   expandableLabels?: { expand?: string; collapse?: string };
@@ -90,18 +107,35 @@ const toastCornerOrbClass = cn(
   "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
 );
 
+function handleToastDismissClick(
+  manager: typeof toastManager | typeof anchoredToastManager,
+  toastId: ToastId,
+  onClose: (() => void) | undefined,
+) {
+  onClose?.();
+  manager.close(toastId);
+}
+
 function CopyErrorButton({ text }: { text: string }) {
-  const { copyToClipboard, isCopied } = useCopyToClipboard();
+  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "error-message" });
+  const label = isCopied ? "Copied error" : "Copy error";
 
   return (
-    <button
-      className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground/80 transition-colors hover:text-muted-foreground"
-      onClick={() => copyToClipboard(text)}
-      title="Copy error"
-      type="button"
-    >
-      {isCopied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
-    </button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            aria-label={label}
+            className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md p-0 text-muted-foreground/80 transition-colors hover:text-muted-foreground"
+            onClick={() => copyToClipboard(text)}
+            type="button"
+          />
+        }
+      >
+        {isCopied ? <CheckIcon className="size-3 text-success" /> : <CopyIcon className="size-3" />}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -184,43 +218,50 @@ function ToastDescriptionAndExpandable({
 
   return (
     <>
-      <div
-        aria-expanded={open}
-        className={cn(
-          "group flex min-w-0 w-full cursor-pointer select-none items-start gap-1.5 rounded-sm text-left outline-none ring-offset-background",
-          "transition-colors hover:bg-muted/40",
-          "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-        )}
-        onClick={toggle}
-        onKeyDown={onKeyDown}
-        role="button"
-        tabIndex={0}
-        title={open ? collapseLabel : expandLabel}
-      >
-        <div className="min-w-0 flex-1">
-          <Toast.Description
-            className={cn(
-              "min-w-0 select-none wrap-break-word text-muted-foreground",
-              errorDescriptionClampClass(toastType, toastDescription),
-              "underline-offset-2 decoration-muted-foreground/60 group-hover:underline",
-            )}
-            data-slot="toast-description"
-          />
-        </div>
-        {open ? (
-          <ChevronUpIcon
-            aria-hidden
-            className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-80"
-            strokeWidth={2.25}
-          />
-        ) : (
-          <ChevronDownIcon
-            aria-hidden
-            className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-80"
-            strokeWidth={2.25}
-          />
-        )}
-      </div>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <div
+              aria-label={open ? collapseLabel : expandLabel}
+              aria-expanded={open}
+              className={cn(
+                "group flex min-w-0 w-full cursor-pointer select-none items-start gap-1.5 rounded-sm text-left outline-none ring-offset-background",
+                "transition-colors hover:bg-muted/40",
+                "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+              )}
+              onClick={toggle}
+              onKeyDown={onKeyDown}
+              role="button"
+              tabIndex={0}
+            />
+          }
+        >
+          <div className="min-w-0 flex-1">
+            <Toast.Description
+              className={cn(
+                "min-w-0 select-none wrap-break-word text-muted-foreground",
+                errorDescriptionClampClass(toastType, toastDescription),
+                "underline-offset-2 decoration-muted-foreground/60 group-hover:underline",
+              )}
+              data-slot="toast-description"
+            />
+          </div>
+          {open ? (
+            <ChevronUpIcon
+              aria-hidden
+              className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-80"
+              strokeWidth={2.25}
+            />
+          ) : (
+            <ChevronDownIcon
+              aria-hidden
+              className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-80"
+              strokeWidth={2.25}
+            />
+          )}
+        </TooltipTrigger>
+        <TooltipPopup side="top">{open ? collapseLabel : expandLabel}</TooltipPopup>
+      </Tooltip>
       {open ? <div className={toastExpandablePanelClassName}>{expandableContent}</div> : null}
     </>
   );
@@ -232,6 +273,7 @@ interface ToastBodyDescriptor {
   readonly Icon: ToastIconComponent | null | undefined;
   readonly stackedActionLayout: boolean;
   readonly actionVariant: NonNullable<ThreadToastData["actionVariant"]>;
+  readonly secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]>;
   readonly copyErrorText: string | null;
   readonly hasTrailingControls: boolean;
   readonly inlineContentEndPad: string;
@@ -248,16 +290,25 @@ function deriveToastBodyDescriptor(toast: {
     toast.actionProps !== undefined && toast.data?.actionLayout === "stacked-end";
   const actionVariant: NonNullable<ThreadToastData["actionVariant"]> =
     toast.data?.actionVariant ?? "default";
+  const secondaryActionVariant: NonNullable<ThreadToastData["secondaryActionVariant"]> =
+    toast.data?.secondaryActionVariant ?? "outline";
   const copyErrorText =
     toast.type === "error" && typeof toast.description === "string" && !toast.data?.hideCopyButton
       ? toast.description
       : null;
-  const hasTrailingControls = copyErrorText !== null || toast.actionProps !== undefined;
+  const hasAdditionalActions = (toast.data?.additionalActions?.length ?? 0) > 0;
+  const hasSecondaryAction = toast.data?.secondaryActionProps !== undefined;
+  const hasTrailingControls =
+    copyErrorText !== null ||
+    toast.actionProps !== undefined ||
+    hasAdditionalActions ||
+    hasSecondaryAction;
   const inlineContentEndPad = hasTrailingControls ? "pr-6" : "pr-10";
   return {
     Icon,
     stackedActionLayout,
     actionVariant,
+    secondaryActionVariant,
     copyErrorText,
     hasTrailingControls,
     inlineContentEndPad,
@@ -277,22 +328,36 @@ function ToastBodyContent({
   copyErrorText,
   actionProps,
   actionVariant,
+  secondaryActionVariant,
   hasTrailingControls,
   toastData,
   toastDescription,
   toastType,
 }: ToastBodyContentProps) {
+  const additionalActions = toastData?.additionalActions ?? [];
+  const secondaryActionProps = toastData?.secondaryActionProps;
+  const leadingIcon = toastData?.leadingIcon;
+  const { className: secondaryActionClassName, ...secondaryActionRest } =
+    secondaryActionProps ?? {};
+
   return (
     <>
       <div className={cn("flex min-w-0 gap-2", !stackedActionLayout && "flex-1")}>
-        {Icon && (
+        {leadingIcon ? (
+          <div
+            className="flex h-lh w-4 shrink-0 items-center justify-center"
+            data-slot="toast-icon"
+          >
+            {leadingIcon}
+          </div>
+        ) : Icon ? (
           <div
             className="[&>svg]:h-lh [&>svg]:w-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
             data-slot="toast-icon"
           >
             <Icon className="in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive in-data-[type=info]:text-info in-data-[type=success]:text-success in-data-[type=warning]:text-warning in-data-[type=loading]:opacity-80" />
           </div>
-        )}
+        ) : null}
         <div
           className={cn(
             "flex min-h-0 min-w-0 flex-1 flex-col gap-0.5",
@@ -315,6 +380,27 @@ function ToastBodyContent({
           )}
         >
           {copyErrorText !== null ? <CopyErrorButton text={copyErrorText} /> : null}
+          {additionalActions.map(({ id, props: { className, ...props } }) => (
+            <button
+              {...props}
+              className={cn(
+                buttonVariants({ size: "xs", variant: secondaryActionVariant }),
+                className,
+              )}
+              key={id}
+              type="button"
+            />
+          ))}
+          {secondaryActionProps ? (
+            <button
+              {...secondaryActionRest}
+              className={cn(
+                buttonVariants({ size: "xs", variant: secondaryActionVariant }),
+                secondaryActionClassName,
+              )}
+              type="button"
+            />
+          ) : null}
           {actionProps ? (
             <Toast.Action
               className={cn(buttonVariants({ size: "xs", variant: actionVariant }), "shrink-0")}
@@ -451,7 +537,7 @@ function ToastProvider({ children, position = "top-right", ...props }: ToastProv
   );
 }
 
-function Toasts({ position = "top-right" }: { position: ToastPosition }) {
+function Toasts({ position }: { position: ToastPosition }) {
   const { toasts } = Toast.useToastManager<ThreadToastData>();
   const activeThreadRef = useActiveThreadRefFromRoute();
   const isTop = position.startsWith("top");
@@ -579,7 +665,9 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                   aria-label="Dismiss notification"
                   className={toastCornerOrbClass}
                   data-slot="toast-close"
-                  onClick={() => toastManager.close(toast.id)}
+                  onClick={() =>
+                    handleToastDismissClick(toastManager, toast.id, toast.data?.onClose)
+                  }
                   type="button"
                 >
                   <XIcon className="size-3" strokeWidth={2.25} />
@@ -670,7 +758,13 @@ function AnchoredToasts() {
                           aria-label="Dismiss notification"
                           className={toastCornerOrbClass}
                           data-slot="toast-close"
-                          onClick={() => anchoredToastManager.close(toast.id)}
+                          onClick={() =>
+                            handleToastDismissClick(
+                              anchoredToastManager,
+                              toast.id,
+                              toast.data?.onClose,
+                            )
+                          }
                           type="button"
                         >
                           <XIcon className="size-3" strokeWidth={2.25} />

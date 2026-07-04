@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import {
   MessageId,
@@ -25,8 +25,6 @@ function makeCheckpoint(
     checkpointRef: `refs/t3/checkpoints/thread/${input.checkpointTurnCount}` as any,
     status: "ready",
     files: [],
-    agentTouchedPaths: [],
-    turnFiles: [],
     assistantMessageId: MessageId.make(`msg-${input.checkpointTurnCount}`),
     ...input,
   };
@@ -69,21 +67,41 @@ describe("buildReviewSectionItems", () => {
         id: "working-tree",
         kind: "working-tree",
         title: "Dirty worktree",
+        status: "ready",
+        error: null,
         baseRef: "HEAD",
         headRef: null,
         diff: "diff --git a/a.ts b/a.ts",
         diffHash: "hash-dirty",
         truncated: false,
+        files: [],
+        metadata: {
+          filesChanged: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          largeFiles: 0,
+          unrenderableFiles: 0,
+        },
       },
       {
         id: "branch-range",
         kind: "branch-range",
         title: "Against main",
+        status: "ready",
+        error: null,
         baseRef: "main",
         headRef: "feature",
         diff: "diff --git a/a.ts b/a.ts",
         diffHash: "hash-base",
         truncated: false,
+        files: [],
+        metadata: {
+          filesChanged: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          largeFiles: 0,
+          unrenderableFiles: 0,
+        },
       },
     ];
 

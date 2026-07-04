@@ -27,15 +27,12 @@
  *
  * @module provider/Layers/ProviderEventLoggers
  */
-import { Context, Effect, Layer } from "effect";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
-import { makeGlobalProviderEventSink } from "./GlobalProviderEventSink.ts";
-
-const GLOBAL_SINK_MAX_BYTES = 10 * 1024 * 1024;
-const GLOBAL_SINK_MAX_FILES = 10;
-const GLOBAL_SINK_BATCH_WINDOW_MS = 200;
 
 export interface ProviderEventLoggersShape {
   readonly native: EventNdjsonLogger | undefined;
@@ -53,7 +50,7 @@ export interface ProviderEventLoggersShape {
 export class ProviderEventLoggers extends Context.Service<
   ProviderEventLoggers,
   ProviderEventLoggersShape
->()("t3/provider/ProviderEventLoggers") {}
+>()("t3/provider/Layers/ProviderEventLoggers") {}
 
 /**
  * Constant value used by tests / boot layers that want to opt out of native
@@ -73,20 +70,12 @@ export const NoOpProviderEventLoggers: ProviderEventLoggersShape = {
 export const ProviderEventLoggersLive = Layer.effect(
   ProviderEventLoggers,
   Effect.gen(function* () {
-    const { providerEventLogPath, globalProviderEventLogPath } = yield* ServerConfig;
-    const globalSink = yield* makeGlobalProviderEventSink({
-      filePath: globalProviderEventLogPath,
-      maxBytes: GLOBAL_SINK_MAX_BYTES,
-      maxFiles: GLOBAL_SINK_MAX_FILES,
-      batchWindowMs: GLOBAL_SINK_BATCH_WINDOW_MS,
-    });
+    const { providerEventLogPath } = yield* ServerConfig;
     const native = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "native",
-      globalSink,
     });
     const canonical = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",
-      globalSink,
     });
     return {
       native,

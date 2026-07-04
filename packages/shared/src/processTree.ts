@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";
 import type { SpawnSyncReturns } from "node:child_process";
 

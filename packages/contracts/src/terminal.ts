@@ -1,7 +1,12 @@
-import { Effect, Schema } from "effect";
+import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
-export const DEFAULT_TERMINAL_ID = "default";
+/**
+ * Client-side id for the first shell opened on a thread. Ids are uniformly
+ * `term-N`; there's no "default" intrinsic. Kept as a named constant so callers
+ * that want "the primary shell" don't hardcode `"term-1"`.
+ */
+export const DEFAULT_TERMINAL_ID = "term-1";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const TerminalColsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
@@ -19,18 +24,15 @@ const TerminalEnvSchema = Schema.Record(TerminalEnvKeySchema, TerminalEnvValueSc
   Schema.isMaxProperties(128),
 );
 
-const TerminalIdWithDefaultSchema = TerminalIdSchema.pipe(
-  Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_ID)),
-);
-
 export const TerminalThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyStringSchema,
 });
 export type TerminalThreadInput = typeof TerminalThreadInput.Type;
 
+/** Terminal ids are ALWAYS chosen by the client and sent explicitly — no server-side allocation. */
 const TerminalSessionInput = Schema.Struct({
   ...TerminalThreadInput.fields,
-  terminalId: TerminalIdWithDefaultSchema,
+  terminalId: TerminalIdSchema,
 });
 export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionInput>;
 
@@ -43,6 +45,18 @@ export const TerminalOpenInput = Schema.Struct({
   env: Schema.optional(TerminalEnvSchema),
 });
 export type TerminalOpenInput = Schema.Codec.Encoded<typeof TerminalOpenInput>;
+
+export const TerminalAttachInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  cols: Schema.optional(TerminalColsSchema),
+  rows: Schema.optional(TerminalRowsSchema),
+  env: Schema.optional(TerminalEnvSchema),
+  restartIfNotRunning: Schema.optional(Schema.Boolean),
+});
+export type TerminalAttachInput = Schema.Codec.Encoded<typeof TerminalAttachInput>;
+export type TerminalAttachInputDecoded = TerminalAttachInput;
 
 export const TerminalWriteInput = Schema.Struct({
   ...TerminalSessionInput.fields,
@@ -90,94 +104,12 @@ export const TerminalSessionSnapshot = Schema.Struct({
   history: Schema.String,
   exitCode: Schema.NullOr(Schema.Int),
   exitSignal: Schema.NullOr(Schema.Int),
-  /** Server-computed display title (idle shell vs subprocess command). Optional on this fork. */
-  label: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+  /** Server-computed display title (idle shell vs subprocess command). */
+  label: Schema.String.check(Schema.isMaxLength(128)),
   updatedAt: Schema.String,
   sequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 export type TerminalSessionSnapshot = typeof TerminalSessionSnapshot.Type;
-
-const TerminalEventBaseSchema = Schema.Struct({
-  threadId: Schema.String.check(Schema.isNonEmpty()),
-  terminalId: Schema.String.check(Schema.isNonEmpty()),
-  createdAt: Schema.String,
-});
-
-const TerminalStartedEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("started"),
-  snapshot: TerminalSessionSnapshot,
-});
-
-const TerminalOutputEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("output"),
-  data: Schema.String,
-});
-
-const TerminalExitedEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("exited"),
-  exitCode: Schema.NullOr(Schema.Int),
-  exitSignal: Schema.NullOr(Schema.Int),
-});
-
-const TerminalErrorEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("error"),
-  message: Schema.String.check(Schema.isNonEmpty()),
-});
-
-const TerminalClearedEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("cleared"),
-});
-
-const TerminalRestartedEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("restarted"),
-  snapshot: TerminalSessionSnapshot,
-});
-
-const TerminalActivityEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("activity"),
-  hasRunningSubprocess: Schema.Boolean,
-});
-
-const TerminalClosedEvent = Schema.Struct({
-  ...TerminalEventBaseSchema.fields,
-  type: Schema.Literal("closed"),
-});
-
-export const TerminalEvent = Schema.Union([
-  TerminalStartedEvent,
-  TerminalOutputEvent,
-  TerminalExitedEvent,
-  TerminalClosedEvent,
-  TerminalErrorEvent,
-  TerminalClearedEvent,
-  TerminalRestartedEvent,
-  TerminalActivityEvent,
-]);
-export type TerminalEvent = typeof TerminalEvent.Type;
-
-export const TerminalAttachInput = Schema.Struct({
-  ...TerminalSessionInput.fields,
-  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
-  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
-  cols: Schema.optional(TerminalColsSchema),
-  rows: Schema.optional(TerminalRowsSchema),
-  env: Schema.optional(TerminalEnvSchema),
-  restartIfNotRunning: Schema.optional(Schema.Boolean),
-});
-export type TerminalAttachInput = Schema.Codec.Encoded<typeof TerminalAttachInput>;
-/**
- * Decoded shape of {@link TerminalAttachInput} (i.e. `terminalId` is required
- * because the schema applies a decoding default). This is the type RPC clients
- * receive as the `attach` input parameter.
- */
-export type TerminalAttachInputDecoded = typeof TerminalAttachInput.Type;
 
 export const TerminalSummary = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
@@ -218,6 +150,72 @@ export const TerminalMetadataStreamEvent = Schema.Union([
 ]);
 export type TerminalMetadataStreamEvent = typeof TerminalMetadataStreamEvent.Type;
 
+const TerminalEventBaseSchema = Schema.Struct({
+  threadId: Schema.String.check(Schema.isNonEmpty()),
+  terminalId: Schema.String.check(Schema.isNonEmpty()),
+  sequence: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+
+const TerminalStartedEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("started"),
+  snapshot: TerminalSessionSnapshot,
+});
+
+const TerminalOutputEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("output"),
+  data: Schema.String,
+});
+
+const TerminalExitedEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("exited"),
+  exitCode: Schema.NullOr(Schema.Int),
+  exitSignal: Schema.NullOr(Schema.Int),
+});
+
+const TerminalClosedEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("closed"),
+});
+
+const TerminalErrorEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("error"),
+  message: Schema.String.check(Schema.isNonEmpty()),
+});
+
+const TerminalClearedEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("cleared"),
+});
+
+const TerminalRestartedEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("restarted"),
+  snapshot: TerminalSessionSnapshot,
+});
+
+const TerminalActivityEvent = Schema.Struct({
+  ...TerminalEventBaseSchema.fields,
+  type: Schema.Literal("activity"),
+  hasRunningSubprocess: Schema.Boolean,
+  label: Schema.String.check(Schema.isMaxLength(128)),
+});
+
+export const TerminalEvent = Schema.Union([
+  TerminalStartedEvent,
+  TerminalOutputEvent,
+  TerminalExitedEvent,
+  TerminalClosedEvent,
+  TerminalErrorEvent,
+  TerminalClearedEvent,
+  TerminalRestartedEvent,
+  TerminalActivityEvent,
+]);
+export type TerminalEvent = typeof TerminalEvent.Type;
+
 const TerminalAttachSnapshotEvent = Schema.Struct({
   type: Schema.Literal("snapshot"),
   snapshot: TerminalSessionSnapshot,
@@ -235,30 +233,46 @@ export const TerminalAttachStreamEvent = Schema.Union([
 ]);
 export type TerminalAttachStreamEvent = typeof TerminalAttachStreamEvent.Type;
 
-export class TerminalCwdError extends Schema.TaggedErrorClass<TerminalCwdError>()(
-  "TerminalCwdError",
+export class TerminalCwdNotFoundError extends Schema.TaggedErrorClass<TerminalCwdNotFoundError>()(
+  "TerminalCwdNotFoundError",
   {
     cwd: Schema.String,
-    reason: Schema.Literals(["notFound", "notDirectory", "statFailed"]),
-    cause: Schema.optional(Schema.Defect),
   },
 ) {
   override get message() {
-    if (this.reason === "notDirectory") {
-      return `Terminal cwd is not a directory: ${this.cwd}`;
-    }
-    if (this.reason === "notFound") {
-      return `Terminal cwd does not exist: ${this.cwd}`;
-    }
-    const causeMessage =
-      this.cause && typeof this.cause === "object" && "message" in this.cause
-        ? this.cause.message
-        : undefined;
-    return causeMessage
-      ? `Failed to access terminal cwd: ${this.cwd} (${causeMessage})`
-      : `Failed to access terminal cwd: ${this.cwd}`;
+    return `Terminal cwd does not exist: ${this.cwd}`;
   }
 }
+
+export class TerminalCwdNotDirectoryError extends Schema.TaggedErrorClass<TerminalCwdNotDirectoryError>()(
+  "TerminalCwdNotDirectoryError",
+  {
+    cwd: Schema.String,
+  },
+) {
+  override get message() {
+    return `Terminal cwd is not a directory: ${this.cwd}`;
+  }
+}
+
+export class TerminalCwdStatError extends Schema.TaggedErrorClass<TerminalCwdStatError>()(
+  "TerminalCwdStatError",
+  {
+    cwd: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return `Failed to access terminal cwd: ${this.cwd}`;
+  }
+}
+
+export const TerminalCwdError = Schema.Union([
+  TerminalCwdNotFoundError,
+  TerminalCwdNotDirectoryError,
+  TerminalCwdStatError,
+]);
+export type TerminalCwdError = typeof TerminalCwdError.Type;
 
 export class TerminalHistoryError extends Schema.TaggedErrorClass<TerminalHistoryError>()(
   "TerminalHistoryError",
@@ -266,7 +280,7 @@ export class TerminalHistoryError extends Schema.TaggedErrorClass<TerminalHistor
     operation: Schema.Literals(["read", "truncate", "migrate"]),
     threadId: Schema.String,
     terminalId: Schema.String,
-    cause: Schema.optional(Schema.Defect),
+    cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
@@ -298,10 +312,42 @@ export class TerminalNotRunningError extends Schema.TaggedErrorClass<TerminalNot
   }
 }
 
+export class TerminalWriteError extends Schema.TaggedErrorClass<TerminalWriteError>()(
+  "TerminalWriteError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+    terminalPid: Schema.Number,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return `Failed to write to terminal for thread: ${this.threadId}, terminal: ${this.terminalId}, PID: ${this.terminalPid}`;
+  }
+}
+
+export class TerminalResizeError extends Schema.TaggedErrorClass<TerminalResizeError>()(
+  "TerminalResizeError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+    terminalPid: Schema.Number,
+    cols: TerminalColsSchema,
+    rows: TerminalRowsSchema,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message() {
+    return `Failed to resize terminal for thread: ${this.threadId}, terminal: ${this.terminalId}, PID: ${this.terminalPid} to ${this.cols}x${this.rows}`;
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
   TerminalSessionLookupError,
   TerminalNotRunningError,
+  TerminalWriteError,
+  TerminalResizeError,
 ]);
 export type TerminalError = typeof TerminalError.Type;

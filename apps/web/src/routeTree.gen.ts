@@ -9,22 +9,20 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
+import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
+import { Route as SettingsProvidersRouteImport } from './routes/settings.providers'
+import { Route as SettingsKeybindingsRouteImport } from './routes/settings.keybindings'
 import { Route as SettingsGeneralRouteImport } from './routes/settings.general'
+import { Route as SettingsDiagnosticsRouteImport } from './routes/settings.diagnostics'
 import { Route as SettingsConnectionsRouteImport } from './routes/settings.connections'
 import { Route as SettingsArchivedRouteImport } from './routes/settings.archived'
 import { Route as ChatDraftDraftIdRouteImport } from './routes/_chat.draft.$draftId'
 import { Route as ChatEnvironmentIdThreadIdRouteImport } from './routes/_chat.$environmentId.$threadId'
 
-const SkillsRoute = SkillsRouteImport.update({
-  id: '/skills',
-  path: '/skills',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -44,9 +42,29 @@ const ChatIndexRoute = ChatIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ChatRoute,
 } as any)
+const SettingsSourceControlRoute = SettingsSourceControlRouteImport.update({
+  id: '/source-control',
+  path: '/source-control',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsProvidersRoute = SettingsProvidersRouteImport.update({
+  id: '/providers',
+  path: '/providers',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsKeybindingsRoute = SettingsKeybindingsRouteImport.update({
+  id: '/keybindings',
+  path: '/keybindings',
+  getParentRoute: () => SettingsRoute,
+} as any)
 const SettingsGeneralRoute = SettingsGeneralRouteImport.update({
   id: '/general',
   path: '/general',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsDiagnosticsRoute = SettingsDiagnosticsRouteImport.update({
+  id: '/diagnostics',
+  path: '/diagnostics',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsConnectionsRoute = SettingsConnectionsRouteImport.update({
@@ -75,20 +93,26 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
-  '/skills': typeof SkillsRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
+  '/settings/diagnostics': typeof SettingsDiagnosticsRoute
   '/settings/general': typeof SettingsGeneralRoute
+  '/settings/keybindings': typeof SettingsKeybindingsRoute
+  '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/source-control': typeof SettingsSourceControlRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
 }
 export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
-  '/skills': typeof SkillsRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
+  '/settings/diagnostics': typeof SettingsDiagnosticsRoute
   '/settings/general': typeof SettingsGeneralRoute
+  '/settings/keybindings': typeof SettingsKeybindingsRoute
+  '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/source-control': typeof SettingsSourceControlRoute
   '/': typeof ChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -98,10 +122,13 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
-  '/skills': typeof SkillsRoute
   '/settings/archived': typeof SettingsArchivedRoute
   '/settings/connections': typeof SettingsConnectionsRoute
+  '/settings/diagnostics': typeof SettingsDiagnosticsRoute
   '/settings/general': typeof SettingsGeneralRoute
+  '/settings/keybindings': typeof SettingsKeybindingsRoute
+  '/settings/providers': typeof SettingsProvidersRoute
+  '/settings/source-control': typeof SettingsSourceControlRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
@@ -112,20 +139,26 @@ export interface FileRouteTypes {
     | '/'
     | '/pair'
     | '/settings'
-    | '/skills'
     | '/settings/archived'
     | '/settings/connections'
+    | '/settings/diagnostics'
     | '/settings/general'
+    | '/settings/keybindings'
+    | '/settings/providers'
+    | '/settings/source-control'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/pair'
     | '/settings'
-    | '/skills'
     | '/settings/archived'
     | '/settings/connections'
+    | '/settings/diagnostics'
     | '/settings/general'
+    | '/settings/keybindings'
+    | '/settings/providers'
+    | '/settings/source-control'
     | '/'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
@@ -134,10 +167,13 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/pair'
     | '/settings'
-    | '/skills'
     | '/settings/archived'
     | '/settings/connections'
+    | '/settings/diagnostics'
     | '/settings/general'
+    | '/settings/keybindings'
+    | '/settings/providers'
+    | '/settings/source-control'
     | '/_chat/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
@@ -147,18 +183,10 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
-  SkillsRoute: typeof SkillsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/skills': {
-      id: '/skills'
-      path: '/skills'
-      fullPath: '/skills'
-      preLoaderRoute: typeof SkillsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -187,11 +215,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatIndexRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/settings/source-control': {
+      id: '/settings/source-control'
+      path: '/source-control'
+      fullPath: '/settings/source-control'
+      preLoaderRoute: typeof SettingsSourceControlRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/providers': {
+      id: '/settings/providers'
+      path: '/providers'
+      fullPath: '/settings/providers'
+      preLoaderRoute: typeof SettingsProvidersRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/keybindings': {
+      id: '/settings/keybindings'
+      path: '/keybindings'
+      fullPath: '/settings/keybindings'
+      preLoaderRoute: typeof SettingsKeybindingsRouteImport
+      parentRoute: typeof SettingsRoute
+    }
     '/settings/general': {
       id: '/settings/general'
       path: '/general'
       fullPath: '/settings/general'
       preLoaderRoute: typeof SettingsGeneralRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/diagnostics': {
+      id: '/settings/diagnostics'
+      path: '/diagnostics'
+      fullPath: '/settings/diagnostics'
+      preLoaderRoute: typeof SettingsDiagnosticsRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/connections': {
@@ -242,13 +298,21 @@ const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 interface SettingsRouteChildren {
   SettingsArchivedRoute: typeof SettingsArchivedRoute
   SettingsConnectionsRoute: typeof SettingsConnectionsRoute
+  SettingsDiagnosticsRoute: typeof SettingsDiagnosticsRoute
   SettingsGeneralRoute: typeof SettingsGeneralRoute
+  SettingsKeybindingsRoute: typeof SettingsKeybindingsRoute
+  SettingsProvidersRoute: typeof SettingsProvidersRoute
+  SettingsSourceControlRoute: typeof SettingsSourceControlRoute
 }
 
 const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsArchivedRoute: SettingsArchivedRoute,
   SettingsConnectionsRoute: SettingsConnectionsRoute,
+  SettingsDiagnosticsRoute: SettingsDiagnosticsRoute,
   SettingsGeneralRoute: SettingsGeneralRoute,
+  SettingsKeybindingsRoute: SettingsKeybindingsRoute,
+  SettingsProvidersRoute: SettingsProvidersRoute,
+  SettingsSourceControlRoute: SettingsSourceControlRoute,
 }
 
 const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
@@ -259,7 +323,6 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
-  SkillsRoute: SkillsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

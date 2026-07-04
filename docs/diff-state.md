@@ -1,41 +1,33 @@
-# Diff State
+# Diff Panel
 
-T3 Code's diff panel is backed by the **Diff State Module**. The module is a typed seam between durable checkpoint storage and the UI.
+T3 Code's diff panel is currently backed by two active diff sources:
 
-## Inputs
+- **Review preview diffs** for branch and working-tree review. These come from `ReviewService.getDiffPreview`, which delegates to the active VCS driver and returns `ReviewDiffPreviewSource` entries.
+- **Checkpoint diffs** for completed turns. These still come from orchestration checkpoint diff RPCs through `useCheckpointDiff`.
 
-- **Authoritative checkpoint diffs** come from `CheckpointReactor` and checkpoint refs.
-- **Speculative provider diffs** come from provider `turn.diff.updated` events. These are useful for fast file summaries, but they are not treated as captured checkpoint data.
-- **Git status updates** come from the existing git status subscription and cause active diff-state queries to refresh.
+The older checkpoint-only `DiffState` server module has been removed. Its useful guarantees now belong in the active review-preview path instead of a separate parallel model.
 
-## State model
+## Review preview source model
 
-`DiffState` is a discriminated union:
+Each `ReviewDiffPreviewSource` includes:
 
-- `ready` — the requested checkpoint-backed diff is available.
-- `stale` — the UI is showing the last loaded snapshot while the latest checkpoint state is unavailable.
-- `loading` — a diff request is in flight.
-- `unavailable` — checkpoint metadata or refs are not available yet.
-- `error` — an unexpected diff failure occurred.
+- `status` — `ready` when the source was computed, `error` when that source failed.
+- `error` — a source-level message when `status` is `error`.
+- `diff`, `diffHash`, and `truncated` — the raw patch payload and cache/freshness metadata.
+- `files` and `metadata` — server-computed file counts, line counts, and safety classification.
 
-`DiffSnapshot` contains the raw patch for the current renderer plus typed metadata and typed file summaries. This keeps current rendering behavior stable while letting future slices move to per-file rendering and deltas.
-
-## Speculative vs authoritative summaries
-
-Provider runtime diff summaries use checkpoint status `speculative`. They may be updated multiple times during a turn and are replaced by real checkpoint captures when available.
-
-Captured checkpoint summaries use status `ready`, `missing`, or `error`. Speculative updates must not overwrite authoritative summaries.
+Source-level errors are partial: a working-tree diff failure does not prevent the branch-range source from returning, and a branch-range failure does not erase the working-tree source.
 
 ## File safety
 
-Server diff state classifies each file as:
+The server classifies review-preview files as:
 
 - `normal`
 - `large`
 - `unrenderable`
 
-The UI collapses large files by default and shows placeholders for unrenderable files. Binary files, oversized diffs, long lines, excessive deletion hunks, and hidden bidi characters are detected server-side.
+Binary patches, oversized sections, very long lines, excessive deletion-heavy diffs, and hidden bidi control characters are detected before the UI renders the source. The UI can use this metadata to warn, collapse, or skip unsafe files.
 
-## Current limitation
+## Freshness
 
-Per-file deltas are currently exposed as typed module behavior, but live push delivery is not yet wired. Until the push path exists, the UI refreshes diff state by invalidating active queries when Git status changes.
+Review preview queries currently use a short stale window. They are not yet driven by a dedicated diff event stream. If the panel needs Warp-like live freshness during rapid workspace changes, the next step is to refresh active review-preview queries from VCS status updates for the selected cwd/base ref.

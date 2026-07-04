@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
 
@@ -26,48 +26,6 @@ export function buildDraftThreadRouteParams(draftId: DraftId): {
   draftId: DraftId;
 } {
   return { draftId };
-}
-
-export function buildThreadRouteTargetLocation(target: ThreadRouteTarget):
-  | {
-      to: "/$environmentId/$threadId";
-      params: ReturnType<typeof buildThreadRouteParams>;
-    }
-  | {
-      to: "/draft/$draftId";
-      params: ReturnType<typeof buildDraftThreadRouteParams>;
-    } {
-  return target.kind === "server"
-    ? {
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(target.threadRef),
-      }
-    : {
-        to: "/draft/$draftId",
-        params: buildDraftThreadRouteParams(target.draftId),
-      };
-}
-
-export function threadRouteTargetsEqual(
-  left: ThreadRouteTarget | null | undefined,
-  right: ThreadRouteTarget | null | undefined,
-): boolean {
-  if (!left || !right || left.kind !== right.kind) {
-    return left === right;
-  }
-
-  if (left.kind === "server" && right.kind === "server") {
-    return (
-      left.threadRef.environmentId === right.threadRef.environmentId &&
-      left.threadRef.threadId === right.threadRef.threadId
-    );
-  }
-
-  if (left.kind === "draft" && right.kind === "draft") {
-    return left.draftId === right.draftId;
-  }
-
-  return false;
 }
 
 export function resolveThreadRouteRef(

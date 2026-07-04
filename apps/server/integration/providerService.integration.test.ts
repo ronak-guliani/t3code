@@ -3,7 +3,12 @@ import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contr
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, assert } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path, Queue, Stream } from "effect";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
@@ -20,7 +25,7 @@ import {
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
-import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
+import * as ProviderSessionRuntime from "../src/persistence/ProviderSessionRuntime.ts";
 
 import {
   makeTestProviderAdapterHarness,
@@ -58,7 +63,7 @@ const makeIntegrationFixture = Effect.gen(function* () {
   });
 
   const directoryLayer = ProviderSessionDirectoryLive.pipe(
-    Layer.provide(ProviderSessionRuntimeRepositoryLive),
+    Layer.provide(ProviderSessionRuntime.layer),
   );
 
   const shared = Layer.mergeAll(

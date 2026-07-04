@@ -6,7 +6,6 @@ import {
   ThreadArchivedPayload as ContractsThreadArchivedPayloadSchema,
   ThreadMetaUpdatedPayload as ContractsThreadMetaUpdatedPayloadSchema,
   ThreadRuntimeModeSetPayload as ContractsThreadRuntimeModeSetPayloadSchema,
-  ThreadPendingRuntimeModeSetPayload as ContractsThreadPendingRuntimeModeSetPayloadSchema,
   ThreadInteractionModeSetPayload as ContractsThreadInteractionModeSetPayloadSchema,
   ThreadDeletedPayload as ContractsThreadDeletedPayloadSchema,
   ThreadUnarchivedPayload as ContractsThreadUnarchivedPayloadSchema,
@@ -17,11 +16,6 @@ import {
   ThreadRevertedPayload as ContractsThreadRevertedPayloadSchema,
   ThreadActivityAppendedPayload as ContractsThreadActivityAppendedPayloadSchema,
   ThreadTurnStartRequestedPayload as ContractsThreadTurnStartRequestedPayloadSchema,
-  ThreadQueuedTurnCreatedPayload as ContractsThreadQueuedTurnCreatedPayloadSchema,
-  ThreadQueuedTurnUpdatedPayload as ContractsThreadQueuedTurnUpdatedPayloadSchema,
-  ThreadQueuedTurnDeletedPayload as ContractsThreadQueuedTurnDeletedPayloadSchema,
-  ThreadQueuedTurnDispatchedPayload as ContractsThreadQueuedTurnDispatchedPayloadSchema,
-  ThreadQueuedTurnFailedPayload as ContractsThreadQueuedTurnFailedPayloadSchema,
   ThreadTurnInterruptRequestedPayload as ContractsThreadTurnInterruptRequestedPayloadSchema,
   ThreadApprovalResponseRequestedPayload as ContractsThreadApprovalResponseRequestedPayloadSchema,
   ThreadCheckpointRevertRequestedPayload as ContractsThreadCheckpointRevertRequestedPayloadSchema,
@@ -37,7 +31,6 @@ export const ThreadCreatedPayload = ContractsThreadCreatedPayloadSchema;
 export const ThreadArchivedPayload = ContractsThreadArchivedPayloadSchema;
 export const ThreadMetaUpdatedPayload = ContractsThreadMetaUpdatedPayloadSchema;
 export const ThreadRuntimeModeSetPayload = ContractsThreadRuntimeModeSetPayloadSchema;
-export const ThreadPendingRuntimeModeSetPayload = ContractsThreadPendingRuntimeModeSetPayloadSchema;
 export const ThreadInteractionModeSetPayload = ContractsThreadInteractionModeSetPayloadSchema;
 export const ThreadDeletedPayload = ContractsThreadDeletedPayloadSchema;
 export const ThreadUnarchivedPayload = ContractsThreadUnarchivedPayloadSchema;
@@ -50,11 +43,6 @@ export const ThreadRevertedPayload = ContractsThreadRevertedPayloadSchema;
 export const ThreadActivityAppendedPayload = ContractsThreadActivityAppendedPayloadSchema;
 
 export const ThreadTurnStartRequestedPayload = ContractsThreadTurnStartRequestedPayloadSchema;
-export const ThreadQueuedTurnCreatedPayload = ContractsThreadQueuedTurnCreatedPayloadSchema;
-export const ThreadQueuedTurnUpdatedPayload = ContractsThreadQueuedTurnUpdatedPayloadSchema;
-export const ThreadQueuedTurnDeletedPayload = ContractsThreadQueuedTurnDeletedPayloadSchema;
-export const ThreadQueuedTurnDispatchedPayload = ContractsThreadQueuedTurnDispatchedPayloadSchema;
-export const ThreadQueuedTurnFailedPayload = ContractsThreadQueuedTurnFailedPayloadSchema;
 export const ThreadTurnInterruptRequestedPayload =
   ContractsThreadTurnInterruptRequestedPayloadSchema;
 export const ThreadApprovalResponseRequestedPayload =

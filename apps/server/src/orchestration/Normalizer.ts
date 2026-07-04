@@ -1,4 +1,6 @@
-import { Effect, FileSystem, Path } from "effect";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import {
   type ClientOrchestrationCommand,
   type OrchestrationCommand,
@@ -9,14 +11,14 @@ import {
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
-import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
-    const workspacePaths = yield* WorkspacePaths;
+    const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
 
     const normalizeProjectWorkspaceRoot = (workspaceRoot: string) =>
       workspacePaths.normalizeWorkspaceRoot(workspaceRoot).pipe(
@@ -63,7 +65,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       } satisfies OrchestrationCommand;
     }
 
-    if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.create") {
+    if (command.type !== "thread.turn.start") {
       return command as OrchestrationCommand;
     }
 
@@ -131,16 +133,6 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
         }),
       { concurrency: 1 },
     );
-
-    if (command.type === "thread.turn.start") {
-      return {
-        ...command,
-        message: {
-          ...command.message,
-          attachments: normalizedAttachments,
-        },
-      } satisfies OrchestrationCommand;
-    }
 
     return {
       ...command,

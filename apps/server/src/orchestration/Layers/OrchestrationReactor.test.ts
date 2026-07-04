@@ -1,13 +1,17 @@
-import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Scope from "effect/Scope";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
-import { QueuedTurnReactor } from "../Services/QueuedTurnReactor.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
+import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -61,9 +65,10 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
-          Layer.succeed(QueuedTurnReactor, {
+          Layer.succeed(AgentAwarenessRelay.AgentAwarenessRelay, {
+            publishThread: () => Effect.void,
             start: () => {
-              started.push("queued-turn-reactor");
+              started.push("agent-awareness-relay");
               return Effect.void;
             },
           }),
@@ -79,8 +84,8 @@ describe("OrchestrationReactor", () => {
       "provider-runtime-ingestion",
       "provider-command-reactor",
       "checkpoint-reactor",
-      "queued-turn-reactor",
       "thread-deletion-reactor",
+      "agent-awareness-relay",
     ]);
 
     await Effect.runPromise(Scope.close(scope, Exit.void));

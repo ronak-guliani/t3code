@@ -1,5 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import {
   ApprovalRequestId,
@@ -17,7 +18,10 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Option, Schema } from "effect";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import type { TestTurnResponse } from "./TestProviderAdapter.integration.ts";
 import {
@@ -47,7 +51,7 @@ const CODEX_PROVIDER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_PROVIDER = ProviderDriverKind.make("claudeAgent");
 
 function nowIso() {
-  return new Date().toISOString();
+  return "2026-05-01T00:00:00.000Z";
 }
 
 class IntegrationWaitTimeoutError extends Schema.TaggedErrorClass<IntegrationWaitTimeoutError>()(
@@ -64,14 +68,14 @@ function waitForSync<A>(
   timeoutMs = 10_000,
 ): Effect.Effect<A, never> {
   return Effect.gen(function* () {
-    const deadline = Date.now() + timeoutMs;
+    const deadline = (yield* Clock.currentTimeMillis) + timeoutMs;
 
     while (true) {
       const value = read();
       if (predicate(value)) {
         return value;
       }
-      if (Date.now() >= deadline) {
+      if ((yield* Clock.currentTimeMillis) >= deadline) {
         return yield* Effect.die(new IntegrationWaitTimeoutError({ description }));
       }
       yield* Effect.sleep(10);
@@ -156,6 +160,7 @@ const startTurn = (input: {
   readonly messageId: string;
   readonly text: string;
   readonly modelSelection?: ModelSelection;
+  readonly createdAt?: string;
 }) =>
   input.harness.engine.dispatch({
     type: "thread.turn.start",
@@ -174,7 +179,7 @@ const startTurn = (input: {
       : {}),
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     runtimeMode: "approval-required",
-    createdAt: nowIso(),
+    createdAt: input.createdAt ?? nowIso(),
   });
 
 it.live("runs a single turn end-to-end and persists checkpoint state in sqlite + git", () =>
@@ -404,7 +409,7 @@ it.live("runs multi-turn file edits and persists checkpoint diffs", () =>
         ],
         mutateWorkspace: ({ cwd }) =>
           Effect.sync(() => {
-            fs.writeFileSync(path.join(cwd, "README.md"), "v2\n", "utf8");
+            NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v2\n", "utf8");
           }),
       });
 
@@ -451,7 +456,7 @@ it.live("runs multi-turn file edits and persists checkpoint diffs", () =>
         ],
         mutateWorkspace: ({ cwd }) =>
           Effect.sync(() => {
-            fs.writeFileSync(path.join(cwd, "README.md"), "v3\n", "utf8");
+            NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v3\n", "utf8");
           }),
       });
 
@@ -506,6 +511,7 @@ it.live("runs multi-turn file edits and persists checkpoint diffs", () =>
         fromCheckpointRef: checkpointRefForThreadTurn(THREAD_ID, 1),
         toCheckpointRef: checkpointRefForThreadTurn(THREAD_ID, 2),
         fallbackFromToHead: false,
+        ignoreWhitespace: false,
       });
       assert.equal(incrementalDiff.includes("README.md"), true);
 
@@ -514,6 +520,7 @@ it.live("runs multi-turn file edits and persists checkpoint diffs", () =>
         fromCheckpointRef: checkpointRefForThreadTurn(THREAD_ID, 0),
         toCheckpointRef: checkpointRefForThreadTurn(THREAD_ID, 2),
         fallbackFromToHead: false,
+        ignoreWhitespace: false,
       });
       assert.equal(fullDiff.includes("README.md"), true);
 
@@ -745,7 +752,7 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         ],
         mutateWorkspace: ({ cwd }) =>
           Effect.sync(() => {
-            fs.writeFileSync(path.join(cwd, "README.md"), "v2\n", "utf8");
+            NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v2\n", "utf8");
           }),
       });
       yield* startTurn({
@@ -753,6 +760,7 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         commandId: "cmd-turn-start-revert-1",
         messageId: "msg-user-revert-1",
         text: "First edit",
+        createdAt: "2026-02-24T10:04:59.900Z",
       });
 
       yield* harness.waitForThread(
@@ -803,7 +811,7 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         ],
         mutateWorkspace: ({ cwd }) =>
           Effect.sync(() => {
-            fs.writeFileSync(path.join(cwd, "README.md"), "v3\n", "utf8");
+            NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v3\n", "utf8");
           }),
       });
       yield* startTurn({
@@ -811,6 +819,7 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         commandId: "cmd-turn-start-revert-2",
         messageId: "msg-user-revert-2",
         text: "Second edit",
+        createdAt: "2026-02-24T10:05:00.900Z",
       });
 
       yield* harness.waitForThread(
@@ -860,7 +869,10 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         ),
         true,
       );
-      assert.equal(fs.readFileSync(path.join(harness.workspaceDir, "README.md"), "utf8"), "v2\n");
+      assert.equal(
+        NodeFS.readFileSync(NodePath.join(harness.workspaceDir, "README.md"), "utf8"),
+        "v2\n",
+      );
       assert.equal(
         gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 2)),
         false,
@@ -1038,10 +1050,7 @@ it.live("recovers claudeAgent sessions after provider stopAll using persisted re
         yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
-            entry.latestTurn?.turnId === "turn-1" &&
-            entry.session?.threadId === "thread-1" &&
-            entry.session?.status === "ready" &&
-            entry.session?.activeTurnId == null,
+            entry.latestTurn?.turnId === "turn-1" && entry.session?.threadId === "thread-1",
         );
 
         yield* harness.adapterHarness!.adapter.stopAll();
@@ -1326,7 +1335,7 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           ],
           mutateWorkspace: ({ cwd }) =>
             Effect.sync(() => {
-              fs.writeFileSync(path.join(cwd, "README.md"), "v2\n", "utf8");
+              NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v2\n", "utf8");
             }),
         });
 
@@ -1344,10 +1353,7 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
         yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
-            entry.latestTurn?.turnId === "turn-1" &&
-            entry.session?.threadId === "thread-1" &&
-            entry.session?.status === "ready" &&
-            entry.session?.activeTurnId == null,
+            entry.latestTurn?.turnId === "turn-1" && entry.session?.threadId === "thread-1",
         );
 
         yield* harness.adapterHarness!.queueTurnResponse(THREAD_ID, {
@@ -1387,7 +1393,7 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           ],
           mutateWorkspace: ({ cwd }) =>
             Effect.sync(() => {
-              fs.writeFileSync(path.join(cwd, "README.md"), "v3\n", "utf8");
+              NodeFS.writeFileSync(NodePath.join(cwd, "README.md"), "v3\n", "utf8");
             }),
         });
 

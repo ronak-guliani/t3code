@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const EditorLaunchStyle = Schema.Literals(["direct-path", "goto", "line-column"]);
@@ -44,13 +44,84 @@ export const EDITORS = [
 export const EditorId = Schema.Literals(EDITORS.map((e) => e.id));
 export type EditorId = typeof EditorId.Type;
 
-export const OpenInEditorInput = Schema.Struct({
+export const LaunchEditorInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   editor: EditorId,
 });
-export type OpenInEditorInput = typeof OpenInEditorInput.Type;
+export type LaunchEditorInput = typeof LaunchEditorInput.Type;
 
-export class OpenError extends Schema.TaggedErrorClass<OpenError>()("OpenError", {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
-}) {}
+export class ExternalLauncherUnknownEditorError extends Schema.TaggedErrorClass<ExternalLauncherUnknownEditorError>()(
+  "ExternalLauncherUnknownEditorError",
+  {
+    editor: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Unknown editor: ${this.editor}`;
+  }
+}
+
+export class ExternalLauncherUnsupportedEditorError extends Schema.TaggedErrorClass<ExternalLauncherUnsupportedEditorError>()(
+  "ExternalLauncherUnsupportedEditorError",
+  {
+    editor: EditorId,
+  },
+) {
+  override get message(): string {
+    return `Unsupported editor: ${this.editor}`;
+  }
+}
+
+export class ExternalLauncherCommandNotFoundError extends Schema.TaggedErrorClass<ExternalLauncherCommandNotFoundError>()(
+  "ExternalLauncherCommandNotFoundError",
+  {
+    editor: EditorId,
+    command: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Editor command not found: ${this.command}`;
+  }
+}
+
+const ExternalLauncherSpawnFields = {
+  command: Schema.String,
+  args: Schema.Array(Schema.String),
+  cause: Schema.Defect(),
+};
+
+export class ExternalLauncherBrowserSpawnError extends Schema.TaggedErrorClass<ExternalLauncherBrowserSpawnError>()(
+  "ExternalLauncherBrowserSpawnError",
+  {
+    ...ExternalLauncherSpawnFields,
+    target: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Failed to launch browser target '${this.target}' with '${[this.command, ...this.args].join(" ")}'`;
+  }
+}
+
+export class ExternalLauncherEditorSpawnError extends Schema.TaggedErrorClass<ExternalLauncherEditorSpawnError>()(
+  "ExternalLauncherEditorSpawnError",
+  {
+    ...ExternalLauncherSpawnFields,
+    editor: EditorId,
+    target: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Failed to launch '${this.target}' in ${this.editor} with '${[this.command, ...this.args].join(" ")}'`;
+  }
+}
+
+export const ExternalLauncherError = Schema.Union([
+  ExternalLauncherUnknownEditorError,
+  ExternalLauncherUnsupportedEditorError,
+  ExternalLauncherCommandNotFoundError,
+  ExternalLauncherBrowserSpawnError,
+  ExternalLauncherEditorSpawnError,
+]);
+export type ExternalLauncherError = typeof ExternalLauncherError.Type;
+
+export const isExternalLauncherError = Schema.is(ExternalLauncherError);

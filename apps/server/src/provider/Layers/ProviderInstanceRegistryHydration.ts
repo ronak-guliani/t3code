@@ -47,7 +47,9 @@ import {
   type ProviderInstanceConfigMap,
   ServerSettings,
 } from "@t3tools/contracts";
-import { Effect, Layer, Stream } from "effect";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
@@ -112,11 +114,7 @@ export const deriveProviderInstanceConfigMap = (
  * configs, so the only way the watcher could fail is a settings stream
  * tear-down, which logs and exits cleanly.
  */
-const SettingsWatcherLive: Layer.Layer<
-  never,
-  never,
-  ProviderInstanceRegistryMutator | ServerSettingsService
-> = Layer.effectDiscard(
+const SettingsWatcherLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const mutator = yield* ProviderInstanceRegistryMutator;
     const serverSettings = yield* ServerSettingsService;

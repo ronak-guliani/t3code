@@ -1,10 +1,21 @@
-import { Schema } from "effect";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
-export const TrimmedString = Schema.Trim;
+export const TrimmedString = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => Effect.succeed(value.trim()),
+      encode: (value) => Effect.succeed(value.trim()),
+    }),
+  ),
+);
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());
 
 export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
+export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 
 export const IsoDateTime = Schema.String;
 export type IsoDateTime = typeof IsoDateTime.Type;
@@ -28,8 +39,6 @@ export const EventId = makeEntityId("EventId");
 export type EventId = typeof EventId.Type;
 export const MessageId = makeEntityId("MessageId");
 export type MessageId = typeof MessageId.Type;
-export const QueuedTurnId = makeEntityId("QueuedTurnId");
-export type QueuedTurnId = typeof QueuedTurnId.Type;
 export const TurnId = makeEntityId("TurnId");
 export type TurnId = typeof TurnId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");

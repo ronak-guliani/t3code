@@ -57,7 +57,6 @@ describe("createCheckpointDiffManager", () => {
       fromTurnCount: 1,
       toTurnCount: 2,
       ignoreWhitespace: false,
-      scope: "snapshot",
     });
     expect(client.getFullThreadDiff).not.toHaveBeenCalled();
     expect(manager.getSnapshot(TARGET)).toEqual({

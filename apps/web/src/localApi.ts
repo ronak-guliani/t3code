@@ -1,32 +1,16 @@
 import type { ContextMenuItem, LocalApi } from "@t3tools/contracts";
 
-import { resetGitStatusStateForTests } from "./lib/gitStatusState";
 import { resetRequestLatencyStateForTests } from "./rpc/requestLatencyState";
-import { resetServerStateForTests } from "./rpc/serverState";
-import { resetWsConnectionStateForTests } from "./rpc/wsConnectionState";
-import {
-  resetSavedEnvironmentRegistryStoreForTests,
-  resetSavedEnvironmentRuntimeStoreForTests,
-} from "./environments/runtime";
-import {
-  getPrimaryEnvironmentConnection,
-  resetEnvironmentServiceForTests,
-} from "./environments/runtime";
-import { type WsRpcClient } from "./rpc/wsRpcClient";
 import { showContextMenuFallback } from "./contextMenuFallback";
-import {
-  readBrowserClientSettings,
-  readBrowserSavedEnvironmentRegistry,
-  readBrowserSavedEnvironmentSecret,
-  removeBrowserSavedEnvironmentSecret,
-  writeBrowserClientSettings,
-  writeBrowserSavedEnvironmentRegistry,
-  writeBrowserSavedEnvironmentSecret,
-} from "./clientPersistenceStorage";
+import { readBrowserClientSettings, writeBrowserClientSettings } from "./clientPersistenceStorage";
 
 let cachedApi: LocalApi | undefined;
 
-export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
+function unavailableLocalBackendError(): Error {
+  return new Error("Local backend API is unavailable before a backend is paired.");
+}
+
+function createBrowserLocalApi(): LocalApi {
   return {
     dialogs: {
       pickFolder: async (options) => {
@@ -41,7 +25,7 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
       },
     },
     shell: {
-      openInEditor: (cwd, editor) => rpcClient.shell.openInEditor({ cwd, editor }),
+      openInEditor: () => Promise.reject(unavailableLocalBackendError()),
       openExternal: async (url) => {
         if (window.desktopBridge) {
           const opened = await window.desktopBridge.openExternal(url);
@@ -65,81 +49,39 @@ export function createLocalApi(rpcClient: WsRpcClient): LocalApi {
         return showContextMenuFallback(items, position);
       },
     },
-    notifications: {
-      show: async (request) => {
-        if (!window.desktopBridge) {
-          return false;
-        }
-        return window.desktopBridge.showNotification(request);
-      },
-      onClick: (listener) => {
-        if (!window.desktopBridge) {
-          return () => undefined;
-        }
-        return window.desktopBridge.onNotificationClick(listener);
-      },
-    },
     persistence: {
       getClientSettings: async () => {
         if (window.desktopBridge) {
-          const settings = await window.desktopBridge.getClientSettings();
-          if (settings) {
-            writeBrowserClientSettings(settings);
-          }
-          return settings;
+          return window.desktopBridge.getClientSettings();
         }
         return readBrowserClientSettings();
       },
       setClientSettings: async (settings) => {
         if (window.desktopBridge) {
-          await window.desktopBridge.setClientSettings(settings);
-          writeBrowserClientSettings(settings);
-          return;
+          return window.desktopBridge.setClientSettings(settings);
         }
         writeBrowserClientSettings(settings);
       },
-      getSavedEnvironmentRegistry: async () => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.getSavedEnvironmentRegistry();
-        }
-        return readBrowserSavedEnvironmentRegistry();
-      },
-      setSavedEnvironmentRegistry: async (records) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.setSavedEnvironmentRegistry(records);
-        }
-        writeBrowserSavedEnvironmentRegistry(records);
-      },
-      getSavedEnvironmentSecret: async (environmentId) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.getSavedEnvironmentSecret(environmentId);
-        }
-        return readBrowserSavedEnvironmentSecret(environmentId);
-      },
-      setSavedEnvironmentSecret: async (environmentId, secret) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.setSavedEnvironmentSecret(environmentId, secret);
-        }
-        return writeBrowserSavedEnvironmentSecret(environmentId, secret);
-      },
-      removeSavedEnvironmentSecret: async (environmentId) => {
-        if (window.desktopBridge) {
-          return window.desktopBridge.removeSavedEnvironmentSecret(environmentId);
-        }
-        removeBrowserSavedEnvironmentSecret(environmentId);
-      },
     },
     server: {
-      getConfig: rpcClient.server.getConfig,
-      refreshProviders: rpcClient.server.refreshProviders,
-      listProviderCommands: rpcClient.server.listProviderCommands,
-      listSkills: rpcClient.server.listSkills,
-      upsertKeybinding: rpcClient.server.upsertKeybinding,
-      getSettings: rpcClient.server.getSettings,
-      updateSettings: rpcClient.server.updateSettings,
-      exportThreadMarkdown: rpcClient.server.exportThreadMarkdown,
+      getConfig: () => Promise.reject(unavailableLocalBackendError()),
+      refreshProviders: () => Promise.reject(unavailableLocalBackendError()),
+      updateProvider: () => Promise.reject(unavailableLocalBackendError()),
+      upsertKeybinding: () => Promise.reject(unavailableLocalBackendError()),
+      removeKeybinding: () => Promise.reject(unavailableLocalBackendError()),
+      getSettings: () => Promise.reject(unavailableLocalBackendError()),
+      updateSettings: () => Promise.reject(unavailableLocalBackendError()),
+      discoverSourceControl: () => Promise.reject(unavailableLocalBackendError()),
+      getTraceDiagnostics: () => Promise.reject(unavailableLocalBackendError()),
+      getProcessDiagnostics: () => Promise.reject(unavailableLocalBackendError()),
+      getProcessResourceHistory: () => Promise.reject(unavailableLocalBackendError()),
+      signalProcess: () => Promise.reject(unavailableLocalBackendError()),
     },
   };
+}
+
+export function createLocalApi(): LocalApi {
+  return createBrowserLocalApi();
 }
 
 export function readLocalApi(): LocalApi | undefined {
@@ -151,7 +93,7 @@ export function readLocalApi(): LocalApi | undefined {
     return cachedApi;
   }
 
-  cachedApi = createLocalApi(getPrimaryEnvironmentConnection().client);
+  cachedApi = createBrowserLocalApi();
   return cachedApi;
 }
 
@@ -167,11 +109,5 @@ export async function __resetLocalApiForTests() {
   cachedApi = undefined;
   const { __resetClientSettingsPersistenceForTests } = await import("./hooks/useSettings");
   __resetClientSettingsPersistenceForTests();
-  await resetEnvironmentServiceForTests();
-  resetGitStatusStateForTests();
   resetRequestLatencyStateForTests();
-  resetSavedEnvironmentRegistryStoreForTests();
-  resetSavedEnvironmentRuntimeStoreForTests();
-  resetServerStateForTests();
-  resetWsConnectionStateForTests();
 }

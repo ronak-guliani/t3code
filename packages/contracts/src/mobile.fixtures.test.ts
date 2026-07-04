@@ -1,8 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 
 import { MobileClientMessage, MobileDescriptorResult, MobileServerMessage } from "./mobile.ts";
@@ -18,9 +19,10 @@ const decodeServerMessage = Schema.decodeUnknownSync(MobileServerMessage);
 const encodeServerMessage = Schema.encodeUnknownSync(MobileServerMessage);
 const decodeClientMessage = Schema.decodeUnknownSync(MobileClientMessage);
 const encodeClientMessage = Schema.encodeUnknownSync(MobileClientMessage);
+const decodeFixtureJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
 
 function readFixture(relativePath: string): unknown {
-  return JSON.parse(readFileSync(join(fixturesRoot, relativePath), "utf8"));
+  return decodeFixtureJson(readFileSync(join(fixturesRoot, relativePath), "utf8"));
 }
 
 function fixtureNames(folder: "server" | "client"): ReadonlyArray<string> {

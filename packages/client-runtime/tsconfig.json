@@ -1,4 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  "include": [
+    "src/authorization",
+    "src/connection",
+    "src/environment",
+    "src/errors",
+    "src/operations",
+    "src/platform",
+    "src/relay",
+    "src/rpc",
+    "src/state"
+  ]
 }

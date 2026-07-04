@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Build the arm64 macOS Dev DMG and install it into /Applications, replacing any
-# previous Dev installation. Quits the running Dev app first, clears quarantine,
-# and launches the freshly installed build.
+# previous Dev installation. Quits running T3 Code desktop variants first, clears
+# quarantine, and launches the freshly installed build.
 #
 # Usage:
 #   scripts/install-t3-dev.sh              # build + install + launch Dev
@@ -18,6 +18,7 @@ ARTIFACT_GLOB="T3-Code-Dev-*-arm64.dmg"
 APP_BUNDLE="${APP_NAME}.app"
 INSTALL_DEST="/Applications/${APP_BUNDLE}"
 RELEASE_DIR="${REPO_ROOT}/release"
+CONFLICTING_APP_BUNDLES=("T3 Code (Dev).app" "T3 Code (Alpha).app" "T3 Code.app")
 
 DO_BUILD=1
 DO_LAUNCH=1
@@ -25,7 +26,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-build) DO_BUILD=0 ;;
     --no-launch) DO_LAUNCH=0 ;;
-    -h|--help)
+    -h | --help)
       sed -n '2,12p' "$0"
       exit 0
       ;;
@@ -48,19 +49,64 @@ fi
 
 log() { printf '\n[install-t3-dev] %s\n' "$*"; }
 
-log "Quitting any running ${APP_NAME} instance..."
-osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
-# Give the app a moment to exit cleanly, then force-kill any stragglers.
-sleep 1
-pkill -f "${APP_BUNDLE}/Contents/MacOS/" >/dev/null 2>&1 || true
+APP_PROCESS_PATTERN=""
+for conflicting_bundle in "${CONFLICTING_APP_BUNDLES[@]}"; do
+  process_path="/Applications/${conflicting_bundle}/Contents/"
+  escaped_process_path="$(printf '%s' "$process_path" | sed 's/[][\\.^$*+?{}()|]/\\&/g')"
+  if [[ -z "$APP_PROCESS_PATTERN" ]]; then
+    APP_PROCESS_PATTERN="$escaped_process_path"
+  else
+    APP_PROCESS_PATTERN="${APP_PROCESS_PATTERN}|${escaped_process_path}"
+  fi
+done
+
+has_running_app_processes() {
+  pgrep -f "$APP_PROCESS_PATTERN" >/dev/null 2>&1
+}
+
+wait_for_app_processes_to_exit() {
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    if ! has_running_app_processes; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+terminate_running_app_processes() {
+  local signal="$1"
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] && kill "$signal" "$pid" >/dev/null 2>&1 || true
+  done < <(pgrep -f "$APP_PROCESS_PATTERN" || true)
+}
+
+log "Quitting running T3 Code desktop instances..."
+for conflicting_bundle in "${CONFLICTING_APP_BUNDLES[@]}"; do
+  conflicting_name="${conflicting_bundle%.app}"
+  osascript -e "tell application \"${conflicting_name}\" to quit" >/dev/null 2>&1 || true
+done
+if ! wait_for_app_processes_to_exit; then
+  log "Running T3 Code desktop processes did not quit; sending SIGTERM..."
+  terminate_running_app_processes -TERM
+  if ! wait_for_app_processes_to_exit; then
+    log "Running T3 Code desktop processes did not exit after SIGTERM; sending SIGKILL..."
+    terminate_running_app_processes -KILL
+    if ! wait_for_app_processes_to_exit; then
+      echo "Failed to stop existing T3 Code desktop processes:" >&2
+      pgrep -fl "$APP_PROCESS_PATTERN" >&2 || true
+      exit 1
+    fi
+  fi
+fi
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   log "Building ${APP_FLAVOR} arm64 DMG (this takes ~1 minute)..."
   rm -f "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.dmg \
-        "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.dmg.blockmap \
-        "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.zip \
-        "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.zip.blockmap
-  ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 --flavor "$APP_FLAVOR" )
+    "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.dmg.blockmap \
+    "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.zip \
+    "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.zip.blockmap
+  (cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 --flavor "$APP_FLAVOR")
 fi
 
 DMG_PATH="$(ls -t "${RELEASE_DIR}"/${ARTIFACT_GLOB} 2>/dev/null | head -n 1 || true)"
@@ -71,8 +117,6 @@ if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
 fi
 log "Using DMG: ${DMG_PATH}"
 
-# Mount the DMG into a temporary mount point and ensure we always detach it,
-# even if ditto/cp fails.
 MOUNT_POINT=""
 cleanup() {
   if [[ -n "$MOUNT_POINT" && -d "$MOUNT_POINT" ]]; then
@@ -83,7 +127,6 @@ trap cleanup EXIT
 
 log "Mounting DMG..."
 ATTACH_OUTPUT="$(hdiutil attach -nobrowse -readonly -plist "$DMG_PATH")"
-# Pull the first /Volumes/* mount point out of the plist.
 MOUNT_POINT="$(printf '%s' "$ATTACH_OUTPUT" \
   | /usr/bin/awk '/<string>\/Volumes\//{ sub(/.*<string>/,""); sub(/<\/string>.*/,""); print; exit }')"
 if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
@@ -112,7 +155,7 @@ log "Installed ${APP_NAME} v${INSTALLED_VERSION}"
 
 if [[ "$DO_LAUNCH" -eq 1 ]]; then
   log "Launching..."
-  open "$INSTALL_DEST"
+  open -n "$INSTALL_DEST"
 fi
 
 log "Done."

@@ -47,9 +47,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         ) : null}
         {props.showInteractionModeToggle ? (
           <>
-            <div className="composer-menu-description px-2 py-1.5 font-medium text-muted-foreground">
-              Mode
-            </div>
+            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Mode</div>
             <MenuRadioGroup
               value={props.interactionMode}
               onValueChange={(value) => {
@@ -63,9 +61,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
-        <div className="composer-menu-description px-2 py-1.5 font-medium text-muted-foreground">
-          Access
-        </div>
+        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
         <MenuRadioGroup
           value={props.runtimeMode}
           onValueChange={(value) => {

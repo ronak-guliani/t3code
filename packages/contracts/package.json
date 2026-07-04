@@ -15,6 +15,10 @@
       "import": "./src/settings.ts",
       "require": "./src/settings.ts"
     },
+    "./relay": {
+      "types": "./src/relay.ts",
+      "import": "./src/relay.ts"
+    },
     ".": {
       "types": "./src/index.ts",
       "import": "./src/index.ts",

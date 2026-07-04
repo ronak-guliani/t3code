@@ -36,7 +36,6 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
     case "read":
       return "file_read_approval";
     case "edit":
-    case "write":
     case "delete":
     case "move":
       return "file_change_approval";
@@ -48,19 +47,14 @@ function canonicalRequestTypeFromAcpKind(kind: string | "unknown"): AcpCanonical
 function canonicalItemTypeFromAcpToolKind(kind: string | undefined): ToolLifecycleItemType {
   switch (kind) {
     case "execute":
-    case "shell":
       return "command_execution";
     case "edit":
-    case "write":
     case "delete":
     case "move":
       return "file_change";
     case "search":
     case "fetch":
       return "web_search";
-    case "task":
-    case "subagent":
-      return "collab_agent_tool_call";
     default:
       return "dynamic_tool_call";
   }
@@ -163,33 +157,6 @@ export function makeAcpPlanUpdatedEvent(input: {
   };
 }
 
-export function makeAcpModeChangedEvent(input: {
-  readonly stamp: AcpEventStamp;
-  readonly provider: ProviderDriverKind;
-  readonly threadId: ThreadId;
-  readonly turnId: TurnId | undefined;
-  readonly modeId: string;
-  readonly rawPayload: unknown;
-}): ProviderRuntimeEvent {
-  return {
-    type: "session.configured",
-    ...input.stamp,
-    provider: input.provider,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    payload: {
-      config: {
-        currentModeId: input.modeId,
-      },
-    },
-    raw: {
-      source: "acp.jsonrpc",
-      method: "session/update",
-      payload: input.rawPayload,
-    },
-  };
-}
-
 export function makeAcpToolCallEvent(input: {
   readonly stamp: AcpEventStamp;
   readonly provider: ProviderDriverKind;
@@ -210,7 +177,7 @@ export function makeAcpToolCallEvent(input: {
     turnId: input.turnId,
     itemId: RuntimeItemId.make(input.toolCall.toolCallId),
     payload: {
-      itemType: input.toolCall.itemType ?? canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
+      itemType: canonicalItemTypeFromAcpToolKind(input.toolCall.kind),
       ...(runtimeStatus ? { status: runtimeStatus } : {}),
       ...(input.toolCall.title ? { title: input.toolCall.title } : {}),
       ...(input.toolCall.detail ? { detail: input.toolCall.detail } : {}),
@@ -252,7 +219,6 @@ export function makeAcpContentDeltaEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
-  readonly streamKind?: "assistant_text" | "reasoning_text";
   readonly text: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
@@ -264,7 +230,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: input.streamKind ?? "assistant_text",
+      streamKind: "assistant_text",
       delta: input.text,
     },
     raw: {

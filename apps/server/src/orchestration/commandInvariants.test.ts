@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import {
   MessageId,
   CommandId,
@@ -9,7 +9,7 @@ import {
   type OrchestrationReadModel,
   ProviderInstanceId,
 } from "@t3tools/contracts";
-import { Effect } from "effect";
+import * as Effect from "effect/Effect";
 
 import {
   findThreadById,
@@ -19,7 +19,7 @@ import {
   requireThreadAbsent,
 } from "./commandInvariants.ts";
 
-const now = new Date().toISOString();
+const now = "2026-01-01T00:00:00.000Z";
 
 const readModel: OrchestrationReadModel = {
   snapshotSequence: 2,
@@ -63,7 +63,6 @@ const readModel: OrchestrationReadModel = {
       },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "full-access",
-      pendingRuntimeMode: null,
       branch: null,
       worktreePath: null,
       createdAt: now,
@@ -87,7 +86,6 @@ const readModel: OrchestrationReadModel = {
       },
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       runtimeMode: "full-access",
-      pendingRuntimeMode: null,
       branch: null,
       worktreePath: null,
       createdAt: now,

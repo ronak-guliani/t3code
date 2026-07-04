@@ -22,12 +22,8 @@
  */
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
-import {
-  CopilotAcpNativeDriver,
-  CopilotDriver,
-  type CopilotDriverEnv,
-} from "./Drivers/CopilotDriver.ts";
 import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
+import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
@@ -39,8 +35,8 @@ import type { AnyProviderDriver } from "./ProviderDriver.ts";
 export type BuiltInDriversEnv =
   | ClaudeDriverEnv
   | CodexDriverEnv
-  | CopilotDriverEnv
   | CursorDriverEnv
+  | GrokDriverEnv
   | OpenCodeDriverEnv;
 
 /**
@@ -51,8 +47,7 @@ export type BuiltInDriversEnv =
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
   CodexDriver,
   ClaudeDriver,
-  CopilotDriver,
-  CopilotAcpNativeDriver,
   CursorDriver,
+  GrokDriver,
   OpenCodeDriver,
 ];

@@ -1,6 +1,6 @@
-import { Schema } from "effect";
 import { assert, it } from "@effect/vitest";
-import { Effect } from "effect";
+import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 
 import {
   KeybindingsConfig,
@@ -29,6 +29,18 @@ it.effect("parses keybinding rules", () =>
     });
     assert.strictEqual(parsed.command, "terminal.toggle");
 
+    const parsedSidebarToggle = yield* decode(KeybindingRule, {
+      key: "mod+b",
+      command: "sidebar.toggle",
+    });
+    assert.strictEqual(parsedSidebarToggle.command, "sidebar.toggle");
+
+    const parsedRightPanelToggle = yield* decode(KeybindingRule, {
+      key: "mod+alt+b",
+      command: "rightPanel.toggle",
+    });
+    assert.strictEqual(parsedRightPanelToggle.command, "rightPanel.toggle");
+
     const parsedClose = yield* decode(KeybindingRule, {
       key: "mod+w",
       command: "terminal.close",
@@ -46,12 +58,6 @@ it.effect("parses keybinding rules", () =>
       command: "commandPalette.toggle",
     });
     assert.strictEqual(parsedCommandPalette.command, "commandPalette.toggle");
-
-    const parsedChatFind = yield* decode(KeybindingRule, {
-      key: "mod+f",
-      command: "chat.find",
-    });
-    assert.strictEqual(parsedChatFind.command, "chat.find");
 
     const parsedLocal = yield* decode(KeybindingRule, {
       key: "mod+shift+n",
@@ -106,8 +112,9 @@ it.effect("parses keybindings array payload", () =>
     const parsed = yield* decode(KeybindingsConfig, [
       { key: "mod+j", command: "terminal.toggle" },
       { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
+      { key: "mod+shift+d", command: "terminal.splitVertical", when: "terminalFocus" },
     ]);
-    assert.lengthOf(parsed, 2);
+    assert.lengthOf(parsed, 3);
   }),
 );
 

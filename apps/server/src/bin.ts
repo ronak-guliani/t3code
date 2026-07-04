@@ -3,22 +3,60 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Command } from "effect/unstable/cli";
+import * as CliError from "effect/unstable/cli/CliError";
 
-import { enableV8CompileCache } from "@t3tools/shared/compileCache";
-import { NetService } from "@t3tools/shared/Net";
-import { cli } from "./cli.ts";
+import * as NetService from "@t3tools/shared/Net";
 import packageJson from "../package.json" with { type: "json" };
-
-// Persist V8 bytecode so repeat launches skip recompiling the many external
-// `node_modules` files this CLI/server loads. When spawned by the desktop app,
-// `NODE_COMPILE_CACHE` is already set (covering first-run static imports too);
-// this call is the fallback for standalone `t3` invocations.
-enableV8CompileCache();
+import { authCommand } from "./cli/auth.ts";
+import { connectCommand } from "./cli/connect.ts";
+import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
+import { sharedServerCommandFlags } from "./cli/config.ts";
+import { projectCommand } from "./cli/project.ts";
+import { runServerCommand, serveCommand, startCommand } from "./cli/server.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
-Command.run(cli, { version: packageJson.version }).pipe(
-  Effect.scoped,
-  Effect.provide(CliRuntimeLayer),
-  NodeRuntime.runMain,
+const connectPublicConfigMissingMessage =
+  "T3 Connect commands are unavailable: this build is missing T3 Connect public configuration.";
+
+class ConnectPublicConfigMissingError extends CliError.UserError {
+  override get message() {
+    return connectPublicConfigMissingMessage;
+  }
+}
+
+const connectUnavailableCommand = Command.make("connect").pipe(
+  Command.withDescription("T3 Connect is unavailable in builds without public configuration."),
+  Command.withHidden,
+  Command.withHandler(() =>
+    Effect.fail(
+      new CliError.ShowHelp({
+        commandPath: ["t3", "connect"],
+        errors: [new ConnectPublicConfigMissingError({ cause: connectPublicConfigMissingMessage })],
+      }),
+    ),
+  ),
 );
+
+export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
+  Command.make("t3", { ...sharedServerCommandFlags }).pipe(
+    Command.withDescription("Run the T3 Code server."),
+    Command.withHandler((flags) => runServerCommand(flags)),
+    Command.withSubcommands([
+      startCommand,
+      serveCommand,
+      authCommand,
+      projectCommand,
+      cloudEnabled ? connectCommand : connectUnavailableCommand,
+    ]),
+  );
+
+export const cli = makeCli();
+
+if (import.meta.main) {
+  Command.run(cli, { version: packageJson.version }).pipe(
+    Effect.scoped,
+    Effect.provide(CliRuntimeLayer),
+    NodeRuntime.runMain,
+  );
+}
