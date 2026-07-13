@@ -21,7 +21,15 @@ import {
 } from "./ThreadStatusIndicators";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { autoAnimate } from "@formkit/auto-animate";
-import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  memo,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   DndContext,
@@ -1300,7 +1308,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // dependency arrays (avoids invalidating every thread-row memo on each
   // thread-list change).
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
-  sidebarThreadByKeyRef.current = sidebarThreadByKey;
+  useLayoutEffect(() => {
+    sidebarThreadByKeyRef.current = sidebarThreadByKey;
+  }, [sidebarThreadByKey]);
   const projectThreads = sidebarThreads;
   const projectExpanded = useUiStateStore(
     (state) => state.projectExpandedById[project.projectKey] ?? true,
@@ -2048,11 +2058,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     async (threadRef: ScopedThreadRef, newTitle: string, originalTitle: string) => {
       const threadKey = scopedThreadKey(threadRef);
       const finishRename = () => {
-        setRenamingThreadKey((current) => {
-          if (current !== threadKey) return current;
+        if (renamingThreadKey === threadKey) {
           renamingInputRef.current = null;
-          return null;
-        });
+          setRenamingThreadKey(null);
+        }
       };
 
       const trimmed = newTitle.trim();
@@ -2091,7 +2100,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
       finishRename();
     },
-    [],
+    [renamingThreadKey],
   );
 
   const closeProjectRenameDialog = useCallback(() => {
@@ -2950,6 +2959,11 @@ export default function Sidebar() {
     select: (params) => resolveThreadRouteRef(params),
   });
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
+  const routeTerminalOpen = useTerminalStateStore((state) =>
+    routeThreadRef
+      ? selectThreadTerminalState(state.terminalStateByThreadKey, routeThreadRef).terminalOpen
+      : false,
+  );
   const keybindings = useServerKeybindings();
   const openAddProjectCommandPalette = useCommandPaletteStore((store) => store.openAddProject);
   const [expandedThreadListsByProject, setExpandedThreadListsByProject] = useState<
@@ -3272,15 +3286,10 @@ export default function Sidebar() {
   const sidebarShortcutContext = useMemo(
     () => ({
       terminalFocus: false,
-      terminalOpen: routeThreadRef
-        ? selectThreadTerminalState(
-            useTerminalStateStore.getState().terminalStateByThreadKey,
-            routeThreadRef,
-          ).terminalOpen
-        : false,
+      terminalOpen: routeTerminalOpen,
       modelPickerOpen,
     }),
-    [modelPickerOpen, routeThreadRef],
+    [modelPickerOpen, routeTerminalOpen],
   );
   const threadJumpLabelByKey = useMemo(
     () =>
