@@ -137,6 +137,37 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("replaces workflow model defaults without retaining stale reasoning options", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+
+      yield* serverSettings.updateSettings({
+        agentWorkflows: {
+          defaultModelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+            { id: "reasoningEffort", value: "high" },
+          ]),
+        },
+      });
+
+      const next = yield* serverSettings.updateSettings({
+        agentWorkflows: {
+          defaultModelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-sonnet-4-6",
+            [{ id: "effort", value: "low" }],
+          ),
+        },
+      });
+
+      assert.deepEqual(
+        next.agentWorkflows.defaultModelSelection,
+        createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-sonnet-4-6", [
+          { id: "effort", value: "low" },
+        ]),
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves model when switching providers via textGenerationModelSelection", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsService;

@@ -10,6 +10,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_AGENT_WORKFLOW_MODEL_SELECTION,
   DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE,
   DEFAULT_REVIEW_CHANGES_SCOPE,
   type AgentWorkflowDestinationMode,
@@ -30,6 +31,7 @@ import {
   DEFAULT_CODE_FONT,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_INPUT_FONT_SIZE,
+  DEFAULT_RESPONSE_METADATA_FONT_SIZE,
   DEFAULT_SIDEBAR_FONT_SIZE,
   DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_TOOL_FONT_SIZE,
@@ -642,6 +644,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.toolFontSize !== DEFAULT_UNIFIED_SETTINGS.toolFontSize
         ? ["Tool font size"]
         : []),
+      ...(settings.responseMetadataFontSize !== DEFAULT_UNIFIED_SETTINGS.responseMetadataFontSize
+        ? ["Response metadata font size"]
+        : []),
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
@@ -693,6 +698,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.threadCompletionNotifications,
       settings.timestampFormat,
       settings.toolFontSize,
+      settings.responseMetadataFontSize,
       settings.uiDensity,
       settings.uiFont,
       theme,
@@ -1557,6 +1563,48 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+        <SettingsRow
+          title="Response metadata font size"
+          description="Font size for timestamps, elapsed time, and Copilot resume commands under responses."
+          resetAction={
+            settings.responseMetadataFontSize !== DEFAULT_RESPONSE_METADATA_FONT_SIZE ? (
+              <SettingResetButton
+                label="response metadata font size"
+                onClick={() =>
+                  updateSettings({
+                    responseMetadataFontSize: DEFAULT_RESPONSE_METADATA_FONT_SIZE,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.responseMetadataFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) {
+                  updateSettings({ responseMetadataFontSize: num });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Response metadata font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find(
+                    (option) => option.value === settings.responseMetadataFontSize,
+                  )?.label ?? `${DEFAULT_RESPONSE_METADATA_FONT_SIZE}px`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
       </SettingsSection>
 
       <SettingsSection title="Preferences">
@@ -2190,6 +2238,26 @@ export function AgentWorkflowsSettingsPanel() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const customWorkflows = settings.agentWorkflows.customWorkflows;
+  const serverProviders = useServerProviders();
+  const workflowModelSelection = resolveAppModelSelectionState(
+    {
+      ...settings,
+      textGenerationModelSelection: settings.agentWorkflows.defaultModelSelection,
+    },
+    serverProviders,
+  );
+  const workflowModelInstanceEntries = sortProviderInstanceEntries(
+    deriveProviderInstanceEntries(serverProviders),
+  );
+  const workflowModelInstanceEntry = workflowModelInstanceEntries.find(
+    (entry) => entry.instanceId === workflowModelSelection.instanceId,
+  );
+  const workflowModelOptionsByInstance = getCustomModelOptionsByInstance(
+    settings,
+    serverProviders,
+    workflowModelSelection.instanceId,
+    workflowModelSelection.model,
+  );
   const workflowRunsQuery = useQuery({
     queryKey: ["workflow-runs", "recent"],
     queryFn: () => getPrimaryEnvironmentConnection().client.workflow.listRuns({ limit: 25 }),
@@ -2282,6 +2350,66 @@ export function AgentWorkflowsSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection title="Defaults">
+        <SettingsRow
+          title="Workflow model"
+          description="Use this model and reasoning level whenever a workflow starts."
+          resetAction={
+            !Equal.equals(
+              settings.agentWorkflows.defaultModelSelection,
+              DEFAULT_AGENT_WORKFLOW_MODEL_SELECTION,
+            ) ? (
+              <SettingResetButton
+                label="workflow model"
+                onClick={() =>
+                  updateAgentWorkflows({
+                    defaultModelSelection: DEFAULT_AGENT_WORKFLOW_MODEL_SELECTION,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <ProviderModelPicker
+                activeInstanceId={workflowModelSelection.instanceId}
+                model={workflowModelSelection.model}
+                lockedProvider={null}
+                instanceEntries={workflowModelInstanceEntries}
+                modelOptionsByInstance={workflowModelOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  updateAgentWorkflows({
+                    defaultModelSelection: createModelSelection(instanceId, model),
+                  });
+                }}
+              />
+              <TraitsPicker
+                provider={workflowModelInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND}
+                models={workflowModelInstanceEntry?.models ?? []}
+                model={workflowModelSelection.model}
+                prompt=""
+                onPromptChange={() => {}}
+                modelOptions={workflowModelSelection.options}
+                allowPromptInjectedEffort={false}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onModelOptionsChange={(nextOptions) => {
+                  updateAgentWorkflows({
+                    defaultModelSelection: createModelSelection(
+                      workflowModelSelection.instanceId,
+                      workflowModelSelection.model,
+                      nextOptions,
+                    ),
+                  });
+                }}
+              />
+            </div>
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection title="Built-in workflows">
         <SettingsRow
           title="Review Code"

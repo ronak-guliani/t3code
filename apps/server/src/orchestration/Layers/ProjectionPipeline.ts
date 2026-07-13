@@ -574,7 +574,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
-            pendingRuntimeMode: event.payload.pendingRuntimeMode,
+            pendingRuntimeMode: event.payload.pendingRuntimeMode ?? null,
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
@@ -978,6 +978,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             onNone: () => null,
             onSome: (session) => session.resumeCursor,
           });
+      const eventSessionStartCheckpointTurnCount =
+        event.payload.session.sessionStartCheckpointTurnCount;
+      const shouldReuseSessionStartCheckpoint =
+        eventSessionStartCheckpointTurnCount === undefined &&
+        Option.isSome(existingSession) &&
+        existingSession.value.sessionStartCheckpointTurnCount !== null &&
+        existingSession.value.status !== "stopped" &&
+        existingSession.value.status !== "error";
+      const sessionStartCheckpointTurnCount =
+        eventSessionStartCheckpointTurnCount ??
+        (shouldReuseSessionStartCheckpoint
+          ? existingSession.value.sessionStartCheckpointTurnCount
+          : Math.max(
+              0,
+              ...(yield* projectionTurnRepository.listByThreadId({
+                threadId: event.payload.threadId,
+              })).flatMap((turn) =>
+                turn.checkpointTurnCount !== null ? [turn.checkpointTurnCount] : [],
+              ),
+            ));
       if (
         event.payload.session.status !== "running" ||
         event.payload.session.activeTurnId === null
@@ -1009,6 +1029,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         runtimeMode: event.payload.session.runtimeMode,
         activeTurnId: event.payload.session.activeTurnId,
         resumeCursor,
+        sessionStartCheckpointTurnCount,
         lastError: event.payload.session.lastError,
         updatedAt: event.payload.session.updatedAt,
       });
@@ -1198,6 +1219,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               checkpointFiles: [],
               checkpointAgentTouchedPaths: [],
               checkpointTurnFiles: [],
+              checkpointSpeculativePatch: null,
             });
           }
 
@@ -1251,6 +1273,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointFiles: [],
             checkpointAgentTouchedPaths: [],
             checkpointTurnFiles: [],
+            checkpointSpeculativePatch: null,
           });
           return;
         }
@@ -1290,6 +1313,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointFiles: [],
             checkpointAgentTouchedPaths: [],
             checkpointTurnFiles: [],
+            checkpointSpeculativePatch: null,
           });
           return;
         }
@@ -1318,6 +1342,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               checkpointFiles: event.payload.files,
               checkpointAgentTouchedPaths: event.payload.agentTouchedPaths,
               checkpointTurnFiles: event.payload.turnFiles,
+              checkpointSpeculativePatch: event.payload.speculativePatch ?? null,
               startedAt: existingTurn.value.startedAt ?? event.payload.completedAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.completedAt,
               completedAt: event.payload.completedAt,
@@ -1341,6 +1366,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             checkpointFiles: event.payload.files,
             checkpointAgentTouchedPaths: event.payload.agentTouchedPaths,
             checkpointTurnFiles: event.payload.turnFiles,
+            checkpointSpeculativePatch: event.payload.speculativePatch ?? null,
           });
           return;
         }

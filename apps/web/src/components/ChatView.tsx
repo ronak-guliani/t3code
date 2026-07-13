@@ -193,7 +193,10 @@ import {
   useServerKeybindings,
 } from "~/rpc/serverState";
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
-import { retainThreadDetailSubscription } from "../environments/runtime/service";
+import {
+  refreshThreadDetailSubscription,
+  retainThreadDetailSubscription,
+} from "../environments/runtime/service";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { deriveMessagesTimelineRows } from "./chat/MessagesTimeline.logic";
 import { FindInChatBar } from "./chat/FindInChatBar";
@@ -204,6 +207,7 @@ const IMAGE_ONLY_BOOTSTRAP_PROMPT =
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const LOCAL_DISPATCH_ACKNOWLEDGEMENT_TIMEOUT_MS = 5_000;
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
@@ -367,11 +371,14 @@ function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
   activeLatestTurn: Thread["latestTurn"] | null;
   phase: SessionPhase;
+  enableRecovery: boolean;
   activePendingApproval: ApprovalRequestId | null;
   activePendingUserInput: ApprovalRequestId | null;
   threadError: string | null | undefined;
 }) {
   const [localDispatch, setLocalDispatch] = useState<LocalDispatchSnapshot | null>(null);
+  const activeEnvironmentId = input.activeThread?.environmentId;
+  const activeThreadId = input.activeThread?.id;
 
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
@@ -420,6 +427,26 @@ function useLocalDispatchState(input: {
     }
     resetLocalDispatch();
   }, [resetLocalDispatch, serverAcknowledgedLocalDispatch]);
+
+  useEffect(() => {
+    if (!input.enableRecovery || !localDispatch || serverAcknowledgedLocalDispatch) {
+      return;
+    }
+    if (!activeEnvironmentId || !activeThreadId) {
+      return;
+    }
+
+    const timeoutId = setTimeout(() => {
+      refreshThreadDetailSubscription(activeEnvironmentId, activeThreadId);
+    }, LOCAL_DISPATCH_ACKNOWLEDGEMENT_TIMEOUT_MS);
+    return () => clearTimeout(timeoutId);
+  }, [
+    activeEnvironmentId,
+    activeThreadId,
+    input.enableRecovery,
+    localDispatch,
+    serverAcknowledgedLocalDispatch,
+  ]);
 
   return {
     beginLocalDispatch,
@@ -1200,6 +1227,7 @@ function ChatViewBody(
     activeThread,
     activeLatestTurn,
     phase,
+    enableRecovery: routeKind === "server",
     activePendingApproval: activePendingApproval?.requestId ?? null,
     activePendingUserInput: activePendingUserInput?.requestId ?? null,
     threadError: activeThread?.error,
@@ -3759,11 +3787,7 @@ function ChatViewBody(
         return;
       }
 
-      const sendCtx = composerRef.current?.getSendContext();
-      const modelSelection =
-        sendCtx?.selectedModelSelection ??
-        activeProject.defaultModelSelection ??
-        activeThread.modelSelection;
+      const modelSelection = settings.agentWorkflows.defaultModelSelection;
 
       setStartingWorkflowId(workflowId);
       void api.workflow
@@ -3792,7 +3816,12 @@ function ChatViewBody(
           }
 
           if (result.threadId !== activeThread.id) {
-            await waitForStartedServerThread(scopeThreadRef(environmentId, result.threadId));
+            const threadStarted = await waitForStartedServerThread(
+              scopeThreadRef(environmentId, result.threadId),
+            );
+            if (!threadStarted) {
+              throw new Error("The workflow thread did not become available in time.");
+            }
             await navigate({
               to: "/$environmentId/$threadId",
               params: {

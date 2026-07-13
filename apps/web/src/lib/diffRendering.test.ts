@@ -1,13 +1,87 @@
 import { describe, expect, it } from "vitest";
 import type { DiffFile, DiffMetadata, DiffSnapshot } from "@t3tools/contracts";
 import { ThreadId } from "@t3tools/contracts";
-import { applyDiffFileDelta, buildPatchCacheKey } from "./diffRendering";
+import type { FileDiffMetadata } from "@pierre/diffs/types";
+import {
+  applyDiffFileDelta,
+  buildPatchCacheKey,
+  getFileDiffRenderSafety,
+  partitionRenderableFileDiffs,
+} from "./diffRendering";
 
 describe("buildPatchCacheKey", () => {
   it("returns a stable cache key for identical content", () => {
     const patch = "diff --git a/a.ts b/a.ts\n+console.log('hello')";
 
     expect(buildPatchCacheKey(patch)).toBe(buildPatchCacheKey(patch));
+  });
+
+  describe("partitionRenderableFileDiffs", () => {
+    function makeFileDiff(overrides: Partial<FileDiffMetadata> = {}): FileDiffMetadata {
+      return {
+        name: "src/example.ts",
+        type: "change",
+        hunks: [
+          {
+            collapsedBefore: 0,
+            additionStart: 1,
+            additionCount: 1,
+            additionLines: 1,
+            additionLineIndex: 0,
+            deletionStart: 1,
+            deletionCount: 1,
+            deletionLines: 1,
+            deletionLineIndex: 0,
+            hunkContent: [
+              {
+                type: "change",
+                deletions: 1,
+                deletionLineIndex: 0,
+                additions: 1,
+                additionLineIndex: 0,
+              },
+            ],
+            splitLineStart: 0,
+            splitLineCount: 1,
+            unifiedLineStart: 0,
+            unifiedLineCount: 2,
+            noEOFCRDeletions: false,
+            noEOFCRAdditions: false,
+          },
+        ],
+        splitLineCount: 1,
+        unifiedLineCount: 2,
+        isPartial: true,
+        deletionLines: ["old\n"],
+        additionLines: ["new\n"],
+        ...overrides,
+      };
+    }
+
+    it("keeps file diffs whose hunks reference existing line content", () => {
+      const file = makeFileDiff();
+
+      expect(getFileDiffRenderSafety(file)).toEqual({ safe: true });
+      expect(partitionRenderableFileDiffs([file])).toEqual({ files: [file], unsafeFiles: [] });
+    });
+
+    it("excludes malformed file diffs before FileDiff can throw on missing line content", () => {
+      const file = makeFileDiff({ additionLines: [] });
+
+      expect(getFileDiffRenderSafety(file)).toEqual({
+        safe: false,
+        reason: "Parsed diff addition references missing line content.",
+      });
+      expect(partitionRenderableFileDiffs([file])).toEqual({
+        files: [],
+        unsafeFiles: [
+          {
+            file,
+            reason: "Parsed diff addition references missing line content.",
+          },
+        ],
+      });
+    });
   });
 
   const baseMetadata: DiffMetadata = {
@@ -128,6 +202,21 @@ describe("buildPatchCacheKey", () => {
 
     expect(buildPatchCacheKey(patch, "diff-panel:light")).not.toBe(
       buildPatchCacheKey(patch, "diff-panel:dark"),
+    );
+  });
+
+  it("includes checkpoint revision and patch content in the cache key", () => {
+    const before = "diff --git a/a.ts b/a.ts\n+console.log('hello')";
+    const after = "diff --git a/a.ts b/a.ts\n+console.log('hello world')";
+
+    expect(buildPatchCacheKey(before, { revision: "checkpoint:1" })).toBe(
+      buildPatchCacheKey(before, { revision: "checkpoint:1" }),
+    );
+    expect(buildPatchCacheKey(before, { revision: "checkpoint:1" })).not.toBe(
+      buildPatchCacheKey(after, { revision: "checkpoint:1" }),
+    );
+    expect(buildPatchCacheKey(before, { revision: "checkpoint:1" })).not.toBe(
+      buildPatchCacheKey(before, { revision: "checkpoint:2" }),
     );
   });
 });

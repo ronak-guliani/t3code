@@ -10,12 +10,18 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model.ts";
 import { ModelSelection, ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const ReviewChangesScope = Schema.Literals(["uncommitted", "against-base"]);
 export type ReviewChangesScope = typeof ReviewChangesScope.Type;
 
 export const DEFAULT_REVIEW_CHANGES_SCOPE: ReviewChangesScope = "uncommitted";
+export const DEFAULT_AGENT_WORKFLOW_MODEL_SELECTION: ModelSelection = {
+  instanceId: ProviderInstanceId.make("codex"),
+  model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+};
 
 export const DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE = `Act as a code reviewer, focusing on newly introduced, discrete, actionable defects.
 Prioritize correctness, performance, security, reliability, and maintainability.
@@ -65,6 +71,9 @@ export const AgentWorkflowDestinationMode = Schema.Literals([
 export type AgentWorkflowDestinationMode = typeof AgentWorkflowDestinationMode.Type;
 
 export const AgentWorkflowSettings = Schema.Struct({
+  defaultModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_AGENT_WORKFLOW_MODEL_SELECTION)),
+  ),
   reviewChanges: ReviewChangesWorkflowSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   builtInOverrides: Schema.Record(
     TrimmedNonEmptyString,

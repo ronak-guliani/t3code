@@ -417,7 +417,7 @@ export function deriveLockedProvider(input: {
 
 export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
-  timeoutMs = 1_000,
+  timeoutMs = 10_000,
 ): Promise<boolean> {
   const getThread = () => selectThreadByRef(useStore.getState(), threadRef);
   const thread = getThread();

@@ -8,6 +8,7 @@ import {
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT,
+  DEFAULT_RESPONSE_METADATA_FONT_SIZE,
   DEFAULT_SIDEBAR_FONT_SIZE,
   DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_SERVER_SETTINGS,
@@ -60,6 +61,27 @@ describe("ClientSettings.sidebarFontSize", () => {
 
     it("rejects unknown sidebar translucency levels in patches", () => {
       expect(() => decodeClientSettingsPatch({ sidebarTranslucency: "glass" })).toThrow();
+    });
+  });
+
+  describe("ClientSettings.responseMetadataFontSize", () => {
+    it("defaults to the compact response metadata font size", () => {
+      expect(DEFAULT_CLIENT_SETTINGS.responseMetadataFontSize).toBe(
+        DEFAULT_RESPONSE_METADATA_FONT_SIZE,
+      );
+      expect(decodeClientSettings({}).responseMetadataFontSize).toBe(
+        DEFAULT_RESPONSE_METADATA_FONT_SIZE,
+      );
+    });
+
+    it("accepts valid response metadata font size patches", () => {
+      expect(
+        decodeClientSettingsPatch({ responseMetadataFontSize: 9 }).responseMetadataFontSize,
+      ).toBe(9);
+    });
+
+    it("rejects invalid response metadata font size patches", () => {
+      expect(() => decodeClientSettingsPatch({ responseMetadataFontSize: 5 })).toThrow();
     });
   });
 

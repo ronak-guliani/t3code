@@ -480,6 +480,7 @@ const make = Effect.gen(function* () {
             // Provider turn ids are not orchestration turn ids.
             activeTurnId: null,
             ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
+            sessionStartCheckpointTurnCount: latestCapturedCheckpointTurnCount(thread.checkpoints),
             lastError: session.lastError ?? null,
             updatedAt: session.updatedAt,
           },
@@ -802,6 +803,9 @@ const make = Effect.gen(function* () {
           : {}),
         runtimeMode: targetThread.runtimeMode,
         activeTurnId: null,
+        sessionStartCheckpointTurnCount: latestCapturedCheckpointTurnCount(
+          targetThread.checkpoints,
+        ),
         lastError: null,
         updatedAt: event.payload.createdAt,
       },
@@ -842,6 +846,9 @@ const make = Effect.gen(function* () {
               runtimeMode: session.runtimeMode,
               activeTurnId: null,
               ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
+              sessionStartCheckpointTurnCount: latestCapturedCheckpointTurnCount(
+                targetThread.checkpoints,
+              ),
               lastError: session.lastError ?? null,
               updatedAt: session.updatedAt,
             },

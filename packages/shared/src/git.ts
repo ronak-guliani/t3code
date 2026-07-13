@@ -361,9 +361,7 @@ function mergeVcsStatusParts(
     hasUpstream: remote?.hasUpstream ?? false,
     aheadCount: remote?.aheadCount ?? 0,
     behindCount: remote?.behindCount ?? 0,
-    ...(remote?.aheadOfDefaultCount !== undefined
-      ? { aheadOfDefaultCount: remote.aheadOfDefaultCount }
-      : {}),
+    aheadOfDefaultCount: remote?.aheadOfDefaultCount ?? 0,
     pr: remote?.pr ?? null,
   };
 }

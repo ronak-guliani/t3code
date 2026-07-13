@@ -520,6 +520,7 @@ describe("checkCursorProviderStatus", () => {
       "default",
       "composer-2",
       "gpt-5.4",
+      "gpt-5.4-mini",
       "claude-opus-4-6",
     ]);
     await expect(runNode(waitForFileContent(requestLogPath))).resolves.toContain("initialize");
@@ -543,6 +544,7 @@ describe("discoverCursorModelsViaAcp", () => {
       "default",
       "composer-2",
       "gpt-5.4",
+      "gpt-5.4-mini",
       "claude-opus-4-6",
     ]);
   });
@@ -576,6 +578,12 @@ describe("discoverCursorModelCapabilitiesViaAcp", () => {
       { slug: "composer-2", name: "Composer 2", isCustom: false, capabilities: emptyCapabilities },
       { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: emptyCapabilities },
       {
+        slug: "gpt-5.4-mini",
+        name: "GPT-5.4 Mini",
+        isCustom: false,
+        capabilities: emptyCapabilities,
+      },
+      {
         slug: "claude-opus-4-6",
         name: "Opus 4.6",
         isCustom: false,
@@ -599,11 +607,12 @@ describe("discoverCursorModelCapabilitiesViaAcp", () => {
       "default",
       "composer-2",
       "gpt-5.4",
+      "gpt-5.4-mini",
       "claude-opus-4-6",
     ]);
 
     const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(4);
+    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(5);
   });
 });
 

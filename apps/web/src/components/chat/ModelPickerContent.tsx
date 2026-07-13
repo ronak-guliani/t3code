@@ -3,7 +3,7 @@ import {
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { resolveSelectableModel } from "@t3tools/shared/model";
+import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/model";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { SearchIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
@@ -26,6 +26,7 @@ import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
 
 type ModelPickerItem = {
   slug: string;
+  selectionSlug: string;
   name: string;
   shortName?: string;
   subProvider?: string;
@@ -37,20 +38,6 @@ type ModelPickerItem = {
 };
 
 const EMPTY_MODEL_JUMP_LABELS = new Map<string, string>();
-
-// Split a `${instanceId}:${slug}` combobox key back into its pieces. Slugs
-// can contain colons (e.g. some vendor model ids), so we only split on the
-// first colon — anything after that is the slug.
-function splitInstanceModelKey(key: string): { instanceId: ProviderInstanceId; slug: string } {
-  const colonIndex = key.indexOf(":");
-  if (colonIndex === -1) {
-    return { instanceId: key as ProviderInstanceId, slug: "" };
-  }
-  return {
-    instanceId: key.slice(0, colonIndex) as ProviderInstanceId,
-    slug: key.slice(colonIndex + 1),
-  };
-}
 
 export const ModelPickerContent = memo(function ModelPickerContent(props: {
   /** The instance currently selected in the composer (combobox "value"). */
@@ -192,9 +179,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (!readyInstanceSet.has(instanceId)) {
         continue;
       }
+      const seenModelSlugs = new Set<string>();
       for (const model of models) {
+        const normalizedSlug = normalizeModelSlug(model.slug, entry.driverKind) ?? model.slug;
+        if (seenModelSlugs.has(normalizedSlug)) {
+          continue;
+        }
+        seenModelSlugs.add(normalizedSlug);
         out.push({
-          slug: model.slug,
+          slug: normalizedSlug,
+          selectionSlug: model.slug,
           name: model.name,
           ...(model.shortName ? { shortName: model.shortName } : {}),
           ...(model.subProvider ? { subProvider: model.subProvider } : {}),
@@ -210,6 +204,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     return out;
   }, [modelOptionsByInstance, entryByInstanceId, readyInstanceSet]);
+  const modelByKey = useMemo(
+    (): ReadonlyMap<string, ModelPickerItem> =>
+      new Map(flatModels.map((model) => [`${model.instanceId}:${model.slug}`, model] as const)),
+    [flatModels],
+  );
 
   const isLocked = props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
@@ -329,24 +328,28 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   ]);
 
   const handleModelSelect = useCallback(
-    (modelSlug: string, instanceId: ProviderInstanceId) => {
-      const options = modelOptionsByInstance.get(instanceId);
+    (modelKey: string) => {
+      const model = modelByKey.get(modelKey);
+      if (!model) {
+        return;
+      }
+      const options = modelOptionsByInstance.get(model.instanceId);
       if (!options) {
         return;
       }
-      const entry = entryByInstanceId.get(instanceId);
+      const entry = entryByInstanceId.get(model.instanceId);
       if (!entry) {
         return;
       }
       // `resolveSelectableModel` uses the driver kind for normalization
       // (slug casing etc.). Custom instances share their driver's
       // normalization rules, so pass the driver kind here.
-      const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
+      const resolvedModel = resolveSelectableModel(entry.driverKind, model.selectionSlug, options);
       if (resolvedModel) {
-        onInstanceModelChange(instanceId, resolvedModel);
+        onInstanceModelChange(model.instanceId, resolvedModel);
       }
     },
-    [entryByInstanceId, modelOptionsByInstance, onInstanceModelChange],
+    [entryByInstanceId, modelByKey, modelOptionsByInstance, onInstanceModelChange],
   );
 
   const toggleFavorite = useCallback(
@@ -459,10 +462,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (!targetModelKey) {
         return;
       }
-      const { instanceId, slug } = splitInstanceModelKey(targetModelKey);
       event.preventDefault();
       event.stopPropagation();
-      handleModelSelect(slug, instanceId);
+      handleModelSelect(targetModelKey);
     };
 
     window.addEventListener("keydown", onWindowKeyDown, true);
@@ -558,8 +560,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             if (typeof modelKey !== "string") {
               return;
             }
-            const { instanceId, slug } = splitInstanceModelKey(modelKey);
-            handleModelSelect(slug, instanceId);
+            handleModelSelect(modelKey);
           }}
         >
           <div
@@ -592,10 +593,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                     ).preventBaseUIHandler?.();
                     e.preventDefault();
                     e.stopPropagation();
-                    const { instanceId, slug } = splitInstanceModelKey(
-                      highlightedModelKeyRef.current,
-                    );
-                    handleModelSelect(slug, instanceId);
+                    handleModelSelect(highlightedModelKeyRef.current);
                     return;
                   }
                   e.stopPropagation();

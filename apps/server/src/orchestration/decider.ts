@@ -1136,6 +1136,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           agentTouchedPaths: command.agentTouchedPaths,
           turnFiles: command.turnFiles,
           assistantMessageId: command.assistantMessageId ?? null,
+          ...(command.speculativePatch !== undefined
+            ? { speculativePatch: command.speculativePatch }
+            : {}),
           completedAt: command.completedAt,
         },
       };

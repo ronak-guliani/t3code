@@ -103,6 +103,7 @@
   --app-chat-font-size: 14px;
   --app-sidebar-font-size: 12px;
   --app-tool-font-size: 12px;
+  --app-response-metadata-font-size: 10px;
   --app-input-font-size: 14px;
   --sidebar-translucency-alpha: 100%;
   --sidebar-backdrop-blur: 0px;
@@ -812,14 +813,4 @@ label:has(> select#reasoning-effort) select {
 
 .dark .model-picker-list::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
-}
-
-/* Chat find — CSS Custom Highlight API */
-::highlight(chat-find) {
-  background-color: rgba(250, 204, 21, 0.45);
-  color: inherit;
-}
-::highlight(chat-find-active) {
-  background-color: rgba(249, 115, 22, 0.6);
-  color: inherit;
 }

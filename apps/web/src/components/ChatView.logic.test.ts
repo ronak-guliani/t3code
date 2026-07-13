@@ -486,6 +486,30 @@ describe("waitForStartedServerThread", () => {
     await expect(promise).resolves.toBe(true);
   });
 
+  it("keeps waiting for workflow threads that take longer than one second to start", async () => {
+    vi.useFakeTimers();
+
+    const threadId = ThreadId.make("thread-slow-workflow");
+    setStoreThreads([makeThread({ id: threadId })]);
+    const promise = waitForStartedServerThread(scopeThreadRef(localEnvironmentId, threadId));
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    setStoreThreads([
+      makeThread({
+        id: threadId,
+        latestTurn: {
+          turnId: TurnId.make("turn-slow-workflow"),
+          state: "running",
+          requestedAt: "2026-03-29T00:00:01.000Z",
+          startedAt: "2026-03-29T00:00:02.500Z",
+          completedAt: null,
+        },
+      }),
+    ]);
+
+    await expect(promise).resolves.toBe(true);
+  });
+
   it("handles the thread starting between the initial read and subscription setup", async () => {
     const threadId = ThreadId.make("thread-race");
     setStoreThreads([makeThread({ id: threadId })]);

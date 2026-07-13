@@ -291,6 +291,7 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
       }
       applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
     },
+    { retryApplicationFailures: true },
   );
   return true;
 }
@@ -476,6 +477,27 @@ export function retainThreadDetailSubscription(
       evictIdleThreadDetailSubscriptionsToCapacity();
     }
   };
+}
+
+export function refreshThreadDetailSubscription(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): boolean {
+  const entry = threadDetailSubscriptions.get(
+    getThreadDetailSubscriptionKey(environmentId, threadId),
+  );
+  if (!entry) {
+    return false;
+  }
+
+  clearThreadDetailSubscriptionEviction(entry);
+  entry.unsubscribe();
+  entry.unsubscribe = NOOP;
+  entry.lastAccessedAt = Date.now();
+  if (!attachThreadDetailSubscription(entry)) {
+    watchThreadDetailSubscriptionConnection(entry);
+  }
+  return true;
 }
 
 function emitEnvironmentConnectionRegistryChange() {

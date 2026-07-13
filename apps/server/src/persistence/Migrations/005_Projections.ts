@@ -88,6 +88,7 @@ export default Effect.gen(function* () {
       checkpoint_files_json TEXT NOT NULL,
       checkpoint_agent_touched_paths_json TEXT NOT NULL DEFAULT '[]',
       checkpoint_turn_files_json TEXT NOT NULL DEFAULT '[]',
+      checkpoint_speculative_patch TEXT,
       UNIQUE (thread_id, turn_id),
       UNIQUE (thread_id, checkpoint_turn_count)
     )

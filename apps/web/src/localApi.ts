@@ -23,6 +23,7 @@ import {
   writeBrowserSavedEnvironmentRegistry,
   writeBrowserSavedEnvironmentSecret,
 } from "./clientPersistenceStorage";
+import { __resetClientSettingsPersistenceForTests } from "./hooks/useSettings";
 
 let cachedApi: LocalApi | undefined;
 
@@ -166,7 +167,6 @@ export function ensureLocalApi(): LocalApi {
 
 export async function __resetLocalApiForTests() {
   cachedApi = undefined;
-  const { __resetClientSettingsPersistenceForTests } = await import("./hooks/useSettings");
   __resetClientSettingsPersistenceForTests();
   await resetEnvironmentServiceForTests();
   resetGitStatusStateForTests();

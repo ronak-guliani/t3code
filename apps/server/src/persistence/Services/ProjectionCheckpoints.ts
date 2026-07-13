@@ -32,6 +32,7 @@ export const ProjectionCheckpoint = Schema.Struct({
   agentTouchedPaths: Schema.Array(TrimmedNonEmptyString),
   turnFiles: Schema.Array(OrchestrationCheckpointFile),
   assistantMessageId: Schema.NullOr(MessageId),
+  speculativePatch: Schema.NullOr(Schema.String),
   completedAt: IsoDateTime,
 });
 export type ProjectionCheckpoint = typeof ProjectionCheckpoint.Type;

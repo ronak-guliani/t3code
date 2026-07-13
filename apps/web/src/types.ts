@@ -82,6 +82,7 @@ export interface TurnDiffSummary {
   checkpointRef?: CheckpointRef | undefined;
   assistantMessageId?: MessageId | undefined;
   checkpointTurnCount?: number | undefined;
+  speculativePatch?: string | undefined;
 }
 
 export interface Project {
@@ -173,6 +174,7 @@ export interface ThreadSession {
   status: SessionPhase | "error" | "closed";
   activeTurnId?: TurnId | undefined;
   resumeCursor?: unknown;
+  sessionStartCheckpointTurnCount?: number | null | undefined;
   createdAt: string;
   updatedAt: string;
   lastError?: string;

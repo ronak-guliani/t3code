@@ -4,6 +4,7 @@ import {
   DEFAULT_CODE_FONT,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_INPUT_FONT_SIZE,
+  DEFAULT_RESPONSE_METADATA_FONT_SIZE,
   DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_SIDEBAR_FONT_SIZE,
   DEFAULT_TOOL_FONT_SIZE,
@@ -79,6 +80,7 @@ export function applyFontSizes(sizes: {
   chatFontSize: FontSize;
   sidebarFontSize: FontSize;
   toolFontSize: FontSize;
+  responseMetadataFontSize: FontSize;
   inputFontSize: FontSize;
 }): void {
   if (typeof document === "undefined") {
@@ -90,6 +92,7 @@ export function applyFontSizes(sizes: {
   style.setProperty("--app-chat-font-size", `${sizes.chatFontSize}px`);
   style.setProperty("--app-sidebar-font-size", `${sizes.sidebarFontSize}px`);
   style.setProperty("--app-tool-font-size", `${sizes.toolFontSize}px`);
+  style.setProperty("--app-response-metadata-font-size", `${sizes.responseMetadataFontSize}px`);
   style.setProperty("--app-input-font-size", `${sizes.inputFontSize}px`);
 }
 
@@ -190,6 +193,10 @@ if (typeof document !== "undefined") {
     chatFontSize: normalizeFontSize(storedSettings?.chatFontSize, DEFAULT_CHAT_FONT_SIZE),
     sidebarFontSize: normalizeFontSize(storedSettings?.sidebarFontSize, DEFAULT_SIDEBAR_FONT_SIZE),
     toolFontSize: normalizeFontSize(storedSettings?.toolFontSize, DEFAULT_TOOL_FONT_SIZE),
+    responseMetadataFontSize: normalizeFontSize(
+      storedSettings?.responseMetadataFontSize,
+      DEFAULT_RESPONSE_METADATA_FONT_SIZE,
+    ),
     inputFontSize: normalizeFontSize(storedSettings?.inputFontSize, DEFAULT_INPUT_FONT_SIZE),
   });
 }
@@ -201,6 +208,7 @@ export function useAppFont() {
   const chatFontSize = useSettings((settings) => settings.chatFontSize);
   const sidebarFontSize = useSettings((settings) => settings.sidebarFontSize);
   const toolFontSize = useSettings((settings) => settings.toolFontSize);
+  const responseMetadataFontSize = useSettings((settings) => settings.responseMetadataFontSize);
   const inputFontSize = useSettings((settings) => settings.inputFontSize);
   const uiDensity = useSettings((settings) => settings.uiDensity);
   const sidebarTranslucency = useSettings((settings) => settings.sidebarTranslucency);
@@ -214,8 +222,22 @@ export function useAppFont() {
   }, [codeFont]);
 
   useEffect(() => {
-    applyFontSizes({ codeFontSize, chatFontSize, sidebarFontSize, toolFontSize, inputFontSize });
-  }, [chatFontSize, codeFontSize, sidebarFontSize, toolFontSize, inputFontSize]);
+    applyFontSizes({
+      codeFontSize,
+      chatFontSize,
+      sidebarFontSize,
+      toolFontSize,
+      responseMetadataFontSize,
+      inputFontSize,
+    });
+  }, [
+    chatFontSize,
+    codeFontSize,
+    sidebarFontSize,
+    toolFontSize,
+    responseMetadataFontSize,
+    inputFontSize,
+  ]);
 
   useEffect(() => {
     applyUiDensity(uiDensity);

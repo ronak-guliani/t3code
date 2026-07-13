@@ -74,7 +74,7 @@ describe("providerCommandsQueryOptions", () => {
 });
 
 describe("providerQueryKeys.diffState", () => {
-  it("includes cacheScope so reused turn counts do not collide", () => {
+  it("includes checkpointRevision so reused turn counts do not collide", () => {
     const baseInput = {
       environmentId,
       threadId,
@@ -85,12 +85,12 @@ describe("providerQueryKeys.diffState", () => {
     expect(
       providerQueryKeys.diffState({
         ...baseInput,
-        cacheScope: "turn:old-turn",
+        checkpointRevision: "turn:old-turn",
       }),
     ).not.toEqual(
       providerQueryKeys.diffState({
         ...baseInput,
-        cacheScope: "turn:new-turn",
+        checkpointRevision: "turn:new-turn",
       }),
     );
   });
@@ -101,7 +101,7 @@ describe("providerQueryKeys.diffState", () => {
       threadId,
       fromTurnCount: 0,
       toTurnCount: 1,
-      cacheScope: "turn:first",
+      checkpointRevision: "turn:first",
     } as const;
 
     expect(
@@ -151,7 +151,7 @@ describe("diffStateQueryOptions", () => {
       toTurnCount: 4,
       kind: "turn",
       scope: "turn",
-      cacheScope: "turn:abc",
+      checkpointRevision: "turn:abc",
     });
 
     const queryClient = new QueryClient();
@@ -166,7 +166,7 @@ describe("diffStateQueryOptions", () => {
     expect(getFullThreadDiffState).not.toHaveBeenCalled();
   });
 
-  it("uses explicit full thread diff API when range starts from zero", async () => {
+  it("uses explicit full thread diff API for conversation diffs", async () => {
     const getTurnDiffState = vi
       .fn()
       .mockResolvedValue({ _tag: "ready", snapshot: { patch: "patch" } });
@@ -182,7 +182,7 @@ describe("diffStateQueryOptions", () => {
       fromTurnCount: 0,
       toTurnCount: 2,
       kind: "conversation",
-      cacheScope: "thread:all",
+      checkpointRevision: "thread:all",
     });
 
     const queryClient = new QueryClient();
@@ -193,6 +193,38 @@ describe("diffStateQueryOptions", () => {
       toTurnCount: 2,
     });
     expect(getTurnDiffState).not.toHaveBeenCalled();
+  });
+
+  it("uses turn diff API for snapshot ranges that do not start at thread baseline", async () => {
+    const getTurnDiffState = vi
+      .fn()
+      .mockResolvedValue({ _tag: "ready", snapshot: { patch: "patch" } });
+    const getFullThreadDiffState = vi.fn().mockResolvedValue({
+      _tag: "ready",
+      snapshot: { patch: "patch" },
+    });
+    mockNativeApi({ getTurnDiffState, getFullThreadDiffState });
+
+    const options = diffStateQueryOptions({
+      environmentId,
+      threadId,
+      fromTurnCount: 4,
+      toTurnCount: 7,
+      kind: "turn",
+      scope: "snapshot",
+      checkpointRevision: "session:range",
+    });
+
+    const queryClient = new QueryClient();
+    await queryClient.fetchQuery(options);
+
+    expect(getTurnDiffState).toHaveBeenCalledWith({
+      threadId,
+      fromTurnCount: 4,
+      toTurnCount: 7,
+      scope: "snapshot",
+    });
+    expect(getFullThreadDiffState).not.toHaveBeenCalled();
   });
 
   it("uses turn diff API for an explicitly selected first turn", async () => {
@@ -212,7 +244,7 @@ describe("diffStateQueryOptions", () => {
       toTurnCount: 1,
       kind: "turn",
       scope: "turn",
-      cacheScope: "turn:first:turn",
+      checkpointRevision: "turn:first:turn",
     });
 
     const queryClient = new QueryClient();
@@ -243,7 +275,7 @@ describe("diffStateQueryOptions", () => {
       fromTurnCount: 4,
       toTurnCount: 3,
       kind: "turn",
-      cacheScope: "turn:invalid",
+      checkpointRevision: "turn:invalid",
     });
 
     const queryClient = new QueryClient();
@@ -259,7 +291,7 @@ describe("diffStateQueryOptions", () => {
       threadId,
       fromTurnCount: 1,
       toTurnCount: 2,
-      cacheScope: "turn:abc",
+      checkpointRevision: "turn:abc",
     });
     const retry = options.retry;
     expect(typeof retry).toBe("function");
@@ -284,7 +316,7 @@ describe("diffStateQueryOptions", () => {
       threadId,
       fromTurnCount: 1,
       toTurnCount: 2,
-      cacheScope: "turn:abc",
+      checkpointRevision: "turn:abc",
     });
     const retryDelay = options.retryDelay;
     expect(typeof retryDelay).toBe("function");

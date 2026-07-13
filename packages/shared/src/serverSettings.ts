@@ -94,6 +94,7 @@ export function applyServerSettingsPatch(
   patch: ServerSettingsPatch,
 ): ServerSettings {
   const selectionPatch = patch.textGenerationModelSelection;
+  const workflowSelectionPatch = patch.agentWorkflows?.defaultModelSelection;
   const { providerInstanceMutations, ...mergeablePatch } = patch;
   const next = deepMerge(current, mergeablePatch);
   const nextWithReplacements =
@@ -103,8 +104,22 @@ export function applyServerSettingsPatch(
           providerInstances: patch.providerInstances,
         }
       : next;
+  const nextWithWorkflowSelection = workflowSelectionPatch
+    ? {
+        ...nextWithReplacements,
+        agentWorkflows: {
+          ...nextWithReplacements.agentWorkflows,
+          defaultModelSelection: createModelSelection(
+            workflowSelectionPatch.instanceId,
+            workflowSelectionPatch.model,
+            workflowSelectionPatch.options,
+          ),
+        },
+      }
+    : nextWithReplacements;
+
   if (!selectionPatch) {
-    return applyProviderInstanceMutations(nextWithReplacements, providerInstanceMutations);
+    return applyProviderInstanceMutations(nextWithWorkflowSelection, providerInstanceMutations);
   }
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
@@ -118,7 +133,7 @@ export function applyServerSettingsPatch(
 
   return applyProviderInstanceMutations(
     {
-      ...nextWithReplacements,
+      ...nextWithWorkflowSelection,
       textGenerationModelSelection: createModelSelection(instanceId, model, options),
     },
     providerInstanceMutations,

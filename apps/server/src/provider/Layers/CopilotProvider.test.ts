@@ -77,6 +77,9 @@ const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "gpt-5.1-codex-mini",
   "gpt-5",
   "gpt-5-mini",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
   "gpt-4.1",
   "gpt-4o",
   "claude-fable-5",
@@ -96,6 +99,7 @@ const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "gemini-3-flash-preview",
   "gemini-2.5-pro",
   "grok-code-fast-1",
+  "kimi-k2.7-code",
   "mai-code-1-flash-picker",
 ] as const;
 

@@ -940,6 +940,47 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("retries application-level failures when subscription recovery is enabled", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let attempts = 0;
+
+    const unsubscribe = transport.subscribe(
+      () =>
+        Stream.suspend(() => {
+          attempts += 1;
+          return Stream.concat(
+            Stream.make({ kind: "snapshot", attempt: attempts }),
+            Stream.fail(new Error("Failed to load thread thread-1")),
+          );
+        }),
+      vi.fn(),
+      {
+        retryApplicationFailures: true,
+        retryDelay: 10,
+        maxRetryDelay: 20,
+      },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(3);
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith("WebSocket RPC subscription failed; retrying", {
+      error: "Failed to load thread thread-1",
+    });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
   it("keeps retrying stream subscriptions after transport failures", async () => {
     const transport = createTransport("ws://localhost:3020");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);

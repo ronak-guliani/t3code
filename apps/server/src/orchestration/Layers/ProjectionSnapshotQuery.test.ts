@@ -214,7 +214,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           checkpoint_status,
           checkpoint_files_json,
           checkpoint_agent_touched_paths_json,
-          checkpoint_turn_files_json
+          checkpoint_turn_files_json,
+          checkpoint_speculative_patch
         )
         VALUES (
           'thread-1',
@@ -229,10 +230,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-02-24T00:00:08.000Z',
           1,
           'checkpoint-1',
-          'ready',
+          'speculative',
           '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]',
           '["README.md"]',
-          '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]'
+          '[{"path":"README.md","kind":"modified","additions":2,"deletions":1}]',
+          'diff --git a/README.md b/README.md'
         )
       `;
 
@@ -351,10 +353,11 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               turnId: asTurnId("turn-1"),
               checkpointTurnCount: 1,
               checkpointRef: asCheckpointRef("checkpoint-1"),
-              status: "ready",
+              status: "speculative",
               files: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
               agentTouchedPaths: ["README.md"],
               turnFiles: [{ path: "README.md", kind: "modified", additions: 2, deletions: 1 }],
+              speculativePatch: "diff --git a/README.md b/README.md",
               assistantMessageId: asMessageId("message-1"),
               completedAt: "2026-02-24T00:00:08.000Z",
             },
@@ -365,6 +368,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             providerName: "codex",
             runtimeMode: "approval-required",
             activeTurnId: asTurnId("turn-1"),
+            sessionStartCheckpointTurnCount: null,
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
@@ -432,6 +436,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             providerName: "codex",
             runtimeMode: "approval-required",
             activeTurnId: asTurnId("turn-1"),
+            sessionStartCheckpointTurnCount: null,
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
@@ -446,6 +451,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(threadDetail._tag, "Some");
       if (threadDetail._tag === "Some") {
         assert.deepEqual(threadDetail.value, snapshot.threads[0]);
+      }
+
+      const checkpointContext = yield* snapshotQuery.getThreadCheckpointContext(
+        ThreadId.make("thread-1"),
+      );
+      assert.equal(checkpointContext._tag, "Some");
+      if (checkpointContext._tag === "Some") {
+        assert.equal(
+          checkpointContext.value.checkpoints[0]?.speculativePatch,
+          "diff --git a/README.md b/README.md",
+        );
       }
     }),
   );

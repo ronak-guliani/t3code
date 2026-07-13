@@ -1,0 +1,10 @@
+/* Kept outside the transformed bundle until Lightning CSS supports the Custom Highlight API. */
+::highlight(chat-find) {
+  background-color: rgba(250, 204, 21, 0.45);
+  color: inherit;
+}
+
+::highlight(chat-find-active) {
+  background-color: rgba(249, 115, 22, 0.6);
+  color: inherit;
+}

@@ -127,6 +127,25 @@ it.effect("defaults scoped checkpoint fields for legacy turn-diff events", () =>
   }),
 );
 
+it.effect("preserves speculative checkpoint patch on turn-diff events", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnDiffCompletedPayload({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      checkpointTurnCount: 1,
+      checkpointRef: "provider-diff:event-1",
+      status: "speculative",
+      files: [],
+      agentTouchedPaths: ["src/app.ts"],
+      turnFiles: [{ path: "src/app.ts", kind: "modified", additions: 1, deletions: 0 }],
+      assistantMessageId: null,
+      speculativePatch: "diff --git a/src/app.ts b/src/app.ts",
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.speculativePatch, "diff --git a/src/app.ts b/src/app.ts");
+  }),
+);
+
 it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
   Effect.gen(function* () {
     const result = yield* Effect.exit(
@@ -208,6 +227,47 @@ it.effect("parses stale diff state snapshots with a message", () =>
       assert.fail(`expected stale diff state, got ${parsed._tag}`);
     }
     assert.strictEqual(parsed.snapshot.threadId, "thread-1");
+  }),
+);
+
+it.effect("parses staged diff state snapshots with a message", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeDiffState({
+      _tag: "staged",
+      message: "Showing staged provider diff while checkpoint capture finishes.",
+      snapshot: {
+        threadId: "thread-1",
+        fromTurnCount: 0,
+        toTurnCount: 1,
+        scope: "snapshot",
+        patch: "diff --git a/a.ts b/a.ts",
+        metadata: {
+          filesChanged: 1,
+          totalAdditions: 1,
+          totalDeletions: 0,
+          largeFiles: 0,
+          unrenderableFiles: 0,
+        },
+        files: [
+          {
+            path: "a.ts",
+            previousPath: null,
+            status: "modified",
+            additions: 1,
+            deletions: 0,
+            hunks: [],
+            isBinary: false,
+            size: "normal",
+            hasHiddenBidiChars: false,
+          },
+        ],
+      },
+    });
+
+    if (parsed._tag !== "staged") {
+      assert.fail(`expected staged diff state, got ${parsed._tag}`);
+    }
+    assert.strictEqual(parsed.snapshot.files[0]?.path, "a.ts");
   }),
 );
 

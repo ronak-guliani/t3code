@@ -302,7 +302,7 @@ export function projectEvent(
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
-            pendingRuntimeMode: payload.pendingRuntimeMode,
+            pendingRuntimeMode: payload.pendingRuntimeMode ?? null,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
             worktreePath: payload.worktreePath,
@@ -712,6 +712,9 @@ export function projectEvent(
             agentTouchedPaths: payload.agentTouchedPaths,
             turnFiles: payload.turnFiles,
             assistantMessageId: payload.assistantMessageId,
+            ...(payload.status === "speculative" && payload.speculativePatch !== undefined
+              ? { speculativePatch: payload.speculativePatch }
+              : {}),
             completedAt: payload.completedAt,
           },
           event.type,

@@ -298,6 +298,7 @@ export const OrchestrationSession = Schema.Struct({
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
   resumeCursor: Schema.optional(Schema.Unknown),
+  sessionStartCheckpointTurnCount: Schema.optionalKey(Schema.NullOr(NonNegativeInt)),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
 });
@@ -312,6 +313,12 @@ export const OrchestrationCheckpointFile = Schema.Struct({
 export type OrchestrationCheckpointFile = typeof OrchestrationCheckpointFile.Type;
 const OrchestrationCheckpointFiles = Schema.Array(OrchestrationCheckpointFile);
 const OrchestrationAgentTouchedPaths = Schema.Array(TrimmedNonEmptyString);
+const OrchestrationCheckpointFilesWithLegacyDefault = OrchestrationCheckpointFiles.pipe(
+  Schema.withDecodingDefault(Effect.succeed([])),
+);
+const OrchestrationAgentTouchedPathsWithLegacyDefault = OrchestrationAgentTouchedPaths.pipe(
+  Schema.withDecodingDefault(Effect.succeed([])),
+);
 
 export const OrchestrationCheckpointStatus = Schema.Literals([
   "ready",
@@ -327,9 +334,10 @@ export const OrchestrationCheckpointSummary = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: Schema.optionalKey(OrchestrationAgentTouchedPaths),
-  turnFiles: Schema.optionalKey(OrchestrationCheckpointFiles),
+  agentTouchedPaths: OrchestrationAgentTouchedPathsWithLegacyDefault,
+  turnFiles: OrchestrationCheckpointFilesWithLegacyDefault,
   assistantMessageId: Schema.NullOr(MessageId),
+  speculativePatch: Schema.optional(Schema.String),
   completedAt: IsoDateTime,
 });
 export type OrchestrationCheckpointSummary = typeof OrchestrationCheckpointSummary.Type;
@@ -871,9 +879,10 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: Schema.optionalKey(OrchestrationAgentTouchedPaths),
-  turnFiles: Schema.optionalKey(OrchestrationCheckpointFiles),
+  agentTouchedPaths: OrchestrationAgentTouchedPathsWithLegacyDefault,
+  turnFiles: OrchestrationCheckpointFilesWithLegacyDefault,
   assistantMessageId: Schema.optional(MessageId),
+  speculativePatch: Schema.optional(Schema.String),
   checkpointTurnCount: NonNegativeInt,
   createdAt: IsoDateTime,
 });
@@ -1157,9 +1166,10 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   checkpointRef: CheckpointRef,
   status: OrchestrationCheckpointStatus,
   files: OrchestrationCheckpointFiles,
-  agentTouchedPaths: Schema.optionalKey(OrchestrationAgentTouchedPaths),
-  turnFiles: Schema.optionalKey(OrchestrationCheckpointFiles),
+  agentTouchedPaths: OrchestrationAgentTouchedPathsWithLegacyDefault,
+  turnFiles: OrchestrationCheckpointFilesWithLegacyDefault,
   assistantMessageId: Schema.NullOr(MessageId),
+  speculativePatch: Schema.optional(Schema.String),
   completedAt: IsoDateTime,
 });
 
@@ -1502,6 +1512,10 @@ const DiffErrorState = TurnCountRange.mapFields(
 export const DiffState = Schema.Union([
   Schema.TaggedStruct("ready", {
     snapshot: DiffSnapshot,
+  }),
+  Schema.TaggedStruct("staged", {
+    snapshot: DiffSnapshot,
+    message: TrimmedNonEmptyString,
   }),
   Schema.TaggedStruct("stale", {
     snapshot: DiffSnapshot,

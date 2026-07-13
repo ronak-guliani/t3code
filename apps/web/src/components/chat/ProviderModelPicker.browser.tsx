@@ -1079,6 +1079,22 @@ describe("ProviderModelPicker", () => {
     }
   });
 
+  it("selects provider model aliases using their original slug", async () => {
+    const mounted = await mountPicker({
+      model: "gpt-5.3-codex",
+      lockedProvider: ProviderDriverKind.make("codex"),
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByText("GPT-5 Codex").first().click();
+
+      expect(mounted.onInstanceModelChange).toHaveBeenCalledWith("codex", "gpt-5-codex");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("only shows codex spark when the server reports it", async () => {
     const providersWithoutSpark: ReadonlyArray<ServerProvider> = [
       buildCodexProvider([

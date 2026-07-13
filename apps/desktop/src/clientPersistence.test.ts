@@ -56,6 +56,7 @@ const clientSettings: ClientSettings = {
   sidebarFontSize: 12,
   sidebarTranslucency: "off",
   toolFontSize: 12,
+  responseMetadataFontSize: 10,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   codeFont: "jetbrains-mono",

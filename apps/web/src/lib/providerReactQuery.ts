@@ -18,7 +18,7 @@ interface CheckpointDiffQueryInput {
   toTurnCount: number | null;
   kind?: "turn" | "conversation";
   scope?: TurnDiffScope | null;
-  cacheScope?: string | null;
+  checkpointRevision?: string | null;
   enabled?: boolean;
 }
 
@@ -39,7 +39,7 @@ export const providerQueryKeys = {
       input.toTurnCount,
       input.kind ?? "conversation",
       input.scope ?? "snapshot",
-      input.cacheScope ?? null,
+      input.checkpointRevision ?? null,
     ] as const,
 };
 

@@ -2,6 +2,7 @@ import {
   createPathConfigForStaticNavigation,
   getPathFromState,
   NavigationState,
+  type ParamListBase,
   StackActions,
   useNavigation,
 } from "@react-navigation/native";
@@ -437,7 +438,9 @@ export const RootStack = createNativeStackNavigator({
       // The whole new-task flow (choose project → draft → add project) shares
       // draft state via NewTaskFlowProvider. The expo-router era mounted it in
       // app/new/_layout.tsx; this layout wrapper is the native-stack equivalent.
-      layout: ({ children }) => <NewTaskFlowProvider>{children}</NewTaskFlowProvider>,
+      layout: ({ children }: { readonly children: React.ReactNode }) => (
+        <NewTaskFlowProvider>{children}</NewTaskFlowProvider>
+      ),
       options: {
         gestureEnabled: true,
         headerShown: false,
@@ -452,12 +455,12 @@ export const RootStack = createNativeStackNavigator({
     }),
   },
 });
-type RootStackType = typeof RootStack;
-
 const navigationPathConfig = {
   screens: createPathConfigForStaticNavigation(RootStack) ?? {},
 };
 
-declare module "@react-navigation/native" {
-  interface RootNavigator extends RootStackType {}
+declare global {
+  namespace ReactNavigation {
+    interface RootParamList extends ParamListBase {}
+  }
 }

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const DEFAULT_TERMINAL_ID = "default";
@@ -27,7 +27,9 @@ export type TerminalThreadInput = typeof TerminalThreadInput.Type;
 /** Terminal ids are client-selected and sent explicitly so clients can resume stable sessions. */
 const TerminalSessionInput = Schema.Struct({
   ...TerminalThreadInput.fields,
-  terminalId: TerminalIdSchema,
+  terminalId: TerminalIdSchema.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_TERMINAL_ID)),
+  ),
 });
 export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionInput>;
 

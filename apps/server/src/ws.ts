@@ -441,7 +441,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           const commandId = CommandId.make(crypto.randomUUID());
           const messageId = MessageId.make(crypto.randomUUID());
           const modelSelection =
-            input.modelSelection ?? project.defaultModelSelection ?? thread.modelSelection;
+            input.modelSelection ??
+            settings.agentWorkflows.defaultModelSelection ??
+            project.defaultModelSelection ??
+            thread.modelSelection;
           const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
           const interactionMode = input.interactionMode ?? thread.interactionMode;
           const normalizedCommand = yield* normalizeDispatchCommand({

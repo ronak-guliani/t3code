@@ -21,11 +21,133 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const checkpointStore = yield* CheckpointStore;
 
+  const prepareTurnDiff = Effect.fn("CheckpointDiffQuery.prepareTurnDiff")(function* (
+    input,
+    operation: string,
+  ) {
+    if (input.fromTurnCount === input.toTurnCount) {
+      return null;
+    }
+
+    // Turn-scoped diffs path-filter the [from..to] range by the file list of
+    // a single target checkpoint. That filtering only has well-defined
+    // semantics for a single checkpoint transition. Wider ranges silently
+    // drop changes outside the target turn's file list and look like a
+    // valid (but wrong) turn diff. Snapshot scope is unaffected.
+    if (input.scope === "turn" && input.toTurnCount !== input.fromTurnCount + 1) {
+      return yield* new CheckpointInvariantError({
+        operation,
+        detail: `Turn-scoped diff requires a single checkpoint transition (toTurnCount === fromTurnCount + 1); received fromTurnCount=${input.fromTurnCount}, toTurnCount=${input.toTurnCount}.`,
+      });
+    }
+
+    const threadContext = yield* projectionSnapshotQuery.getThreadCheckpointContext(input.threadId);
+    if (Option.isNone(threadContext)) {
+      return yield* new CheckpointInvariantError({
+        operation,
+        detail: `Thread '${input.threadId}' not found.`,
+      });
+    }
+
+    const maxTurnCount = threadContext.value.checkpoints.reduce(
+      (max, checkpoint) => Math.max(max, checkpoint.checkpointTurnCount),
+      0,
+    );
+    if (input.toTurnCount > maxTurnCount) {
+      return yield* new CheckpointUnavailableError({
+        threadId: input.threadId,
+        turnCount: input.toTurnCount,
+        detail: `Turn diff range exceeds current turn count: requested ${input.toTurnCount}, current ${maxTurnCount}.`,
+      });
+    }
+
+    const workspaceCwd = threadContext.value.worktreePath ?? threadContext.value.workspaceRoot;
+    if (!workspaceCwd) {
+      return yield* new CheckpointInvariantError({
+        operation,
+        detail: `Workspace path missing for thread '${input.threadId}' when computing turn diff.`,
+      });
+    }
+
+    const effectiveFromTurnCount = input.fromTurnCount;
+    const fromCheckpointRef =
+      effectiveFromTurnCount === 0
+        ? checkpointRefForThreadTurn(input.threadId, 0)
+        : threadContext.value.checkpoints.find(
+            (checkpoint) => checkpoint.checkpointTurnCount === effectiveFromTurnCount,
+          )?.checkpointRef;
+    if (!fromCheckpointRef) {
+      return yield* new CheckpointUnavailableError({
+        threadId: input.threadId,
+        turnCount: effectiveFromTurnCount,
+        detail: `Checkpoint ref is unavailable for turn ${effectiveFromTurnCount}.`,
+      });
+    }
+
+    const toCheckpointRef = threadContext.value.checkpoints.find(
+      (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
+    )?.checkpointRef;
+    if (!toCheckpointRef) {
+      return yield* new CheckpointUnavailableError({
+        threadId: input.threadId,
+        turnCount: input.toTurnCount,
+        detail: `Checkpoint ref is unavailable for turn ${input.toTurnCount}.`,
+      });
+    }
+
+    const [fromExists, toExists] = yield* Effect.all(
+      [
+        checkpointStore.hasCheckpointRef({
+          cwd: workspaceCwd,
+          checkpointRef: fromCheckpointRef,
+        }),
+        checkpointStore.hasCheckpointRef({
+          cwd: workspaceCwd,
+          checkpointRef: toCheckpointRef,
+        }),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    if (!fromExists) {
+      return yield* new CheckpointUnavailableError({
+        threadId: input.threadId,
+        turnCount: input.fromTurnCount,
+        detail: `Filesystem checkpoint is unavailable for turn ${input.fromTurnCount}.`,
+      });
+    }
+
+    if (!toExists) {
+      return yield* new CheckpointUnavailableError({
+        threadId: input.threadId,
+        turnCount: input.toTurnCount,
+        detail: `Filesystem checkpoint is unavailable for turn ${input.toTurnCount}.`,
+      });
+    }
+
+    const toCheckpoint = threadContext.value.checkpoints.find(
+      (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
+    );
+    const turnScopedPaths = input.scope === "turn" ? (toCheckpoint?.turnFiles ?? []) : null;
+    if (turnScopedPaths !== null && turnScopedPaths.length === 0) {
+      return null;
+    }
+
+    return {
+      workspaceCwd,
+      fromCheckpointRef,
+      toCheckpointRef,
+      ...(turnScopedPaths !== null
+        ? { paths: Array.from(new Set(turnScopedPaths.map((file) => file.path))) }
+        : {}),
+    };
+  });
+
   const getTurnDiff: CheckpointDiffQueryShape["getTurnDiff"] = Effect.fn("getTurnDiff")(
     function* (input) {
       const operation = "CheckpointDiffQuery.getTurnDiff";
-
-      if (input.fromTurnCount === input.toTurnCount) {
+      const prepared = yield* prepareTurnDiff(input, operation);
+      if (prepared === null) {
         const emptyDiff: OrchestrationGetTurnDiffResultType = {
           threadId: input.threadId,
           fromTurnCount: input.fromTurnCount,
@@ -41,132 +163,12 @@ const make = Effect.gen(function* () {
         return emptyDiff;
       }
 
-      // Turn-scoped diffs path-filter the [from..to] range by the file list of
-      // a single target checkpoint. That filtering only has well-defined
-      // semantics for a single checkpoint transition. Wider ranges silently
-      // drop changes outside the target turn's file list and look like a
-      // valid (but wrong) turn diff. Snapshot scope is unaffected.
-      if (input.scope === "turn" && input.toTurnCount !== input.fromTurnCount + 1) {
-        return yield* new CheckpointInvariantError({
-          operation,
-          detail: `Turn-scoped diff requires a single checkpoint transition (toTurnCount === fromTurnCount + 1); received fromTurnCount=${input.fromTurnCount}, toTurnCount=${input.toTurnCount}.`,
-        });
-      }
-
-      const threadContext = yield* projectionSnapshotQuery.getThreadCheckpointContext(
-        input.threadId,
-      );
-      if (Option.isNone(threadContext)) {
-        return yield* new CheckpointInvariantError({
-          operation,
-          detail: `Thread '${input.threadId}' not found.`,
-        });
-      }
-
-      const maxTurnCount = threadContext.value.checkpoints.reduce(
-        (max, checkpoint) => Math.max(max, checkpoint.checkpointTurnCount),
-        0,
-      );
-      if (input.toTurnCount > maxTurnCount) {
-        return yield* new CheckpointUnavailableError({
-          threadId: input.threadId,
-          turnCount: input.toTurnCount,
-          detail: `Turn diff range exceeds current turn count: requested ${input.toTurnCount}, current ${maxTurnCount}.`,
-        });
-      }
-
-      const workspaceCwd = threadContext.value.worktreePath ?? threadContext.value.workspaceRoot;
-      if (!workspaceCwd) {
-        return yield* new CheckpointInvariantError({
-          operation,
-          detail: `Workspace path missing for thread '${input.threadId}' when computing turn diff.`,
-        });
-      }
-
-      const effectiveFromTurnCount = input.scope === "snapshot" ? 0 : input.fromTurnCount;
-      const fromCheckpointRef =
-        effectiveFromTurnCount === 0
-          ? checkpointRefForThreadTurn(input.threadId, 0)
-          : threadContext.value.checkpoints.find(
-              (checkpoint) => checkpoint.checkpointTurnCount === effectiveFromTurnCount,
-            )?.checkpointRef;
-      if (!fromCheckpointRef) {
-        return yield* new CheckpointUnavailableError({
-          threadId: input.threadId,
-          turnCount: effectiveFromTurnCount,
-          detail: `Checkpoint ref is unavailable for turn ${effectiveFromTurnCount}.`,
-        });
-      }
-
-      const toCheckpointRef = threadContext.value.checkpoints.find(
-        (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
-      )?.checkpointRef;
-      if (!toCheckpointRef) {
-        return yield* new CheckpointUnavailableError({
-          threadId: input.threadId,
-          turnCount: input.toTurnCount,
-          detail: `Checkpoint ref is unavailable for turn ${input.toTurnCount}.`,
-        });
-      }
-
-      const [fromExists, toExists] = yield* Effect.all(
-        [
-          checkpointStore.hasCheckpointRef({
-            cwd: workspaceCwd,
-            checkpointRef: fromCheckpointRef,
-          }),
-          checkpointStore.hasCheckpointRef({
-            cwd: workspaceCwd,
-            checkpointRef: toCheckpointRef,
-          }),
-        ],
-        { concurrency: "unbounded" },
-      );
-
-      if (!fromExists) {
-        return yield* new CheckpointUnavailableError({
-          threadId: input.threadId,
-          turnCount: input.fromTurnCount,
-          detail: `Filesystem checkpoint is unavailable for turn ${input.fromTurnCount}.`,
-        });
-      }
-
-      if (!toExists) {
-        return yield* new CheckpointUnavailableError({
-          threadId: input.threadId,
-          turnCount: input.toTurnCount,
-          detail: `Filesystem checkpoint is unavailable for turn ${input.toTurnCount}.`,
-        });
-      }
-
-      const toCheckpoint = threadContext.value.checkpoints.find(
-        (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
-      );
-      const turnScopedPaths = input.scope === "turn" ? (toCheckpoint?.turnFiles ?? []) : null;
-      if (turnScopedPaths !== null && turnScopedPaths.length === 0) {
-        const turnDiff: OrchestrationGetTurnDiffResultType = {
-          threadId: input.threadId,
-          fromTurnCount: input.fromTurnCount,
-          toTurnCount: input.toTurnCount,
-          diff: "",
-        };
-        if (!isTurnDiffResult(turnDiff)) {
-          return yield* new CheckpointInvariantError({
-            operation,
-            detail: "Computed turn diff result does not satisfy contract schema.",
-          });
-        }
-        return turnDiff;
-      }
-
       const diff = yield* checkpointStore.diffCheckpoints({
-        cwd: workspaceCwd,
-        fromCheckpointRef,
-        toCheckpointRef,
+        cwd: prepared.workspaceCwd,
+        fromCheckpointRef: prepared.fromCheckpointRef,
+        toCheckpointRef: prepared.toCheckpointRef,
         fallbackFromToHead: false,
-        ...(turnScopedPaths !== null
-          ? { paths: Array.from(new Set(turnScopedPaths.map((file) => file.path))) }
-          : {}),
+        ...(prepared.paths !== undefined ? { paths: prepared.paths } : {}),
       });
 
       const turnDiff: OrchestrationGetTurnDiffResultType = {
@@ -186,6 +188,22 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const getTurnDiffFiles: CheckpointDiffQueryShape["getTurnDiffFiles"] = Effect.fn(
+    "getTurnDiffFiles",
+  )(function* (input) {
+    const prepared = yield* prepareTurnDiff(input, "CheckpointDiffQuery.getTurnDiffFiles");
+    if (prepared === null) {
+      return [];
+    }
+    return yield* checkpointStore.diffCheckpointFiles({
+      cwd: prepared.workspaceCwd,
+      fromCheckpointRef: prepared.fromCheckpointRef,
+      toCheckpointRef: prepared.toCheckpointRef,
+      fallbackFromToHead: false,
+      ...(prepared.paths !== undefined ? { paths: prepared.paths } : {}),
+    });
+  });
+
   const getFullThreadDiff: CheckpointDiffQueryShape["getFullThreadDiff"] = (
     input: OrchestrationGetFullThreadDiffInput,
   ) =>
@@ -196,9 +214,19 @@ const make = Effect.gen(function* () {
       scope: "snapshot",
     }).pipe(Effect.map((result): OrchestrationGetFullThreadDiffResult => result));
 
+  const getFullThreadDiffFiles: CheckpointDiffQueryShape["getFullThreadDiffFiles"] = (input) =>
+    getTurnDiffFiles({
+      threadId: input.threadId,
+      fromTurnCount: 0,
+      toTurnCount: input.toTurnCount,
+      scope: "snapshot",
+    });
+
   return {
     getTurnDiff,
+    getTurnDiffFiles,
     getFullThreadDiff,
+    getFullThreadDiffFiles,
   } satisfies CheckpointDiffQueryShape;
 });
 

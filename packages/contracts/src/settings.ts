@@ -33,6 +33,7 @@ export type FontSize = typeof FontSize.Type;
 export const DEFAULT_CODE_FONT_SIZE: FontSize = 12 as FontSize;
 export const DEFAULT_CHAT_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_TOOL_FONT_SIZE: FontSize = 12 as FontSize;
+export const DEFAULT_RESPONSE_METADATA_FONT_SIZE: FontSize = 10 as FontSize;
 export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 12 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
 
@@ -83,6 +84,9 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_TRANSLUCENCY)),
   ),
   toolFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_TOOL_FONT_SIZE))),
+  responseMetadataFontSize: FontSize.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_RESPONSE_METADATA_FONT_SIZE)),
+  ),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   codeFont: CodeFont.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODE_FONT))),
@@ -337,6 +341,7 @@ const ChatExportDetailSettingsPatch = Schema.Struct({
 });
 
 const AgentWorkflowSettingsPatch = Schema.Struct({
+  defaultModelSelection: Schema.optionalKey(ModelSelection),
   reviewChanges: Schema.optionalKey(
     Schema.Struct({
       enabled: Schema.optionalKey(Schema.Boolean),
@@ -424,6 +429,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarFontSize: Schema.optionalKey(FontSize),
   sidebarTranslucency: Schema.optionalKey(SidebarTranslucency),
   toolFontSize: Schema.optionalKey(FontSize),
+  responseMetadataFontSize: Schema.optionalKey(FontSize),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   codeFont: Schema.optionalKey(CodeFont),

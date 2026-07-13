@@ -2818,6 +2818,86 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("replaces speculative provider diff files with the latest patch files", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-turn-diff-a"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-provider-diff-replace"),
+      itemId: asItemId("item-provider-diff-replace"),
+      payload: {
+        unifiedDiff: [
+          "diff --git a/src/a.ts b/src/a.ts",
+          "index 1111111..2222222 100644",
+          "--- a/src/a.ts",
+          "+++ b/src/a.ts",
+          "@@ -1 +1 @@",
+          "-old",
+          "+new",
+        ].join("\n"),
+      },
+    });
+
+    await waitForThread(harness.engine, (entry) =>
+      entry.checkpoints.some(
+        (checkpoint: ProviderRuntimeTestCheckpoint) =>
+          checkpoint.turnId === "turn-provider-diff-replace" &&
+          checkpoint.turnFiles.some((file) => file.path === "src/a.ts"),
+      ),
+    );
+
+    const latestPatch = [
+      "diff --git a/src/b.ts b/src/b.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/b.ts",
+      "+++ b/src/b.ts",
+      "@@ -1 +1 @@",
+      "-before",
+      "+after",
+    ].join("\n");
+    harness.emit({
+      type: "turn.diff.updated",
+      eventId: asEventId("evt-turn-diff-b"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-provider-diff-replace"),
+      itemId: asItemId("item-provider-diff-replace"),
+      payload: {
+        unifiedDiff: latestPatch,
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.checkpoints.some(
+        (checkpoint: ProviderRuntimeTestCheckpoint) =>
+          checkpoint.turnId === "turn-provider-diff-replace" &&
+          checkpoint.turnFiles.length === 1 &&
+          checkpoint.turnFiles[0]?.path === "src/b.ts",
+      ),
+    );
+    const checkpoint = thread.checkpoints.find(
+      (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-provider-diff-replace",
+    );
+
+    expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-a");
+    expect(checkpoint?.agentTouchedPaths).toEqual(["src/b.ts"]);
+    expect(checkpoint?.turnFiles).toEqual([
+      {
+        path: "src/b.ts",
+        kind: "modified",
+        additions: 1,
+        deletions: 1,
+      },
+    ]);
+    expect(checkpoint?.speculativePatch).toBe(latestPatch);
+  });
+
   it("projects context window updates into normalized thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

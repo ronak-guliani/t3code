@@ -297,4 +297,31 @@ describe("retainThreadDetailSubscription", () => {
 
     stop();
   });
+
+  it("restarts a retained thread detail subscription for dispatch recovery", async () => {
+    const {
+      refreshThreadDetailSubscription,
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-stale");
+
+    const release = retainThreadDetailSubscription(environmentId, threadId);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenLastCalledWith({ threadId }, expect.any(Function), {
+      retryApplicationFailures: true,
+    });
+
+    expect(refreshThreadDetailSubscription(environmentId, threadId)).toBe(true);
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
+
+    release();
+    stop();
+    await resetEnvironmentServiceForTests();
+  });
 });

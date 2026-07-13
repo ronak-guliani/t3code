@@ -24,6 +24,8 @@ import { isTransportConnectionErrorMessage } from "./transportError";
 
 interface SubscribeOptions {
   readonly retryDelay?: Duration.Input;
+  readonly maxRetryDelay?: Duration.Input;
+  readonly retryApplicationFailures?: boolean;
   readonly onResubscribe?: () => void;
 }
 
@@ -32,6 +34,8 @@ interface RequestOptions {
 }
 
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
+const DEFAULT_SUBSCRIPTION_MAX_RETRY_DELAY_MS = Duration.seconds(10);
+const SUBSCRIPTION_RETRY_STABILITY_WINDOW_MS = Duration.toMillis(Duration.seconds(30));
 const NOOP: () => void = () => undefined;
 
 interface TransportSession {
@@ -116,7 +120,12 @@ export class WsTransport {
     const retryDelayMs = Duration.toMillis(
       Duration.fromInputUnsafe(options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS),
     );
+    const maxRetryDelayMs = Duration.toMillis(
+      Duration.fromInputUnsafe(options?.maxRetryDelay ?? DEFAULT_SUBSCRIPTION_MAX_RETRY_DELAY_MS),
+    );
     let cancelCurrentStream: () => void = NOOP;
+    let consecutiveApplicationFailures = 0;
+    let hasReportedApplicationFailure = false;
 
     void (async () => {
       for (;;) {
@@ -125,6 +134,7 @@ export class WsTransport {
         }
 
         const session = this.session;
+        const attemptStartedAt = Date.now();
         try {
           if (hasReceivedValue) {
             try {
@@ -159,6 +169,25 @@ export class WsTransport {
 
           const formattedError = formatErrorMessage(error);
           if (!isTransportConnectionErrorMessage(formattedError)) {
+            if (options?.retryApplicationFailures) {
+              if (Date.now() - attemptStartedAt >= SUBSCRIPTION_RETRY_STABILITY_WINDOW_MS) {
+                consecutiveApplicationFailures = 0;
+                hasReportedApplicationFailure = false;
+              }
+              if (!hasReportedApplicationFailure) {
+                console.warn("WebSocket RPC subscription failed; retrying", {
+                  error: formattedError,
+                });
+                hasReportedApplicationFailure = true;
+              }
+              consecutiveApplicationFailures += 1;
+              const applicationRetryDelayMs = Math.min(
+                maxRetryDelayMs,
+                retryDelayMs * 2 ** Math.min(consecutiveApplicationFailures - 1, 30),
+              );
+              await sleep(applicationRetryDelayMs);
+              continue;
+            }
             console.warn("WebSocket RPC subscription failed", {
               error: formattedError,
             });

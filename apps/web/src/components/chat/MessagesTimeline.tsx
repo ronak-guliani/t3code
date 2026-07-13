@@ -466,7 +466,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                   workspaceRoot={ctx.workspaceRoot}
                 />
                 <div className="mt-1.5 flex min-w-0 items-center gap-2">
-                  <p className="shrink-0 text-[10px] text-muted-foreground/30">
+                  <p className="shrink-0 text-muted-foreground/30 text-[length:var(--app-response-metadata-font-size)]">
                     {row.message.streaming ? (
                       <LiveMessageMeta
                         createdAt={row.message.createdAt}
@@ -483,7 +483,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                   </p>
                   {showCopilotResumeCommand ? (
                     <span
-                      className="min-w-0 truncate font-mono text-[10px] text-muted-foreground/30"
+                      className="min-w-0 truncate font-mono text-muted-foreground/30 opacity-0 transition-opacity duration-200 text-[length:var(--app-response-metadata-font-size)] group-hover/assistant:opacity-100"
                       title={showCopilotResumeCommand}
                     >
                       {showCopilotResumeCommand}

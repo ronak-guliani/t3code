@@ -12,11 +12,11 @@ const configuredWsUrl = process.env.VITE_WS_URL?.trim();
 const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
 
 const buildSourcemap =
-  sourcemapEnv === "0" || sourcemapEnv === "false"
-    ? false
+  sourcemapEnv === "1" || sourcemapEnv === "true"
+    ? true
     : sourcemapEnv === "hidden"
       ? "hidden"
-      : true;
+      : false;
 
 function resolveDevProxyTarget(wsUrl: string | undefined): string | undefined {
   if (!wsUrl) {
@@ -107,5 +107,53 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     sourcemap: buildSourcemap,
+    // The desktop client includes large lazy-loaded syntax grammars and a diff worker.
+    chunkSizeWarningLimit: 2_000,
+    rolldownOptions: {
+      checks: {
+        pluginTimings: false,
+      },
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "react",
+              test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
+              priority: 30,
+            },
+            {
+              name: "effect",
+              test: /node_modules[\\/](?:effect|@effect)[\\/]/,
+              priority: 20,
+            },
+            {
+              name: "editor",
+              test: /node_modules[\\/](?:lexical|@lexical)[\\/]/,
+              priority: 20,
+            },
+            {
+              name: "terminal",
+              test: /node_modules[\\/]@xterm[\\/]/,
+              priority: 20,
+            },
+            {
+              name: "ui",
+              test: /node_modules[\\/](?:@base-ui|@dnd-kit|@floating-ui|lucide-react)[\\/]/,
+              priority: 10,
+            },
+            {
+              name: "tanstack",
+              test: /node_modules[\\/]@tanstack[\\/]/,
+              priority: 10,
+            },
+            {
+              name: "markdown",
+              test: /node_modules[\\/](?:react-markdown|remark-|rehype-|unified|micromark|mdast-|hast-|unist-|vfile|property-information|stringify-entities)/,
+              priority: 10,
+            },
+          ],
+        },
+      },
+    },
   },
 });

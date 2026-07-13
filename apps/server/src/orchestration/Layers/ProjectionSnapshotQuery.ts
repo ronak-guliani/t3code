@@ -215,6 +215,7 @@ function mapSessionRow(
     runtimeMode: row.runtimeMode,
     activeTurnId: row.activeTurnId,
     ...(row.resumeCursor !== null ? { resumeCursor: row.resumeCursor } : {}),
+    sessionStartCheckpointTurnCount: row.sessionStartCheckpointTurnCount,
     lastError: row.lastError,
     updatedAt: row.updatedAt,
   };
@@ -460,6 +461,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           s.runtime_mode AS "runtimeMode",
           s.active_turn_id AS "activeTurnId",
           COALESCE(s.resume_cursor_json, r.resume_cursor_json) AS "resumeCursor",
+          s.session_start_checkpoint_turn_count AS "sessionStartCheckpointTurnCount",
           s.last_error AS "lastError",
           s.updated_at AS "updatedAt"
         FROM projection_thread_sessions s
@@ -483,6 +485,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_files_json AS "files",
           checkpoint_agent_touched_paths_json AS "agentTouchedPaths",
           checkpoint_turn_files_json AS "turnFiles",
+          checkpoint_speculative_patch AS "speculativePatch",
           assistant_message_id AS "assistantMessageId",
           completed_at AS "completedAt"
         FROM projection_turns
@@ -751,6 +754,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           s.runtime_mode AS "runtimeMode",
           s.active_turn_id AS "activeTurnId",
           COALESCE(s.resume_cursor_json, r.resume_cursor_json) AS "resumeCursor",
+          s.session_start_checkpoint_turn_count AS "sessionStartCheckpointTurnCount",
           s.last_error AS "lastError",
           s.updated_at AS "updatedAt"
         FROM projection_thread_sessions s
@@ -804,6 +808,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_files_json AS "files",
           checkpoint_agent_touched_paths_json AS "agentTouchedPaths",
           checkpoint_turn_files_json AS "turnFiles",
+          checkpoint_speculative_patch AS "speculativePatch",
           assistant_message_id AS "assistantMessageId",
           completed_at AS "completedAt"
         FROM projection_turns
@@ -999,6 +1004,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   files: row.files,
                   agentTouchedPaths: row.agentTouchedPaths,
                   turnFiles: row.turnFiles,
+                  ...(row.speculativePatch !== null
+                    ? { speculativePatch: row.speculativePatch }
+                    : {}),
                   assistantMessageId: row.assistantMessageId,
                   completedAt: row.completedAt,
                 });
@@ -1053,6 +1061,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   runtimeMode: row.runtimeMode,
                   activeTurnId: row.activeTurnId,
                   ...(row.resumeCursor !== null ? { resumeCursor: row.resumeCursor } : {}),
+                  sessionStartCheckpointTurnCount: row.sessionStartCheckpointTurnCount,
                   lastError: row.lastError,
                   updatedAt: row.updatedAt,
                 });
@@ -1400,6 +1409,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             files: row.files,
             agentTouchedPaths: row.agentTouchedPaths,
             turnFiles: row.turnFiles,
+            ...(row.speculativePatch !== null ? { speculativePatch: row.speculativePatch } : {}),
             assistantMessageId: row.assistantMessageId,
             completedAt: row.completedAt,
           }),
@@ -1619,6 +1629,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           files: row.files,
           agentTouchedPaths: row.agentTouchedPaths,
           turnFiles: row.turnFiles,
+          ...(row.speculativePatch !== null ? { speculativePatch: row.speculativePatch } : {}),
           assistantMessageId: row.assistantMessageId,
           completedAt: row.completedAt,
         })),

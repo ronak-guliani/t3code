@@ -49,6 +49,7 @@ export const ProjectionTurn = Schema.Struct({
   checkpointFiles: Schema.Array(OrchestrationCheckpointFile),
   checkpointAgentTouchedPaths: Schema.Array(TrimmedNonEmptyString),
   checkpointTurnFiles: Schema.Array(OrchestrationCheckpointFile),
+  checkpointSpeculativePatch: Schema.NullOr(Schema.String),
 });
 export type ProjectionTurn = typeof ProjectionTurn.Type;
 
@@ -69,6 +70,7 @@ export const ProjectionTurnById = Schema.Struct({
   checkpointFiles: Schema.Array(OrchestrationCheckpointFile),
   checkpointAgentTouchedPaths: Schema.Array(TrimmedNonEmptyString),
   checkpointTurnFiles: Schema.Array(OrchestrationCheckpointFile),
+  checkpointSpeculativePatch: Schema.NullOr(Schema.String),
 });
 export type ProjectionTurnById = typeof ProjectionTurnById.Type;
 

@@ -153,20 +153,6 @@ function normalizeRuntimeTurnState(
   }
 }
 
-function mergeProviderTurnDiffFiles(
-  current: ReadonlyArray<ProviderTurnDiffFile>,
-  next: ReadonlyArray<ProviderTurnDiffFile>,
-): ProviderTurnDiffFile[] {
-  const byPath = new Map<string, ProviderTurnDiffFile>();
-  for (const file of current) {
-    byPath.set(file.path, file);
-  }
-  for (const file of next) {
-    byPath.set(file.path, file);
-  }
-  return [...byPath.values()].toSorted((left, right) => left.path.localeCompare(right.path));
-}
-
 function parseProviderTurnDiffFiles(
   unifiedDiff: string,
   cwd: string,
@@ -1600,10 +1586,7 @@ const make = Effect.gen(function* () {
               event.payload.unifiedDiff,
               workspaceCwd,
             );
-            const turnFiles =
-              existingCheckpoint === undefined
-                ? providerTurnFiles
-                : mergeProviderTurnDiffFiles(existingCheckpoint.turnFiles, providerTurnFiles);
+            const turnFiles = providerTurnFiles;
             const agentTouchedPaths = [...new Set(turnFiles.map((file) => file.path))];
             const assistantMessageId = MessageId.make(
               `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
@@ -1623,6 +1606,7 @@ const make = Effect.gen(function* () {
               agentTouchedPaths,
               turnFiles,
               assistantMessageId,
+              speculativePatch: event.payload.unifiedDiff,
               checkpointTurnCount: existingCheckpoint?.checkpointTurnCount ?? maxTurnCount + 1,
               createdAt: now,
             });

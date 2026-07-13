@@ -16,6 +16,7 @@ import { Context } from "effect";
 import type { Effect } from "effect";
 
 import type { CheckpointServiceError } from "../Errors.ts";
+import type { CheckpointDiffFileSummary } from "./CheckpointStore.ts";
 
 /**
  * CheckpointDiffQueryShape - Service API for checkpoint diff queries.
@@ -31,6 +32,15 @@ export interface CheckpointDiffQueryShape {
   ) => Effect.Effect<OrchestrationGetTurnDiffResult, CheckpointServiceError>;
 
   /**
+   * Read per-file diff stats for a single turn checkpoint transition.
+   *
+   * Uses Git numstat so metadata callers do not need to materialize or parse hunks.
+   */
+  readonly getTurnDiffFiles: (
+    input: OrchestrationGetTurnDiffInput,
+  ) => Effect.Effect<ReadonlyArray<CheckpointDiffFileSummary>, CheckpointServiceError>;
+
+  /**
    * Read the full patch diff across a thread range of checkpoints.
    *
    * Delegates to turn diff with `fromTurnCount = 0`.
@@ -38,6 +48,15 @@ export interface CheckpointDiffQueryShape {
   readonly getFullThreadDiff: (
     input: OrchestrationGetFullThreadDiffInput,
   ) => Effect.Effect<OrchestrationGetFullThreadDiffResult, CheckpointServiceError>;
+
+  /**
+   * Read per-file diff stats across a thread range of checkpoints.
+   *
+   * Delegates to turn diff files with `fromTurnCount = 0`.
+   */
+  readonly getFullThreadDiffFiles: (
+    input: OrchestrationGetFullThreadDiffInput,
+  ) => Effect.Effect<ReadonlyArray<CheckpointDiffFileSummary>, CheckpointServiceError>;
 }
 
 /**

@@ -59,7 +59,7 @@ import { vi } from "vitest";
 
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
-import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
+import { CloudHttpRuntimeLayerLive, CloudRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import {
   CheckpointDiffQuery,
@@ -222,6 +222,38 @@ const browserOtlpTracingLayer = Layer.mergeAll(
   Layer.succeed(HttpClient.TracerDisabledWhen, () => true),
 );
 
+const makeServerConfigUnderTest = (baseDir: string, options?: Partial<ServerConfigShape>) =>
+  Effect.gen(function* () {
+    const devUrl = options?.devUrl;
+    const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
+    return {
+      logLevel: "Info",
+      traceMinLevel: "Info",
+      traceTimingEnabled: true,
+      traceBatchWindowMs: 200,
+      traceMaxBytes: 10 * 1024 * 1024,
+      traceMaxFiles: 10,
+      otlpTracesUrl: undefined,
+      otlpMetricsUrl: undefined,
+      otlpExportIntervalMs: 10_000,
+      otlpServiceName: "t3-server",
+      mode: "desktop",
+      port: 0,
+      host: "127.0.0.1",
+      cwd: process.cwd(),
+      baseDir,
+      ...derivedPaths,
+      staticDir: undefined,
+      devUrl,
+      noBrowser: true,
+      startupPresentation: "browser",
+      desktopBootstrapToken: defaultDesktopBootstrapToken,
+      autoBootstrapProjectFromCwd: false,
+      logWebSocketEvents: false,
+      ...options,
+    } satisfies ServerConfigShape;
+  });
+
 const authTestLayer = ServerAuthLive.pipe(
   Layer.provide(SqlitePersistenceMemory),
   Layer.provide(ServerSecretStoreLive),
@@ -355,34 +387,7 @@ const buildAppUnderTest = (options?: {
     const fileSystem = yield* FileSystem.FileSystem;
     const tempBaseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-test-" });
     const baseDir = options?.config?.baseDir ?? tempBaseDir;
-    const devUrl = options?.config?.devUrl;
-    const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
-    const config: ServerConfigShape = {
-      logLevel: "Info",
-      traceMinLevel: "Info",
-      traceTimingEnabled: true,
-      traceBatchWindowMs: 200,
-      traceMaxBytes: 10 * 1024 * 1024,
-      traceMaxFiles: 10,
-      otlpTracesUrl: undefined,
-      otlpMetricsUrl: undefined,
-      otlpExportIntervalMs: 10_000,
-      otlpServiceName: "t3-server",
-      mode: "desktop",
-      port: 0,
-      host: "127.0.0.1",
-      cwd: process.cwd(),
-      baseDir,
-      ...derivedPaths,
-      staticDir: undefined,
-      devUrl,
-      noBrowser: true,
-      startupPresentation: "browser",
-      desktopBootstrapToken: defaultDesktopBootstrapToken,
-      autoBootstrapProjectFromCwd: false,
-      logWebSocketEvents: false,
-      ...options?.config,
-    };
+    const config = yield* makeServerConfigUnderTest(baseDir, options?.config);
     const layerConfig = Layer.succeed(ServerConfig, config);
     const gitCoreLayer = Layer.mock(GitCore)({
       isInsideWorkTree: () => Effect.succeed(false),
@@ -536,6 +541,7 @@ const buildAppUnderTest = (options?: {
               toTurnCount: 0,
               diff: "",
             }),
+          getTurnDiffFiles: () => Effect.succeed([]),
           getFullThreadDiff: () =>
             Effect.succeed({
               threadId: defaultThreadId,
@@ -543,6 +549,7 @@ const buildAppUnderTest = (options?: {
               toTurnCount: 0,
               diff: "",
             }),
+          getFullThreadDiffFiles: () => Effect.succeed([]),
           ...options?.layers?.checkpointDiffQuery,
         }),
       ),
@@ -934,6 +941,44 @@ const readNodeWebSocketJson = (socket: NodeWsSocket) =>
 const decodeMobileServerMessage = Schema.decodeUnknownSync(MobileServerMessage);
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect("builds cloud runtime with production auth storage", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-cloud-runtime-test-",
+      });
+      const config = yield* makeServerConfigUnderTest(baseDir);
+
+      yield* Effect.scoped(
+        Layer.build(
+          CloudHttpRuntimeLayerLive.pipe(
+            Layer.provide(FetchHttpClient.layer),
+            Layer.provide(Layer.succeed(ServerConfig, config)),
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect("builds full cloud runtime with production dependencies", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-full-cloud-runtime-test-",
+      });
+      const config = yield* makeServerConfigUnderTest(baseDir);
+
+      yield* Effect.scoped(
+        Layer.build(
+          CloudRuntimeLayerLive.pipe(
+            Layer.provide(FetchHttpClient.layer),
+            Layer.provide(Layer.succeed(ServerConfig, config)),
+          ),
+        ),
+      );
+    }),
+  );
+
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1817,6 +1862,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 toTurnCount: input.toTurnCount,
                 diff: "mobile-turn-diff",
               }),
+            getTurnDiffFiles: () => Effect.succeed([]),
             getFullThreadDiff: (input) =>
               Effect.succeed({
                 threadId: input.threadId,
@@ -1824,6 +1870,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 toTurnCount: input.toTurnCount,
                 diff: "mobile-full-diff",
               }),
+            getFullThreadDiffFiles: () => Effect.succeed([]),
           },
         },
       });

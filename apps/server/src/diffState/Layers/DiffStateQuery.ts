@@ -8,12 +8,13 @@ import type {
   OrchestrationGetTurnDiffResult,
   TurnDiffScope,
 } from "@t3tools/contracts";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 
-import { parseTurnDiffFilesFromUnifiedDiff } from "../../checkpointing/Diffs.ts";
 import { CheckpointDiffQueryLive } from "../../checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointStoreLive } from "../../checkpointing/Layers/CheckpointStore.ts";
 import { CheckpointDiffQuery } from "../../checkpointing/Services/CheckpointDiffQuery.ts";
+import type { CheckpointDiffFileSummary } from "../../checkpointing/Services/CheckpointStore.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { DiffStateQuery, type DiffStateQueryShape } from "../Services/DiffStateQuery.ts";
 
 const MAX_DIFF_SIZE = 4_375_000;
@@ -105,37 +106,19 @@ function classifyDiffSection(input: {
   return { size: "normal", isBinary, hasHiddenBidiChars };
 }
 
-function countUnifiedDiffSectionChanges(section: string): {
-  readonly additions: number;
-  readonly deletions: number;
-} {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of section.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) {
-      continue;
-    }
-    if (line.startsWith("+")) {
-      additions += 1;
-    } else if (line.startsWith("-")) {
-      deletions += 1;
-    }
-  }
-  return { additions, deletions };
-}
-
-function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
+function toDiffFiles(
+  patch: string,
+  fileSummaries: ReadonlyArray<CheckpointDiffFileSummary>,
+): ReadonlyArray<DiffFile> {
   if (patch.trim().length === 0) {
     return [];
   }
 
   const sectionsByPath = splitPatchByFile(patch);
-  const parsedFilesByPath = new Map(
-    parseTurnDiffFilesFromUnifiedDiff(patch).map((file) => [file.path, file] as const),
-  );
+  const filesByPath = new Map(fileSummaries.map((file) => [file.path, file] as const));
   for (const path of sectionsByPath.keys()) {
-    if (!parsedFilesByPath.has(path)) {
-      parsedFilesByPath.set(path, {
+    if (!filesByPath.has(path)) {
+      filesByPath.set(path, {
         path,
         additions: 0,
         deletions: 0,
@@ -143,25 +126,21 @@ function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
     }
   }
 
-  return [...parsedFilesByPath.values()]
+  return [...filesByPath.values()]
     .toSorted((left, right) => left.path.localeCompare(right.path))
     .map((file) => {
       const section = sectionsByPath.get(file.path) ?? "";
-      const changes =
-        section.length > 0
-          ? countUnifiedDiffSectionChanges(section)
-          : { additions: file.additions, deletions: file.deletions };
       const classification = classifyDiffSection({
         section,
-        additions: changes.additions,
-        deletions: changes.deletions,
+        additions: file.additions,
+        deletions: file.deletions,
       });
       return {
         path: file.path,
         previousPath: null,
         status: "unknown",
-        additions: changes.additions,
-        deletions: changes.deletions,
+        additions: file.additions,
+        deletions: file.deletions,
         hunks: [],
         size: classification.size,
         isBinary: classification.isBinary,
@@ -172,9 +151,10 @@ function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
 
 function toReadyDiffState(input: {
   readonly result: OrchestrationGetTurnDiffResult;
+  readonly files: ReadonlyArray<CheckpointDiffFileSummary>;
   readonly scope: TurnDiffScope;
 }): DiffState {
-  const files = toDiffFiles(input.result.diff);
+  const files = toDiffFiles(input.result.diff, input.files);
   const snapshot: DiffSnapshot = {
     threadId: input.result.threadId,
     fromTurnCount: input.result.fromTurnCount,
@@ -191,11 +171,58 @@ function toReadyDiffState(input: {
   };
 }
 
+function toStagedDiffState(input: {
+  readonly result: OrchestrationGetTurnDiffResult;
+  readonly files: ReadonlyArray<CheckpointDiffFileSummary>;
+  readonly scope: TurnDiffScope;
+}): DiffState {
+  const patchFiles = splitPatchByFile(input.result.diff);
+  const files =
+    patchFiles.size > 0 ? input.files.filter((file) => patchFiles.has(file.path)) : input.files;
+  const staged = toReadyDiffState({ ...input, files });
+  if (staged._tag !== "ready") {
+    return staged;
+  }
+  return {
+    _tag: "staged",
+    snapshot: staged.snapshot,
+    message: "Showing staged provider diff while checkpoint capture finishes.",
+  };
+}
+
+function combineDiffFileSummaries(
+  ...groups: ReadonlyArray<ReadonlyArray<CheckpointDiffFileSummary>>
+): ReadonlyArray<CheckpointDiffFileSummary> {
+  const combined = new Map<string, CheckpointDiffFileSummary>();
+  for (const group of groups) {
+    for (const file of group) {
+      const existing = combined.get(file.path);
+      combined.set(file.path, {
+        path: file.path,
+        additions: (existing?.additions ?? 0) + file.additions,
+        deletions: (existing?.deletions ?? 0) + file.deletions,
+      });
+    }
+  }
+  return [...combined.values()];
+}
+
+function combinePatches(...patches: ReadonlyArray<string>): string {
+  return patches
+    .map((patch) => patch.trim())
+    .filter((patch) => patch.length > 0)
+    .join("\n");
+}
+
 function toFileDelta(input: {
   readonly state: DiffState;
   readonly path: string;
 }): DiffFileDelta | null {
-  if (input.state._tag !== "ready" && input.state._tag !== "stale") {
+  if (
+    input.state._tag !== "ready" &&
+    input.state._tag !== "staged" &&
+    input.state._tag !== "stale"
+  ) {
     return null;
   }
   const snapshot = input.state.snapshot;
@@ -212,27 +239,118 @@ function toFileDelta(input: {
 
 const make = Effect.gen(function* () {
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
 
-  const getTurnDiffState: DiffStateQueryShape["getTurnDiffState"] = (input) => {
-    const scope = input.scope ?? "snapshot";
-    return checkpointDiffQuery.getTurnDiff({ ...input, scope }).pipe(
-      Effect.map((result) => toReadyDiffState({ result, scope })),
-      Effect.catchTag("CheckpointUnavailableError", (error) =>
-        Effect.succeed({
-          _tag: "unavailable" as const,
+  const getStagedTurnDiffState = (input: {
+    readonly threadId: OrchestrationGetTurnDiffResult["threadId"];
+    readonly fromTurnCount: number;
+    readonly toTurnCount: number;
+    readonly scope: TurnDiffScope;
+  }) =>
+    projectionSnapshotQuery.getThreadCheckpointContext(input.threadId).pipe(
+      Effect.flatMap((context) => {
+        if (Option.isNone(context)) {
+          return Effect.succeed(null);
+        }
+        const checkpoint = context.value.checkpoints.find(
+          (entry) =>
+            entry.checkpointTurnCount === input.toTurnCount &&
+            entry.status === "speculative" &&
+            typeof entry.speculativePatch === "string" &&
+            entry.speculativePatch.trim().length > 0,
+        );
+        if (!checkpoint) {
+          return Effect.succeed(null);
+        }
+        const stagedResult = {
           threadId: input.threadId,
           fromTurnCount: input.fromTurnCount,
           toTurnCount: input.toTurnCount,
-          scope,
-          message: error.detail,
-        }),
-      ),
+          diff: checkpoint.speculativePatch ?? "",
+        };
+        const stagedOnly = toStagedDiffState({
+          result: stagedResult,
+          files: checkpoint.turnFiles,
+          scope: input.scope,
+        });
+        const precedingCheckpoint = context.value.checkpoints
+          .filter(
+            (entry) =>
+              entry.status === "ready" &&
+              entry.checkpointTurnCount > input.fromTurnCount &&
+              entry.checkpointTurnCount < input.toTurnCount,
+          )
+          .toSorted((left, right) => right.checkpointTurnCount - left.checkpointTurnCount)[0];
+        if (!precedingCheckpoint) {
+          return Effect.succeed(stagedOnly);
+        }
+        const precedingInput = {
+          threadId: input.threadId,
+          fromTurnCount: input.fromTurnCount,
+          toTurnCount: precedingCheckpoint.checkpointTurnCount,
+          scope: input.scope,
+        };
+        return Effect.all(
+          {
+            result: checkpointDiffQuery.getTurnDiff(precedingInput),
+            files: checkpointDiffQuery.getTurnDiffFiles(precedingInput),
+          },
+          { concurrency: "unbounded" },
+        ).pipe(
+          Effect.map(({ files, result }) =>
+            toStagedDiffState({
+              result: {
+                ...stagedResult,
+                diff: combinePatches(result.diff, stagedResult.diff),
+              },
+              files: combineDiffFileSummaries(files, checkpoint.turnFiles),
+              scope: input.scope,
+            }),
+          ),
+        );
+      }),
+      Effect.catch(() => Effect.succeed(null)),
+    );
+
+  const getTurnDiffState: DiffStateQueryShape["getTurnDiffState"] = (input) => {
+    const scope = input.scope ?? "snapshot";
+    return getStagedTurnDiffState({ ...input, scope }).pipe(
+      Effect.flatMap((staged) => {
+        if (staged) {
+          return Effect.succeed(staged);
+        }
+        return Effect.all(
+          {
+            result: checkpointDiffQuery.getTurnDiff({ ...input, scope }),
+            files: checkpointDiffQuery.getTurnDiffFiles({ ...input, scope }),
+          },
+          { concurrency: "unbounded" },
+        ).pipe(
+          Effect.map(({ files, result }) => toReadyDiffState({ result, files, scope })),
+          Effect.catchTag("CheckpointUnavailableError", (error) =>
+            Effect.succeed({
+              _tag: "unavailable" as const,
+              threadId: input.threadId,
+              fromTurnCount: input.fromTurnCount,
+              toTurnCount: input.toTurnCount,
+              scope,
+              message: error.detail,
+            }),
+          ),
+        );
+      }),
     );
   };
 
   const getFullThreadDiffState: DiffStateQueryShape["getFullThreadDiffState"] = (input) =>
-    checkpointDiffQuery.getFullThreadDiff(input).pipe(
-      Effect.map((result) => toReadyDiffState({ result, scope: "snapshot" })),
+    Effect.all(
+      {
+        result: checkpointDiffQuery.getFullThreadDiff(input),
+        files: checkpointDiffQuery.getFullThreadDiffFiles(input),
+      },
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map(({ files, result }) => toReadyDiffState({ result, files, scope: "snapshot" })),
       Effect.catchTag("CheckpointUnavailableError", (error) =>
         Effect.succeed({
           _tag: "unavailable" as const,
