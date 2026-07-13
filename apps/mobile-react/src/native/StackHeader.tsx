@@ -61,6 +61,20 @@ function normalizeScreenOptions(
   return normalized as NativeStackNavigationOptions;
 }
 
+function subscribeNavigationListeners(
+  navigation: NativeStackNavigationProp<ParamListBase>,
+  listeners: Record<string, (event: never) => void>,
+): () => void {
+  const subscriptions = Object.entries(listeners).map(([eventName, listener]) =>
+    navigation.addListener(eventName as never, listener as never),
+  );
+  return () => {
+    for (const unsubscribe of subscriptions) {
+      unsubscribe();
+    }
+  };
+}
+
 export function NativeStackScreenOptions(props: {
   readonly options?: AppNativeStackNavigationOptions;
   readonly listeners?: Record<string, (event: never) => void>;
@@ -80,14 +94,7 @@ export function NativeStackScreenOptions(props: {
     if (!navigation || !props.listeners) {
       return;
     }
-    const subscriptions = Object.entries(props.listeners).map(([eventName, listener]) =>
-      navigation.addListener(eventName as never, listener as never),
-    );
-    return () => {
-      for (const unsubscribe of subscriptions) {
-        unsubscribe();
-      }
-    };
+    return subscribeNavigationListeners(navigation, props.listeners);
   }, [navigation, props.listeners]);
 
   return null;

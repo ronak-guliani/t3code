@@ -223,23 +223,22 @@ function ProviderAccentColorPicker(props: {
   readonly value: string | undefined;
   readonly onCommit: (value: string) => void;
 }) {
+  return <ProviderAccentColorPickerDraft key={props.value ?? ""} {...props} />;
+}
+
+function ProviderAccentColorPickerDraft(props: {
+  readonly displayName: string;
+  readonly value: string | undefined;
+  readonly onCommit: (value: string) => void;
+}) {
   const [draft, setDraft] = useState(props.value ?? "");
-  const [isEditing, setIsEditing] = useState(false);
   const draftColor = normalizeProviderAccentColor(draft);
 
-  useEffect(() => {
-    if (isEditing) return;
-    setDraft(props.value ?? "");
-  }, [isEditing, props.value]);
-
   const commitDraft = () => {
-    setIsEditing(false);
     props.onCommit(draftColor ?? "");
   };
 
   const commitSwatch = (swatch: string) => {
-    setIsEditing(false);
-    setDraft(swatch);
     props.onCommit(swatch);
   };
 
@@ -250,13 +249,10 @@ function ProviderAccentColorPicker(props: {
         <input
           type="color"
           value={draftColor ?? PROVIDER_ACCENT_SWATCHES[0]}
-          onFocus={() => setIsEditing(true)}
           onInput={(event) => {
-            setIsEditing(true);
             setDraft(event.currentTarget.value);
           }}
           onChange={(event) => {
-            setIsEditing(true);
             setDraft(event.currentTarget.value);
           }}
           onBlur={commitDraft}
@@ -290,8 +286,6 @@ function ProviderAccentColorPicker(props: {
             variant="ghost"
             className="h-7 px-2 text-xs text-muted-foreground"
             onClick={() => {
-              setIsEditing(false);
-              setDraft("");
               props.onCommit("");
             }}
           >

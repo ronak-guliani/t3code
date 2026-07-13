@@ -8,7 +8,7 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE,
   DEFAULT_REVIEW_CHANGES_SCOPE,
@@ -65,7 +65,7 @@ import {
   setDesktopUpdateStateQueryData,
   useDesktopUpdateState,
 } from "../../lib/desktopUpdateReactQuery";
-import { getPrimaryEnvironmentConnection } from "../../environments/runtime";
+import { getPrimaryEnvironmentConnection } from "../../environments/runtime/service";
 import {
   getCustomModelOptionsByInstance,
   resolveAppModelSelectionState,
@@ -267,24 +267,16 @@ function ReviewPromptTemplateEditor({
   value: string;
   onCommit: (nextValue: string) => void;
 }) {
-  const [draft, setDraft] = useState(value);
-
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
-
-  const commitDraft = useCallback(() => {
-    if (draft !== value) {
-      onCommit(draft);
-    }
-  }, [draft, onCommit, value]);
-
   return (
     <Textarea
+      key={value}
       className="mt-4 w-full"
-      value={draft}
-      onChange={(event) => setDraft(event.target.value)}
-      onBlur={commitDraft}
+      defaultValue={value}
+      onBlur={(event) => {
+        if (event.currentTarget.value !== value) {
+          onCommit(event.currentTarget.value);
+        }
+      }}
       onKeyDown={(event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
           event.currentTarget.blur();

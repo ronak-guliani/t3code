@@ -2,7 +2,7 @@
 
 import { CheckIcon } from "lucide-react";
 import { Radio as RadioPrimitive } from "@base-ui/react/radio";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import {
   ProviderInstanceId,
   ProviderDriverKind,
@@ -109,6 +109,16 @@ interface AddProviderInstanceDialogProps {
 }
 
 export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderInstanceDialogProps) {
+  return (
+    <AddProviderInstanceDialogSession
+      key={open ? "open" : "closed"}
+      open={open}
+      onOpenChange={onOpenChange}
+    />
+  );
+}
+
+function AddProviderInstanceDialogSession({ open, onOpenChange }: AddProviderInstanceDialogProps) {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
 
@@ -116,8 +126,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   const [driver, setDriver] = useState<ProviderDriverKind>(DEFAULT_DRIVER_KIND);
   const [label, setLabel] = useState("");
   const [accentColor, setAccentColor] = useState<string>("");
-  const [instanceId, setInstanceId] = useState("");
-  const [instanceIdDirty, setInstanceIdDirty] = useState(false);
+  const [customInstanceId, setCustomInstanceId] = useState<string | null>(null);
   // Driver-specific field values keyed by `${driver}:${fieldKey}` so toggling
   // between drivers during the same dialog session doesn't lose in-progress
   // input. Only the active driver's values are persisted on save.
@@ -126,55 +135,26 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
   // they update live so fixing the problem clears the message in place.
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
 
-  const existingIds = useMemo(
-    () => new Set(Object.keys(settings.providerInstances ?? {})),
-    [settings.providerInstances],
-  );
-
-  // Reset the form every time the dialog opens so each creation starts
-  // from a clean slate.
-  useEffect(() => {
-    if (!open) return;
-    setDriver(DEFAULT_DRIVER_KIND);
-    setLabel("");
-    setAccentColor("");
-    setInstanceId("");
-    setWizardStep(0);
-    setInstanceIdDirty(false);
-    setFieldValues({});
-    setHasAttemptedSubmit(false);
-  }, [open]);
-
-  // Auto-derive the instance id from driver + label until the user types
-  // in the Instance ID field directly (after which they own its value).
-  useEffect(() => {
-    if (instanceIdDirty) return;
-    setInstanceId(deriveInstanceId(driver, label));
-  }, [driver, label, instanceIdDirty]);
+  const existingIds = new Set(Object.keys(settings.providerInstances ?? {}));
 
   const driverOption = DRIVER_OPTION_BY_VALUE[driver] ?? DEFAULT_DRIVER_OPTION;
+  const instanceId = customInstanceId ?? deriveInstanceId(driver, label);
   const instanceIdError = validateInstanceId(instanceId, existingIds);
   const showInstanceIdError = hasAttemptedSubmit && instanceIdError !== null;
   const previewLabel = label.trim() || `${driverOption.label} Workspace`;
   const wizardSteps = ["Driver", "Identity", "Config"] as const;
   const wizardStepSummaries = [driverOption.label, previewLabel, null] as const;
 
-  const getFieldValue = useCallback(
-    (fieldKey: string) => fieldValues[`${driver}:${fieldKey}`] ?? "",
-    [driver, fieldValues],
-  );
+  const getFieldValue = (fieldKey: string) => fieldValues[`${driver}:${fieldKey}`] ?? "";
 
-  const setFieldValue = useCallback(
-    (fieldKey: string, value: string) => {
-      setFieldValues((existing) => ({
-        ...existing,
-        [`${driver}:${fieldKey}`]: value,
-      }));
-    },
-    [driver],
-  );
+  const setFieldValue = (fieldKey: string, value: string) => {
+    setFieldValues((existing) => ({
+      ...existing,
+      [`${driver}:${fieldKey}`]: value,
+    }));
+  };
 
-  const handleSave = useCallback(() => {
+  const handleSave = () => {
     setHasAttemptedSubmit(true);
     if (instanceIdError !== null) return;
 
@@ -219,18 +199,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
         description: error instanceof Error ? error.message : "Update failed.",
       });
     }
-  }, [
-    driver,
-    driverOption,
-    fieldValues,
-    instanceId,
-    instanceIdError,
-    label,
-    accentColor,
-    onOpenChange,
-    settings.providerInstances,
-    updateSettings,
-  ]);
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -372,8 +341,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                 placeholder={`${driver}_work`}
                 value={instanceId}
                 onChange={(event) => {
-                  setInstanceIdDirty(true);
-                  setInstanceId(event.target.value);
+                  setCustomInstanceId(event.target.value);
                 }}
                 aria-invalid={showInstanceIdError}
               />

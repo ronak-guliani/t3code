@@ -1,7 +1,7 @@
 import type { EnvironmentId, GitResolvePullRequestResult, ThreadId } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   gitPreparePullRequestThreadMutationOptions,
@@ -34,6 +34,21 @@ interface PullRequestThreadDialogProps {
 
 export function PullRequestThreadDialog({
   open,
+  initialReference,
+  ...props
+}: PullRequestThreadDialogProps) {
+  return (
+    <PullRequestThreadDialogSession
+      key={open ? `open:${initialReference ?? ""}` : "closed"}
+      {...props}
+      open={open}
+      initialReference={initialReference}
+    />
+  );
+}
+
+function PullRequestThreadDialogSession({
+  open,
   environmentId,
   threadId,
   cwd,
@@ -43,21 +58,21 @@ export function PullRequestThreadDialog({
 }: PullRequestThreadDialogProps) {
   const queryClient = useQueryClient();
   const referenceInputRef = useRef<HTMLInputElement>(null);
-  const [reference, setReference] = useState(initialReference ?? "");
-  const [referenceDirty, setReferenceDirty] = useState(false);
-  const [preparingMode, setPreparingMode] = useState<"local" | "worktree" | null>(null);
+  const [dialogState, setDialogState] = useState<{
+    readonly reference: string;
+    readonly referenceDirty: boolean;
+    readonly preparingMode: "local" | "worktree" | null;
+  }>({
+    reference: initialReference ?? "",
+    referenceDirty: false,
+    preparingMode: null,
+  });
+  const { reference, referenceDirty, preparingMode } = dialogState;
   const [debouncedReference, referenceDebouncer] = useDebouncedValue(
     reference,
     { wait: 450 },
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
-
-  useEffect(() => {
-    if (!open) return;
-    setReference(initialReference ?? "");
-    setReferenceDirty(false);
-    setPreparingMode(null);
-  }, [initialReference, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -122,41 +137,30 @@ export function PullRequestThreadDialog({
     }
   }, [resolvedPullRequest?.state]);
 
-  const handleConfirm = useCallback(
-    async (mode: "local" | "worktree") => {
-      if (!parsedReference) {
-        setReferenceDirty(true);
-        return;
-      }
-      if (!parsedReference || !resolvedPullRequest || !cwd) {
-        return;
-      }
-      setPreparingMode(mode);
-      try {
-        const result = await preparePullRequestThreadMutation.mutateAsync({
-          reference: parsedReference,
-          mode,
-          ...(mode === "worktree" ? { threadId } : {}),
-        });
-        await onPrepared({
-          branch: result.branch,
-          worktreePath: result.worktreePath,
-        });
-        onOpenChange(false);
-      } finally {
-        setPreparingMode(null);
-      }
-    },
-    [
-      cwd,
-      onOpenChange,
-      onPrepared,
-      parsedReference,
-      preparePullRequestThreadMutation,
-      resolvedPullRequest,
-      threadId,
-    ],
-  );
+  const handleConfirm = async (mode: "local" | "worktree") => {
+    if (!parsedReference) {
+      setDialogState((current) => ({ ...current, referenceDirty: true }));
+      return;
+    }
+    if (!resolvedPullRequest || !cwd) {
+      return;
+    }
+    setDialogState((current) => ({ ...current, preparingMode: mode }));
+    try {
+      const result = await preparePullRequestThreadMutation.mutateAsync({
+        reference: parsedReference,
+        mode,
+        ...(mode === "worktree" ? { threadId } : {}),
+      });
+      await onPrepared({
+        branch: result.branch,
+        worktreePath: result.worktreePath,
+      });
+      onOpenChange(false);
+    } finally {
+      setDialogState((current) => ({ ...current, preparingMode: null }));
+    }
+  };
 
   const validationMessage = !referenceDirty
     ? null
@@ -202,8 +206,11 @@ export function PullRequestThreadDialog({
               placeholder="https://github.com/owner/repo/pull/42, gh pr checkout 42, or #42"
               value={reference}
               onChange={(event) => {
-                setReferenceDirty(true);
-                setReference(event.target.value);
+                setDialogState((current) => ({
+                  ...current,
+                  reference: event.target.value,
+                  referenceDirty: true,
+                }));
               }}
               onKeyDown={(event) => {
                 if (event.key !== "Enter") {
