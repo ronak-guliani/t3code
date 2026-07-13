@@ -255,7 +255,7 @@ function findButtonByText(text: string): HTMLButtonElement | null {
 }
 
 function Harness() {
-  const [activeThreadRef, setActiveThreadRef] = useState(
+  const [activeThreadRef, setActiveThreadRef] = useState(() =>
     scopeThreadRef(ENVIRONMENT_A, SHARED_THREAD_ID),
   );
 

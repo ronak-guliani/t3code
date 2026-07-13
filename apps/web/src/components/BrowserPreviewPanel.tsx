@@ -7,6 +7,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -27,7 +28,6 @@ import {
   memo,
   type FormEvent,
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -69,13 +69,7 @@ interface BrowserPreviewPanelProps {
 
 const DEFAULT_PREVIEW_URL = "http://localhost:3000";
 function useCanHostDesktopPreview(): boolean {
-  const [canHost, setCanHost] = useState(() => isElectron && getDesktopPreviewBridge() !== null);
-
-  useEffect(() => {
-    setCanHost(isElectron && getDesktopPreviewBridge() !== null);
-  }, []);
-
-  return canHost;
+  return isElectron && getDesktopPreviewBridge() !== null;
 }
 
 const BrowserPreviewSurfaceSlot = memo(function BrowserPreviewSurfaceSlot({
@@ -171,12 +165,7 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
   onClose,
 }: BrowserPreviewPanelProps) {
   const webviewRef = useRef<PreviewWebviewElement | null>(null);
-  const [address, setAddress] = useState(DEFAULT_PREVIEW_URL);
   const [isOpening, setIsOpening] = useState(false);
-  const [isDiscoveringServers, setIsDiscoveringServers] = useState(false);
-  const [discoveredServers, setDiscoveredServers] = useState<
-    readonly PreviewDiscoveredLocalServer[]
-  >([]);
   const [isRecording, setIsRecording] = useState(false);
   const [selectorAction, setSelectorAction] = useState<"annotate" | "click" | null>(null);
   const [selectorInput, setSelectorInput] = useState("");
@@ -189,6 +178,12 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
   const snapshot = getActivePreviewSnapshot(previewState);
 
   const activeUrl = getPreviewSnapshotUrl(snapshot);
+  const [addressDraft, setAddressDraft] = useState(() => ({
+    sourceUrl: activeUrl,
+    value: activeUrl || DEFAULT_PREVIEW_URL,
+  }));
+  const address =
+    addressDraft.sourceUrl === activeUrl ? addressDraft.value : activeUrl || DEFAULT_PREVIEW_URL;
   const isLoading = snapshot?.navStatus._tag === "Loading";
   const activeDesktopState = snapshot ? previewState.desktopByTabId[snapshot.tabId] : undefined;
   const zoomPercent = Math.round((activeDesktopState?.zoomFactor ?? 1) * 100);
@@ -231,37 +226,36 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
     [activeUrl, address, api, snapshot, threadId],
   );
 
-  useEffect(() => {
-    if (activeUrl) {
-      setAddress(activeUrl);
-    }
-  }, [activeUrl]);
-
-  const discoverLocalServers = useCallback(async () => {
-    if (!api) {
-      return;
-    }
-    setIsDiscoveringServers(true);
-    try {
-      const result = await api.preview.discoverLocalServers({});
-      setDiscoveredServers(result.servers);
-    } catch (error) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not discover local servers",
-          description:
-            error instanceof Error ? error.message : "The local server scan did not complete.",
-        }),
-      );
-    } finally {
-      setIsDiscoveringServers(false);
-    }
-  }, [api]);
-
-  useEffect(() => {
-    void discoverLocalServers();
-  }, [discoverLocalServers]);
+  const {
+    data: discoveredServers = [],
+    isFetching: isDiscoveringServers,
+    refetch: discoverLocalServers,
+  } = useQuery({
+    queryKey: ["preview-discovered-local-servers", environmentId],
+    queryFn: async (): Promise<readonly PreviewDiscoveredLocalServer[]> => {
+      if (!api) {
+        throw new Error("Environment disconnected");
+      }
+      try {
+        const result = await api.preview.discoverLocalServers({});
+        return result.servers;
+      } catch (error) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not discover local servers",
+            description:
+              error instanceof Error ? error.message : "The local server scan did not complete.",
+          }),
+        );
+        throw error;
+      }
+    },
+    enabled: api !== undefined,
+    retry: false,
+    refetchOnReconnect: false,
+    refetchOnWindowFocus: false,
+  });
 
   const registerWebviewElement = useCallback(
     (element: HTMLElement | null) => {
@@ -325,7 +319,8 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
           : await api.preview.open({ threadId, url });
         applyPreviewServerSnapshot(threadRef, nextSnapshot);
         rememberPreviewUrl(threadRef, getPreviewSnapshotUrl(nextSnapshot) || url);
-        setAddress(getPreviewSnapshotUrl(nextSnapshot) || url);
+        const nextAddress = getPreviewSnapshotUrl(nextSnapshot) || url;
+        setAddressDraft({ sourceUrl: nextAddress, value: nextAddress });
         // On desktop the webview `src` is fixed for the life of the tab (to avoid
         // reload loops), so an explicit navigation of an existing tab must drive
         // the guest through the bridge. A freshly opened tab loads via `src`.
@@ -368,7 +363,8 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
       applyPreviewServerSnapshot(threadRef, nextSnapshot);
       activatePreviewTab(threadRef, nextSnapshot.tabId);
       rememberPreviewUrl(threadRef, getPreviewSnapshotUrl(nextSnapshot) || address);
-      setAddress(getPreviewSnapshotUrl(nextSnapshot) || address);
+      const nextAddress = getPreviewSnapshotUrl(nextSnapshot) || address;
+      setAddressDraft({ sourceUrl: nextAddress, value: nextAddress });
     } catch (error) {
       toastManager.add(
         stackedThreadToast({
@@ -716,7 +712,9 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
         <form className="min-w-0 flex-1" onSubmit={submitAddress}>
           <Input
             value={address}
-            onChange={(event) => setAddress(event.target.value)}
+            onChange={(event) =>
+              setAddressDraft({ sourceUrl: activeUrl, value: event.target.value })
+            }
             className="h-8"
             aria-label="Preview URL"
             placeholder={DEFAULT_PREVIEW_URL}
@@ -926,7 +924,7 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
               className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
               title={server.title ?? server.url}
               onClick={() => {
-                setAddress(server.url);
+                setAddressDraft({ sourceUrl: activeUrl, value: server.url });
                 void openOrNavigate(server.url);
               }}
             >

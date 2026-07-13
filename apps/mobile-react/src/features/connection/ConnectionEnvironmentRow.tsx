@@ -34,8 +34,25 @@ export function ConnectionEnvironmentRow(props: {
     updates: { readonly label: string; readonly displayUrl: string },
   ) => Promise<AtomCommandResult<unknown, unknown>>;
 }) {
-  const [label, setLabel] = useState(props.environment.environmentLabel);
-  const [url, setUrl] = useState(props.environment.displayUrl);
+  const environmentLabel = props.environment.environmentLabel;
+  const environmentUrl = props.environment.displayUrl;
+  const [draft, setDraft] = useState(() => ({
+    sourceLabel: environmentLabel,
+    sourceUrl: environmentUrl,
+    label: environmentLabel,
+    url: environmentUrl,
+  }));
+  const label = draft.sourceLabel === environmentLabel ? draft.label : environmentLabel;
+  const url = draft.sourceUrl === environmentUrl ? draft.url : environmentUrl;
+  const updateDraft = (patch: Partial<Pick<typeof draft, "label" | "url">>) => {
+    setDraft((current) => ({
+      sourceLabel: environmentLabel,
+      sourceUrl: environmentUrl,
+      label: current.sourceLabel === environmentLabel ? current.label : environmentLabel,
+      url: current.sourceUrl === environmentUrl ? current.url : environmentUrl,
+      ...patch,
+    }));
+  };
 
   const mutedColor = useThemeColor("--color-icon-subtle");
   const placeholderColor = useThemeColor("--color-placeholder");
@@ -152,7 +169,7 @@ export function ConnectionEnvironmentRow(props: {
                   placeholder="My MacBook"
                   placeholderTextColor={placeholderColor}
                   value={label}
-                  onChangeText={setLabel}
+                  onChangeText={(value) => updateDraft({ label: value })}
                   className="rounded-[14px] border border-input-border bg-input px-4 py-3 text-base text-foreground"
                 />
               </View>
@@ -171,7 +188,7 @@ export function ConnectionEnvironmentRow(props: {
                   placeholder="192.168.1.100:8080"
                   placeholderTextColor={placeholderColor}
                   value={url}
-                  onChangeText={setUrl}
+                  onChangeText={(value) => updateDraft({ url: value })}
                   className="rounded-[14px] border border-input-border bg-input px-4 py-3 text-base text-foreground"
                 />
               </View>

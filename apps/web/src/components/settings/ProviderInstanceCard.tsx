@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   isProviderDriverKind,
   type ProviderInstanceConfig,
@@ -304,13 +304,23 @@ function ProviderEnvironmentSection(props: {
   readonly environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
   readonly onChange: (environment: ReadonlyArray<ProviderInstanceEnvironmentVariable>) => void;
 }) {
-  const [rows, setRows] = useState<ReadonlyArray<EnvironmentDraftRow>>(() =>
-    props.environment.map(makeEnvironmentDraftRow),
-  );
-
-  useEffect(() => {
-    setRows(props.environment.map(makeEnvironmentDraftRow));
-  }, [props.environment]);
+  const [draftState, setDraftState] = useState<{
+    readonly sourceEnvironment: ReadonlyArray<ProviderInstanceEnvironmentVariable>;
+    readonly rows: ReadonlyArray<EnvironmentDraftRow>;
+  }>(() => ({
+    sourceEnvironment: props.environment,
+    rows: props.environment.map(makeEnvironmentDraftRow),
+  }));
+  const rows =
+    draftState.sourceEnvironment === props.environment
+      ? draftState.rows
+      : props.environment.map(makeEnvironmentDraftRow);
+  const setRows = (nextRows: ReadonlyArray<EnvironmentDraftRow>) => {
+    setDraftState({
+      sourceEnvironment: props.environment,
+      rows: nextRows,
+    });
+  };
 
   const publishRows = (nextRows: ReadonlyArray<EnvironmentDraftRow>) => {
     const published: ProviderInstanceEnvironmentVariable[] = [];
