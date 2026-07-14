@@ -282,6 +282,9 @@ export function useThreadOutboxDrain(): void {
       return;
     }
 
+    const connectedEnvironmentsById = new Map(
+      connectedEnvironments.map((environment) => [environment.environmentId, environment]),
+    );
     for (const [threadKey, queuedMessages] of Object.entries(queuedMessagesByThreadKey)) {
       const nextQueuedMessage = queuedMessages[0];
       if (!nextQueuedMessage) {
@@ -300,9 +303,7 @@ export function useThreadOutboxDrain(): void {
       }
 
       const creation = nextQueuedMessage.creation;
-      const environment = connectedEnvironments.find(
-        (candidate) => candidate.environmentId === nextQueuedMessage.environmentId,
-      );
+      const environment = connectedEnvironmentsById.get(nextQueuedMessage.environmentId);
       const shellStatus = shellStatuses.get(nextQueuedMessage.environmentId) ?? "empty";
       const deliveryAction = resolveThreadOutboxDeliveryAction({
         isCreation: creation !== undefined,

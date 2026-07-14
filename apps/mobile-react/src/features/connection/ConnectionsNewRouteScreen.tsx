@@ -2,7 +2,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
@@ -30,8 +30,14 @@ export function ConnectionsNewRouteScreen({
   const navigation = useNavigation();
   const params = route.params ?? {};
   const insets = useSafeAreaInsets();
-  const [hostInput, setHostInput] = useState("");
-  const [codeInput, setCodeInput] = useState("");
+  const initialPairingFields = parsePairingUrl(connectionPairingUrl);
+  const [pairingDraft, setPairingDraft] = useState(() => ({
+    sourceUrl: connectionPairingUrl,
+    ...initialPairingFields,
+  }));
+  const pairingFields =
+    pairingDraft.sourceUrl === connectionPairingUrl ? pairingDraft : initialPairingFields;
+  const { host: hostInput, code: codeInput } = pairingFields;
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showScanner, setShowScanner] = useState(params.mode === "scan_qr");
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
@@ -42,25 +48,13 @@ export function ConnectionsNewRouteScreen({
 
   const connectDisabled = isSubmitting || hostInput.trim().length === 0;
 
-  useEffect(() => {
-    const { host, code } = parsePairingUrl(connectionPairingUrl);
-    setHostInput(host);
-    setCodeInput(code);
-  }, [connectionPairingUrl]);
-
-  useEffect(() => {
-    if (pairingConnectionError) {
-      setIsSubmitting(false);
-    }
-  }, [pairingConnectionError]);
-
-  const handleHostChange = useCallback((value: string) => {
-    setHostInput(value);
-  }, []);
-
-  const handleCodeChange = useCallback((value: string) => {
-    setCodeInput(value);
-  }, []);
+  const updatePairingDraft = (patch: Partial<typeof initialPairingFields>) => {
+    setPairingDraft((current) => ({
+      sourceUrl: connectionPairingUrl,
+      ...(current.sourceUrl === connectionPairingUrl ? current : initialPairingFields),
+      ...patch,
+    }));
+  };
 
   const openScanner = useCallback(async () => {
     if (cameraPermission?.granted) {
@@ -98,8 +92,7 @@ export function ConnectionsNewRouteScreen({
       try {
         const pairingUrl = extractPairingUrlFromQrPayload(data);
         const { host, code } = parsePairingUrl(pairingUrl);
-        setHostInput(host);
-        setCodeInput(code);
+        setPairingDraft({ sourceUrl: pairingUrl, host, code });
         onChangeConnectionPairingUrl(pairingUrl);
         setShowScanner(false);
       } catch (error) {
@@ -213,7 +206,7 @@ export function ConnectionsNewRouteScreen({
                   placeholder="192.168.1.100:8080"
                   placeholderTextColor={placeholderColor}
                   value={hostInput}
-                  onChangeText={handleHostChange}
+                  onChangeText={(host) => updatePairingDraft({ host })}
                   className="rounded-[14px] border border-input-border bg-input px-4 py-3.5 text-base text-foreground"
                 />
               </View>
@@ -231,7 +224,7 @@ export function ConnectionsNewRouteScreen({
                   placeholder="abc-123-xyz"
                   placeholderTextColor={placeholderColor}
                   value={codeInput}
-                  onChangeText={handleCodeChange}
+                  onChangeText={(code) => updatePairingDraft({ code })}
                   className="rounded-[14px] border border-input-border bg-input px-4 py-3.5 text-base text-foreground"
                 />
               </View>

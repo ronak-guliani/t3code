@@ -11,7 +11,7 @@ import {
   WS_RECONNECT_MAX_ATTEMPTS,
 } from "../rpc/wsConnectionState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
-import { getPrimaryEnvironmentConnection } from "../environments/runtime";
+import { getPrimaryEnvironmentConnection } from "../environments/runtime/service";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
 type WsAutoReconnectTrigger = "focus" | "online";
@@ -227,12 +227,15 @@ export function WebSocketConnectionCoordinator() {
       return;
     }
 
-    setNowMs(Date.now());
+    const frameId = window.requestAnimationFrame(() => {
+      setNowMs(Date.now());
+    });
     const intervalId = window.setInterval(() => {
       setNowMs(Date.now());
     }, 1_000);
 
     return () => {
+      window.cancelAnimationFrame(frameId);
       window.clearInterval(intervalId);
     };
   }, [status.nextRetryAt, status.reconnectPhase]);
