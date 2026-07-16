@@ -257,13 +257,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const isExpanded = isFocused;
   const canSend = hasContent;
 
-  const onPressImage = useCallback(
-    (uri: string) => {
-      wasExpandedBeforePreviewRef.current = isFocused;
-      setPreviewImageUri(uri);
-    },
-    [isFocused],
-  );
+  const onPressImage = (uri: string) => {
+    wasExpandedBeforePreviewRef.current = isFocused;
+    setPreviewImageUri(uri);
+  };
 
   const closePreview = useCallback(() => {
     setPreviewImageUri(null);
@@ -315,9 +312,9 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     end: props.draftMessage.length,
   }));
 
-  const handleSelectionChange = useCallback((selection: ComposerEditorSelection) => {
+  const handleSelectionChange = (selection: ComposerEditorSelection) => {
     setComposerSelection(selection);
-  }, []);
+  };
   useEffect(() => {
     const end = props.draftMessage.length;
     setComposerSelection((selection) => {

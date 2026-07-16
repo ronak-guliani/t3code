@@ -1,6 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { previewPartitionForEnvironment } from "@t3tools/shared/preview";
-import { memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { readEnvironmentApi } from "~/environmentApi";
 import { isElectron } from "~/env";
@@ -34,7 +34,7 @@ function reportPreviewStatus(
   });
 }
 
-export const BrowserPreviewHost = memo(function BrowserPreviewHost() {
+export const BrowserPreviewHost = function BrowserPreviewHost() {
   const surfaces = useHostedPreviewSurfaces();
 
   useEffect(() => {
@@ -83,9 +83,9 @@ export const BrowserPreviewHost = memo(function BrowserPreviewHost() {
       ))}
     </>
   );
-});
+};
 
-const HostedPreviewWebview = memo(function HostedPreviewWebview({
+const HostedPreviewWebview = function HostedPreviewWebview({
   surface,
 }: {
   readonly surface: HostedPreviewSurface;
@@ -93,19 +93,16 @@ const HostedPreviewWebview = memo(function HostedPreviewWebview({
   const { threadRef, snapshot, rect } = surface;
   const environmentId = threadRef.environmentId;
   const threadId = threadRef.threadId;
-  const stableThreadRef = useMemo(
-    () => scopeThreadRef(environmentId, threadId),
-    [environmentId, threadId],
-  );
+  const stableThreadRef = scopeThreadRef(environmentId, threadId);
   const webviewRef = useRef<PreviewWebviewElement | null>(null);
-  const api = useMemo(() => readEnvironmentApi(environmentId), [environmentId]);
+  const api = readEnvironmentApi(environmentId);
   const activeUrl = getPreviewSnapshotUrl(snapshot);
   // The webview `src` must stay fixed for the life of the tab. Binding it to the
   // live (reported) URL makes every in-page navigation or redirect re-assign
   // `src`, which forces Electron to reload the guest — an infinite loop when a
   // page redirects. Explicit navigations are driven via previewBridge.navigate.
-  const initialUrl = useRef(activeUrl).current;
-  const partition = useMemo(() => previewPartitionForEnvironment(environmentId), [environmentId]);
+  const [initialUrl] = useState(activeUrl);
+  const partition = previewPartitionForEnvironment(environmentId);
 
   useEffect(() => {
     const previewBridge = getDesktopPreviewBridge();
@@ -121,54 +118,48 @@ const HostedPreviewWebview = memo(function HostedPreviewWebview({
       });
   }, [initialUrl, partition, snapshot.tabId, stableThreadRef]);
 
-  const reportWebviewStatus = useCallback(
-    (tag: "Loading" | "Success") => {
-      if (!api || !activeUrl) {
+  const reportWebviewStatus = (tag: "Loading" | "Success") => {
+    if (!api || !activeUrl) {
+      return;
+    }
+    const webview = webviewRef.current;
+    reportPreviewStatus(api, {
+      threadId,
+      tabId: snapshot.tabId,
+      navStatus: statusFromWebview(webview, activeUrl, tag),
+      canGoBack: webview?.canGoBack?.() ?? snapshot.canGoBack,
+      canGoForward: webview?.canGoForward?.() ?? snapshot.canGoForward,
+    });
+  };
+
+  const registerWebviewElement = (element: HTMLElement | null) => {
+    const webview = element as PreviewWebviewElement | null;
+    webviewRef.current = webview;
+    if (!webview) {
+      return;
+    }
+
+    const previewBridge = getDesktopPreviewBridge();
+    if (!previewBridge) {
+      return;
+    }
+
+    const register = () => {
+      const webContentsId = webview.getWebContentsId?.();
+      if (typeof webContentsId !== "number") {
         return;
       }
-      const webview = webviewRef.current;
-      reportPreviewStatus(api, {
-        threadId,
-        tabId: snapshot.tabId,
-        navStatus: statusFromWebview(webview, activeUrl, tag),
-        canGoBack: webview?.canGoBack?.() ?? snapshot.canGoBack,
-        canGoForward: webview?.canGoForward?.() ?? snapshot.canGoForward,
-      });
-    },
-    [activeUrl, api, snapshot.canGoBack, snapshot.canGoForward, snapshot.tabId, threadId],
-  );
+      void previewBridge
+        .registerWebview({ tabId: snapshot.tabId, webContentsId, partition })
+        .then((state) => applyPreviewDesktopState(stableThreadRef, state))
+        .catch((error: unknown) => {
+          console.error("[BROWSER_PREVIEW] register webview failed", error);
+        });
+    };
 
-  const registerWebviewElement = useCallback(
-    (element: HTMLElement | null) => {
-      const webview = element as PreviewWebviewElement | null;
-      webviewRef.current = webview;
-      if (!webview) {
-        return;
-      }
-
-      const previewBridge = getDesktopPreviewBridge();
-      if (!previewBridge) {
-        return;
-      }
-
-      const register = () => {
-        const webContentsId = webview.getWebContentsId?.();
-        if (typeof webContentsId !== "number") {
-          return;
-        }
-        void previewBridge
-          .registerWebview({ tabId: snapshot.tabId, webContentsId, partition })
-          .then((state) => applyPreviewDesktopState(stableThreadRef, state))
-          .catch((error: unknown) => {
-            console.error("[BROWSER_PREVIEW] register webview failed", error);
-          });
-      };
-
-      webview.addEventListener("did-attach", register, { once: true });
-      queueMicrotask(register);
-    },
-    [partition, snapshot.tabId, stableThreadRef],
-  );
+    webview.addEventListener("did-attach", register, { once: true });
+    queueMicrotask(register);
+  };
 
   if (!initialUrl) {
     return null;
@@ -192,4 +183,4 @@ const HostedPreviewWebview = memo(function HostedPreviewWebview({
       onLoad={() => reportWebviewStatus("Success")}
     />
   );
-});
+};

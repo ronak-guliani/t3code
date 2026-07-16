@@ -858,9 +858,8 @@ export function GeneralSettingsPanel() {
             error instanceof Error ? error.message : "An error occurred while opening the picker.",
         }),
       );
-    } finally {
-      setIsPickingChatExportDirectory(false);
     }
+    setIsPickingChatExportDirectory(false);
   }, [isPickingChatExportDirectory, settings.chatExportDirectory, updateSettings]);
 
   const updateChatExportDetail = useCallback(

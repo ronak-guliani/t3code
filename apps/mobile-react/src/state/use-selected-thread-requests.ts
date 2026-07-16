@@ -114,26 +114,26 @@ export function useSelectedThreadRequests() {
     [selectedThreadShell],
   );
 
-  const onRespondToApproval = useCallback(
-    async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
-      if (!selectedThreadShell) {
-        return;
-      }
+  const onRespondToApproval = async (
+    requestId: ApprovalRequestId,
+    decision: ProviderApprovalDecision,
+  ) => {
+    if (!selectedThreadShell) {
+      return;
+    }
 
-      setRespondingApprovalId(requestId);
-      const result = await respondToApproval({
-        environmentId: selectedThreadShell.environmentId,
-        input: {
-          threadId: selectedThreadShell.id,
-          requestId,
-          decision,
-        },
-      });
-      setRespondingApprovalId((current) => (current === requestId ? null : current));
-      return result;
-    },
-    [respondToApproval, selectedThreadShell],
-  );
+    setRespondingApprovalId(requestId);
+    const result = await respondToApproval({
+      environmentId: selectedThreadShell.environmentId,
+      input: {
+        threadId: selectedThreadShell.id,
+        requestId,
+        decision,
+      },
+    });
+    setRespondingApprovalId((current) => (current === requestId ? null : current));
+    return result;
+  };
 
   const onSubmitUserInput = useCallback(async () => {
     if (!selectedThreadShell || !activePendingUserInput || !activePendingUserInputAnswers) {

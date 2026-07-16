@@ -401,12 +401,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   const isCodexStyle = provider === "codex";
 
   return (
-    <Menu
-      open={isMenuOpen}
-      onOpenChange={(open) => {
-        setIsMenuOpen(open);
-      }}
-    >
+    <Menu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
       <MenuTrigger
         render={
           <Button

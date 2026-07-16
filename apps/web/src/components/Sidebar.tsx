@@ -1573,7 +1573,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         projectGroupingSettings.sidebarProjectGroupingOverrides?.[overrideKey] ?? "inherit",
       );
     },
-    [projectGroupingSettings.sidebarProjectGroupingOverrides],
+    [projectGroupingSettings],
   );
 
   const removeProject = useCallback(

@@ -187,11 +187,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
 
       <Dialog
         open={isSaveDialogOpen}
-        onOpenChange={(open) => {
-          if (!isSavingToWorkspace) {
-            setIsSaveDialogOpen(open);
-          }
-        }}
+        onOpenChange={isSavingToWorkspace ? undefined : setIsSaveDialogOpen}
       >
         <DialogPopup className="max-w-xl">
           <DialogHeader>

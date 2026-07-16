@@ -3648,9 +3648,6 @@ function ChatViewBody(
     ],
   );
 
-  const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
-    setExpandedImage(preview);
-  }, []);
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string, scope: TurnDiffScope = "snapshot") => {
       if (!isServerThread) {
@@ -4046,7 +4043,7 @@ function ChatViewBody(
               onRevertUserMessage={onRevertUserMessage}
               onForkAssistantMessage={onForkAssistantMessage}
               isRevertingCheckpoint={isRevertingCheckpoint}
-              onImageExpand={onExpandTimelineImage}
+              onImageExpand={setExpandedImage}
               markdownCwd={gitCwd ?? undefined}
               resolvedTheme={resolvedTheme}
               timestampFormat={timestampFormat}
@@ -4148,7 +4145,7 @@ function ChatViewBody(
               focusComposer={focusComposer}
               scheduleComposerFocus={scheduleComposerFocus}
               setThreadError={setThreadError}
-              onExpandImage={onExpandTimelineImage}
+              onExpandImage={setExpandedImage}
             />
             {isGitRepo && (
               <BranchToolbar

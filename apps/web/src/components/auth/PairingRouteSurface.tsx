@@ -73,13 +73,10 @@ export function PairingRouteSurface({
     [onAuthenticated],
   );
 
-  const handleSubmit = useCallback(
-    async (event?: React.SubmitEvent<HTMLFormElement>) => {
-      event?.preventDefault();
-      await submitCredential(credential);
-    },
-    [submitCredential, credential],
-  );
+  const handleSubmit = async (event?: React.SubmitEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    await submitCredential(credential);
+  };
 
   useEffect(() => {
     if (!autoPairToken || autoSubmitAttemptedRef.current) {

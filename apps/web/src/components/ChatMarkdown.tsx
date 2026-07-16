@@ -6,10 +6,7 @@ import React, {
   type MouseEvent as ReactMouseEvent,
   isValidElement,
   use,
-  useCallback,
-  memo,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -148,7 +145,7 @@ function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
 function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleCopy = useCallback(() => {
+  function handleCopy() {
     if (typeof navigator === "undefined" || navigator.clipboard == null) {
       return;
     }
@@ -165,7 +162,7 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
         }, 1200);
       })
       .catch(() => undefined);
-  }, [code]);
+  }
 
   useEffect(
     () => () => {
@@ -259,19 +256,18 @@ function UncachedShikiCodeBlock({
   isStreaming,
 }: UncachedShikiCodeBlockProps) {
   const highlighter = use(getHighlighterPromise(language));
-  const highlightedHtml = useMemo(() => {
-    try {
-      return highlighter.codeToHtml(code, { lang: language, theme: themeName });
-    } catch (error) {
-      // Log highlighting failures for debugging while falling back to plain text
-      console.warn(
-        `Code highlighting failed for language "${language}", falling back to plain text.`,
-        error instanceof Error ? error.message : error,
-      );
-      // If highlighting fails for this language, render as plain text
-      return highlighter.codeToHtml(code, { lang: "text", theme: themeName });
-    }
-  }, [code, highlighter, language, themeName]);
+  let highlightedHtml: string;
+  try {
+    highlightedHtml = highlighter.codeToHtml(code, { lang: language, theme: themeName });
+  } catch (error) {
+    // Log highlighting failures for debugging while falling back to plain text
+    console.warn(
+      `Code highlighting failed for language "${language}", falling back to plain text.`,
+      error instanceof Error ? error.message : error,
+    );
+    // If highlighting fails for this language, render as plain text
+    highlightedHtml = highlighter.codeToHtml(code, { lang: "text", theme: themeName });
+  }
 
   useEffect(() => {
     if (!isStreaming) {
@@ -379,7 +375,7 @@ function normalizeMarkdownLinkHrefKey(href: string): string {
   return rewriteMarkdownFileUriHref(normalizedHref) ?? normalizedHref;
 }
 
-const MarkdownFileLink = memo(function MarkdownFileLink({
+function MarkdownFileLink({
   href,
   targetPath,
   displayPath,
@@ -388,7 +384,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   theme,
   className,
 }: MarkdownFileLinkProps) {
-  const handleOpen = useCallback(() => {
+  function handleOpen() {
     const api = readLocalApi();
     if (!api) {
       toastManager.add({
@@ -407,9 +403,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [targetPath]);
+  }
 
-  const handleCopy = useCallback((value: string, title: string) => {
+  function handleCopy(value: string, title: string) {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
       toastManager.add(
         stackedThreadToast({
@@ -439,39 +435,36 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         );
       },
     );
-  }, []);
+  }
 
-  const handleContextMenu = useCallback(
-    async (event: ReactMouseEvent<HTMLAnchorElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
+  async function handleContextMenu(event: ReactMouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    event.stopPropagation();
 
-      const api = readLocalApi();
-      if (!api) return;
+    const api = readLocalApi();
+    if (!api) return;
 
-      const clicked = await api.contextMenu.show(
-        [
-          { id: "open", label: "Open in editor" },
-          { id: "copy-relative", label: "Copy relative path" },
-          { id: "copy-full", label: "Copy full path" },
-        ] as const,
-        { x: event.clientX, y: event.clientY },
-      );
+    const clicked = await api.contextMenu.show(
+      [
+        { id: "open", label: "Open in editor" },
+        { id: "copy-relative", label: "Copy relative path" },
+        { id: "copy-full", label: "Copy full path" },
+      ] as const,
+      { x: event.clientX, y: event.clientY },
+    );
 
-      if (clicked === "open") {
-        handleOpen();
-        return;
-      }
-      if (clicked === "copy-relative") {
-        handleCopy(displayPath, "Relative path");
-        return;
-      }
-      if (clicked === "copy-full") {
-        handleCopy(targetPath, "Full path");
-      }
-    },
-    [displayPath, handleCopy, handleOpen, targetPath],
-  );
+    if (clicked === "open") {
+      handleOpen();
+      return;
+    }
+    if (clicked === "copy-relative") {
+      handleCopy(displayPath, "Relative path");
+      return;
+    }
+    if (clicked === "copy-full") {
+      handleCopy(targetPath, "Full path");
+    }
+  }
 
   return (
     <Tooltip>
@@ -506,21 +499,6 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         </div>
       </TooltipPopup>
     </Tooltip>
-  );
-}, areMarkdownFileLinkPropsEqual);
-
-function areMarkdownFileLinkPropsEqual(
-  previous: Readonly<MarkdownFileLinkProps>,
-  next: Readonly<MarkdownFileLinkProps>,
-): boolean {
-  return (
-    previous.href === next.href &&
-    previous.targetPath === next.targetPath &&
-    previous.displayPath === next.displayPath &&
-    previous.filePath === next.filePath &&
-    previous.label === next.label &&
-    previous.theme === next.theme &&
-    previous.className === next.className
   );
 }
 
@@ -566,7 +544,7 @@ const markdownComponentsWithoutRuntimeState = {
 function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
-  const markdownFileLinkMetaByHref = useMemo(() => {
+  const markdownFileLinkMetaByHref = (() => {
     const metaByHref = new Map<
       string,
       NonNullable<ReturnType<typeof resolveMarkdownFileLinkMeta>>
@@ -580,79 +558,69 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
       }
     }
     return metaByHref;
-  }, [cwd, text]);
-  const fileLinkParentSuffixByPath = useMemo(() => {
-    const filePaths = [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath);
-    return buildFileLinkParentSuffixByPath(filePaths);
-  }, [markdownFileLinkMetaByHref]);
-  const markdownUrlTransform = useCallback((href: string) => {
+  })();
+  const fileLinkParentSuffixByPath = buildFileLinkParentSuffixByPath(
+    [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
+  );
+  function markdownUrlTransform(href: string) {
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
-  }, []);
-  const markdownAnchor = useCallback(
-    ({ node: _node, href, ...props }: MarkdownFunctionComponentProps<"a">) => {
-      const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
-      const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
-      if (!fileLinkMeta) {
-        return <a {...props} href={href} target="_blank" rel="noopener noreferrer" />;
-      }
+  }
+  function markdownAnchor({ node: _node, href, ...props }: MarkdownFunctionComponentProps<"a">) {
+    const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
+    const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
+    if (!fileLinkMeta) {
+      return <a {...props} href={href} target="_blank" rel="noopener noreferrer" />;
+    }
 
-      const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
-      const labelParts = [fileLinkMeta.basename];
-      if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
-        labelParts.push(parentSuffix);
-      }
-      if (fileLinkMeta.line) {
-        labelParts.push(
-          `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
-        );
-      }
-
-      return (
-        <MarkdownFileLink
-          href={fileLinkMeta.targetPath}
-          targetPath={fileLinkMeta.targetPath}
-          displayPath={fileLinkMeta.displayPath}
-          filePath={fileLinkMeta.filePath}
-          label={labelParts.join(" · ")}
-          theme={resolvedTheme}
-          className={props.className}
-        />
+    const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
+    const labelParts = [fileLinkMeta.basename];
+    if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
+      labelParts.push(parentSuffix);
+    }
+    if (fileLinkMeta.line) {
+      labelParts.push(
+        `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
       );
-    },
-    [fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme],
-  );
-  const markdownPre = useCallback(
-    ({ node: _node, children, ...props }: MarkdownFunctionComponentProps<"pre">) => {
-      const codeBlock = extractCodeBlock(children);
-      if (!codeBlock) {
-        return <pre {...props}>{children}</pre>;
-      }
+    }
 
-      return (
-        <MarkdownCodeBlock code={codeBlock.code}>
-          <CodeHighlightErrorBoundary fallback={<pre {...props}>{children}</pre>}>
-            <Suspense fallback={<pre {...props}>{children}</pre>}>
-              <SuspenseShikiCodeBlock
-                className={codeBlock.className}
-                code={codeBlock.code}
-                themeName={diffThemeName}
-                isStreaming={isStreaming}
-              />
-            </Suspense>
-          </CodeHighlightErrorBoundary>
-        </MarkdownCodeBlock>
-      );
-    },
-    [diffThemeName, isStreaming],
-  );
-  const markdownComponents = useMemo<Components>(
-    () => ({
-      ...markdownComponentsWithoutRuntimeState,
-      a: markdownAnchor,
-      pre: markdownPre,
-    }),
-    [markdownAnchor, markdownPre],
-  );
+    return (
+      <MarkdownFileLink
+        href={fileLinkMeta.targetPath}
+        targetPath={fileLinkMeta.targetPath}
+        displayPath={fileLinkMeta.displayPath}
+        filePath={fileLinkMeta.filePath}
+        label={labelParts.join(" · ")}
+        theme={resolvedTheme}
+        className={props.className}
+      />
+    );
+  }
+  function markdownPre({ node: _node, children, ...props }: MarkdownFunctionComponentProps<"pre">) {
+    const codeBlock = extractCodeBlock(children);
+    if (!codeBlock) {
+      return <pre {...props}>{children}</pre>;
+    }
+
+    return (
+      <MarkdownCodeBlock code={codeBlock.code}>
+        <CodeHighlightErrorBoundary fallback={<pre {...props}>{children}</pre>}>
+          <Suspense fallback={<pre {...props}>{children}</pre>}>
+            <SuspenseShikiCodeBlock
+              className={codeBlock.className}
+              code={codeBlock.code}
+              themeName={diffThemeName}
+              isStreaming={isStreaming}
+            />
+          </Suspense>
+        </CodeHighlightErrorBoundary>
+      </MarkdownCodeBlock>
+    );
+  }
+  const markdownComponents: Components = {
+    ...markdownComponentsWithoutRuntimeState,
+    a: markdownAnchor,
+    pre: markdownPre,
+  };
 
   return (
     <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground/80">
@@ -667,4 +635,4 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
   );
 }
 
-export default memo(ChatMarkdown);
+export default ChatMarkdown;

@@ -157,9 +157,11 @@ function PullRequestThreadDialogSession({
         worktreePath: result.worktreePath,
       });
       onOpenChange(false);
-    } finally {
+    } catch (error) {
       setDialogState((current) => ({ ...current, preparingMode: null }));
+      throw error;
     }
+    setDialogState((current) => ({ ...current, preparingMode: null }));
   };
 
   const validationMessage = !referenceDirty

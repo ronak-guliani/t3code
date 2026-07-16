@@ -6,7 +6,7 @@ import type {
   GitStatusResult,
 } from "@t3tools/contracts";
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDownIcon,
   CloudDownloadIcon,
@@ -227,14 +227,8 @@ export default function GitActionsControl({
   draftId,
 }: GitActionsControlProps) {
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
-  const threadToastData = useMemo(
-    () => (activeThreadRef ? { threadRef: activeThreadRef } : undefined),
-    [activeThreadRef],
-  );
-  const activeServerThreadSelector = useMemo(
-    () => createThreadSelectorByRef(activeThreadRef),
-    [activeThreadRef],
-  );
+  const threadToastData = activeThreadRef ? { threadRef: activeThreadRef } : undefined;
+  const activeServerThreadSelector = createThreadSelectorByRef(activeThreadRef);
   const activeServerThread = useStore(activeServerThreadSelector);
   const activeDraftThread = useComposerDraftStore((store) =>
     draftId
@@ -306,26 +300,23 @@ export default function GitActionsControl({
       });
     },
     [
-      activeDraftThread,
-      activeServerThread,
       activeThreadRef,
+      activeServerThread,
+      activeDraftThread,
       draftId,
-      setDraftThreadContext,
       setThreadBranch,
+      setDraftThreadContext,
     ],
   );
 
-  const syncThreadBranchAfterGitAction = useCallback(
-    (result: GitRunStackedActionResult) => {
-      const branchUpdate = resolveThreadBranchUpdate(result);
-      if (!branchUpdate) {
-        return;
-      }
+  const syncThreadBranchAfterGitAction = (result: GitRunStackedActionResult) => {
+    const branchUpdate = resolveThreadBranchUpdate(result);
+    if (!branchUpdate) {
+      return;
+    }
 
-      persistThreadBranchSync(branchUpdate.branch);
-    },
-    [persistThreadBranchSync],
-  );
+    persistThreadBranchSync(branchUpdate.branch);
+  };
 
   const { data: gitStatus = null, error: gitStatusError } = useGitStatus({
     environmentId: activeEnvironmentId,
@@ -391,18 +382,18 @@ export default function GitActionsControl({
     persistThreadBranchSync,
   ]);
 
-  const isDefaultBranch = useMemo(() => {
-    return gitStatusForActions?.isDefaultBranch ?? false;
-  }, [gitStatusForActions?.isDefaultBranch]);
+  const isDefaultBranch = gitStatusForActions?.isDefaultBranch ?? false;
 
-  const gitActionMenuItems = useMemo(
-    () => buildMenuItems(gitStatusForActions, isGitActionRunning, hasOriginRemote),
-    [gitStatusForActions, hasOriginRemote, isGitActionRunning],
+  const gitActionMenuItems = buildMenuItems(
+    gitStatusForActions,
+    isGitActionRunning,
+    hasOriginRemote,
   );
-  const quickAction = useMemo(
-    () =>
-      resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultBranch, hasOriginRemote),
-    [gitStatusForActions, hasOriginRemote, isDefaultBranch, isGitActionRunning],
+  const quickAction = resolveQuickAction(
+    gitStatusForActions,
+    isGitActionRunning,
+    isDefaultBranch,
+    hasOriginRemote,
   );
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
@@ -463,7 +454,7 @@ export default function GitActionsControl({
     };
   }, [activeEnvironmentId, gitCwd]);
 
-  const openExistingPr = useCallback(async () => {
+  const openExistingPr = async () => {
     const api = readLocalApi();
     if (!api) {
       toastManager.add({
@@ -492,7 +483,7 @@ export default function GitActionsControl({
         }),
       );
     });
-  }, [gitStatusForActions, threadToastData]);
+  };
 
   async function runGitActionWithToast({
     action,
@@ -841,31 +832,28 @@ export default function GitActionsControl({
     });
   };
 
-  const openChangedFileInEditor = useCallback(
-    (filePath: string) => {
-      const api = readLocalApi();
-      if (!api || !gitCwd) {
-        toastManager.add({
-          type: "error",
-          title: "Editor opening is unavailable.",
-          data: threadToastData,
-        });
-        return;
-      }
-      const target = resolvePathLinkTarget(filePath, gitCwd);
-      void openInPreferredEditor(api, target).catch((error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open file",
-            description: error instanceof Error ? error.message : "An error occurred.",
-            ...(threadToastData !== undefined ? { data: threadToastData } : {}),
-          }),
-        );
+  const openChangedFileInEditor = (filePath: string) => {
+    const api = readLocalApi();
+    if (!api || !gitCwd) {
+      toastManager.add({
+        type: "error",
+        title: "Editor opening is unavailable.",
+        data: threadToastData,
       });
-    },
-    [gitCwd, threadToastData],
-  );
+      return;
+    }
+    const target = resolvePathLinkTarget(filePath, gitCwd);
+    void openInPreferredEditor(api, target).catch((error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to open file",
+          description: error instanceof Error ? error.message : "An error occurred.",
+          ...(threadToastData !== undefined ? { data: threadToastData } : {}),
+        }),
+      );
+    });
+  };
 
   if (!gitCwd) return null;
 

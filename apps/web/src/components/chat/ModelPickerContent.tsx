@@ -114,15 +114,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     searchInputRef.current?.focus({ preventScroll: true });
   }, []);
 
-  const handleSelectInstance = useCallback(
-    (instanceId: ProviderInstanceId | "favorites") => {
-      setSelectedInstanceId(instanceId);
-      window.requestAnimationFrame(() => {
-        focusSearchInput();
-      });
-    },
-    [focusSearchInput],
-  );
+  const handleSelectInstance = (instanceId: ProviderInstanceId | "favorites") => {
+    setSelectedInstanceId(instanceId);
+    window.requestAnimationFrame(() => {
+      focusSearchInput();
+    });
+  };
 
   useLayoutEffect(() => {
     focusSearchInput();

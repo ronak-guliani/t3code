@@ -633,53 +633,44 @@ function ChatPaneLeaf(props: ChatPaneLeafProps) {
     [leafId, leafView?.target, replaceLeafTarget],
   );
 
-  const updateDropPlacement = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      if (!hasChatSplitThreadDragPayload(event.dataTransfer)) {
-        setDropPlacement(null);
-        return null;
-      }
+  const resolveDropPlacement = (
+    event: React.DragEvent<HTMLDivElement>,
+  ): ChatSplitDropPlacement | null => {
+    if (!hasChatSplitThreadDragPayload(event.dataTransfer)) {
+      return null;
+    }
 
-      if (!leafView?.target) {
-        setDropPlacement("right");
-        return "right";
-      }
+    if (!leafView?.target) {
+      return "right";
+    }
 
-      const rect = event.currentTarget.getBoundingClientRect();
-      const placement = resolveChatSplitDropPlacement({
-        rect,
-        clientX: event.clientX,
-        clientY: event.clientY,
-      });
-      setDropPlacement(placement);
-      return placement;
-    },
-    [leafView?.target],
-  );
+    const rect = event.currentTarget.getBoundingClientRect();
+    return resolveChatSplitDropPlacement({
+      rect,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  };
 
-  const handleDragEnter = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      const placement = updateDropPlacement(event);
-      if (!placement) {
-        return;
-      }
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-    },
-    [updateDropPlacement],
-  );
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    const placement = resolveDropPlacement(event);
+    setDropPlacement(placement);
+    if (!placement) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
 
-  const handleDragOver = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      const placement = updateDropPlacement(event);
-      if (!placement) {
-        return;
-      }
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-    },
-    [updateDropPlacement],
-  );
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    const placement = resolveDropPlacement(event);
+    setDropPlacement(placement);
+    if (!placement) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  };
 
   const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     const relatedTarget = event.relatedTarget;
@@ -689,35 +680,32 @@ function ChatPaneLeaf(props: ChatPaneLeafProps) {
     setDropPlacement(null);
   }, []);
 
-  const handleDrop = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      const placement = updateDropPlacement(event);
-      const threadRef = readChatSplitThreadDragPayload(event.dataTransfer);
-      setDropPlacement(null);
-      if (!placement || !threadRef) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    const placement = resolveDropPlacement(event);
+    const threadRef = readChatSplitThreadDragPayload(event.dataTransfer);
+    setDropPlacement(null);
+    if (!placement || !threadRef) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
 
-      const focusedTarget = dropTargetIntoLeaf(
-        leafId,
-        {
-          kind: "server",
-          threadRef,
-        },
-        placement,
-      );
-      if (!focusedTarget || focusedTarget.kind !== "server") {
-        return;
-      }
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(focusedTarget.threadRef),
-      });
-    },
-    [dropTargetIntoLeaf, leafId, navigate, updateDropPlacement],
-  );
+    const focusedTarget = dropTargetIntoLeaf(
+      leafId,
+      {
+        kind: "server",
+        threadRef,
+      },
+      placement,
+    );
+    if (!focusedTarget || focusedTarget.kind !== "server") {
+      return;
+    }
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(focusedTarget.threadRef),
+    });
+  };
 
   const paneActions = useMemo<ReactNode>(() => {
     if (!leafView) return null;

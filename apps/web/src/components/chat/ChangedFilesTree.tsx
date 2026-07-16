@@ -97,86 +97,150 @@ export const ChangedFilesTree = memo(function ChangedFilesTree(props: {
     [workspaceRoot],
   );
 
-  const renderTreeNode = (node: TurnDiffTreeNode, depth: number) => {
-    const leftPadding = 8 + depth * 14;
-    if (node.kind === "directory") {
-      const isExpanded = expandedDirectories[node.path] ?? allDirectoriesExpanded;
-      return (
-        <div key={`dir:${node.path}`}>
-          <button
-            type="button"
-            data-scroll-anchor-ignore
-            className="group flex w-full items-center gap-1.5 rounded-xl py-1 pr-3 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-            style={{ paddingLeft: `${leftPadding}px` }}
-            onClick={() => toggleDirectory(node.path)}
-            onContextMenu={(event) => showFileManagerContextMenu(event, node.path)}
-          >
-            <ChevronRightIcon
-              aria-hidden="true"
-              className={cn(
-                "size-3.5 shrink-0 text-muted-foreground/70 transition-transform group-hover:text-foreground/80",
-                isExpanded && "rotate-90",
-              )}
-            />
-            {isExpanded ? (
-              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
-            ) : (
-              <FolderClosedIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
-            )}
-            <span className="truncate font-mono text-muted-foreground/90 group-hover:text-foreground/90">
-              {node.name}
-            </span>
-            {hasNonZeroStat(node.stat) && (
-              <span className="ml-auto shrink-0 font-mono text-[0.85em] tabular-nums">
-                <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
-              </span>
-            )}
-          </button>
-          {isExpanded && (
-            <div className="space-y-0.5">
-              {node.children.map((childNode) => renderTreeNode(childNode, depth + 1))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    return (
-      <button
-        key={`file:${node.path}`}
-        type="button"
-        className="group flex w-full items-center gap-1.5 rounded-xl py-1 pr-3 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-        style={{ paddingLeft: `${leftPadding}px` }}
-        onClick={() => onOpenTurnDiff(turnId, node.path, diffScope)}
-        onContextMenu={(event) => showFileManagerContextMenu(event, node.path)}
-      >
-        {hasDirectoryNodes || depth > 0 ? (
-          <span aria-hidden="true" className="size-3.5 shrink-0" />
-        ) : null}
-        <VscodeEntryIcon
-          pathValue={node.path}
-          kind="file"
-          theme={resolvedTheme}
-          className="size-3.5 text-muted-foreground/70"
-        />
-        <span className="truncate font-mono text-muted-foreground/80 group-hover:text-foreground/90">
-          {node.name}
-        </span>
-        {node.stat && (
-          <span className="ml-auto shrink-0 font-mono text-[0.85em] tabular-nums">
-            <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
-          </span>
-        )}
-      </button>
-    );
-  };
+  const treeContext = useMemo<TreeNodeContext>(
+    () => ({
+      expandedDirectories,
+      allDirectoriesExpanded,
+      hasDirectoryNodes,
+      resolvedTheme,
+      turnId,
+      diffScope,
+      toggleDirectory,
+      showFileManagerContextMenu,
+      onOpenTurnDiff,
+    }),
+    [
+      expandedDirectories,
+      allDirectoriesExpanded,
+      hasDirectoryNodes,
+      resolvedTheme,
+      turnId,
+      diffScope,
+      toggleDirectory,
+      showFileManagerContextMenu,
+      onOpenTurnDiff,
+    ],
+  );
 
   return (
     <div className="space-y-0.5" style={{ fontSize: "var(--app-code-font-size)" }}>
-      {treeNodes.map((node) => renderTreeNode(node, 0))}
+      {treeNodes.map((node) => (
+        <ChangedFilesTreeNode key={node.path} node={node} depth={0} context={treeContext} />
+      ))}
     </div>
   );
 });
+
+type TreeNodeContext = {
+  expandedDirectories: Record<string, boolean>;
+  allDirectoriesExpanded: boolean;
+  hasDirectoryNodes: boolean;
+  resolvedTheme: "light" | "dark";
+  turnId: TurnId;
+  diffScope: TurnDiffScope | undefined;
+  toggleDirectory: (pathValue: string) => void;
+  showFileManagerContextMenu: (event: ReactMouseEvent, pathValue: string) => void;
+  onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
+};
+
+function ChangedFilesTreeNode({
+  node,
+  depth,
+  context,
+}: {
+  node: TurnDiffTreeNode;
+  depth: number;
+  context: TreeNodeContext;
+}) {
+  const {
+    expandedDirectories,
+    allDirectoriesExpanded,
+    hasDirectoryNodes,
+    resolvedTheme,
+    turnId,
+    diffScope,
+    toggleDirectory,
+    showFileManagerContextMenu,
+    onOpenTurnDiff,
+  } = context;
+  const leftPadding = 8 + depth * 14;
+  if (node.kind === "directory") {
+    const isExpanded = expandedDirectories[node.path] ?? allDirectoriesExpanded;
+    return (
+      <div>
+        <button
+          type="button"
+          data-scroll-anchor-ignore
+          className="group flex w-full items-center gap-1.5 rounded-xl py-1 pr-3 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+          style={{ paddingLeft: `${leftPadding}px` }}
+          onClick={() => toggleDirectory(node.path)}
+          onContextMenu={(event) => showFileManagerContextMenu(event, node.path)}
+        >
+          <ChevronRightIcon
+            aria-hidden="true"
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground/70 transition-transform group-hover:text-foreground/80",
+              isExpanded && "rotate-90",
+            )}
+          />
+          {isExpanded ? (
+            <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+          ) : (
+            <FolderClosedIcon className="size-3.5 shrink-0 text-muted-foreground/75" />
+          )}
+          <span className="truncate font-mono text-muted-foreground/90 group-hover:text-foreground/90">
+            {node.name}
+          </span>
+          {hasNonZeroStat(node.stat) && (
+            <span className="ml-auto shrink-0 font-mono text-[0.85em] tabular-nums">
+              <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+            </span>
+          )}
+        </button>
+        {isExpanded && (
+          <div className="space-y-0.5">
+            {node.children.map((childNode) => (
+              <ChangedFilesTreeNode
+                key={childNode.path}
+                node={childNode}
+                depth={depth + 1}
+                context={context}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="group flex w-full items-center gap-1.5 rounded-xl py-1 pr-3 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+      style={{ paddingLeft: `${leftPadding}px` }}
+      onClick={() => onOpenTurnDiff(turnId, node.path, diffScope)}
+      onContextMenu={(event) => showFileManagerContextMenu(event, node.path)}
+    >
+      {hasDirectoryNodes || depth > 0 ? (
+        <span aria-hidden="true" className="size-3.5 shrink-0" />
+      ) : null}
+      <VscodeEntryIcon
+        pathValue={node.path}
+        kind="file"
+        theme={resolvedTheme}
+        className="size-3.5 text-muted-foreground/70"
+      />
+      <span className="truncate font-mono text-muted-foreground/80 group-hover:text-foreground/90">
+        {node.name}
+      </span>
+      {node.stat && (
+        <span className="ml-auto shrink-0 font-mono text-[0.85em] tabular-nums">
+          <DiffStatLabel additions={node.stat.additions} deletions={node.stat.deletions} />
+        </span>
+      )}
+    </button>
+  );
+}
 
 function joinWorkspacePath(workspaceRoot: string, pathValue: string): string {
   const trimmedRoot = workspaceRoot.replace(/\/+$/, "");

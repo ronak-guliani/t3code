@@ -1373,52 +1373,40 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     // Callbacks: prompt change
     // ------------------------------------------------------------------
-    const onPromptChange = useCallback(
-      (
-        nextPrompt: string,
-        nextCursor: number,
-        expandedCursor: number,
-        cursorAdjacentToMention: boolean,
-        terminalContextIds: string[],
-      ) => {
-        if (activePendingProgress?.activeQuestion && pendingUserInputs.length > 0) {
-          setComposerCursor(nextCursor);
-          setComposerTrigger(
-            cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
-          );
-          onChangeActivePendingUserInputCustomAnswer(
-            activePendingProgress.activeQuestion.id,
-            nextPrompt,
-            nextCursor,
-            expandedCursor,
-            cursorAdjacentToMention,
-          );
-          return;
-        }
-        promptRef.current = nextPrompt;
-        setPrompt(nextPrompt);
-        if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
-          setComposerDraftTerminalContexts(
-            composerDraftTarget,
-            syncTerminalContextsByIds(composerTerminalContexts, terminalContextIds),
-          );
-        }
+    const onPromptChange = (
+      nextPrompt: string,
+      nextCursor: number,
+      expandedCursor: number,
+      cursorAdjacentToMention: boolean,
+      terminalContextIds: string[],
+    ) => {
+      if (activePendingProgress?.activeQuestion && pendingUserInputs.length > 0) {
         setComposerCursor(nextCursor);
         setComposerTrigger(
           cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
         );
-      },
-      [
-        activePendingProgress?.activeQuestion,
-        pendingUserInputs.length,
-        onChangeActivePendingUserInputCustomAnswer,
-        promptRef,
-        setPrompt,
-        composerDraftTarget,
-        composerTerminalContexts,
-        setComposerDraftTerminalContexts,
-      ],
-    );
+        onChangeActivePendingUserInputCustomAnswer(
+          activePendingProgress.activeQuestion.id,
+          nextPrompt,
+          nextCursor,
+          expandedCursor,
+          cursorAdjacentToMention,
+        );
+        return;
+      }
+      promptRef.current = nextPrompt;
+      setPrompt(nextPrompt);
+      if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
+        setComposerDraftTerminalContexts(
+          composerDraftTarget,
+          syncTerminalContextsByIds(composerTerminalContexts, terminalContextIds),
+        );
+      }
+      setComposerCursor(nextCursor);
+      setComposerTrigger(
+        cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
+      );
+    };
 
     // ------------------------------------------------------------------
     // Callbacks: prompt replacement / menu
@@ -1590,13 +1578,10 @@ export const ChatComposer = memo(
       [applyPromptReplacement, handleInteractionModeChange, resolveActiveComposerTrigger],
     );
 
-    const onComposerMenuItemHighlighted = useCallback(
-      (itemId: string | null) => {
-        setComposerHighlightedItemId(itemId);
-        setComposerHighlightedSearchKey(composerMenuSearchKey);
-      },
-      [composerMenuSearchKey],
-    );
+    const onComposerMenuItemHighlighted = (itemId: string | null) => {
+      setComposerHighlightedItemId(itemId);
+      setComposerHighlightedSearchKey(composerMenuSearchKey);
+    };
 
     const nudgeComposerMenuHighlight = useCallback(
       (key: "ArrowDown" | "ArrowUp") => {
@@ -2277,9 +2262,7 @@ export const ChatComposer = memo(
                             composerProviderState.modelPickerIconClassName,
                         }
                       : {})}
-                    onOpenChange={(open) => {
-                      setIsComposerModelPickerOpen(open);
-                    }}
+                    onOpenChange={setIsComposerModelPickerOpen}
                     onInstanceModelChange={onProviderModelSelect}
                   />
 

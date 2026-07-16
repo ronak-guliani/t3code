@@ -361,13 +361,11 @@ export default function ProjectScriptsControl({
       )}
 
       <Dialog
-        onOpenChange={(open) => {
-          setDialogOpen(open);
+        onOpenChange={setDialogOpen}
+        onOpenChangeComplete={(open) => {
           if (!open) {
             setIconPickerOpen(false);
           }
-        }}
-        onOpenChangeComplete={(open) => {
           if (open) return;
           setEditingScriptId(null);
           setName("");

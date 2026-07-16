@@ -8,8 +8,6 @@ import {
   FolderIcon,
   MonitorIcon,
 } from "lucide-react";
-import { memo, useMemo } from "react";
-
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
@@ -65,7 +63,7 @@ interface MobileRunContextSelectorProps {
   onEnvModeChange: (mode: EnvMode) => void;
 }
 
-const MobileRunContextSelector = memo(function MobileRunContextSelector({
+const MobileRunContextSelector = function MobileRunContextSelector({
   envLocked,
   envModeLocked,
   environmentId,
@@ -76,10 +74,8 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   activeWorktreePath,
   onEnvModeChange,
 }: MobileRunContextSelectorProps) {
-  const activeEnvironment = useMemo(
-    () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
-    [availableEnvironments, environmentId],
-  );
+  const activeEnvironment =
+    availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null;
   const environmentLabel = activeEnvironment?.label ?? "Run on";
   const EnvironmentIcon = activeEnvironment?.isPrimary ? MonitorIcon : CloudIcon;
   const WorkspaceIcon =
@@ -171,9 +167,9 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
       </MenuPopup>
     </Menu>
   );
-});
+};
 
-export const BranchToolbar = memo(function BranchToolbar({
+export const BranchToolbar = function BranchToolbar({
   environmentId,
   threadId,
   draftId,
@@ -187,11 +183,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   availableEnvironments,
   onEnvironmentChange,
 }: BranchToolbarProps) {
-  const threadRef = useMemo(
-    () => scopeThreadRef(environmentId, threadId),
-    [environmentId, threadId],
-  );
-  const serverThreadSelector = useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]);
+  const threadRef = scopeThreadRef(environmentId, threadId);
+  const serverThreadSelector = createThreadSelectorByRef(threadRef);
   const serverThread = useStore(serverThreadSelector);
   const draftThread = useComposerDraftStore((store) =>
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
@@ -201,10 +194,7 @@ export const BranchToolbar = memo(function BranchToolbar({
     : draftThread
       ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
       : null;
-  const activeProjectSelector = useMemo(
-    () => createProjectSelectorByRef(activeProjectRef),
-    [activeProjectRef],
-  );
+  const activeProjectSelector = createProjectSelectorByRef(activeProjectRef);
   const activeProject = useStore(activeProjectSelector);
   const hasActiveThread = serverThread !== undefined || draftThread !== null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
@@ -280,4 +270,4 @@ export const BranchToolbar = memo(function BranchToolbar({
       />
     </div>
   );
-});
+};

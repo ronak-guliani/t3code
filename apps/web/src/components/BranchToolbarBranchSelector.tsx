@@ -412,19 +412,16 @@ export function BranchToolbarBranchSelector({
   // ---------------------------------------------------------------------------
   // Combobox / list plumbing
   // ---------------------------------------------------------------------------
-  const handleOpenChange = useCallback(
-    (open: boolean) => {
-      setIsBranchMenuOpen(open);
-      if (!open) {
-        setBranchQuery("");
-        return;
-      }
-      void queryClient.invalidateQueries({
-        queryKey: gitQueryKeys.branches(environmentId, branchCwd),
-      });
-    },
-    [branchCwd, environmentId, queryClient],
-  );
+  const handleOpenChange = (open: boolean) => {
+    setIsBranchMenuOpen(open);
+    if (!open) {
+      setBranchQuery("");
+      return;
+    }
+    void queryClient.invalidateQueries({
+      queryKey: gitQueryKeys.branches(environmentId, branchCwd),
+    });
+  };
 
   const branchListScrollElementRef = useRef<HTMLDivElement | null>(null);
   const maybeFetchNextBranchPage = useCallback(() => {

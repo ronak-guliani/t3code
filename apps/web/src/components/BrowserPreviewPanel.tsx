@@ -339,9 +339,8 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
             description: error instanceof Error ? error.message : "The preview URL could not open.",
           }),
         );
-      } finally {
-        setIsOpening(false);
       }
+      setIsOpening(false);
     },
     [api, snapshot, threadId, threadRef],
   );
@@ -373,9 +372,8 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
           description: error instanceof Error ? error.message : "The preview URL could not open.",
         }),
       );
-    } finally {
-      setIsOpening(false);
     }
+    setIsOpening(false);
   }, [address, api, threadId, threadRef]);
 
   const closeTab = useCallback(
@@ -568,9 +566,11 @@ export const BrowserPreviewPanel = memo(function BrowserPreviewPanel({
         const url = URL.createObjectURL(blob);
         try {
           downloadDataUrl(`preview-recording-${result.tabId}-${result.stoppedAt}.json`, url);
-        } finally {
+        } catch (error) {
           URL.revokeObjectURL(url);
+          throw error;
         }
+        URL.revokeObjectURL(url);
       })
       .catch((error: unknown) => {
         setIsRecording(false);

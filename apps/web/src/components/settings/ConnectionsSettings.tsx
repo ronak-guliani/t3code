@@ -551,9 +551,8 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
           description: message,
         }),
       );
-    } finally {
-      setIsCreatingPairingLink(false);
     }
+    setIsCreatingPairingLink(false);
   }, [pairingLabel]);
 
   return (
@@ -588,8 +587,8 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
       </Button>
       <Dialog
         open={dialogOpen}
-        onOpenChange={(open) => {
-          setDialogOpen(open);
+        onOpenChange={setDialogOpen}
+        onOpenChangeComplete={(open) => {
           if (!open) {
             setPairingLabel("");
           }
@@ -913,7 +912,7 @@ export function ConnectionsSettings() {
     }
   }, [createMobilePairing]);
 
-  const handleRevokeDesktopPairingLink = useCallback(async (id: string) => {
+  const handleRevokeDesktopPairingLink = async (id: string) => {
     setRevokingDesktopPairingLinkId(id);
     setDesktopAccessManagementError(null);
     try {
@@ -928,33 +927,30 @@ export function ConnectionsSettings() {
           description: message,
         }),
       );
-    } finally {
-      setRevokingDesktopPairingLinkId(null);
     }
-  }, []);
+    setRevokingDesktopPairingLinkId(null);
+  };
 
-  const handleRevokeDesktopClientSession = useCallback(
-    async (sessionId: ServerClientSessionRecord["sessionId"]) => {
-      setRevokingDesktopClientSessionId(sessionId);
-      setDesktopAccessManagementError(null);
-      try {
-        await revokeServerClientSession(sessionId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Failed to revoke client access.";
-        setDesktopAccessManagementError(message);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not revoke client access",
-            description: message,
-          }),
-        );
-      } finally {
-        setRevokingDesktopClientSessionId(null);
-      }
-    },
-    [],
-  );
+  const handleRevokeDesktopClientSession = async (
+    sessionId: ServerClientSessionRecord["sessionId"],
+  ) => {
+    setRevokingDesktopClientSessionId(sessionId);
+    setDesktopAccessManagementError(null);
+    try {
+      await revokeServerClientSession(sessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to revoke client access.";
+      setDesktopAccessManagementError(message);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not revoke client access",
+          description: message,
+        }),
+      );
+    }
+    setRevokingDesktopClientSessionId(null);
+  };
 
   const handleRevokeOtherDesktopClients = useCallback(async () => {
     setIsRevokingOtherDesktopClients(true);
@@ -976,9 +972,8 @@ export function ConnectionsSettings() {
           description: message,
         }),
       );
-    } finally {
-      setIsRevokingOtherDesktopClients(false);
     }
+    setIsRevokingOtherDesktopClients(false);
   }, []);
 
   const handleAddSavedBackend = useCallback(async () => {
@@ -1014,9 +1009,8 @@ export function ConnectionsSettings() {
           description: message,
         }),
       );
-    } finally {
-      setIsAddingSavedBackend(false);
     }
+    setIsAddingSavedBackend(false);
   }, [
     savedBackendHost,
     savedBackendLabel,
@@ -1025,7 +1019,7 @@ export function ConnectionsSettings() {
     savedBackendPairingUrl,
   ]);
 
-  const handleReconnectSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
+  const handleReconnectSavedBackend = async (environmentId: EnvironmentId) => {
     setReconnectingSavedEnvironmentId(environmentId);
     setSavedBackendError(null);
     try {
@@ -1040,12 +1034,11 @@ export function ConnectionsSettings() {
           description: message,
         }),
       );
-    } finally {
-      setReconnectingSavedEnvironmentId(null);
     }
-  }, []);
+    setReconnectingSavedEnvironmentId(null);
+  };
 
-  const handleRemoveSavedBackend = useCallback(async (environmentId: EnvironmentId) => {
+  const handleRemoveSavedBackend = async (environmentId: EnvironmentId) => {
     setRemovingSavedEnvironmentId(environmentId);
     setSavedBackendError(null);
     try {
@@ -1060,14 +1053,12 @@ export function ConnectionsSettings() {
           description: message,
         }),
       );
-    } finally {
-      setRemovingSavedEnvironmentId(null);
     }
-  }, []);
+    setRemovingSavedEnvironmentId(null);
+  };
 
   useEffect(() => {
     if (desktopBridge) {
-      setCurrentSessionRole("owner");
       return;
     }
 
@@ -1167,9 +1158,6 @@ export function ConnectionsSettings() {
             error instanceof Error ? error.message : "Failed to load network exposure state.";
           setDesktopServerExposureError(message);
         });
-    } else {
-      setDesktopServerExposureState(null);
-      setDesktopServerExposureError(null);
     }
 
     return () => {
@@ -1178,18 +1166,12 @@ export function ConnectionsSettings() {
     };
   }, [canManageLocalBackend, desktopBridge]);
 
-  useEffect(() => {
-    if (canManageLocalBackend) return;
-    setIsLoadingDesktopAccessManagement(false);
-    setDesktopPairingLinks([]);
-    setDesktopClientSessions([]);
-    setDesktopAccessManagementError(null);
-    setDesktopServerExposureState(null);
-    setDesktopServerExposureError(null);
-  }, [canManageLocalBackend]);
   const visibleDesktopPairingLinks = useMemo(
-    () => desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client"),
-    [desktopPairingLinks],
+    () =>
+      canManageLocalBackend
+        ? desktopPairingLinks.filter((pairingLink) => pairingLink.role === "client")
+        : [],
+    [canManageLocalBackend, desktopPairingLinks],
   );
   return (
     <SettingsPageContainer>
@@ -1366,8 +1348,8 @@ export function ConnectionsSettings() {
         headerAction={
           <Dialog
             open={addBackendDialogOpen}
-            onOpenChange={(open) => {
-              setAddBackendDialogOpen(open);
+            onOpenChange={setAddBackendDialogOpen}
+            onOpenChangeComplete={(open) => {
               if (!open) {
                 setSavedBackendError(null);
               }

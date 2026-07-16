@@ -105,47 +105,41 @@ function SidebarProvider({
   // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen);
   const open = openProp ?? _open;
-  const setOpen = React.useCallback(
-    async (value: boolean | ((value: boolean) => boolean)) => {
-      const openState = typeof value === "function" ? value(open) : value;
-      if (setOpenProp) {
-        setOpenProp(openState);
-      } else {
-        _setOpen(openState);
-      }
+  const setOpen = async (value: boolean | ((value: boolean) => boolean)) => {
+    const openState = typeof value === "function" ? value(open) : value;
+    if (setOpenProp) {
+      setOpenProp(openState);
+    } else {
+      _setOpen(openState);
+    }
 
-      // This sets the cookie to keep the sidebar state.
-      await cookieStore.set({
-        expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
-        name: SIDEBAR_COOKIE_NAME,
-        path: "/",
-        value: String(openState),
-      });
-    },
-    [setOpenProp, open],
-  );
+    // This sets the cookie to keep the sidebar state.
+    await cookieStore.set({
+      expires: Date.now() + SIDEBAR_COOKIE_MAX_AGE * 1000,
+      name: SIDEBAR_COOKIE_NAME,
+      path: "/",
+      value: String(openState),
+    });
+  };
 
   // Helper to toggle the sidebar.
-  const toggleSidebar = React.useCallback(() => {
+  const toggleSidebar = () => {
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
-  }, [isMobile, setOpen]);
+  };
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
   const state = open ? "expanded" : "collapsed";
 
-  const contextValue = React.useMemo<SidebarContextProps>(
-    () => ({
-      isMobile,
-      open,
-      openMobile,
-      setOpen,
-      setOpenMobile,
-      state,
-      toggleSidebar,
-    }),
-    [state, open, setOpen, isMobile, openMobile, toggleSidebar],
-  );
+  const contextValue: SidebarContextProps = {
+    isMobile,
+    open,
+    openMobile,
+    setOpen,
+    setOpenMobile,
+    state,
+    toggleSidebar,
+  };
 
   return (
     <SidebarContext.Provider value={contextValue}>
@@ -185,7 +179,7 @@ function Sidebar({
   resizable?: boolean | SidebarResizableOptions;
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar();
-  const resolvedResizable = React.useMemo<SidebarResolvedResizableOptions | null>(() => {
+  const resolvedResizable: SidebarResolvedResizableOptions | null = (() => {
     if (isMobile || collapsible === "none" || !resizable) {
       return null;
     }
@@ -198,11 +192,11 @@ function Sidebar({
       ...(options.onResize ? { onResize: options.onResize } : {}),
       ...(options.shouldAcceptWidth ? { shouldAcceptWidth: options.shouldAcceptWidth } : {}),
     };
-  }, [collapsible, isMobile, resizable]);
-  const instanceContextValue = React.useMemo<SidebarInstanceContextProps>(
-    () => ({ side, resizable: resolvedResizable }),
-    [resolvedResizable, side],
-  );
+  })();
+  const instanceContextValue: SidebarInstanceContextProps = {
+    side,
+    resizable: resolvedResizable,
+  };
 
   if (collapsible === "none") {
     return (
@@ -367,181 +361,157 @@ function SidebarRail({
   const railLabel = canResize ? "Resize Sidebar" : "Toggle Sidebar";
   const railTitle = canResize ? "Drag to resize sidebar" : "Toggle Sidebar";
 
-  const stopResize = React.useCallback(
-    (pointerId: number) => {
-      const resizeState = resizeStateRef.current;
-      if (!resizeState) {
+  const stopResize = (pointerId: number) => {
+    const resizeState = resizeStateRef.current;
+    if (!resizeState) {
+      return;
+    }
+    if (resizeState.rafId !== null) {
+      window.cancelAnimationFrame(resizeState.rafId);
+    }
+    resizeState.transitionTargets.forEach((element) => {
+      element.style.removeProperty("transition-duration");
+    });
+    if (resolvedResizable?.storageKey && typeof window !== "undefined") {
+      setLocalStorageItem(resolvedResizable.storageKey, resizeState.width, Schema.Finite);
+    }
+    resolvedResizable?.onResize?.(resizeState.width);
+    resizeStateRef.current = null;
+    if (resizeState.rail.hasPointerCapture(pointerId)) {
+      resizeState.rail.releasePointerCapture(pointerId);
+    }
+    document.body.style.removeProperty("cursor");
+    document.body.style.removeProperty("user-select");
+  };
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerDown?.(event);
+    if (event.defaultPrevented) return;
+    if (!resolvedResizable || !open || event.button !== 0) return;
+
+    const wrapper = event.currentTarget.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
+    const sidebarRoot = event.currentTarget.closest<HTMLElement>("[data-slot='sidebar']");
+    if (!wrapper || !sidebarRoot) {
+      return;
+    }
+
+    const sidebarContainer = sidebarRoot.querySelector<HTMLElement>(
+      "[data-slot='sidebar-container']",
+    );
+    if (!sidebarContainer) {
+      return;
+    }
+
+    const startWidth = sidebarContainer.getBoundingClientRect().width;
+    const initialWidth = clampSidebarWidth(startWidth, resolvedResizable);
+    const transitionTargets = [
+      sidebarRoot.querySelector<HTMLElement>("[data-slot='sidebar-gap']"),
+      sidebarRoot.querySelector<HTMLElement>("[data-slot='sidebar-container']"),
+    ].filter((element): element is HTMLElement => element !== null);
+    transitionTargets.forEach((element) => {
+      element.style.setProperty("transition-duration", "0ms");
+    });
+
+    event.preventDefault();
+    event.stopPropagation();
+    resizeStateRef.current = {
+      moved: false,
+      pointerId: event.pointerId,
+      pendingWidth: initialWidth,
+      rail: event.currentTarget,
+      rafId: null,
+      sidebarRoot,
+      side: sidebarInstance?.side ?? "left",
+      startWidth: initialWidth,
+      startX: event.clientX,
+      transitionTargets,
+      width: initialWidth,
+      wrapper,
+    };
+    wrapper.style.setProperty("--sidebar-width", `${initialWidth}px`);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
+
+  const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerMove?.(event);
+    if (event.defaultPrevented) return;
+    const resizeState = resizeStateRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId || !resolvedResizable) return;
+
+    event.preventDefault();
+    const delta =
+      resizeState.side === "right"
+        ? resizeState.startX - event.clientX
+        : event.clientX - resizeState.startX;
+    if (Math.abs(delta) > 2) {
+      resizeState.moved = true;
+    }
+    resizeState.pendingWidth = clampSidebarWidth(resizeState.startWidth + delta, resolvedResizable);
+    if (resizeState.rafId !== null) {
+      return;
+    }
+
+    resizeState.rafId = window.requestAnimationFrame(() => {
+      const activeResizeState = resizeStateRef.current;
+      if (!activeResizeState || !resolvedResizable) return;
+
+      activeResizeState.rafId = null;
+      const nextWidth = activeResizeState.pendingWidth;
+      const accepted =
+        resolvedResizable.shouldAcceptWidth?.({
+          currentWidth: activeResizeState.width,
+          nextWidth,
+          rail: activeResizeState.rail,
+          side: activeResizeState.side,
+          sidebarRoot: activeResizeState.sidebarRoot,
+          wrapper: activeResizeState.wrapper,
+        }) ?? true;
+      if (!accepted) {
         return;
       }
-      if (resizeState.rafId !== null) {
-        window.cancelAnimationFrame(resizeState.rafId);
-      }
-      resizeState.transitionTargets.forEach((element) => {
-        element.style.removeProperty("transition-duration");
-      });
-      if (resolvedResizable?.storageKey && typeof window !== "undefined") {
-        setLocalStorageItem(resolvedResizable.storageKey, resizeState.width, Schema.Finite);
-      }
-      resolvedResizable?.onResize?.(resizeState.width);
-      resizeStateRef.current = null;
-      if (resizeState.rail.hasPointerCapture(pointerId)) {
-        resizeState.rail.releasePointerCapture(pointerId);
-      }
-      document.body.style.removeProperty("cursor");
-      document.body.style.removeProperty("user-select");
-    },
-    [resolvedResizable],
-  );
 
-  const handlePointerDown = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      onPointerDown?.(event);
-      if (event.defaultPrevented) return;
-      if (!resolvedResizable || !open || event.button !== 0) return;
+      activeResizeState.wrapper.style.setProperty("--sidebar-width", `${nextWidth}px`);
+      activeResizeState.width = nextWidth;
+    });
+  };
 
-      const wrapper = event.currentTarget.closest<HTMLElement>("[data-slot='sidebar-wrapper']");
-      const sidebarRoot = event.currentTarget.closest<HTMLElement>("[data-slot='sidebar']");
-      if (!wrapper || !sidebarRoot) {
-        return;
-      }
+  const endResizeInteraction = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const resizeState = resizeStateRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
 
-      const sidebarContainer = sidebarRoot.querySelector<HTMLElement>(
-        "[data-slot='sidebar-container']",
-      );
-      if (!sidebarContainer) {
-        return;
-      }
+    event.preventDefault();
+    suppressClickRef.current = resizeState.moved;
+    stopResize(event.pointerId);
+  };
 
-      const startWidth = sidebarContainer.getBoundingClientRect().width;
-      const initialWidth = clampSidebarWidth(startWidth, resolvedResizable);
-      const transitionTargets = [
-        sidebarRoot.querySelector<HTMLElement>("[data-slot='sidebar-gap']"),
-        sidebarRoot.querySelector<HTMLElement>("[data-slot='sidebar-container']"),
-      ].filter((element): element is HTMLElement => element !== null);
-      transitionTargets.forEach((element) => {
-        element.style.setProperty("transition-duration", "0ms");
-      });
+  const handlePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerUp?.(event);
+    if (event.defaultPrevented) return;
+    endResizeInteraction(event);
+  };
 
+  const handlePointerCancel = (event: React.PointerEvent<HTMLButtonElement>) => {
+    onPointerCancel?.(event);
+    if (event.defaultPrevented) return;
+    endResizeInteraction(event);
+  };
+
+  const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+    onClick?.(event);
+    if (event.defaultPrevented) return;
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
       event.preventDefault();
-      event.stopPropagation();
-      resizeStateRef.current = {
-        moved: false,
-        pointerId: event.pointerId,
-        pendingWidth: initialWidth,
-        rail: event.currentTarget,
-        rafId: null,
-        sidebarRoot,
-        side: sidebarInstance?.side ?? "left",
-        startWidth: initialWidth,
-        startX: event.clientX,
-        transitionTargets,
-        width: initialWidth,
-        wrapper,
-      };
-      wrapper.style.setProperty("--sidebar-width", `${initialWidth}px`);
-      event.currentTarget.setPointerCapture(event.pointerId);
-      document.body.style.cursor = "col-resize";
-      document.body.style.userSelect = "none";
-    },
-    [onPointerDown, open, resolvedResizable, sidebarInstance?.side],
-  );
-
-  const handlePointerMove = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      onPointerMove?.(event);
-      if (event.defaultPrevented) return;
-      const resizeState = resizeStateRef.current;
-      if (!resizeState || resizeState.pointerId !== event.pointerId || !resolvedResizable) return;
-
+      return;
+    }
+    if (resolvedResizable && open) {
       event.preventDefault();
-      const delta =
-        resizeState.side === "right"
-          ? resizeState.startX - event.clientX
-          : event.clientX - resizeState.startX;
-      if (Math.abs(delta) > 2) {
-        resizeState.moved = true;
-      }
-      resizeState.pendingWidth = clampSidebarWidth(
-        resizeState.startWidth + delta,
-        resolvedResizable,
-      );
-      if (resizeState.rafId !== null) {
-        return;
-      }
-
-      resizeState.rafId = window.requestAnimationFrame(() => {
-        const activeResizeState = resizeStateRef.current;
-        if (!activeResizeState || !resolvedResizable) return;
-
-        activeResizeState.rafId = null;
-        const nextWidth = activeResizeState.pendingWidth;
-        const accepted =
-          resolvedResizable.shouldAcceptWidth?.({
-            currentWidth: activeResizeState.width,
-            nextWidth,
-            rail: activeResizeState.rail,
-            side: activeResizeState.side,
-            sidebarRoot: activeResizeState.sidebarRoot,
-            wrapper: activeResizeState.wrapper,
-          }) ?? true;
-        if (!accepted) {
-          return;
-        }
-
-        activeResizeState.wrapper.style.setProperty("--sidebar-width", `${nextWidth}px`);
-        activeResizeState.width = nextWidth;
-      });
-    },
-    [onPointerMove, resolvedResizable],
-  );
-
-  const endResizeInteraction = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      const resizeState = resizeStateRef.current;
-      if (!resizeState || resizeState.pointerId !== event.pointerId) return;
-
-      event.preventDefault();
-      suppressClickRef.current = resizeState.moved;
-      stopResize(event.pointerId);
-    },
-    [stopResize],
-  );
-
-  const handlePointerUp = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      onPointerUp?.(event);
-      if (event.defaultPrevented) return;
-      endResizeInteraction(event);
-    },
-    [endResizeInteraction, onPointerUp],
-  );
-
-  const handlePointerCancel = React.useCallback(
-    (event: React.PointerEvent<HTMLButtonElement>) => {
-      onPointerCancel?.(event);
-      if (event.defaultPrevented) return;
-      endResizeInteraction(event);
-    },
-    [endResizeInteraction, onPointerCancel],
-  );
-
-  const handleClick = React.useCallback(
-    (event: React.MouseEvent<HTMLButtonElement>) => {
-      onClick?.(event);
-      if (event.defaultPrevented) return;
-      if (suppressClickRef.current) {
-        suppressClickRef.current = false;
-        event.preventDefault();
-        return;
-      }
-      if (resolvedResizable && open) {
-        event.preventDefault();
-        return;
-      }
-      toggleSidebar();
-    },
-    [onClick, open, resolvedResizable, toggleSidebar],
-  );
+      return;
+    }
+    toggleSidebar();
+  };
 
   React.useEffect(() => {
     if (!resolvedResizable?.storageKey || typeof window === "undefined") return;
@@ -890,13 +860,13 @@ function SidebarMenuSkeleton({
   showIcon?: boolean;
 }) {
   const skeletonId = React.useId();
-  const width = React.useMemo(() => {
+  const width = (() => {
     let hash = 0;
     for (const character of skeletonId) {
       hash = (hash * 31 + character.charCodeAt(0)) % 40;
     }
     return `${hash + 50}%`;
-  }, [skeletonId]);
+  })();
 
   return (
     <div
