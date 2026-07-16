@@ -533,7 +533,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
     const sessions = new Map<ThreadId, CopilotSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
-    const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(1024);
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.sync(() => EventId.make(crypto.randomUUID()));
