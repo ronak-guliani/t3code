@@ -1771,7 +1771,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       };
 
       return Option.some(
-    getSnapshotSequence,
         yield* decodeThread(thread).pipe(
           Effect.mapError(
             toPersistenceDecodeError("ProjectionSnapshotQuery.getThreadDetailById:decodeThread"),
@@ -1785,6 +1784,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getShellSnapshot,
     getCounts,
     getActiveProjectByWorkspaceRoot,
+    getSnapshotSequence,
     getProjectShellById,
     getFirstActiveThreadIdByProjectId,
     getThreadCheckpointContext,
