@@ -545,4 +545,80 @@ describe("WorkflowCoordinatorReactor", () => {
       nodes: [{ status: "completed", resultArtifactId: "workflow-result" }],
     });
   });
+
+  it("finalizes a still-pending run as failed when the parent was deleted", async () => {
+    let model: OrchestrationReadModel = {
+      ...readModel,
+      workflowRuns: [],
+    };
+    let sequence = 0;
+    const applyDecided = async (
+      decided:
+        | Omit<OrchestrationEvent, "sequence">
+        | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
+    ) => {
+      const events = Array.isArray(decided) ? decided : [decided];
+      for (const event of events) {
+        sequence += 1;
+        model = await Effect.runPromise(projectEvent(model, { ...event, sequence }));
+      }
+    };
+
+    await applyDecided(
+      await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "workflow.run.request",
+            commandId: CommandId.make("request-run"),
+            runId,
+            parentThreadId,
+            definition: run.definition,
+            workerConfig: run.workerConfig,
+            inputArtifact,
+            createdAt: now,
+          },
+          readModel: model,
+        }),
+      ),
+    );
+    expect(model.workflowRuns?.[0]).toMatchObject({
+      status: "pending",
+      nodes: [{ status: "pending" }],
+    });
+
+    const failureArtifact: WorkflowArtifact = {
+      id: WorkflowArtifactId.make("workflow-final"),
+      runId,
+      producerThreadId: parentThreadId,
+      payload: {
+        kind: "final-result",
+        summary: "Parent thread was deleted before the worker started.",
+        body: "Parent thread was deleted before the worker started.",
+        evidence: [],
+      },
+      createdAt: now,
+    };
+    await applyDecided(
+      await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "workflow.run.finalize",
+            commandId: CommandId.make("finalize-missing-parent"),
+            runId,
+            parentThreadId,
+            artifact: failureArtifact,
+            status: "failed",
+            completedAt: now,
+          },
+          readModel: model,
+        }),
+      ),
+    );
+
+    expect(model.workflowRuns?.[0]).toMatchObject({
+      status: "failed",
+      finalArtifactId: "workflow-final",
+      nodes: [{ status: "failed" }],
+    });
+  });
 });

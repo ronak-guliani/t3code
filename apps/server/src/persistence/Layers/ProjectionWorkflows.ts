@@ -20,7 +20,6 @@ import { toPersistenceSqlError } from "../Errors.ts";
 import {
   GetProjectionWorkflowArtifactInput,
   GetProjectionWorkflowRunInput,
-  isIncompleteWorkflowRun,
   ProjectionWorkflowRepository,
   type ProjectionWorkflowRepositoryShape,
   toWorkflowRun,
@@ -196,6 +195,44 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
       `,
   });
 
+  const listNodeRowsForRuns = SqlSchema.findAll({
+    Request: Schema.Struct({ runIds: Schema.Array(WorkflowRunId) }),
+    Result: ProjectionWorkflowNodeDbRow,
+    execute: ({ runIds }) =>
+      sql`
+        SELECT
+          run_id AS "runId",
+          node_id AS "nodeId",
+          status,
+          worker_thread_id AS "workerThreadId",
+          input_artifact_id AS "inputArtifactId",
+          result_artifact_id AS "resultArtifactId",
+          started_at AS "startedAt",
+          completed_at AS "completedAt"
+        FROM projection_workflow_nodes
+        WHERE ${sql.in("run_id", runIds)}
+        ORDER BY node_id ASC
+      `,
+  });
+
+  const mapRunsWithNodes = (rows: ReadonlyArray<ProjectionWorkflowRunDbRow>) =>
+    rows.length === 0
+      ? Effect.succeed([])
+      : listNodeRowsForRuns({ runIds: rows.map((row) => row.runId) }).pipe(
+          Effect.map((nodeRows) => {
+            const nodesByRun = new Map<WorkflowRunId, ProjectionWorkflowNodeDbRow[]>();
+            for (const node of nodeRows) {
+              const existing = nodesByRun.get(node.runId);
+              if (existing) {
+                existing.push(node);
+              } else {
+                nodesByRun.set(node.runId, [node]);
+              }
+            }
+            return rows.map((row) => mapRun(row, nodesByRun.get(row.runId) ?? []));
+          }),
+        );
+
   const getArtifactRow = SqlSchema.findOneOption({
     Request: GetProjectionWorkflowArtifactInput,
     Result: ProjectionWorkflowArtifactDbRow,
@@ -246,27 +283,13 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
 
   const listIncomplete: ProjectionWorkflowRepositoryShape["listIncomplete"] = () =>
     listIncompleteRunRows(undefined).pipe(
-      Effect.flatMap((rows) =>
-        Effect.forEach(
-          rows.filter((row) => isIncompleteWorkflowRun(row.status)),
-          (row) =>
-            listNodeRows({ runId: row.runId }).pipe(Effect.map((nodes) => mapRun(row, nodes))),
-          { concurrency: 1 },
-        ),
-      ),
+      Effect.flatMap(mapRunsWithNodes),
       Effect.mapError(toPersistenceSqlError("ProjectionWorkflowRepository.listIncomplete:query")),
     );
 
   const listAll: ProjectionWorkflowRepositoryShape["listAll"] = () =>
     listAllRunRows(undefined).pipe(
-      Effect.flatMap((rows) =>
-        Effect.forEach(
-          rows,
-          (row) =>
-            listNodeRows({ runId: row.runId }).pipe(Effect.map((nodes) => mapRun(row, nodes))),
-          { concurrency: 1 },
-        ),
-      ),
+      Effect.flatMap(mapRunsWithNodes),
       Effect.mapError(toPersistenceSqlError("ProjectionWorkflowRepository.listAll:query")),
     );
 

@@ -947,10 +947,26 @@ const make = Effect.gen(function* () {
         thread,
         projects: readModel.projects,
       });
-      if (
-        cwd === null ||
-        !(yield* reviewSnapshotVerifier.isCurrent({ cwd, snapshot: thread.reviewSnapshot }))
-      ) {
+      if (cwd === null) {
+        yield* Effect.logWarning("Discarding review result because the worktree changed", {
+          threadId: input.threadId,
+          snapshotHash: thread.reviewSnapshot.diffHash,
+        });
+        return;
+      }
+      const snapshotIsCurrent = yield* reviewSnapshotVerifier
+        .isCurrent({ cwd, snapshot: thread.reviewSnapshot })
+        .pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("Discarding review result because snapshot could not be verified", {
+              threadId: input.threadId,
+              snapshotHash: thread.reviewSnapshot.diffHash,
+              error,
+            }),
+          ),
+          Effect.orElseSucceed(() => false),
+        );
+      if (!snapshotIsCurrent) {
         yield* Effect.logWarning("Discarding review result because the worktree changed", {
           threadId: input.threadId,
           snapshotHash: thread.reviewSnapshot.diffHash,

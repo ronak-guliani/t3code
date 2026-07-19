@@ -1377,7 +1377,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         !node ||
         (node.status !== "completed" && node.status !== "failed" && node.status !== "pending") ||
         (node.status === "pending" && command.status !== "failed") ||
-        command.status !== node.status ||
+        (node.status !== "pending" && command.status !== node.status) ||
         command.artifact.runId !== command.runId ||
         command.artifact.payload.kind !== "final-result"
       ) {

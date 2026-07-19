@@ -141,6 +141,8 @@ const MAX_THREAD_PROPOSED_PLANS = 200;
 const MAX_THREAD_ACTIVITIES = 500;
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 const EMPTY_QUEUED_TURNS: readonly OrchestrationQueuedTurn[] = [];
+const EMPTY_WORKFLOW_RUNS: ReturnType<typeof selectWorkflowRunsForParentThreadInRuntime> =
+  Object.freeze([]);
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -2110,7 +2112,7 @@ export function selectWorkflowRunsForParentThread(
           createWorkflowRuntimeState(),
         ref.threadId,
       )
-    : [];
+    : EMPTY_WORKFLOW_RUNS;
 }
 
 export function selectProjectsAcrossEnvironments(state: AppState): Project[] {

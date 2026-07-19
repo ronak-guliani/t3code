@@ -29,8 +29,8 @@ function normalizeCodexOutput(decoded: unknown, changedLines: ChangedLines): unk
 
   const paths = [...changedLines.keys()];
   return {
-    findings: decoded.findings.map((value, index) => {
-      if (!isRecord(value) || !isRecord(value.code_location)) return value;
+    findings: decoded.findings.flatMap((value, index) => {
+      if (!isRecord(value) || !isRecord(value.code_location)) return [];
       const location = value.code_location;
       const range = isRecord(location.line_range) ? location.line_range : {};
       const absolutePath =
@@ -55,21 +55,23 @@ function normalizeCodexOutput(decoded: unknown, changedLines: ChangedLines): unk
         typeof value.body !== "string" ||
         typeof value.confidence_score !== "number"
       ) {
-        return value;
+        return [];
       }
-      return {
-        id: `finding-${index + 1}`,
-        priority,
-        title: value.title.replace(/^\[P[0-3]\]\s*/, ""),
-        body: value.body,
-        confidence: value.confidence_score,
-        location: {
-          path,
-          side: "new",
-          startLine: range.start,
-          endLine: range.end,
+      return [
+        {
+          id: `finding-${index + 1}`,
+          priority,
+          title: value.title.replace(/^\[P[0-3]\]\s*/, ""),
+          body: value.body,
+          confidence: value.confidence_score,
+          location: {
+            path,
+            side: "new",
+            startLine: range.start,
+            endLine: range.end,
+          },
         },
-      };
+      ];
     }),
     verdict: decoded.overall_correctness === "patch is incorrect" ? "request-changes" : "approve",
     summary: decoded.overall_explanation,
