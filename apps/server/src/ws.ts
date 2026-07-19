@@ -37,6 +37,8 @@ import {
   type WorkflowRunInput,
   type WorkflowRunResult,
   WorkflowRunId,
+  WorkflowArtifactId,
+  WorkflowNodeId,
   SourceControlRepositoryError,
   ServerProviderUpdateError,
   KeybindingsConfigError,
@@ -295,6 +297,15 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               }),
             );
           default:
+            if (event.aggregateKind === "workflow") {
+              return Effect.succeed(
+                Option.some({
+                  kind: "workflow-event" as const,
+                  sequence: event.sequence,
+                  event,
+                }),
+              );
+            }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
             }
@@ -441,11 +452,11 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             settings: {
               promptTemplate: override?.promptTemplate ?? reviewSettings.promptTemplate,
             },
-            snapshot: reviewContext.snapshot,
           });
-          const threadId = ThreadId.make(crypto.randomUUID());
-          const commandId = CommandId.make(crypto.randomUUID());
-          const messageId = MessageId.make(crypto.randomUUID());
+          const nodeId = WorkflowNodeId.make("review-changes");
+          const threadId = ThreadId.make(`workflow:${runId}:node:${nodeId}:worker`);
+          const commandId = CommandId.make(`workflow:${runId}:request`);
+          const messageId = MessageId.make(`workflow:${runId}:node:${nodeId}:input`);
           const modelSelection =
             reviewSettings.modelSelection ??
             input.modelSelection ??
@@ -453,43 +464,47 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             thread.modelSelection;
           const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
           const interactionMode = input.interactionMode ?? thread.interactionMode;
-          const normalizedCommand = yield* normalizeDispatchCommand({
-            type: "thread.turn.start",
+          const dispatchResult = yield* orchestrationEngine.dispatch({
+            type: "workflow.run.request",
             commandId,
-            threadId,
-            message: {
-              messageId,
-              role: "user",
-              text: prompt,
-              attachments: [],
+            runId,
+            parentThreadId: input.threadId,
+            definition: {
+              id: REVIEW_CHANGES_WORKFLOW_ID,
+              name: title,
+              nodes: [
+                {
+                  id: nodeId,
+                  title,
+                  prompt,
+                  contextPolicy: "none",
+                },
+              ],
             },
-            modelSelection,
-            titleSeed: title,
-            runtimeMode,
-            interactionMode,
-            bootstrap: {
-              createThread: {
-                projectId: project.id,
-                parentThreadId: input.threadId,
-                title,
-                modelSelection,
-                runtimeMode,
-                interactionMode,
-                branch: reviewContext.branch,
-                worktreePath: cwd === project.workspaceRoot ? null : cwd,
-                reviewSnapshot: reviewContext.snapshot,
-                createdAt,
-              },
+            workerConfig: {
+              modelSelection,
+              runtimeMode,
+              interactionMode,
+              branch: reviewContext.branch,
+              worktreePath: cwd === project.workspaceRoot ? null : cwd,
+              reviewSnapshot: reviewContext.snapshot,
             },
-            source: {
-              kind: "workflow",
-              workflowId: REVIEW_CHANGES_WORKFLOW_ID,
+            inputArtifact: {
+              id: WorkflowArtifactId.make(`workflow:${runId}:input`),
               runId,
-              trigger: input.trigger,
+              nodeId,
+              producerThreadId: input.threadId,
+              payload: {
+                kind: "input-context",
+                contextPolicy: "none",
+                parentThreadId: input.threadId,
+                messages: [],
+                truncated: false,
+              },
+              createdAt,
             },
             createdAt,
           });
-          const dispatchResult = yield* dispatchNormalizedCommand(normalizedCommand);
           return {
             status: "started" as const,
             runId,

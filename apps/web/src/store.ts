@@ -19,7 +19,13 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { parseScopedThreadKey } from "@t3tools/client-runtime";
+import {
+  applyWorkflowRuntimeEvent,
+  createWorkflowRuntimeState,
+  parseScopedThreadKey,
+  selectWorkflowRunsForParentThread as selectWorkflowRunsForParentThreadInRuntime,
+  type WorkflowRuntimeState,
+} from "@t3tools/client-runtime";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
@@ -91,6 +97,7 @@ export interface EnvironmentState {
   // truth for sidebar data.
   // ---------------------------------------------------------------------------
   sidebarThreadSummaryById: Record<ThreadId, SidebarThreadSummary>;
+  workflowRuntime?: WorkflowRuntimeState;
 
   bootstrapComplete: boolean;
 }
@@ -119,6 +126,7 @@ const initialEnvironmentState: EnvironmentState = {
   queuedTurnsByThreadId: {},
   reviewStateByThreadId: {},
   sidebarThreadSummaryById: {},
+  workflowRuntime: createWorkflowRuntimeState(),
   bootstrapComplete: false,
 };
 
@@ -1286,6 +1294,10 @@ function syncEnvironmentShellSnapshot(
     threadSessionById,
     threadTurnStateById,
     sidebarThreadSummaryById,
+    workflowRuntime: createWorkflowRuntimeState(
+      snapshot.workflowRuns ?? [],
+      snapshot.workflowArtifacts ?? [],
+    ),
     messageIdsByThreadId: retainThreadScopedRecord(state.messageIdsByThreadId, nextThreadIds),
     messageByThreadId: retainThreadScopedRecord(state.messageByThreadId, nextThreadIds),
     activityIdsByThreadId: retainThreadScopedRecord(state.activityIdsByThreadId, nextThreadIds),
@@ -1345,6 +1357,19 @@ function applyEnvironmentOrchestrationEvent(
   environmentId: EnvironmentId,
 ): EnvironmentState {
   switch (event.type) {
+    case "workflow.run-requested":
+    case "workflow.artifact-created":
+    case "workflow.node-worker-started":
+    case "workflow.worker-result-recorded":
+    case "workflow.run-finalized":
+      return {
+        ...state,
+        workflowRuntime: applyWorkflowRuntimeEvent(
+          state.workflowRuntime ?? createWorkflowRuntimeState(),
+          event,
+        ),
+      };
+
     case "project.created": {
       const nextProject = mapProject(
         {
@@ -1974,6 +1999,8 @@ function applyEnvironmentShellEvent(
       return writeThreadShellState(state, mapThreadShell(event.thread, environmentId));
     case "thread-removed":
       return removeThreadState(state, event.threadId);
+    case "workflow-event":
+      return applyEnvironmentOrchestrationEvent(state, event.event, environmentId);
   }
 }
 
@@ -2071,6 +2098,19 @@ export function selectThreadsForEnvironment(
   environmentId: EnvironmentId | null | undefined,
 ): Thread[] {
   return getThreads(selectEnvironmentState(state, environmentId));
+}
+
+export function selectWorkflowRunsForParentThread(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+) {
+  return ref
+    ? selectWorkflowRunsForParentThreadInRuntime(
+        selectEnvironmentState(state, ref.environmentId).workflowRuntime ??
+          createWorkflowRuntimeState(),
+        ref.threadId,
+      )
+    : [];
 }
 
 export function selectProjectsAcrossEnvironments(state: AppState): Project[] {

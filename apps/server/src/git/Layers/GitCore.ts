@@ -44,7 +44,7 @@ const isGitCommandError = Schema.is(GitCommandError);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
-const REVIEW_SNAPSHOT_MAX_BYTES = 96_000;
+const REVIEW_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * Prepend `-c core.longpaths=true` to git args on Windows so operations that
@@ -1442,19 +1442,28 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     ).pipe(Effect.map((diffs) => diffs.join("")));
 
   const toReviewSnapshot = (input: {
+    readonly cwd: string;
     readonly scope: ReviewSnapshot["scope"];
     readonly trackedDiff: string;
     readonly untrackedDiff: string;
-  }): ReviewSnapshot => {
+  }): Effect.Effect<ReviewSnapshot, GitCommandError> => {
     const fullDiff = `${input.trackedDiff}${input.untrackedDiff}`;
-    const bytes = Buffer.from(fullDiff);
-    const truncated = bytes.byteLength > REVIEW_SNAPSHOT_MAX_BYTES;
-    return {
+    if (Buffer.byteLength(fullDiff) > REVIEW_SNAPSHOT_MAX_BYTES) {
+      return Effect.fail(
+        createGitCommandError(
+          "GitCore.resolveReviewChangesContext",
+          input.cwd,
+          [],
+          `Review diff exceeds the ${REVIEW_SNAPSHOT_MAX_BYTES}-byte snapshot limit.`,
+        ),
+      );
+    }
+    return Effect.succeed({
       scope: input.scope,
-      diff: truncated ? bytes.subarray(0, REVIEW_SNAPSHOT_MAX_BYTES).toString("utf8") : fullDiff,
+      diff: fullDiff,
       diffHash: createHash("sha256").update(fullDiff).digest("hex"),
-      truncated,
-    };
+      truncated: false,
+    });
   };
 
   const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = Effect.fn(
@@ -1501,7 +1510,8 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         statusShort,
         untrackedFiles,
         hasReviewableChanges: statusShort.trim().length > 0 || untrackedFiles.length > 0,
-        snapshot: toReviewSnapshot({
+        snapshot: yield* toReviewSnapshot({
+          cwd: input.cwd,
           scope: {
             kind: "uncommitted",
             branch: details.branch,
@@ -1564,7 +1574,8 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       hasReviewableChanges: hasTrackedDiff || untrackedFiles.length > 0,
       baseBranch,
       mergeBaseSha,
-      snapshot: toReviewSnapshot({
+      snapshot: yield* toReviewSnapshot({
+        cwd: input.cwd,
         scope: {
           kind: "against-base",
           branch: details.branch,
