@@ -2763,18 +2763,37 @@ index 1111111..2222222 100644
       threadId: asThreadId("thread-1"),
     });
     harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-9"),
+      payload: {},
+    });
+    harness.emit({
       type: "item.started",
       eventId: asEventId("evt-tool-started"),
       provider: ProviderDriverKind.make("codex"),
       createdAt: now,
       threadId: asThreadId("thread-1"),
       turnId: asTurnId("turn-9"),
+      itemId: asItemId("item-read-file"),
       payload: {
         itemType: "command_execution",
         status: "in_progress",
         title: "Read file",
         detail: "/tmp/file.ts",
       },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-9"),
+      payload: { state: "completed" },
     });
 
     const thread = await waitForThread(
@@ -2784,6 +2803,12 @@ index 1111111..2222222 100644
         entry.session?.activeTurnId === null &&
         entry.activities.some(
           (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.kind === "insights.turn.started",
+        ) &&
+        entry.activities.some(
+          (activity: ProviderRuntimeTestActivity) => activity.kind === "insights.turn.completed",
         ),
     );
 
@@ -2793,6 +2818,24 @@ index 1111111..2222222 100644
         (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
       ),
     ).toBe(true);
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "insights.turn.started",
+      ),
+    ).toBe(true);
+    expect(
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "insights.turn.completed",
+      ),
+    ).toBe(true);
+    const toolActivity = thread.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.started",
+    );
+    const toolPayload =
+      toolActivity?.payload && typeof toolActivity.payload === "object"
+        ? (toolActivity.payload as Record<string, unknown>)
+        : undefined;
+    expect(toolPayload?.itemId).toBe("item-read-file");
   });
 
   it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
