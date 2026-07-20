@@ -34,6 +34,7 @@ import {
   GitForkIcon,
   GlobeIcon,
   HammerIcon,
+  InfoIcon,
   type LucideIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -537,6 +538,18 @@ function TimelineRowContent(props: { row: TimelineRow }) {
           );
         })()}
 
+      {row.kind === "message" && row.message.role === "system" && (
+        <div className="mx-1 flex items-start gap-2 rounded-lg border border-border/50 bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
+          <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="whitespace-pre-wrap break-words">{row.message.text}</p>
+            <p className="mt-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/60">
+              {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+            </p>
+          </div>
+        </div>
+      )}
+
       {row.kind === "proposed-plan" && (
         <div className="min-w-0 px-1 py-0.5">
           <ProposedPlanCard
@@ -552,9 +565,9 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         <div className="py-0.5 pl-1.5">
           <div className="flex items-center gap-2 pt-1 text-[10px] text-muted-foreground/50">
             <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
             </span>
             <span>
               {row.createdAt ? (
