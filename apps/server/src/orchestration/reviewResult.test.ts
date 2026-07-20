@@ -14,7 +14,6 @@ index 1111111..2222222 100644
  context();
 `,
   diffHash: "snapshot-hash",
-  truncated: false,
 };
 
 describe("parseReviewResult", () => {

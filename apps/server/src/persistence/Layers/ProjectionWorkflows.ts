@@ -38,6 +38,18 @@ const ProjectionWorkflowRunDbRow = Schema.Struct({
   completedAt: Schema.NullOr(IsoDateTime),
 });
 
+const ProjectionWorkflowShellRunDbRow = Schema.Struct({
+  runId: WorkflowRunId,
+  workflowId: TrimmedNonEmptyString,
+  parentThreadId: ThreadId,
+  status: WorkflowRunStatus,
+  definition: Schema.fromJsonString(WorkflowDefinition),
+  finalArtifactId: Schema.NullOr(WorkflowArtifactId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
+});
+
 const ProjectionWorkflowNodeDbRow = Schema.Struct({
   runId: WorkflowRunId,
   nodeId: WorkflowNodeId,
@@ -60,9 +72,12 @@ const ProjectionWorkflowArtifactDbRow = Schema.Struct({
 type ProjectionWorkflowArtifactDbRow = typeof ProjectionWorkflowArtifactDbRow.Type;
 
 type ProjectionWorkflowRunDbRow = typeof ProjectionWorkflowRunDbRow.Type;
+type ProjectionWorkflowShellRunDbRow = typeof ProjectionWorkflowShellRunDbRow.Type;
 type ProjectionWorkflowNodeDbRow = typeof ProjectionWorkflowNodeDbRow.Type;
 
 const runInput = Schema.Struct({ runId: WorkflowRunId });
+const runIdsInput = Schema.Struct({ runIds: Schema.Array(WorkflowRunId) });
+const SHELL_WORKFLOW_HISTORY_PER_PARENT = 20;
 
 function mapNode(row: ProjectionWorkflowNodeDbRow): WorkflowNodeRun {
   return {
@@ -95,6 +110,26 @@ function mapRun(
     },
     nodes: nodes.map(mapNode),
   });
+}
+
+function mapShellRun(
+  row: ProjectionWorkflowShellRunDbRow,
+  nodes: ReadonlyArray<ProjectionWorkflowNodeDbRow>,
+) {
+  return {
+    run: {
+      id: row.runId,
+      workflowId: row.workflowId,
+      parentThreadId: row.parentThreadId,
+      status: row.status,
+      nodes: nodes.map(mapNode),
+      ...(row.finalArtifactId === null ? {} : { finalArtifactId: row.finalArtifactId }),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      ...(row.completedAt === null ? {} : { completedAt: row.completedAt }),
+    },
+    definition: row.definition,
+  };
 }
 
 function mapArtifact(row: ProjectionWorkflowArtifactDbRow) {
@@ -175,6 +210,43 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
       `,
   });
 
+  const listShellRunRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionWorkflowShellRunDbRow,
+    execute: () =>
+      sql`
+        WITH ranked_runs AS (
+          SELECT
+            *,
+            ROW_NUMBER() OVER (
+              PARTITION BY
+                parent_thread_id,
+                CASE
+                  WHEN status IN ('pending', 'running') THEN 'active'
+                  ELSE 'terminal'
+                END
+              ORDER BY created_at DESC, run_id DESC
+            ) AS status_rank
+          FROM projection_workflow_runs
+        )
+        SELECT
+          run_id AS "runId",
+          workflow_id AS "workflowId",
+          parent_thread_id AS "parentThreadId",
+          status,
+          definition_json AS definition,
+          final_artifact_id AS "finalArtifactId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          completed_at AS "completedAt"
+        FROM ranked_runs
+        WHERE
+          status IN ('pending', 'running')
+          OR status_rank <= ${SHELL_WORKFLOW_HISTORY_PER_PARENT}
+        ORDER BY created_at ASC, run_id ASC
+      `,
+  });
+
   const listNodeRows = SqlSchema.findAll({
     Request: runInput,
     Result: ProjectionWorkflowNodeDbRow,
@@ -196,7 +268,7 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
   });
 
   const listNodeRowsForRuns = SqlSchema.findAll({
-    Request: Schema.Struct({ runIds: Schema.Array(WorkflowRunId) }),
+    Request: runIdsInput,
     Result: ProjectionWorkflowNodeDbRow,
     execute: ({ runIds }) =>
       sql`
@@ -212,6 +284,39 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
         FROM projection_workflow_nodes
         WHERE ${sql.in("run_id", runIds)}
         ORDER BY node_id ASC
+      `,
+  });
+
+  const listShellArtifactRows = SqlSchema.findAll({
+    Request: runIdsInput,
+    Result: ProjectionWorkflowArtifactDbRow,
+    execute: ({ runIds }) =>
+      sql`
+        SELECT
+          artifact_id AS id,
+          run_id AS "runId",
+          node_id AS "nodeId",
+          producer_thread_id AS "producerThreadId",
+          payload_json AS payload,
+          created_at AS "createdAt"
+        FROM projection_workflow_artifacts
+        WHERE
+          ${sql.in("run_id", runIds)}
+          AND (
+            artifact_id IN (
+              SELECT result_artifact_id
+              FROM projection_workflow_nodes
+              WHERE ${sql.in("run_id", runIds)}
+                AND result_artifact_id IS NOT NULL
+            )
+            OR artifact_id IN (
+              SELECT final_artifact_id
+              FROM projection_workflow_runs
+              WHERE ${sql.in("run_id", runIds)}
+                AND final_artifact_id IS NOT NULL
+            )
+          )
+        ORDER BY created_at ASC, artifact_id ASC
       `,
   });
 
@@ -291,6 +396,38 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
     listAllRunRows(undefined).pipe(
       Effect.flatMap(mapRunsWithNodes),
       Effect.mapError(toPersistenceSqlError("ProjectionWorkflowRepository.listAll:query")),
+    );
+
+  const listShellSnapshot: ProjectionWorkflowRepositoryShape["listShellSnapshot"] = () =>
+    listShellRunRows(undefined).pipe(
+      Effect.flatMap((runRows) => {
+        if (runRows.length === 0) {
+          return Effect.succeed({ runs: [], artifacts: [] });
+        }
+        const runIds = runRows.map((row) => row.runId);
+        return Effect.all([listNodeRowsForRuns({ runIds }), listShellArtifactRows({ runIds })], {
+          concurrency: "unbounded",
+        }).pipe(
+          Effect.map(([nodeRows, artifactRows]) => {
+            const nodesByRun = new Map<WorkflowRunId, ProjectionWorkflowNodeDbRow[]>();
+            for (const node of nodeRows) {
+              const existing = nodesByRun.get(node.runId);
+              if (existing) {
+                existing.push(node);
+              } else {
+                nodesByRun.set(node.runId, [node]);
+              }
+            }
+            return {
+              runs: runRows.map((row) => mapShellRun(row, nodesByRun.get(row.runId) ?? [])),
+              artifacts: artifactRows.map(mapArtifact),
+            };
+          }),
+        );
+      }),
+      Effect.mapError(
+        toPersistenceSqlError("ProjectionWorkflowRepository.listShellSnapshot:query"),
+      ),
     );
 
   const upsertRun: ProjectionWorkflowRepositoryShape["upsertRun"] = (run) =>
@@ -485,6 +622,7 @@ const makeProjectionWorkflowRepository = Effect.gen(function* () {
     getByRunId,
     listIncomplete,
     listAll,
+    listShellSnapshot,
     upsertArtifact,
     getArtifactById,
     listAllArtifacts,

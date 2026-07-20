@@ -90,6 +90,16 @@ const createSchema = Effect.gen(function* () {
       PRIMARY KEY (run_id, node_id)
     )
   `;
+  yield* sql`
+    CREATE TABLE projection_workflow_artifacts (
+      artifact_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      node_id TEXT,
+      producer_thread_id TEXT,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `;
 });
 
 const freshRepository = ProjectionWorkflowRepositoryLive.pipe(
@@ -139,6 +149,44 @@ it.effect("returns only pending/running runs with their nodes for listIncomplete
   ),
 );
 
+it.effect("bounds shell history per parent while retaining active runs", () =>
+  withSchema(
+    Effect.gen(function* () {
+      const repository = yield* ProjectionWorkflowRepository;
+      const parentThreadId = ThreadId.make("shared-parent");
+
+      for (let index = 0; index < 25; index += 1) {
+        const timestamp = `2026-07-17T20:${String(index).padStart(2, "0")}:00.000Z`;
+        yield* repository.upsertRun({
+          ...makeRun(`terminal-${String(index).padStart(2, "0")}`, "completed"),
+          parentThreadId,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      }
+      yield* repository.upsertRun({
+        ...makeRun("active-old", "running"),
+        parentThreadId,
+        createdAt: "2026-07-17T19:00:00.000Z",
+        updatedAt: "2026-07-17T19:00:00.000Z",
+      });
+
+      const snapshot = yield* repository.listShellSnapshot();
+
+      assert.equal(snapshot.runs.length, 21);
+      assert(snapshot.runs.some(({ run }) => run.id === "active-old"));
+      assert.deepEqual(
+        snapshot.runs.filter(({ run }) => run.status === "completed").map(({ run }) => run.id),
+        Array.from(
+          { length: 20 },
+          (_, offset) => `terminal-${String(offset + 5).padStart(2, "0")}`,
+        ),
+      );
+      assert.deepEqual(snapshot.artifacts, []);
+    }),
+  ),
+);
+
 it.effect("returns no runs when the table is empty", () =>
   withSchema(
     Effect.gen(function* () {
@@ -146,6 +194,7 @@ it.effect("returns no runs when the table is empty", () =>
 
       assert.deepEqual(yield* repository.listAll(), []);
       assert.deepEqual(yield* repository.listIncomplete(), []);
+      assert.deepEqual(yield* repository.listShellSnapshot(), { runs: [], artifacts: [] });
     }),
   ),
 );

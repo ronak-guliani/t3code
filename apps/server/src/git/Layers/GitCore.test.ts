@@ -731,7 +731,6 @@ it.layer(TestLayer)("git integration", (it) => {
             throw new Error("expected review snapshot");
           }
           expect(Buffer.byteLength(result.snapshot.diff)).toBeGreaterThan(96_000);
-          expect(result.snapshot.truncated).toBe(false);
           expect(result.snapshot.diff).toContain("late-reviewable.ts");
         }),
     );
@@ -751,7 +750,6 @@ it.layer(TestLayer)("git integration", (it) => {
         if (!result.snapshot) {
           throw new Error("expected review snapshot");
         }
-        expect(result.snapshot.truncated).toBe(false);
         expect(result.snapshot.diff).toContain("large-before.ts");
         expect(result.snapshot.diff).toContain("late-reviewable.ts");
       }),

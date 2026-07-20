@@ -337,12 +337,34 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       return;
     }
     const session = worker.session;
-    if (
-      session === null ||
-      session.activeTurnId !== null ||
-      session.status === "starting" ||
-      session.status === "running"
-    ) {
+    if (session === null || session.activeTurnId !== null || session.status === "starting") {
+      return;
+    }
+    const latestTurn = worker.latestTurn;
+    if (latestTurn?.state === "completed") {
+      const completedMessage =
+        latestTurn.assistantMessageId === null
+          ? undefined
+          : worker.messages.find((message) => message.id === latestTurn.assistantMessageId);
+      yield* recordWorkerResult({
+        runId: run.id,
+        node,
+        workerThreadId: node.workerThreadId,
+        status: "completed",
+        body: completedMessage?.text || "Worker completed without a textual response.",
+        ...(completedMessage === undefined ? {} : { messageId: completedMessage.id }),
+      });
+      return;
+    }
+    if (latestTurn?.state === "error" || latestTurn?.state === "interrupted") {
+      yield* recordWorkerResult({
+        runId: run.id,
+        node,
+        workerThreadId: node.workerThreadId,
+        status: "failed",
+        body:
+          session.lastError ?? `Worker turn was ${latestTurn.state} before it produced a result.`,
+      });
       return;
     }
     if (
@@ -360,20 +382,6 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
           (session.status === "error"
             ? "Worker session failed before producing a result."
             : `Worker session was ${session.status} before it produced a result.`),
-      });
-      return;
-    }
-    const completedMessage = worker.messages
-      .toReversed()
-      .find((message) => message.role === "assistant" && !message.streaming);
-    if (completedMessage) {
-      yield* recordWorkerResult({
-        runId: run.id,
-        node,
-        workerThreadId: node.workerThreadId,
-        status: "completed",
-        body: completedMessage.text || "Worker completed without a textual response.",
-        messageId: completedMessage.id,
       });
     }
   });

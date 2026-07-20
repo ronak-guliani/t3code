@@ -26,6 +26,8 @@ export function WorkflowRunsButton({
     return null;
   }
 
+  const runningCount = runs.filter((entry) => entry.run.status === "running").length;
+
   return (
     <Popover>
       <Tooltip>
@@ -40,9 +42,11 @@ export function WorkflowRunsButton({
                   aria-label="Workflow runs"
                 >
                   <WorkflowIcon className="size-3" />
-                  <span className="absolute -right-1 -top-1 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-medium leading-none text-primary-foreground">
-                    {runs.length}
-                  </span>
+                  {runningCount > 0 ? (
+                    <span className="absolute -right-1 -top-1 flex min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-medium leading-none text-primary-foreground">
+                      {runningCount}
+                    </span>
+                  ) : null}
                 </Button>
               }
             />

@@ -63,6 +63,14 @@ export const GetProjectionWorkflowArtifactInput = Schema.Struct({
 });
 export type GetProjectionWorkflowArtifactInput = typeof GetProjectionWorkflowArtifactInput.Type;
 
+export interface ProjectionWorkflowShellSnapshot {
+  readonly runs: ReadonlyArray<{
+    readonly run: WorkflowRun;
+    readonly definition: WorkflowDefinition;
+  }>;
+  readonly artifacts: ReadonlyArray<WorkflowArtifact>;
+}
+
 export interface ProjectionWorkflowRepositoryShape {
   readonly upsertRun: (
     run: ProjectionWorkflowRun,
@@ -76,6 +84,10 @@ export interface ProjectionWorkflowRepositoryShape {
   >;
   readonly listAll: () => Effect.Effect<
     ReadonlyArray<ProjectionWorkflowRun>,
+    ProjectionRepositoryError
+  >;
+  readonly listShellSnapshot: () => Effect.Effect<
+    ProjectionWorkflowShellSnapshot,
     ProjectionRepositoryError
   >;
   readonly upsertArtifact: (

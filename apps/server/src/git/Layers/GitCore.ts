@@ -45,6 +45,7 @@ const isGitCommandError = Schema.is(GitCommandError);
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REVIEW_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+const REVIEW_DIFF_NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 
 /**
  * Prepend `-c core.longpaths=true` to git args on Windows so operations that
@@ -1422,8 +1423,16 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         executeGit(
           "GitCore.resolveReviewChangesContext.untrackedDiff",
           cwd,
-          ["diff", "--no-index", "--binary", "--full-index", "--", "/dev/null", filePath],
-          { allowNonZeroExit: true },
+          [
+            "diff",
+            "--no-index",
+            "--binary",
+            "--full-index",
+            "--",
+            REVIEW_DIFF_NULL_DEVICE,
+            filePath,
+          ],
+          { allowNonZeroExit: true, maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
         ).pipe(
           Effect.flatMap((result) =>
             result.code === 0 || result.code === 1
@@ -1432,7 +1441,15 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
                   createGitCommandError(
                     "GitCore.resolveReviewChangesContext.untrackedDiff",
                     cwd,
-                    ["diff", "--no-index", "--binary", "--full-index", "--", "/dev/null", filePath],
+                    [
+                      "diff",
+                      "--no-index",
+                      "--binary",
+                      "--full-index",
+                      "--",
+                      REVIEW_DIFF_NULL_DEVICE,
+                      filePath,
+                    ],
                     result.stderr.trim() || `Unable to capture untracked file '${filePath}'.`,
                   ),
                 ),
@@ -1462,7 +1479,6 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       scope: input.scope,
       diff: fullDiff,
       diffHash: createHash("sha256").update(fullDiff).digest("hex"),
-      truncated: false,
     });
   };
 
@@ -1487,19 +1503,18 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     if (input.scope === "uncommitted") {
       const [stagedDiff, unstagedDiff, untrackedDiff] = yield* Effect.all(
         [
-          runGitStdout("GitCore.resolveReviewChangesContext.stagedDiff", input.cwd, [
-            "diff",
-            "--cached",
-            "--no-ext-diff",
-            "--binary",
-            "--full-index",
-          ]),
-          runGitStdout("GitCore.resolveReviewChangesContext.unstagedDiff", input.cwd, [
-            "diff",
-            "--no-ext-diff",
-            "--binary",
-            "--full-index",
-          ]),
+          runGitStdoutWithOptions(
+            "GitCore.resolveReviewChangesContext.stagedDiff",
+            input.cwd,
+            ["diff", "--cached", "--no-ext-diff", "--binary", "--full-index"],
+            { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+          ),
+          runGitStdoutWithOptions(
+            "GitCore.resolveReviewChangesContext.unstagedDiff",
+            input.cwd,
+            ["diff", "--no-ext-diff", "--binary", "--full-index"],
+            { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+          ),
           readUntrackedReviewDiff(input.cwd, untrackedFiles),
         ],
         { concurrency: "unbounded" },
@@ -1555,13 +1570,12 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     const [hasTrackedDiff, trackedDiff, untrackedDiff] = yield* Effect.all(
       [
         hasDiffAgainst(input.cwd, mergeBaseSha),
-        runGitStdout("GitCore.resolveReviewChangesContext.branchDiff", input.cwd, [
-          "diff",
-          "--no-ext-diff",
-          "--binary",
-          "--full-index",
-          mergeBaseSha,
-        ]),
+        runGitStdoutWithOptions(
+          "GitCore.resolveReviewChangesContext.branchDiff",
+          input.cwd,
+          ["diff", "--no-ext-diff", "--binary", "--full-index", mergeBaseSha],
+          { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+        ),
         readUntrackedReviewDiff(input.cwd, untrackedFiles),
       ],
       { concurrency: "unbounded" },

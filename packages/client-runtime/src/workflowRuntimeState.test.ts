@@ -118,6 +118,10 @@ describe("workflow runtime state", () => {
         startedAt: "2026-07-17T00:00:30.000Z",
       }),
     );
+    expect(state.runsById[runId]).toMatchObject({
+      status: "running",
+      nodes: [{ status: "running", workerThreadId }],
+    });
     state = applyWorkflowRuntimeEvent(
       state,
       workflowEvent("workflow.worker-result-recorded", {
@@ -165,5 +169,41 @@ describe("workflow runtime state", () => {
       "artifact-result",
       "artifact-final",
     ]);
+  });
+
+  it("marks pending nodes failed when a run is finalized before worker startup", () => {
+    const state = applyWorkflowRuntimeEvent(
+      createWorkflowRuntimeState([
+        {
+          run,
+          definition: {
+            id: "workflow-1",
+            name: "Repository review",
+            nodes: [],
+          },
+        },
+      ]),
+      workflowEvent("workflow.run-finalized", {
+        runId,
+        parentThreadId,
+        artifact: {
+          ...resultArtifact,
+          id: WorkflowArtifactId.make("artifact-final-failed"),
+          payload: {
+            kind: "final-result",
+            summary: "Worker failed",
+            body: "Parent thread was deleted.",
+            evidence: [],
+          },
+        },
+        status: "failed",
+        completedAt: "2026-07-17T00:02:00.000Z",
+      }),
+    );
+
+    expect(state.runsById[runId]).toMatchObject({
+      status: "failed",
+      nodes: [{ status: "failed", completedAt: "2026-07-17T00:02:00.000Z" }],
+    });
   });
 });

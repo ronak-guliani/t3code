@@ -1290,8 +1290,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          projectionWorkflowRepository.listAll(),
-          projectionWorkflowRepository.listAllArtifacts(),
+          projectionWorkflowRepository.listShellSnapshot(),
         ]),
       )
       .pipe(
@@ -1303,10 +1302,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             latestTurnRows,
             backgroundAgentActivityRows,
             stateRows,
-            workflowRuns,
-            workflowArtifacts,
+            workflowSnapshot,
           ]) =>
             Effect.gen(function* () {
+              const { artifacts: workflowArtifacts, runs: workflowRuns } = workflowSnapshot;
               let updatedAt: string | null = null;
               for (const row of projectRows) {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
@@ -1330,7 +1329,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
               }
               for (const run of workflowRuns) {
-                updatedAt = maxIso(updatedAt, run.updatedAt);
+                updatedAt = maxIso(updatedAt, run.run.updatedAt);
               }
               for (const artifact of workflowArtifacts) {
                 updatedAt = maxIso(updatedAt, artifact.createdAt);
@@ -1399,10 +1398,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                         : {}),
                     };
                   }),
-                workflowRuns: workflowRuns.map(({ definition, ...run }) => ({
-                  run,
-                  definition,
-                })),
+                workflowRuns,
                 workflowArtifacts,
                 updatedAt: updatedAt ?? new Date(0).toISOString(),
               };

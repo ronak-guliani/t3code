@@ -154,6 +154,7 @@ describe("WorkflowCoordinatorReactor", () => {
       getByRunId: () => Effect.succeed(Option.some(run)),
       listIncomplete: () => Effect.succeed([run]),
       listAll: () => Effect.succeed([run]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
       upsertArtifact: () => Effect.void,
       getArtifactById: () => Effect.succeed(Option.some(inputArtifact)),
       listAllArtifacts: () => Effect.succeed([inputArtifact]),
@@ -222,6 +223,7 @@ describe("WorkflowCoordinatorReactor", () => {
       getByRunId: () => Effect.succeed(Option.some(run)),
       listIncomplete: () => Effect.succeed([run]),
       listAll: () => Effect.succeed([run]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
       upsertArtifact: () => Effect.void,
       getArtifactById: () => Effect.succeed(Option.some(inputArtifact)),
       listAllArtifacts: () => Effect.succeed([inputArtifact]),
@@ -304,6 +306,7 @@ describe("WorkflowCoordinatorReactor", () => {
       getByRunId: () => Effect.succeed(Option.some(runningRun)),
       listIncomplete: () => Effect.succeed([runningRun]),
       listAll: () => Effect.succeed([runningRun]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
       upsertArtifact: () => Effect.void,
       getArtifactById: () => Effect.succeed(Option.some(inputArtifact)),
       listAllArtifacts: () => Effect.succeed([inputArtifact]),
@@ -401,6 +404,7 @@ describe("WorkflowCoordinatorReactor", () => {
       getByRunId: () => Effect.succeed(Option.some(runningRun)),
       listIncomplete: () => Effect.succeed([runningRun]),
       listAll: () => Effect.succeed([runningRun]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
       upsertArtifact: () => Effect.void,
       getArtifactById: () => Effect.succeed(Option.some(inputArtifact)),
       listAllArtifacts: () => Effect.succeed([inputArtifact]),
@@ -421,6 +425,112 @@ describe("WorkflowCoordinatorReactor", () => {
     await Effect.runPromise(coordinator.start().pipe(Scope.provide(scope)));
 
     expect(commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
+
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  });
+
+  it("records a tool-only result after an idle runtime completes its turn", async () => {
+    const childThreadId = ThreadId.make("workflow:workflow-run:node:worker:worker");
+    const completedTurnId = TurnId.make("completed-turn");
+    const parent = readModel.threads[0];
+    if (!parent) {
+      throw new Error("Expected a parent thread fixture.");
+    }
+    const runningRun: ProjectionWorkflowRun = {
+      ...run,
+      status: "running",
+      nodes: [
+        {
+          nodeId,
+          status: "running",
+          inputArtifactId,
+          workerThreadId: childThreadId,
+          startedAt: now,
+        },
+      ],
+    };
+    const completedModel: OrchestrationReadModel = {
+      ...readModel,
+      workflowRuns: [runningRun],
+      threads: [
+        ...readModel.threads,
+        {
+          ...parent,
+          id: childThreadId,
+          parentThreadId,
+          title: "Investigate",
+          messages: [],
+          latestTurn: {
+            turnId: completedTurnId,
+            state: "completed",
+            requestedAt: now,
+            startedAt: now,
+            completedAt: now,
+            assistantMessageId: null,
+          },
+          session: {
+            threadId: childThreadId,
+            status: "running",
+            providerName: "Codex",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+        },
+      ],
+    };
+    const commands: OrchestrationCommand[] = [];
+    const engine: OrchestrationEngineShape = {
+      getReadModel: () => Effect.succeed(completedModel),
+      readEvents: () => Stream.empty,
+      dispatch: (command) =>
+        Effect.sync(() => {
+          commands.push(command);
+          return { sequence: commands.length };
+        }),
+      streamDomainEvents: Stream.empty,
+    };
+    const workflows: ProjectionWorkflowRepositoryShape = {
+      upsertRun: () => Effect.void,
+      getByRunId: () => Effect.succeed(Option.some(runningRun)),
+      listIncomplete: () => Effect.succeed([runningRun]),
+      listAll: () => Effect.succeed([runningRun]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
+      upsertArtifact: () => Effect.void,
+      getArtifactById: () => Effect.succeed(Option.some(inputArtifact)),
+      listAllArtifacts: () => Effect.succeed([inputArtifact]),
+      setNodeInputArtifact: () => Effect.void,
+      startNode: () => Effect.void,
+      recordNodeResult: () => Effect.void,
+      finalizeRun: () => Effect.void,
+    };
+
+    runtime = ManagedRuntime.make(
+      WorkflowCoordinatorReactorLive.pipe(
+        Layer.provideMerge(Layer.succeed(OrchestrationEngineService, engine)),
+        Layer.provideMerge(Layer.succeed(ProjectionWorkflowRepository, workflows)),
+      ),
+    );
+    const coordinator = await runtime.runPromise(Effect.service(WorkflowCoordinatorReactor));
+    const scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(coordinator.start().pipe(Scope.provide(scope)));
+
+    expect(commands.map((command) => command.type)).toEqual([
+      "thread.turn.start",
+      "workflow.worker-result.record",
+    ]);
+    expect(commands[1]).toMatchObject({
+      type: "workflow.worker-result.record",
+      artifact: {
+        payload: {
+          kind: "worker-result",
+          status: "completed",
+          body: "Worker completed without a textual response.",
+        },
+      },
+    });
 
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });

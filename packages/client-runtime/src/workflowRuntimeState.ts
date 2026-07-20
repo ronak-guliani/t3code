@@ -84,6 +84,7 @@ export function applyWorkflowRuntimeEvent(
     case "workflow.node-worker-started":
       return updateRun(state, event.payload.runId, (run) => ({
         ...run,
+        status: "running",
         nodes: run.nodes.map((node) =>
           node.nodeId === event.payload.nodeId
             ? {
@@ -125,6 +126,18 @@ export function applyWorkflowRuntimeEvent(
       return updateRun(nextState, event.payload.runId, (run) => ({
         ...run,
         status: event.payload.status,
+        nodes:
+          event.payload.status === "failed"
+            ? run.nodes.map((node) =>
+                node.status === "pending"
+                  ? {
+                      ...node,
+                      status: "failed",
+                      completedAt: event.payload.completedAt,
+                    }
+                  : node,
+              )
+            : run.nodes,
         finalArtifactId: event.payload.artifact.id,
         updatedAt: event.payload.completedAt,
         completedAt: event.payload.completedAt,

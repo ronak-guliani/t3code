@@ -79,6 +79,7 @@ import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispat
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
+import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
   createThreadMarkdownExportFilename,
   formatThreadMarkdownExport,
@@ -530,52 +531,72 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
               const normalizedCommand = yield* normalizeDispatchCommand(command);
-              const shouldStopSessionAfterArchive =
+              const threadsToArchive =
                 normalizedCommand.type === "thread.archive"
-                  ? yield* projectionSnapshotQuery
-                      .getThreadShellById(normalizedCommand.threadId)
-                      .pipe(
-                        Effect.map(
-                          Option.match({
-                            onNone: () => false,
-                            onSome: (thread) =>
-                              thread.session !== null && thread.session.status !== "stopped",
+                  ? yield* Effect.gen(function* () {
+                      const rootShell = yield* projectionSnapshotQuery
+                        .getThreadShellById(normalizedCommand.threadId)
+                        .pipe(Effect.catch(() => Effect.succeed(Option.none())));
+                      const subtree = collectActiveThreadSubtree(
+                        yield* orchestrationEngine.getReadModel(),
+                        normalizedCommand.threadId,
+                      );
+                      const rootFromReadModel = subtree.find(
+                        (thread) => thread.id === normalizedCommand.threadId,
+                      );
+                      return [
+                        {
+                          id: normalizedCommand.threadId,
+                          session: Option.match(rootShell, {
+                            onNone: () => rootFromReadModel?.session ?? null,
+                            onSome: (thread) => thread.session,
                           }),
+                        },
+                        ...subtree.flatMap((thread) =>
+                          thread.id === normalizedCommand.threadId
+                            ? []
+                            : [{ id: thread.id, session: thread.session }],
                         ),
-                        Effect.catch(() => Effect.succeed(false)),
-                      )
-                  : false;
+                      ];
+                    })
+                  : [];
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
               if (normalizedCommand.type === "thread.archive") {
-                if (shouldStopSessionAfterArchive) {
-                  yield* Effect.gen(function* () {
-                    const stopCommand = yield* normalizeDispatchCommand({
-                      type: "thread.session.stop",
-                      commandId: CommandId.make(
-                        `session-stop-for-archive:${normalizedCommand.commandId}`,
-                      ),
-                      threadId: normalizedCommand.threadId,
-                      createdAt: new Date().toISOString(),
-                    });
+                yield* Effect.forEach(
+                  threadsToArchive,
+                  (thread) =>
+                    Effect.gen(function* () {
+                      if (thread.session !== null && thread.session.status !== "stopped") {
+                        yield* Effect.gen(function* () {
+                          const stopCommand = yield* normalizeDispatchCommand({
+                            type: "thread.session.stop",
+                            commandId: CommandId.make(
+                              `session-stop-for-archive:${normalizedCommand.commandId}:${thread.id}`,
+                            ),
+                            threadId: thread.id,
+                            createdAt: new Date().toISOString(),
+                          });
+                          yield* dispatchNormalizedCommand(stopCommand);
+                        }).pipe(
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning("failed to stop provider session during archive", {
+                              threadId: thread.id,
+                              cause,
+                            }),
+                          ),
+                        );
+                      }
 
-                    yield* dispatchNormalizedCommand(stopCommand);
-                  }).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logWarning("failed to stop provider session during archive", {
-                        threadId: normalizedCommand.threadId,
-                        cause,
-                      }),
-                    ),
-                  );
-                }
-
-                yield* terminalManager.close({ threadId: normalizedCommand.threadId }).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("failed to close thread terminals after archive", {
-                      threadId: normalizedCommand.threadId,
-                      error: error.message,
+                      yield* terminalManager.close({ threadId: thread.id }).pipe(
+                        Effect.catch((error) =>
+                          Effect.logWarning("failed to close thread terminals after archive", {
+                            threadId: thread.id,
+                            error: error.message,
+                          }),
+                        ),
+                      );
                     }),
-                  ),
+                  { concurrency: 4 },
                 );
               }
               return result;

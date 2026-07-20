@@ -20,6 +20,7 @@ import {
   requireThreadReadyForTurnStart,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
+import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
@@ -478,20 +479,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
-      return {
-        ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
-          occurredAt,
-          commandId: command.commandId,
+      const threadsToArchive = collectActiveThreadSubtree(readModel, command.threadId);
+      return threadsToArchive.map(
+        (thread): PlannedOrchestrationEvent => ({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.archived",
+          payload: {
+            threadId: thread.id,
+            archivedAt: occurredAt,
+            updatedAt: occurredAt,
+          },
         }),
-        type: "thread.archived",
-        payload: {
-          threadId: command.threadId,
-          archivedAt: occurredAt,
-          updatedAt: occurredAt,
-        },
-      };
+      );
     }
 
     case "thread.unarchive": {

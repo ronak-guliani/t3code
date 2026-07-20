@@ -399,7 +399,6 @@ describe("ProviderRuntimeIngestion", () => {
         scope: { kind: "uncommitted", branch: "main", untrackedFiles: [] },
         diff,
         diffHash: "snapshot-hash",
-        truncated: false,
       },
     });
     const startedAt = new Date().toISOString();
