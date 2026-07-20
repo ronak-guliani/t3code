@@ -97,6 +97,42 @@
   }
 }
 
+@layer components {
+  .chat-composer-glass {
+    background: var(--card);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html:is(
+        [data-sidebar-translucency="subtle"],
+        [data-sidebar-translucency="medium"],
+        [data-sidebar-translucency="strong"],
+        [data-sidebar-translucency="liquid-glass"]
+      ):not([data-window-focused="false"])
+      .chat-composer-glass {
+      background: color-mix(in srgb, var(--card) 20%, transparent);
+      box-shadow:
+        0 18px 48px -20px rgb(0 0 0 / 28%),
+        0 4px 14px -7px rgb(0 0 0 / 22%);
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+    }
+
+    html.dark:is(
+        [data-sidebar-translucency="subtle"],
+        [data-sidebar-translucency="medium"],
+        [data-sidebar-translucency="strong"],
+        [data-sidebar-translucency="liquid-glass"]
+      ):not([data-window-focused="false"])
+      .chat-composer-glass {
+      background: color-mix(in srgb, var(--card) 45%, transparent);
+      box-shadow:
+        0 18px 48px -20px rgb(0 0 0 / 60%),
+        0 4px 14px -7px rgb(0 0 0 / 40%);
+    }
+  }
+}
+
 /* Safe-area inset utilities for surfaces that opt into edge-to-edge rendering.
    Insets resolve to 0 when the browser already constrains the layout viewport
    to the safe area. */
@@ -707,6 +743,16 @@ label:has(> select#reasoning-effort) select {
 
 [data-chat-composer-footer] [data-slot="separator"] {
   height: 1.25em;
+}
+
+.composer-inline-chip[data-composer-chip-selected]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background-color: Highlight;
+  opacity: 0.3;
+  pointer-events: none;
 }
 
 /* Diffs theme bridge (match diff surfaces to app palette) */
