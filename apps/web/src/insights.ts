@@ -39,6 +39,28 @@ export interface InsightAggregate {
   readonly toolCallCount: number;
 }
 
+const INSIGHT_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
+  "insights.turn.started",
+  "insights.turn.completed",
+  "insights.turn.aborted",
+  "tool.started",
+  "tool.updated",
+  "tool.completed",
+  "approval.requested",
+  "approval.resolved",
+  "user-input.requested",
+  "user-input.resolved",
+]);
+
+/**
+ * True for the lifecycle activities Insights derives timing from. These records
+ * must be retained beyond the UI activity cap so long-thread totals stay
+ * complete once older activities are evicted.
+ */
+export function isInsightActivity(activity: OrchestrationThreadActivity): boolean {
+  return INSIGHT_ACTIVITY_KINDS.has(activity.kind);
+}
+
 interface MutableInterval {
   start: number;
   end?: number;

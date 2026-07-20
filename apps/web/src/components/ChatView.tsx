@@ -4295,7 +4295,10 @@ function ChatViewBody(
           />
         ) : null}
         {insightsOpen && !shouldUseRightPanelSheet ? (
-          <InsightsPanel activities={activeThread.activities} onClose={closeInsights} />
+          <InsightsPanel
+            activities={activeThread.insightActivities ?? activeThread.activities}
+            onClose={closeInsights}
+          />
         ) : null}
       </div>
       {/* end horizontal flex container */}
@@ -4333,7 +4336,7 @@ function ChatViewBody(
             />
           ) : (
             <InsightsPanel
-              activities={activeThread.activities}
+              activities={activeThread.insightActivities ?? activeThread.activities}
               mode="sheet"
               onClose={closeInsights}
             />
