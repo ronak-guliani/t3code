@@ -454,6 +454,8 @@ export function makeOpenCodeAdapter(
     const managedNativeEventLogger =
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
     const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1024);
+    const eventScope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
     const sessions = new Map<ThreadId, OpenCodeSessionContext>();
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
@@ -463,25 +465,29 @@ export function makeOpenCodeAdapter(
     // fibers. Consumers that can't reason about Effect scopes therefore
     // cannot leak OpenCode child processes by forgetting to call `stopAll`.
     yield* Effect.addFinalizer(() =>
-      Effect.gen(function* () {
-        const contexts = [...sessions.values()];
-        sessions.clear();
-        // `ignoreCause` swallows both typed failures (none here) and defects
-        // from throwing scope finalizers so a sibling's death can't interrupt
-        // the remaining cleanups.
-        yield* Effect.forEach(
-          contexts,
-          (context) => Effect.ignoreCause(stopOpenCodeContext(context)),
-          { concurrency: "unbounded", discard: true },
-        );
-        // Close the logger AFTER session teardown so any final lifecycle
-        // events emitted during shutdown still get written. `close` flushes
-        // the `Logger.batched` window and closes each per-thread
-        // `RotatingFileSink` handle owned by the logger's internal scope.
-        if (managedNativeEventLogger !== undefined) {
-          yield* managedNativeEventLogger.close();
-        }
-      }).pipe(Effect.ensuring(Queue.shutdown(runtimeEvents))),
+      Queue.shutdown(runtimeEvents).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const contexts = [...sessions.values()];
+            sessions.clear();
+            // `ignoreCause` swallows both typed failures (none here) and defects
+            // from throwing scope finalizers so a sibling's death can't interrupt
+            // the remaining cleanups.
+            yield* Effect.forEach(
+              contexts,
+              (context) => Effect.ignoreCause(stopOpenCodeContext(context)),
+              { concurrency: "unbounded", discard: true },
+            );
+            // Close the logger AFTER session teardown so any final lifecycle
+            // events emitted during shutdown still get written. `close` flushes
+            // the `Logger.batched` window and closes each per-thread
+            // `RotatingFileSink` handle owned by the logger's internal scope.
+            if (managedNativeEventLogger !== undefined) {
+              yield* managedNativeEventLogger.close();
+            }
+          }),
+        ),
+      ),
     );
 
     const emit = (event: ProviderRuntimeEvent) =>
@@ -1315,15 +1321,18 @@ export function makeOpenCodeAdapter(
         if (!stopped) {
           return;
         }
-        yield* emit({
-          ...(yield* buildEventBase({ threadId })),
-          type: "session.exited",
-          payload: {
-            reason: "Session stopped.",
-            recoverable: false,
-            exitKind: "graceful",
-          },
-        });
+        yield* Effect.forkIn(
+          emit({
+            ...(yield* buildEventBase({ threadId })),
+            type: "session.exited",
+            payload: {
+              reason: "Session stopped.",
+              recoverable: false,
+              exitKind: "graceful",
+            },
+          }),
+          eventScope,
+        );
       },
     );
 

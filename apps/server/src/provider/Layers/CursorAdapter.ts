@@ -321,6 +321,8 @@ export function makeCursorAdapter(
     const sessions = new Map<ThreadId, CursorSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(1024);
+    const eventScope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.sync(() => EventId.make(crypto.randomUUID()));
@@ -432,13 +434,16 @@ export function makeCursorAdapter(
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
-        yield* offerRuntimeEvent({
-          type: "session.exited",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
-        });
+        yield* Effect.forkIn(
+          offerRuntimeEvent({
+            type: "session.exited",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            payload: { exitKind: "graceful" },
+          }),
+          eventScope,
+        );
       });
 
     const startSession: CursorAdapterShape["startSession"] = (input) =>
@@ -1072,9 +1077,9 @@ export function makeCursorAdapter(
       Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
 
     yield* Effect.addFinalizer(() =>
-      Effect.forEach(sessions.values(), stopSessionInternal, { discard: true }).pipe(
-        Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
-        Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
+      PubSub.shutdown(runtimeEventPubSub).pipe(
+        Effect.andThen(Effect.forEach(sessions.values(), stopSessionInternal, { discard: true })),
+        Effect.andThen(managedNativeEventLogger?.close() ?? Effect.void),
       ),
     );
 

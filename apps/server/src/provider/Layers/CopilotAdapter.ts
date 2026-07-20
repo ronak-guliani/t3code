@@ -534,6 +534,8 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const sessions = new Map<ThreadId, CopilotSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(1024);
+    const eventScope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.sync(() => EventId.make(crypto.randomUUID()));
@@ -650,13 +652,16 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         ctx.turns.length = 0;
         yield* closeRuntimeInternal(ctx);
         sessions.delete(ctx.threadId);
-        yield* offerRuntimeEvent({
-          type: "session.exited",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: ctx.threadId,
-          payload: { exitKind: "graceful" },
-        });
+        yield* Effect.forkIn(
+          offerRuntimeEvent({
+            type: "session.exited",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            payload: { exitKind: "graceful" },
+          }),
+          eventScope,
+        );
       });
 
     const openRuntime = (input: {
@@ -1716,13 +1721,15 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       });
 
     yield* Effect.addFinalizer(() =>
-      Effect.gen(function* () {
-        const contexts = [...sessions.values()];
-        yield* Effect.forEach(contexts, stopSessionInternal, { discard: true });
-        yield* clearThreadSemaphores;
-      }).pipe(
-        Effect.tap(() => PubSub.shutdown(runtimeEventPubSub)),
-        Effect.tap(() => managedNativeEventLogger?.close() ?? Effect.void),
+      PubSub.shutdown(runtimeEventPubSub).pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const contexts = [...sessions.values()];
+            yield* Effect.forEach(contexts, stopSessionInternal, { discard: true });
+            yield* clearThreadSemaphores;
+          }),
+        ),
+        Effect.andThen(managedNativeEventLogger?.close() ?? Effect.void),
       ),
     );
 

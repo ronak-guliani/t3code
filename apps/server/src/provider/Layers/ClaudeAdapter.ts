@@ -64,6 +64,7 @@ import {
   Path,
   Queue,
   Ref,
+  Scope,
   Stream,
 } from "effect";
 
@@ -1005,13 +1006,20 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
   const runtimeEventQueue = yield* Queue.bounded<ProviderRuntimeEvent>(1024);
+  const eventScope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
+  const stoppingSessionThreadIds = new Set<ThreadId>();
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const nextEventId = Effect.sync(() => EventId.make(randomUUID()));
   const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
-  const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
-    Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
+  const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> => {
+    const offer = Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
+    return stoppingSessionThreadIds.has(event.threadId)
+      ? Effect.forkIn(offer, eventScope).pipe(Effect.asVoid)
+      : offer;
+  };
 
   const logNativeSdkMessage = Effect.fn("logNativeSdkMessage")(function* (
     context: ClaudeSessionContext,
@@ -2401,6 +2409,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (context.stopped) return;
 
     context.stopped = true;
+    stoppingSessionThreadIds.add(context.session.threadId);
 
     for (const [requestId, pending] of context.pendingApprovals) {
       yield* Deferred.succeed(pending.decision, "cancel");
@@ -2466,6 +2475,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     sessions.delete(context.session.threadId);
+    stoppingSessionThreadIds.delete(context.session.threadId);
   });
 
   const requireSession = (
@@ -3244,14 +3254,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     );
 
   yield* Effect.addFinalizer(() =>
-    Effect.forEach(
-      sessions,
-      ([, context]) =>
-        stopSessionInternal(context, {
-          emitExitEvent: false,
-        }),
-      { discard: true },
-    ).pipe(Effect.tap(() => Queue.shutdown(runtimeEventQueue))),
+    Queue.shutdown(runtimeEventQueue).pipe(
+      Effect.andThen(
+        Effect.forEach(
+          sessions,
+          ([, context]) =>
+            stopSessionInternal(context, {
+              emitExitEvent: false,
+            }),
+          { discard: true },
+        ),
+      ),
+    ),
   );
 
   return {
