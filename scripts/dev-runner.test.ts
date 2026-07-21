@@ -195,6 +195,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         assert.equal(env.T3CODE_NO_BROWSER, undefined);
         assert.equal(env.T3CODE_HOST, undefined);
         assert.equal(env.VITE_WS_URL, "ws://127.0.0.1:4222");
+        assert.equal(env.T3CODE_DESKTOP_DEV, "1");
       }),
     );
 
