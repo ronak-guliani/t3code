@@ -322,7 +322,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         onScroll={handleScroll}
         className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
         ListHeaderComponent={<div className="h-3 sm:h-4" />}
-        ListFooterComponent={<div className="h-3 sm:h-4" />}
+        ListFooterComponent={<div className="chat-timeline-composer-overlap-spacer" />}
       />
     </TimelineRowCtx.Provider>
   );
