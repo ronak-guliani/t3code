@@ -11,7 +11,7 @@ Use the T3 CLI as a control plane for running work in other T3 Code threads.
 
 ```sh
 t3 project list
-t3 chat new --project <project> --title "<delegated task>" "<complete prompt>"
+t3 chat new --project <project> --parent "$T3_MCP_THREAD_ID" --title "<delegated task>" "<complete prompt>"
 t3 chat stream <thread-id>
 t3 chat show <thread-id> --messages
 ```
@@ -19,7 +19,7 @@ t3 chat show <thread-id> --messages
 ## Delegation workflow
 
 1. Resolve the project with `t3 project list` unless the user provided a project ID/path.
-2. Create a helper thread with `t3 chat new --project <project> --title "<short task>" "<full prompt>"`.
+2. Create a nested helper thread with `t3 chat new --project <project> --parent "$T3_MCP_THREAD_ID" --title "<short task>" "<full prompt>"`.
 3. Capture the returned `threadId`.
 4. Monitor only when needed:
    - `t3 chat stream <threadId>` for live progress.
@@ -78,5 +78,6 @@ When consolidating, distinguish:
 
 - Keep destructive operations in the current controlling thread unless explicitly delegated.
 - Prefer creating a new helper thread over reusing an unrelated old thread.
+- Keep helper threads nested under the controlling thread with `--parent "$T3_MCP_THREAD_ID"`.
 - Stop or interrupt helper threads only when the user asks or the task is clearly obsolete.
 - Do not hide helper failures; report blocked or inconclusive results plainly.
