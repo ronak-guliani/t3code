@@ -281,6 +281,7 @@ async function createIsolatedWorkspaceTool(
   if (!branch?.trim()) {
     throw new Error("create_isolated_workspace requires a non-empty branch");
   }
+  const branchName = branch.trim();
   const targetPath = requireAbsolutePath(asString(args.path));
   const baseRef = asString(args.baseRef);
 
@@ -295,7 +296,7 @@ async function createIsolatedWorkspaceTool(
     "add",
     targetPath,
     "-b",
-    branch.trim(),
+    branchName,
     currentBranch,
   ]);
 
@@ -305,20 +306,30 @@ async function createIsolatedWorkspaceTool(
       "set-branch",
       options.threadId,
       "--branch",
-      branch.trim(),
+      branchName,
       "--worktree",
       targetPath,
     ]);
   } catch (error) {
-    await runCommand(options.cwd, "git", ["worktree", "remove", "--force", targetPath]).catch(
-      () => undefined,
-    );
+    const worktreeRemoved = await runCommand(options.cwd, "git", [
+      "worktree",
+      "remove",
+      "--force",
+      targetPath,
+    ])
+      .then(() => true)
+      .catch(() => false);
+    if (worktreeRemoved) {
+      await runCommand(options.cwd, "git", ["branch", "--delete", "--force", branchName]).catch(
+        () => undefined,
+      );
+    }
     throw error;
   }
 
   return JSON.stringify({
     worktreePath: targetPath,
-    branch: branch.trim(),
+    branch: branchName,
     baseRef: currentBranch,
     note: "Handoff recorded. Finish this turn normally; the next turn starts in the worktree.",
   });

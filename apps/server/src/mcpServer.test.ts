@@ -123,6 +123,9 @@ describe("create_isolated_workspace MCP tool", () => {
       ).rejects.toThrow("t3-fails");
 
       await expect(readFile(targetPath, "utf8")).rejects.toThrow();
+      await expect(
+        run("git", ["rev-parse", "--verify", "--quiet", "feature/worktree"], root),
+      ).rejects.toThrow();
     } finally {
       process.env.PATH = originalPath;
       await rm(root, { recursive: true, force: true });
