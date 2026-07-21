@@ -377,9 +377,13 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const selectedView = diffSearch.reviewFinding ? "uncommitted" : diffSearch.diffView;
   const selectedTurnId =
     selectedView === undefined
-      ? (diffSearch.diffTurnId ?? orderedTurnDiffSummaries[0]?.turnId ?? null)
+      ? (diffSearch.diffTurnId ??
+        orderedTurnDiffSummaries.find((summary) => summary.status === "ready")?.turnId ??
+        null)
       : null;
   const showReviewSnapshot = selectedView === "uncommitted";
+  const reviewSnapshotLabel =
+    reviewSnapshot?.scope.kind === "uncommitted" ? "All uncommitted" : "All branch changes";
   const reviewResult =
     activeThread?.reviewResult?.status === "parsed" ? activeThread.reviewResult : null;
   const selectedReviewFinding =
@@ -917,7 +921,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                     : "border-border/70 bg-background/70 text-muted-foreground/80 hover:border-border hover:text-foreground/80",
                 )}
               >
-                <div className="leading-tight font-medium">All uncommitted</div>
+                <div className="leading-tight font-medium">{reviewSnapshotLabel}</div>
               </div>
             </button>
           ) : null}
