@@ -371,15 +371,17 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       }),
     [inferredCheckpointTurnCountByTurnId, turnDiffSummaries],
   );
+  const readyTurnDiffSummaries = useMemo(
+    () => orderedTurnDiffSummaries.filter((summary) => summary.status === "ready"),
+    [orderedTurnDiffSummaries],
+  );
 
   const reviewSnapshot =
     activeThread?.reviewSnapshot ?? activeThread?.reviewResult?.snapshot ?? null;
   const selectedView = diffSearch.reviewFinding ? "uncommitted" : diffSearch.diffView;
   const selectedTurnId =
     selectedView === undefined
-      ? (diffSearch.diffTurnId ??
-        orderedTurnDiffSummaries.find((summary) => summary.status === "ready")?.turnId ??
-        null)
+      ? (diffSearch.diffTurnId ?? readyTurnDiffSummaries[0]?.turnId ?? null)
       : null;
   const showReviewSnapshot = selectedView === "uncommitted";
   const reviewSnapshotLabel =
@@ -432,7 +434,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     [selectedCheckpointTurnCount],
   );
   const conversationCheckpointTurnCount = useMemo(() => {
-    const turnCounts = orderedTurnDiffSummaries
+    const turnCounts = readyTurnDiffSummaries
       .map(
         (summary) =>
           summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId],
@@ -443,7 +445,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     }
     const latest = Math.max(...turnCounts);
     return latest > 0 ? latest : undefined;
-  }, [inferredCheckpointTurnCountByTurnId, orderedTurnDiffSummaries]);
+  }, [inferredCheckpointTurnCountByTurnId, readyTurnDiffSummaries]);
   const conversationCheckpointRange = useMemo(
     () =>
       !selectedTurn && typeof conversationCheckpointTurnCount === "number"
@@ -459,11 +461,11 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     : conversationCheckpointRange;
   const selectedScope = selectedTurn ? "turn" : "snapshot";
   const conversationCacheScope = useMemo(() => {
-    if (selectedTurn || orderedTurnDiffSummaries.length === 0) {
+    if (selectedTurn || readyTurnDiffSummaries.length === 0) {
       return null;
     }
-    return `conversation:${orderedTurnDiffSummaries.map((summary) => summary.turnId).join(",")}`;
-  }, [orderedTurnDiffSummaries, selectedTurn]);
+    return `conversation:${readyTurnDiffSummaries.map((summary) => summary.turnId).join(",")}`;
+  }, [readyTurnDiffSummaries, selectedTurn]);
   const activeDiffCacheScope = selectedTurn
     ? `turn:${selectedTurn.turnId}:${selectedScope}`
     : conversationCacheScope;
@@ -1029,7 +1031,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         <div className="flex flex-1 items-center justify-center px-5 text-center text-[length:var(--app-code-font-size)] text-muted-foreground/70">
           Turn diffs are unavailable because this project is not a git repository.
         </div>
-      ) : orderedTurnDiffSummaries.length === 0 && !showReviewSnapshot ? (
+      ) : readyTurnDiffSummaries.length === 0 && !showReviewSnapshot ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-[length:var(--app-code-font-size)] text-muted-foreground/70">
           No completed turns yet.
         </div>
