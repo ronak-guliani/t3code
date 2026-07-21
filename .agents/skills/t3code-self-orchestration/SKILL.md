@@ -12,7 +12,6 @@ Use the T3 CLI as a control plane for running work in other T3 Code threads.
 ```sh
 t3 project list
 t3 chat new --project <project> --title "<delegated task>" "<complete prompt>"
-t3 chat stream <thread-id>
 t3 chat show <thread-id> --messages
 ```
 
@@ -22,8 +21,10 @@ t3 chat show <thread-id> --messages
 2. Create a helper thread with `t3 chat new --project <project> --title "<short task>" "<full prompt>"`.
 3. Capture the returned `threadId`.
 4. Monitor only when needed:
-   - `t3 chat stream <threadId>` for live progress.
-   - `t3 chat show <threadId> --messages` for a point-in-time result.
+   - Use `t3 chat show <threadId> --messages` for a point-in-time result and to confirm
+     the latest turn state.
+   - `t3 chat stream <threadId>` is a persistent subscription. Never run it as an
+     attached command to wait for completion; it does not exit when a turn completes.
 5. If blocked, use approval/input skills only under the user’s authorization.
 6. Summarize findings back in the current chat with thread IDs and decisive outcomes.
 
