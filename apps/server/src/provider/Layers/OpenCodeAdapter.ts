@@ -454,8 +454,7 @@ export function makeOpenCodeAdapter(
     const managedNativeEventLogger =
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
     const runtimeEvents = yield* Queue.bounded<ProviderRuntimeEvent>(1024);
-    const eventScope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
+    let isShuttingDown = false;
     const sessions = new Map<ThreadId, OpenCodeSessionContext>();
 
     // Layer-level finalizer: when the adapter layer shuts down, stop every
@@ -465,7 +464,10 @@ export function makeOpenCodeAdapter(
     // fibers. Consumers that can't reason about Effect scopes therefore
     // cannot leak OpenCode child processes by forgetting to call `stopAll`.
     yield* Effect.addFinalizer(() =>
-      Queue.shutdown(runtimeEvents).pipe(
+      Effect.sync(() => {
+        isShuttingDown = true;
+      }).pipe(
+        Effect.andThen(Queue.shutdown(runtimeEvents)),
         Effect.andThen(
           Effect.gen(function* () {
             const contexts = [...sessions.values()];
@@ -491,7 +493,7 @@ export function makeOpenCodeAdapter(
     );
 
     const emit = (event: ProviderRuntimeEvent) =>
-      Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
+      isShuttingDown ? Effect.void : Queue.offer(runtimeEvents, event).pipe(Effect.asVoid);
     const writeNativeEvent = (
       threadId: ThreadId,
       event: {
@@ -1321,18 +1323,15 @@ export function makeOpenCodeAdapter(
         if (!stopped) {
           return;
         }
-        yield* Effect.forkIn(
-          emit({
-            ...(yield* buildEventBase({ threadId })),
-            type: "session.exited",
-            payload: {
-              reason: "Session stopped.",
-              recoverable: false,
-              exitKind: "graceful",
-            },
-          }),
-          eventScope,
-        );
+        yield* emit({
+          ...(yield* buildEventBase({ threadId })),
+          type: "session.exited",
+          payload: {
+            reason: "Session stopped.",
+            recoverable: false,
+            exitKind: "graceful",
+          },
+        });
       },
     );
 

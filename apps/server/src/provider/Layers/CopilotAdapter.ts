@@ -534,15 +534,14 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const sessions = new Map<ThreadId, CopilotSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(1024);
-    const eventScope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
+    let isShuttingDown = false;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.sync(() => EventId.make(crypto.randomUUID()));
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+      isShuttingDown ? Effect.void : PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -652,16 +651,13 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         ctx.turns.length = 0;
         yield* closeRuntimeInternal(ctx);
         sessions.delete(ctx.threadId);
-        yield* Effect.forkIn(
-          offerRuntimeEvent({
-            type: "session.exited",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            payload: { exitKind: "graceful" },
-          }),
-          eventScope,
-        );
+        yield* offerRuntimeEvent({
+          type: "session.exited",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          payload: { exitKind: "graceful" },
+        });
       });
 
     const openRuntime = (input: {
@@ -1721,7 +1717,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       });
 
     yield* Effect.addFinalizer(() =>
-      PubSub.shutdown(runtimeEventPubSub).pipe(
+      Effect.sync(() => {
+        isShuttingDown = true;
+      }).pipe(
+        Effect.andThen(PubSub.shutdown(runtimeEventPubSub)),
         Effect.andThen(
           Effect.gen(function* () {
             const contexts = [...sessions.values()];

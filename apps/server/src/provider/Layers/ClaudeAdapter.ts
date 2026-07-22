@@ -64,7 +64,6 @@ import {
   Path,
   Queue,
   Ref,
-  Scope,
   Stream,
 } from "effect";
 
@@ -195,6 +194,7 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly runtimeEventBufferCapacity?: number;
 }
 
 function isUuid(value: string): boolean {
@@ -1005,21 +1005,17 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }) as ClaudeQueryRuntime);
 
   const sessions = new Map<ThreadId, ClaudeSessionContext>();
-  const runtimeEventQueue = yield* Queue.bounded<ProviderRuntimeEvent>(1024);
-  const eventScope = yield* Scope.make();
-  yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
-  const stoppingSessionThreadIds = new Set<ThreadId>();
+  const runtimeEventQueue = yield* Queue.bounded<ProviderRuntimeEvent>(
+    options?.runtimeEventBufferCapacity ?? 1024,
+  );
+  let isShuttingDown = false;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const nextEventId = Effect.sync(() => EventId.make(randomUUID()));
   const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
-  const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> => {
-    const offer = Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
-    return stoppingSessionThreadIds.has(event.threadId)
-      ? Effect.forkIn(offer, eventScope).pipe(Effect.asVoid)
-      : offer;
-  };
+  const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
+    isShuttingDown ? Effect.void : Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
 
   const logNativeSdkMessage = Effect.fn("logNativeSdkMessage")(function* (
     context: ClaudeSessionContext,
@@ -2409,7 +2405,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     if (context.stopped) return;
 
     context.stopped = true;
-    stoppingSessionThreadIds.add(context.session.threadId);
 
     for (const [requestId, pending] of context.pendingApprovals) {
       yield* Deferred.succeed(pending.decision, "cancel");
@@ -2473,9 +2468,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
     }
-
     sessions.delete(context.session.threadId);
-    stoppingSessionThreadIds.delete(context.session.threadId);
   });
 
   const requireSession = (
@@ -3254,7 +3247,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     );
 
   yield* Effect.addFinalizer(() =>
-    Queue.shutdown(runtimeEventQueue).pipe(
+    Effect.sync(() => {
+      isShuttingDown = true;
+    }).pipe(
+      Effect.andThen(Queue.shutdown(runtimeEventQueue)),
       Effect.andThen(
         Effect.forEach(
           sessions,

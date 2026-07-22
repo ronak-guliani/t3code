@@ -321,15 +321,14 @@ export function makeCursorAdapter(
     const sessions = new Map<ThreadId, CursorSessionContext>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(1024);
-    const eventScope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(eventScope, Exit.void));
+    let isShuttingDown = false;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.sync(() => EventId.make(crypto.randomUUID()));
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
-      PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+      isShuttingDown ? Effect.void : PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
 
     const getThreadSemaphore = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
@@ -434,16 +433,13 @@ export function makeCursorAdapter(
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
-        yield* Effect.forkIn(
-          offerRuntimeEvent({
-            type: "session.exited",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: ctx.threadId,
-            payload: { exitKind: "graceful" },
-          }),
-          eventScope,
-        );
+        yield* offerRuntimeEvent({
+          type: "session.exited",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          payload: { exitKind: "graceful" },
+        });
       });
 
     const startSession: CursorAdapterShape["startSession"] = (input) =>
@@ -1077,7 +1073,10 @@ export function makeCursorAdapter(
       Effect.forEach(sessions.values(), stopSessionInternal, { discard: true });
 
     yield* Effect.addFinalizer(() =>
-      PubSub.shutdown(runtimeEventPubSub).pipe(
+      Effect.sync(() => {
+        isShuttingDown = true;
+      }).pipe(
+        Effect.andThen(PubSub.shutdown(runtimeEventPubSub)),
         Effect.andThen(Effect.forEach(sessions.values(), stopSessionInternal, { discard: true })),
         Effect.andThen(managedNativeEventLogger?.close() ?? Effect.void),
       ),
