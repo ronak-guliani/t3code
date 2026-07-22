@@ -177,6 +177,254 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
+  it.effect("keeps the turn active until a background agent settles", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-background-agent-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_EMIT_BACKGROUND_AGENT_FLOW: "1",
+          T3_ACP_BACKGROUND_AGENT_COMPLETION_DELAY_MS: "900",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "turn.started" ||
+            event.type === "task.started" ||
+            event.type === "task.completed" ||
+            event.type === "content.delta" ||
+            event.type === "turn.completed",
+        ),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      const startedAt = Date.now();
+      yield* adapter.sendTurn({
+        threadId,
+        input: "delegate inspection",
+        attachments: [],
+      });
+      const elapsedMs = Date.now() - startedAt;
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["turn.started", "task.started", "task.completed", "turn.completed"],
+      );
+      const turnStarted = events.find((event) => event.type === "turn.started");
+      assert.isDefined(turnStarted);
+      const turnId = turnStarted?.turnId;
+      const taskStarted = events.find((event) => event.type === "task.started");
+      assert.equal(taskStarted?.type, "task.started");
+      if (taskStarted?.type === "task.started") {
+        assert.equal(taskStarted.payload.taskId, "background-agent-1");
+        assert.equal(taskStarted.payload.name, "requested-background-agent");
+        assert.equal(taskStarted.payload.agentType, "explore");
+      }
+
+      assert.isAtLeast(elapsedMs, 850);
+      assert.deepEqual(
+        events
+          .filter(
+            (event) =>
+              event.type === "task.started" ||
+              event.type === "task.completed" ||
+              event.type === "turn.completed",
+          )
+          .map((event) => event.type),
+        ["task.started", "task.completed", "turn.completed"],
+      );
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+      assert.isTrue(events.every((event) => event.turnId === undefined || event.turnId === turnId));
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("stops running background agents before the session exits", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-background-agent-stop-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_EMIT_BACKGROUND_AGENT_FLOW: "1",
+          T3_ACP_BACKGROUND_AGENT_COMPLETION_DELAY_MS: "5000",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const lifecycleEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "task.started" ||
+            event.type === "task.completed" ||
+            event.type === "session.exited",
+        ),
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const taskStartedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "task.started"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
+      });
+
+      const sendTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "delegate inspection",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+
+      const taskStarted = yield* Fiber.join(taskStartedFiber);
+      assert.equal(taskStarted._tag, "Some");
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(sendTurnFiber);
+
+      const lifecycleEvents = Array.from(yield* Fiber.join(lifecycleEventsFiber));
+      assert.deepEqual(
+        lifecycleEvents.map((event) => event.type),
+        ["task.started", "task.completed", "session.exited"],
+      );
+      const taskCompleted = lifecycleEvents.find((event) => event.type === "task.completed");
+      assert.equal(taskCompleted?.type, "task.completed");
+      if (taskCompleted?.type === "task.completed") {
+        assert.equal(taskCompleted.payload.status, "stopped");
+        assert.equal(taskCompleted.payload.taskId, "background-agent-1");
+      }
+    }),
+  );
+
+  it.effect("settles immediately when end_turn declares no background tasks", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-delayed-continuation-thread");
+
+      yield* isolateCopilotHome();
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({ T3_ACP_EMIT_DELAYED_CONTINUATION_FLOW: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "item.updated" ||
+            event.type === "item.completed" ||
+            event.type === "content.delta" ||
+            event.type === "turn.completed",
+        ),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      const startedAt = Date.now();
+      yield* adapter.sendTurn({ threadId, input: "continue later", attachments: [] });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+
+      assert.isBelow(Date.now() - startedAt, 750);
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["turn.completed"],
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("completes the turn when a background agent launch fails", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-background-agent-launch-failure-thread");
+
+      yield* isolateCopilotHome();
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_EMIT_BACKGROUND_AGENT_FLOW: "1",
+          T3_ACP_FAIL_BACKGROUND_AGENT_LAUNCH: "1",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: COPILOT_INSTANCE_ID, model: "auto" },
+      });
+
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "task.started" ||
+            event.type === "task.completed" ||
+            event.type === "turn.completed",
+        ),
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "delegate inspection",
+        attachments: [],
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["turn.completed"],
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("drops assistant history chunks emitted while resuming a Copilot ACP session", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
@@ -1070,6 +1318,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
             readonly name: string;
             readonly command: string;
             readonly args: string[];
+            readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
           }>
         >(mcpLogPath),
       );
@@ -1082,6 +1331,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         process.cwd(),
         "--toolsets",
         "read_file,search_files",
+      ]);
+      assert.deepEqual(mcpServers?.[0]?.env, [
+        { name: "T3_MCP_THREAD_ID", value: threadId },
+        { name: "T3_MCP_CLI_COMMAND", value: "t3-test" },
       ]);
 
       yield* adapter.stopSession(threadId);

@@ -169,7 +169,8 @@ import {
   ReviewDiffPreviewInput,
   ReviewDiffPreviewResult,
 } from "./review.ts";
-import { WorkflowRunError, WorkflowRunInput, WorkflowRunResult } from "./agentWorkflows.ts";
+import { WorkflowRunError, WorkflowRunResult } from "./agentWorkflows.ts";
+import { WorkflowRunInput } from "./workflowRuntime.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -598,6 +599,24 @@ export const WsOrchestrationReplayEventsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.
   error: OrchestrationReplayEventsError,
 });
 
+export const WsOrchestrationGetShellSnapshotRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getShellSnapshot,
+  {
+    payload: OrchestrationRpcSchemas.getShellSnapshot.input,
+    success: OrchestrationRpcSchemas.getShellSnapshot.output,
+    error: OrchestrationGetSnapshotError,
+  },
+);
+
+export const WsOrchestrationGetThreadSnapshotRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+  {
+    payload: OrchestrationRpcSchemas.getThreadSnapshot.input,
+    success: OrchestrationRpcSchemas.getThreadSnapshot.output,
+    error: OrchestrationGetSnapshotError,
+  },
+);
+
 export const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -867,6 +886,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffStateRpc,
   WsOrchestrationGetFullThreadDiffStateRpc,
   WsOrchestrationReplayEventsRpc,
+  WsOrchestrationGetShellSnapshotRpc,
+  WsOrchestrationGetThreadSnapshotRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,

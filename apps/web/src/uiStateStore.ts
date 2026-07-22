@@ -24,6 +24,7 @@ export interface PersistedUiState {
   threadExpandedById?: Record<string, boolean>;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
   changedFilesDiffScope?: TurnDiffScope;
+  dismissedAgentRunKeys?: string[];
 }
 
 export interface UiProjectState {
@@ -37,9 +38,50 @@ export interface UiThreadState {
   threadExpandedById: Record<string, boolean>;
   threadChangedFilesExpandedById: Record<string, Record<string, boolean>>;
   changedFilesDiffScope: TurnDiffScope;
+  /**
+   * Keys of background-agent runs the user has archived from the sidebar.
+   * These rows are virtual (derived from a parent thread's activity timeline)
+   * and have no backing thread, so archiving is a persisted UI-side dismissal.
+   */
+  dismissedAgentRunKeys: Record<string, true>;
 }
 
 export interface UiState extends UiProjectState, UiThreadState {}
+
+export function createThreadExpandedOverridesSelector(
+  threadKeys: readonly string[],
+): (state: UiState) => ReadonlyMap<string, boolean> {
+  let initialized = false;
+  const previousOverrides: Array<boolean | undefined> = [];
+  let previousSelection: ReadonlyMap<string, boolean> = new Map();
+
+  return (state) => {
+    let changed = !initialized;
+    for (let index = 0; index < threadKeys.length; index += 1) {
+      if (state.threadExpandedById[threadKeys[index]!] !== previousOverrides[index]) {
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return previousSelection;
+    }
+
+    const nextSelection = new Map<string, boolean>();
+    previousOverrides.length = threadKeys.length;
+    for (let index = 0; index < threadKeys.length; index += 1) {
+      const threadKey = threadKeys[index]!;
+      const override = state.threadExpandedById[threadKey];
+      previousOverrides[index] = override;
+      if (typeof override === "boolean") {
+        nextSelection.set(threadKey, override);
+      }
+    }
+    previousSelection = nextSelection;
+    initialized = true;
+    return previousSelection;
+  };
+}
 
 export interface SyncProjectInput {
   /** Physical project key (env + cwd). Used for manual sort order. */
@@ -62,6 +104,7 @@ const initialState: UiState = {
   threadExpandedById: {},
   threadChangedFilesExpandedById: {},
   changedFilesDiffScope: "turn",
+  dismissedAgentRunKeys: {},
 };
 
 const persistedCollapsedProjectCwds = new Set<string>();
@@ -106,6 +149,7 @@ function readPersistedState(): UiState {
         parsed.threadChangedFilesExpandedById,
       ),
       changedFilesDiffScope: sanitizePersistedDiffScope(parsed.changedFilesDiffScope),
+      dismissedAgentRunKeys: sanitizePersistedDismissedAgentRunKeys(parsed.dismissedAgentRunKeys),
     };
   } catch {
     return initialState;
@@ -120,8 +164,8 @@ function readPersistedState(): UiState {
 
     const nextState: Record<string, boolean> = {};
     for (const [threadId, expanded] of Object.entries(value)) {
-      if (threadId && expanded === false) {
-        nextState[threadId] = false;
+      if (threadId && typeof expanded === "boolean") {
+        nextState[threadId] = expanded;
       }
     }
     return nextState;
@@ -157,6 +201,21 @@ function sanitizePersistedPinnedThreadKeysByProjectId(
 
 function sanitizePersistedDiffScope(value: unknown): TurnDiffScope {
   return value === "snapshot" ? "snapshot" : "turn";
+}
+
+function sanitizePersistedDismissedAgentRunKeys(
+  value: PersistedUiState["dismissedAgentRunKeys"],
+): Record<string, true> {
+  if (!Array.isArray(value)) {
+    return {};
+  }
+  const nextState: Record<string, true> = {};
+  for (const key of value) {
+    if (typeof key === "string" && key.length > 0) {
+      nextState[key] = true;
+    }
+  }
+  return nextState;
 }
 
 function sanitizePersistedThreadChangedFilesExpanded(
@@ -241,7 +300,9 @@ export function persistState(state: UiState): void {
       ),
     );
     const threadExpandedById = Object.fromEntries(
-      Object.entries(state.threadExpandedById).filter(([, expanded]) => expanded === false),
+      Object.entries(state.threadExpandedById).filter(
+        ([, expanded]) => typeof expanded === "boolean",
+      ),
     );
     window.localStorage.setItem(
       PERSISTED_STATE_KEY,
@@ -253,6 +314,7 @@ export function persistState(state: UiState): void {
         threadExpandedById,
         threadChangedFilesExpandedById,
         changedFilesDiffScope: state.changedFilesDiffScope,
+        dismissedAgentRunKeys: Object.keys(state.dismissedAgentRunKeys),
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -612,25 +674,18 @@ export function clearThreadUi(state: UiState, threadId: string): UiState {
 }
 
 export function setThreadExpanded(state: UiState, threadId: string, expanded: boolean): UiState {
-  const currentExpanded = state.threadExpandedById[threadId] ?? true;
-  if (currentExpanded === expanded) {
+  if (state.threadExpandedById[threadId] === expanded) {
     return state;
   }
 
-  if (expanded) {
-    const nextState = { ...state.threadExpandedById };
-    delete nextState[threadId];
-    return {
-      ...state,
-      threadExpandedById: nextState,
-    };
-  }
-
+  // Persist the explicit choice in both directions. Parents default to
+  // collapsed once settled, so an explicit "expanded" must be recorded rather
+  // than cleared back to the (now collapsed) default.
   return {
     ...state,
     threadExpandedById: {
       ...state.threadExpandedById,
-      [threadId]: false,
+      [threadId]: expanded,
     },
   };
 }
@@ -830,6 +885,27 @@ export function reorderPinnedThreads(
   };
 }
 
+export function setAgentRunDismissed(
+  state: UiState,
+  agentRunKey: string,
+  dismissed: boolean,
+): UiState {
+  const isDismissed = state.dismissedAgentRunKeys[agentRunKey] === true;
+  if (isDismissed === dismissed) {
+    return state;
+  }
+  const nextDismissedAgentRunKeys = { ...state.dismissedAgentRunKeys };
+  if (dismissed) {
+    nextDismissedAgentRunKeys[agentRunKey] = true;
+  } else {
+    delete nextDismissedAgentRunKeys[agentRunKey];
+  }
+  return {
+    ...state,
+    dismissedAgentRunKeys: nextDismissedAgentRunKeys,
+  };
+}
+
 interface UiStateStore extends UiState {
   syncProjects: (projects: readonly SyncProjectInput[]) => void;
   syncThreads: (threads: readonly SyncThreadInput[]) => void;
@@ -851,6 +927,7 @@ interface UiStateStore extends UiState {
     draggedThreadId: string,
     targetThreadId: string,
   ) => void;
+  setAgentRunDismissed: (agentRunKey: string, dismissed: boolean) => void;
 }
 
 export const useUiStateStore = create<UiStateStore>((set) => ({
@@ -876,6 +953,14 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setThreadPinned(state, projectId, threadId, pinned)),
   reorderPinnedThreads: (projectId, draggedThreadId, targetThreadId) =>
     set((state) => reorderPinnedThreads(state, projectId, draggedThreadId, targetThreadId)),
+  setAgentRunDismissed: (agentRunKey, dismissed) => {
+    set((state) => setAgentRunDismissed(state, agentRunKey, dismissed));
+    // Archiving an agent run is a deliberate, low-frequency action the user
+    // expects to survive an immediate restart. The 500ms persist debounce (and
+    // an unreliable `beforeunload` flush in the desktop webview) can drop the
+    // write if the app closes before it fires, so persist synchronously here.
+    debouncedPersistState.flush();
+  },
 }));
 
 useUiStateStore.subscribe((state) => debouncedPersistState.maybeExecute(state));

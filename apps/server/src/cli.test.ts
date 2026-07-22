@@ -29,7 +29,9 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   orchestrationDispatchRouteLayer,
+  orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
+  orchestrationThreadSnapshotRouteLayer,
 } from "./orchestration/http.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
@@ -116,6 +118,8 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
     const config = yield* makeCliTestServerConfig(baseDir);
     const routesLayer = Layer.mergeAll(
       orchestrationSnapshotRouteLayer,
+      orchestrationShellSnapshotRouteLayer,
+      orchestrationThreadSnapshotRouteLayer,
       orchestrationDispatchRouteLayer,
     );
     const appLayer = HttpRouter.serve(routesLayer, {
@@ -686,21 +690,6 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             "--base-dir",
             baseDir,
           ]);
-          const newChatOutput = yield* captureStdout(
-            runCli([
-              "chat",
-              "new",
-              "--project",
-              workspaceRoot,
-              "--title",
-              "New Turn Chat",
-              "first-prompt",
-              "--base-dir",
-              baseDir,
-            ]),
-          );
-          const newChat = JSON.parse(newChatOutput.output) as { readonly threadId: string };
-
           const createdOutput = yield* captureStdout(
             runCli([
               "chat",
@@ -714,6 +703,23 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             ]),
           );
           const created = JSON.parse(createdOutput.output) as { readonly threadId: string };
+
+          const newChatOutput = yield* captureStdout(
+            runCli([
+              "chat",
+              "new",
+              "--project",
+              workspaceRoot,
+              "--parent",
+              created.threadId,
+              "--title",
+              "New Turn Chat",
+              "first-prompt",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          const newChat = JSON.parse(newChatOutput.output) as { readonly threadId: string };
 
           yield* runCliWithRuntime([
             "chat",
@@ -811,6 +817,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           assert.equal(newThread?.modelSelection.instanceId, "codex");
           assert.equal(newThread?.modelSelection.model, "gpt-5.4");
           assert.equal(newThread?.modelSelection.options, undefined);
+          assert.equal(newThread?.parentThreadId, created.threadId);
           assert.isTrue(newThread?.messages.some((message) => message.text === "first-prompt"));
           assert.equal(sentThread?.modelSelection.instanceId, "codex");
           assert.equal(sentThread?.modelSelection.model, "gpt-5.4");

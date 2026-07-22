@@ -18,6 +18,7 @@ import { ServerLifecycleEventsLive } from "./serverLifecycleEvents.ts";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime.ts";
+import { ProjectionWorkflowRepositoryLive } from "./persistence/Layers/ProjectionWorkflows.ts";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
@@ -41,6 +42,8 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
+import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
+import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import { ServerSettingsLive } from "./serverSettings.ts";
@@ -76,7 +79,9 @@ import {
 } from "./serverRuntimeState.ts";
 import {
   orchestrationDispatchRouteLayer,
+  orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
+  orchestrationThreadSnapshotRouteLayer,
 } from "./orchestration/http.ts";
 import { NetService } from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -143,6 +148,9 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
   Layer.provideMerge(QueuedTurnReactorLive),
+  Layer.provideMerge(WorkflowCoordinatorReactorLive),
+  Layer.provideMerge(ReviewSnapshotVerifierLive),
+  Layer.provideMerge(ProjectionWorkflowRepositoryLive),
   Layer.provideMerge(ThreadDeletionReactorLive),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
@@ -339,7 +347,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   authWebSocketTokenRouteLayer,
   attachmentsRouteLayer,
   orchestrationDispatchRouteLayer,
+  orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
+  orchestrationThreadSnapshotRouteLayer,
   ConnectHttpApiLayerLive,
   mobileRouteLayer,
   otlpTracesProxyRouteLayer,

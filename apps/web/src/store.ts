@@ -19,7 +19,13 @@ import type {
   ScopedProjectRef,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { parseScopedThreadKey } from "@t3tools/client-runtime";
+import {
+  applyWorkflowRuntimeEvent,
+  createWorkflowRuntimeState,
+  parseScopedThreadKey,
+  selectWorkflowRunsForParentThread as selectWorkflowRunsForParentThreadInRuntime,
+  type WorkflowRuntimeState,
+} from "@t3tools/client-runtime";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
@@ -39,6 +45,7 @@ import {
 import { resolveEnvironmentHttpUrl } from "./environments/runtime";
 import { sanitizeThreadErrorMessage } from "./rpc/transportError";
 import { getThreadFromEnvironmentState } from "./threadDerivation";
+import { isInsightActivity } from "./insights";
 
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -76,11 +83,16 @@ export interface EnvironmentState {
   messageByThreadId: Record<ThreadId, Record<MessageId, ChatMessage>>;
   activityIdsByThreadId: Record<ThreadId, string[]>;
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
+  // Insights lifecycle records retained independently of `activityByThreadId`
+  // so thread-wide timing stays complete after the capped activity window
+  // evicts older turns. Bounded by distinct turns, not raw activity count.
+  insightActivitiesByThreadId: Record<ThreadId, readonly OrchestrationThreadActivity[]>;
   proposedPlanIdsByThreadId: Record<ThreadId, string[]>;
   proposedPlanByThreadId: Record<ThreadId, Record<string, ProposedPlan>>;
   turnDiffIdsByThreadId: Record<ThreadId, TurnId[]>;
   turnDiffSummaryByThreadId: Record<ThreadId, Record<TurnId, TurnDiffSummary>>;
   queuedTurnsByThreadId: Record<ThreadId, readonly OrchestrationQueuedTurn[]>;
+  reviewStateByThreadId?: Record<ThreadId, Pick<Thread, "reviewSnapshot" | "reviewResult">>;
 
   // ---------------------------------------------------------------------------
   // Sidebar summary — written ONLY by the shell stream
@@ -90,6 +102,7 @@ export interface EnvironmentState {
   // truth for sidebar data.
   // ---------------------------------------------------------------------------
   sidebarThreadSummaryById: Record<ThreadId, SidebarThreadSummary>;
+  workflowRuntime?: WorkflowRuntimeState;
 
   bootstrapComplete: boolean;
 }
@@ -111,12 +124,15 @@ const initialEnvironmentState: EnvironmentState = {
   messageByThreadId: {},
   activityIdsByThreadId: {},
   activityByThreadId: {},
+  insightActivitiesByThreadId: {},
   proposedPlanIdsByThreadId: {},
   proposedPlanByThreadId: {},
   turnDiffIdsByThreadId: {},
   turnDiffSummaryByThreadId: {},
   queuedTurnsByThreadId: {},
+  reviewStateByThreadId: {},
   sidebarThreadSummaryById: {},
+  workflowRuntime: createWorkflowRuntimeState(),
   bootstrapComplete: false,
 };
 
@@ -129,8 +145,12 @@ const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 const MAX_THREAD_PROPOSED_PLANS = 200;
 const MAX_THREAD_ACTIVITIES = 500;
+const MAX_THREAD_INSIGHT_TURNS = 500;
+const EMPTY_INSIGHT_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 const EMPTY_QUEUED_TURNS: readonly OrchestrationQueuedTurn[] = [];
+const EMPTY_WORKFLOW_RUNS: ReturnType<typeof selectWorkflowRunsForParentThreadInRuntime> =
+  Object.freeze([]);
 
 function arraysEqual<T>(left: readonly T[], right: readonly T[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -301,6 +321,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
+    ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
   };
@@ -356,6 +378,7 @@ function mapThreadShell(
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
+    backgroundAgentRuns: thread.backgroundAgentRuns ?? [],
   };
   return {
     shell,
@@ -485,8 +508,28 @@ function sidebarThreadSummariesEqual(
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
-    left.hasActionableProposedPlan === right.hasActionableProposedPlan
+    left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
+    backgroundAgentRunsEqual(left.backgroundAgentRuns, right.backgroundAgentRuns)
   );
+}
+
+function backgroundAgentRunsEqual(
+  left: SidebarThreadSummary["backgroundAgentRuns"],
+  right: SidebarThreadSummary["backgroundAgentRuns"],
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((run, index) => {
+    const candidate = right[index];
+    return (
+      candidate !== undefined &&
+      run.taskId === candidate.taskId &&
+      run.name === candidate.name &&
+      run.status === candidate.status &&
+      run.startedAt === candidate.startedAt &&
+      run.completedAt === candidate.completedAt
+    );
+  });
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -742,6 +785,12 @@ function writeThreadState(
 
   if (previousThread?.activities !== nextThread.activities) {
     const nextActivitySlice = buildActivitySlice(nextThread);
+    const previousInsightActivities =
+      nextState.insightActivitiesByThreadId[nextThread.id] ?? EMPTY_INSIGHT_ACTIVITIES;
+    const nextInsightActivities = reconcileInsightActivities(
+      previousInsightActivities,
+      nextThread.activities,
+    );
     nextState = {
       ...nextState,
       activityIdsByThreadId: {
@@ -752,6 +801,14 @@ function writeThreadState(
         ...nextState.activityByThreadId,
         [nextThread.id]: nextActivitySlice.byId,
       },
+      ...(nextInsightActivities !== previousInsightActivities
+        ? {
+            insightActivitiesByThreadId: {
+              ...nextState.insightActivitiesByThreadId,
+              [nextThread.id]: nextInsightActivities,
+            },
+          }
+        : {}),
     };
   }
 
@@ -791,6 +848,22 @@ function writeThreadState(
       queuedTurnsByThreadId: {
         ...nextState.queuedTurnsByThreadId,
         [nextThread.id]: nextThread.queuedTurns ?? EMPTY_QUEUED_TURNS,
+      },
+    };
+  }
+
+  if (
+    previousThread?.reviewSnapshot !== nextThread.reviewSnapshot ||
+    previousThread?.reviewResult !== nextThread.reviewResult
+  ) {
+    nextState = {
+      ...nextState,
+      reviewStateByThreadId: {
+        ...nextState.reviewStateByThreadId,
+        [nextThread.id]: {
+          reviewSnapshot: nextThread.reviewSnapshot,
+          reviewResult: nextThread.reviewResult,
+        },
       },
     };
   }
@@ -917,6 +990,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedMessages, ...messageByThreadId } = state.messageByThreadId;
   const { [threadId]: _removedActivityIds, ...activityIdsByThreadId } = state.activityIdsByThreadId;
   const { [threadId]: _removedActivities, ...activityByThreadId } = state.activityByThreadId;
+  const { [threadId]: _removedInsightActivities, ...insightActivitiesByThreadId } =
+    state.insightActivitiesByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
     state.proposedPlanIdsByThreadId;
   const { [threadId]: _removedPlans, ...proposedPlanByThreadId } = state.proposedPlanByThreadId;
@@ -924,6 +999,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedTurnDiffs, ...turnDiffSummaryByThreadId } =
     state.turnDiffSummaryByThreadId;
   const { [threadId]: _removedQueuedTurns, ...queuedTurnsByThreadId } = state.queuedTurnsByThreadId;
+  const { [threadId]: _removedReviewState, ...reviewStateByThreadId } =
+    state.reviewStateByThreadId ?? {};
   const { [threadId]: _removedSidebarSummary, ...sidebarThreadSummaryById } =
     state.sidebarThreadSummaryById;
 
@@ -938,11 +1015,13 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     messageByThreadId,
     activityIdsByThreadId,
     activityByThreadId,
+    insightActivitiesByThreadId,
     proposedPlanIdsByThreadId,
     proposedPlanByThreadId,
     turnDiffIdsByThreadId,
     turnDiffSummaryByThreadId,
     queuedTurnsByThreadId,
+    reviewStateByThreadId,
     sidebarThreadSummaryById,
   };
 }
@@ -979,6 +1058,82 @@ function compareActivities(
   }
 
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+}
+
+/**
+ * Retains the Insights lifecycle records (turn/tool/wait markers) that the
+ * capped activity window would otherwise evict, so long-thread timing stays
+ * complete. Merges the still-visible window with previously retained records,
+ * keeps evicted turns (older than the current window) while dropping reverted
+ * turns (newer than the window yet absent from it), and bounds growth by
+ * distinct turn count. Returns the existing reference unchanged when nothing
+ * relevant changed to avoid needless Insights recomputation.
+ */
+function reconcileInsightActivities(
+  existing: readonly OrchestrationThreadActivity[],
+  nextActivities: readonly OrchestrationThreadActivity[],
+): readonly OrchestrationThreadActivity[] {
+  if (nextActivities.length === 0) {
+    return existing.length === 0 ? existing : EMPTY_INSIGHT_ACTIVITIES;
+  }
+
+  const byId = new Map<string, OrchestrationThreadActivity>();
+  for (const activity of existing) byId.set(activity.id, activity);
+  for (const activity of nextActivities) {
+    if (isInsightActivity(activity)) byId.set(activity.id, activity);
+  }
+
+  // Boundary of the still-visible window, derived from all activities so a turn
+  // whose lifecycle markers were evicted but whose other activities remain is
+  // still treated as present.
+  const windowTurnIds = new Set<string>();
+  let windowMin: OrchestrationThreadActivity | undefined;
+  for (const activity of nextActivities) {
+    if (activity.turnId !== null) windowTurnIds.add(activity.turnId);
+    if (windowMin === undefined || compareActivities(activity, windowMin) < 0) {
+      windowMin = activity;
+    }
+  }
+
+  const byTurn = new Map<string, OrchestrationThreadActivity[]>();
+  for (const activity of byId.values()) {
+    if (activity.turnId === null) continue;
+    const list = byTurn.get(activity.turnId);
+    if (list) list.push(activity);
+    else byTurn.set(activity.turnId, [activity]);
+  }
+
+  const retainedTurns: Array<{
+    activities: OrchestrationThreadActivity[];
+    max: OrchestrationThreadActivity;
+  }> = [];
+  for (const [turnId, turnActivities] of byTurn) {
+    const sorted = turnActivities.toSorted(compareActivities);
+    const max = sorted[sorted.length - 1]!;
+    if (
+      !windowTurnIds.has(turnId) &&
+      windowMin !== undefined &&
+      compareActivities(max, windowMin) >= 0
+    ) {
+      // Absent from the window yet not older than it: a reverted turn.
+      continue;
+    }
+    retainedTurns.push({ activities: sorted, max });
+  }
+
+  retainedTurns.sort((left, right) => compareActivities(left.max, right.max));
+  const merged = retainedTurns
+    .slice(-MAX_THREAD_INSIGHT_TURNS)
+    .flatMap((entry) => entry.activities)
+    .toSorted(compareActivities);
+
+  if (
+    merged.length === existing.length &&
+    merged.every((activity, index) => activity === existing[index])
+  ) {
+    return existing;
+  }
+  return merged;
 }
 
 function buildLatestTurn(params: {
@@ -1242,10 +1397,18 @@ function syncEnvironmentShellSnapshot(
     threadSessionById,
     threadTurnStateById,
     sidebarThreadSummaryById,
+    workflowRuntime: createWorkflowRuntimeState(
+      snapshot.workflowRuns ?? [],
+      snapshot.workflowArtifacts ?? [],
+    ),
     messageIdsByThreadId: retainThreadScopedRecord(state.messageIdsByThreadId, nextThreadIds),
     messageByThreadId: retainThreadScopedRecord(state.messageByThreadId, nextThreadIds),
     activityIdsByThreadId: retainThreadScopedRecord(state.activityIdsByThreadId, nextThreadIds),
     activityByThreadId: retainThreadScopedRecord(state.activityByThreadId, nextThreadIds),
+    insightActivitiesByThreadId: retainThreadScopedRecord(
+      state.insightActivitiesByThreadId,
+      nextThreadIds,
+    ),
     proposedPlanIdsByThreadId: retainThreadScopedRecord(
       state.proposedPlanIdsByThreadId,
       nextThreadIds,
@@ -1257,6 +1420,10 @@ function syncEnvironmentShellSnapshot(
       nextThreadIds,
     ),
     queuedTurnsByThreadId: retainThreadScopedRecord(state.queuedTurnsByThreadId, nextThreadIds),
+    reviewStateByThreadId: retainThreadScopedRecord(
+      state.reviewStateByThreadId ?? {},
+      nextThreadIds,
+    ),
     bootstrapComplete: true,
   };
 }
@@ -1297,6 +1464,19 @@ function applyEnvironmentOrchestrationEvent(
   environmentId: EnvironmentId,
 ): EnvironmentState {
   switch (event.type) {
+    case "workflow.run-requested":
+    case "workflow.artifact-created":
+    case "workflow.node-worker-started":
+    case "workflow.worker-result-recorded":
+    case "workflow.run-finalized":
+      return {
+        ...state,
+        workflowRuntime: applyWorkflowRuntimeEvent(
+          state.workflowRuntime ?? createWorkflowRuntimeState(),
+          event,
+        ),
+      };
+
     case "project.created": {
       const nextProject = mapProject(
         {
@@ -1407,6 +1587,9 @@ function applyEnvironmentOrchestrationEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          ...(event.payload.reviewSnapshot !== undefined
+            ? { reviewSnapshot: event.payload.reviewSnapshot }
+            : {}),
           latestTurn: null,
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
@@ -1531,6 +1714,7 @@ function applyEnvironmentOrchestrationEvent(
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
         });
+
         const existingMessage = thread.messages.find((entry) => entry.id === message.id);
         const messages = existingMessage
           ? thread.messages.map((entry) =>
@@ -1606,6 +1790,14 @@ function applyEnvironmentOrchestrationEvent(
           updatedAt: event.occurredAt,
         };
       });
+
+    case "thread.review-result-set":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        reviewSnapshot: event.payload.result.snapshot,
+        reviewResult: event.payload.result,
+        updatedAt: event.occurredAt,
+      }));
 
     case "thread.session-set":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
@@ -1914,6 +2106,8 @@ function applyEnvironmentShellEvent(
       return writeThreadShellState(state, mapThreadShell(event.thread, environmentId));
     case "thread-removed":
       return removeThreadState(state, event.threadId);
+    case "workflow-event":
+      return applyEnvironmentOrchestrationEvent(state, event.event, environmentId);
   }
 }
 
@@ -2011,6 +2205,19 @@ export function selectThreadsForEnvironment(
   environmentId: EnvironmentId | null | undefined,
 ): Thread[] {
   return getThreads(selectEnvironmentState(state, environmentId));
+}
+
+export function selectWorkflowRunsForParentThread(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+) {
+  return ref
+    ? selectWorkflowRunsForParentThreadInRuntime(
+        selectEnvironmentState(state, ref.environmentId).workflowRuntime ??
+          createWorkflowRuntimeState(),
+        ref.threadId,
+      )
+    : EMPTY_WORKFLOW_RUNS;
 }
 
 export function selectProjectsAcrossEnvironments(state: AppState): Project[] {

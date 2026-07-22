@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE } from "@t3tools/contracts";
+import {
+  DEFAULT_REVIEW_CHANGES_PROMPT_TEMPLATE,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+} from "@t3tools/contracts";
 
 import { buildReviewChangesPrompt, reviewChangesVariantIdForScope } from "./reviewChanges.ts";
 
@@ -16,6 +19,11 @@ describe("buildReviewChangesPrompt", () => {
     expect(prompt).toContain("git ls-files --others --exclude-standard");
     expect(prompt).toContain("Do not review already committed branch changes");
     expect(prompt).toContain("Custom reviewer instructions.");
+    expect(prompt).toContain("Return exactly one JSON object");
+    expect(prompt).toContain('"code_location"');
+    expect(prompt).not.toContain('"location":{"path":"relative/path"');
+    expect(prompt).not.toContain("<review-snapshot>");
+    expect(prompt.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
   });
 
   it("builds the base branch review scope with merge-base instructions", () => {

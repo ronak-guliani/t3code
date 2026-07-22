@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   ModelSelection,
   OrchestrationLatestTurn,
+  OrchestrationBackgroundAgentRunShell,
   OrchestrationQueuedTurn,
   OrchestrationProposedPlanId,
   RepositoryIdentity,
@@ -16,6 +17,8 @@ import type {
   ProviderInstanceId,
   CheckpointRef,
   ProviderInteractionMode,
+  ReviewResult,
+  ReviewSnapshot,
   RuntimeMode,
 } from "@t3tools/contracts";
 
@@ -119,8 +122,13 @@ export interface Thread {
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
   branch: string | null;
   worktreePath: string | null;
+  reviewSnapshot?: ReviewSnapshot | undefined;
+  reviewResult?: ReviewResult | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  // Lifecycle activities retained for Insights beyond the capped `activities`
+  // window. Derived in the store; may be absent on directly-built fixtures.
+  insightActivities?: readonly OrchestrationThreadActivity[];
 }
 
 export interface ThreadShell {
@@ -165,6 +173,12 @@ export interface SidebarThreadSummary {
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasActionableProposedPlan: boolean;
+  backgroundAgentRuns?: readonly OrchestrationBackgroundAgentRunShell[];
+  virtualAgentRun?: {
+    parentThreadId: ThreadId;
+    taskId: string;
+    status: "running" | "completed" | "failed" | "stopped";
+  };
 }
 
 export interface ThreadSession {

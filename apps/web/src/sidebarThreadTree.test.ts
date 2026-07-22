@@ -2,7 +2,12 @@ import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import type { ThreadStatusPill } from "./components/Sidebar.logic";
-import { buildSidebarThreadRows } from "./sidebarThreadTree";
+import {
+  agentRunDismissKey,
+  buildSidebarThreadRows,
+  expandSidebarThreadsWithAgentRuns,
+} from "./sidebarThreadTree";
+import type { AgentRun } from "./session-logic";
 import type { SidebarThreadSummary } from "./types";
 
 const environmentId = EnvironmentId.make("env-a");
@@ -44,6 +49,66 @@ const workingStatus: ThreadStatusPill = {
 };
 
 describe("buildSidebarThreadRows", () => {
+  it("renders inactive background agents through the normal nested-chat tree", () => {
+    const parent = thread("thread-1");
+    const agentRun: AgentRun = {
+      taskId: "agent-1",
+      name: "Repository explorer",
+      startedAt: "2026-01-01T00:00:02.000Z",
+      status: "completed",
+      entries: [],
+    };
+    const threads = expandSidebarThreadsWithAgentRuns({
+      threads: [parent],
+      agentRunsByThreadKey: new Map([[key(parent.id), [agentRun]]]),
+    });
+
+    const result = buildSidebarThreadRows({
+      threads,
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map([[key(parent.id), true]]),
+      sortOrder: "created_at",
+      resolveThreadStatus: () => null,
+    });
+
+    expect(result.rowViews.map((row) => [row.thread.title, row.depth])).toEqual([
+      [parent.title, 0],
+      [agentRun.name, 1],
+    ]);
+    expect(result.rowViews[0]).toMatchObject({ hasChildren: true, childCount: 1 });
+    expect(result.rowViews[1]?.thread.virtualAgentRun).toEqual({
+      parentThreadId: parent.id,
+      taskId: agentRun.taskId,
+      status: "completed",
+    });
+  });
+
+  it("omits dismissed background-agent runs", () => {
+    const parent = thread("thread-1");
+    const dismissedRun: AgentRun = {
+      taskId: "agent-dismissed",
+      name: "Dismissed run",
+      startedAt: "2026-01-01T00:00:02.000Z",
+      status: "completed",
+      entries: [],
+    };
+    const visibleRun: AgentRun = {
+      ...dismissedRun,
+      taskId: "agent-visible",
+      name: "Visible run",
+    };
+
+    const threads = expandSidebarThreadsWithAgentRuns({
+      threads: [parent],
+      agentRunsByThreadKey: new Map([[key(parent.id), [dismissedRun, visibleRun]]]),
+      dismissedAgentRunKeys: {
+        [agentRunDismissKey(parent.id, dismissedRun.taskId)]: true,
+      },
+    });
+
+    expect(threads.map((candidate) => candidate.title)).toEqual([parent.title, visibleRun.name]);
+  });
+
   it("renders child chats indented directly below expanded parents", () => {
     const parent = thread("thread-1");
     const child = thread("thread-2", { parentThreadId: parent.id });
@@ -52,7 +117,10 @@ describe("buildSidebarThreadRows", () => {
     const result = buildSidebarThreadRows({
       threads: [grandchild, child, parent],
       pinnedThreadKeys: [],
-      collapsedThreadKeys: new Set(),
+      expandedOverrideByThreadKey: new Map([
+        [key(parent.id), true],
+        [key(child.id), true],
+      ]),
       sortOrder: "created_at",
       resolveThreadStatus: () => null,
     });
@@ -65,6 +133,91 @@ describe("buildSidebarThreadRows", () => {
     expect(result.orderedThreadKeys).toEqual([key(parent.id), key(child.id), key(grandchild.id)]);
   });
 
+  it("collapses settled parents by default so nested chats stay hidden", () => {
+    const parent = thread("thread-1");
+    const child = thread("thread-2", { parentThreadId: parent.id });
+
+    const result = buildSidebarThreadRows({
+      threads: [parent, child],
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map(),
+      sortOrder: "created_at",
+      resolveThreadStatus: () => null,
+    });
+
+    expect(result.rowViews.map((row) => row.thread.id)).toEqual([parent.id]);
+    expect(result.rowViews[0]).toMatchObject({ hasChildren: true, isExpanded: false });
+  });
+
+  it("keeps an unseen completed nested chat visible", () => {
+    const parent = thread("thread-1");
+    const child = thread("thread-2", { parentThreadId: parent.id });
+    const completedStatus: ThreadStatusPill = {
+      label: "Completed",
+      colorClass: "text-emerald-600",
+      dotClass: "bg-emerald-500",
+      pulse: false,
+    };
+
+    const result = buildSidebarThreadRows({
+      threads: [parent, child],
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map(),
+      sortOrder: "created_at",
+      resolveThreadStatus: (candidate) => (candidate.id === child.id ? completedStatus : null),
+    });
+
+    expect(result.rowViews.map((row) => row.thread.id)).toEqual([parent.id, child.id]);
+    expect(result.rowViews[0]).toMatchObject({ hasChildren: true, isExpanded: true });
+
+    const manuallyCollapsed = buildSidebarThreadRows({
+      threads: [parent, child],
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map([[key(parent.id), false]]),
+      sortOrder: "created_at",
+      resolveThreadStatus: (candidate) => (candidate.id === child.id ? completedStatus : null),
+    });
+
+    expect(manuallyCollapsed.rowViews.map((row) => row.thread.id)).toEqual([parent.id]);
+  });
+
+  it("keeps the active settled child and its ancestors visible", () => {
+    const parent = thread("thread-1");
+    const child = thread("thread-2", { parentThreadId: parent.id });
+    const grandchild = thread("thread-3", { parentThreadId: child.id });
+
+    const result = buildSidebarThreadRows({
+      threads: [parent, child, grandchild],
+      pinnedThreadKeys: [],
+      activeThreadKey: key(grandchild.id),
+      expandedOverrideByThreadKey: new Map(),
+      sortOrder: "created_at",
+      resolveThreadStatus: () => null,
+    });
+
+    expect(result.rowViews.map((row) => row.thread.id)).toEqual([
+      parent.id,
+      child.id,
+      grandchild.id,
+    ]);
+  });
+
+  it("auto-expands parents whose descendants are active", () => {
+    const parent = thread("thread-1");
+    const child = thread("thread-2", { parentThreadId: parent.id });
+
+    const result = buildSidebarThreadRows({
+      threads: [parent, child],
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map(),
+      sortOrder: "created_at",
+      resolveThreadStatus: (candidate) => (candidate.id === child.id ? workingStatus : null),
+    });
+
+    expect(result.rowViews.map((row) => row.thread.id)).toEqual([parent.id, child.id]);
+    expect(result.rowViews[0]?.isExpanded).toBe(true);
+  });
+
   it("omits collapsed descendants while rolling up their status", () => {
     const parent = thread("thread-1");
     const child = thread("thread-2", { parentThreadId: parent.id });
@@ -72,7 +225,7 @@ describe("buildSidebarThreadRows", () => {
     const result = buildSidebarThreadRows({
       threads: [parent, child],
       pinnedThreadKeys: [],
-      collapsedThreadKeys: new Set([key(parent.id)]),
+      expandedOverrideByThreadKey: new Map([[key(parent.id), false]]),
       sortOrder: "created_at",
       resolveThreadStatus: (candidate) => (candidate.id === child.id ? workingStatus : null),
     });
@@ -89,7 +242,7 @@ describe("buildSidebarThreadRows", () => {
     const result = buildSidebarThreadRows({
       threads: [orphan],
       pinnedThreadKeys: [],
-      collapsedThreadKeys: new Set(),
+      expandedOverrideByThreadKey: new Map(),
       sortOrder: "created_at",
       resolveThreadStatus: () => null,
     });
@@ -104,7 +257,10 @@ describe("buildSidebarThreadRows", () => {
     const result = buildSidebarThreadRows({
       threads: [first, second],
       pinnedThreadKeys: [],
-      collapsedThreadKeys: new Set(),
+      expandedOverrideByThreadKey: new Map([
+        [key(first.id), true],
+        [key(second.id), true],
+      ]),
       sortOrder: "created_at",
       resolveThreadStatus: () => null,
     });
@@ -122,7 +278,7 @@ describe("buildSidebarThreadRows", () => {
     const result = buildSidebarThreadRows({
       threads: [root1, child, root2],
       pinnedThreadKeys: [key(root2.id), key(child.id)],
-      collapsedThreadKeys: new Set(),
+      expandedOverrideByThreadKey: new Map([[key(root1.id), true]]),
       sortOrder: "created_at",
       resolveThreadStatus: () => null,
     });

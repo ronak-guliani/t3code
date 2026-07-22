@@ -91,7 +91,12 @@ import {
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
-import { selectExistingThreadKeys, selectProjectsAcrossEnvironments, useStore } from "../store";
+import {
+  selectExistingThreadKeys,
+  selectProjectsAcrossEnvironments,
+  selectWorkflowRunsForParentThread,
+  useStore,
+} from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
 import {
@@ -159,6 +164,7 @@ import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { ReviewFindingsCard } from "./chat/ReviewFindingsCard";
 import { ChatHeader } from "./chat/ChatHeader";
 import {
   type AgentWorkflowHeaderAction,
@@ -205,6 +211,7 @@ import {
 import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { RightPanelSheet } from "./RightPanelSheet";
+import { InsightsPanel } from "./InsightsPanel";
 import { deriveMessagesTimelineRows } from "./chat/MessagesTimeline.logic";
 import { FindInChatBar } from "./chat/FindInChatBar";
 import { useChatFind } from "./chat/useChatFind";
@@ -668,6 +675,15 @@ function ChatViewBody(
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
   const navigate = useNavigate();
+  const navigateToThread = useCallback(
+    (targetThreadId: ThreadId) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId: targetThreadId },
+      });
+    },
+    [environmentId, navigate],
+  );
   const diffSearch = controlledDiffSearch ?? resolvedDiffSearch;
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
@@ -721,7 +737,6 @@ function ChatViewBody(
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
     Record<string, string | null>
   >({});
-  const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [isExportingThread, setIsExportingThread] = useState(false);
   const [startingWorkflowId, setStartingWorkflowId] = useState<string | null>(null);
@@ -734,9 +749,16 @@ function ChatViewBody(
   >({});
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
-  const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
-  const [browserPreviewOpen, setBrowserPreviewOpen] = useState(false);
-  const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const [activeRightPanel, setActiveRightPanel] = useState<
+    "plan" | "browser-preview" | "insights" | null
+  >(null);
+  const planSidebarOpen = activeRightPanel === "plan";
+  const browserPreviewOpen = activeRightPanel === "browser-preview";
+  const insightsOpen = activeRightPanel === "insights";
+  const setPlanSidebarOpen = useCallback((open: boolean) => {
+    setActiveRightPanel((current) => (open ? "plan" : current === "plan" ? null : current));
+  }, []);
+  const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
@@ -836,6 +858,11 @@ function ChatViewBody(
   );
   const isServerThread = routeKind === "server" && serverThread !== undefined;
   const activeThread = isServerThread ? serverThread : localDraftThread;
+  const workflowRuns = useStore(
+    useShallow((state) =>
+      selectWorkflowRunsForParentThread(state, routeKind === "server" ? routeThreadRef : null),
+    ),
+  );
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
     composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
@@ -1122,6 +1149,7 @@ function ChatViewBody(
     : rawPhase === "running"
       ? "ready"
       : rawPhase;
+  const isConnecting = phase === "connecting";
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
@@ -1747,10 +1775,26 @@ function ChatViewBody(
     setTerminalOpen(!terminalState.terminalOpen);
   }, [activeThreadRef, setTerminalOpen, terminalState.terminalOpen]);
   const toggleBrowserPreview = useCallback(() => {
-    setBrowserPreviewOpen((open) => !open);
-  }, []);
+    setActiveRightPanel((current) => {
+      if (current === "browser-preview") return null;
+      planSidebarDismissedForTurnRef.current =
+        activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+      return "browser-preview";
+    });
+  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
   const closeBrowserPreview = useCallback(() => {
-    setBrowserPreviewOpen(false);
+    setActiveRightPanel((current) => (current === "browser-preview" ? null : current));
+  }, []);
+  const toggleInsights = useCallback(() => {
+    setActiveRightPanel((current) => {
+      if (current === "insights") return null;
+      planSidebarDismissedForTurnRef.current =
+        activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
+      return "insights";
+    });
+  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
+  const closeInsights = useCallback(() => {
+    setActiveRightPanel((current) => (current === "insights" ? null : current));
   }, []);
   const splitTerminal = useCallback(() => {
     if (!activeThreadRef || hasReachedSplitLimit) return;
@@ -2268,7 +2312,7 @@ function ChatViewBody(
       setPlanSidebarOpen(false);
     }
     planSidebarDismissedForTurnRef.current = null;
-  }, [activeThread?.id]);
+  }, [routeThreadKey]);
 
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
@@ -2276,6 +2320,7 @@ function ChatViewBody(
     if (!autoOpenPlanSidebar) return;
     if (!activePlan) return;
     if (planSidebarOpen) return;
+    if (activeRightPanel !== null) return;
     const latestTurnId = activeLatestTurn?.turnId ?? null;
     if (latestTurnId && activePlan.turnId !== latestTurnId) return;
     const turnKey = activePlan.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
@@ -2284,6 +2329,7 @@ function ChatViewBody(
   }, [
     activePlan,
     activeLatestTurn?.turnId,
+    activeRightPanel,
     autoOpenPlanSidebar,
     planSidebarOpen,
     sidebarProposedPlan?.turnId,
@@ -2291,7 +2337,7 @@ function ChatViewBody(
 
   useEffect(() => {
     setIsRevertingCheckpoint(false);
-  }, [activeThread?.id]);
+  }, [routeThreadKey]);
 
   useEffect(() => {
     if (!activeThread?.id || terminalState.terminalOpen) return;
@@ -2301,7 +2347,7 @@ function ChatViewBody(
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, terminalState.terminalOpen]);
+  }, [focusComposer, routeThreadKey, terminalState.terminalOpen]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -2329,7 +2375,7 @@ function ChatViewBody(
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeThread?.id, activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages]);
+  }, [activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages, routeThreadKey]);
 
   useEffect(() => {
     setOptimisticUserMessages((existing) => {
@@ -2340,24 +2386,52 @@ function ChatViewBody(
     });
     resetLocalDispatch();
     setExpandedImage(null);
-  }, [draftId, resetLocalDispatch, threadId]);
+  }, [draftId, resetLocalDispatch, routeThreadKey]);
 
   const closeExpandedImage = useCallback(() => {
     setExpandedImage(null);
   }, []);
 
   const activeWorktreePath = activeThread?.worktreePath ?? null;
+  const observedThreadWorkspaceRef = useRef<{
+    readonly threadKey: string;
+    readonly worktreePath: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!activeThread) {
+      observedThreadWorkspaceRef.current = null;
+      return;
+    }
+
+    const previous = observedThreadWorkspaceRef.current;
+    observedThreadWorkspaceRef.current = {
+      threadKey: routeThreadKey,
+      worktreePath: activeThread.worktreePath,
+    };
+    if (
+      previous === null ||
+      previous.threadKey !== routeThreadKey ||
+      previous.worktreePath !== null ||
+      activeThread.worktreePath === null
+    ) {
+      return;
+    }
+
+    toastManager.add(
+      stackedThreadToast({
+        type: "success",
+        title: "Worktree assigned",
+        description: `Future work in this chat will run on ${activeThread.branch ?? "the new branch"}.`,
+      }),
+    );
+  }, [activeThread, routeThreadKey]);
   const derivedEnvMode: DraftThreadEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath,
     hasServerThread: isServerThread,
     draftThreadEnvMode: isLocalDraftThread ? draftThread?.envMode : undefined,
   });
   const canOverrideServerThreadEnvMode = Boolean(
-    isServerThread &&
-    activeThread &&
-    activeThread.messages.length === 0 &&
-    activeThread.worktreePath === null &&
-    !envLocked,
+    isServerThread && activeThread && activeThread.worktreePath === null,
   );
   const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
     ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
@@ -2374,7 +2448,7 @@ function ChatViewBody(
   useEffect(() => {
     setPendingServerThreadEnvMode(null);
     setPendingServerThreadBranch(undefined);
-  }, [activeThread?.id]);
+  }, [routeThreadKey]);
 
   useEffect(() => {
     if (canOverrideServerThreadEnvMode) {
@@ -2842,14 +2916,11 @@ function ChatViewBody(
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
-        ? activeThreadBranch
-        : null;
+      sendEnvMode === "worktree" && !activeThread.worktreePath ? activeThreadBranch : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
-    const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+    const shouldCreateWorktree = sendEnvMode === "worktree" && !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -2979,6 +3050,9 @@ function ChatViewBody(
                 ? {
                     createThread: {
                       projectId: activeProject.id,
+                      ...(draftThread?.parentThreadId
+                        ? { parentThreadId: draftThread.parentThreadId }
+                        : {}),
                       title,
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
@@ -3673,7 +3747,7 @@ function ChatViewBody(
     setExpandedImage(preview);
   }, []);
   const onOpenTurnDiff = useCallback(
-    (turnId: TurnId, filePath?: string, scope: TurnDiffScope = "snapshot") => {
+    (turnId: TurnId, filePath?: string, scope: TurnDiffScope = "turn") => {
       if (!isServerThread) {
         return;
       }
@@ -3683,6 +3757,14 @@ function ChatViewBody(
           ? { diff: "1", diffTurnId: turnId, diffFilePath: filePath, diffScope: scope }
           : { diff: "1", diffTurnId: turnId, diffScope: scope },
       );
+    },
+    [isServerThread, onDiffPanelOpen, updateDiffSearch],
+  );
+  const onSelectReviewFinding = useCallback(
+    (findingId: string) => {
+      if (!isServerThread) return;
+      onDiffPanelOpen?.();
+      updateDiffSearch({ diff: "1", diffView: "uncommitted", reviewFinding: findingId });
     },
     [isServerThread, onDiffPanelOpen, updateDiffSearch],
   );
@@ -4006,6 +4088,7 @@ function ChatViewBody(
           terminalAvailable={activeProject !== undefined}
           terminalOpen={terminalState.terminalOpen}
           browserPreviewOpen={browserPreviewOpen}
+          insightsOpen={insightsOpen}
           exportingThread={isExportingThread}
           exportThreadDisabledReason={exportThreadDisabledReason}
           terminalToggleShortcutLabel={terminalToggleShortcutLabel}
@@ -4013,14 +4096,17 @@ function ChatViewBody(
           gitCwd={gitCwd}
           diffOpen={diffOpen}
           workflowActions={workflowHeaderActions}
+          workflowRuns={workflowRuns}
           onRunProjectScript={runProjectScript}
           onRunWorkflow={onRunWorkflow}
+          onNavigateThread={navigateToThread}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
           onExportThread={onExportThread}
           onToggleTerminal={toggleTerminalVisibility}
           onToggleBrowserPreview={toggleBrowserPreview}
+          onToggleInsights={toggleInsights}
           onToggleDiff={onToggleDiff}
           paneActions={paneActions}
         />
@@ -4080,7 +4166,16 @@ function ChatViewBody(
               workspaceRoot={activeWorkspaceRoot}
               onIsAtEndChange={onIsAtEndChange}
               activeChatFindRowId={chatFindOpen ? (activeChatFindMatch?.rowId ?? null) : null}
+              reviewResultActive={activeThread.reviewResult?.status === "parsed"}
             />
+            {activeThread.reviewResult ? (
+              <div className="mx-auto w-full max-w-3xl px-4 pb-3">
+                <ReviewFindingsCard
+                  result={activeThread.reviewResult}
+                  onSelectFinding={onSelectReviewFinding}
+                />
+              </div>
+            ) : null}
 
             {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
             {showScrollToBottom && (
@@ -4225,7 +4320,7 @@ function ChatViewBody(
         {/* end chat column */}
 
         {/* Plan sidebar */}
-        {planSidebarOpen && !shouldUsePlanSidebarSheet ? (
+        {planSidebarOpen && !shouldUseRightPanelSheet ? (
           <PlanSidebar
             activePlan={activePlan}
             activeProposedPlan={sidebarProposedPlan}
@@ -4243,6 +4338,12 @@ function ChatViewBody(
             environmentId={activeThread.environmentId}
             threadId={activeThread.id}
             onClose={closeBrowserPreview}
+          />
+        ) : null}
+        {insightsOpen && !shouldUseRightPanelSheet ? (
+          <InsightsPanel
+            activities={activeThread.insightActivities ?? activeThread.activities}
+            onClose={closeInsights}
           />
         ) : null}
       </div>
@@ -4265,19 +4366,27 @@ function ChatViewBody(
           onAddTerminalContext={addTerminalContextToDraft}
         />
       ))}
-      {shouldUsePlanSidebarSheet ? (
-        <RightPanelSheet open={planSidebarOpen} onClose={closePlanSidebar}>
-          <PlanSidebar
-            activePlan={activePlan}
-            activeProposedPlan={sidebarProposedPlan}
-            label={planSidebarLabel}
-            environmentId={environmentId}
-            markdownCwd={gitCwd ?? undefined}
-            workspaceRoot={activeWorkspaceRoot}
-            timestampFormat={timestampFormat}
-            mode="sheet"
-            onClose={closePlanSidebar}
-          />
+      {shouldUseRightPanelSheet && (planSidebarOpen || insightsOpen) ? (
+        <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closeInsights}>
+          {planSidebarOpen ? (
+            <PlanSidebar
+              activePlan={activePlan}
+              activeProposedPlan={sidebarProposedPlan}
+              label={planSidebarLabel}
+              environmentId={environmentId}
+              markdownCwd={gitCwd ?? undefined}
+              workspaceRoot={activeWorkspaceRoot}
+              timestampFormat={timestampFormat}
+              mode="sheet"
+              onClose={closePlanSidebar}
+            />
+          ) : (
+            <InsightsPanel
+              activities={activeThread.insightActivities ?? activeThread.activities}
+              mode="sheet"
+              onClose={closeInsights}
+            />
+          )}
         </RightPanelSheet>
       ) : null}
 

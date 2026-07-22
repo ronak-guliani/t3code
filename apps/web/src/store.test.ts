@@ -35,6 +35,7 @@ import {
 } from "./store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 import type { SidebarThreadSummary } from "./types";
+import { deriveInsights, isInsightActivity } from "./insights";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 const remoteEnvironmentId = EnvironmentId.make("environment-remote");
@@ -195,6 +196,9 @@ function makeState(thread: Thread): AppState {
         thread.activities.map((activity) => [activity.id, activity] as const),
       ) as EnvironmentState["activityByThreadId"][ThreadId],
     },
+    insightActivitiesByThreadId: {
+      [thread.id]: thread.activities.filter(isInsightActivity),
+    },
     proposedPlanIdsByThreadId: {
       [thread.id]: thread.proposedPlans.map((plan) => plan.id),
     },
@@ -235,6 +239,7 @@ function makeEmptyState(overrides: Partial<AppState & EnvironmentState> = {}): A
     messageByThreadId: {},
     activityIdsByThreadId: {},
     activityByThreadId: {},
+    insightActivitiesByThreadId: {},
     proposedPlanIdsByThreadId: {},
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
@@ -824,6 +829,34 @@ describe("incremental orchestration updates", () => {
       localEnvironmentId,
     );
     expect(threadsOf(afterDispatch)[0]?.queuedTurns ?? []).toEqual([]);
+  });
+
+  it("retains review snapshots and applies live structured review results", () => {
+    const threadId = ThreadId.make("thread-review");
+    const reviewSnapshot = {
+      scope: { kind: "uncommitted" as const, branch: "main", untrackedFiles: [] },
+      diff: "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      diffHash: "review-hash",
+    };
+    const state = makeState(makeThread({ id: threadId, reviewSnapshot }));
+    const result = {
+      status: "parsed" as const,
+      snapshot: reviewSnapshot,
+      findings: [],
+      verdict: "approve" as const,
+      summary: "No issues found.",
+    };
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.review-result-set", { threadId, result }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next).find((thread) => thread.id === threadId)).toMatchObject({
+      reviewSnapshot: { diffHash: "review-hash" },
+      reviewResult: { status: "parsed", summary: "No issues found." },
+    });
   });
 
   it("reuses an existing project row when project.created arrives with a new id for the same cwd", () => {
@@ -1576,5 +1609,91 @@ describe("incremental orchestration updates", () => {
       state: "running",
     });
     expect(threadsOf(next)[0]?.latestTurn?.sourceProposedPlan).toBeUndefined();
+  });
+});
+
+describe("insights lifecycle retention", () => {
+  function activityAppendedEvent(input: {
+    sequence: number;
+    id: string;
+    kind: string;
+    turnId: string;
+    payload?: Record<string, unknown>;
+  }): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> {
+    const occurredAt = new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
+    return makeEvent(
+      "thread.activity-appended",
+      {
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make(input.id),
+          tone: "info",
+          kind: input.kind,
+          summary: input.kind,
+          payload: input.payload ?? {},
+          turnId: TurnId.make(input.turnId),
+          sequence: input.sequence,
+          createdAt: occurredAt,
+        },
+      },
+      { sequence: input.sequence, eventId: EventId.make(`event-${input.sequence}`) },
+    );
+  }
+
+  it("retains completed turn timing after older activities exceed the capped window", () => {
+    const events: Extract<OrchestrationEvent, { type: "thread.activity-appended" }>[] = [
+      activityAppendedEvent({
+        sequence: 1,
+        id: "activity-turn-1-start",
+        kind: "insights.turn.started",
+        turnId: "turn-1",
+        payload: { provider: "copilot" },
+      }),
+      activityAppendedEvent({
+        sequence: 2,
+        id: "activity-turn-1-end",
+        kind: "insights.turn.completed",
+        turnId: "turn-1",
+        payload: { provider: "copilot", state: "completed" },
+      }),
+    ];
+    // Push well past MAX_THREAD_ACTIVITIES (500) with a later turn so turn-1's
+    // lifecycle markers are evicted from the capped activity window.
+    for (let index = 0; index < 600; index += 1) {
+      events.push(
+        activityAppendedEvent({
+          sequence: 100 + index,
+          id: `activity-turn-2-${index}`,
+          kind: "step",
+          turnId: "turn-2",
+        }),
+      );
+    }
+
+    const next = applyOrchestrationEvents(makeState(makeThread()), events, localEnvironmentId);
+    const thread = selectThreadByRef(
+      next,
+      scopeThreadRef(localEnvironmentId, ThreadId.make("thread-1")),
+    );
+
+    // The capped activity window evicted turn-1.
+    expect(thread?.activities.length).toBe(500);
+    expect(thread?.activities.some((activity) => activity.id === "activity-turn-1-start")).toBe(
+      false,
+    );
+
+    // The retained insights list still carries turn-1's lifecycle markers.
+    const insightActivities = thread?.insightActivities ?? [];
+    expect(insightActivities.some((activity) => activity.id === "activity-turn-1-start")).toBe(
+      true,
+    );
+    expect(insightActivities.some((activity) => activity.id === "activity-turn-1-end")).toBe(true);
+
+    // And Insights still represents the older completed turn.
+    const insights = deriveInsights(insightActivities, 1_700_001_000_000);
+    const turnOne = insights.turns.find((turn) => String(turn.turnId) === "turn-1");
+    expect(turnOne).toBeDefined();
+    expect(turnOne?.status).toBe("completed");
+    expect(turnOne?.durationMs).toBe(1_000);
   });
 });

@@ -56,6 +56,7 @@ describe("orchestration projector", () => {
           payload: {
             threadId: "thread-1",
             projectId: "project-1",
+            parentThreadId: "parent-thread",
             title: "demo",
             modelSelection: {
               provider: ProviderDriverKind.make("codex"),
@@ -76,6 +77,7 @@ describe("orchestration projector", () => {
       {
         id: "thread-1",
         projectId: "project-1",
+        parentThreadId: "parent-thread",
         title: "demo",
         modelSelection: {
           instanceId: "codex",
@@ -86,6 +88,7 @@ describe("orchestration projector", () => {
         interactionMode: "default",
         branch: null,
         worktreePath: null,
+        reviewResult: null,
         latestTurn: null,
         createdAt: now,
         updatedAt: now,

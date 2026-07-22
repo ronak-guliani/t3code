@@ -18,7 +18,7 @@ import {
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
+import { deriveTimelineEntries, formatElapsed, type AgentRun } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -34,6 +34,7 @@ import {
   GitForkIcon,
   GlobeIcon,
   HammerIcon,
+  InfoIcon,
   type LucideIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -45,7 +46,6 @@ import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
-import { DiffScopeToggle } from "./DiffScopeToggle";
 import { DiffStatLabel } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
@@ -66,7 +66,6 @@ import {
   type ParsedTerminalContextEntry,
 } from "~/lib/terminalContext";
 import { cn } from "~/lib/utils";
-import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatTimestamp } from "../../timestampFormat";
 
@@ -103,6 +102,7 @@ interface TimelineRowSharedState {
   onForkAssistantMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
+  reviewResultMessageId: string | null;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -139,6 +139,7 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   activeChatFindRowId?: string | null;
+  reviewResultActive?: boolean;
 }
 
 const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
@@ -175,6 +176,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workspaceRoot,
   onIsAtEndChange,
   activeChatFindRowId = null,
+  reviewResultActive = false,
 }: MessagesTimelineProps) {
   const handleForkAssistantMessage = onForkAssistantMessage ?? NOOP_FORK_ASSISTANT_MESSAGE;
   const rawRows = useMemo(
@@ -202,6 +204,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const reviewResultMessageId = useMemo(() => {
+    if (!reviewResultActive) return null;
+    const row = rawRows
+      .toReversed()
+      .find((entry) => entry.kind === "message" && entry.message.role === "assistant");
+    return row?.id ?? null;
+  }, [rawRows, reviewResultActive]);
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
@@ -250,6 +259,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onForkAssistantMessage: handleForkAssistantMessage,
       onImageExpand,
       onOpenTurnDiff,
+      reviewResultMessageId,
     }),
     [
       activeTurnInProgress,
@@ -270,6 +280,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       handleForkAssistantMessage,
       onImageExpand,
       onOpenTurnDiff,
+      reviewResultMessageId,
     ],
   );
 
@@ -455,11 +466,13 @@ function TimelineRowContent(props: { row: TimelineRow }) {
           return (
             <>
               <div className="min-w-0 px-1 py-0.5">
-                <ChatMarkdown
-                  text={messageText}
-                  cwd={ctx.markdownCwd}
-                  isStreaming={Boolean(row.message.streaming)}
-                />
+                {ctx.reviewResultMessageId === row.id ? null : (
+                  <ChatMarkdown
+                    text={messageText}
+                    cwd={ctx.markdownCwd}
+                    isStreaming={Boolean(row.message.streaming)}
+                  />
+                )}
                 <AssistantChangedFilesSection
                   turnSummary={row.assistantTurnDiffSummary}
                   resolvedTheme={ctx.resolvedTheme}
@@ -523,6 +536,18 @@ function TimelineRowContent(props: { row: TimelineRow }) {
           );
         })()}
 
+      {row.kind === "message" && row.message.role === "system" && (
+        <div className="mx-1 flex items-start gap-2 rounded-lg border border-border/50 bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
+          <InfoIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="whitespace-pre-wrap break-words">{row.message.text}</p>
+            <p className="mt-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/60">
+              {formatTimestamp(row.message.createdAt, ctx.timestampFormat)}
+            </p>
+          </div>
+        </div>
+      )}
+
       {row.kind === "proposed-plan" && (
         <div className="min-w-0 px-1 py-0.5">
           <ProposedPlanCard
@@ -538,9 +563,9 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         <div className="py-0.5 pl-1.5">
           <div className="flex items-center gap-2 pt-1 text-[10px] text-muted-foreground/50">
             <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
             </span>
             <span>
               {row.createdAt ? (
@@ -741,12 +766,8 @@ function AssistantChangedFilesSectionInner({
   workspaceRoot: string | undefined;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const preferredScope = useUiStateStore((store) => store.changedFilesDiffScope);
-  const setPreferredScope = useUiStateStore((store) => store.setChangedFilesDiffScope);
-  const snapshotFiles = turnSummary.files;
   const turnFiles = turnSummary.turnFiles ?? [];
-  const selectedScope = preferredScope;
-  const visibleFiles = selectedScope === "turn" ? turnFiles : snapshotFiles;
+  const visibleFiles = turnFiles;
   const summaryStat = summarizeTurnDiffStats(visibleFiles);
   if (summaryStat.additions === 0 && summaryStat.deletions === 0) return null;
 
@@ -767,14 +788,13 @@ function AssistantChangedFilesSectionInner({
           />
         </div>
         <div className="flex items-center gap-1">
-          <DiffScopeToggle value={selectedScope} onChange={setPreferredScope} />
           <Button
             type="button"
             size="xs"
             variant="outline"
             className="size-[1.5em] p-0 text-[inherit] sm:h-[1.5em] sm:text-[inherit]"
             disabled={visibleFiles.length === 0}
-            onClick={() => onOpenTurnDiff(turnSummary.turnId, visibleFiles[0]?.path, selectedScope)}
+            onClick={() => onOpenTurnDiff(turnSummary.turnId, visibleFiles[0]?.path, "turn")}
             aria-label="View diff"
           >
             <DiffIcon className="size-[0.85em]" />
@@ -803,7 +823,7 @@ function AssistantChangedFilesSectionInner({
             files={visibleFiles}
             allDirectoriesExpanded
             resolvedTheme={resolvedTheme}
-            diffScope={selectedScope}
+            diffScope="turn"
             onOpenTurnDiff={onOpenTurnDiff}
             workspaceRoot={workspaceRoot}
           />
@@ -1148,6 +1168,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workspaceRoot: string | undefined;
 }) {
   const { workEntry, workspaceRoot } = props;
+  if (workEntry.agentRun) {
+    return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
+  }
   const iconConfig = workToneIcon(workEntry.tone);
   const entryIcon = createElement(workEntryIcon(workEntry), { className: "size-3" });
   const heading = toolWorkEntryHeading(workEntry);
@@ -1260,6 +1283,92 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </div>
       )}
+    </div>
+  );
+});
+
+const AgentRunRow = memo(function AgentRunRow({
+  agentRun,
+  workspaceRoot,
+}: {
+  agentRun: AgentRun;
+  workspaceRoot: string | undefined;
+}) {
+  const [isExpanded, setIsExpanded] = useState(agentRun.status === "running");
+  const ToggleIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
+  const status =
+    agentRun.status === "running"
+      ? "Running"
+      : agentRun.status === "completed"
+        ? "Completed"
+        : agentRun.status === "stopped"
+          ? "Stopped"
+          : "Failed";
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-background/45 px-2 py-1.5">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 text-left"
+        onClick={() => setIsExpanded((value) => !value)}
+        aria-expanded={isExpanded}
+      >
+        <ToggleIcon className="size-3 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-foreground/85">{agentRun.name}</span>
+        <span className="text-[0.8em] text-muted-foreground/65">{status}</span>
+      </button>
+      {isExpanded && (
+        <AgentRunTranscript agentRun={agentRun} workspaceRoot={workspaceRoot} compact />
+      )}
+    </div>
+  );
+});
+
+const AgentRunTranscript = memo(function AgentRunTranscript({
+  agentRun,
+  workspaceRoot,
+  compact = false,
+}: {
+  agentRun: AgentRun;
+  workspaceRoot: string | undefined;
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? "mt-2 border-l border-border/50 pl-3" : "space-y-3"}>
+      {agentRun.prompt ? (
+        compact ? (
+          <div className="rounded-md bg-muted/35 px-3 py-2 whitespace-pre-wrap text-muted-foreground">
+            {agentRun.prompt}
+          </div>
+        ) : (
+          <div className="flex justify-end">
+            <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3 whitespace-pre-wrap">
+              {agentRun.prompt}
+            </div>
+          </div>
+        )
+      ) : null}
+      {agentRun.entries.map((entry) => (
+        <SimpleWorkEntryRow
+          key={`agent-entry:${entry.id}`}
+          workEntry={entry}
+          workspaceRoot={workspaceRoot}
+        />
+      ))}
+      {agentRun.summary ? (
+        compact ? (
+          <div className="whitespace-pre-wrap text-muted-foreground/80">{agentRun.summary}</div>
+        ) : (
+          <div className="min-w-0 px-1 py-0.5">
+            <ChatMarkdown text={agentRun.summary} cwd={workspaceRoot} isStreaming={false} />
+          </div>
+        )
+      ) : null}
+      <div className="text-[0.75em] tracking-wide text-muted-foreground/50">
+        Background{agentRun.agentType ? ` ${agentRun.agentType}` : ""} agent
+        {agentRun.model ? ` · ${agentRun.model}` : ""}
+        {agentRun.reasoningEffort ? ` · ${agentRun.reasoningEffort}` : ""}
+      </div>
     </div>
   );
 });

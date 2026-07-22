@@ -138,4 +138,29 @@ describe("ChatMarkdown", () => {
       await screen.unmount();
     }
   });
+
+  it("keeps table headers from inheriting emergency word breaks", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text={[
+          "| Rank | Finding | Impact / effort |",
+          "| --- | --- | --- |",
+          "| 1 | Every event fans out to every projection. | Very high / medium |",
+        ].join("\n")}
+        cwd="/repo/project"
+      />,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        const header = [...document.querySelectorAll("th")].find(
+          (candidate) => candidate.textContent?.trim() === "Rank",
+        );
+        expect(header).toBeInstanceOf(HTMLTableCellElement);
+        expect(getComputedStyle(header!).overflowWrap).not.toBe("anywhere");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   Cache,
   Data,
@@ -18,7 +19,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { GitCommandError, type GitBranch } from "@t3tools/contracts";
+import { GitCommandError, type GitBranch, type ReviewSnapshot } from "@t3tools/contracts";
 import { dedupeRemoteBranchesWithLocalMatches } from "@t3tools/shared/git";
 import { compactTraceAttributes } from "../../observability/Attributes.ts";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
@@ -43,6 +44,12 @@ const isGitCommandError = Schema.is(GitCommandError);
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
+const REVIEW_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+const REVIEW_DIFF_NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
+// Well-known empty tree object, used as the uncommitted-review diff base when
+// the repository has an unborn HEAD (initialized, not yet committed). Falls back
+// to this SHA-1 value when the repository's object format cannot be resolved.
+const EMPTY_TREE_FALLBACK_OBJECT = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /**
  * Prepend `-c core.longpaths=true` to git args on Windows so operations that
@@ -1391,6 +1398,38 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       "-z",
     ]).pipe(Effect.map((stdout) => splitNullSeparatedPaths(stdout, false)));
 
+  const resolveEmptyTreeObject = (cwd: string): Effect.Effect<string, GitCommandError> =>
+    executeGit(
+      "GitCore.resolveReviewChangesContext.emptyTreeObject",
+      cwd,
+      ["hash-object", "-t", "tree", "--stdin"],
+      { stdin: "", allowNonZeroExit: true, timeoutMs: 5_000 },
+    ).pipe(
+      Effect.map((result) => {
+        const hash = result.stdout.trim();
+        return result.code === 0 && hash.length > 0 ? hash : EMPTY_TREE_FALLBACK_OBJECT;
+      }),
+      Effect.catch(() => Effect.succeed(EMPTY_TREE_FALLBACK_OBJECT)),
+    );
+
+  // Resolve the base for the combined uncommitted worktree diff. Uses HEAD when
+  // it points at a commit; on an unborn HEAD (initialized repo with no commit
+  // yet) HEAD cannot be resolved, so fall back to the empty tree so staged and
+  // untracked-but-added changes still produce a reviewable diff.
+  const resolveUncommittedDiffBase = (cwd: string): Effect.Effect<string, GitCommandError> =>
+    executeGit(
+      "GitCore.resolveReviewChangesContext.headCheck",
+      cwd,
+      ["rev-parse", "--verify", "--quiet", "HEAD"],
+      { allowNonZeroExit: true, timeoutMs: 5_000 },
+    ).pipe(
+      Effect.flatMap((result) =>
+        result.code === 0 && result.stdout.trim().length > 0
+          ? Effect.succeed<string>("HEAD")
+          : resolveEmptyTreeObject(cwd),
+      ),
+    );
+
   const hasDiffAgainst = (cwd: string, ref: string) =>
     executeGit("GitCore.resolveReviewChangesContext.diffQuiet", cwd, ["diff", "--quiet", ref], {
       allowNonZeroExit: true,
@@ -1413,6 +1452,72 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       }),
     );
 
+  const readUntrackedReviewDiff = (cwd: string, untrackedFiles: readonly string[]) =>
+    Effect.forEach(
+      untrackedFiles,
+      (filePath) =>
+        executeGit(
+          "GitCore.resolveReviewChangesContext.untrackedDiff",
+          cwd,
+          [
+            "diff",
+            "--no-index",
+            "--binary",
+            "--full-index",
+            "--",
+            REVIEW_DIFF_NULL_DEVICE,
+            filePath,
+          ],
+          { allowNonZeroExit: true, maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+        ).pipe(
+          Effect.flatMap((result) =>
+            result.code === 0 || result.code === 1
+              ? Effect.succeed(result.stdout)
+              : Effect.fail(
+                  createGitCommandError(
+                    "GitCore.resolveReviewChangesContext.untrackedDiff",
+                    cwd,
+                    [
+                      "diff",
+                      "--no-index",
+                      "--binary",
+                      "--full-index",
+                      "--",
+                      REVIEW_DIFF_NULL_DEVICE,
+                      filePath,
+                    ],
+                    result.stderr.trim() || `Unable to capture untracked file '${filePath}'.`,
+                  ),
+                ),
+          ),
+        ),
+      { concurrency: 1 },
+    ).pipe(Effect.map((diffs) => diffs.join("")));
+
+  const toReviewSnapshot = (input: {
+    readonly cwd: string;
+    readonly scope: ReviewSnapshot["scope"];
+    readonly trackedDiff: string;
+    readonly untrackedDiff: string;
+  }): Effect.Effect<ReviewSnapshot, GitCommandError> => {
+    const fullDiff = `${input.trackedDiff}${input.untrackedDiff}`;
+    if (Buffer.byteLength(fullDiff) > REVIEW_SNAPSHOT_MAX_BYTES) {
+      return Effect.fail(
+        createGitCommandError(
+          "GitCore.resolveReviewChangesContext",
+          input.cwd,
+          [],
+          `Review diff exceeds the ${REVIEW_SNAPSHOT_MAX_BYTES}-byte snapshot limit.`,
+        ),
+      );
+    }
+    return Effect.succeed({
+      scope: input.scope,
+      diff: fullDiff,
+      diffHash: createHash("sha256").update(fullDiff).digest("hex"),
+    });
+  };
+
   const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = Effect.fn(
     "resolveReviewChangesContext",
   )(function* (input) {
@@ -1432,12 +1537,35 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     );
 
     if (input.scope === "uncommitted") {
+      const diffBase = yield* resolveUncommittedDiffBase(input.cwd);
+      const [trackedDiff, untrackedDiff] = yield* Effect.all(
+        [
+          runGitStdoutWithOptions(
+            "GitCore.resolveReviewChangesContext.uncommittedDiff",
+            input.cwd,
+            ["diff", "--no-ext-diff", "--binary", "--full-index", diffBase],
+            { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+          ),
+          readUntrackedReviewDiff(input.cwd, untrackedFiles),
+        ],
+        { concurrency: "unbounded" },
+      );
       return {
         scope: "uncommitted" as const,
         branch: details.branch,
         statusShort,
         untrackedFiles,
         hasReviewableChanges: statusShort.trim().length > 0 || untrackedFiles.length > 0,
+        snapshot: yield* toReviewSnapshot({
+          cwd: input.cwd,
+          scope: {
+            kind: "uncommitted",
+            branch: details.branch,
+            untrackedFiles,
+          },
+          trackedDiff,
+          untrackedDiff,
+        }),
       };
     }
 
@@ -1470,7 +1598,19 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       );
     }
 
-    const hasTrackedDiff = yield* hasDiffAgainst(input.cwd, mergeBaseSha);
+    const [hasTrackedDiff, trackedDiff, untrackedDiff] = yield* Effect.all(
+      [
+        hasDiffAgainst(input.cwd, mergeBaseSha),
+        runGitStdoutWithOptions(
+          "GitCore.resolveReviewChangesContext.branchDiff",
+          input.cwd,
+          ["diff", "--no-ext-diff", "--binary", "--full-index", mergeBaseSha],
+          { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+        ),
+        readUntrackedReviewDiff(input.cwd, untrackedFiles),
+      ],
+      { concurrency: "unbounded" },
+    );
     return {
       scope: "against-base" as const,
       branch: details.branch,
@@ -1479,6 +1619,18 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       hasReviewableChanges: hasTrackedDiff || untrackedFiles.length > 0,
       baseBranch,
       mergeBaseSha,
+      snapshot: yield* toReviewSnapshot({
+        cwd: input.cwd,
+        scope: {
+          kind: "against-base",
+          branch: details.branch,
+          baseBranch,
+          mergeBaseSha,
+          untrackedFiles,
+        },
+        trackedDiff,
+        untrackedDiff,
+      }),
     };
   });
 

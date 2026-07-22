@@ -700,6 +700,109 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(result.statusShort).toContain("README.md");
         expect(result.statusShort).toContain("staged.txt");
         expect(result.untrackedFiles).toContain("untracked.txt");
+        if (!result.snapshot) {
+          throw new Error("expected review snapshot");
+        }
+        expect(result.snapshot.diffHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(result.snapshot.diff).toContain("README.md");
+        expect(result.snapshot.diff).toContain("staged.txt");
+        expect(result.snapshot.diff).toContain("untracked.txt");
+      }),
+    );
+
+    it.effect(
+      "resolves uncommitted scope on an unborn HEAD with staged and untracked changes",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const core = yield* GitCore;
+          yield* core.initRepo({ cwd: tmp });
+          yield* git(tmp, ["config", "user.email", "test@test.com"]);
+          yield* git(tmp, ["config", "user.name", "Test"]);
+          yield* writeTextFile(path.join(tmp, "staged.txt"), "staged\n");
+          yield* git(tmp, ["add", "staged.txt"]);
+          yield* writeTextFile(path.join(tmp, "untracked.txt"), "untracked\n");
+
+          const result = yield* core.resolveReviewChangesContext({
+            cwd: tmp,
+            scope: "uncommitted",
+          });
+
+          expect(result.scope).toBe("uncommitted");
+          expect(result.hasReviewableChanges).toBe(true);
+          expect(result.untrackedFiles).toContain("untracked.txt");
+          if (!result.snapshot) {
+            throw new Error("expected review snapshot");
+          }
+          expect(result.snapshot.diff).toContain("staged.txt");
+          expect(result.snapshot.diff).toContain("untracked.txt");
+        }),
+    );
+
+    it.effect("uses HEAD-to-worktree coordinates when a file has staged and unstaged edits", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* writeTextFile(path.join(tmp, "README.md"), "# staged\n");
+        yield* git(tmp, ["add", "README.md"]);
+        yield* writeTextFile(path.join(tmp, "README.md"), "# working tree\n");
+
+        const result = yield* (yield* GitCore).resolveReviewChangesContext({
+          cwd: tmp,
+          scope: "uncommitted",
+        });
+
+        if (!result.snapshot) {
+          throw new Error("expected review snapshot");
+        }
+        expect(result.snapshot.diff).toContain("-# test");
+        expect(result.snapshot.diff).toContain("+# working tree");
+        expect(result.snapshot.diff).not.toContain("+# staged");
+      }),
+    );
+
+    it.effect(
+      "keeps a later untracked file in a complete review snapshot beyond the provider input budget",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
+          yield* writeTextFile(path.join(tmp, "large-before.ts"), buildLargeText(9_000));
+          yield* writeTextFile(
+            path.join(tmp, "late-reviewable.ts"),
+            "export const later = true;\n",
+          );
+
+          const result = yield* (yield* GitCore).resolveReviewChangesContext({
+            cwd: tmp,
+            scope: "uncommitted",
+          });
+
+          if (!result.snapshot) {
+            throw new Error("expected review snapshot");
+          }
+          expect(Buffer.byteLength(result.snapshot.diff)).toBeGreaterThan(96_000);
+          expect(result.snapshot.diff).toContain("late-reviewable.ts");
+        }),
+    );
+
+    it.effect("captures large files without omitting later reviewable file diffs", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        yield* writeTextFile(path.join(tmp, "large-before.ts"), buildLargeText(30_000));
+        yield* writeTextFile(path.join(tmp, "late-reviewable.ts"), "export const later = true;\n");
+
+        const result = yield* (yield* GitCore).resolveReviewChangesContext({
+          cwd: tmp,
+          scope: "uncommitted",
+        });
+
+        if (!result.snapshot) {
+          throw new Error("expected review snapshot");
+        }
+        expect(result.snapshot.diff).toContain("large-before.ts");
+        expect(result.snapshot.diff).toContain("late-reviewable.ts");
       }),
     );
 
@@ -727,6 +830,14 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(result.mergeBaseSha).toBe(mergeBaseSha);
         expect(result.hasReviewableChanges).toBe(true);
         expect(result.untrackedFiles).toContain("untracked.txt");
+        if (!result.snapshot) {
+          throw new Error("expected review snapshot");
+        }
+        expect(result.snapshot.scope).toMatchObject({
+          kind: "against-base",
+          baseBranch: initialBranch,
+          mergeBaseSha,
+        });
       }),
     );
   });

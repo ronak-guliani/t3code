@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearThreadUi,
+  createThreadExpandedOverridesSelector,
   hydratePersistedProjectState,
   markThreadVisited,
   markThreadUnread,
@@ -11,6 +12,7 @@ import {
   persistState,
   reorderPinnedThreads,
   reorderProjects,
+  setAgentRunDismissed,
   setChangedFilesDiffScope,
   setProjectExpanded,
   setThreadExpanded,
@@ -30,11 +32,26 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadExpandedById: {},
     threadChangedFilesExpandedById: {},
     changedFilesDiffScope: "turn",
+    dismissedAgentRunKeys: {},
     ...overrides,
   };
 }
 
 describe("uiStateStore pure functions", () => {
+  it("keeps thread expansion selector snapshots stable while selected overrides are unchanged", () => {
+    const selector = createThreadExpandedOverridesSelector(["thread-1"]);
+    const state = makeUiState({ threadExpandedById: { "thread-1": true } });
+    const selected = selector(state);
+
+    expect(selector(state)).toBe(selected);
+    expect(
+      selector({
+        ...state,
+        threadExpandedById: { ...state.threadExpandedById, unrelated: false },
+      }),
+    ).toBe(selected);
+  });
+
   it("markThreadVisited stores the provided server timestamp", () => {
     const threadId = ThreadId.make("thread-1");
     const initialState = makeUiState();
@@ -66,6 +83,19 @@ describe("uiStateStore pure functions", () => {
     expect(setChangedFilesDiffScope(next, "snapshot")).toBe(next);
   });
 
+  it("setAgentRunDismissed adds and removes stable dismissal keys", () => {
+    const initialState = makeUiState();
+    const dismissed = setAgentRunDismissed(initialState, "agent-run:thread-1:agent-1", true);
+
+    expect(dismissed.dismissedAgentRunKeys).toEqual({
+      "agent-run:thread-1:agent-1": true,
+    });
+    expect(setAgentRunDismissed(dismissed, "agent-run:thread-1:agent-1", true)).toBe(dismissed);
+    expect(
+      setAgentRunDismissed(dismissed, "agent-run:thread-1:agent-1", false).dismissedAgentRunKeys,
+    ).toEqual({});
+  });
+
   it("markThreadUnread moves lastVisitedAt before completion for a completed thread", () => {
     const threadId = ThreadId.make("thread-1");
     const latestTurnCompletedAt = "2026-02-25T12:30:00.000Z";
@@ -93,7 +123,7 @@ describe("uiStateStore pure functions", () => {
     expect(next).toBe(initialState);
   });
 
-  it("setThreadExpanded stores only collapsed thread overrides", () => {
+  it("setThreadExpanded stores explicit thread overrides in both directions", () => {
     const threadId = ThreadId.make("thread-1");
     const initialState = makeUiState();
 
@@ -101,7 +131,7 @@ describe("uiStateStore pure functions", () => {
     expect(collapsed.threadExpandedById[threadId]).toBe(false);
 
     const expanded = setThreadExpanded(collapsed, threadId, true);
-    expect(expanded.threadExpandedById[threadId]).toBeUndefined();
+    expect(expanded.threadExpandedById[threadId]).toBe(true);
   });
 
   it("reorderProjects moves a project to a target index", () => {
@@ -683,5 +713,16 @@ describe("uiStateStore persistence round-trip", () => {
     ]);
 
     expect(rehydrated.projectExpandedById[nextLogicalKey]).toBe(false);
+  });
+
+  it("persists dismissed agent-run keys as an array across restart", () => {
+    const dismissedKey = "agent-run:thread-1:task-1";
+    const state = setAgentRunDismissed(makeUiState(), dismissedKey, true);
+    persistState(state);
+
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+    expect(persisted.dismissedAgentRunKeys).toEqual([dismissedKey]);
   });
 });

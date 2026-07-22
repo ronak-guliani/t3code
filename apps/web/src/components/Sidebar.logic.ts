@@ -55,6 +55,7 @@ type ThreadStatusInput = Pick<
   | "interactionMode"
   | "latestTurn"
   | "session"
+  | "virtualAgentRun"
 > & {
   lastVisitedAt?: string | undefined;
 };
@@ -358,7 +359,10 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (isThreadActivelyWorking(thread.latestTurn, thread.session)) {
+  if (
+    thread.virtualAgentRun?.status === "running" ||
+    isThreadActivelyWorking(thread.latestTurn, thread.session)
+  ) {
     return {
       label: "Working",
       colorClass: "text-sky-600 dark:text-sky-300/80",
@@ -400,6 +404,15 @@ export function resolveThreadStatusPill(input: {
   }
 
   return null;
+}
+
+/**
+ * A parent chat is treated as "active" (and so auto-expanded in the sidebar)
+ * when it, or any nested descendant, is doing something the user likely wants
+ * to keep visible, including an unseen completion.
+ */
+export function isActiveThreadStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null;
 }
 
 export function resolveProjectStatusIndicator(

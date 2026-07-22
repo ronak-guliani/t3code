@@ -296,6 +296,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pendingRuntimeMode: null,
           branch: null,
           worktreePath: null,
+          reviewResult: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "running",
@@ -373,6 +374,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.snapshotSequence, 5);
+      assert.equal(yield* snapshotQuery.getSnapshotSequence(), 5);
       assert.deepEqual(shellSnapshot.projects, [
         {
           id: asProjectId("project-1"),

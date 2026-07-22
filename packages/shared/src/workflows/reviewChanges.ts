@@ -97,6 +97,9 @@ ${buildReviewChangesScopeContext(input.context)}
 
 <instructions>
 ${promptTemplateOrDefault(input.settings.promptTemplate)}
+
+Return exactly one JSON object with no Markdown fences or surrounding text:
+{"findings":[{"title":"[P1] short title","body":"explanation","confidence_score":0.0,"priority":1,"code_location":{"absolute_file_path":"/absolute/path/to/file","line_range":{"start":1,"end":1}}}],"overall_correctness":"patch is correct|patch is incorrect","overall_explanation":"short summary","overall_confidence_score":0.0}
 </instructions>`;
 }
 

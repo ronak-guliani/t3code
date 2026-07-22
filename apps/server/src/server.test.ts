@@ -61,6 +61,7 @@ import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
+import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
 import {
   CheckpointDiffQuery,
   type CheckpointDiffQueryShape,
@@ -517,6 +518,7 @@ const buildAppUnderTest = (options?: {
               threads: [],
               updatedAt: new Date(0).toISOString(),
             }),
+          getSnapshotSequence: () => Effect.succeed(0),
           getProjectShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
@@ -1678,6 +1680,85 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
         assert.equal(response.auth.policy, "desktop-managed-local");
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("loads a large CLI shell snapshot without reading the full projection", () =>
+    Effect.gen(function* () {
+      const now = new Date().toISOString();
+      const shellSnapshot = {
+        snapshotSequence: 338,
+        projects: [
+          {
+            id: defaultProjectId,
+            title: "Default Project",
+            workspaceRoot: "/workspace/default-project",
+            defaultModelSelection,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        threads: Array.from({ length: 338 }, (_, index) =>
+          makeDefaultOrchestrationThreadShell({
+            id: ThreadId.make(`thread-${index}`),
+          }),
+        ),
+        updatedAt: now,
+      };
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getSnapshot: () => Effect.die("CLI must not request the full projection snapshot"),
+            getShellSnapshot: () => Effect.succeed(shellSnapshot),
+          },
+        },
+      });
+
+      const snapshot = yield* getLiveOrchestrationShellSnapshot({
+        url: Option.some(yield* getHttpServerUrl()),
+        token: Option.some(yield* getAuthenticatedBearerSessionToken()),
+        baseDir: Option.none(),
+      });
+
+      assert.equal(snapshot.threads.length, 338);
+      assert.equal(snapshot.snapshotSequence, 338);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("loads a thread detail without hydrating the shell snapshot", () =>
+    Effect.gen(function* () {
+      const detail = makeDefaultOrchestrationReadModel().threads[0];
+      if (!detail) {
+        return yield* Effect.die("Expected default thread detail.");
+      }
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getShellSnapshot: () => Effect.die("Thread detail must not load the shell snapshot"),
+            getSnapshotSequence: () => Effect.succeed(42),
+            getThreadDetailById: () => Effect.succeed(Option.some(detail)),
+          },
+        },
+      });
+
+      const response = yield* HttpClient.get(
+        `/api/orchestration/threads/${defaultThreadId}/snapshot`,
+        {
+          headers: {
+            authorization: `Bearer ${yield* getAuthenticatedBearerSessionToken()}`,
+          },
+        },
+      );
+      const snapshot = (yield* response.json) as {
+        readonly snapshotSequence: number;
+        readonly thread: { readonly id: string };
+      };
+
+      assert.equal(response.status, 200);
+      assert.equal(snapshot.snapshotSequence, 42);
+      assert.equal(snapshot.thread.id, defaultThreadId);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("serves versioned mobile descriptor and auth wrappers", () =>
@@ -3894,6 +3975,105 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("stops descendant sessions and terminals when archiving a parent thread", () =>
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread-archive-parent");
+      const childThreadId = ThreadId.make("thread-archive-child");
+      const effects: string[] = [];
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      const now = new Date().toISOString();
+      const readModel = makeDefaultOrchestrationReadModel();
+      const template = readModel.threads[0]!;
+      const session = (threadId: ThreadId) => ({
+        threadId,
+        status: "ready" as const,
+        providerName: "claudeAgent",
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: now,
+      });
+
+      yield* buildAppUnderTest({
+        layers: {
+          terminalManager: {
+            close: (input) =>
+              Effect.sync(() => {
+                effects.push(`terminal.close:${input.threadId}`);
+              }),
+          },
+          orchestrationEngine: {
+            getReadModel: () =>
+              Effect.succeed({
+                ...readModel,
+                threads: [
+                  {
+                    ...template,
+                    id: parentThreadId,
+                    parentThreadId: null,
+                    session: session(parentThreadId),
+                  },
+                  {
+                    ...template,
+                    id: childThreadId,
+                    parentThreadId,
+                    session: session(childThreadId),
+                  },
+                ],
+              }),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                effects.push(
+                  `dispatch:${command.type}:${"threadId" in command ? command.threadId : ""}`,
+                );
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getThreadShellById: () =>
+              Effect.succeed(
+                Option.some(
+                  makeDefaultOrchestrationThreadShell({
+                    id: parentThreadId,
+                    updatedAt: now,
+                    session: session(parentThreadId),
+                  }),
+                ),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId: CommandId.make("cmd-thread-archive-parent"),
+            threadId: parentThreadId,
+          }),
+        ),
+      );
+
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        ["thread.archive", "thread.session.stop", "thread.session.stop"],
+      );
+      assert.deepEqual(
+        dispatchedCommands
+          .filter((command) => command.type === "thread.session.stop")
+          .map((command) => command.threadId)
+          .toSorted(),
+        [parentThreadId, childThreadId].toSorted(),
+      );
+      assert.deepEqual(
+        effects.filter((effect) => effect.startsWith("terminal.close:")).toSorted(),
+        [`terminal.close:${parentThreadId}`, `terminal.close:${childThreadId}`].toSorted(),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("checks session status before archiving removes the thread from active lookups", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-archive-precheck");
@@ -4330,6 +4510,11 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   interactionMode: "default",
                   branch: "main",
                   worktreePath: null,
+                  reviewSnapshot: {
+                    scope: { kind: "uncommitted", branch: "main", untrackedFiles: [] },
+                    diff: "diff --git a/example.ts b/example.ts",
+                    diffHash: "review-snapshot-hash",
+                  },
                   createdAt,
                 },
                 prepareWorktree: {
@@ -4368,6 +4553,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           worktreePath: "/tmp/bootstrap-worktree",
         });
         assert.deepEqual(refreshStatus.mock.calls[0]?.[0], "/tmp/bootstrap-worktree");
+        const createThreadCommand = dispatchedCommands[0];
+        assertTrue(createThreadCommand?.type === "thread.create");
+        if (createThreadCommand?.type === "thread.create") {
+          assert.deepEqual(createThreadCommand.reviewSnapshot, {
+            scope: { kind: "uncommitted", branch: "main", untrackedFiles: [] },
+            diff: "diff --git a/example.ts b/example.ts",
+            diffHash: "review-snapshot-hash",
+          });
+        }
 
         const setupActivities = dispatchedCommands.filter(
           (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>

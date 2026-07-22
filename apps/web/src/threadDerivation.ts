@@ -12,6 +12,7 @@ import type {
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Thread["activities"] = [];
+const EMPTY_INSIGHT_ACTIVITIES: NonNullable<Thread["insightActivities"]> = [];
 const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_TURN_DIFF_SUMMARIES: TurnDiffSummary[] = [];
 const EMPTY_QUEUED_TURNS: readonly OrchestrationQueuedTurn[] = [];
@@ -28,9 +29,11 @@ const threadCache = new WeakMap<
     turnState: ThreadTurnState | undefined;
     messages: Thread["messages"];
     activities: Thread["activities"];
+    insightActivities: NonNullable<Thread["insightActivities"]>;
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
     queuedTurns: readonly OrchestrationQueuedTurn[];
+    reviewState: NonNullable<EnvironmentState["reviewStateByThreadId"]>[ThreadId] | undefined;
     thread: Thread;
   }
 >();
@@ -113,9 +116,11 @@ export function getThreadFromEnvironmentState(
   const turnState = state.threadTurnStateById[threadId];
   const messages = selectThreadMessages(state, threadId);
   const activities = selectThreadActivities(state, threadId);
+  const insightActivities = state.insightActivitiesByThreadId[threadId] ?? EMPTY_INSIGHT_ACTIVITIES;
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
   const queuedTurns = state.queuedTurnsByThreadId[threadId] ?? EMPTY_QUEUED_TURNS;
+  const reviewState = state.reviewStateByThreadId?.[threadId];
   const cached = threadCache.get(shell);
 
   if (
@@ -124,9 +129,11 @@ export function getThreadFromEnvironmentState(
     cached.turnState === turnState &&
     cached.messages === messages &&
     cached.activities === activities &&
+    cached.insightActivities === insightActivities &&
     cached.proposedPlans === proposedPlans &&
     cached.turnDiffSummaries === turnDiffSummaries &&
-    cached.queuedTurns === queuedTurns
+    cached.queuedTurns === queuedTurns &&
+    cached.reviewState === reviewState
   ) {
     return cached.thread;
   }
@@ -138,9 +145,11 @@ export function getThreadFromEnvironmentState(
     pendingSourceProposedPlan: turnState?.pendingSourceProposedPlan,
     messages,
     activities,
+    insightActivities,
     proposedPlans,
     turnDiffSummaries,
     ...(queuedTurns.length > 0 ? { queuedTurns: [...queuedTurns] } : {}),
+    ...reviewState,
   };
 
   threadCache.set(shell, {
@@ -148,9 +157,11 @@ export function getThreadFromEnvironmentState(
     turnState,
     messages,
     activities,
+    insightActivities,
     proposedPlans,
     turnDiffSummaries,
     queuedTurns,
+    reviewState,
     thread,
   });
 

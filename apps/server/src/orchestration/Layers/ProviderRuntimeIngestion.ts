@@ -33,6 +33,8 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { parseReviewResult } from "../reviewResult.ts";
+import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
@@ -224,6 +226,61 @@ function runtimeEventToActivities(
       : {};
   })();
   switch (event.type) {
+    case "turn.started": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "insights.turn.started",
+          summary: "Turn started",
+          payload: {
+            provider: event.provider,
+            ...(event.payload.model ? { model: event.payload.model } : {}),
+            ...(event.payload.effort ? { effort: event.payload.effort } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "turn.completed": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: event.payload.state === "failed" ? "error" : "info",
+          kind: "insights.turn.completed",
+          summary: "Turn completed",
+          payload: {
+            provider: event.provider,
+            state: event.payload.state,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "turn.aborted": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "insights.turn.aborted",
+          summary: "Turn aborted",
+          payload: {
+            provider: event.provider,
+            ...(event.payload.reason ? { reason: event.payload.reason } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "request.opened": {
       if (event.payload.requestType === "tool_user_input") {
         return [];
@@ -386,6 +443,19 @@ function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
+            ...(event.payload.name ? { name: event.payload.name } : {}),
+            ...(event.payload.agentType ? { agentType: event.payload.agentType } : {}),
+            ...(event.payload.prompt ? { prompt: event.payload.prompt } : {}),
+            ...(event.payload.model ? { model: event.payload.model } : {}),
+            ...(event.payload.reasoningEffort
+              ? { reasoningEffort: event.payload.reasoningEffort }
+              : {}),
+            ...(event.payload.launchToolCallId
+              ? { launchToolCallId: event.payload.launchToolCallId }
+              : {}),
+            ...(event.payload.description
+              ? { description: truncateDetail(event.payload.description) }
+              : {}),
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
@@ -433,7 +503,11 @@ function runtimeEventToActivities(
           payload: {
             taskId: event.payload.taskId,
             status: event.payload.status,
-            ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
+            // `detail` stays a short preview for compact inline work-log rows, while `summary`
+            // preserves the full final result so the read-only agent-run view can render it in full.
+            ...(event.payload.summary
+              ? { detail: truncateDetail(event.payload.summary), summary: event.payload.summary }
+              : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -497,6 +571,8 @@ function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool updated",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId ? { itemId: event.itemId } : {}),
+            provider: event.provider,
             ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
@@ -520,6 +596,9 @@ function runtimeEventToActivities(
           summary: event.payload.title ?? "Tool",
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId ? { itemId: event.itemId } : {}),
+            provider: event.provider,
+            ...(event.payload.status ? { status: event.payload.status } : {}),
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
             ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
           },
@@ -542,6 +621,8 @@ function runtimeEventToActivities(
           summary: `${event.payload.title ?? "Tool"} started`,
           payload: {
             itemType: event.payload.itemType,
+            ...(event.itemId ? { itemId: event.itemId } : {}),
+            provider: event.provider,
             ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -562,6 +643,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const reviewSnapshotVerifier = yield* ReviewSnapshotVerifier;
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -891,6 +973,72 @@ const make = Effect.gen(function* () {
         });
       }
       yield* clearAssistantMessageState(input.messageId);
+    });
+
+  const persistReviewResult = (input: {
+    event: ProviderRuntimeEvent;
+    threadId: ThreadId;
+    turnId: TurnId;
+    createdAt: string;
+  }) =>
+    Effect.gen(function* () {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const thread = readModel.threads.find((entry) => entry.id === input.threadId);
+      if (
+        !thread?.reviewSnapshot ||
+        (thread.reviewResult !== undefined && thread.reviewResult !== null)
+      ) {
+        return;
+      }
+      const cwd = resolveThreadWorkspaceCwd({
+        thread,
+        projects: readModel.projects,
+      });
+      if (cwd === null) {
+        yield* Effect.logWarning("Discarding review result because the worktree changed", {
+          threadId: input.threadId,
+          snapshotHash: thread.reviewSnapshot.diffHash,
+        });
+        return;
+      }
+      const snapshotIsCurrent = yield* reviewSnapshotVerifier
+        .isCurrent({ cwd, snapshot: thread.reviewSnapshot })
+        .pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("Discarding review result because snapshot could not be verified", {
+              threadId: input.threadId,
+              snapshotHash: thread.reviewSnapshot.diffHash,
+              error,
+            }),
+          ),
+          Effect.orElseSucceed(() => false),
+        );
+      if (!snapshotIsCurrent) {
+        yield* Effect.logWarning("Discarding review result because the worktree changed", {
+          threadId: input.threadId,
+          snapshotHash: thread.reviewSnapshot.diffHash,
+        });
+        return;
+      }
+
+      const output =
+        thread.messages
+          .filter(
+            (message) =>
+              message.role === "assistant" && message.turnId === input.turnId && !message.streaming,
+          )
+          .toSorted(
+            (left, right) =>
+              left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
+          )
+          .at(-1)?.text ?? "";
+      yield* orchestrationEngine.dispatch({
+        type: "thread.review-result.set",
+        commandId: providerCommandId(input.event, "review-result-set"),
+        threadId: input.threadId,
+        result: parseReviewResult({ output, snapshot: thread.reviewSnapshot }),
+        createdAt: input.createdAt,
+      });
     });
 
   const finalizeActiveAssistantSegmentForTurn = (input: {
@@ -1276,7 +1424,7 @@ const make = Effect.gen(function* () {
 
       if (isThreadLifecycleEvent) {
         if (event.type === "turn.completed") {
-          const completedTurnId = toTurnId(event.turnId);
+          const completedTurnId = lifecycleTurnId;
           if (completedTurnId) {
             const assistantMessageIds = yield* getAssistantMessageIdsForTurn(
               thread.id,
@@ -1314,6 +1462,14 @@ const make = Effect.gen(function* () {
         }
 
         yield* dispatchThreadLifecycleUpdate();
+        if (event.type === "turn.completed" && lifecycleTurnId !== undefined) {
+          yield* persistReviewResult({
+            event,
+            threadId: thread.id,
+            turnId: lifecycleTurnId,
+            createdAt: now,
+          });
+        }
       }
 
       if (

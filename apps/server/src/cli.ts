@@ -11,7 +11,7 @@ import {
   KeybindingRule,
   MessageId,
   ModelSelection,
-  OrchestrationReadModel,
+  OrchestrationThread,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   ProjectScript,
@@ -95,12 +95,14 @@ import {
   decodeRawOrchestrationCommand,
   decodeRpcPayload,
   dispatchRawOrchestrationCommand,
-  getLiveOrchestrationSnapshot,
+  fetchLiveOrchestrationShellSnapshot,
+  getLiveOrchestrationShellSnapshot,
   printJson,
   readJsonPayload,
   runReconnectingStream,
   withLiveOrchestrationClient,
   withLiveRpcClient,
+  withLiveSnapshotClient,
   withLiveSnapshotAndRpc,
   watchShell,
   CliPayloadError,
@@ -117,13 +119,16 @@ import {
   threadSummary,
   withProjectRpc,
   withTerminalRpc,
+  withThreadDetail,
   withThreadDispatch,
   withThreadRpc,
   type ActiveProject,
+  type CliSnapshot,
   type CliThread,
 } from "./cli/liveContext.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
+const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
 
 const BootstrapEnvelopeSchema = Schema.Struct({
   mode: Schema.optional(RuntimeMode),
@@ -624,9 +629,6 @@ const runLiveServerRequest = <A, E extends Error, R>(
     return yield* handle(response);
   }).pipe(withProjectCliLiveServerTimeout);
 
-const decodeOrchestrationReadModelResponse = (response: HttpClientResponse.HttpClientResponse) =>
-  HttpClientResponse.schemaBodyJson(OrchestrationReadModel)(response);
-
 const readErrorMessageFromResponse = (response: HttpClientResponse.HttpClientResponse) =>
   HttpClientResponse.schemaBodyJson(OrchestrationHttpErrorResponse)(response).pipe(
     Effect.map((body) => body.error),
@@ -657,7 +659,7 @@ const resolveProjectTitle = Effect.fn("resolveProjectTitle")(function* (
 });
 
 const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (input: {
-  readonly snapshot: OrchestrationReadModel;
+  readonly snapshot: CliSnapshot;
   readonly identifier: string;
 }) {
   const trimmedIdentifier = input.identifier.trim();
@@ -665,7 +667,7 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
     return yield* Effect.fail(new Error("Project identifier cannot be empty."));
   }
 
-  const activeProjects = input.snapshot.projects.filter((project) => project.deletedAt === null);
+  const activeProjects = activeProjectsOf(input.snapshot);
   const exactIdMatch = activeProjects.find((project) => project.id === trimmedIdentifier);
   if (exactIdMatch) {
     return {
@@ -699,21 +701,6 @@ const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (
   } satisfies ProjectMutationTarget;
 });
 
-const fetchLiveOrchestrationSnapshot = (origin: string, bearerToken: string) =>
-  runLiveServerRequest(
-    HttpClientRequest.get(`${origin}/api/orchestration/snapshot`).pipe(
-      HttpClientRequest.acceptJson,
-      HttpClientRequest.bearerToken(bearerToken),
-    ),
-    HttpClientResponse.matchStatus({
-      "2xx": decodeOrchestrationReadModelResponse,
-      orElse: (response) =>
-        readErrorMessageFromResponse(response).pipe(
-          Effect.flatMap((message) => Effect.fail(new Error(message))),
-        ),
-    }),
-  );
-
 const dispatchLiveOrchestrationCommand = (
   origin: string,
   bearerToken: string,
@@ -739,7 +726,7 @@ const dispatchLiveOrchestrationCommand = (
 
 const getOfflineSnapshot = Effect.fn("getOfflineSnapshot")(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-  return yield* projectionSnapshotQuery.getSnapshot();
+  return yield* projectionSnapshotQuery.getShellSnapshot();
 });
 
 type ProjectExecutionPlan =
@@ -763,7 +750,7 @@ const resolveProjectExecutionPlan = Effect.fn("resolveProjectExecutionPlan")(fun
 
   const origin = runtimeState.value.origin;
   const probe = withProjectCliSessionToken(authControlPlane, (token) =>
-    fetchLiveOrchestrationSnapshot(origin, token),
+    fetchLiveOrchestrationShellSnapshot(origin, token),
   );
   const probed = yield* Effect.exit(probe);
   if (Exit.isSuccess(probed)) {
@@ -786,7 +773,7 @@ const resolveProjectExecutionPlan = Effect.fn("resolveProjectExecutionPlan")(fun
 const runProjectMutation = Effect.fn("runProjectMutation")(function* (
   flags: CliAuthLocationFlags,
   run: (input: {
-    readonly snapshot: OrchestrationReadModel;
+    readonly snapshot: CliSnapshot;
     readonly dispatch: (
       command: ProjectCliDispatchCommand,
     ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -815,7 +802,7 @@ const runProjectMutation = Effect.fn("runProjectMutation")(function* (
     if (plan.mode === "live") {
       return yield* withProjectCliSessionToken(authControlPlane, (token) =>
         Effect.gen(function* () {
-          const snapshot = yield* fetchLiveOrchestrationSnapshot(plan.origin, token);
+          const snapshot = yield* fetchLiveOrchestrationShellSnapshot(plan.origin, token);
           const output = yield* run({
             snapshot,
             dispatch: (command) => dispatchLiveOrchestrationCommand(plan.origin, token, command),
@@ -1287,7 +1274,7 @@ const projectListCommand = Command.make("list", {
   Command.withDescription("List active projects."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
+      const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
       yield* printJson(activeProjectsOf(snapshot).map(projectSummary));
     }),
   ),
@@ -1302,7 +1289,7 @@ const projectShowCommand = Command.make("show", {
   Command.withDescription("Show a project."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
+      const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
       const project = yield* findProjectForCli(snapshot, flags.project);
       yield* printJson({
         ...project,
@@ -1330,7 +1317,7 @@ const projectAddCommand = Command.make("add", {
         snapshot,
         dispatch,
       }: {
-        readonly snapshot: OrchestrationReadModel;
+        readonly snapshot: CliSnapshot;
         readonly dispatch: (
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -1378,7 +1365,7 @@ const projectRemoveCommand = Command.make("remove", {
         snapshot,
         dispatch,
       }: {
-        readonly snapshot: OrchestrationReadModel;
+        readonly snapshot: CliSnapshot;
         readonly dispatch: (
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -1415,7 +1402,7 @@ const projectRenameCommand = Command.make("rename", {
         snapshot,
         dispatch,
       }: {
-        readonly snapshot: OrchestrationReadModel;
+        readonly snapshot: CliSnapshot;
         readonly dispatch: (
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
@@ -1669,7 +1656,7 @@ const chatListCommand = Command.make("list", {
   Command.withDescription("List active chats."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
+      const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
       const project = Option.isSome(flags.project)
         ? yield* findProjectForCli(snapshot, flags.project.value)
         : null;
@@ -1689,9 +1676,14 @@ const chatShowCommand = Command.make("show", {
   Command.withDescription("Show a chat."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
-      const thread = yield* findThreadForCli(snapshot, flags.chat, { includeArchived: true });
-      yield* printJson(flags.messages ? thread : threadSummary(thread));
+      if (!flags.messages) {
+        const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
+        const thread = yield* findThreadForCli(snapshot, flags.chat, { includeArchived: true });
+        return yield* printJson(threadSummary(thread));
+      }
+      yield* withThreadDetail(flags, flags.chat, ({ detail }) => printJson(detail), {
+        includeArchived: true,
+      });
     }),
   ),
 );
@@ -1731,7 +1723,7 @@ const getPayloadRequestId = (payload: unknown): string | undefined => {
 };
 
 const pendingActivitiesFor = (input: {
-  readonly thread: CliThread;
+  readonly thread: OrchestrationThread;
   readonly requestedKind: string;
   readonly resolvedKind: string;
 }) => {
@@ -1805,9 +1797,9 @@ const chatArchivedCommand = Command.make("archived", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const snapshot = yield* withLiveRpcClient(flags, (client) =>
-        client[ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]({}),
+        client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({}),
       );
-      yield* printJson(snapshot.threads);
+      yield* printJson(snapshot.threads.filter((thread) => thread.archivedAt !== null));
     }),
   ),
 );
@@ -1817,6 +1809,10 @@ const chatCreateCommand = Command.make("create", {
   ...modelSelectionFlags,
   project: Flag.string("project").pipe(
     Flag.withDescription("Project id, title, or workspace root."),
+  ),
+  parent: Flag.string("parent").pipe(
+    Flag.optional,
+    Flag.withDescription("Parent thread id or title."),
   ),
   title: Flag.string("title").pipe(Flag.withDefault("New chat")),
   runtimeMode: runtimeModeFlag,
@@ -1830,6 +1826,14 @@ const chatCreateCommand = Command.make("create", {
       Effect.gen(function* () {
         const snapshot = yield* getSnapshot;
         const project = yield* findProjectForCli(snapshot, flags.project);
+        const parent = Option.isSome(flags.parent)
+          ? yield* findThreadForCli(snapshot, flags.parent.value)
+          : null;
+        if (parent !== null && parent.projectId !== project.id) {
+          return yield* Effect.fail(
+            new Error(`Parent thread '${parent.id}' belongs to a different project.`),
+          );
+        }
         const threadId = ThreadId.make(crypto.randomUUID());
         const modelSelection = yield* resolveModelSelectionWithDefault(
           flags,
@@ -1840,6 +1844,7 @@ const chatCreateCommand = Command.make("create", {
           commandId: CommandId.make(crypto.randomUUID()),
           threadId,
           projectId: project.id,
+          parentThreadId: parent?.id ?? null,
           title: flags.title,
           modelSelection,
           runtimeMode: flags.runtimeMode,
@@ -2099,6 +2104,10 @@ const chatNewCommand = Command.make("new", {
   project: Flag.string("project").pipe(
     Flag.withDescription("Project id, title, or workspace root."),
   ),
+  parent: Flag.string("parent").pipe(
+    Flag.optional,
+    Flag.withDescription("Parent thread id or title."),
+  ),
   title: Flag.string("title").pipe(Flag.withDefault("New chat")),
   runtimeMode: runtimeModeFlag,
   interactionMode: interactionModeFlag,
@@ -2112,6 +2121,14 @@ const chatNewCommand = Command.make("new", {
       Effect.gen(function* () {
         const snapshot = yield* getSnapshot;
         const project = yield* findProjectForCli(snapshot, flags.project);
+        const parent = Option.isSome(flags.parent)
+          ? yield* findThreadForCli(snapshot, flags.parent.value)
+          : null;
+        if (parent !== null && parent.projectId !== project.id) {
+          return yield* Effect.fail(
+            new Error(`Parent thread '${parent.id}' belongs to a different project.`),
+          );
+        }
         const threadId = ThreadId.make(crypto.randomUUID());
         const modelSelection = yield* resolveModelSelectionWithDefault(
           flags,
@@ -2123,6 +2140,7 @@ const chatNewCommand = Command.make("new", {
           commandId: CommandId.make(crypto.randomUUID()),
           threadId,
           projectId: project.id,
+          parentThreadId: parent?.id ?? null,
           title: flags.title,
           modelSelection,
           runtimeMode: flags.runtimeMode,
@@ -2372,21 +2390,28 @@ const approvalListCommand = Command.make("list", {
 }).pipe(
   Command.withDescription("List pending approval requests."),
   Command.withHandler((flags) =>
-    Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
-      const threads = Option.isSome(flags.thread)
-        ? [yield* findThreadForCli(snapshot, flags.thread.value)]
-        : activeThreadsOf(snapshot);
-      yield* printJson(
-        threads.flatMap((thread) =>
-          pendingActivitiesFor({
-            thread,
-            requestedKind: "approval.requested",
-            resolvedKind: "approval.resolved",
-          }),
-        ),
-      );
-    }),
+    withLiveSnapshotClient(flags, ({ getSnapshot, getThreadSnapshot }) =>
+      Effect.gen(function* () {
+        const snapshot = yield* getSnapshot;
+        const threads = Option.isSome(flags.thread)
+          ? [yield* findThreadForCli(snapshot, flags.thread.value)]
+          : activeThreadsOf(snapshot).filter((thread) => thread.hasPendingApprovals);
+        const details = yield* Effect.forEach(
+          threads,
+          (thread) => getThreadSnapshot(thread.id).pipe(Effect.map((detail) => detail.thread)),
+          { concurrency: PENDING_REQUEST_DETAILS_CONCURRENCY },
+        );
+        yield* printJson(
+          details.flatMap((thread) =>
+            pendingActivitiesFor({
+              thread,
+              requestedKind: "approval.requested",
+              resolvedKind: "approval.resolved",
+            }),
+          ),
+        );
+      }),
+    ),
   ),
 );
 
@@ -2458,21 +2483,28 @@ const inputListCommand = Command.make("list", {
 }).pipe(
   Command.withDescription("List pending user-input requests."),
   Command.withHandler((flags) =>
-    Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
-      const threads = Option.isSome(flags.thread)
-        ? [yield* findThreadForCli(snapshot, flags.thread.value)]
-        : activeThreadsOf(snapshot);
-      yield* printJson(
-        threads.flatMap((thread) =>
-          pendingActivitiesFor({
-            thread,
-            requestedKind: "user-input.requested",
-            resolvedKind: "user-input.resolved",
-          }),
-        ),
-      );
-    }),
+    withLiveSnapshotClient(flags, ({ getSnapshot, getThreadSnapshot }) =>
+      Effect.gen(function* () {
+        const snapshot = yield* getSnapshot;
+        const threads = Option.isSome(flags.thread)
+          ? [yield* findThreadForCli(snapshot, flags.thread.value)]
+          : activeThreadsOf(snapshot).filter((thread) => thread.hasPendingUserInput);
+        const details = yield* Effect.forEach(
+          threads,
+          (thread) => getThreadSnapshot(thread.id).pipe(Effect.map((detail) => detail.thread)),
+          { concurrency: PENDING_REQUEST_DETAILS_CONCURRENCY },
+        );
+        yield* printJson(
+          details.flatMap((thread) =>
+            pendingActivitiesFor({
+              thread,
+              requestedKind: "user-input.requested",
+              resolvedKind: "user-input.resolved",
+            }),
+          ),
+        );
+      }),
+    ),
   ),
 );
 
@@ -4731,10 +4763,10 @@ const orchestrationDispatchCommand = Command.make("dispatch", {
 const orchestrationSnapshotCommand = Command.make("snapshot", {
   ...liveTargetFlags,
 }).pipe(
-  Command.withDescription("Print the current orchestration read-model snapshot."),
+  Command.withDescription("Print the current orchestration shell snapshot."),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
-      const snapshot = yield* getLiveOrchestrationSnapshot(flags);
+      const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
       yield* printJson(snapshot);
     }),
   ),
