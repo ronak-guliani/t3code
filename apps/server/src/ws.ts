@@ -48,6 +48,7 @@ import {
 } from "@t3tools/contracts";
 import {
   buildReviewChangesPrompt,
+  parseReviewChangesScope,
   REVIEW_CHANGES_WORKFLOW_ID,
 } from "@t3tools/shared/workflows/reviewChanges";
 import {
@@ -375,9 +376,6 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         createdAt: new Date().toISOString(),
       });
 
-      const parseReviewScope = (value: unknown) =>
-        value === "uncommitted" || value === "against-base" ? value : null;
-
       const runWorkflow = (input: WorkflowRunInput) =>
         Effect.gen(function* () {
           const runId = WorkflowRunId.make(input.idempotencyKey);
@@ -414,8 +412,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           const project = projectOption.value;
 
           const requestedScope =
-            parseReviewScope(input.input?.scope) ??
-            parseReviewScope(override?.defaultInput?.scope) ??
+            parseReviewChangesScope(input.input?.scope) ??
+            parseReviewChangesScope(override?.defaultInput?.scope) ??
             reviewSettings.defaultScope ??
             DEFAULT_REVIEW_CHANGES_SCOPE;
           const cwd = input.cwd ?? thread.worktreePath ?? project.workspaceRoot;
