@@ -503,8 +503,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               const project = projectOption.value;
               const cwd = input.cwd ?? project.workspaceRoot;
               const requestedScope =
-                parseReviewScope(input.input?.scope) ??
-                parseReviewScope(override?.defaultInput?.scope) ??
+                parseReviewChangesScope(input.input?.scope) ??
+                parseReviewChangesScope(override?.defaultInput?.scope) ??
                 reviewSettings.defaultScope ??
                 DEFAULT_REVIEW_CHANGES_SCOPE;
               const reviewContext = yield* git.resolveReviewChangesContext({
