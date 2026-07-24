@@ -780,7 +780,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           ) : null}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <SidebarThreadTerminalStatus environmentId={thread.environmentId} threadId={thread.id} />
+          <SidebarThreadTerminalStatus
+            environmentId={thread.environmentId}
+            threadId={virtualAgentRun?.parentThreadId ?? thread.id}
+          />
           <div
             className={`flex min-w-12 justify-end ${
               isRemoteThread ? "max-sm:min-w-24" : "max-sm:min-w-20"
