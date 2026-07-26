@@ -12,34 +12,20 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerConfig,
-  type TerminalMetadataStreamEvent,
   type ServerLifecycleWelcomePayload,
-  type ThreadId,
+  ThreadId,
   type TurnId,
   WS_METHODS,
   OrchestrationSessionStatus,
   DEFAULT_SERVER_SETTINGS,
-  DEFAULT_TERMINAL_ID,
-  ServerConfig as ServerConfigSchema,
 } from "@t3tools/contracts";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { createModelCapabilities, createModelSelection } from "@t3tools/shared/model";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
-import { page } from "vite-plus/test/browser";
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vite-plus/test";
+import { page } from "vitest/browser";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { useCommandPaletteStore } from "../commandPaletteStore";
@@ -66,46 +52,19 @@ import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
-import { terminalSessionManager } from "../terminalSessionState";
-import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { useTerminalStateStore } from "../terminalStateStore";
 import { useUiStateStore } from "../uiStateStore";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
 import { BrowserWsRpcHarness, type NormalizedWsRpcRequestBody } from "../../test/wsRpcHarness";
 
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 
-vi.mock("../lib/vcsStatusState", () => {
-  const status = {
-    data: {
-      isRepo: true,
-      sourceControlProvider: {
-        kind: "github",
-        name: "GitHub",
-        baseUrl: "https://github.com",
-      },
-      hasPrimaryRemote: true,
-      isDefaultRef: true,
-      refName: "main",
-      hasWorkingTreeChanges: false,
-      workingTree: { files: [], insertions: 0, deletions: 0 },
-      hasUpstream: true,
-      aheadCount: 0,
-      behindCount: 0,
-      pr: null,
-    },
-    error: null,
-    cause: null,
-    isPending: false,
-  };
-
-  return {
-    getVcsStatusSnapshot: () => status,
-    useVcsStatus: () => status,
-    useVcsStatuses: () => new Map(),
-    refreshVcsStatus: () => Promise.resolve(null),
-    resetVcsStatusStateForTests: () => undefined,
-  };
-});
+vi.mock("../lib/gitStatusState", () => ({
+  useGitStatus: () => ({ data: null, error: null, cause: null, isPending: false }),
+  useGitStatuses: () => new Map(),
+  refreshGitStatus: () => Promise.resolve(null),
+  resetGitStatusStateForTests: () => undefined,
+}));
 
 const THREAD_ID = "thread-browser-test" as ThreadId;
 const THREAD_TITLE = "Browser test thread";
@@ -139,7 +98,6 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   welcome: ServerLifecycleWelcomePayload;
-  terminalMetadataEvents: ReadonlyArray<TerminalMetadataStreamEvent>;
 }
 
 let fixture: TestFixture;
@@ -147,7 +105,6 @@ const rpcHarness = new BrowserWsRpcHarness();
 const wsRequests = rpcHarness.requests;
 let customWsRpcResolver: ((body: NormalizedWsRpcRequestBody) => unknown | undefined) | null = null;
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
-const encodeServerConfig = Schema.encodeSync(ServerConfigSchema);
 
 interface ViewportSpec {
   name: string;
@@ -203,7 +160,7 @@ function createBaseServerConfig(): ServerConfig {
     auth: {
       policy: "loopback-browser",
       bootstrapMethods: ["one-time-token"],
-      sessionMethods: ["browser-session-cookie", "bearer-access-token"],
+      sessionMethods: ["browser-session-cookie", "bearer-session-token"],
       sessionCookieName: "t3_session",
     },
     cwd: "/repo/project",
@@ -249,10 +206,19 @@ function createMockEnvironmentApi(input: {
     filesystem: {
       browse: input.browse,
     },
-    sourceControl: {} as EnvironmentApi["sourceControl"],
-    vcs: {} as EnvironmentApi["vcs"],
+    preview: {} as EnvironmentApi["preview"],
     git: {} as EnvironmentApi["git"],
-    review: {} as EnvironmentApi["review"],
+    workflow: {
+      run: (() => {
+        throw new Error("Not implemented in browser test.");
+      }) as EnvironmentApi["workflow"]["run"],
+    },
+    server: {
+      exportThreadMarkdown: (() => {
+        throw new Error("Not implemented in browser test.");
+      }) as EnvironmentApi["server"]["exportThreadMarkdown"],
+      listProviderCommands: async () => ({ commands: [] }),
+    },
     orchestration: {
       dispatchCommand: input.dispatchCommand,
       getTurnDiff: (() => {
@@ -261,39 +227,16 @@ function createMockEnvironmentApi(input: {
       getFullThreadDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getFullThreadDiff"],
-      getArchivedShellSnapshot: (() => {
+      getTurnDiffState: (() => {
         throw new Error("Not implemented in browser test.");
-      }) as EnvironmentApi["orchestration"]["getArchivedShellSnapshot"],
+      }) as EnvironmentApi["orchestration"]["getTurnDiffState"],
+      getFullThreadDiffState: (() => {
+        throw new Error("Not implemented in browser test.");
+      }) as EnvironmentApi["orchestration"]["getFullThreadDiffState"],
       subscribeShell: (() => () => undefined) as EnvironmentApi["orchestration"]["subscribeShell"],
       subscribeThread: (() => () =>
         undefined) as EnvironmentApi["orchestration"]["subscribeThread"],
     },
-    preview: {
-      open: () => {
-        throw new Error("Not implemented in browser test.");
-      },
-      navigate: () => {
-        throw new Error("Not implemented in browser test.");
-      },
-      refresh: () => {
-        throw new Error("Not implemented in browser test.");
-      },
-      close: () => {
-        throw new Error("Not implemented in browser test.");
-      },
-      list: () => Promise.resolve({ sessions: [] }),
-      reportStatus: () => {
-        throw new Error("Not implemented in browser test.");
-      },
-      automation: {
-        connect: () => () => undefined,
-        respond: () => Promise.resolve(),
-        reportOwner: () => Promise.resolve(),
-        clearOwner: () => Promise.resolve(),
-      },
-      onEvent: () => () => undefined,
-      subscribePorts: () => () => undefined,
-    } as EnvironmentApi["preview"],
   };
 }
 
@@ -421,6 +364,7 @@ function createSnapshotForTargetUser(options: {
         },
         interactionMode: "default",
         runtimeMode: "full-access",
+        pendingRuntimeMode: null,
         branch: "main",
         worktreePath: null,
         latestTurn: null,
@@ -464,7 +408,6 @@ function buildFixture(snapshot: OrchestrationReadModel): TestFixture {
       bootstrapProjectId: PROJECT_ID,
       bootstrapThreadId: THREAD_ID,
     },
-    terminalMetadataEvents: [],
   };
 }
 
@@ -487,6 +430,7 @@ function addThreadToSnapshot(
         },
         interactionMode: "default",
         runtimeMode: "full-access",
+        pendingRuntimeMode: null,
         branch: "main",
         worktreePath: null,
         latestTurn: null,
@@ -731,6 +675,7 @@ function setDraftThreadWithoutWorktree(): void {
         threadId: THREAD_ID,
         environmentId: LOCAL_ENVIRONMENT_ID,
         projectId: PROJECT_ID,
+        parentThreadId: null,
         logicalProjectKey: PROJECT_DRAFT_KEY,
         createdAt: NOW_ISO,
         runtimeMode: "full-access",
@@ -822,6 +767,7 @@ function createSnapshotWithSecondaryProject(options?: {
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
           interactionMode: "default",
           runtimeMode: "full-access",
+          pendingRuntimeMode: null,
           branch: "release/docs-portal",
           worktreePath: null,
           latestTurn: null,
@@ -854,6 +800,7 @@ function createSnapshotWithSecondaryProject(options?: {
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
           interactionMode: "default",
           runtimeMode: "full-access",
+          pendingRuntimeMode: null,
           branch: "release/docs-archive",
           worktreePath: null,
           latestTurn: null,
@@ -1025,82 +972,15 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
   }
   const tag = body._tag;
   if (tag === WS_METHODS.serverGetConfig) {
-    return encodeServerConfig(fixture.serverConfig);
+    return fixture.serverConfig;
   }
-  if (tag === WS_METHODS.serverDiscoverSourceControl) {
-    return {
-      versionControlSystems: [],
-      sourceControlProviders: [
-        {
-          kind: "github",
-          label: "GitHub",
-          executable: "gh",
-          status: "available",
-          version: Option.some("gh version 2.0.0"),
-          installHint: "Install GitHub CLI.",
-          detail: Option.none(),
-          auth: {
-            status: "authenticated",
-            account: Option.some("t3-oss"),
-            host: Option.some("github.com"),
-            detail: Option.none(),
-          },
-        },
-        {
-          kind: "gitlab",
-          label: "GitLab",
-          executable: "glab",
-          status: "available",
-          version: Option.some("glab version 1.0.0"),
-          installHint: "Install GitLab CLI.",
-          detail: Option.none(),
-          auth: {
-            status: "authenticated",
-            account: Option.some("t3-oss"),
-            host: Option.some("gitlab.com"),
-            detail: Option.none(),
-          },
-        },
-        {
-          kind: "bitbucket",
-          label: "Bitbucket",
-          executable: "Bitbucket REST API",
-          status: "available",
-          version: Option.none(),
-          installHint: "Set Bitbucket API token environment variables.",
-          detail: Option.none(),
-          auth: {
-            status: "authenticated",
-            account: Option.some("t3-oss"),
-            host: Option.some("bitbucket.org"),
-            detail: Option.none(),
-          },
-        },
-        {
-          kind: "azure-devops",
-          label: "Azure DevOps",
-          executable: "az",
-          status: "available",
-          version: Option.some("azure-cli 2.0.0"),
-          installHint: "Install Azure CLI.",
-          detail: Option.none(),
-          auth: {
-            status: "authenticated",
-            account: Option.some("t3-oss"),
-            host: Option.some("dev.azure.com"),
-            detail: Option.none(),
-          },
-        },
-      ],
-    };
-  }
-  if (tag === WS_METHODS.vcsListRefs) {
+  if (tag === WS_METHODS.gitListBranches) {
     return {
       isRepo: true,
-      hasPrimaryRemote: true,
+      hasOriginRemote: true,
       nextCursor: null,
       totalCount: 1,
-      refs: [
+      branches: [
         {
           name: "main",
           current: true,
@@ -1135,7 +1015,6 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
       history: "",
       exitCode: null,
       exitSignal: null,
-      label: "Terminal 1",
       updatedAt: NOW_ISO,
     };
   }
@@ -1442,15 +1321,13 @@ async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
   return waitForElement(() => findButtonByText(text), `Unable to find "${text}" button.`);
 }
 
-function findButtonContainingText(text: string): HTMLElement | null {
-  return (
-    Array.from(document.querySelectorAll<HTMLElement>('button, [role="button"]')).find((button) =>
-      button.textContent?.includes(text),
-    ) ?? null
-  );
+function findButtonContainingText(text: string): HTMLButtonElement | null {
+  return (Array.from(document.querySelectorAll("button")).find((button) =>
+    button.textContent?.includes(text),
+  ) ?? null) as HTMLButtonElement | null;
 }
 
-async function waitForButtonContainingText(text: string): Promise<HTMLElement> {
+async function waitForButtonContainingText(text: string): Promise<HTMLButtonElement> {
   return waitForElement(
     () => findButtonContainingText(text),
     `Unable to find button containing "${text}".`,
@@ -1532,6 +1409,19 @@ function dispatchChatNewShortcut(): void {
       cancelable: true,
     }),
   );
+}
+
+function dispatchChatFindShortcut(): KeyboardEvent {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  const event = new KeyboardEvent("keydown", {
+    key: "f",
+    metaKey: useMetaForMod,
+    ctrlKey: !useMetaForMod,
+    bubbles: true,
+    cancelable: true,
+  });
+  window.dispatchEvent(event);
+  return event;
 }
 
 function releaseModShortcut(key?: string): void {
@@ -1735,7 +1625,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
             {
               version: 1,
               type: "snapshot",
-              config: encodeServerConfig(fixture.serverConfig),
+              config: fixture.serverConfig,
             },
           ];
         }
@@ -1760,9 +1650,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 },
               ]
             : [];
-        }
-        if (request._tag === WS_METHODS.subscribeTerminalMetadata) {
-          return fixture.terminalMetadataEvents;
         }
         return [];
       },
@@ -1797,9 +1684,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
       projectOrder: [],
       threadLastVisitedAtById: {},
     });
-    useTerminalUiStateStore.persist.clearStorage();
-    useTerminalUiStateStore.setState({
-      terminalUiStateByThreadKey: {},
+    useTerminalStateStore.persist.clearStorage();
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {},
+      terminalLaunchContextByThreadKey: {},
+      terminalEventEntriesByKey: {},
+      nextTerminalEventId: 1,
     });
   });
 
@@ -1807,74 +1697,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
     customWsRpcResolver = null;
     document.body.innerHTML = "";
   });
-
-  it("renders locked single-environment mobile run context as a static workspace label", async () => {
-    const mounted = await mountChatView({
-      viewport: COMPACT_FOOTER_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-mobile-locked-workspace" as MessageId,
-        targetText: "locked mobile workspace",
-      }),
-    });
-
-    try {
-      await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll<HTMLElement>("span")).find(
-            (element) => element.textContent?.trim() === "Local checkout",
-          ) ?? null,
-        "Unable to find static mobile workspace label.",
-      );
-
-      expect(findButtonByText("Local checkout")).toBeNull();
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("keeps dismiss-only composer banners aligned on mobile", async () => {
-    const mounted = await mountChatView({
-      viewport: COMPACT_FOOTER_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-mobile-version-banner" as MessageId,
-        targetText: "mobile version banner",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          environment: {
-            ...nextFixture.serverConfig.environment,
-            serverVersion: "9.9.9",
-          },
-        };
-      },
-    });
-
-    try {
-      const banner = await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll<HTMLElement>('[data-slot="alert"]')).find(
-            (element) => element.textContent?.includes("Client and server versions differ"),
-          ) ?? null,
-        "Unable to find version mismatch banner.",
-      );
-      const title = banner.querySelector<HTMLElement>('[data-slot="alert-title"]');
-      const description = banner.querySelector<HTMLElement>('[data-slot="alert-description"]');
-      const dismissButton = banner.querySelector<HTMLButtonElement>(
-        'button[aria-label="Dismiss version mismatch warning"]',
-      );
-
-      expect(title).toBeTruthy();
-      expect(description).toBeTruthy();
-      expect(dismissButton).toBeTruthy();
-      expect(dismissButton!.getBoundingClientRect().top).toBeLessThan(
-        description!.getBoundingClientRect().top,
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("re-expands the bootstrap project using its logical key", async () => {
     useUiStateStore.setState({
       projectExpandedById: {
@@ -1935,10 +1757,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -1976,15 +1798,22 @@ describe("ChatView timeline estimator parity (full app)", () => {
       });
     }
 
-    useTerminalUiStateStore.setState({
-      terminalUiStateByThreadKey: {
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {
         [THREAD_KEY]: {
           terminalOpen: true,
           terminalHeight: 280,
           terminalIds: ["default"],
+          runningTerminalIds: [],
           activeTerminalId: "default",
           terminalGroups: [{ id: "group-default", terminalIds: ["default"] }],
           activeTerminalGroupId: "group-default",
+        },
+      },
+      terminalLaunchContextByThreadKey: {
+        [THREAD_KEY]: {
+          cwd: "/repo/project",
+          worktreePath: null,
         },
       },
     });
@@ -1992,34 +1821,14 @@ describe("ChatView timeline estimator parity (full app)", () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot,
-      configureFixture: (nextFixture) => {
-        nextFixture.terminalMetadataEvents = [
-          {
-            type: "upsert",
-            terminal: {
-              threadId: THREAD_ID,
-              terminalId: DEFAULT_TERMINAL_ID,
-              cwd: "/repo/project",
-              worktreePath: null,
-              status: "running",
-              pid: 123,
-              exitCode: null,
-              exitSignal: null,
-              hasRunningSubprocess: false,
-              label: "Terminal 1",
-              updatedAt: isoAt(0),
-            },
-          },
-        ];
-      },
     });
 
     try {
       await vi.waitFor(
         () => {
-          const attachRequest = wsRequests
-            .toReversed()
-            .find((request) => request._tag === WS_METHODS.terminalAttach) as
+          const openRequest = wsRequests.find(
+            (request) => request._tag === WS_METHODS.terminalOpen,
+          ) as
             | {
                 _tag: string;
                 cwd?: string;
@@ -2027,51 +1836,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 env?: Record<string, string>;
               }
             | undefined;
-          expect(attachRequest).toMatchObject({
-            _tag: WS_METHODS.terminalAttach,
+          expect(openRequest).toMatchObject({
+            _tag: WS_METHODS.terminalOpen,
             cwd: "/repo/project",
             worktreePath: null,
             env: {
               T3CODE_PROJECT_ROOT: "/repo/project",
             },
           });
-          expect(attachRequest?.env?.T3CODE_WORKTREE_PATH).toBeUndefined();
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("attaches the default terminal when opening an empty terminal drawer", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-open-empty-terminal-drawer" as MessageId,
-        targetText: "open empty terminal drawer",
-      }),
-    });
-
-    try {
-      const toggle = await waitForElement(
-        () =>
-          document.querySelector<HTMLButtonElement>('button[aria-label="Toggle terminal drawer"]'),
-        "Unable to find terminal drawer toggle.",
-      );
-      toggle.click();
-
-      await vi.waitFor(
-        () => {
-          const attachRequest = wsRequests.find(
-            (request) => request._tag === WS_METHODS.terminalAttach,
-          );
-          expect(attachRequest).toMatchObject({
-            _tag: WS_METHODS.terminalAttach,
-            threadId: THREAD_ID,
-            terminalId: DEFAULT_TERMINAL_ID,
-            cwd: "/repo/project",
-          });
+          expect(openRequest?.env?.T3CODE_WORKTREE_PATH).toBeUndefined();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -2098,10 +1871,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -2144,10 +1917,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -2303,10 +2076,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await waitForServerConfigToApply();
       const openButton = await waitForElement(
         () =>
-          Array.from(document.querySelectorAll("button")).find(
-            (button) => button.textContent?.trim() === "Open",
+          Array.from(document.querySelectorAll("button")).find((button) =>
+            button.getAttribute("aria-label")?.startsWith("Open in "),
           ) as HTMLButtonElement | null,
-        "Unable to find Open button.",
+        "Unable to find open-in-editor button.",
       );
       await vi.waitFor(() => {
         expect(openButton.disabled).toBe(false);
@@ -2338,6 +2111,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -2369,7 +2143,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const runButton = await waitForElement(
         () =>
           Array.from(document.querySelectorAll("button")).find(
-            (button) => button.getAttribute("aria-label") === "Run Lint",
+            (button) => button.title === "Run Lint",
           ) as HTMLButtonElement | null,
         "Unable to find Run Lint button.",
       );
@@ -2410,6 +2184,58 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("starts review in the draft root thread", async () => {
+    setDraftThreadWithoutWorktree();
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.workflowRun) {
+          return {
+            status: "started",
+            runId: "review-run",
+            threadId: THREAD_ID,
+            commandId: "review-command",
+            messageId: "review-message",
+            sequence: 2,
+            createdAt: NOW_ISO,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      (await waitForButtonByText("Review uncommitted changes")).click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.find(
+              (request) =>
+                request._tag === WS_METHODS.workflowRun && request.threadId === THREAD_ID,
+            ),
+          ).toMatchObject({
+            workflowId: "review-changes",
+            projectId: PROJECT_ID,
+            destinationMode: "same-chat",
+          });
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.create",
+            ),
+          ).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("runs project scripts from worktree draft threads at the worktree cwd", async () => {
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2417,6 +2243,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -2448,7 +2275,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const runButton = await waitForElement(
         () =>
           Array.from(document.querySelectorAll("button")).find(
-            (button) => button.getAttribute("aria-label") === "Run Test",
+            (button) => button.title === "Run Test",
           ) as HTMLButtonElement | null,
         "Unable to find Run Test button.",
       );
@@ -2483,6 +2310,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -2550,16 +2378,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
       branchButton.click();
 
       const branchInput = await waitForElement(
-        () => document.querySelector<HTMLInputElement>('input[placeholder="Search refs..."]'),
-        "Unable to find ref search input.",
+        () => document.querySelector<HTMLInputElement>('input[placeholder="Search branches..."]'),
+        "Unable to find branch search input.",
       );
       branchInput.focus();
-      await page.getByPlaceholder("Search refs...").fill("1359");
+      await page.getByPlaceholder("Search branches...").fill("1359");
 
       const checkoutItem = await waitForElement(
         () =>
           Array.from(document.querySelectorAll("span")).find(
-            (element) => element.textContent?.trim() === "Checkout pull request",
+            (element) => element.textContent?.trim() === "Checkout Pull Request",
           ) as HTMLSpanElement | null,
         "Unable to find checkout pull request option.",
       );
@@ -2602,8 +2430,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("sends bootstrap turn-starts and waits for server setup on first-send worktree drafts", async () => {
-    useTerminalUiStateStore.setState({
-      terminalUiStateByThreadKey: {},
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {},
     });
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -2611,6 +2439,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -2688,7 +2517,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         { timeout: 8_000, interval: 16 },
       );
 
-      expect(wsRequests.some((request) => request._tag === WS_METHODS.vcsCreateWorktree)).toBe(
+      expect(wsRequests.some((request) => request._tag === WS_METHODS.gitCreateWorktree)).toBe(
         false,
       );
       expect(
@@ -2824,24 +2653,35 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("keeps new-worktree mode on empty server threads and bootstraps the first send", async () => {
+  it("hands an existing server thread to a new worktree on its next send", async () => {
     const snapshot = addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID);
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: {
         ...snapshot,
         threads: snapshot.threads.map((thread) =>
-          thread.id === THREAD_ID ? Object.assign({}, thread, { session: null }) : thread,
+          thread.id === THREAD_ID
+            ? Object.assign({}, thread, {
+                session: null,
+                messages: [
+                  createUserMessage({
+                    id: "msg-existing-thread-worktree-handoff" as MessageId,
+                    text: "Earlier work",
+                    offsetSeconds: 0,
+                  }),
+                ],
+              })
+            : thread,
         ),
       },
       resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.vcsListRefs) {
+        if (body._tag === WS_METHODS.gitListBranches) {
           return {
             isRepo: true,
-            hasPrimaryRemote: true,
+            hasOriginRemote: true,
             nextCursor: null,
             totalCount: 1,
-            refs: [
+            branches: [
               {
                 name: "main",
                 current: true,
@@ -2928,13 +2768,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         ),
       },
       resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.vcsListRefs) {
+        if (body._tag === WS_METHODS.gitListBranches) {
           return {
             isRepo: true,
-            hasPrimaryRemote: true,
+            hasOriginRemote: true,
             nextCursor: null,
             totalCount: 2,
-            refs: [
+            branches: [
               {
                 name: "main",
                 current: true,
@@ -3024,13 +2864,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
       viewport: DEFAULT_VIEWPORT,
       snapshot: snapshotWithTwoThreads,
       resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.vcsListRefs) {
+        if (body._tag === WS_METHODS.gitListBranches) {
           return {
             isRepo: true,
-            hasPrimaryRemote: true,
+            hasOriginRemote: true,
             nextCursor: null,
             totalCount: 2,
-            refs: [
+            branches: [
               {
                 name: "main",
                 current: true,
@@ -3106,8 +2946,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("shows the send state once bootstrap dispatch is in flight", async () => {
-    useTerminalUiStateStore.setState({
-      terminalUiStateByThreadKey: {},
+    useTerminalStateStore.setState({
+      terminalStateByThreadKey: {},
     });
     useComposerDraftStore.setState({
       draftThreadsByThreadKey: {
@@ -3115,6 +2955,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -3188,8 +3029,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
     try {
       const initialModeButton = await waitForInteractionModeButton("Build");
-      expect(initialModeButton.getAttribute("aria-label")).toContain("enter plan mode");
-      expect(initialModeButton.hasAttribute("title")).toBe(false);
+      expect(initialModeButton.title).toContain("enter plan mode");
 
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -3201,9 +3041,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       await waitForLayout();
 
-      expect((await waitForInteractionModeButton("Build")).getAttribute("aria-label")).toContain(
-        "enter plan mode",
-      );
+      expect((await waitForInteractionModeButton("Build")).title).toContain("enter plan mode");
 
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
@@ -3218,7 +3056,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Plan")).getAttribute("aria-label")).toContain(
+          expect((await waitForInteractionModeButton("Plan")).title).toContain(
             "return to normal build mode",
           );
         },
@@ -3236,96 +3074,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect(
-            (await waitForInteractionModeButton("Build")).getAttribute("aria-label"),
-          ).toContain("enter plan mode");
+          expect((await waitForInteractionModeButton("Build")).title).toContain("enter plan mode");
         },
         { timeout: 8_000, interval: 16 },
       );
     } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("focuses the composer and inserts printable text typed from the page background", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-target-type-to-focus" as MessageId,
-        targetText: "type-to-focus target",
-      }),
-    });
-
-    const backgroundTarget = document.createElement("div");
-    backgroundTarget.tabIndex = -1;
-    document.body.append(backgroundTarget);
-
-    try {
-      const composerEditor = await waitForComposerEditor();
-      backgroundTarget.focus();
-      expect(document.activeElement).not.toBe(composerEditor);
-
-      const event = new KeyboardEvent("keydown", {
-        key: "h",
-        bubbles: true,
-        cancelable: true,
-      });
-      backgroundTarget.dispatchEvent(event);
-
-      await waitForComposerText("h");
-      expect(event.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(composerEditor);
-
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "i",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-
-      await waitForComposerText("hi");
-    } finally {
-      backgroundTarget.remove();
-      await mounted.cleanup();
-    }
-  });
-
-  it("does not steal printable keys from editable targets or shortcut modifiers", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-target-type-to-focus-guards" as MessageId,
-        targetText: "type-to-focus guards target",
-      }),
-    });
-    const input = document.createElement("input");
-    document.body.append(input);
-
-    try {
-      input.focus();
-      input.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "x",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-      await waitForLayout();
-      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt ?? "").toBe("");
-
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "k",
-          metaKey: true,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-      await waitForLayout();
-      expect(useComposerDraftStore.getState().draftsByThreadKey[THREAD_KEY]?.prompt ?? "").toBe("");
-    } finally {
-      input.remove();
       await mounted.cleanup();
     }
   });
@@ -3340,6 +3093,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: `${PROJECT_DRAFT_KEY}:stale`,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -3352,6 +3106,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -3372,13 +3127,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${activeDraftId}`,
       resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.vcsListRefs) {
+        if (body._tag === WS_METHODS.gitListBranches) {
           return {
             isRepo: true,
-            hasPrimaryRemote: true,
+            hasOriginRemote: true,
             nextCursor: null,
             totalCount: 2,
-            refs: [
+            branches: [
               {
                 name: "main",
                 current: true,
@@ -3478,6 +3233,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           threadId: THREAD_ID,
           environmentId: LOCAL_ENVIRONMENT_ID,
           projectId: PROJECT_ID,
+          parentThreadId: null,
           logicalProjectKey: PROJECT_DRAFT_KEY,
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
@@ -3497,13 +3253,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
       snapshot: createDraftOnlySnapshot(),
       initialPath: `/draft/${draftId}`,
       resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.vcsListRefs) {
+        if (body._tag === WS_METHODS.gitListBranches) {
           return {
             isRepo: true,
-            hasPrimaryRemote: true,
+            hasOriginRemote: true,
             nextCursor: null,
             totalCount: branches.length,
-            refs: branches,
+            branches,
           };
         }
         return undefined;
@@ -3521,8 +3277,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
       branchButton.click();
 
       await waitForElement(
-        () => document.querySelector<HTMLInputElement>('input[placeholder="Search refs..."]'),
-        "Unable to find ref search input.",
+        () => document.querySelector<HTMLInputElement>('input[placeholder="Search branches..."]'),
+        "Unable to find branch search input.",
       );
 
       const popup = await waitForElement(
@@ -3703,13 +3459,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
-      await waitForComposerText("hi [package.json](package.json) there");
+      await waitForComposerText("hi @package.json there");
       await setComposerSelectionByTextOffsets({
         start: "hi package.json ".length,
         end: "hi package.json there".length,
       });
       await pressComposerKey("(");
-      await waitForComposerText("hi [package.json](package.json) (there)");
+      await waitForComposerText("hi @package.json (there)");
     } finally {
       await mounted.cleanup();
     }
@@ -3736,47 +3492,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await selectAllComposerContent();
       await pressComposerKey("(");
       await waitForComposerText("(");
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("stores selected file tags as markdown links while keeping the composer chip", async () => {
-    useComposerDraftStore.getState().setPrompt(THREAD_REF, "@pack");
-
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-file-tag-encoding" as MessageId,
-        targetText: "file tag encoding",
-      }),
-      resolveRpc: (body) => {
-        if (body._tag !== WS_METHODS.projectsSearchEntries) {
-          return undefined;
-        }
-        return {
-          entries: [
-            {
-              path: "path/to/package.json",
-              kind: "file",
-              parentPath: "path/to",
-            },
-          ],
-          truncated: false,
-        };
-      },
-    });
-
-    try {
-      const item = await waitForComposerMenuItem("path:file:path/to/package.json");
-      item.click();
-
-      await waitForComposerText("[package.json](path/to/package.json) ");
-      const chip = await waitForElement(
-        () => document.querySelector<HTMLElement>('[data-composer-mention-chip="true"]'),
-        "Unable to find rendered composer file chip.",
-      );
-      expect(chip.textContent).toContain("package.json");
     } finally {
       await mounted.cleanup();
     }
@@ -3965,13 +3680,39 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("shows a pointer cursor for the running stop button", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stop-button-cursor" as MessageId,
+      targetText: "stop button cursor target",
+      sessionStatus: "running",
+    });
+    const runningTurnId = "turn-stop-button-cursor" as TurnId;
+    const runningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? Object.assign({}, thread, {
+              latestTurn: {
+                turnId: runningTurnId,
+                state: "running",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: null,
+                assistantMessageId: null,
+              },
+              session: thread.session
+                ? Object.assign({}, thread.session, {
+                    activeTurnId: runningTurnId,
+                    updatedAt: isoAt(101),
+                  })
+                : null,
+            })
+          : thread,
+      ),
+    };
+
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-stop-button-cursor" as MessageId,
-        targetText: "stop button cursor target",
-        sessionStatus: "running",
-      }),
+      snapshot: runningSnapshot,
     });
 
     try {
@@ -3981,6 +3722,111 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       expect(getComputedStyle(stopButton).cursor).toBe("pointer");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not show working UI for a completed turn after a stale running reload", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-stale-running-reload" as MessageId,
+      targetText: "stale running reload target",
+      sessionStatus: "running",
+    });
+    const completedTurnId = "turn-stale-running-reload" as TurnId;
+    const staleRunningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              latestTurn: {
+                turnId: completedTurnId,
+                state: "completed",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: isoAt(120),
+                assistantMessageId: null,
+              },
+              session: thread.session
+                ? {
+                    ...thread.session,
+                    status: "running",
+                    activeTurnId: completedTurnId,
+                    updatedAt: isoAt(120),
+                  }
+                : null,
+            }
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: staleRunningSnapshot,
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("assistant filler 21");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(document.body.textContent).not.toContain("Working");
+      expect(document.querySelector('button[aria-label="Stop generation"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows working UI for an unfinished latest turn even when session state lags ready", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-unfinished-turn-ready-session" as MessageId,
+      targetText: "unfinished turn ready session target",
+      sessionStatus: "ready",
+    });
+    const runningTurnId = "turn-unfinished-ready-session" as TurnId;
+    const unfinishedTurnSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? Object.assign({}, thread, {
+              latestTurn: {
+                turnId: runningTurnId,
+                state: "running",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: null,
+                assistantMessageId: null,
+              },
+              session: thread.session
+                ? Object.assign({}, thread.session, {
+                    status: "ready",
+                    activeTurnId: null,
+                    updatedAt: isoAt(101),
+                  })
+                : null,
+            })
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: unfinishedTurnSnapshot,
+    });
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("Working");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(document.querySelector('button[aria-label="Stop generation"]')).not.toBeNull();
     } finally {
       await mounted.cleanup();
     }
@@ -4051,68 +3897,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
           const tooltip = document.querySelector<HTMLElement>('[data-slot="tooltip-popup"]');
           expect(tooltip).not.toBeNull();
           expect(tooltip?.textContent).toContain(THREAD_TITLE);
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("shows the sidebar terminal indicator from terminal metadata activity", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-terminal-metadata-indicator" as MessageId,
-        targetText: "terminal metadata indicator target",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.terminalMetadataEvents = [
-          {
-            type: "upsert",
-            terminal: {
-              threadId: THREAD_ID,
-              terminalId: DEFAULT_TERMINAL_ID,
-              cwd: "/repo/project",
-              worktreePath: null,
-              status: "running",
-              pid: 123,
-              exitCode: null,
-              exitSignal: null,
-              hasRunningSubprocess: true,
-              label: "Terminal 1",
-              updatedAt: isoAt(1_200),
-            },
-          },
-        ];
-      },
-    });
-
-    try {
-      await vi.waitFor(
-        () => {
-          expect(
-            terminalSessionManager.listSessions({
-              environmentId: LOCAL_ENVIRONMENT_ID,
-              threadId: THREAD_ID,
-            }),
-          ).toMatchObject([
-            {
-              state: {
-                hasRunningSubprocess: true,
-              },
-            },
-          ]);
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-
-      await vi.waitFor(
-        () => {
-          const terminalIndicator = document.querySelector<HTMLElement>(
-            '[aria-label="Terminal process running"]',
-          );
-          expect(terminalIndicator).not.toBeNull();
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -4678,6 +4462,224 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("opens find in chat from the configured shortcut, prevents native find, and closes on Escape", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-chat-find-shortcut-test" as MessageId,
+        targetText: "Needle alpha",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      const shortcutEvent = dispatchChatFindShortcut();
+      expect(shortcutEvent.defaultPrevented).toBe(true);
+
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+        "Find in chat input should open from the shortcut.",
+      );
+      input.focus();
+      await page.getByPlaceholder(input.placeholder).fill("needle");
+      await expect.element(page.getByText("1 of 1")).toBeVisible();
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle alpha",
+        );
+      });
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(document.querySelector('input[aria-label="Find in chat"]')).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("navigates between find matches with Enter and Shift+Enter", async () => {
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-chat-find-navigation-test" as MessageId,
+      targetText: "Needle alpha",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread, threadIndex) =>
+        threadIndex !== 0
+          ? thread
+          : {
+              ...thread,
+              messages: thread.messages.map((message, messageIndex) =>
+                messageIndex !== 10
+                  ? message
+                  : createUserMessage({
+                      id: "msg-user-chat-find-navigation-second" as MessageId,
+                      text: "Needle beta",
+                      offsetSeconds: 45,
+                    }),
+              ),
+            },
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      dispatchChatFindShortcut();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+        "Find in chat input should open for match navigation.",
+      );
+      input.focus();
+      await page.getByPlaceholder(input.placeholder).fill("needle");
+      await expect.element(page.getByText("1 of 2")).toBeVisible();
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle alpha",
+        );
+      });
+
+      const inputElement = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Find in chat"]',
+      );
+      expect(inputElement).not.toBeNull();
+      await dispatchInputKey(inputElement!, { key: "Enter" });
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle beta",
+        );
+      });
+      await expect.element(page.getByText("2 of 2")).toBeVisible();
+
+      await dispatchInputKey(inputElement!, { key: "Enter", shiftKey: true });
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+          "Needle alpha",
+        );
+      });
+      await expect.element(page.getByText("1 of 2")).toBeVisible();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("resets the find surface when the active thread changes", async () => {
+    const secondThreadId = ThreadId.make("thread-find-reset");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: addThreadToSnapshot(
+        createSnapshotForTargetUser({
+          targetMessageId: "msg-user-chat-find-reset-test" as MessageId,
+          targetText: "Needle reset",
+        }),
+        secondThreadId,
+      ),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "chat.find",
+              shortcut: {
+                key: "f",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      dispatchChatFindShortcut();
+      const input = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+        "Find in chat input should open before switching threads.",
+      );
+      input.focus();
+      await page.getByPlaceholder(input.placeholder).fill("needle");
+      await expect.element(page.getByText("1 of 1")).toBeVisible();
+
+      await mounted.router.navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: LOCAL_ENVIRONMENT_ID,
+          threadId: secondThreadId,
+        },
+      });
+      await waitForLayout();
+      await vi.waitFor(() => {
+        expect(document.querySelector('input[aria-label="Find in chat"]')).toBeNull();
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders the configurable shortcut and runs a command from the sidebar trigger", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -4710,7 +4712,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
+      await waitForServerConfigToApply();
+      await waitForCommandPaletteShortcutLabel();
       const palette = page.getByTestId("command-palette");
       await openCommandPaletteFromTrigger();
 
@@ -4762,7 +4765,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
+      await waitForServerConfigToApply();
+      await waitForCommandPaletteShortcutLabel();
       const palette = page.getByTestId("command-palette");
       await openCommandPaletteFromTrigger();
 
@@ -4835,13 +4839,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
+      await waitForServerConfigToApply();
+      await waitForCommandPaletteShortcutLabel();
       const palette = page.getByTestId("command-palette");
       await openCommandPaletteFromTrigger();
 
       await expect.element(palette).toBeInTheDocument();
       await palette.getByText("Add project", { exact: true }).click();
-      await palette.getByText("Local folder", { exact: true }).click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");
@@ -4888,126 +4892,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("shows clone destination controls after resolving an add project repository", async () => {
-    const mounted = await mountChatView({
-      viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-command-palette-add-project-remote" as MessageId,
-        targetText: "command palette add project remote",
-      }),
-      configureFixture: (nextFixture) => {
-        nextFixture.serverConfig = {
-          ...nextFixture.serverConfig,
-          keybindings: [
-            {
-              command: "commandPalette.toggle",
-              shortcut: {
-                key: "k",
-                metaKey: false,
-                ctrlKey: false,
-                shiftKey: false,
-                altKey: false,
-                modKey: true,
-              },
-              whenAst: {
-                type: "not",
-                node: { type: "identifier", name: "terminalFocus" },
-              },
-            },
-          ],
-        };
-      },
-      resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.filesystemBrowse) {
-          return {
-            parentPath: "~/",
-            entries: [{ name: "Development", fullPath: "~/Development" }],
-          };
-        }
-
-        if (body._tag === WS_METHODS.sourceControlLookupRepository) {
-          return {
-            provider: "github",
-            nameWithOwner: "t3-oss/t3-env",
-            url: "https://github.com/t3-oss/t3-env",
-            sshUrl: "git@github.com:t3-oss/t3-env.git",
-          };
-        }
-
-        if (body._tag === WS_METHODS.sourceControlCloneRepository) {
-          return {
-            cwd: body.destinationPath,
-            remoteUrl: body.remoteUrl,
-            repository: null,
-          };
-        }
-
-        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
-          return {
-            sequence: fixture.snapshot.snapshotSequence + 1,
-          };
-        }
-
-        return undefined;
-      },
-    });
-
-    try {
-      await Promise.all([waitForServerConfigToApply(), waitForCommandPaletteShortcutLabel()]);
-      const palette = page.getByTestId("command-palette");
-      await openCommandPaletteFromTrigger();
-
-      await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Add project", { exact: true }).click();
-      await palette.getByText("GitHub repository", { exact: true }).click();
-
-      const repositoryInput = await waitForCommandPaletteInput(
-        "Enter GitHub repository (owner/repo)",
-      );
-      await page.getByPlaceholder("Enter GitHub repository (owner/repo)").fill("t3-oss/t3-env");
-      await dispatchInputKey(repositoryInput, { key: "Enter" });
-
-      await vi.waitFor(
-        () => {
-          const clonePathInput = document.querySelector<HTMLInputElement>(
-            'input[placeholder="Enter path (e.g. ~/projects/my-app)"]',
-          );
-          expect(clonePathInput?.value).toBe("~/");
-          expect(document.body.textContent).toContain("Repository");
-          expect(document.body.textContent).toContain("t3-oss/t3-env");
-          expect(document.body.textContent).toContain("https://github.com/t3-oss/t3-env");
-          expect(document.body.textContent).toContain("Select where to clone");
-          expect(document.body.textContent).toContain("Development");
-          expect(document.body.textContent).toContain("Clone");
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-
-      await page
-        .getByPlaceholder("Enter path (e.g. ~/projects/my-app)")
-        .fill("~/Development/t3env");
-      const clonePathInput = await waitForCommandPaletteInput(
-        "Enter path (e.g. ~/projects/my-app)",
-      );
-      await dispatchInputKey(clonePathInput, { key: "Enter" });
-
-      await vi.waitFor(
-        () => {
-          const cloneRequest = wsRequests.find(
-            (request) => request._tag === WS_METHODS.sourceControlCloneRepository,
-          ) as { destinationPath?: string; remoteUrl?: string } | undefined;
-          expect(cloneRequest).toMatchObject({
-            remoteUrl: "git@github.com:t3-oss/t3-env.git",
-            destinationPath: "~/Development/t3env",
-          });
-        },
-        { timeout: 8_000, interval: 16 },
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
   it("opens add project browse mode from the sidebar add button", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -5034,7 +4918,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       const palette = page.getByTestId("command-palette");
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/");
@@ -5097,7 +4980,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       const palette = page.getByTestId("command-palette");
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/Development/");
@@ -5157,7 +5039,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await page.getByTestId("sidebar-add-project-trigger").click();
 
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Desktop/fresh-project");
 
@@ -5237,7 +5118,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await page.getByTestId("sidebar-add-project-trigger").click();
 
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/codex/");
 
@@ -5369,7 +5249,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(palette.getByText("This device", { exact: true }).first())
         .toBeInTheDocument();
       await palette.getByText("Staging", { exact: true }).click();
-      await palette.getByText("Local folder", { exact: true }).click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await expect.element(browseInput).toHaveValue("~/workspaces/");
@@ -5463,7 +5342,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       const palette = page.getByTestId("command-palette");
       await expect.element(palette).toBeInTheDocument();
-      await palette.getByText("Local folder", { exact: true }).click();
       const browseInput = palette.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await browseInput.fill("~/Applications/access");
 
@@ -5581,7 +5459,6 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       await expect.element(palette).toBeInTheDocument();
       await palette.getByText("Add project", { exact: true }).click();
-      await palette.getByText("Local folder", { exact: true }).click();
 
       const browseInput = await waitForCommandPaletteInput(ADD_PROJECT_SUBMENU_PLACEHOLDER);
       await page.getByPlaceholder(ADD_PROJECT_SUBMENU_PLACEHOLDER).fill("~/Development/");

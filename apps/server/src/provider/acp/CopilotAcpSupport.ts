@@ -8,6 +8,8 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import type * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
+import { ThreadId } from "@t3tools/contracts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
@@ -42,24 +44,6 @@ export const COPILOT_CLIENT_CAPABILITIES = {
   terminal: false,
 } satisfies NonNullable<EffectAcpSchema.InitializeRequest["clientCapabilities"]>;
 
-const COPILOT_MCP_TOOLSETS = [
-  "terminal",
-  "read_file",
-  "write_file",
-  "search_files",
-  "skill_view",
-  "skills_list",
-  "skill_manage",
-  "web_search",
-  "web_extract",
-  "memory",
-  "preview_screenshot",
-  "preview_click",
-  "preview_type",
-  "preview_annotate",
-  "create_isolated_workspace",
-] as const;
-
 type CopilotAcpRuntimeCopilotSettings = {
   readonly binaryPath: CopilotSettings["binaryPath"];
 };
@@ -91,28 +75,27 @@ export function buildCopilotAcpSpawnInput(
 }
 
 export function buildCopilotMcpServers(
-  cwd: string,
   threadId: string | undefined,
-  env: NodeJS.ProcessEnv = process.env,
 ): ReadonlyArray<EffectAcpSchema.McpServer> {
-  if (env.T3_COPILOT_ACP_ENABLE_MCP !== "1" && env.HERMES_COPILOT_ACP_ENABLE_MCP !== "1") {
+  if (!threadId) {
     return [];
   }
 
-  const command =
-    env.T3_COPILOT_ACP_MCP_COMMAND?.trim() || env.HERMES_COPILOT_ACP_MCP_COMMAND?.trim() || "t3";
-  const toolsets =
-    env.T3_COPILOT_ACP_MCP_TOOLSETS?.trim() ||
-    env.HERMES_COPILOT_ACP_MCP_TOOLSETS?.trim() ||
-    COPILOT_MCP_TOOLSETS.join(",");
+  const session = McpProviderSession.readMcpProviderSession(ThreadId.make(threadId));
+  if (!session) {
+    return [];
+  }
+
   return [
     {
-      name: "t3-tools",
-      command,
-      args: ["mcp", "serve", "--cwd", cwd, "--toolsets", toolsets],
-      env: [
-        ...(threadId === undefined ? [] : [{ name: "T3_MCP_THREAD_ID", value: threadId }]),
-        { name: "T3_MCP_CLI_COMMAND", value: command },
+      type: "http",
+      name: "t3-code",
+      url: session.endpoint,
+      headers: [
+        {
+          name: "Authorization",
+          value: session.authorizationHeader,
+        },
       ],
     },
   ];
@@ -165,7 +148,7 @@ export const makeCopilotAcpRuntime = (
         clientInfo: COPILOT_CLIENT_INFO,
         clientCapabilities: COPILOT_CLIENT_CAPABILITIES,
         modeSwitchMethod: "set_mode",
-        mcpServers: buildCopilotMcpServers(input.cwd, input.threadId),
+        mcpServers: buildCopilotMcpServers(input.threadId),
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),

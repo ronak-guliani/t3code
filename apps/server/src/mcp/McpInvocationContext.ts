@@ -26,7 +26,11 @@ export const requireMcpCapability = Effect.fn("mcp.requireCapability")(function*
   const invocation = yield* McpInvocationContext;
   if (!invocation.capabilities.has(capability)) {
     return yield* new PreviewAutomationUnavailableError({
-      message: `MCP credential does not grant the ${capability} capability.`,
+      capability,
+      environmentId: invocation.environmentId,
+      threadId: invocation.threadId,
+      providerSessionId: invocation.providerSessionId,
+      providerInstanceId: invocation.providerInstanceId,
     });
   }
   return invocation;

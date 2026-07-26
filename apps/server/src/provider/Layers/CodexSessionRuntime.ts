@@ -1,3 +1,6 @@
+// @ts-nocheck
+import { randomUUID } from "node:crypto";
+
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -17,17 +20,8 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
-import * as Crypto from "effect/Crypto";
-import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
-import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
-import * as Layer from "effect/Layer";
-import * as Queue from "effect/Queue";
-import * as Ref from "effect/Ref";
-import * as Scope from "effect/Scope";
-import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
+import { resolveWindowsSpawn } from "@t3tools/shared/shell";
+import { Deferred, Effect, Exit, Layer, Queue, Ref, Scope, Schema, Stream } from "effect";
 import * as SchemaIssue from "effect/SchemaIssue";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -41,6 +35,7 @@ import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -53,7 +48,6 @@ const BENIGN_ERROR_LOG_SNIPPETS = [
   "state db missing rollout path for thread",
   "state db record_discrepancy: find_thread_path_by_id_str_in_subdir, falling_back",
 ];
-const CODEX_APP_SERVER_FORCE_KILL_AFTER = "2 seconds" as const;
 const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "not found",
   "missing thread",
@@ -62,18 +56,12 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "does not exist",
 ];
 
-export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
-  return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
-}
-
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
 });
 const CodexUserInputAnswerObject = Schema.Struct({
   answers: Schema.Array(Schema.String),
 });
-const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
-const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
 
 // TODO: Verify `packages/effect-codex-app-server/scripts/generate.ts` so the generated
 // `V2TurnStartParams` schema includes `collaborationMode` directly.
@@ -82,9 +70,11 @@ const CodexTurnStartParamsWithCollaborationMode = EffectCodexSchema.V2TurnStartP
     collaborationMode: Schema.optionalKey(EffectCodexSchema.V2TurnStartParams__CollaborationMode),
   }),
 );
+const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffect(
   CodexTurnStartParamsWithCollaborationMode,
 );
+const isCodexUserInputAnswerObject = Schema.is(CodexUserInputAnswerObject);
 
 export type CodexTurnStartParamsWithCollaborationMode =
   typeof CodexTurnStartParamsWithCollaborationMode.Type;
@@ -107,7 +97,6 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
-  readonly appServerArgs?: ReadonlyArray<string>;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -160,7 +149,19 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexSessionRuntimeActiveTurnMissingError;
+
+export class CodexSessionRuntimeActiveTurnMissingError extends Schema.TaggedErrorClass<CodexSessionRuntimeActiveTurnMissingError>()(
+  "CodexSessionRuntimeActiveTurnMissingError",
+  {
+    threadId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Cannot interrupt Codex thread ${this.threadId} because no active turn is tracked.`;
+  }
+}
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -391,6 +392,20 @@ export function buildTurnStartParams(input: {
   }).pipe(
     Effect.mapError((error) => toProtocolParseError("Invalid turn/start request payload", error)),
   );
+}
+
+export function buildUnsupportedDynamicToolCallResponse(
+  payload: EffectCodexSchema.DynamicToolCallParams,
+): EffectCodexSchema.DynamicToolCallResponse {
+  return {
+    success: false,
+    contentItems: [
+      {
+        type: "inputText",
+        text: `Dynamic tool '${payload.tool}' is not supported by this client.`,
+      },
+    ],
+  };
 }
 
 function classifyCodexStderrLine(rawLine: string): { readonly message: string } | null {
@@ -675,14 +690,11 @@ function updateSession(
   sessionRef: Ref.Ref<ProviderSession>,
   updates: Partial<ProviderSession>,
 ): Effect.Effect<void> {
-  return Effect.gen(function* () {
-    const updatedAt = DateTime.formatIso(yield* DateTime.now);
-    yield* Ref.update(sessionRef, (session) => ({
-      ...session,
-      ...updates,
-      updatedAt,
-    }));
-  });
+  return Ref.update(sessionRef, (session) => ({
+    ...session,
+    ...updates,
+    updatedAt: new Date().toISOString(),
+  }));
 }
 
 function parseThreadSnapshot(
@@ -702,12 +714,11 @@ export const makeCodexSessionRuntime = (
 ): Effect.Effect<
   CodexSessionRuntimeShape,
   CodexErrors.CodexAppServerError,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
+  ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
 > =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
-    const crypto = yield* Crypto.Crypto;
     const events = yield* Queue.unbounded<ProviderEvent>();
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
@@ -723,13 +734,13 @@ export const makeCodexSessionRuntime = (
       ...(options.environment ?? process.env),
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
     };
+    const { command: spawnTarget, shell } = resolveWindowsSpawn(options.binaryPath, { env });
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(options.binaryPath, ["app-server", ...(options.appServerArgs ?? [])], {
+        ChildProcess.make(spawnTarget, ["app-server"], {
           cwd: options.cwd,
           env,
-          forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-          shell: process.platform === "win32",
+          shell,
         }),
       )
       .pipe(
@@ -751,18 +762,7 @@ export const makeCodexSessionRuntime = (
       Effect.provide(clientContext),
     );
     const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
-    const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
-    const randomUUIDv4 = crypto.randomUUIDv4.pipe(
-      Effect.mapError(
-        (cause) =>
-          new CodexErrors.CodexAppServerTransportError({
-            detail: "Failed to generate Codex runtime identifier.",
-            cause,
-          }),
-      ),
-    );
 
-    const sessionCreatedAt = yield* nowIso;
     const initialSession = {
       provider: PROVIDER,
       ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
@@ -772,22 +772,19 @@ export const makeCodexSessionRuntime = (
       ...(options.model ? { model: options.model } : {}),
       threadId: options.threadId,
       ...(options.resumeCursor !== undefined ? { resumeCursor: options.resumeCursor } : {}),
-      createdAt: sessionCreatedAt,
-      updatedAt: sessionCreatedAt,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
     const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
-      Effect.gen(function* () {
-        const id = yield* randomUUIDv4;
-        return yield* offerEvent({
-          id: EventId.make(id),
-          provider: PROVIDER,
-          ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
-          createdAt: yield* nowIso,
-          ...event,
-        });
+      offerEvent({
+        id: EventId.make(randomUUID()),
+        provider: PROVIDER,
+        ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
+        createdAt: new Date().toISOString(),
+        ...event,
       });
     const emitSessionEvent = (method: string, message: string) =>
       emitEvent({
@@ -948,7 +945,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const requestId = ApprovalRequestId.make(randomUUID());
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1004,7 +1001,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const requestId = ApprovalRequestId.make(randomUUID());
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const decision = yield* Deferred.make<ProviderApprovalDecision>();
@@ -1060,7 +1057,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
       Effect.gen(function* () {
-        const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+        const requestId = ApprovalRequestId.make(randomUUID());
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
         const answers = yield* Deferred.make<ProviderUserInputAnswers>();
@@ -1105,6 +1102,26 @@ export const makeCodexSessionRuntime = (
             ),
           ),
         } satisfies EffectCodexSchema.ToolRequestUserInputResponse;
+      }),
+    );
+
+    yield* client.handleServerRequest("item/tool/call", (payload) =>
+      Effect.gen(function* () {
+        const requestId = ApprovalRequestId.make(randomUUID());
+        const turnId = TurnId.make(payload.turnId);
+        const itemId = ProviderItemId.make(payload.callId);
+
+        yield* emitEvent({
+          kind: "request",
+          threadId: options.threadId,
+          method: "item/tool/call",
+          requestId,
+          ...(turnId ? { turnId } : {}),
+          ...(itemId ? { itemId } : {}),
+          payload,
+        });
+
+        return buildUnsupportedDynamicToolCallResponse(payload);
       }),
     );
 
@@ -1216,7 +1233,7 @@ export const makeCodexSessionRuntime = (
         cwd: opened.cwd,
         model: opened.model,
         resumeCursor: { threadId: providerThreadId },
-        updatedAt: yield* nowIso,
+        updatedAt: new Date().toISOString(),
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
@@ -1244,11 +1261,7 @@ export const makeCodexSessionRuntime = (
         status: "closed",
         activeTurnId: undefined,
       });
-      yield* emitSessionEvent("session/closed", "Session stopped").pipe(
-        Effect.catch((cause) =>
-          Effect.logError("Failed to emit Codex session closed event.", { cause }),
-        ),
-      );
+      yield* emitSessionEvent("session/closed", "Session stopped");
       yield* Scope.close(runtimeScope, Exit.void);
       yield* Queue.shutdown(serverNotifications);
       yield* Queue.shutdown(events);
@@ -1260,15 +1273,6 @@ export const makeCodexSessionRuntime = (
       sendTurn: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
-          if (hasConfiguredMcpServer(options.appServerArgs)) {
-            yield* client.request("config/mcpServer/reload", undefined).pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Failed to refresh Codex MCP tool catalog before turn.", {
-                  cause,
-                }),
-              ),
-            );
-          }
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
@@ -1309,7 +1313,9 @@ export const makeCodexSessionRuntime = (
           const session = yield* Ref.get(sessionRef);
           const effectiveTurnId = turnId ?? session.activeTurnId;
           if (!effectiveTurnId) {
-            return;
+            return yield* new CodexSessionRuntimeActiveTurnMissingError({
+              threadId: options.threadId,
+            });
           }
           yield* client.request("turn/interrupt", {
             threadId: providerThreadId,

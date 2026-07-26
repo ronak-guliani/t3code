@@ -16,7 +16,7 @@ import * as Net from "@t3tools/shared/Net";
 import { LSOF_LOCAL_HOST_TOKENS } from "@t3tools/shared/preview";
 import { Cause, Context, Duration, Effect, Layer, Ref, Schedule, Scope } from "effect";
 
-import { ProcessRunner } from "../processRunner.ts";
+import { runProcess } from "../processRunner.ts";
 
 export interface PortDiscoveryShape {
   readonly scan: () => Effect.Effect<ReadonlyArray<DiscoveredLocalServer>>;
@@ -181,7 +181,19 @@ const serversEqual = (
 
 const make = Effect.gen(function* PortDiscoveryMake() {
   const net = yield* Net.NetService;
-  const processRunner = yield* ProcessRunner;
+  const runListenerCommand = (input: {
+    readonly command: string;
+    readonly args: ReadonlyArray<string>;
+    readonly timeoutMs: number;
+  }) =>
+    Effect.tryPromise(() =>
+      runProcess(input.command, input.args, {
+        timeoutMs: input.timeoutMs,
+        maxBufferBytes: 1024 * 1024,
+        outputMode: "truncate",
+        allowNonZeroExit: true,
+      }),
+    );
   const stateRef = yield* Ref.make<ScannerState>({
     lastSnapshot: [],
     listeners: new Set(),
@@ -224,33 +236,25 @@ const make = Effect.gen(function* PortDiscoveryMake() {
     if (process.platform === "win32") {
       const command =
         'Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { $processName = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName; Write-Output "$($_.LocalAddress)|$($_.LocalPort)|$($_.OwningProcess)|$processName" }';
-      const listeners = yield* processRunner
-        .run({
-          command: "powershell.exe",
-          args: ["-NoProfile", "-NonInteractive", "-Command", command],
-          timeout: Duration.millis(WINDOWS_LISTENER_TIMEOUT_MS),
-          maxOutputBytes: 1024 * 1024,
-          outputMode: "truncate",
-        })
-        .pipe(
-          Effect.map((result) => parseWindowsListenerOutput(result.stdout, terminalByProcessId)),
-          Effect.catchCause(() => Effect.succeed(null)),
-        );
+      const listeners = yield* runListenerCommand({
+        command: "powershell.exe",
+        args: ["-NoProfile", "-NonInteractive", "-Command", command],
+        timeoutMs: WINDOWS_LISTENER_TIMEOUT_MS,
+      }).pipe(
+        Effect.map((result) => parseWindowsListenerOutput(result.stdout, terminalByProcessId)),
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
       if (listeners !== null) return listeners;
       return yield* probeCommonPorts();
     }
-    const lsofResult = yield* processRunner
-      .run({
-        command: "lsof",
-        args: ["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"],
-        timeout: Duration.millis(LSOF_TIMEOUT_MS),
-        maxOutputBytes: 1024 * 1024,
-        outputMode: "truncate",
-      })
-      .pipe(
-        Effect.map((result) => parseLsofOutput(result.stdout, terminalByProcessId)),
-        Effect.catchCause(() => Effect.succeed(null)),
-      );
+    const lsofResult = yield* runListenerCommand({
+      command: "lsof",
+      args: ["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"],
+      timeoutMs: LSOF_TIMEOUT_MS,
+    }).pipe(
+      Effect.map((result) => parseLsofOutput(result.stdout, terminalByProcessId)),
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
     if (lsofResult !== null) return lsofResult;
     return yield* probeCommonPorts();
   });

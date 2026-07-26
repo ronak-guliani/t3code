@@ -1,6 +1,6 @@
 import type { EnvironmentId, EnvironmentApi } from "@t3tools/contracts";
 
-import type { WsRpcClient } from "@t3tools/client-runtime";
+import type { WsRpcClient } from "./rpc/wsRpcClient";
 import { readEnvironmentConnection } from "./environments/runtime";
 
 const environmentApiOverridesForTests = new Map<EnvironmentId, EnvironmentApi>();
@@ -9,14 +9,12 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
   return {
     terminal: {
       open: (input) => rpcClient.terminal.open(input as never),
-      attach: (input, callback, options) =>
-        rpcClient.terminal.attach(input as never, callback, options),
       write: (input) => rpcClient.terminal.write(input as never),
       resize: (input) => rpcClient.terminal.resize(input as never),
       clear: (input) => rpcClient.terminal.clear(input as never),
       restart: (input) => rpcClient.terminal.restart(input as never),
       close: (input) => rpcClient.terminal.close(input as never),
-      onMetadata: (callback, options) => rpcClient.terminal.onMetadata(callback, options),
+      onEvent: (callback) => rpcClient.terminal.onEvent(callback),
     },
     projects: {
       searchEntries: rpcClient.projects.searchEntries,
@@ -25,55 +23,56 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     filesystem: {
       browse: rpcClient.filesystem.browse,
     },
-    sourceControl: {
-      lookupRepository: rpcClient.sourceControl.lookupRepository,
-      cloneRepository: rpcClient.sourceControl.cloneRepository,
-      publishRepository: rpcClient.sourceControl.publishRepository,
-    },
-    vcs: {
-      pull: rpcClient.vcs.pull,
-      refreshStatus: rpcClient.vcs.refreshStatus,
-      onStatus: (input, callback, options) => rpcClient.vcs.onStatus(input, callback, options),
-      listRefs: rpcClient.vcs.listRefs,
-      createWorktree: rpcClient.vcs.createWorktree,
-      removeWorktree: rpcClient.vcs.removeWorktree,
-      createRef: rpcClient.vcs.createRef,
-      switchRef: rpcClient.vcs.switchRef,
-      init: rpcClient.vcs.init,
+    preview: {
+      open: rpcClient.preview.open,
+      navigate: rpcClient.preview.navigate,
+      reportStatus: rpcClient.preview.reportStatus,
+      resize: rpcClient.preview.resize,
+      refresh: rpcClient.preview.refresh,
+      close: rpcClient.preview.close,
+      list: rpcClient.preview.list,
+      automation: {
+        connect: (input, callback, options) =>
+          rpcClient.preview.automation.connect(input, callback, options),
+        respond: (response) => rpcClient.preview.automation.respond(response),
+        focusHost: (input) => rpcClient.preview.automation.focusHost(input),
+      },
+      onEvent: (callback) => rpcClient.preview.onEvent(callback),
+      subscribePorts: (callback, options) =>
+        rpcClient.preview.onDiscoveredLocalServers(callback, options),
     },
     git: {
+      pull: rpcClient.git.pull,
+      refreshStatus: rpcClient.git.refreshStatus,
+      onStatus: (input, callback, options) => rpcClient.git.onStatus(input, callback, options),
+      listBranches: rpcClient.git.listBranches,
+      createWorktree: rpcClient.git.createWorktree,
+      removeWorktree: rpcClient.git.removeWorktree,
+      createBranch: rpcClient.git.createBranch,
+      checkout: rpcClient.git.checkout,
+      init: rpcClient.git.init,
       resolvePullRequest: rpcClient.git.resolvePullRequest,
+      listOpenPullRequests: rpcClient.git.listOpenPullRequests,
       preparePullRequestThread: rpcClient.git.preparePullRequestThread,
+      resolveReviewChangesContext: rpcClient.git.resolveReviewChangesContext,
     },
-    review: {
-      getDiffPreview: rpcClient.review.getDiffPreview,
+    workflow: {
+      run: rpcClient.workflow.run,
+    },
+    server: {
+      listProviderCommands: rpcClient.server.listProviderCommands,
+      exportThreadMarkdown: rpcClient.server.exportThreadMarkdown,
     },
     orchestration: {
       dispatchCommand: rpcClient.orchestration.dispatchCommand,
       getTurnDiff: rpcClient.orchestration.getTurnDiff,
       getFullThreadDiff: rpcClient.orchestration.getFullThreadDiff,
-      getArchivedShellSnapshot: rpcClient.orchestration.getArchivedShellSnapshot,
+      getTurnDiffState: rpcClient.orchestration.getTurnDiffState,
+      getFullThreadDiffState: rpcClient.orchestration.getFullThreadDiffState,
       subscribeShell: (callback, options) =>
         rpcClient.orchestration.subscribeShell(callback, options),
       subscribeThread: (input, callback, options) =>
         rpcClient.orchestration.subscribeThread(input, callback, options),
-    },
-    preview: {
-      open: (input) => rpcClient.preview.open(input as never),
-      navigate: (input) => rpcClient.preview.navigate(input as never),
-      refresh: (input) => rpcClient.preview.refresh(input as never),
-      close: (input) => rpcClient.preview.close(input as never),
-      list: (input) => rpcClient.preview.list(input as never),
-      reportStatus: (input) => rpcClient.preview.reportStatus(input as never),
-      automation: {
-        connect: (input, callback, options) =>
-          rpcClient.preview.automation.connect(input as never, callback, options),
-        respond: (response) => rpcClient.preview.automation.respond(response as never),
-        reportOwner: (owner) => rpcClient.preview.automation.reportOwner(owner as never),
-        clearOwner: (input) => rpcClient.preview.automation.clearOwner(input as never),
-      },
-      onEvent: (callback, options) => rpcClient.preview.onEvent(callback, options),
-      subscribePorts: (callback, options) => rpcClient.preview.subscribePorts(callback, options),
     },
   };
 }

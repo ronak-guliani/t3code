@@ -1,17 +1,16 @@
 import "vite-plus/test/config";
+import * as NodeURL from "node:url";
 import { defineConfig } from "vite-plus";
-import { fileURLToPath } from "node:url";
 
 export default defineConfig({
   resolve: {
     alias: {
-      "~": fileURLToPath(new URL("./apps/web/src", import.meta.url)),
+      "~": NodeURL.fileURLToPath(new URL("./apps/web/src", import.meta.url)),
     },
   },
   test: {
     environment: "node",
     exclude: [
-      "**/.repos/**",
       "**/node_modules/**",
       "**/dist/**",
       "**/dist-electron/**",
@@ -23,20 +22,16 @@ export default defineConfig({
   fmt: {
     ignorePatterns: [
       ".reference",
-      ".repos/**",
       ".plans",
-      ".alchemy",
       "dist",
       "dist-electron",
       "node_modules",
       "pnpm-lock.yaml",
       "*.tsbuildinfo",
       "**/routeTree.gen.ts",
-      "apps/mobile/android/**",
-      "apps/mobile/ios/**",
+      "apps/mobile/.build/**",
       "apps/web/public/mockServiceWorker.js",
       "apps/web/src/lib/vendor/qrcodegen.ts",
-      "apps/mobile/uniwind-types.d.ts",
       "*.icon/**",
     ],
     sortPackageJson: {},
@@ -51,17 +46,13 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns: [
-      ".repos",
-      ".repos/**",
       "dist",
       "dist-electron",
       "node_modules",
       "pnpm-lock.yaml",
       "*.tsbuildinfo",
       "**/routeTree.gen.ts",
-      "apps/mobile/android/**",
-      "apps/mobile/ios/**",
-      "apps/mobile/uniwind-types.d.ts",
+      "apps/mobile/.build/**",
     ],
     plugins: ["eslint", "oxc", "react", "unicorn", "typescript"],
     jsPlugins: ["./oxlint-plugin-t3code/index.ts"],
@@ -97,10 +88,8 @@ export default defineConfig({
       "typescript/restrict-template-expressions": "off",
       "typescript/unbound-method": "off",
       "t3code/no-inline-schema-compile": "warn",
-      "t3code/no-manual-effect-runtime-in-tests": "error",
     },
     options: {
-      // Revisit once Oxlint's tsgolint path can integrate with @effect/tsgo diagnostics.
       typeAware: false,
       typeCheck: false,
     },

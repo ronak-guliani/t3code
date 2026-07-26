@@ -8,7 +8,10 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
+import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+import { Button } from "~/components/ui/button";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
@@ -56,6 +59,8 @@ interface Props {
   tabId?: string | null;
   configuredUrls?: ReadonlyArray<string> | undefined;
   visible: boolean;
+  /** When provided, renders a panel close affordance in the chrome row. */
+  onClose?: (() => void) | undefined;
 }
 
 const localApi = typeof window === "undefined" ? null : ensureLocalApi();
@@ -64,14 +69,19 @@ const localApi = typeof window === "undefined" ? null : ensureLocalApi();
  * Single-tab preview surface: chrome row on top, one webview below, empty
  * state when no session exists for the thread.
  */
-export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, visible }: Props) {
+export function PreviewView({
+  threadRef,
+  tabId: requestedTabId,
+  configuredUrls,
+  visible,
+  onClose,
+}: Props) {
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
   const activeRecordingTabId = useActiveBrowserRecordingTabId();
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
-  const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
@@ -236,80 +246,13 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         void stopBrowserRecording(tabId).then(
           (artifact) => {
             if (!artifact) return;
-            let pathCopied = false;
-            let toastId: ReturnType<typeof toastManager.add>;
-
-            const copyPath = () => {
-              if (!navigator.clipboard?.writeText) {
-                toastManager.update(
-                  toastId,
-                  stackedThreadToast({
-                    type: "error",
-                    title: "Unable to copy recording path",
-                    description: "Clipboard API unavailable.",
-                    actionProps: revealAction,
-                  }),
-                );
-                return;
-              }
-
-              void navigator.clipboard.writeText(artifact.path).then(
-                () => {
-                  pathCopied = true;
-                  updateRecordingToast();
-                  window.setTimeout(() => {
-                    pathCopied = false;
-                    updateRecordingToast();
-                  }, 2_000);
-                },
-                (error) => {
-                  toastManager.update(
-                    toastId,
-                    stackedThreadToast({
-                      type: "error",
-                      title: "Unable to copy recording path",
-                      description: error instanceof Error ? error.message : "An error occurred.",
-                      actionProps: revealAction,
-                    }),
-                  );
-                },
-              );
-            };
-
-            const revealAction = {
-              children: revealInFileExplorerLabel(navigator.platform),
-              onClick: () => void bridge.revealArtifact(artifact.path),
-            };
-            const updateRecordingToast = () => {
-              toastManager.update(
-                toastId,
-                stackedThreadToast({
-                  type: "success",
-                  title: "Recording saved",
-                  actionProps: revealAction,
-                  data: {
-                    secondaryActionProps: {
-                      children: pathCopied ? "Copied!" : "Copy path",
-                      disabled: pathCopied,
-                      onClick: copyPath,
-                    },
-                    secondaryActionVariant: "outline",
-                  },
-                }),
-              );
-            };
-
-            toastId = toastManager.add(
+            toastManager.add(
               stackedThreadToast({
                 type: "success",
                 title: "Recording saved",
-                actionProps: revealAction,
-                data: {
-                  secondaryActionProps: {
-                    children: "Copy path",
-                    onClick: copyPath,
-                  },
-                  secondaryActionVariant: "outline",
+                actionProps: {
+                  children: revealInFileExplorerLabel(navigator.platform),
+                  onClick: () => void bridge.revealArtifact(artifact.path),
                 },
               }),
             );
@@ -344,11 +287,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       }
       void bridge.captureScreenshot(tabId).then(
         (artifact) => {
-          const revealAction = {
-            children: revealInFileExplorerLabel(navigator.platform),
-            onClick: () => void bridge.revealArtifact(artifact.path),
-          };
-          let pathCopied = false;
           let imageCopied = false;
           let toastId: ReturnType<typeof toastManager.add>;
 
@@ -368,52 +306,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
                   disabled: imageCopied,
                   onClick: copyImage,
                 },
-                data: {
-                  additionalActions: [
-                    {
-                      id: "copy-path",
-                      props: {
-                        children: pathCopied ? "Copied!" : "Copy path",
-                        disabled: pathCopied,
-                        onClick: copyPath,
-                      },
-                    },
-                  ],
-                  secondaryActionProps: {
-                    ...revealAction,
-                  },
-                  secondaryActionVariant: "outline",
-                },
               }),
-            );
-          };
-
-          const copyPath = () => {
-            if (!navigator.clipboard?.writeText) {
-              updateScreenshotToast(
-                "error",
-                "Unable to copy screenshot path",
-                "Clipboard API unavailable.",
-              );
-              return;
-            }
-
-            void navigator.clipboard.writeText(artifact.path).then(
-              () => {
-                pathCopied = true;
-                updateScreenshotToast();
-                window.setTimeout(() => {
-                  pathCopied = false;
-                  updateScreenshotToast();
-                }, 2_000);
-              },
-              (error) => {
-                updateScreenshotToast(
-                  "error",
-                  "Unable to copy screenshot path",
-                  error instanceof Error ? error.message : "An error occurred.",
-                );
-              },
             );
           };
 
@@ -441,24 +334,10 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
             stackedThreadToast({
               type: "success",
               title: "Screenshot saved",
+              description: artifact.path,
               actionProps: {
                 children: "Copy image",
                 onClick: copyImage,
-              },
-              data: {
-                additionalActions: [
-                  {
-                    id: "copy-path",
-                    props: {
-                      children: "Copy path",
-                      onClick: copyPath,
-                    },
-                  },
-                ],
-                secondaryActionProps: {
-                  ...revealAction,
-                },
-                secondaryActionVariant: "outline",
               },
             }),
           );
@@ -494,7 +373,6 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
       try {
         const annotation = await previewBridge.pickElement(tabId);
         if (!annotation) return;
-        addPreviewAnnotation(threadRef, annotation);
         const screenshotFile = await previewAnnotationScreenshotFile(annotation);
         if (screenshotFile && annotation.screenshot) {
           addImage(threadRef, {
@@ -530,7 +408,7 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
         }
       }
     })();
-  }, [addImage, addPreviewAnnotation, tabId, threadRef]);
+  }, [addImage, tabId, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle
@@ -605,16 +483,29 @@ export function PreviewView({ threadRef, tabId: requestedTabId, configuredUrls, 
           isUnreachable ? "Page didn't load — pick unavailable until the page renders" : undefined
         }
         trailingActions={
-          previewBridge ? (
-            <PreviewMoreMenu
-              tabId={tabId}
-              hasWebContents={desktopOverlay !== null}
-              zoomFactor={desktopOverlay?.zoomFactor ?? 1}
-              colorScheme={desktopOverlay?.colorScheme ?? "system"}
-              deviceToolbarVisible={viewport._tag !== "fill"}
-              onToggleDeviceToolbar={handleToggleDeviceToolbar}
-            />
-          ) : null
+          <>
+            {previewBridge ? (
+              <PreviewMoreMenu
+                tabId={tabId}
+                hasWebContents={desktopOverlay !== null}
+                zoomFactor={desktopOverlay?.zoomFactor ?? 1}
+                colorScheme={desktopOverlay?.colorScheme ?? "system"}
+                deviceToolbarVisible={viewport._tag !== "fill"}
+                onToggleDeviceToolbar={handleToggleDeviceToolbar}
+              />
+            ) : null}
+            {onClose ? (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                type="button"
+                aria-label="Close browser panel"
+                onClick={onClose}
+              >
+                <X className="size-3.5" />
+              </Button>
+            ) : null}
+          </>
         }
       />
 

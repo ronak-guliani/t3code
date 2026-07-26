@@ -9,12 +9,14 @@ import { Effect, Fiber, Layer, Stream } from "effect";
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import { COPILOT_PLAN_MODE_ID } from "../acp/CopilotAcpSupport.ts";
@@ -1260,38 +1262,24 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
-  it.effect("passes env-gated T3 MCP server descriptors during Copilot ACP session startup", () =>
+  it.effect("passes scoped HTTP MCP server descriptors during Copilot ACP session startup", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
       const settings = yield* ServerSettingsService;
       const threadId = ThreadId.make("copilot-mcp-startup-thread");
-      const previousEnableMcp = process.env.T3_COPILOT_ACP_ENABLE_MCP;
-      const previousCommand = process.env.T3_COPILOT_ACP_MCP_COMMAND;
-      const previousToolsets = process.env.T3_COPILOT_ACP_MCP_TOOLSETS;
 
       yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          if (previousEnableMcp === undefined) {
-            delete process.env.T3_COPILOT_ACP_ENABLE_MCP;
-          } else {
-            process.env.T3_COPILOT_ACP_ENABLE_MCP = previousEnableMcp;
-          }
-          if (previousCommand === undefined) {
-            delete process.env.T3_COPILOT_ACP_MCP_COMMAND;
-          } else {
-            process.env.T3_COPILOT_ACP_MCP_COMMAND = previousCommand;
-          }
-          if (previousToolsets === undefined) {
-            delete process.env.T3_COPILOT_ACP_MCP_TOOLSETS;
-          } else {
-            process.env.T3_COPILOT_ACP_MCP_TOOLSETS = previousToolsets;
-          }
-        }),
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
       );
 
-      process.env.T3_COPILOT_ACP_ENABLE_MCP = "1";
-      process.env.T3_COPILOT_ACP_MCP_COMMAND = "t3-test";
-      process.env.T3_COPILOT_ACP_MCP_TOOLSETS = "read_file,search_files";
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId,
+        providerSessionId: "provider-session-1",
+        providerInstanceId: COPILOT_INSTANCE_ID,
+        endpoint: "http://127.0.0.1:3000/mcp",
+        authorizationHeader: "Bearer scoped-token",
+      });
 
       yield* isolateCopilotHome();
 
@@ -1315,26 +1303,18 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       const [mcpServers] = yield* Effect.promise(() =>
         readJsonLines<
           ReadonlyArray<{
+            readonly type: string;
             readonly name: string;
-            readonly command: string;
-            readonly args: string[];
-            readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+            readonly url: string;
+            readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
           }>
         >(mcpLogPath),
       );
-      assert.equal(mcpServers?.[0]?.name, "t3-tools");
-      assert.equal(mcpServers?.[0]?.command, "t3-test");
-      assert.deepEqual(mcpServers?.[0]?.args, [
-        "mcp",
-        "serve",
-        "--cwd",
-        process.cwd(),
-        "--toolsets",
-        "read_file,search_files",
-      ]);
-      assert.deepEqual(mcpServers?.[0]?.env, [
-        { name: "T3_MCP_THREAD_ID", value: threadId },
-        { name: "T3_MCP_CLI_COMMAND", value: "t3-test" },
+      assert.equal(mcpServers?.[0]?.type, "http");
+      assert.equal(mcpServers?.[0]?.name, "t3-code");
+      assert.equal(mcpServers?.[0]?.url, "http://127.0.0.1:3000/mcp");
+      assert.deepEqual(mcpServers?.[0]?.headers, [
+        { name: "Authorization", value: "Bearer scoped-token" },
       ]);
 
       yield* adapter.stopSession(threadId);

@@ -13,6 +13,8 @@ import {
   normalizeCopilotAcpModeId,
   resolveCopilotAcpModeId,
 } from "./CopilotAcpSupport.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 describe("buildCopilotAcpSpawnInput", () => {
   it("builds the default GitHub Copilot ACP command", () => {
@@ -34,28 +36,34 @@ describe("buildCopilotAcpSpawnInput", () => {
   });
 
   describe("buildCopilotMcpServers", () => {
-    it("keeps MCP disabled by default", () => {
-      expect(buildCopilotMcpServers("/tmp/project", "thread-1", {})).toEqual([]);
+    it("does not expose MCP without a provider-scoped session", () => {
+      expect(buildCopilotMcpServers("thread-1")).toEqual([]);
     });
 
-    it("builds an env-gated T3 MCP stdio server descriptor", () => {
-      expect(
-        buildCopilotMcpServers("/tmp/project", "thread-1", {
-          T3_COPILOT_ACP_ENABLE_MCP: "1",
-          T3_COPILOT_ACP_MCP_COMMAND: "t3-dev",
-          T3_COPILOT_ACP_MCP_TOOLSETS: "read_file,search_files",
-        }),
-      ).toEqual([
+    it("builds an authenticated HTTP MCP server descriptor", () => {
+      const threadId = ThreadId.make("thread-1");
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId,
+        providerSessionId: "provider-session-1",
+        providerInstanceId: ProviderInstanceId.make("copilot"),
+        endpoint: "http://127.0.0.1:3000/mcp",
+        authorizationHeader: "Bearer scoped-token",
+      });
+      expect(buildCopilotMcpServers(threadId)).toEqual([
         {
-          name: "t3-tools",
-          command: "t3-dev",
-          args: ["mcp", "serve", "--cwd", "/tmp/project", "--toolsets", "read_file,search_files"],
-          env: [
-            { name: "T3_MCP_THREAD_ID", value: "thread-1" },
-            { name: "T3_MCP_CLI_COMMAND", value: "t3-dev" },
+          type: "http",
+          name: "t3-code",
+          url: "http://127.0.0.1:3000/mcp",
+          headers: [
+            {
+              name: "Authorization",
+              value: "Bearer scoped-token",
+            },
           ],
         },
       ]);
+      McpProviderSession.clearMcpProviderSession(threadId);
     });
   });
 });

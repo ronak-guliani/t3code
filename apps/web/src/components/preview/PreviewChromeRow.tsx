@@ -3,7 +3,6 @@ import {
   ArrowRight,
   Camera,
   ExternalLink,
-  Globe,
   MousePointerClick,
   RotateCw,
 } from "lucide-react";
@@ -23,6 +22,7 @@ import { cn } from "~/lib/utils";
 
 interface Props {
   url: string;
+  displayUrl?: string | undefined;
   loading: boolean;
   loadProgress: number;
   canGoBack: boolean;
@@ -61,6 +61,7 @@ const NOOP = () => {};
 
 export function PreviewChromeRow({
   url,
+  displayUrl,
   loading,
   loadProgress,
   canGoBack,
@@ -84,19 +85,13 @@ export function PreviewChromeRow({
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [draft, setDraft] = useState(url);
-
-  // Sync the input with external URL changes, but only when the user isn't
-  // actively typing (preserves in-progress edits during navigation events).
-  useEffect(() => {
-    setDraft((previous) => (document.activeElement === inputRef.current ? previous : url));
-  }, [url]);
+  const [inputFocused, setInputFocused] = useState(false);
 
   useEffect(() => {
     if (focusUrlNonce == null) return;
     const node = inputRef.current;
     if (!node) return;
     node.focus();
-    node.select();
   }, [focusUrlNonce]);
 
   const submit = (event?: FormEvent | KeyboardEvent) => {
@@ -109,10 +104,7 @@ export function PreviewChromeRow({
 
   return (
     <div className="relative">
-      <form
-        onSubmit={submit}
-        className="flex h-10 items-center gap-1 border-b border-border/70 bg-background px-2"
-      >
+      <form onSubmit={submit} className="surface-subheader gap-1 px-2" data-surface-subheader>
         <div className="flex items-center gap-0.5" role="group" aria-label="Navigation">
           <Tooltip>
             <TooltipTrigger
@@ -167,30 +159,50 @@ export function PreviewChromeRow({
           </Tooltip>
         </div>
 
-        <InputGroup className="h-7 flex-1 rounded-md">
-          <InputGroupAddon align="inline-start">
-            <Globe className="size-3.5 text-muted-foreground" aria-hidden />
-          </InputGroupAddon>
-          <InputGroupInput
-            ref={inputRef}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") submit(event);
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setDraft(url);
-                inputRef.current?.blur();
+        <InputGroup className="group/address h-7 flex-1 rounded-md border-transparent bg-transparent shadow-none before:shadow-none hover:bg-muted/40 focus-within:bg-background">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <InputGroupInput
+                  ref={inputRef}
+                  value={inputFocused ? draft : (displayUrl ?? url)}
+                  className={cn(
+                    onOpenInBrowser &&
+                      !inputFocused &&
+                      "group-hover/address:pe-7 transition-[padding]",
+                  )}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onFocus={() => {
+                    setDraft(url);
+                    setInputFocused(true);
+                    queueMicrotask(() => inputRef.current?.select());
+                  }}
+                  onBlur={() => {
+                    setInputFocused(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") submit(event);
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setDraft(url);
+                      inputRef.current?.blur();
+                    }
+                  }}
+                  placeholder="Search or enter URL"
+                  spellCheck={false}
+                  disabled={inputDisabled}
+                  data-preview-url-input
+                  size="sm"
+                />
               }
-            }}
-            placeholder="Search or enter URL"
-            spellCheck={false}
-            disabled={inputDisabled}
-            data-preview-url-input
-            size="sm"
-          />
-          {onOpenInBrowser ? (
-            <InputGroupAddon align="inline-end">
+            />
+            {!inputFocused && displayUrl ? <TooltipPopup>{url}</TooltipPopup> : null}
+          </Tooltip>
+          {onOpenInBrowser && !inputFocused ? (
+            <InputGroupAddon
+              align="inline-end"
+              className="pointer-events-none absolute inset-y-0 right-0 opacity-0 transition-opacity group-hover/address:pointer-events-auto group-hover/address:opacity-100"
+            >
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -254,7 +266,7 @@ export function PreviewChromeRow({
             >
               <Camera className={cn(recording && "text-destructive")} />
               {recording ? (
-                <span className="absolute right-0.5 top-0.5 size-1.5 animate-pulse rounded-full bg-destructive" />
+                <span className="absolute right-0.5 top-0.5 size-1.5 animate-status-pulse rounded-full bg-destructive" />
               ) : null}
             </TooltipTrigger>
             <TooltipPopup>

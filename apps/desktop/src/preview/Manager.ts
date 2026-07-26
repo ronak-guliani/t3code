@@ -52,8 +52,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import * as PreviewEnvironment from "./PreviewEnvironment.ts";
 import {
   ANNOTATION_CAPTURED_CHANNEL,
   ANNOTATION_THEME_CHANNEL,
@@ -2963,7 +2963,7 @@ export class PreviewManager extends Context.Service<
 >()("@t3tools/desktop/preview/Manager/PreviewManager") {}
 
 export const make = Effect.gen(function* PreviewManagerMake() {
-  const environment = yield* DesktopEnvironment.DesktopEnvironment;
+  const environment = yield* PreviewEnvironment.PreviewEnvironment;
   const browserSession = yield* BrowserSession.BrowserSession;
   const operations = yield* makeNativeOperations(environment.browserArtifactsDir);
 

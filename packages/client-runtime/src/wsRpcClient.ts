@@ -4,14 +4,12 @@ import {
   type GitRunStackedActionResult,
   type LocalApi,
   ORCHESTRATION_WS_METHODS,
-  type RelayClientInstallProgressEvent,
-  type RelayClientStatus,
   type ServerSettingsPatch,
   type VcsStatusResult,
   type VcsStatusStreamEvent,
   WS_METHODS,
 } from "@t3tools/contracts";
-import { applyGitStatusStreamEvent } from "@t3tools/shared/git";
+import { applyVcsStatusStreamEvent } from "@t3tools/shared/git";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
@@ -89,8 +87,7 @@ export interface WsRpcClient {
     readonly automation: {
       readonly connect: RpcInputStreamMethod<typeof WS_METHODS.previewAutomationConnect>;
       readonly respond: RpcUnaryMethod<typeof WS_METHODS.previewAutomationRespond>;
-      readonly reportOwner: RpcUnaryMethod<typeof WS_METHODS.previewAutomationReportOwner>;
-      readonly clearOwner: RpcUnaryMethod<typeof WS_METHODS.previewAutomationClearOwner>;
+      readonly focusHost: RpcUnaryMethod<typeof WS_METHODS.previewAutomationFocusHost>;
     };
     readonly onEvent: RpcStreamMethod<typeof WS_METHODS.subscribePreviewEvents>;
     readonly subscribePorts: RpcStreamMethod<typeof WS_METHODS.subscribeDiscoveredLocalServers>;
@@ -168,12 +165,6 @@ export interface WsRpcClient {
     >;
     readonly signalProcess: RpcUnaryMethod<typeof WS_METHODS.serverSignalProcess>;
   };
-  readonly cloud: {
-    readonly getRelayClientStatus: RpcUnaryNoArgMethod<typeof WS_METHODS.cloudGetRelayClientStatus>;
-    readonly installRelayClient: (
-      onProgress?: (event: RelayClientInstallProgressEvent) => void,
-    ) => Promise<RelayClientStatus>;
-  };
   readonly orchestration: {
     readonly dispatchCommand: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.dispatchCommand>;
     readonly getTurnDiff: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.getTurnDiff>;
@@ -245,22 +236,20 @@ export function createWsRpcClient(
           ),
         respond: (input) =>
           transport.request((client) => client[WS_METHODS.previewAutomationRespond](input)),
-        reportOwner: (input) =>
-          transport.request((client) => client[WS_METHODS.previewAutomationReportOwner](input)),
-        clearOwner: (input) =>
-          transport.request((client) => client[WS_METHODS.previewAutomationClearOwner](input)),
+        focusHost: (input) =>
+          transport.request((client) => client[WS_METHODS.previewAutomationFocusHost](input)),
       },
       onEvent: (listener, options) =>
         transport.subscribe(
           (client) => client[WS_METHODS.subscribePreviewEvents]({}),
           listener,
-          options,
+          subscriptionOptions(options, WS_METHODS.subscribePreviewEvents),
         ),
       subscribePorts: (listener, options) =>
         transport.subscribe(
           (client) => client[WS_METHODS.subscribeDiscoveredLocalServers]({}),
           listener,
-          options,
+          subscriptionOptions(options, WS_METHODS.subscribeDiscoveredLocalServers),
         ),
     },
     projects: {
@@ -293,7 +282,7 @@ export function createWsRpcClient(
         return transport.subscribe(
           (client) => client[WS_METHODS.subscribeVcsStatus](input),
           (event: VcsStatusStreamEvent) => {
-            current = applyGitStatusStreamEvent(current, event);
+            current = applyVcsStatusStreamEvent(current, event);
             listener(current);
           },
           subscriptionOptions(options, WS_METHODS.subscribeVcsStatus),
@@ -378,26 +367,6 @@ export function createWsRpcClient(
         transport.request((client) => client[WS_METHODS.serverGetProcessResourceHistory](input)),
       signalProcess: (input) =>
         transport.request((client) => client[WS_METHODS.serverSignalProcess](input)),
-    },
-    cloud: {
-      getRelayClientStatus: () =>
-        transport.request((client) => client[WS_METHODS.cloudGetRelayClientStatus]({})),
-      installRelayClient: async (onProgress) => {
-        let installed: RelayClientStatus | null = null;
-        await transport.requestStream(
-          (client) => client[WS_METHODS.cloudInstallRelayClient]({}),
-          (event) => {
-            onProgress?.(event);
-            if (event.type === "complete") {
-              installed = event.status;
-            }
-          },
-        );
-        if (installed) {
-          return installed;
-        }
-        throw new Error("Relay client install stream completed without a final status.");
-      },
     },
     orchestration: {
       dispatchCommand: (input) =>

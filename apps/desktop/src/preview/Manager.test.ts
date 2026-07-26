@@ -14,9 +14,8 @@ import type * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
-import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import * as PreviewEnvironment from "./PreviewEnvironment.ts";
 import * as PreviewManager from "./Manager.ts";
 
 const {
@@ -58,6 +57,19 @@ vi.mock("electron", () => ({
   },
 }));
 
+class PreviewListenerDeliveryError extends Error {
+  readonly operation: string;
+  readonly windowId: number;
+  readonly channel: string;
+
+  constructor(input: { operation: string; windowId: number; channel: string }) {
+    super(`Failed to deliver ${input.channel} to window ${input.windowId}.`);
+    this.operation = input.operation;
+    this.windowId = input.windowId;
+    this.channel = input.channel;
+  }
+}
+
 const browserSessionLayer = Layer.succeed(
   BrowserSession.BrowserSession,
   BrowserSession.BrowserSession.of({
@@ -69,12 +81,7 @@ const browserSessionLayer = Layer.succeed(
   }),
 );
 
-const environmentLayer = Layer.succeed(
-  DesktopEnvironment.DesktopEnvironment,
-  DesktopEnvironment.DesktopEnvironment.of({
-    browserArtifactsDir: "/tmp/t3/dev/browser-artifacts",
-  } as DesktopEnvironment.DesktopEnvironment["Service"]),
-);
+const environmentLayer = PreviewEnvironment.layer("/tmp/t3/dev/browser-artifacts");
 
 const fileSystemLayer = FileSystem.layerNoop({
   makeDirectory: (path) =>
@@ -155,12 +162,10 @@ describe("PreviewManager", () => {
         }
       }
     });
-    const deliveryError = new ElectronWindow.ElectronWindowOperationError({
+    const deliveryError = new PreviewListenerDeliveryError({
       operation: "send-window-message",
-      platform: "darwin",
       windowId: 42,
       channel: "preview:state-change",
-      cause: new Error("renderer unavailable"),
     });
     const delivered = vi.fn();
 
@@ -178,7 +183,7 @@ describe("PreviewManager", () => {
         expect(delivered).toHaveBeenCalledOnce();
         expect(delivered).toHaveBeenCalledWith("tab_listener_failure", state);
         expect(loggedErrors).toHaveLength(1);
-        expect(loggedErrors[0]).toBeInstanceOf(ElectronWindow.ElectronWindowOperationError);
+        expect(loggedErrors[0]).toBeInstanceOf(PreviewListenerDeliveryError);
         expect(loggedErrors[0]).toMatchObject({
           operation: "send-window-message",
           windowId: 42,

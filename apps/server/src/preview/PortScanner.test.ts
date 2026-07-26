@@ -6,17 +6,11 @@ import * as Net from "@t3tools/shared/Net";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProcessRunner } from "../processRunner.ts";
 import * as PortScanner from "./PortScanner.ts";
 
 const { parseLsofOutput, parsePortFromLsofName, parseWindowsListenerOutput, serversEqual } =
   PortScanner.__testing;
-const TestProcessRunner = Layer.succeed(ProcessRunner, {
-  run: () => Effect.die("ProcessRunner should not be used by Windows TCP probe tests"),
-});
-const TestPortDiscoveryLive = PortScanner.layer.pipe(
-  Layer.provide(Layer.mergeAll(TestProcessRunner, Net.layer)),
-);
+const TestPortDiscoveryLive = PortScanner.layer.pipe(Layer.provide(Net.NetService.layer));
 
 const openServer = (port: number): Effect.Effect<net.Server | null> =>
   Effect.callback((resume) => {

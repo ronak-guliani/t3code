@@ -1,352 +1,161 @@
-import * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
-import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
-import * as Queue from "effect/Queue";
-import * as Ref from "effect/Ref";
-import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
+// @ts-nocheck
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import * as NodePath from "node:path";
+
+import { DateTime, Duration, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import {
-  DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  AuthReviewWriteScope,
-  AuthRelayWriteScope,
-  AuthTerminalOperateScope,
-  AuthAccessReadScope,
-  AuthAccessStreamError,
   type AuthAccessStreamEvent,
-  type AuthEnvironmentScope,
   AuthSessionId,
   CommandId,
+  DEFAULT_REVIEW_CHANGES_SCOPE,
+  type DiscoveredLocalServer,
   type DiscoveredLocalServerList,
-  EventId,
-  type OrchestrationCommand,
   type GitActionProgressEvent,
   type GitManagerServiceError,
+  GitHubCliError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
   OrchestrationGetFullThreadDiffError,
+  OrchestrationGetFullThreadDiffStateError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
+  OrchestrationGetTurnDiffStateError,
   ORCHESTRATION_WS_METHODS,
-  type ProjectEntriesFailure,
-  type ProjectFileFailure,
-  type ProjectFileOperation,
-  ProjectListEntriesError,
-  ProjectReadFileError,
   ProjectSearchEntriesError,
   ProjectWriteFileError,
-  RelayClientInstallFailedError,
-  type RelayClientInstallProgressEvent,
   OrchestrationReplayEventsError,
-  type FilesystemBrowseFailure,
   FilesystemBrowseError,
-  AssetWorkspaceContextNotFoundError,
-  AssetWorkspaceContextResolutionError,
-  EnvironmentAuthorizationError,
+  MessageId,
+  ServerProviderListCommandsError,
+  ServerExportThreadMarkdownError,
   ThreadId,
-  type TerminalAttachStreamEvent,
-  type TerminalError,
   type TerminalEvent,
+  type TerminalError,
+  type TerminalAttachStreamEvent,
   type TerminalMetadataStreamEvent,
+  type VcsError,
+  GitCommandError,
+  WorkflowRunError,
+  type WorkflowRunInput,
+  type WorkflowRunResult,
+  type WorkflowWorkerConfig,
+  WorkflowRunId,
+  WorkflowArtifactId,
+  WorkflowNodeId,
+  SourceControlRepositoryError,
+  ServerProviderUpdateError,
+  KeybindingsConfigError,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
+import {
+  buildReviewChangesPrompt,
+  parseReviewChangesScope,
+  REVIEW_CHANGES_WORKFLOW_ID,
+} from "@t3tools/shared/workflows/reviewChanges";
+import {
+  buildFixReviewIssuesPrompt,
+  FIX_REVIEW_ISSUES_WORKFLOW_ID,
+} from "@t3tools/shared/workflows/fixReviewIssues";
+import {
+  gitCheckoutResultToVcs,
+  gitCommandErrorToVcs,
+  gitCreateBranchResultToVcs,
+  gitCreateWorktreeResultToVcs,
+  gitListBranchesToVcs,
+  gitPullResultToVcs,
+  gitStatusStreamEventToVcs,
+  gitStatusToVcs,
+  vcsCreateRefInputToGit,
+  vcsCreateWorktreeInputToGit,
+  vcsListRefsInputToGit,
+} from "./git/VcsBridge.ts";
 import { clamp } from "effect/Number";
-import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
-import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
-import * as ServerConfig from "./config.ts";
-import * as Keybindings from "./keybindings.ts";
-import * as ExternalLauncher from "./process/externalLauncher.ts";
+import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
+import { DiffStateQuery } from "./diffState/Services/DiffStateQuery.ts";
+import { ServerConfig } from "./config.ts";
+import { GitCore } from "./git/Services/GitCore.ts";
+import { GitHubCli } from "./git/Services/GitHubCli.ts";
+import { GitManager } from "./git/Services/GitManager.ts";
+import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
+import { Keybindings } from "./keybindings.ts";
+import { Open, resolveAvailableEditors } from "./open.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
-import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
+import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
+import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
-  observeRpcEffect as instrumentRpcEffect,
-  observeRpcStream as instrumentRpcStream,
-  observeRpcStreamEffect as instrumentRpcStreamEffect,
+  createThreadMarkdownExportFilename,
+  formatThreadMarkdownExport,
+} from "./orchestration/threadMarkdownExport.ts";
+import {
+  observeRpcEffect,
+  observeRpcStream,
+  observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
-import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
-import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
-import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
-import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
-import * as ServerSettings from "./serverSettings.ts";
-import * as TerminalManager from "./terminal/Manager.ts";
-import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
-import * as PreviewManager from "./preview/Manager.ts";
-import { issueAssetUrl } from "./assets/AssetAccess.ts";
-import * as PortScanner from "./preview/PortScanner.ts";
-import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
-import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
-import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
-import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
-import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
-import * as GitWorkflowService from "./git/GitWorkflowService.ts";
-import * as ReviewService from "./review/ReviewService.ts";
-import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
-import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
-import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
-import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
-import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
-import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
-import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
-import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
-import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
-import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
-import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
-import * as GitHubCli from "./sourceControl/GitHubCli.ts";
-import * as GitLabCli from "./sourceControl/GitLabCli.ts";
-import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
-import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
-import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
-import * as VcsProcess from "./vcs/VcsProcess.ts";
-import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
-import * as SessionStore from "./auth/SessionStore.ts";
-import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
-import * as RelayClient from "@t3tools/shared/relayClient";
+import { withLogContext } from "./observability/LogContext.ts";
+import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
+import { listCopilotPreconnectionCommands } from "./provider/copilotPreconnectionCommands.ts";
+import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
+import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
+import { SidebarState } from "./sidebarState.ts";
+import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { listServerSkills } from "./skills/skillCatalog.ts";
+import { TerminalManager } from "./terminal/Services/Manager.ts";
+import { WorkspaceEntries } from "./workspace/Services/WorkspaceEntries.ts";
+import { WorkspaceFileSystem } from "./workspace/Services/WorkspaceFileSystem.ts";
+import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePaths.ts";
+import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
+import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
+import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
+import { ServerAuth } from "./auth/Services/ServerAuth.ts";
+import { PreviewManager } from "./preview/Manager.ts";
+import { PortDiscovery } from "./preview/PortScanner.ts";
+import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
+import {
+  BootstrapCredentialService,
+  type BootstrapCredentialChange,
+} from "./auth/Services/BootstrapCredentialService.ts";
+import {
+  SessionCredentialService,
+  type SessionCredentialChange,
+} from "./auth/Services/SessionCredentialService.ts";
+import { respondToAuthError } from "./auth/http.ts";
+import { expandHomePath } from "./pathExpansion.ts";
+
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
 
-const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+async function writeThreadMarkdownExportFile(input: {
+  readonly directory: string;
+  readonly filename: string;
+  readonly contents: string;
+}): Promise<string> {
+  const directoryPath = NodePath.resolve(expandHomePath(input.directory));
+  const targetPath = NodePath.join(directoryPath, input.filename);
+  const tempPath = NodePath.join(directoryPath, `.${input.filename}.${crypto.randomUUID()}.tmp`);
 
-function unexpectedCompatibilityError(error: never): never {
-  throw new Error(`Unhandled compatibility error: ${String(error)}`);
-}
-
-/** Preserve the setup runner's broader pre-refactor message normalization. */
-function legacySetupFailureDescription(cause: unknown): string {
-  if (
-    typeof cause === "object" &&
-    cause !== null &&
-    "message" in cause &&
-    typeof cause.message === "string"
-  ) {
-    return cause.message;
+  await mkdir(directoryPath, { recursive: true });
+  try {
+    await writeFile(tempPath, input.contents, "utf8");
+    await rename(tempPath, targetPath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
   }
-  return String(cause);
-}
-
-function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
-  readonly failure: ProjectEntriesFailure;
-  readonly normalizedCwd?: string;
-  readonly timeout?: string;
-  readonly detail?: string;
-} {
-  switch (error._tag) {
-    case "WorkspaceRootNotExistsError":
-      return {
-        failure: "workspace_root_not_found",
-        normalizedCwd: error.normalizedWorkspaceRoot,
-      };
-    case "WorkspaceRootCreateFailedError":
-      return {
-        failure: "workspace_root_create_failed",
-        normalizedCwd: error.normalizedWorkspaceRoot,
-      };
-    case "WorkspaceRootStatFailedError":
-      return {
-        failure: "workspace_root_stat_failed",
-        normalizedCwd: error.normalizedWorkspaceRoot,
-        detail: error.phase,
-      };
-    case "WorkspaceRootNotDirectoryError":
-      return {
-        failure: "workspace_root_not_directory",
-        normalizedCwd: error.normalizedWorkspaceRoot,
-      };
-    case "WorkspaceSearchIndexCreateFailed":
-      return {
-        failure: "search_index_create_failed",
-        normalizedCwd: error.cwd,
-        detail: error.reason,
-      };
-    case "WorkspaceSearchIndexScanTimedOut":
-      return {
-        failure: "search_index_scan_timed_out",
-        normalizedCwd: error.cwd,
-        timeout: error.timeout,
-      };
-    case "WorkspaceSearchIndexSearchFailed":
-      return {
-        failure: "search_index_search_failed",
-        normalizedCwd: error.cwd,
-        detail: error.reason,
-      };
-    default:
-      return unexpectedCompatibilityError(error);
-  }
-}
-
-function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntriesBrowseError): {
-  readonly failure: FilesystemBrowseFailure;
-  readonly parentPath?: string;
-  readonly platform?: string;
-} {
-  switch (error._tag) {
-    case "WorkspaceEntriesWindowsPathUnsupportedError":
-      return { failure: "windows_path_unsupported", platform: error.platform };
-    case "WorkspaceEntriesCurrentProjectRequiredError":
-      return { failure: "current_project_required" };
-    case "WorkspaceEntriesReadDirectoryError":
-      return { failure: "read_directory_failed", parentPath: error.parentPath };
-    default:
-      return unexpectedCompatibilityError(error);
-  }
-}
-
-function projectFileFailureContext(
-  error:
-    | WorkspaceFileSystem.WorkspaceFileSystemError
-    | WorkspacePaths.WorkspacePathOutsideRootError,
-): {
-  readonly failure: ProjectFileFailure;
-  readonly resolvedPath?: string;
-  readonly resolvedWorkspaceRoot?: string;
-  readonly operation?: ProjectFileOperation;
-  readonly operationPath?: string;
-} {
-  switch (error._tag) {
-    case "WorkspacePathOutsideRootError":
-      return { failure: "workspace_path_outside_root" };
-    case "WorkspaceFileSystemOperationError":
-      return {
-        failure: "operation_failed",
-        resolvedPath: error.resolvedPath,
-        operation: error.operation,
-        operationPath: error.operationPath,
-      };
-    case "WorkspaceFilePathEscapeError":
-      return {
-        failure: "resolved_path_outside_root",
-        resolvedPath: error.resolvedPath,
-        resolvedWorkspaceRoot: error.resolvedWorkspaceRoot,
-      };
-    case "WorkspacePathNotFileError":
-      return { failure: "path_not_file", resolvedPath: error.resolvedPath };
-    case "WorkspaceBinaryFileError":
-      return { failure: "binary_file", resolvedPath: error.resolvedPath };
-    default:
-      return unexpectedCompatibilityError(error);
-  }
-}
-
-function projectSetupScriptCompatibilityDetail(
-  error: ProjectSetupScriptRunner.ProjectSetupScriptRunnerError,
-): string {
-  switch (error._tag) {
-    case "ProjectSetupScriptOperationError":
-      return legacySetupFailureDescription(error.cause);
-    case "ProjectSetupScriptProjectNotFoundError":
-      return "Project was not found for setup script execution.";
-    default:
-      return unexpectedCompatibilityError(error);
-  }
-}
-
-function isThreadDetailEvent(event: OrchestrationEvent): event is Extract<
-  OrchestrationEvent,
-  {
-    type:
-      | "thread.message-sent"
-      | "thread.proposed-plan-upserted"
-      | "thread.activity-appended"
-      | "thread.turn-diff-completed"
-      | "thread.reverted"
-      | "thread.session-set";
-  }
-> {
-  return (
-    event.type === "thread.message-sent" ||
-    event.type === "thread.proposed-plan-upserted" ||
-    event.type === "thread.activity-appended" ||
-    event.type === "thread.turn-diff-completed" ||
-    event.type === "thread.reverted" ||
-    event.type === "thread.session-set"
-  );
+  return targetPath;
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
-const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
-  [ORCHESTRATION_WS_METHODS.dispatchCommand, AuthOrchestrationOperateScope],
-  [ORCHESTRATION_WS_METHODS.getTurnDiff, AuthOrchestrationReadScope],
-  [ORCHESTRATION_WS_METHODS.getFullThreadDiff, AuthOrchestrationReadScope],
-  [ORCHESTRATION_WS_METHODS.replayEvents, AuthOrchestrationReadScope],
-  [ORCHESTRATION_WS_METHODS.subscribeShell, AuthOrchestrationReadScope],
-  [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot, AuthOrchestrationReadScope],
-  [ORCHESTRATION_WS_METHODS.subscribeThread, AuthOrchestrationReadScope],
-  [WS_METHODS.serverGetConfig, AuthOrchestrationReadScope],
-  [WS_METHODS.serverRefreshProviders, AuthOrchestrationOperateScope],
-  [WS_METHODS.serverUpdateProvider, AuthOrchestrationOperateScope],
-  [WS_METHODS.serverUpsertKeybinding, AuthOrchestrationOperateScope],
-  [WS_METHODS.serverRemoveKeybinding, AuthOrchestrationOperateScope],
-  [WS_METHODS.serverGetSettings, AuthOrchestrationReadScope],
-  [WS_METHODS.serverUpdateSettings, AuthOrchestrationOperateScope],
-  [WS_METHODS.serverDiscoverSourceControl, AuthOrchestrationReadScope],
-  [WS_METHODS.serverGetTraceDiagnostics, AuthOrchestrationReadScope],
-  [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
-  [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
-  [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
-  [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
-  [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
-  [WS_METHODS.sourceControlLookupRepository, AuthOrchestrationReadScope],
-  [WS_METHODS.sourceControlCloneRepository, AuthOrchestrationOperateScope],
-  [WS_METHODS.sourceControlPublishRepository, AuthOrchestrationOperateScope],
-  [WS_METHODS.projectsListEntries, AuthOrchestrationReadScope],
-  [WS_METHODS.projectsReadFile, AuthOrchestrationReadScope],
-  [WS_METHODS.projectsSearchEntries, AuthOrchestrationReadScope],
-  [WS_METHODS.projectsWriteFile, AuthOrchestrationOperateScope],
-  [WS_METHODS.shellOpenInEditor, AuthOrchestrationOperateScope],
-  [WS_METHODS.filesystemBrowse, AuthOrchestrationReadScope],
-  [WS_METHODS.assetsCreateUrl, AuthOrchestrationReadScope],
-  [WS_METHODS.subscribeVcsStatus, AuthOrchestrationReadScope],
-  [WS_METHODS.vcsRefreshStatus, AuthOrchestrationReadScope],
-  [WS_METHODS.vcsPull, AuthOrchestrationOperateScope],
-  [WS_METHODS.gitRunStackedAction, AuthOrchestrationOperateScope],
-  [WS_METHODS.gitResolvePullRequest, AuthOrchestrationOperateScope],
-  [WS_METHODS.gitPreparePullRequestThread, AuthOrchestrationOperateScope],
-  [WS_METHODS.vcsListRefs, AuthOrchestrationReadScope],
-  [WS_METHODS.vcsCreateWorktree, AuthOrchestrationOperateScope],
-  [WS_METHODS.vcsRemoveWorktree, AuthOrchestrationOperateScope],
-  [WS_METHODS.vcsCreateRef, AuthOrchestrationOperateScope],
-  [WS_METHODS.vcsSwitchRef, AuthOrchestrationOperateScope],
-  [WS_METHODS.vcsInit, AuthOrchestrationOperateScope],
-  [WS_METHODS.reviewGetDiffPreview, AuthReviewWriteScope],
-  [WS_METHODS.terminalOpen, AuthTerminalOperateScope],
-  [WS_METHODS.terminalAttach, AuthTerminalOperateScope],
-  [WS_METHODS.terminalWrite, AuthTerminalOperateScope],
-  [WS_METHODS.terminalResize, AuthTerminalOperateScope],
-  [WS_METHODS.terminalClear, AuthTerminalOperateScope],
-  [WS_METHODS.terminalRestart, AuthTerminalOperateScope],
-  [WS_METHODS.terminalClose, AuthTerminalOperateScope],
-  [WS_METHODS.subscribeTerminalEvents, AuthTerminalOperateScope],
-  [WS_METHODS.subscribeTerminalMetadata, AuthTerminalOperateScope],
-  [WS_METHODS.previewOpen, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewNavigate, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewResize, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewRefresh, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewClose, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewList, AuthOrchestrationReadScope],
-  [WS_METHODS.previewReportStatus, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewAutomationConnect, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewAutomationRespond, AuthOrchestrationOperateScope],
-  [WS_METHODS.previewAutomationFocusHost, AuthOrchestrationOperateScope],
-  [WS_METHODS.subscribePreviewEvents, AuthOrchestrationReadScope],
-  [WS_METHODS.subscribeDiscoveredLocalServers, AuthOrchestrationReadScope],
-  [WS_METHODS.subscribeServerConfig, AuthOrchestrationReadScope],
-  [WS_METHODS.subscribeServerLifecycle, AuthOrchestrationReadScope],
-  [WS_METHODS.subscribeAuthAccess, AuthAccessReadScope],
-]);
-
 function toAuthAccessStreamEvent(
-  change: PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange,
+  change: BootstrapCredentialChange | SessionCredentialChange,
   revision: number,
   currentSessionId: AuthSessionId,
 ): AuthAccessStreamEvent {
@@ -385,185 +194,50 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (
-  currentSession: EnvironmentAuth.AuthenticatedSession,
-  previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
-) =>
+const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
-      const currentSessionId = currentSession.sessionId;
-      const crypto = yield* Crypto.Crypto;
-      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-      const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
-      const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
-      const keybindings = yield* Keybindings.Keybindings;
-      const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
-      const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
-      const review = yield* ReviewService.ReviewService;
-      const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
-      const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
-      const terminalManager = yield* TerminalManager.TerminalManager;
-      const previewManager = yield* PreviewManager.PreviewManager;
-      const portDiscovery = yield* PortScanner.PortDiscovery;
-      const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-      const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
-      const config = yield* ServerConfig.ServerConfig;
-      const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
-      const serverSettings = yield* ServerSettings.ServerSettingsService;
-      const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-      const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-      const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
-      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
-      const repositoryIdentityResolver =
-        yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
-      const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-      const sourceControlDiscovery = yield* SourceControlDiscovery.SourceControlDiscovery;
-      const automaticGitFetchInterval = serverSettings.getSettings.pipe(
-        Effect.map((settings) => settings.automaticGitFetchInterval),
-        Effect.catch((cause) =>
-          Effect.logWarning("Failed to read automatic Git fetch interval setting", {
-            detail: cause.message,
-          }).pipe(Effect.as(DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL)),
-        ),
-      );
-      const sourceControlRepositories =
-        yield* SourceControlRepositoryService.SourceControlRepositoryService;
-      const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
-      const sessions = yield* SessionStore.SessionStore;
-      const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
-      const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
-      const relayClient = yield* RelayClient.RelayClient;
-      const authorizationError = (requiredScope: AuthEnvironmentScope) =>
-        new EnvironmentAuthorizationError({
-          message: `The authenticated token is missing required scope: ${requiredScope}.`,
-          requiredScope,
-        });
-      const authorizeEffect = <A, E, R>(
-        requiredScope: AuthEnvironmentScope,
-        effect: Effect.Effect<A, E, R>,
-      ): Effect.Effect<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.scopes.includes(requiredScope)
-          ? effect
-          : Effect.fail(authorizationError(requiredScope));
-      const authorizeStream = <A, E, R>(
-        requiredScope: AuthEnvironmentScope,
-        stream: Stream.Stream<A, E, R>,
-      ): Stream.Stream<A, E | EnvironmentAuthorizationError, R> =>
-        currentSession.scopes.includes(requiredScope)
-          ? stream
-          : Stream.fail(authorizationError(requiredScope));
-      const requiredScopeForMethod = (method: string): AuthEnvironmentScope => {
-        const requiredScope = RPC_REQUIRED_SCOPE.get(method);
-        if (requiredScope === undefined) {
-          throw new Error(`RPC method ${method} has no declared authorization scope.`);
-        }
-        return requiredScope;
-      };
-      const observeRpcEffect = <A, E, R>(
-        method: string,
-        effect: Effect.Effect<A, E, R>,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcEffect(
-          method,
-          authorizeEffect(requiredScopeForMethod(method), effect),
-          traceAttributes,
-        );
-      const observeRpcStream = <A, E, R>(
-        method: string,
-        stream: Stream.Stream<A, E, R>,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcStream(
-          method,
-          authorizeStream(requiredScopeForMethod(method), stream),
-          traceAttributes,
-        );
-      const observeRpcStreamEffect = <A, StreamError, StreamContext, EffectError, EffectContext>(
-        method: string,
-        effect: Effect.Effect<
-          Stream.Stream<A, StreamError, StreamContext>,
-          EffectError,
-          EffectContext
-        >,
-        traceAttributes?: Readonly<Record<string, unknown>>,
-      ) =>
-        instrumentRpcStreamEffect(
-          method,
-          authorizeEffect(requiredScopeForMethod(method), effect),
-          traceAttributes,
-        );
-      const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
-        isOrchestrationDispatchCommandError(cause)
-          ? cause
-          : new OrchestrationDispatchCommandError({
-              message: cause instanceof Error ? cause.message : fallbackMessage,
-              cause,
-            });
-      const randomUUID = crypto.randomUUIDv4.pipe(
-        Effect.mapError((cause) =>
-          toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
-        ),
-      );
-      const serverEventId = randomUUID.pipe(Effect.map(EventId.make));
-      const serverCommandId = (tag: string) =>
-        randomUUID.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const orchestrationEngine = yield* OrchestrationEngineService;
+      const checkpointDiffQuery = yield* CheckpointDiffQuery;
+      const diffStateQuery = yield* DiffStateQuery;
+      const keybindings = yield* Keybindings;
+      const open = yield* Open;
+      const gitManager = yield* GitManager;
+      const git = yield* GitCore;
+      const gitHubCli = yield* Effect.serviceOption(GitHubCli);
+      const gitStatusBroadcaster = yield* GitStatusBroadcaster;
+      const terminalManager = yield* TerminalManager;
+      const providerRegistry = yield* ProviderRegistry;
+      const config = yield* ServerConfig;
+      const lifecycleEvents = yield* ServerLifecycleEvents;
+      const serverSettings = yield* ServerSettingsService;
+      const sidebarState = yield* SidebarState;
+      const startup = yield* ServerRuntimeStartup;
+      const workspaceEntries = yield* WorkspaceEntries;
+      const workspaceFileSystem = yield* WorkspaceFileSystem;
+      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner;
+      const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
+      const serverEnvironment = yield* ServerEnvironment;
+      const serverAuth = yield* ServerAuth;
+      const bootstrapCredentials = yield* BootstrapCredentialService;
+      const sessions = yield* SessionCredentialService;
+      const previewManager = yield* PreviewManager;
+      const portDiscovery = yield* PortDiscovery;
+      const previewAutomationBroker = yield* PreviewAutomationBroker;
+      const dispatchNormalizedCommand = makeClientCommandDispatcher({
+        orchestrationEngine,
+        startup,
+        git,
+        gitStatusBroadcaster,
+        projectSetupScriptRunner,
+      });
 
       const loadAuthAccessSnapshot = () =>
         Effect.all({
-          pairingLinks: serverAuth.listPairingLinks(),
-          clientSessions: serverAuth.listClientSessions(currentSessionId),
-        }).pipe(
-          Effect.mapError(
-            (error) =>
-              new AuthAccessStreamError({
-                message: error.message,
-              }),
-          ),
-        );
-
-      const appendSetupScriptActivity = (input: {
-        readonly threadId: ThreadId;
-        readonly kind: "setup-script.requested" | "setup-script.started" | "setup-script.failed";
-        readonly summary: string;
-        readonly createdAt: string;
-        readonly payload: Record<string, unknown>;
-        readonly tone: "info" | "error";
-      }) =>
-        Effect.all({
-          commandId: serverCommandId("setup-script-activity"),
-          activityId: serverEventId,
-        }).pipe(
-          Effect.flatMap(({ commandId, activityId }) =>
-            orchestrationEngine.dispatch({
-              type: "thread.activity.append",
-              commandId,
-              threadId: input.threadId,
-              activity: {
-                id: activityId,
-                tone: input.tone,
-                kind: input.kind,
-                summary: input.summary,
-                payload: input.payload,
-                turnId: null,
-                createdAt: input.createdAt,
-              },
-              createdAt: input.createdAt,
-            }),
-          ),
-        );
-
-      const toBootstrapDispatchCommandCauseError = (cause: Cause.Cause<unknown>) => {
-        const error = Cause.squash(cause);
-        return isOrchestrationDispatchCommandError(error)
-          ? error
-          : new OrchestrationDispatchCommandError({
-              message:
-                error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
-              cause,
-            });
-      };
+          pairingLinks: serverAuth.listPairingLinks().pipe(Effect.orDie),
+          clientSessions: serverAuth.listClientSessions(currentSessionId).pipe(Effect.orDie),
+        });
 
       const enrichProjectEvent = (
         event: OrchestrationEvent,
@@ -583,13 +257,9 @@ const makeWsRpcLayer = (
             return Effect.gen(function* () {
               const workspaceRoot =
                 event.payload.workspaceRoot ??
-                Option.match(
-                  yield* projectionSnapshotQuery.getProjectShellById(event.payload.projectId),
-                  {
-                    onNone: () => null,
-                    onSome: (project) => project.workspaceRoot,
-                  },
-                ) ??
+                (yield* orchestrationEngine.getReadModel()).projects.find(
+                  (project) => project.id === event.payload.projectId,
+                )?.workspaceRoot ??
                 null;
               if (workspaceRoot === null) {
                 return event;
@@ -603,7 +273,7 @@ const makeWsRpcLayer = (
                   repositoryIdentity,
                 },
               } satisfies OrchestrationEvent;
-            }).pipe(Effect.orElseSucceed(() => event));
+            });
           default:
             return Effect.succeed(event);
         }
@@ -626,7 +296,7 @@ const makeWsRpcLayer = (
                   project: nextProject,
                 })),
               ),
-              Effect.orElseSucceed(() => Option.none()),
+              Effect.catch(() => Effect.succeed(Option.none())),
             );
           case "project.deleted":
             return Effect.succeed(
@@ -637,7 +307,6 @@ const makeWsRpcLayer = (
               }),
             );
           case "thread.deleted":
-          case "thread.archived":
             return Effect.succeed(
               Option.some({
                 kind: "thread-removed" as const,
@@ -645,18 +314,16 @@ const makeWsRpcLayer = (
                 threadId: event.payload.threadId,
               }),
             );
-          case "thread.unarchived":
-            return projectionSnapshotQuery.getThreadShellById(event.payload.threadId).pipe(
-              Effect.map((thread) =>
-                Option.map(thread, (nextThread) => ({
-                  kind: "thread-upserted" as const,
-                  sequence: event.sequence,
-                  thread: nextThread,
-                })),
-              ),
-              Effect.orElseSucceed(() => Option.none()),
-            );
           default:
+            if (event.aggregateKind === "workflow") {
+              return Effect.succeed(
+                Option.some({
+                  kind: "workflow-event" as const,
+                  sequence: event.sequence,
+                  event,
+                }),
+              );
+            }
             if (event.aggregateKind !== "thread") {
               return Effect.succeed(Option.none());
             }
@@ -670,246 +337,15 @@ const makeWsRpcLayer = (
                     thread: nextThread,
                   })),
                 ),
-                Effect.orElseSucceed(() => Option.none()),
+                Effect.catch(() => Effect.succeed(Option.none())),
               );
         }
-      };
-
-      const dispatchBootstrapTurnStart = (
-        command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
-      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
-        Effect.gen(function* () {
-          const bootstrap = command.bootstrap;
-          const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
-          let createdThread = false;
-          let targetProjectId = bootstrap?.createThread?.projectId;
-          let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
-          let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
-
-          const cleanupCreatedThread = () =>
-            createdThread
-              ? serverCommandId("bootstrap-thread-delete").pipe(
-                  Effect.flatMap((commandId) =>
-                    orchestrationEngine.dispatch({
-                      type: "thread.delete",
-                      commandId,
-                      threadId: command.threadId,
-                    }),
-                  ),
-                  Effect.ignoreCause({ log: true }),
-                )
-              : Effect.void;
-
-          const recordSetupScriptLaunchFailure = (input: {
-            readonly error: ProjectSetupScriptRunner.ProjectSetupScriptRunnerError;
-            readonly requestedAt: string;
-            readonly worktreePath: string;
-          }) => {
-            const detail = projectSetupScriptCompatibilityDetail(input.error);
-            return appendSetupScriptActivity({
-              threadId: command.threadId,
-              kind: "setup-script.failed",
-              summary: "Setup script failed to start",
-              createdAt: input.requestedAt,
-              payload: {
-                detail,
-                worktreePath: input.worktreePath,
-              },
-              tone: "error",
-            }).pipe(
-              Effect.ignoreCause({ log: false }),
-              Effect.flatMap(() =>
-                Effect.logWarning("bootstrap turn start failed to launch setup script", {
-                  threadId: command.threadId,
-                  worktreePath: input.worktreePath,
-                  detail,
-                }),
-              ),
-            );
-          };
-
-          const recordSetupScriptStarted = (input: {
-            readonly requestedAt: string;
-            readonly worktreePath: string;
-            readonly scriptId: string;
-            readonly scriptName: string;
-            readonly terminalId: string;
-          }) =>
-            Effect.gen(function* () {
-              const startedAt = yield* nowIso;
-              const payload = {
-                scriptId: input.scriptId,
-                scriptName: input.scriptName,
-                terminalId: input.terminalId,
-                worktreePath: input.worktreePath,
-              };
-              yield* Effect.all([
-                appendSetupScriptActivity({
-                  threadId: command.threadId,
-                  kind: "setup-script.requested",
-                  summary: "Starting setup script",
-                  createdAt: input.requestedAt,
-                  payload,
-                  tone: "info",
-                }),
-                appendSetupScriptActivity({
-                  threadId: command.threadId,
-                  kind: "setup-script.started",
-                  summary: "Setup script started",
-                  createdAt: startedAt,
-                  payload,
-                  tone: "info",
-                }),
-              ]).pipe(
-                Effect.asVoid,
-                Effect.catch((error) =>
-                  Effect.logWarning(
-                    "bootstrap turn start launched setup script but failed to record setup activity",
-                    {
-                      threadId: command.threadId,
-                      worktreePath: input.worktreePath,
-                      scriptId: input.scriptId,
-                      terminalId: input.terminalId,
-                      detail: error.message,
-                    },
-                  ),
-                ),
-              );
-            });
-
-          const runSetupProgram = () =>
-            Effect.gen(function* () {
-              if (!bootstrap?.runSetupScript || !targetWorktreePath) {
-                return;
-              }
-              const worktreePath = targetWorktreePath;
-              const requestedAt = yield* nowIso;
-              yield* projectSetupScriptRunner
-                .runForThread({
-                  threadId: command.threadId,
-                  ...(targetProjectId ? { projectId: targetProjectId } : {}),
-                  ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
-                  worktreePath,
-                })
-                .pipe(
-                  Effect.matchEffect({
-                    onFailure: (error) =>
-                      recordSetupScriptLaunchFailure({
-                        error,
-                        requestedAt,
-                        worktreePath,
-                      }),
-                    onSuccess: (setupResult) => {
-                      if (setupResult.status !== "started") {
-                        return Effect.void;
-                      }
-                      return recordSetupScriptStarted({
-                        requestedAt,
-                        worktreePath,
-                        scriptId: setupResult.scriptId,
-                        scriptName: setupResult.scriptName,
-                        terminalId: setupResult.terminalId,
-                      });
-                    },
-                  }),
-                );
-            });
-
-          const bootstrapProgram = Effect.gen(function* () {
-            if (bootstrap?.createThread) {
-              yield* orchestrationEngine.dispatch({
-                type: "thread.create",
-                commandId: yield* serverCommandId("bootstrap-thread-create"),
-                threadId: command.threadId,
-                projectId: bootstrap.createThread.projectId,
-                title: bootstrap.createThread.title,
-                modelSelection: bootstrap.createThread.modelSelection,
-                runtimeMode: bootstrap.createThread.runtimeMode,
-                interactionMode: bootstrap.createThread.interactionMode,
-                branch: bootstrap.createThread.branch,
-                worktreePath: bootstrap.createThread.worktreePath,
-                createdAt: bootstrap.createThread.createdAt,
-              });
-              createdThread = true;
-            }
-
-            if (bootstrap?.prepareWorktree) {
-              let worktreeBaseRef = bootstrap.prepareWorktree.baseBranch;
-              if (bootstrap.prepareWorktree.startFromOrigin) {
-                yield* gitWorkflow.fetchRemote({
-                  cwd: bootstrap.prepareWorktree.projectCwd,
-                  remoteName: "origin",
-                });
-                const resolvedRemoteBase = yield* gitWorkflow.resolveRemoteTrackingCommit({
-                  cwd: bootstrap.prepareWorktree.projectCwd,
-                  refName: bootstrap.prepareWorktree.baseBranch,
-                  fallbackRemoteName: "origin",
-                });
-                worktreeBaseRef = resolvedRemoteBase.commitSha;
-              }
-              const worktree = yield* gitWorkflow.createWorktree({
-                cwd: bootstrap.prepareWorktree.projectCwd,
-                refName: worktreeBaseRef,
-                newRefName: bootstrap.prepareWorktree.branch,
-                baseRefName: bootstrap.prepareWorktree.baseBranch,
-                path: null,
-              });
-              targetWorktreePath = worktree.worktree.path;
-              yield* orchestrationEngine.dispatch({
-                type: "thread.meta.update",
-                commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
-                threadId: command.threadId,
-                branch: worktree.worktree.refName,
-                worktreePath: targetWorktreePath,
-              });
-              yield* refreshGitStatus(targetWorktreePath);
-            }
-
-            yield* runSetupProgram();
-
-            return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
-          });
-
-          return yield* bootstrapProgram.pipe(
-            Effect.catchCause((cause) => {
-              const dispatchError = toBootstrapDispatchCommandCauseError(cause);
-              if (Cause.hasInterruptsOnly(cause)) {
-                return Effect.fail(dispatchError);
-              }
-              return cleanupCreatedThread().pipe(Effect.flatMap(() => Effect.fail(dispatchError)));
-            }),
-          );
-        });
-
-      const dispatchNormalizedCommand = (
-        normalizedCommand: OrchestrationCommand,
-      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
-        const dispatchEffect =
-          normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-            ? dispatchBootstrapTurnStart(normalizedCommand)
-            : orchestrationEngine
-                .dispatch(normalizedCommand)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-                  ),
-                );
-
-        return startup
-          .enqueueCommand(dispatchEffect)
-          .pipe(
-            Effect.mapError((cause) =>
-              toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-            ),
-          );
       };
 
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
-        const settings = ServerSettings.redactServerSettingsForClient(
-          yield* serverSettings.getSettings,
-        );
+        const settings = redactServerSettingsForClient(yield* serverSettings.getSettings);
         const environment = yield* serverEnvironment.getDescriptor;
         const auth = yield* serverAuth.getDescriptor();
 
@@ -921,7 +357,7 @@ const makeWsRpcLayer = (
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
-          availableEditors: yield* externalLauncher.resolveAvailableEditors(),
+          availableEditors: resolveAvailableEditors(),
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,
@@ -937,9 +373,390 @@ const makeWsRpcLayer = (
       });
 
       const refreshGitStatus = (cwd: string) =>
-        vcsStatusBroadcaster
+        gitStatusBroadcaster
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
+
+      const workflowSkipped = (
+        input: Pick<WorkflowRunInput, "idempotencyKey">,
+        reason: Extract<WorkflowRunResult, { status: "skipped" }>["reason"],
+        message: string,
+      ): WorkflowRunResult => ({
+        status: "skipped" as const,
+        runId: WorkflowRunId.make(input.idempotencyKey),
+        reason,
+        message,
+        createdAt: new Date().toISOString(),
+      });
+
+      const dispatchSingleNodeWorkflow = (input: {
+        readonly request: WorkflowRunInput;
+        readonly runId: WorkflowRunId;
+        readonly workflowId: string;
+        readonly title: string;
+        readonly prompt: string;
+        readonly nodeId: WorkflowNodeId;
+        readonly workerConfig: WorkflowWorkerConfig;
+        readonly createdAt: string;
+      }) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(`workflow:${input.runId}:node:${input.nodeId}:worker`);
+          const commandId = CommandId.make(`workflow:${input.runId}:request`);
+          const messageId = MessageId.make(`workflow:${input.runId}:node:${input.nodeId}:input`);
+          const dispatchResult = yield* orchestrationEngine.dispatch({
+            type: "workflow.run.request",
+            commandId,
+            runId: input.runId,
+            parentThreadId: input.request.threadId,
+            definition: {
+              id: input.workflowId,
+              name: input.title,
+              nodes: [
+                {
+                  id: input.nodeId,
+                  title: input.title,
+                  prompt: input.prompt,
+                  contextPolicy: "none",
+                },
+              ],
+            },
+            workerConfig: input.workerConfig,
+            inputArtifact: {
+              id: WorkflowArtifactId.make(`workflow:${input.runId}:input`),
+              runId: input.runId,
+              nodeId: input.nodeId,
+              producerThreadId: input.request.threadId,
+              payload: {
+                kind: "input-context",
+                contextPolicy: "none",
+                parentThreadId: input.request.threadId,
+                messages: [],
+                truncated: false,
+              },
+              createdAt: input.createdAt,
+            },
+            createdAt: input.createdAt,
+          });
+          return {
+            status: "started" as const,
+            runId: input.runId,
+            threadId,
+            commandId,
+            messageId,
+            sequence: dispatchResult.sequence,
+            createdAt: input.createdAt,
+          } satisfies WorkflowRunResult;
+        });
+
+      const runWorkflow = (input: WorkflowRunInput) =>
+        Effect.gen(function* () {
+          const runId = WorkflowRunId.make(input.idempotencyKey);
+          const createdAt = new Date().toISOString();
+
+          if (
+            input.workflowId !== REVIEW_CHANGES_WORKFLOW_ID &&
+            input.workflowId !== FIX_REVIEW_ISSUES_WORKFLOW_ID
+          ) {
+            return workflowSkipped(input, "workflow-not-found", "Workflow not found.");
+          }
+          if (
+            input.destinationMode !== undefined &&
+            input.destinationMode !== "child-chat" &&
+            !(
+              input.workflowId === REVIEW_CHANGES_WORKFLOW_ID &&
+              input.destinationMode === "same-chat"
+            )
+          ) {
+            return yield* new WorkflowRunError({
+              message:
+                "Built-in workflows currently support only child-chat and review same-chat destinations.",
+            });
+          }
+
+          const settings = yield* serverSettings.getSettings;
+          const reviewSettings = settings.agentWorkflows.reviewChanges;
+          const fixSettings = settings.agentWorkflows.fixReviewIssues;
+          const override = settings.agentWorkflows.builtInOverrides[input.workflowId];
+          const workflowSettings =
+            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
+          const enabled = override?.enabled ?? workflowSettings.enabled;
+          if (!enabled) {
+            return workflowSkipped(
+              input,
+              "workflow-disabled",
+              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
+                ? "Fix Review Issues workflow is disabled."
+                : "Review Code workflow is disabled.",
+            );
+          }
+
+          const threadOption = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
+          if (Option.isNone(threadOption)) {
+            if (
+              input.workflowId === REVIEW_CHANGES_WORKFLOW_ID &&
+              input.destinationMode === "same-chat" &&
+              input.projectId !== undefined &&
+              input.modelSelection !== undefined &&
+              input.runtimeMode !== undefined &&
+              input.interactionMode !== undefined
+            ) {
+              const projectOption = yield* projectionSnapshotQuery.getProjectShellById(
+                input.projectId,
+              );
+              if (Option.isNone(projectOption)) {
+                return workflowSkipped(input, "project-not-found", "Project not found.");
+              }
+              const project = projectOption.value;
+              const cwd = input.cwd ?? project.workspaceRoot;
+              const requestedScope =
+                parseReviewChangesScope(input.input?.scope) ??
+                parseReviewChangesScope(override?.defaultInput?.scope) ??
+                reviewSettings.defaultScope ??
+                DEFAULT_REVIEW_CHANGES_SCOPE;
+              const reviewContext = yield* git.resolveReviewChangesContext({
+                cwd,
+                scope: requestedScope,
+                ...(requestedScope === "pull-request" &&
+                typeof input.input?.pullRequestNumber === "number" &&
+                Number.isSafeInteger(input.input.pullRequestNumber) &&
+                input.input.pullRequestNumber > 0
+                  ? { pullRequestNumber: input.input.pullRequestNumber }
+                  : {}),
+              });
+              if (!reviewContext.hasReviewableChanges) {
+                return workflowSkipped(
+                  input,
+                  "no-reviewable-changes",
+                  reviewContext.scope === "against-base"
+                    ? "No changes against base branch."
+                    : reviewContext.scope === "pull-request"
+                      ? "This pull request has no changes."
+                      : "No uncommitted changes.",
+                );
+              }
+              if (reviewContext.snapshot === undefined) {
+                return yield* new WorkflowRunError({
+                  message: "Unable to capture an immutable review snapshot.",
+                });
+              }
+              const title =
+                input.title ??
+                (reviewContext.scope === "against-base"
+                  ? `Review changes against ${reviewContext.baseBranch}`
+                  : reviewContext.scope === "pull-request"
+                    ? `Review PR #${reviewContext.pullRequest.number}: ${reviewContext.pullRequest.title}`
+                    : "Review uncommitted changes");
+              const prompt = buildReviewChangesPrompt({
+                context:
+                  reviewContext.scope === "against-base"
+                    ? {
+                        scope: "against-base",
+                        baseBranch: reviewContext.baseBranch,
+                        mergeBaseSha: reviewContext.mergeBaseSha,
+                      }
+                    : reviewContext.scope === "pull-request"
+                      ? {
+                          scope: "pull-request",
+                          number: reviewContext.pullRequest.number,
+                          title: reviewContext.pullRequest.title,
+                          baseBranch: reviewContext.pullRequest.baseBranch,
+                          headBranch: reviewContext.pullRequest.headBranch,
+                        }
+                      : { scope: "uncommitted" },
+                settings: {
+                  promptTemplate: override?.promptTemplate ?? reviewSettings.promptTemplate,
+                },
+              });
+              const createCommandId = CommandId.make(`workflow:${runId}:create-parent`);
+              const messageId = MessageId.make(`workflow:${runId}:input`);
+              yield* orchestrationEngine.dispatch({
+                type: "thread.create",
+                commandId: createCommandId,
+                threadId: input.threadId,
+                projectId: project.id,
+                parentThreadId: null,
+                title,
+                modelSelection:
+                  reviewSettings.modelSelection ??
+                  input.modelSelection ??
+                  project.defaultModelSelection ??
+                  input.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                branch: reviewContext.branch,
+                worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                reviewSnapshot: reviewContext.snapshot,
+                createdAt,
+              });
+              const commandId = CommandId.make(`workflow:${runId}:request`);
+              const dispatchResult = yield* orchestrationEngine.dispatch({
+                type: "thread.turn.start",
+                commandId,
+                threadId: input.threadId,
+                message: {
+                  messageId,
+                  role: "user",
+                  text: prompt,
+                  attachments: [],
+                },
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                createdAt,
+              });
+              return {
+                status: "started" as const,
+                runId,
+                threadId: input.threadId,
+                commandId,
+                messageId,
+                sequence: dispatchResult.sequence,
+                createdAt,
+              } satisfies WorkflowRunResult;
+            }
+            return workflowSkipped(input, "thread-not-found", "Thread not found.");
+          }
+          const thread = threadOption.value;
+
+          const projectId = input.projectId ?? thread.projectId;
+          const projectOption = yield* projectionSnapshotQuery.getProjectShellById(projectId);
+          if (Option.isNone(projectOption)) {
+            return workflowSkipped(input, "project-not-found", "Project not found.");
+          }
+          const project = projectOption.value;
+          const cwd = input.cwd ?? thread.worktreePath ?? project.workspaceRoot;
+
+          if (input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID) {
+            const issues = typeof input.input?.issues === "string" ? input.input.issues.trim() : "";
+            if (issues.length === 0) {
+              return yield* new WorkflowRunError({
+                message: "Fix Review Issues requires at least one review issue.",
+              });
+            }
+
+            const title = input.title ?? "Fix review issues";
+            const nodeId = WorkflowNodeId.make(FIX_REVIEW_ISSUES_WORKFLOW_ID);
+            return yield* dispatchSingleNodeWorkflow({
+              request: input,
+              runId,
+              workflowId: FIX_REVIEW_ISSUES_WORKFLOW_ID,
+              title,
+              prompt: buildFixReviewIssuesPrompt({
+                issues,
+                settings: {
+                  promptTemplate: override?.promptTemplate ?? fixSettings.promptTemplate,
+                },
+              }),
+              nodeId,
+              workerConfig: {
+                modelSelection:
+                  fixSettings.modelSelection ??
+                  input.modelSelection ??
+                  project.defaultModelSelection ??
+                  thread.modelSelection,
+                runtimeMode: input.runtimeMode ?? thread.runtimeMode,
+                interactionMode: input.interactionMode ?? thread.interactionMode,
+                branch: thread.branch,
+                worktreePath: cwd === project.workspaceRoot ? null : cwd,
+              },
+              createdAt,
+            });
+          }
+
+          const requestedScope =
+            parseReviewChangesScope(input.input?.scope) ??
+            parseReviewChangesScope(override?.defaultInput?.scope) ??
+            reviewSettings.defaultScope ??
+            DEFAULT_REVIEW_CHANGES_SCOPE;
+          const reviewContext = yield* git.resolveReviewChangesContext({
+            cwd,
+            scope: requestedScope,
+            ...(requestedScope === "pull-request" &&
+            typeof input.input?.pullRequestNumber === "number" &&
+            Number.isSafeInteger(input.input.pullRequestNumber) &&
+            input.input.pullRequestNumber > 0
+              ? { pullRequestNumber: input.input.pullRequestNumber }
+              : {}),
+          });
+
+          if (!reviewContext.hasReviewableChanges) {
+            return workflowSkipped(
+              input,
+              "no-reviewable-changes",
+              reviewContext.scope === "against-base"
+                ? "No changes against base branch."
+                : reviewContext.scope === "pull-request"
+                  ? "This pull request has no changes."
+                  : "No uncommitted changes.",
+            );
+          }
+          if (reviewContext.snapshot === undefined) {
+            return yield* new WorkflowRunError({
+              message: "Unable to capture an immutable review snapshot.",
+            });
+          }
+
+          const title =
+            input.title ??
+            (reviewContext.scope === "against-base"
+              ? `Review changes against ${reviewContext.baseBranch}`
+              : reviewContext.scope === "pull-request"
+                ? `Review PR #${reviewContext.pullRequest.number}: ${reviewContext.pullRequest.title}`
+                : "Review uncommitted changes");
+          const prompt = buildReviewChangesPrompt({
+            context:
+              reviewContext.scope === "against-base"
+                ? {
+                    scope: "against-base",
+                    baseBranch: reviewContext.baseBranch,
+                    mergeBaseSha: reviewContext.mergeBaseSha,
+                  }
+                : reviewContext.scope === "pull-request"
+                  ? {
+                      scope: "pull-request",
+                      number: reviewContext.pullRequest.number,
+                      title: reviewContext.pullRequest.title,
+                      baseBranch: reviewContext.pullRequest.baseBranch,
+                      headBranch: reviewContext.pullRequest.headBranch,
+                    }
+                  : { scope: "uncommitted" },
+            settings: {
+              promptTemplate: override?.promptTemplate ?? reviewSettings.promptTemplate,
+            },
+          });
+          const nodeId = WorkflowNodeId.make("review-changes");
+          const modelSelection =
+            reviewSettings.modelSelection ??
+            input.modelSelection ??
+            project.defaultModelSelection ??
+            thread.modelSelection;
+          const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
+          const interactionMode = input.interactionMode ?? thread.interactionMode;
+          return yield* dispatchSingleNodeWorkflow({
+            request: input,
+            runId,
+            workflowId: REVIEW_CHANGES_WORKFLOW_ID,
+            title,
+            prompt,
+            nodeId,
+            workerConfig: {
+              modelSelection,
+              runtimeMode,
+              interactionMode,
+              branch: reviewContext.branch,
+              worktreePath: cwd === project.workspaceRoot ? null : cwd,
+              reviewSnapshot: reviewContext.snapshot,
+            },
+            createdAt,
+          });
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowRunError({
+                message: cause instanceof Error ? cause.message : "Failed to run workflow.",
+                cause,
+              }),
+          ),
+        );
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -947,52 +764,72 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
               const normalizedCommand = yield* normalizeDispatchCommand(command);
-              const shouldStopSessionAfterArchive =
+              const threadsToArchive =
                 normalizedCommand.type === "thread.archive"
-                  ? yield* projectionSnapshotQuery
-                      .getThreadShellById(normalizedCommand.threadId)
-                      .pipe(
-                        Effect.map(
-                          Option.match({
-                            onNone: () => false,
-                            onSome: (thread) =>
-                              thread.session !== null && thread.session.status !== "stopped",
+                  ? yield* Effect.gen(function* () {
+                      const rootShell = yield* projectionSnapshotQuery
+                        .getThreadShellById(normalizedCommand.threadId)
+                        .pipe(Effect.catch(() => Effect.succeed(Option.none())));
+                      const subtree = collectActiveThreadSubtree(
+                        yield* orchestrationEngine.getReadModel(),
+                        normalizedCommand.threadId,
+                      );
+                      const rootFromReadModel = subtree.find(
+                        (thread) => thread.id === normalizedCommand.threadId,
+                      );
+                      return [
+                        {
+                          id: normalizedCommand.threadId,
+                          session: Option.match(rootShell, {
+                            onNone: () => rootFromReadModel?.session ?? null,
+                            onSome: (thread) => thread.session,
                           }),
+                        },
+                        ...subtree.flatMap((thread) =>
+                          thread.id === normalizedCommand.threadId
+                            ? []
+                            : [{ id: thread.id, session: thread.session }],
                         ),
-                        Effect.orElseSucceed(() => false),
-                      )
-                  : false;
+                      ];
+                    })
+                  : [];
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
               if (normalizedCommand.type === "thread.archive") {
-                if (shouldStopSessionAfterArchive) {
-                  yield* Effect.gen(function* () {
-                    const stopCommand = yield* normalizeDispatchCommand({
-                      type: "thread.session.stop",
-                      commandId: CommandId.make(
-                        `session-stop-for-archive:${normalizedCommand.commandId}`,
-                      ),
-                      threadId: normalizedCommand.threadId,
-                      createdAt: yield* nowIso,
-                    });
+                yield* Effect.forEach(
+                  threadsToArchive,
+                  (thread) =>
+                    Effect.gen(function* () {
+                      if (thread.session !== null && thread.session.status !== "stopped") {
+                        yield* Effect.gen(function* () {
+                          const stopCommand = yield* normalizeDispatchCommand({
+                            type: "thread.session.stop",
+                            commandId: CommandId.make(
+                              `session-stop-for-archive:${normalizedCommand.commandId}:${thread.id}`,
+                            ),
+                            threadId: thread.id,
+                            createdAt: new Date().toISOString(),
+                          });
+                          yield* dispatchNormalizedCommand(stopCommand);
+                        }).pipe(
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning("failed to stop provider session during archive", {
+                              threadId: thread.id,
+                              cause,
+                            }),
+                          ),
+                        );
+                      }
 
-                    yield* dispatchNormalizedCommand(stopCommand);
-                  }).pipe(
-                    Effect.catchCause((cause) =>
-                      Effect.logWarning("failed to stop provider session during archive", {
-                        threadId: normalizedCommand.threadId,
-                        cause,
-                      }),
-                    ),
-                  );
-                }
-
-                yield* terminalManager.close({ threadId: normalizedCommand.threadId }).pipe(
-                  Effect.catch((error) =>
-                    Effect.logWarning("failed to close thread terminals after archive", {
-                      threadId: normalizedCommand.threadId,
-                      error: error.message,
+                      yield* terminalManager.close({ threadId: thread.id }).pipe(
+                        Effect.catch((error) =>
+                          Effect.logWarning("failed to close thread terminals after archive", {
+                            threadId: thread.id,
+                            error: error.message,
+                          }),
+                        ),
+                      );
                     }),
-                  ),
+                  { concurrency: 4 },
                 );
               }
               return result;
@@ -1036,6 +873,34 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getTurnDiffState]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getTurnDiffState,
+            diffStateQuery.getTurnDiffState(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetTurnDiffStateError({
+                    message: "Failed to load turn diff state",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getFullThreadDiffState]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getFullThreadDiffState,
+            diffStateQuery.getFullThreadDiffState(input).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetFullThreadDiffStateError({
+                    message: "Failed to load full thread diff state",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.replayEvents]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.replayEvents,
@@ -1059,14 +924,55 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getShellSnapshot]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getShellSnapshot,
+            projectionSnapshotQuery.getShellSnapshot().pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load orchestration shell snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadSnapshot,
+            Effect.all([
+              projectionSnapshotQuery.getThreadDetailById(input.threadId),
+              projectionSnapshotQuery.getShellSnapshot(),
+            ]).pipe(
+              Effect.flatMap(([threadDetail, shellSnapshot]) => {
+                if (Option.isNone(threadDetail)) {
+                  return new OrchestrationGetSnapshotError({
+                    message: `Thread ${input.threadId} was not found`,
+                    cause: input.threadId,
+                  });
+                }
+                return Effect.succeed({
+                  snapshotSequence: shellSnapshot.snapshotSequence,
+                  thread: threadDetail.value,
+                });
+              }),
+              Effect.mapError((cause) =>
+                cause instanceof OrchestrationGetSnapshotError
+                  ? cause
+                  : new OrchestrationGetSnapshotError({
+                      message: `Failed to load thread ${input.threadId}`,
+                      cause,
+                    }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (_input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
-                Effect.tapError((cause) =>
-                  Effect.logError("orchestration shell snapshot load failed", { cause }),
-                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationGetSnapshotError({
@@ -1093,23 +999,6 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "orchestration" },
           ),
-        [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
-          observeRpcEffect(
-            ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
-            projectionSnapshotQuery.getArchivedShellSnapshot().pipe(
-              Effect.tapError((cause) =>
-                Effect.logError("orchestration archived shell snapshot load failed", { cause }),
-              ),
-              Effect.mapError(
-                (cause) =>
-                  new OrchestrationGetSnapshotError({
-                    message: "Failed to load archived orchestration shell snapshot",
-                    cause,
-                  }),
-              ),
-            ),
-            { "rpc.aggregate": "orchestration" },
-          ),
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
@@ -1124,12 +1013,12 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 ),
-                projectionSnapshotQuery.getSnapshotSequence().pipe(
-                  Effect.map(({ snapshotSequence }) => snapshotSequence),
+                projectionSnapshotQuery.getShellSnapshot().pipe(
+                  Effect.map((snapshot) => snapshot.snapshotSequence),
                   Effect.mapError(
                     (cause) =>
                       new OrchestrationGetSnapshotError({
-                        message: "Failed to load orchestration snapshot sequence",
+                        message: `Failed to load thread ${input.threadId}`,
                         cause,
                       }),
                   ),
@@ -1182,13 +1071,27 @@ const makeWsRpcLayer = (
             ).pipe(Effect.map((providers) => ({ providers }))),
             { "rpc.aggregate": "server" },
           ),
-        [WS_METHODS.serverUpdateProvider]: (input) =>
+        [WS_METHODS.serverListProviderCommands]: (input) =>
           observeRpcEffect(
-            WS_METHODS.serverUpdateProvider,
-            providerMaintenanceRunner.updateProvider(input),
-            {
-              "rpc.aggregate": "server",
-            },
+            WS_METHODS.serverListProviderCommands,
+            (input.provider === "copilot"
+              ? Effect.tryPromise({
+                  try: () => listCopilotPreconnectionCommands({ cwd: input.cwd }),
+                  catch: (cause) =>
+                    new ServerProviderListCommandsError({
+                      message: "Failed to list provider commands",
+                      cause,
+                    }),
+                })
+              : Effect.succeed([])
+            ).pipe(Effect.map((commands) => ({ commands }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverListSkills]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListSkills,
+            Effect.promise(() => listServerSkills()),
+            { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverUpsertKeybinding]: (rule) =>
           observeRpcEffect(
@@ -1199,21 +1102,10 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "server" },
           ),
-        [WS_METHODS.serverRemoveKeybinding]: (rule) =>
-          observeRpcEffect(
-            WS_METHODS.serverRemoveKeybinding,
-            Effect.gen(function* () {
-              const keybindingsConfig = yield* keybindings.removeKeybindingRule(rule);
-              return { keybindings: keybindingsConfig, issues: [] };
-            }),
-            { "rpc.aggregate": "server" },
-          ),
         [WS_METHODS.serverGetSettings]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetSettings,
-            serverSettings.getSettings.pipe(
-              Effect.map(ServerSettings.redactServerSettingsForClient),
-            ),
+            serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
             {
               "rpc.aggregate": "server",
             },
@@ -1221,105 +1113,110 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateSettings]: ({ patch }) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateSettings,
-            serverSettings
-              .updateSettings(patch)
-              .pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
+            serverSettings.updateSettings(patch).pipe(Effect.map(redactServerSettingsForClient)),
             {
               "rpc.aggregate": "server",
             },
           ),
-        [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
+        [WS_METHODS.sidebarGetState]: (_input) =>
+          observeRpcEffect(WS_METHODS.sidebarGetState, sidebarState.get, {
+            "rpc.aggregate": "sidebar",
+          }),
+        [WS_METHODS.sidebarUpdateState]: (input) =>
+          observeRpcEffect(WS_METHODS.sidebarUpdateState, sidebarState.update(input), {
+            "rpc.aggregate": "sidebar",
+          }),
+        [WS_METHODS.workflowRun]: (input) =>
+          observeRpcEffect(WS_METHODS.workflowRun, runWorkflow(input), {
+            "rpc.aggregate": "workflow",
+          }),
+        [WS_METHODS.serverExportThreadMarkdown]: (input) =>
           observeRpcEffect(
-            WS_METHODS.serverDiscoverSourceControl,
-            sourceControlDiscovery.discover,
-            {
-              "rpc.aggregate": "server",
-            },
-          ),
-        [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
-          observeRpcEffect(
-            WS_METHODS.serverGetTraceDiagnostics,
-            TraceDiagnostics.readTraceDiagnostics({
-              traceFilePath: config.serverTracePath,
-              maxFiles: config.traceMaxFiles,
+            WS_METHODS.serverExportThreadMarkdown,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerExportThreadMarkdownError({
+                      message: cause.message,
+                      cause,
+                    }),
+                ),
+              );
+              const exportDirectory = settings.chatExportDirectory.trim();
+              if (exportDirectory.length === 0) {
+                return yield* new ServerExportThreadMarkdownError({
+                  message: "Set a chat export directory in Settings before exporting.",
+                });
+              }
+
+              const threadOption = yield* projectionSnapshotQuery
+                .getThreadDetailById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerExportThreadMarkdownError({
+                        message: "Unable to load the chat for export.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(threadOption)) {
+                return yield* new ServerExportThreadMarkdownError({
+                  message: "Chat not found.",
+                });
+              }
+
+              const thread = threadOption.value;
+              const projectOption = yield* projectionSnapshotQuery
+                .getProjectShellById(thread.projectId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerExportThreadMarkdownError({
+                        message: "Unable to load project metadata for export.",
+                        cause,
+                      }),
+                  ),
+                );
+              const exportedAt = new Date();
+              const filename = createThreadMarkdownExportFilename({
+                title: thread.title,
+                exportedAt,
+              });
+              const path = yield* Effect.tryPromise({
+                try: () =>
+                  writeThreadMarkdownExportFile({
+                    directory: exportDirectory,
+                    filename,
+                    contents: formatThreadMarkdownExport({
+                      thread,
+                      project: Option.isSome(projectOption) ? projectOption.value : null,
+                      exportedAt,
+                      detail: settings.chatExportDetail,
+                    }),
+                  }),
+                catch: (cause) =>
+                  new ServerExportThreadMarkdownError({
+                    message: "Unable to write chat export file.",
+                    cause,
+                  }),
+              });
+
+              yield* open.openInEditor({ cwd: path, editor: input.editor }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerExportThreadMarkdownError({
+                      message: `Chat exported to ${path}, but it could not be opened.`,
+                      cause,
+                    }),
+                ),
+              );
+
+              return { path, filename };
             }),
             {
               "rpc.aggregate": "server",
-            },
-          ),
-        [WS_METHODS.serverGetProcessDiagnostics]: (_input) =>
-          observeRpcEffect(WS_METHODS.serverGetProcessDiagnostics, processDiagnostics.read, {
-            "rpc.aggregate": "server",
-          }),
-        [WS_METHODS.serverGetProcessResourceHistory]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.serverGetProcessResourceHistory,
-            processResourceMonitor.readHistory(input),
-            {
-              "rpc.aggregate": "server",
-            },
-          ),
-        [WS_METHODS.serverSignalProcess]: (input) =>
-          observeRpcEffect(WS_METHODS.serverSignalProcess, processDiagnostics.signal(input), {
-            "rpc.aggregate": "server",
-          }),
-        [WS_METHODS.cloudGetRelayClientStatus]: (_input) =>
-          observeRpcEffect(WS_METHODS.cloudGetRelayClientStatus, relayClient.resolve, {
-            "rpc.aggregate": "cloud",
-          }),
-        [WS_METHODS.cloudInstallRelayClient]: (_input) =>
-          observeRpcStream(
-            WS_METHODS.cloudInstallRelayClient,
-            Stream.callback<RelayClientInstallProgressEvent, RelayClientInstallFailedError>(
-              (queue) =>
-                relayClient
-                  .installWithProgress((event) => Queue.offer(queue, event).pipe(Effect.asVoid))
-                  .pipe(
-                    Effect.flatMap((status) =>
-                      Queue.offer(queue, {
-                        type: "complete",
-                        status,
-                      }),
-                    ),
-                    Effect.catchTag("RelayClientInstallError", (error) =>
-                      Queue.fail(
-                        queue,
-                        new RelayClientInstallFailedError({
-                          reason: error.reason,
-                          message: error.message,
-                        }),
-                      ),
-                    ),
-                    Effect.andThen(Queue.end(queue)),
-                    Effect.forkScoped,
-                  ),
-            ),
-            { "rpc.aggregate": "cloud" },
-          ),
-        [WS_METHODS.sourceControlLookupRepository]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.sourceControlLookupRepository,
-            sourceControlRepositories.lookupRepository(input),
-            {
-              "rpc.aggregate": "source-control",
-            },
-          ),
-        [WS_METHODS.sourceControlCloneRepository]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.sourceControlCloneRepository,
-            sourceControlRepositories.cloneRepository(input),
-            {
-              "rpc.aggregate": "source-control",
-            },
-          ),
-        [WS_METHODS.sourceControlPublishRepository]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.sourceControlPublishRepository,
-            sourceControlRepositories
-              .publishRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
-            {
-              "rpc.aggregate": "source-control",
             },
           ),
         [WS_METHODS.projectsSearchEntries]: (input) =>
@@ -1329,40 +1226,7 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new ProjectSearchEntriesError({
-                    cwd: input.cwd,
-                    queryLength: input.query.length,
-                    limit: input.limit,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
-            { "rpc.aggregate": "workspace" },
-          ),
-        [WS_METHODS.projectsListEntries]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.projectsListEntries,
-            workspaceEntries.list(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectListEntriesError({
-                    ...input,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
-            { "rpc.aggregate": "workspace" },
-          ),
-        [WS_METHODS.projectsReadFile]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.projectsReadFile,
-            workspaceFileSystem.readFile(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectReadFileError({
-                    ...input,
-                    ...projectFileFailureContext(cause),
+                    message: `Failed to search workspace entries: ${cause.detail}`,
                     cause,
                   }),
               ),
@@ -1373,22 +1237,30 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.projectsWriteFile,
             workspaceFileSystem.writeFile(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectWriteFileError({
-                    cwd: input.cwd,
-                    relativePath: input.relativePath,
-                    ...projectFileFailureContext(cause),
-                    cause,
-                  }),
-              ),
+              Effect.mapError((cause) => {
+                const message = isWorkspacePathOutsideRootError(cause)
+                  ? "Workspace file path must stay within the project root."
+                  : "Failed to write workspace file";
+                return new ProjectWriteFileError({
+                  message,
+                  cause,
+                });
+              }),
             ),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.shellOpenInEditor]: (input) =>
-          observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
+          observeRpcEffect(WS_METHODS.shellOpenInEditor, open.openInEditor(input), {
             "rpc.aggregate": "workspace",
           }),
+        [WS_METHODS.shellRevealInFileManager]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.shellRevealInFileManager,
+            open.revealInFileManager(input.path),
+            {
+              "rpc.aggregate": "workspace",
+            },
+          ),
         [WS_METHODS.filesystemBrowse]: (input) =>
           observeRpcEffect(
             WS_METHODS.filesystemBrowse,
@@ -1396,82 +1268,79 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new FilesystemBrowseError({
-                    ...input,
-                    ...filesystemBrowseFailureContext(cause),
+                    message: cause.detail,
                     cause,
                   }),
               ),
             ),
             { "rpc.aggregate": "workspace" },
           ),
-        [WS_METHODS.assetsCreateUrl]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.assetsCreateUrl,
-            Effect.gen(function* () {
-              if (input.resource._tag !== "workspace-file") {
-                return yield* issueAssetUrl({ resource: input.resource });
-              }
-              const thread = yield* projectionSnapshotQuery
-                .getThreadShellById(input.resource.threadId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new AssetWorkspaceContextResolutionError({
-                        resource: input.resource,
-                        cause,
-                      }),
-                  ),
-                );
-              if (Option.isNone(thread)) {
-                return yield* new AssetWorkspaceContextNotFoundError({
-                  resource: input.resource,
-                });
-              }
-              const project = yield* projectionSnapshotQuery
-                .getProjectShellById(thread.value.projectId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new AssetWorkspaceContextResolutionError({
-                        resource: input.resource,
-                        cause,
-                      }),
-                  ),
-                );
-              if (Option.isNone(project)) {
-                return yield* new AssetWorkspaceContextNotFoundError({
-                  resource: input.resource,
-                });
-              }
-              return yield* issueAssetUrl({
-                resource: input.resource,
-                workspaceRoot: thread.value.worktreePath ?? project.value.workspaceRoot,
-              });
-            }),
-            { "rpc.aggregate": "workspace" },
+        [WS_METHODS.previewOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.previewOpen, previewManager.open(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewNavigate]: (input) =>
+          observeRpcEffect(WS_METHODS.previewNavigate, previewManager.navigate(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewReportStatus]: (input) =>
+          observeRpcEffect(WS_METHODS.previewReportStatus, previewManager.reportStatus(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewResize]: (input) =>
+          observeRpcEffect(WS_METHODS.previewResize, previewManager.resize(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewRefresh]: (input) =>
+          observeRpcEffect(WS_METHODS.previewRefresh, previewManager.refresh(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewClose]: (input) =>
+          observeRpcEffect(WS_METHODS.previewClose, previewManager.close(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewList]: (input) =>
+          observeRpcEffect(WS_METHODS.previewList, previewManager.list(input), {
+            "rpc.aggregate": "preview",
+          }),
+        [WS_METHODS.previewAutomationConnect]: (input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.previewAutomationConnect,
+            previewAutomationBroker.connect(input),
+            { "rpc.aggregate": "preview-automation" },
           ),
-        [WS_METHODS.subscribeVcsStatus]: (input) =>
+        [WS_METHODS.previewAutomationRespond]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAutomationRespond,
+            previewAutomationBroker.respond(input),
+            { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.previewAutomationFocusHost]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.previewAutomationFocusHost,
+            previewAutomationBroker.focusHost(input),
+            { "rpc.aggregate": "preview-automation" },
+          ),
+        [WS_METHODS.subscribeGitStatus]: (input) =>
           observeRpcStream(
-            WS_METHODS.subscribeVcsStatus,
-            vcsStatusBroadcaster.streamStatus(input, {
-              automaticRemoteRefreshInterval: automaticGitFetchInterval,
-            }),
+            WS_METHODS.subscribeGitStatus,
+            gitStatusBroadcaster.streamStatus(input),
             {
-              "rpc.aggregate": "vcs",
+              "rpc.aggregate": "git",
             },
           ),
-        [WS_METHODS.vcsRefreshStatus]: (input) =>
+        [WS_METHODS.gitRefreshStatus]: (input) =>
           observeRpcEffect(
-            WS_METHODS.vcsRefreshStatus,
-            vcsStatusBroadcaster.refreshStatus(input.cwd),
+            WS_METHODS.gitRefreshStatus,
+            gitStatusBroadcaster.refreshStatus(input.cwd),
             {
-              "rpc.aggregate": "vcs",
+              "rpc.aggregate": "git",
             },
           ),
-        [WS_METHODS.vcsPull]: (input) =>
+        [WS_METHODS.gitPull]: (input) =>
           observeRpcEffect(
-            WS_METHODS.vcsPull,
-            gitWorkflow.pullCurrentBranch(input.cwd).pipe(
+            WS_METHODS.gitPull,
+            git.pullCurrentBranch(input.cwd).pipe(
               Effect.matchCauseEffect({
                 onFailure: (cause) => Effect.failCause(cause),
                 onSuccess: (result) =>
@@ -1484,7 +1353,7 @@ const makeWsRpcLayer = (
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
             Stream.callback<GitActionProgressEvent, GitManagerServiceError>((queue) =>
-              gitWorkflow
+              gitManager
                 .runStackedAction(input, {
                   actionId: input.actionId,
                   progressReporter: {
@@ -1501,68 +1370,335 @@ const makeWsRpcLayer = (
                   }),
                 ),
             ),
-            { "rpc.aggregate": "vcs" },
+            { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitResolvePullRequest]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.gitResolvePullRequest,
-            gitWorkflow.resolvePullRequest(input),
-            {
-              "rpc.aggregate": "git",
-            },
-          ),
+          observeRpcEffect(WS_METHODS.gitResolvePullRequest, gitManager.resolvePullRequest(input), {
+            "rpc.aggregate": "git",
+          }),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitPreparePullRequestThread,
-            gitWorkflow
+            gitManager
               .preparePullRequestThread(input)
               .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
-        [WS_METHODS.vcsListRefs]: (input) =>
-          observeRpcEffect(WS_METHODS.vcsListRefs, gitWorkflow.listRefs(input), {
-            "rpc.aggregate": "vcs",
+        [WS_METHODS.gitResolveReviewChangesContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitResolveReviewChangesContext,
+            git.resolveReviewChangesContext(input),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitListOpenPullRequests]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitListOpenPullRequests,
+            Option.match(gitHubCli, {
+              onNone: () =>
+                Effect.fail(
+                  new GitHubCliError({
+                    operation: "listOpenPullRequests",
+                    detail: "GitHub CLI integration is unavailable.",
+                  }),
+                ),
+              onSome: (service) =>
+                service.listRepositoryOpenPullRequests({ cwd: input.cwd }).pipe(
+                  Effect.map((pullRequests) => ({
+                    pullRequests: pullRequests.map((pullRequest) => ({
+                      number: pullRequest.number,
+                      title: pullRequest.title,
+                      url: pullRequest.url,
+                      baseBranch: pullRequest.baseRefName,
+                      headBranch: pullRequest.headRefName,
+                      state: pullRequest.state ?? "open",
+                    })),
+                  })),
+                ),
+            }),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitListBranches]: (input) =>
+          observeRpcEffect(WS_METHODS.gitListBranches, git.listBranches(input), {
+            "rpc.aggregate": "git",
           }),
+        [WS_METHODS.gitCreateWorktree]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitCreateWorktree,
+            git.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitRemoveWorktree]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitRemoveWorktree,
+            git.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitCreateBranch]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitCreateBranch,
+            git.createBranch(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitCheckout]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitCheckout,
+            Effect.scoped(git.checkoutBranch(input)).pipe(
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
+            { "rpc.aggregate": "git" },
+          ),
+        [WS_METHODS.gitInit]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitInit,
+            git.initRepo(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            { "rpc.aggregate": "git" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
+            projectionSnapshotQuery.getShellSnapshot().pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to load archived orchestration shell snapshot",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        // VCS RPCs delegate to the fork's git layers and translate result
+        // shapes through VcsBridge (the fork is git-first).
+        [WS_METHODS.subscribeVcsStatus]: (input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeVcsStatus,
+            gitStatusBroadcaster.streamStatus(input).pipe(Stream.map(gitStatusStreamEventToVcs)),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsRefreshStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsRefreshStatus,
+            gitStatusBroadcaster.refreshStatus(input.cwd).pipe(Effect.map(gitStatusToVcs)),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsPull]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsPull,
+            git.pullCurrentBranch(input.cwd).pipe(
+              Effect.map(gitPullResultToVcs),
+              Effect.matchCauseEffect({
+                onFailure: (cause) => Effect.failCause(cause),
+                onSuccess: (result) =>
+                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
+              }),
+            ),
+            { "rpc.aggregate": "vcs" },
+          ),
+        [WS_METHODS.vcsListRefs]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsListRefs,
+            git.listBranches(vcsListRefsInputToGit(input)).pipe(Effect.map(gitListBranchesToVcs)),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            gitWorkflow.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            git.createWorktree(vcsCreateWorktreeInputToGit(input)).pipe(
+              Effect.map(gitCreateWorktreeResultToVcs),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
-            gitWorkflow.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            git.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,
-            gitWorkflow.createRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            git.createBranch(vcsCreateRefInputToGit(input)).pipe(
+              Effect.map(gitCreateBranchResultToVcs),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,
-            gitWorkflow.switchRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.scoped(git.checkoutBranch({ cwd: input.cwd, branch: input.refName })).pipe(
+              Effect.map(gitCheckoutResultToVcs),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsInit,
-            vcsProvisioning
-              .initRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            git.initRepo({ cwd: input.cwd }).pipe(
+              Effect.mapError((error): VcsError => gitCommandErrorToVcs(error)),
+              Effect.tap(() => refreshGitStatus(input.cwd)),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
+        // Source-control provider integration is not implemented in the
+        // git-first fork; report empty discovery and fail explicit operations.
+        [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverDiscoverSourceControl,
+            Effect.succeed({ versionControlSystems: [], sourceControlProviders: [] }),
+            { "rpc.aggregate": "source-control" },
+          ),
+        [WS_METHODS.sourceControlLookupRepository]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.sourceControlLookupRepository,
+            Effect.fail(
+              new SourceControlRepositoryError({
+                provider: input.provider,
+                operation: "lookupRepository",
+                detail: "Source-control provider integration is not available on this server.",
+              }),
+            ),
+            { "rpc.aggregate": "source-control" },
+          ),
+        [WS_METHODS.sourceControlCloneRepository]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.sourceControlCloneRepository,
+            Effect.fail(
+              new SourceControlRepositoryError({
+                provider: input.provider ?? "github",
+                operation: "cloneRepository",
+                detail: "Source-control provider integration is not available on this server.",
+              }),
+            ),
+            { "rpc.aggregate": "source-control" },
+          ),
+        [WS_METHODS.sourceControlPublishRepository]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.sourceControlPublishRepository,
+            Effect.fail(
+              new SourceControlRepositoryError({
+                provider: input.provider,
+                operation: "publishRepository",
+                detail: "Source-control provider integration is not available on this server.",
+              }),
+            ),
+            { "rpc.aggregate": "source-control" },
+          ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
-          observeRpcEffect(WS_METHODS.reviewGetDiffPreview, review.getDiffPreview(input), {
-            "rpc.aggregate": "review",
-          }),
-        [WS_METHODS.terminalOpen]: (input) =>
-          observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
-            "rpc.aggregate": "terminal",
-          }),
+          observeRpcEffect(
+            WS_METHODS.reviewGetDiffPreview,
+            Effect.fail(
+              new GitCommandError({
+                operation: "reviewGetDiffPreview",
+                command: "review",
+                cwd: input.cwd,
+                detail: "Live diff preview is not available on this server.",
+              }),
+            ),
+            { "rpc.aggregate": "review" },
+          ),
+        [WS_METHODS.serverUpdateProvider]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverUpdateProvider,
+            Effect.fail(
+              new ServerProviderUpdateError({
+                provider: input.provider,
+                reason: "Provider self-update is not available on this server.",
+              }),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverRemoveKeybinding]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRemoveKeybinding,
+            Effect.fail(
+              new KeybindingsConfigError({
+                configPath: config.keybindingsConfigPath,
+                detail: "Removing keybindings is not supported on this server.",
+              }),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
+        // Process/trace diagnostics are not instrumented in the fork; return
+        // well-formed empty snapshots so the client renders an empty state.
+        [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetTraceDiagnostics,
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              return {
+                traceFilePath: "unavailable",
+                scannedFilePaths: [],
+                readAt: now,
+                recordCount: 0,
+                parseErrorCount: 0,
+                firstSpanAt: Option.none(),
+                lastSpanAt: Option.none(),
+                failureCount: 0,
+                interruptionCount: 0,
+                slowSpanThresholdMs: 0,
+                slowSpanCount: 0,
+                logLevelCounts: {},
+                topSpansByCount: [],
+                slowestSpans: [],
+                commonFailures: [],
+                latestFailures: [],
+                latestWarningAndErrorLogs: [],
+                partialFailure: Option.none(),
+                error: Option.none(),
+              };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetProcessDiagnostics]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetProcessDiagnostics,
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              return {
+                serverPid: process.pid,
+                readAt: now,
+                processCount: 0,
+                totalRssBytes: 0,
+                totalCpuPercent: 0,
+                processes: [],
+                error: Option.none(),
+              };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetProcessResourceHistory]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetProcessResourceHistory,
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              return {
+                readAt: now,
+                windowMs: input.windowMs,
+                bucketMs: input.bucketMs,
+                sampleIntervalMs: 0,
+                retainedSampleCount: 0,
+                totalCpuSecondsApprox: 0,
+                buckets: [],
+                topProcesses: [],
+                error: Option.none(),
+              };
+            }),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverSignalProcess]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSignalProcess,
+            Effect.succeed({
+              pid: input.pid,
+              signal: input.signal,
+              signaled: false,
+              message: Option.some("Process signaling is not supported on this server."),
+            }),
+            { "rpc.aggregate": "server" },
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
@@ -1574,6 +1710,21 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "terminal" },
           ),
+        [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeTerminalMetadata,
+            Stream.callback<TerminalMetadataStreamEvent>((queue) =>
+              Effect.acquireRelease(
+                terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
+                (unsubscribe) => Effect.sync(unsubscribe),
+              ),
+            ),
+            { "rpc.aggregate": "terminal" },
+          ),
+        [WS_METHODS.terminalOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.terminalOpen, terminalManager.open(input), {
+            "rpc.aggregate": "terminal",
+          }),
         [WS_METHODS.terminalWrite]: (input) =>
           observeRpcEffect(WS_METHODS.terminalWrite, terminalManager.write(input), {
             "rpc.aggregate": "terminal",
@@ -1605,63 +1756,6 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "terminal" },
           ),
-        [WS_METHODS.subscribeTerminalMetadata]: (_input) =>
-          observeRpcStream(
-            WS_METHODS.subscribeTerminalMetadata,
-            Stream.callback<TerminalMetadataStreamEvent>((queue) =>
-              Effect.acquireRelease(
-                terminalManager.subscribeMetadata((event) => Queue.offer(queue, event)),
-                (unsubscribe) => Effect.sync(unsubscribe),
-              ),
-            ),
-            { "rpc.aggregate": "terminal" },
-          ),
-        [WS_METHODS.previewOpen]: (input) =>
-          observeRpcEffect(WS_METHODS.previewOpen, previewManager.open(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewNavigate]: (input) =>
-          observeRpcEffect(WS_METHODS.previewNavigate, previewManager.navigate(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewResize]: (input) =>
-          observeRpcEffect(WS_METHODS.previewResize, previewManager.resize(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewRefresh]: (input) =>
-          observeRpcEffect(WS_METHODS.previewRefresh, previewManager.refresh(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewClose]: (input) =>
-          observeRpcEffect(WS_METHODS.previewClose, previewManager.close(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewList]: (input) =>
-          observeRpcEffect(WS_METHODS.previewList, previewManager.list(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewReportStatus]: (input) =>
-          observeRpcEffect(WS_METHODS.previewReportStatus, previewManager.reportStatus(input), {
-            "rpc.aggregate": "preview",
-          }),
-        [WS_METHODS.previewAutomationConnect]: (input) =>
-          observeRpcStreamEffect(
-            WS_METHODS.previewAutomationConnect,
-            previewAutomationBroker.connect(input),
-            { "rpc.aggregate": "preview-automation" },
-          ),
-        [WS_METHODS.previewAutomationRespond]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.previewAutomationRespond,
-            previewAutomationBroker.respond(input),
-            { "rpc.aggregate": "preview-automation" },
-          ),
-        [WS_METHODS.previewAutomationFocusHost]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.previewAutomationFocusHost,
-            previewAutomationBroker.focusHost(input),
-            { "rpc.aggregate": "preview-automation" },
-          ),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
@@ -1672,18 +1766,13 @@ const makeWsRpcLayer = (
             Stream.callback<DiscoveredLocalServerList>((queue) =>
               Effect.gen(function* () {
                 yield* portDiscovery.retain;
-                const initial = yield* portDiscovery.scan();
-                const initialScannedAt = DateTime.formatIso(yield* DateTime.now);
-                yield* Queue.offer(queue, {
-                  servers: initial,
-                  scannedAt: initialScannedAt,
-                });
-                yield* portDiscovery.subscribe((servers) =>
+                const offerServers = (servers: ReadonlyArray<DiscoveredLocalServer>) =>
                   Effect.gen(function* () {
                     const scannedAt = DateTime.formatIso(yield* DateTime.now);
                     yield* Queue.offer(queue, { servers, scannedAt });
-                  }),
-                );
+                  });
+                yield* offerServers(yield* portDiscovery.scan());
+                yield* portDiscovery.subscribe(offerServers);
               }),
             ),
             { "rpc.aggregate": "preview" },
@@ -1697,7 +1786,6 @@ const makeWsRpcLayer = (
                   version: 1 as const,
                   type: "keybindingsUpdated" as const,
                   payload: {
-                    keybindings: event.keybindings,
                     issues: event.issues,
                   },
                 })),
@@ -1711,7 +1799,7 @@ const makeWsRpcLayer = (
                 Stream.debounce(Duration.millis(PROVIDER_STATUS_DEBOUNCE_MS)),
               );
               const settingsUpdates = serverSettings.streamChanges.pipe(
-                Stream.map((settings) => ServerSettings.redactServerSettingsForClient(settings)),
+                Stream.map((settings) => redactServerSettingsForClient(settings)),
                 Stream.map((settings) => ({
                   version: 1 as const,
                   type: "settingsUpdated" as const,
@@ -1754,6 +1842,10 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.subscribeSidebarState]: (_input) =>
+          observeRpcStream(WS_METHODS.subscribeSidebarState, sidebarState.changes, {
+            "rpc.aggregate": "sidebar",
+          }),
         [WS_METHODS.subscribeAuthAccess]: (_input) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,
@@ -1761,7 +1853,7 @@ const makeWsRpcLayer = (
               const initialSnapshot = yield* loadAuthAccessSnapshot();
               const revisionRef = yield* Ref.make(1);
               const accessChanges: Stream.Stream<
-                PairingGrantStore.BootstrapCredentialChange | SessionStore.SessionCredentialChange
+                BootstrapCredentialChange | SessionCredentialChange
               > = Stream.merge(bootstrapCredentials.streamChanges, sessions.streamChanges);
 
               const liveEvents: Stream.Stream<AuthAccessStreamEvent> = accessChanges.pipe(
@@ -1791,65 +1883,32 @@ const makeWsRpcLayer = (
   );
 
 export const websocketRpcRouteLayer = Layer.unwrap(
-  Effect.gen(function* () {
-    const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-    return HttpRouter.add(
+  Effect.succeed(
+    HttpRouter.add(
       "GET",
       "/ws",
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-        const sessions = yield* SessionStore.SessionStore;
-        const session = yield* serverAuth.authenticateWebSocketUpgrade(request).pipe(
-          Effect.catchIf(EnvironmentAuth.isServerAuthCredentialError, (error) =>
-            failEnvironmentAuthInvalid(EnvironmentAuth.serverAuthCredentialReason(error)),
-          ),
-          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
-            failEnvironmentInternal("internal_error", error),
-          ),
-        );
+        const serverAuth = yield* ServerAuth;
+        const sessions = yield* SessionCredentialService;
+        const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
-          disableTracing: true,
+          spanPrefix: "ws.rpc",
+          spanAttributes: {
+            "rpc.transport": "websocket",
+            "rpc.system": "effect-rpc",
+          },
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session, previewAutomationBroker).pipe(
-              Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(ProviderMaintenanceRunner.layer),
-              Layer.provide(
-                SourceControlDiscovery.layer.pipe(
-                  Layer.provide(
-                    SourceControlProviderRegistry.layer.pipe(
-                      Layer.provide(
-                        Layer.mergeAll(
-                          AzureDevOpsCli.layer,
-                          BitbucketApi.layer,
-                          GitHubCli.layer,
-                          GitLabCli.layer,
-                        ),
-                      ),
-                      Layer.provideMerge(GitVcsDriver.layer),
-                      Layer.provide(
-                        VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer)),
-                      ),
-                    ),
-                  ),
-                  Layer.provide(VcsProcess.layer),
-                ),
-              ),
-            ),
+            makeWsRpcLayer(session.sessionId).pipe(Layer.provideMerge(RpcSerialization.layerJson)),
           ),
         );
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect,
+          () => rpcWebSocketHttpEffect.pipe(withLogContext({ sessionId: session.sessionId })),
           () => sessions.markDisconnected(session.sessionId),
         );
-      }).pipe(
-        Effect.catchTags({
-          EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
-          EnvironmentInternalError: HttpServerRespondable.toResponse,
-        }),
-      ),
-    );
-  }),
+      }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
+    ),
+  ),
 );

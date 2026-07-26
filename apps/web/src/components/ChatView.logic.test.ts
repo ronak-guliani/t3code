@@ -7,20 +7,21 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type EnvironmentState, useStore } from "../store";
 import { type Thread } from "../types";
+import { isInsightActivity } from "../insights";
 
 import {
-  MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
   buildExpiredTerminalContextToastCopy,
+  canStartThreadTurn,
   createLocalDispatchSnapshot,
+  createThreadPlanCatalogSelector,
   deriveComposerSendState,
-  getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
-  reconcileRetainedMountedThreadIds,
+  resolveInterruptTurnId,
   resolveSendEnvMode,
   shouldWriteThreadErrorToCurrentServerThread,
   waitForStartedServerThread,
@@ -75,30 +76,6 @@ describe("deriveComposerSendState", () => {
     expect(state.expiredTerminalContextCount).toBe(1);
     expect(state.hasSendableContent).toBe(true);
   });
-
-  it("treats element contexts as sendable content (no text, no images, no terminals)", () => {
-    const state = deriveComposerSendState({
-      prompt: "",
-      imageCount: 0,
-      terminalContexts: [],
-      elementContextCount: 1,
-    });
-
-    expect(state.trimmedPrompt).toBe("");
-    expect(state.expiredTerminalContextCount).toBe(0);
-    expect(state.hasSendableContent).toBe(true);
-  });
-
-  it("does NOT treat zero element contexts as sendable", () => {
-    expect(
-      deriveComposerSendState({
-        prompt: "",
-        imageCount: 0,
-        terminalContexts: [],
-        elementContextCount: 0,
-      }).hasSendableContent,
-    ).toBe(false);
-  });
 });
 
 describe("buildExpiredTerminalContextToastCopy", () => {
@@ -117,70 +94,76 @@ describe("buildExpiredTerminalContextToastCopy", () => {
   });
 });
 
-describe("getStartedThreadModelChangeBlockReason", () => {
-  const providers = [
-    {
-      instanceId: ProviderInstanceId.make("codex"),
-    },
-    {
-      instanceId: ProviderInstanceId.make("grok"),
-      requiresNewThreadForModelChange: true,
-    },
-  ];
-
-  it("allows model changes before a provider session has started", () => {
+describe("canStartThreadTurn", () => {
+  it("blocks a new user turn while the current turn is running", () => {
     expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: false,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-other",
-        },
+      canStartThreadTurn({
+        phase: "running",
+        isSendBusy: false,
+        isConnecting: false,
+        sendInFlight: false,
       }),
-    ).toBeNull();
+    ).toBe(false);
   });
 
-  it("allows unchanged model selections for restricted providers", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: true,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-      }),
-    ).toBeNull();
-  });
-
-  it("blocks started-session model changes when either provider requires a new thread", () => {
-    expect(
-      getStartedThreadModelChangeBlockReason({
-        providers,
-        hasStartedSession: true,
-        currentModelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5.4",
-        },
-        nextModelSelection: {
-          instanceId: ProviderInstanceId.make("grok"),
-          model: "grok-build",
-        },
-      }),
-    ).toEqual({
-      title: "Start a new chat to change models",
-      description:
-        "This provider does not allow switching models after a conversation has started.",
+  describe("resolveInterruptTurnId", () => {
+    it("prefers the session active turn id", () => {
+      expect(
+        resolveInterruptTurnId({
+          session: {
+            provider: ProviderDriverKind.make("codex"),
+            status: "running",
+            orchestrationStatus: "running",
+            activeTurnId: TurnId.make("session-turn"),
+            createdAt: "2026-02-27T00:00:00.000Z",
+            updatedAt: "2026-02-27T00:00:00.000Z",
+          },
+          latestTurn: {
+            turnId: TurnId.make("latest-turn"),
+            state: "running",
+            requestedAt: "2026-02-27T00:00:00.000Z",
+            startedAt: "2026-02-27T00:00:01.000Z",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        }),
+      ).toBe(TurnId.make("session-turn"));
     });
+
+    it("falls back to the latest running turn", () => {
+      expect(
+        resolveInterruptTurnId({
+          session: null,
+          latestTurn: {
+            turnId: TurnId.make("latest-turn"),
+            state: "running",
+            requestedAt: "2026-02-27T00:00:00.000Z",
+            startedAt: "2026-02-27T00:00:01.000Z",
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        }),
+      ).toBe(TurnId.make("latest-turn"));
+    });
+  });
+
+  it("allows a new user turn only when the thread can accept a send", () => {
+    expect(
+      canStartThreadTurn({
+        phase: "ready",
+        isSendBusy: false,
+        isConnecting: false,
+        sendInFlight: false,
+      }),
+    ).toBe(true);
+    expect(
+      canStartThreadTurn({
+        phase: "ready",
+        isSendBusy: true,
+        isConnecting: false,
+        sendInFlight: false,
+      }),
+    ).toBe(false);
   });
 });
 
@@ -276,50 +259,6 @@ describe("reconcileMountedTerminalThreadIds", () => {
   });
 });
 
-describe("reconcileRetainedMountedThreadIds", () => {
-  it("retains hidden open threads and adds the active open thread", () => {
-    expect(
-      reconcileRetainedMountedThreadIds({
-        currentThreadIds: [ThreadId.make("thread-hidden")],
-        openThreadIds: [ThreadId.make("thread-hidden")],
-        activeThreadId: ThreadId.make("thread-active"),
-        activeThreadOpen: true,
-        maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
-      }),
-    ).toEqual([ThreadId.make("thread-hidden"), ThreadId.make("thread-active")]);
-  });
-
-  it("can retain the active thread as hidden when it is inactive", () => {
-    expect(
-      reconcileRetainedMountedThreadIds({
-        currentThreadIds: [ThreadId.make("thread-active")],
-        openThreadIds: [ThreadId.make("thread-active")],
-        activeThreadId: ThreadId.make("thread-active"),
-        activeThreadOpen: false,
-        maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
-        retainInactiveActiveThread: true,
-      }),
-    ).toEqual([ThreadId.make("thread-active")]);
-  });
-
-  it("evicts the oldest hidden threads beyond the configured cap", () => {
-    const currentThreadIds = Array.from(
-      { length: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS + 2 },
-      (_, index) => ThreadId.make(`thread-${index + 1}`),
-    );
-
-    expect(
-      reconcileRetainedMountedThreadIds({
-        currentThreadIds,
-        openThreadIds: currentThreadIds,
-        activeThreadId: null,
-        activeThreadOpen: false,
-        maxHiddenThreadCount: MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
-      }),
-    ).toEqual(currentThreadIds.slice(-MAX_HIDDEN_MOUNTED_PREVIEW_THREADS));
-  });
-});
-
 describe("shouldWriteThreadErrorToCurrentServerThread", () => {
   it("routes errors to the active server thread when route and target match", () => {
     const threadId = ThreadId.make("thread-1");
@@ -352,6 +291,7 @@ describe("shouldWriteThreadErrorToCurrentServerThread", () => {
 
 const makeThread = (input?: {
   id?: ThreadId;
+  proposedPlans?: Thread["proposedPlans"];
   latestTurn?: {
     turnId: TurnId;
     state: "running" | "completed";
@@ -364,13 +304,15 @@ const makeThread = (input?: {
   environmentId: localEnvironmentId,
   codexThreadId: null,
   projectId: ProjectId.make("project-1"),
+  parentThreadId: null,
   title: "Thread",
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
   runtimeMode: "full-access" as const,
+  pendingRuntimeMode: null,
   interactionMode: "default" as const,
   session: null,
   messages: [],
-  proposedPlans: [],
+  proposedPlans: input?.proposedPlans ?? [],
   error: null,
   createdAt: "2026-03-29T00:00:00.000Z",
   archivedAt: null,
@@ -418,9 +360,11 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
           environmentId: thread.environmentId,
           codexThreadId: thread.codexThreadId,
           projectId: thread.projectId,
+          parentThreadId: thread.parentThreadId,
           title: thread.title,
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
+          pendingRuntimeMode: thread.pendingRuntimeMode,
           interactionMode: thread.interactionMode,
           error: thread.error,
           createdAt: thread.createdAt,
@@ -461,6 +405,9 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
         Object.fromEntries(thread.activities.map((activity) => [activity.id, activity])),
       ]),
     ),
+    insightActivitiesByThreadId: Object.fromEntries(
+      threads.map((thread) => [thread.id, thread.activities.filter(isInsightActivity)]),
+    ),
     proposedPlanIdsByThreadId: Object.fromEntries(
       threads.map((thread) => [thread.id, thread.proposedPlans.map((plan) => plan.id)]),
     ),
@@ -482,6 +429,9 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
         Object.fromEntries(thread.turnDiffSummaries.map((summary) => [summary.turnId, summary])),
       ]),
     ),
+    queuedTurnsByThreadId: Object.fromEntries(
+      threads.map((thread) => [thread.id, thread.queuedTurns ?? []]),
+    ),
     sidebarThreadSummaryById: {},
     bootstrapComplete: true,
   };
@@ -497,6 +447,46 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   setStoreThreads([]);
+});
+
+describe("createThreadPlanCatalogSelector", () => {
+  it("reuses the resolved environment for stable thread lookups", () => {
+    const threadId = ThreadId.make("thread-with-plan");
+    const proposedPlan: Thread["proposedPlans"][number] = {
+      id: "plan-1",
+      turnId: TurnId.make("turn-1"),
+      planMarkdown: "# Plan",
+      implementedAt: null,
+      implementationThreadId: null,
+      createdAt: "2026-03-29T00:00:00.000Z",
+      updatedAt: "2026-03-29T00:00:00.000Z",
+    };
+    setStoreThreads([
+      makeThread({
+        id: threadId,
+        proposedPlans: [proposedPlan],
+      }),
+    ]);
+    const selector = createThreadPlanCatalogSelector([threadId]);
+    const firstResult = selector(useStore.getState());
+    const throwingEnvironmentState = {
+      ...useStore.getState().environmentStateById[localEnvironmentId],
+      get threadShellById(): EnvironmentState["threadShellById"] {
+        throw new Error("unrelated environment should not be scanned");
+      },
+    } as EnvironmentState;
+
+    const nextResult = selector({
+      ...useStore.getState(),
+      environmentStateById: {
+        [EnvironmentId.make("environment-unrelated")]: throwingEnvironmentState,
+        ...useStore.getState().environmentStateById,
+      },
+    });
+
+    expect(firstResult).toEqual([{ id: threadId, proposedPlans: [proposedPlan] }]);
+    expect(nextResult).toBe(firstResult);
+  });
 });
 
 describe("waitForStartedServerThread", () => {
@@ -610,9 +600,11 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       environmentId: localEnvironmentId,
       codexThreadId: null,
       projectId,
+      parentThreadId: null,
       title: "Thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      pendingRuntimeMode: null,
       interactionMode: "default",
       session: previousSession,
       messages: [],
@@ -647,9 +639,11 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       environmentId: localEnvironmentId,
       codexThreadId: null,
       projectId,
+      parentThreadId: null,
       title: "Thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      pendingRuntimeMode: null,
       interactionMode: "default",
       session: previousSession,
       messages: [],
@@ -693,9 +687,11 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       environmentId: localEnvironmentId,
       codexThreadId: null,
       projectId,
+      parentThreadId: null,
       title: "Thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      pendingRuntimeMode: null,
       interactionMode: "default",
       session: previousSession,
       messages: [],
@@ -736,9 +732,11 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       environmentId: localEnvironmentId,
       codexThreadId: null,
       projectId,
+      parentThreadId: null,
       title: "Thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      pendingRuntimeMode: null,
       interactionMode: "default",
       session: previousSession,
       messages: [],
@@ -779,9 +777,11 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       environmentId: localEnvironmentId,
       codexThreadId: null,
       projectId,
+      parentThreadId: null,
       title: "Thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      pendingRuntimeMode: null,
       interactionMode: "default",
       session: previousSession,
       messages: [],
@@ -829,9 +829,11 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       environmentId: localEnvironmentId,
       codexThreadId: null,
       projectId,
+      parentThreadId: null,
       title: "Thread",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       runtimeMode: "full-access",
+      pendingRuntimeMode: null,
       interactionMode: "default",
       session: previousSession,
       messages: [],

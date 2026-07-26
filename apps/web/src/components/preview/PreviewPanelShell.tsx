@@ -10,18 +10,24 @@ export type PreviewPanelMode = "inline" | "sheet" | "sidebar" | "embedded";
 
 const PREVIEW_PANEL_WIDTH_STORAGE_KEY = "t3code:preview-panel-width";
 const PREVIEW_PANEL_MIN_WIDTH = 360;
-/** Hard ceiling so a wide monitor can't yield a panel that swallows the chat. */
-const PREVIEW_PANEL_MAX_WIDTH_PX = 1400;
-/** Fraction of the viewport allowed; the panel is min(this · vw, MAX_PX). */
+/** Fraction of the viewport allowed, preserving the remaining space for chat. */
 const PREVIEW_PANEL_MAX_WIDTH_FRACTION = 0.7;
 const PREVIEW_PANEL_DEFAULT_WIDTH = 540;
+
+export function getPreviewPanelMaxWidth(viewportWidth: number): number {
+  return Math.floor(viewportWidth * PREVIEW_PANEL_MAX_WIDTH_FRACTION);
+}
 
 /**
  * Shell for the preview panel. In inline mode the panel is user-resizable
  * via a drag handle on the left edge; width persists per browser. In
  * sheet/sidebar modes the parent owns the size.
  */
-export function PreviewPanelShell(props: { mode: PreviewPanelMode; children: ReactNode }) {
+export function PreviewPanelShell(props: {
+  mode: PreviewPanelMode;
+  maximized?: boolean;
+  children: ReactNode;
+}) {
   const useDragRegion = isElectron && props.mode !== "sheet" && props.mode !== "embedded";
   const isInline = props.mode === "inline";
   const maxWidth = useViewportClampedMaxWidth();
@@ -37,12 +43,17 @@ export function PreviewPanelShell(props: { mode: PreviewPanelMode; children: Rea
     <div
       className={cn(
         "relative flex h-full min-h-0 min-w-0 flex-col self-stretch bg-background",
-        isInline ? "shrink-0 border-l border-border" : "w-full",
+        isInline
+          ? props.maximized
+            ? "flex-1 border-l border-border"
+            : "shrink-0 border-l border-border"
+          : "w-full",
       )}
-      style={isInline ? { width: `${width}px` } : undefined}
+      style={isInline && !props.maximized ? { width: `${width}px` } : undefined}
       data-preview-panel-mode={props.mode}
+      data-preview-panel-maximized={props.maximized ? "true" : "false"}
     >
-      {isInline ? <RightPanelResizeHandle handlers={handlers} /> : null}
+      {isInline && !props.maximized ? <RightPanelResizeHandle handlers={handlers} /> : null}
       {useDragRegion ? <div className="electron-drag-region h-0 w-full" aria-hidden /> : null}
       {props.children}
     </div>
@@ -73,5 +84,5 @@ function useViewportClampedMaxWidth(): number {
       if (frame !== 0) window.cancelAnimationFrame(frame);
     };
   }, []);
-  return Math.min(PREVIEW_PANEL_MAX_WIDTH_PX, Math.floor(vw * PREVIEW_PANEL_MAX_WIDTH_FRACTION));
+  return getPreviewPanelMaxWidth(vw);
 }

@@ -1,25 +1,26 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.0.27",
+  "version": "0.0.23",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "ensure:electron": "node scripts/ensure-electron-runtime.mjs",
+    "dev": "vp pack --watch",
+    "dev:bundle": "vp pack --watch",
+    "dev:electron": "node scripts/dev-electron.mjs",
+    "build": "vp pack",
     "start": "node scripts/start-electron.mjs",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests",
-    "smoke-test": "node scripts/smoke-test.mjs"
+    "smoke-test": "node scripts/smoke-test.mjs",
+    "build:preview-annotation-css": "node scripts/build-preview-annotation-css.mjs"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
-    "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
-    "@t3tools/ssh": "workspace:*",
-    "@t3tools/tailscale": "workspace:*",
     "effect": "catalog:",
-    "electron": "41.5.0",
+    "electron": "40.6.0",
     "electron-updater": "^6.6.2",
     "playwright-core": "1.60.0",
     "react-grab": "^0.1.32"
@@ -27,9 +28,11 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
-    "cross-env": "^10.1.0",
-    "electron-builder": "26.8.1",
-    "vite-plus": "catalog:"
+    "effect-acp": "workspace:*",
+    "electron-builder": "^26.15.3",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   },
   "productName": "T3 Code (Alpha)"
 }
