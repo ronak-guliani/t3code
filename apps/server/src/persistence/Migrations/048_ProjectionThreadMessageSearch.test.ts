@@ -40,6 +40,24 @@ layer("048_ProjectionThreadMessageSearch", (it) => {
 
       yield* sql`
         UPDATE projection_thread_messages
+        SET text = 'find src/components', updated_at = '2026-01-01T00:00:01.000Z'
+        WHERE message_id = 'settled'
+      `;
+      const afterSettledUpdate = yield* sql<{ readonly count: number }>`
+        SELECT count(*) AS count
+        FROM projection_thread_message_fts
+        WHERE projection_thread_message_fts MATCH '"src/components"'
+      `;
+      assert.equal(afterSettledUpdate[0]?.count, 1);
+      const afterSettledUpdateOldText = yield* sql<{ readonly count: number }>`
+        SELECT count(*) AS count
+        FROM projection_thread_message_fts
+        WHERE projection_thread_message_fts MATCH '"src/routes"'
+      `;
+      assert.equal(afterSettledUpdateOldText[0]?.count, 0);
+
+      yield* sql`
+        UPDATE projection_thread_messages
         SET text = 'streaming delta src/routes', updated_at = '2026-01-01T00:00:01.000Z'
         WHERE message_id = 'streaming'
       `;

@@ -25,36 +25,32 @@ export default Effect.gen(function* () {
     END
   `;
   yield* sql`
-    CREATE TRIGGER IF NOT EXISTS projection_thread_message_fts_update_delete
+    CREATE TRIGGER IF NOT EXISTS projection_thread_message_fts_update
     AFTER UPDATE ON projection_thread_messages
-    WHEN OLD.is_streaming = 0
-      AND OLD.text <> ''
-      AND OLD.role IN ('user', 'assistant')
-      AND (
-        NEW.is_streaming <> 0
-        OR NEW.text = ''
-        OR NEW.role NOT IN ('user', 'assistant')
-        OR NEW.text <> OLD.text
-      )
     BEGIN
       INSERT INTO projection_thread_message_fts(projection_thread_message_fts, rowid, text)
-      VALUES ('delete', OLD.rowid, OLD.text);
-    END
-  `;
-  yield* sql`
-    CREATE TRIGGER IF NOT EXISTS projection_thread_message_fts_update_insert
-    AFTER UPDATE ON projection_thread_messages
-    WHEN NEW.is_streaming = 0
-      AND NEW.text <> ''
-      AND NEW.role IN ('user', 'assistant')
-      AND (
-        OLD.is_streaming <> 0
-        OR OLD.text = ''
-        OR OLD.role NOT IN ('user', 'assistant')
-        OR NEW.text <> OLD.text
-      )
-    BEGIN
-      INSERT INTO projection_thread_message_fts(rowid, text) VALUES (NEW.rowid, NEW.text);
+      SELECT 'delete', OLD.rowid, OLD.text
+      WHERE OLD.is_streaming = 0
+        AND OLD.text <> ''
+        AND OLD.role IN ('user', 'assistant')
+        AND (
+          NEW.is_streaming <> 0
+          OR NEW.text = ''
+          OR NEW.role NOT IN ('user', 'assistant')
+          OR NEW.text <> OLD.text
+        );
+
+      INSERT INTO projection_thread_message_fts(rowid, text)
+      SELECT NEW.rowid, NEW.text
+      WHERE NEW.is_streaming = 0
+        AND NEW.text <> ''
+        AND NEW.role IN ('user', 'assistant')
+        AND (
+          OLD.is_streaming <> 0
+          OR OLD.text = ''
+          OR OLD.role NOT IN ('user', 'assistant')
+          OR NEW.text <> OLD.text
+        );
     END
   `;
   yield* sql`
