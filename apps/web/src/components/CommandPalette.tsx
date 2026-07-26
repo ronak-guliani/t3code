@@ -230,6 +230,14 @@ function OpenCommandPaletteDialog() {
     useHandleNewThread();
   const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
   const threads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const transcriptSearchEnvironmentIds = useStore(
+    useShallow((state) => [
+      ...new Set([
+        ...selectProjectsAcrossEnvironments(state).map((project) => project.environmentId),
+        ...selectSidebarThreadsAcrossEnvironments(state).map((thread) => thread.environmentId),
+      ]),
+    ]),
+  );
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
@@ -349,12 +357,8 @@ function OpenCommandPaletteDialog() {
     setTranscriptSearchItems([]);
     let current = true;
     const timer = window.setTimeout(() => {
-      const environmentIds = new Set<EnvironmentId>([
-        ...projects.map((project) => project.environmentId),
-        ...threads.map((thread) => thread.environmentId),
-      ]);
       void Promise.allSettled(
-        [...environmentIds].flatMap((environmentId) => {
+        transcriptSearchEnvironmentIds.flatMap((environmentId) => {
           const api = readEnvironmentApi(environmentId);
           return api
             ? [
@@ -380,7 +384,7 @@ function OpenCommandPaletteDialog() {
       current = false;
       window.clearTimeout(timer);
     };
-  }, [currentView, isBrowsing, projects, query, threads]);
+  }, [currentView, isBrowsing, query, transcriptSearchEnvironmentIds]);
 
   const activeThreadId = activeThread?.id;
   const currentProjectEnvironmentId =
