@@ -6,6 +6,7 @@ import {
   type EnvironmentId,
   type FilesystemBrowseResult,
   type ProjectId,
+  type OrchestrationTranscriptSearchMatch,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -78,6 +79,7 @@ import {
   buildRootGroups,
   buildThreadActionItems,
   type CommandPaletteActionItem,
+  type CommandPaletteGroup,
   type CommandPaletteSubmenuItem,
   type CommandPaletteView,
   filterBrowseEntries,
@@ -109,6 +111,12 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
+const TRANSCRIPT_SEARCH_DEBOUNCE_MS = 125;
+
+interface TranscriptSearchItem {
+  readonly environmentId: EnvironmentId;
+  readonly match: OrchestrationTranscriptSearchMatch;
+}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -210,6 +218,7 @@ function OpenCommandPaletteDialog() {
   const clearOpenIntent = useCommandPaletteStore((store) => store.clearOpenIntent);
   const composerHandleRef = useComposerHandleContext();
   const [query, setQuery] = useState("");
+  const [transcriptSearchItems, setTranscriptSearchItems] = useState<TranscriptSearchItem[]>([]);
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
   const queryClient = useQueryClient();
@@ -322,6 +331,53 @@ function OpenCommandPaletteDialog() {
     () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.name])),
     [projects],
   );
+
+  useEffect(() => {
+    const normalizedQuery = query.trim().replace(/\s+/g, " ");
+    if (
+      normalizedQuery.length < 3 ||
+      normalizedQuery.startsWith(">") ||
+      currentView !== null ||
+      isBrowsing
+    ) {
+      setTranscriptSearchItems([]);
+      return;
+    }
+
+    let current = true;
+    const timer = window.setTimeout(() => {
+      const environmentIds = new Set<EnvironmentId>([
+        ...projects.map((project) => project.environmentId),
+        ...threads.map((thread) => thread.environmentId),
+      ]);
+      void Promise.allSettled(
+        [...environmentIds].flatMap((environmentId) => {
+          const api = readEnvironmentApi(environmentId);
+          return api
+            ? [
+                api.orchestration
+                  .searchTranscript({ query: normalizedQuery })
+                  .then((result) =>
+                    result.matches.map(
+                      (match) => ({ environmentId, match }) satisfies TranscriptSearchItem,
+                    ),
+                  ),
+              ]
+            : [];
+        }),
+      ).then((results) => {
+        if (!current) return;
+        setTranscriptSearchItems(
+          results.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+        );
+      });
+    }, TRANSCRIPT_SEARCH_DEBOUNCE_MS);
+
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+  }, [currentView, isBrowsing, projects, query, threads]);
 
   const activeThreadId = activeThread?.id;
   const currentProjectEnvironmentId =
@@ -719,6 +775,41 @@ function OpenCommandPaletteDialog() {
     projectSearchItems: projectSearchItems,
     threadSearchItems: allThreadItems,
   });
+  const transcriptGroup = useMemo<CommandPaletteGroup | null>(() => {
+    if (transcriptSearchItems.length === 0 || currentView !== null || isActionsOnly) {
+      return null;
+    }
+    const metadataThreadKeys = new Set(
+      filteredGroups
+        .flatMap((group) => group.items)
+        .filter((item) => item.value.startsWith("thread:"))
+        .map((item) => item.value.slice("thread:".length)),
+    );
+    const items = transcriptSearchItems
+      .filter(({ environmentId, match }) => !metadataThreadKeys.has(match.threadId))
+      .map(({ environmentId, match }) => {
+        const context = [match.projectTitle, match.branch ? `#${match.branch}` : null]
+          .filter((part): part is string => part !== null)
+          .join(" · ");
+        return {
+          kind: "action" as const,
+          value: `transcript:${environmentId}:${match.threadId}`,
+          searchTerms: [match.title, match.excerpt],
+          title: match.title,
+          description: `${context ? `${context} · ` : ""}${match.role === "user" ? "You" : "Assistant"}: ${match.excerpt}`,
+          icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            await navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(scopeThreadRef(environmentId, match.threadId)),
+            });
+          },
+        } satisfies CommandPaletteActionItem;
+      });
+    return items.length > 0
+      ? { value: "conversation-matches", label: "Conversation matches", items }
+      : null;
+  }, [currentView, filteredGroups, isActionsOnly, navigate, transcriptSearchItems]);
 
   const handleAddProject = useCallback(
     async (rawCwd: string) => {
@@ -860,6 +951,9 @@ function OpenCommandPaletteDialog() {
   });
 
   let displayedGroups = filteredGroups;
+  if (transcriptGroup) {
+    displayedGroups = [...displayedGroups, transcriptGroup];
+  }
   if (isBrowsing) {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }
