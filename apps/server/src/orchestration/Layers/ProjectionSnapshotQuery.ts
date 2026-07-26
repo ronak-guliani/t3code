@@ -21,7 +21,6 @@ import {
   type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
-  type OrchestrationSearchTranscriptResult,
   ModelSelection,
   ProjectId,
   ThreadId,

@@ -110,6 +110,8 @@ import { ComposerHandleContext, useComposerHandleContext } from "../composerHand
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+const EMPTY_THREAD_SEARCH_ITEMS: ReadonlyArray<CommandPaletteActionItem> = [];
+const EMPTY_COMMAND_PALETTE_GROUPS: ReadonlyArray<CommandPaletteGroup> = [];
 const BROWSE_STALE_TIME_MS = 30_000;
 const TRANSCRIPT_SEARCH_DEBOUNCE_MS = 125;
 
@@ -554,9 +556,10 @@ function OpenCommandPaletteDialog() {
       settings.defaultThreadEnvMode,
     ],
   );
-
-  const allThreadItems = useMemo(
-    () =>
+  const shouldBuildThreadSearchItems =
+    currentView === null && !isActionsOnly && deferredQuery.trim().length > 0;
+  const buildThreadItems = useCallback(
+    (limit?: number) =>
       buildThreadActionItems({
         threads,
         ...(activeThreadId ? { activeThreadId } : {}),
@@ -571,10 +574,21 @@ function OpenCommandPaletteDialog() {
             params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
           });
         },
+        ...(limit === undefined ? {} : { limit }),
       }),
     [activeThreadId, navigate, projectTitleById, settings.sidebarThreadSortOrder, threads],
   );
-  const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+  const threadSearchItems = useMemo(
+    () => (shouldBuildThreadSearchItems ? buildThreadItems() : EMPTY_THREAD_SEARCH_ITEMS),
+    [buildThreadItems, shouldBuildThreadSearchItems],
+  );
+  const recentThreadItems = useMemo(() => {
+    if (threadSearchItems.length > 0) {
+      return threadSearchItems.slice(0, RECENT_THREAD_LIMIT);
+    }
+
+    return buildThreadItems(RECENT_THREAD_LIMIT);
+  }, [buildThreadItems, threadSearchItems]);
 
   function pushPaletteView(view: CommandPaletteView): void {
     setViewStack((previousViews) => [
@@ -769,13 +783,34 @@ function OpenCommandPaletteDialog() {
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const activeGroups = currentView ? currentView.groups : rootGroups;
 
-  const filteredGroups = filterCommandPaletteGroups({
-    activeGroups,
-    query: deferredQuery,
-    isInSubmenu: currentView !== null,
-    projectSearchItems: projectSearchItems,
-    threadSearchItems: allThreadItems,
-  });
+  const filteredActiveGroups = useMemo(
+    () =>
+      filterCommandPaletteGroups({
+        activeGroups,
+        query: deferredQuery,
+        isInSubmenu: currentView !== null,
+        projectSearchItems: EMPTY_THREAD_SEARCH_ITEMS,
+        threadSearchItems: EMPTY_THREAD_SEARCH_ITEMS,
+      }),
+    [activeGroups, currentView, deferredQuery],
+  );
+  const filteredSearchGroups = useMemo(() => {
+    if (currentView) {
+      return EMPTY_COMMAND_PALETTE_GROUPS;
+    }
+
+    return filterCommandPaletteGroups({
+      activeGroups: EMPTY_COMMAND_PALETTE_GROUPS,
+      query: deferredQuery,
+      isInSubmenu: false,
+      projectSearchItems,
+      threadSearchItems,
+    });
+  }, [currentView, deferredQuery, projectSearchItems, threadSearchItems]);
+  const filteredGroups = useMemo(
+    () => (currentView ? filteredActiveGroups : [...filteredActiveGroups, ...filteredSearchGroups]),
+    [currentView, filteredActiveGroups, filteredSearchGroups],
+  );
   const transcriptGroup = useMemo<CommandPaletteGroup | null>(() => {
     if (transcriptSearchItems.length === 0 || currentView !== null || isActionsOnly) {
       return null;
@@ -787,7 +822,7 @@ function OpenCommandPaletteDialog() {
         .map((item) => item.value.slice("thread:".length)),
     );
     const items = transcriptSearchItems
-      .filter(({ environmentId, match }) => !metadataThreadKeys.has(match.threadId))
+      .filter(({ match }) => !metadataThreadKeys.has(match.threadId))
       .map(({ environmentId, match }) => {
         const context = [match.projectTitle, match.branch ? `#${match.branch}` : null]
           .filter((part): part is string => part !== null)
