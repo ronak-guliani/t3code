@@ -344,6 +344,7 @@ function OpenCommandPaletteDialog() {
       return;
     }
 
+    setTranscriptSearchItems([]);
     let current = true;
     const timer = window.setTimeout(() => {
       const environmentIds = new Set<EnvironmentId>([
