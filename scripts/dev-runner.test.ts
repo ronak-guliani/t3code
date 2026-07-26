@@ -4,6 +4,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Path } from "effect";
 
 import {
+  MODE_ARGS,
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
   findFirstAvailableOffset,
@@ -12,6 +13,22 @@ import {
 } from "./dev-runner.ts";
 
 it.layer(NodeServices.layer)("dev-runner", (it) => {
+  describe("MODE_ARGS", () => {
+    it.effect("passes every --filter before the task name", () =>
+      Effect.sync(() => {
+        for (const [mode, args] of Object.entries(MODE_ARGS)) {
+          const taskIndex = args.indexOf("dev");
+          assert.isAbove(taskIndex, 0, `${mode} must invoke the 'dev' task`);
+          const lastFilterIndex = args.lastIndexOf("--filter");
+          assert.isBelow(
+            lastFilterIndex,
+            taskIndex,
+            `${mode} places --filter after 'dev', which makes vp re-enter the root dev script`,
+          );
+        }
+      }),
+    );
+  });
   describe("resolveOffset", () => {
     it.effect("uses explicit T3CODE_PORT_OFFSET when provided", () =>
       Effect.sync(() => {

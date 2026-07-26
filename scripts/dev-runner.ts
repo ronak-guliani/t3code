@@ -20,20 +20,23 @@ export const DEFAULT_T3_HOME = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(NodeOS.homedir(), ".t3"),
 );
 
-const MODE_ARGS = {
+// `vp run` treats everything after the task name as pass-through args for that
+// task, so `--filter` must precede `dev`. With the flags trailing, vp resolves
+// the root package's own `dev` script and re-enters this runner.
+export const MODE_ARGS = {
   dev: [
     "run",
-    "dev",
     "--filter",
     "@t3tools/contracts",
     "--filter",
     "@t3tools/web",
     "--filter",
     "t3",
+    "dev",
   ],
-  "dev:server": ["run", "dev", "--filter", "t3"],
-  "dev:web": ["run", "dev", "--filter", "@t3tools/web"],
-  "dev:desktop": ["run", "dev", "--filter", "@t3tools/desktop", "--filter", "@t3tools/web"],
+  "dev:server": ["run", "--filter", "t3", "dev"],
+  "dev:web": ["run", "--filter", "@t3tools/web", "dev"],
+  "dev:desktop": ["run", "--filter", "@t3tools/desktop", "--filter", "@t3tools/web", "dev"],
 } as const satisfies Record<string, ReadonlyArray<string>>;
 
 type DevMode = keyof typeof MODE_ARGS;

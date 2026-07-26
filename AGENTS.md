@@ -40,6 +40,7 @@ Write only the small, concise amount of code needed to solve the problem; avoid 
 - Retried sidebar mutations need durable mutation IDs; a lost response can hide a committed reorder, and replaying it without server deduplication can move the thread twice.
 - Packaged Dev builds must write their flavor-specific `productName` into ASAR metadata; Electron derives `app.getName()` from it, and a stale Alpha name makes Dev reuse Alpha's Chromium profile.
 - Do not synthesize active virtual agent-run rows for archived parent threads; the sidebar filters archived parents after expansion, which otherwise resurrects their former nested runs as roots on startup.
+- `vp run` treats every argument after the task name as pass-through, so `--filter` must precede the task (`vp run --filter pkg dev`). Trailing filters make vp resolve the root package's own `dev` script and re-enter `scripts/dev-runner.ts`.
 
 ## Keep This File Updated
 
