@@ -289,6 +289,9 @@ describe("ProviderCommandReactor", () => {
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: vi.fn(() => Effect.succeed(input?.checkpointIsGitRepository ?? false)),
       hasCheckpointRef: vi.fn(() => Effect.succeed(input?.checkpointRefExists ?? false)),
+      checkpointRefMatchesWorkspace: vi.fn(() =>
+        Effect.succeed(input?.checkpointRefExists ?? false),
+      ),
       captureCheckpoint: vi.fn((_) =>
         Effect.sync(() => {
           turnStartOrder.push("captureCheckpoint");
