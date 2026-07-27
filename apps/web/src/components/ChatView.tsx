@@ -127,6 +127,12 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings"
 import { PreviewPanel } from "./preview/PreviewPanel";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { useBrowserPanelState, useRightPanelStore } from "~/rightPanelStore";
+import { RightPanelTabs } from "./RightPanelTabs";
+import { addBrowserSurface } from "./preview/addBrowserSurface";
+import { closePreviewSession } from "./preview/closePreviewSession";
+import { useThreadPreviewState } from "~/previewStateStore";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { ChevronDownIcon } from "lucide-react";
@@ -753,15 +759,24 @@ function ChatViewBody(
   >({});
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
-  const [activeRightPanel, setActiveRightPanel] = useState<
-    "plan" | "browser-preview" | "insights" | null
-  >(null);
-  const planSidebarOpen = activeRightPanel === "plan";
-  const browserPreviewOpen = activeRightPanel === "browser-preview";
+  const [activeRightPanel, setActiveRightPanel] = useState<"insights" | null>(null);
+  const planSidebarOpen =
+    useBrowserPanelState(routeThreadRef).isOpen &&
+    useBrowserPanelState(routeThreadRef).activeSurfaceId === "plan";
+  const browserPreviewOpen =
+    useBrowserPanelState(routeThreadRef).isOpen &&
+    useBrowserPanelState(routeThreadRef).surfaces.some((surface) => surface.kind === "preview");
   const insightsOpen = activeRightPanel === "insights";
-  const setPlanSidebarOpen = useCallback((open: boolean) => {
-    setActiveRightPanel((current) => (open ? "plan" : current === "plan" ? null : current));
-  }, []);
+  const setPlanSidebarOpen = useCallback(
+    (open: boolean) => {
+      if (open) {
+        useRightPanelStore.getState().open(routeThreadRef, "plan");
+      } else {
+        useRightPanelStore.getState().close(routeThreadRef);
+      }
+    },
+    [routeThreadRef],
+  );
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
@@ -1779,22 +1794,24 @@ function ChatViewBody(
     setTerminalOpen(!terminalState.terminalOpen);
   }, [activeThreadRef, setTerminalOpen, terminalState.terminalOpen]);
   const toggleBrowserPreview = useCallback(() => {
-    setActiveRightPanel((current) => {
-      if (current === "browser-preview") {
-        if (activeThreadRef) useRightPanelStore.getState().closeBrowser(activeThreadRef);
-        return null;
-      }
-      if (activeThreadRef) useRightPanelStore.getState().openBrowser(activeThreadRef, null);
-      planSidebarDismissedForTurnRef.current =
-        activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-      return "browser-preview";
-    });
+    if (!activeThreadRef) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    if (panel?.isOpen && panel.surfaces.some((surface) => surface.kind === "preview")) {
+      state.close(activeThreadRef);
+      return;
+    }
+    state.open(activeThreadRef, "preview");
+    planSidebarDismissedForTurnRef.current =
+      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
   }, [activePlan?.turnId, activeThreadRef, sidebarProposedPlan?.turnId]);
   const closeBrowserPreview = useCallback(() => {
-    if (activeThreadRef) useRightPanelStore.getState().closeBrowser(activeThreadRef);
-    setActiveRightPanel((current) => (current === "browser-preview" ? null : current));
+    if (activeThreadRef) useRightPanelStore.getState().close(activeThreadRef);
   }, [activeThreadRef]);
   const browserPanel = useBrowserPanelState(activeThreadRef);
+  const previewState = useThreadPreviewState(activeThreadRef);
+  const openPreview = useAtomCommand(previewEnvironment.open);
+  const closePreview = useAtomCommand(previewEnvironment.close);
   const activeBrowserSurface = browserPanel.surfaces.find(
     (surface) => surface.id === browserPanel.activeSurfaceId,
   );
@@ -1805,14 +1822,42 @@ function ChatViewBody(
     [activeProject?.scripts],
   );
   const browserPanelVisibleRef = useRef(browserPanel.isOpen);
-  // Automation can reveal the browser from outside React; mirror a browser
-  // surface becoming visible into this fork's existing right-panel shell.
   useEffect(() => {
-    const becameVisible = browserPanel.isOpen && !browserPanelVisibleRef.current;
     browserPanelVisibleRef.current = browserPanel.isOpen;
-    if (!becameVisible) return;
-    setActiveRightPanel("browser-preview");
   }, [browserPanel.isOpen]);
+  useEffect(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore
+      .getState()
+      .reconcileBrowserSurfaces(activeThreadRef, Object.keys(previewState.sessions));
+  }, [activeThreadRef, previewState.sessions]);
+  const activateRightPanelSurface = useCallback(
+    (surface: (typeof browserPanel.surfaces)[number]) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().activateSurface(activeThreadRef, surface.id);
+    },
+    [activeThreadRef],
+  );
+  const closeRightPanelSurface = useCallback(
+    (surface: (typeof browserPanel.surfaces)[number]) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+      if (surface.kind === "preview" && surface.resourceId) {
+        const snapshot = previewState.sessions[surface.resourceId] ?? null;
+        void closePreviewSession({
+          closePreview,
+          snapshot,
+          tabId: surface.resourceId,
+          threadRef: activeThreadRef,
+        });
+      }
+    },
+    [activeThreadRef, closePreview, previewState.sessions],
+  );
+  const createBrowserSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
+  }, [activeThreadRef, openPreview]);
   const toggleInsights = useCallback(() => {
     setActiveRightPanel((current) => {
       if (current === "insights") return null;
@@ -4393,29 +4438,42 @@ function ChatViewBody(
         </div>
         {/* end chat column */}
 
-        {/* Plan sidebar */}
-        {planSidebarOpen && !shouldUseRightPanelSheet ? (
-          <PlanSidebar
-            activePlan={activePlan}
-            activeProposedPlan={sidebarProposedPlan}
-            label={planSidebarLabel}
-            environmentId={environmentId}
-            markdownCwd={gitCwd ?? undefined}
-            workspaceRoot={activeWorkspaceRoot}
-            timestampFormat={timestampFormat}
-            mode="sidebar"
-            onClose={closePlanSidebar}
-          />
-        ) : null}
-        {browserPreviewOpen && activeThreadRef ? (
-          <PreviewPanel
-            mode="inline"
-            threadRef={activeThreadRef}
-            tabId={browserTabId}
-            configuredUrls={configuredPreviewUrls}
-            visible
-            onClose={closeBrowserPreview}
-          />
+        {browserPanel.isOpen && !shouldUseRightPanelSheet && activeThreadRef ? (
+          <RightPanelTabs
+            surfaces={browserPanel.surfaces}
+            activeSurfaceId={browserPanel.activeSurfaceId}
+            previewSessions={previewState.sessions}
+            onActivate={activateRightPanelSurface}
+            onClose={closeRightPanelSurface}
+            onAdd={createBrowserSurface}
+          >
+            {activeBrowserSurface?.kind === "plan" ? (
+              <PlanSidebar
+                activePlan={activePlan}
+                activeProposedPlan={sidebarProposedPlan}
+                label={planSidebarLabel}
+                environmentId={environmentId}
+                markdownCwd={gitCwd ?? undefined}
+                workspaceRoot={activeWorkspaceRoot}
+                timestampFormat={timestampFormat}
+                mode="sidebar"
+                onClose={closePlanSidebar}
+              />
+            ) : activeBrowserSurface?.kind === "preview" ? (
+              <PreviewPanel
+                mode="inline"
+                threadRef={activeThreadRef}
+                tabId={browserTabId}
+                configuredUrls={configuredPreviewUrls}
+                visible
+                onClose={closeBrowserPreview}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
+                This surface is unavailable for this thread.
+              </div>
+            )}
+          </RightPanelTabs>
         ) : null}
         {insightsOpen && !shouldUseRightPanelSheet ? (
           <InsightsPanel
@@ -4443,20 +4501,40 @@ function ChatViewBody(
           onAddTerminalContext={addTerminalContextToDraft}
         />
       ))}
-      {shouldUseRightPanelSheet && (planSidebarOpen || insightsOpen) ? (
-        <RightPanelSheet open onClose={planSidebarOpen ? closePlanSidebar : closeInsights}>
-          {planSidebarOpen ? (
-            <PlanSidebar
-              activePlan={activePlan}
-              activeProposedPlan={sidebarProposedPlan}
-              label={planSidebarLabel}
-              environmentId={environmentId}
-              markdownCwd={gitCwd ?? undefined}
-              workspaceRoot={activeWorkspaceRoot}
-              timestampFormat={timestampFormat}
-              mode="sheet"
-              onClose={closePlanSidebar}
-            />
+      {shouldUseRightPanelSheet && (browserPanel.isOpen || insightsOpen) ? (
+        <RightPanelSheet open onClose={browserPanel.isOpen ? closeBrowserPreview : closeInsights}>
+          {browserPanel.isOpen && activeThreadRef ? (
+            <RightPanelTabs
+              surfaces={browserPanel.surfaces}
+              activeSurfaceId={browserPanel.activeSurfaceId}
+              previewSessions={previewState.sessions}
+              onActivate={activateRightPanelSurface}
+              onClose={closeRightPanelSurface}
+              onAdd={createBrowserSurface}
+            >
+              {activeBrowserSurface?.kind === "plan" ? (
+                <PlanSidebar
+                  activePlan={activePlan}
+                  activeProposedPlan={sidebarProposedPlan}
+                  label={planSidebarLabel}
+                  environmentId={environmentId}
+                  markdownCwd={gitCwd ?? undefined}
+                  workspaceRoot={activeWorkspaceRoot}
+                  timestampFormat={timestampFormat}
+                  mode="sheet"
+                  onClose={closePlanSidebar}
+                />
+              ) : (
+                <PreviewPanel
+                  mode="sheet"
+                  threadRef={activeThreadRef}
+                  tabId={browserTabId}
+                  configuredUrls={configuredPreviewUrls}
+                  visible
+                  onClose={closeBrowserPreview}
+                />
+              )}
+            </RightPanelTabs>
           ) : (
             <InsightsPanel
               activities={activeThread.insightActivities ?? activeThread.activities}
