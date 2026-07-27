@@ -73,6 +73,10 @@ function updateState(
 }
 
 function upsert(current: ThreadRightPanelState, surface: RightPanelSurface): ThreadRightPanelState {
+  const existing = current.surfaces.find((entry) => entry.id === surface.id);
+  if (current.isOpen && current.activeSurfaceId === surface.id && existing === surface) {
+    return current;
+  }
   return {
     isOpen: true,
     activeSurfaceId: surface.id,
@@ -189,6 +193,13 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
         const activeSurfaceId = surfaces.some((surface) => surface.id === current.activeSurfaceId)
           ? current.activeSurfaceId
           : (surfaces.find((surface) => surface.kind === "preview")?.id ?? surfaces[0]?.id ?? null);
+        if (
+          surfaces.length === current.surfaces.length &&
+          surfaces.every((surface, index) => surface === current.surfaces[index]) &&
+          activeSurfaceId === current.activeSurfaceId
+        ) {
+          return current;
+        }
         return { ...current, surfaces, activeSurfaceId };
       }),
     })),

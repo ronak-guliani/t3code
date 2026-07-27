@@ -133,4 +133,23 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
   });
+  describe("readFile", () => {
+    it.effect("reads files relative to the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        yield* writeTextFile(cwd, "docs/preview.html", "<h1>Preview</h1>");
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "docs/preview.html",
+        });
+
+        expect(result).toEqual({
+          relativePath: "docs/preview.html",
+          contents: "<h1>Preview</h1>",
+        });
+      }),
+    );
+  });
 });

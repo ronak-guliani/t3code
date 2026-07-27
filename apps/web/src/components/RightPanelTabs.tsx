@@ -1,9 +1,20 @@
 import type { PreviewSessionSnapshot } from "@t3tools/contracts";
-import { ClipboardList, FileDiff, Files, Globe2, Plus, TerminalSquare, X } from "lucide-react";
-import type { MouseEvent, ReactNode } from "react";
+import {
+  ClipboardList,
+  FileDiff,
+  Files,
+  Globe2,
+  Maximize2,
+  Minimize2,
+  Plus,
+  TerminalSquare,
+  X,
+} from "lucide-react";
+import { type MouseEvent, type ReactNode, useState } from "react";
 
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "./ui/menu";
 
 type Props = {
   readonly surfaces: readonly RightPanelSurface[];
@@ -11,7 +22,16 @@ type Props = {
   readonly previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   readonly onActivate: (surface: RightPanelSurface) => void;
   readonly onClose: (surface: RightPanelSurface) => void;
-  readonly onAdd: () => void;
+  readonly onCloseOthers: (surface: RightPanelSurface) => void;
+  readonly onCloseToRight: (surface: RightPanelSurface) => void;
+  readonly onCloseAll: () => void;
+  readonly onCopyPath: (path: string) => void;
+  readonly onAddBrowser: () => void;
+  readonly onAddTerminal: () => void;
+  readonly onAddFiles: () => void;
+  readonly onAddDiff: () => void;
+  readonly maximized?: boolean;
+  readonly onToggleMaximize?: () => void;
   readonly children: ReactNode;
 };
 
@@ -29,16 +49,45 @@ function titleFor(
     case "file":
       return surface.relativePath.split("/").at(-1) ?? surface.relativePath;
     case "terminal":
-      return "Terminal";
+      return `Terminal ${surface.resourceId}`;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
-      return snapshot.navStatus.title || new URL(snapshot.navStatus.url).host || "Browser";
+      try {
+        return snapshot.navStatus.title || new URL(snapshot.navStatus.url).host || "Browser";
+      } catch {
+        return snapshot.navStatus.title || "Browser";
+      }
     }
   }
 }
 
-function Icon({ surface }: { readonly surface: RightPanelSurface }) {
+function PreviewIcon({ url }: { readonly url: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) return <Globe2 className="size-3.5" />;
+  try {
+    const favicon = new URL("/favicon.ico", url).toString();
+    return (
+      <img
+        alt=""
+        aria-hidden
+        className="size-3.5 rounded-sm"
+        src={favicon}
+        onError={() => setFailed(true)}
+      />
+    );
+  } catch {
+    return <Globe2 className="size-3.5" />;
+  }
+}
+
+function Icon({
+  surface,
+  sessions,
+}: {
+  readonly surface: RightPanelSurface;
+  readonly sessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+}) {
   switch (surface.kind) {
     case "plan":
       return <ClipboardList className="size-3.5" />;
@@ -49,8 +98,11 @@ function Icon({ surface }: { readonly surface: RightPanelSurface }) {
       return <Files className="size-3.5" />;
     case "terminal":
       return <TerminalSquare className="size-3.5" />;
-    case "preview":
-      return <Globe2 className="size-3.5" />;
+    case "preview": {
+      const status = surface.resourceId ? sessions[surface.resourceId]?.navStatus : undefined;
+      const url = status && status._tag !== "Idle" ? status.url : null;
+      return <PreviewIcon url={url} />;
+    }
   }
 }
 
@@ -60,7 +112,16 @@ export function RightPanelTabs({
   previewSessions,
   onActivate,
   onClose,
-  onAdd,
+  onCloseOthers,
+  onCloseToRight,
+  onCloseAll,
+  onCopyPath,
+  onAddBrowser,
+  onAddTerminal,
+  onAddFiles,
+  onAddDiff,
+  maximized = false,
+  onToggleMaximize,
   children,
 }: Props) {
   const closeOnMiddleClick = (event: MouseEvent, surface: RightPanelSurface) => {
@@ -70,57 +131,114 @@ export function RightPanelTabs({
   };
 
   return (
-    <section className="flex min-h-0 w-[min(42vw,36rem)] min-w-80 flex-col border-l border-border bg-card max-[980px]:w-full max-[980px]:min-w-0">
+    <section
+      className={cn(
+        "flex min-h-0 w-[min(42vw,36rem)] min-w-80 flex-col border-l border-border bg-card max-[980px]:w-full max-[980px]:min-w-0",
+        maximized && "w-full max-w-none",
+      )}
+      data-right-panel-maximized={maximized ? "true" : "false"}
+    >
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
         <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {surfaces.map((surface) => {
             const title = titleFor(surface, previewSessions);
             const active = surface.id === activeSurfaceId;
             return (
-              <button
-                key={surface.id}
-                type="button"
-                title={title}
-                onClick={() => onActivate(surface)}
-                onAuxClick={(event) => closeOnMiddleClick(event, surface)}
-                className={cn(
-                  "group flex h-7 min-w-24 max-w-44 shrink-0 items-center gap-1.5 rounded px-2 text-xs",
-                  active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
-                )}
-              >
-                <Icon surface={surface} />
-                <span className="min-w-0 flex-1 truncate text-left">{title}</span>
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Close ${title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onClose(surface);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onClose(surface);
-                    }
-                  }}
-                  className="opacity-0 group-hover:opacity-100"
-                >
-                  <X className="size-3" />
-                </span>
-              </button>
+              <Menu key={surface.id}>
+                <MenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      title={title}
+                      onClick={() => onActivate(surface)}
+                      onAuxClick={(event) => closeOnMiddleClick(event, surface)}
+                      className={cn(
+                        "group flex h-7 min-w-24 max-w-44 shrink-0 items-center gap-1.5 rounded px-2 text-xs",
+                        active
+                          ? "bg-accent text-foreground"
+                          : "text-muted-foreground hover:bg-accent/60",
+                      )}
+                    >
+                      <Icon surface={surface} sessions={previewSessions} />
+                      <span className="min-w-0 flex-1 truncate text-left">{title}</span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Close ${title}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onClose(surface);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onClose(surface);
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100"
+                      >
+                        <X className="size-3" />
+                      </span>
+                    </button>
+                  }
+                />
+                <MenuPopup>
+                  {surface.kind === "file" ? (
+                    <>
+                      <MenuItem onClick={() => onCopyPath(surface.relativePath)}>
+                        Copy path
+                      </MenuItem>
+                      <MenuSeparator />
+                    </>
+                  ) : null}
+                  <MenuItem onClick={() => onClose(surface)}>Close</MenuItem>
+                  <MenuItem disabled={surfaces.length <= 1} onClick={() => onCloseOthers(surface)}>
+                    Close others
+                  </MenuItem>
+                  <MenuItem
+                    disabled={surfaces.indexOf(surface) === surfaces.length - 1}
+                    onClick={() => onCloseToRight(surface)}
+                  >
+                    Close to the right
+                  </MenuItem>
+                  <MenuItem disabled={surfaces.length === 0} onClick={onCloseAll}>
+                    Close all
+                  </MenuItem>
+                </MenuPopup>
+              </Menu>
             );
           })}
         </div>
-        <button
-          type="button"
-          aria-label="Add browser surface"
-          onClick={onAdd}
-          className="rounded p-1 hover:bg-accent"
-        >
-          <Plus className="size-4" />
-        </button>
+        <Menu>
+          <MenuTrigger
+            render={
+              <button
+                type="button"
+                aria-label="Add surface"
+                className="rounded p-1 hover:bg-accent"
+              >
+                <Plus className="size-4" />
+              </button>
+            }
+          />
+          <MenuPopup>
+            <MenuItem onClick={onAddBrowser}>Browser</MenuItem>
+            <MenuItem onClick={onAddTerminal}>Terminal</MenuItem>
+            <MenuItem onClick={onAddFiles}>Files</MenuItem>
+            <MenuItem onClick={onAddDiff}>Diff</MenuItem>
+          </MenuPopup>
+        </Menu>
+        {onToggleMaximize ? (
+          <button
+            type="button"
+            aria-label={maximized ? "Restore panel size" : "Maximize panel"}
+            onClick={onToggleMaximize}
+            className="rounded p-1 hover:bg-accent"
+          >
+            {maximized ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          </button>
+        ) : null}
       </div>
       <div className="min-h-0 flex-1">{children}</div>
     </section>

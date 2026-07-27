@@ -29,6 +29,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { previewBridge } from "./previewBridge";
 import { subscribePreviewAction } from "./previewActionBus";
 import { openPreviewSession } from "./openPreviewSession";
+import { openDiscoveredPort } from "./openDiscoveredPort";
 import { PreviewChromeRow } from "./PreviewChromeRow";
 import { formatPreviewUrl } from "./previewUrlPresentation";
 import { PreviewEmptyState } from "./PreviewEmptyState";
@@ -526,7 +527,16 @@ export function PreviewView({
             environmentId={threadRef.environmentId}
             configuredUrls={configuredUrls}
             recentlySeenUrls={previewState.recentlySeenUrls}
-            onOpenUrl={(next) => void handleOpenServerUrl(next)}
+            onOpenUrl={(url) => void handleOpenServerUrl(url)}
+            onOpenServer={(server) =>
+              tabId
+                ? void handleOpenServerUrl(server.url)
+                : void openDiscoveredPort({
+                    threadRef,
+                    port: server,
+                    openPreview: open,
+                  })
+            }
           />
         ) : null}
         {snapshot && desktopOverlay ? (
