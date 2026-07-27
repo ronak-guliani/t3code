@@ -97,4 +97,28 @@ describe("AcpSessionRuntime handleSessionUpdate", () => {
       expect(started).toHaveLength(2);
       expect(completed).toHaveLength(1);
     }).pipe(Effect.runPromise));
+
+  it("closes the assistant segment when the initial tool call update is suppressed", () =>
+    Effect.gen(function* () {
+      const events = yield* drainNotifications([
+        textChunk("Let me look"),
+        {
+          sessionId: "session-1",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tool-1",
+            title: "Terminal",
+            kind: "execute",
+            status: "pending",
+          },
+        },
+        toolCallProgress("running"),
+        textChunk("Found it"),
+      ]);
+
+      const started = events.filter((event) => event._tag === "AssistantItemStarted");
+      const completed = events.filter((event) => event._tag === "AssistantItemCompleted");
+      expect(started).toHaveLength(2);
+      expect(completed).toHaveLength(1);
+    }).pipe(Effect.runPromise));
 });

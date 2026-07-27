@@ -720,9 +720,6 @@ export const handleSessionUpdate = ({
           }
           return [{ previous, merged: nextToolCall }, next] as const;
         });
-        if (!shouldEmitToolCallUpdate(previous, merged)) {
-          continue;
-        }
         // Close the active assistant segment only when a tool call is first
         // observed (a genuine `tool_call` start where the model paused its
         // prose). Progress and completion updates to an already-tracked call
@@ -733,6 +730,9 @@ export const handleSessionUpdate = ({
             queue,
             assistantSegmentRef,
           });
+        }
+        if (!shouldEmitToolCallUpdate(previous, merged)) {
+          continue;
         }
         yield* Queue.offer(queue, {
           _tag: "ToolCallUpdated",

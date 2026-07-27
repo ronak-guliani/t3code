@@ -584,16 +584,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
-      const worktreeOwner =
-        command.worktreePath === undefined || command.worktreePath === null
-          ? undefined
-          : findActiveWorktreeOwner(readModel, command.threadId, command.worktreePath);
-      if (worktreeOwner !== undefined) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `Worktree '${command.worktreePath}' is already bound to active thread '${worktreeOwner.id}'.`,
-        });
-      }
       const metaUpdatedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",

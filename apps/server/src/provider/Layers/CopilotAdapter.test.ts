@@ -802,7 +802,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
-  it.effect("throttles leaked full-access permission warnings to one per permission kind", () =>
+  it.effect("does not warn for expected full-access permission requests", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
       const settings = yield* ServerSettingsService;
@@ -833,7 +833,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
             event.type === "request.opened" ||
             event.type === "turn.completed",
         ),
-        Stream.take(2),
+        Stream.take(1),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -847,7 +847,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       const events = Array.from(yield* Fiber.join(relevantEventsFiber));
       assert.deepEqual(
         events.map((event) => event.type),
-        ["runtime.warning", "turn.completed"],
+        ["turn.completed"],
       );
 
       yield* adapter.stopSession(threadId);

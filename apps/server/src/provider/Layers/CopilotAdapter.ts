@@ -137,7 +137,6 @@ interface CopilotSessionContext {
   notificationFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
-  readonly fullAccessWarningKeys: Set<string>;
   readonly turns: Array<CopilotRetainedTurnSnapshot>;
   activeTurnId: TurnId | undefined;
   inFlightTurnId: TurnId | undefined;
@@ -325,12 +324,6 @@ function parseCopilotResume(raw: unknown): { sessionId: string } | undefined {
   if (raw.schemaVersion !== COPILOT_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
   return { sessionId: raw.sessionId.trim() };
-}
-
-function leakedFullAccessWarningKey(
-  permissionRequest: ReturnType<typeof normalizeCopilotPermissionRequest>,
-): string {
-  return `${permissionRequest.kind}:${permissionRequest.toolCall?.itemType ?? "unknown"}`;
 }
 
 function textOrFallback(value: string | null | undefined, fallback: string): string {
@@ -829,7 +822,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       readonly copilotSettings: CopilotRuntimeCopilotSettings;
       readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
       readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
-      readonly fullAccessWarningKeys: Set<string>;
       readonly getCurrentTurnId: () => TurnId | undefined;
       readonly onSessionEvent?: (
         event: AcpParsedSessionEvent,
@@ -899,27 +891,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                   });
                 }
                 return { outcome: { outcome: "cancelled" as const } };
-              }
-
-              if (input.runtimeMode === "full-access") {
-                const warningKey = leakedFullAccessWarningKey(permissionRequest);
-                if (!input.fullAccessWarningKeys.has(warningKey)) {
-                  input.fullAccessWarningKeys.add(warningKey);
-                  yield* offerRuntimeEvent({
-                    type: "runtime.warning",
-                    ...(yield* makeEventStamp()),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId: input.getCurrentTurnId(),
-                    payload: {
-                      message: "Copilot requested permission despite full-access runtime mode.",
-                      detail: {
-                        requestKind: permissionRequest.kind,
-                        requestDetail: permissionRequest.detail ?? null,
-                      },
-                    },
-                  });
-                }
               }
 
               if (autoApproval._tag === "select") {
@@ -1265,7 +1236,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           copilotSettings: ctx.copilotSettings,
           pendingApprovals: ctx.pendingApprovals,
           pendingUserInputs: ctx.pendingUserInputs,
-          fullAccessWarningKeys: ctx.fullAccessWarningKeys,
           resumeSessionId,
           getCurrentTurnId: () => ctx.activeTurnId,
           onSessionEvent: (event) => processBackgroundAgentEvent(ctx, event),
@@ -1434,7 +1404,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
-          const fullAccessWarningKeys = new Set<string>();
           let ctx: CopilotSessionContext | undefined;
           const resumeSessionId = parseCopilotResume(input.resumeCursor)?.sessionId;
           const runtime = yield* openRuntime({
@@ -1444,7 +1413,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             copilotSettings: { binaryPath: copilotSettings.binaryPath },
             pendingApprovals,
             pendingUserInputs,
-            fullAccessWarningKeys,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             ...(input.resumeFallback ? { resumeFallback: input.resumeFallback } : {}),
             getCurrentTurnId: () => ctx?.activeTurnId,
@@ -1488,7 +1456,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               notificationFiber: runtime.notificationFiber,
               pendingApprovals,
               pendingUserInputs,
-              fullAccessWarningKeys,
               turns: [],
               activeTurnId: undefined,
               inFlightTurnId: undefined,
