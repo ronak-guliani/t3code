@@ -82,6 +82,7 @@ export function PreviewView({
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
+  const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
@@ -246,14 +247,15 @@ export function PreviewView({
         void stopBrowserRecording(tabId).then(
           (artifact) => {
             if (!artifact) return;
+            const revealAction = {
+              children: "Reveal in Finder",
+              onClick: () => void bridge.revealArtifact(artifact.path),
+            };
             toastManager.add(
               stackedThreadToast({
                 type: "success",
                 title: "Recording saved",
-                actionProps: {
-                  children: revealInFileExplorerLabel(navigator.platform),
-                  onClick: () => void bridge.revealArtifact(artifact.path),
-                },
+                actionProps: revealAction,
               }),
             );
           },
@@ -373,6 +375,7 @@ export function PreviewView({
       try {
         const annotation = await previewBridge.pickElement(tabId);
         if (!annotation) return;
+        addPreviewAnnotation(threadRef, annotation);
         const screenshotFile = await previewAnnotationScreenshotFile(annotation);
         if (screenshotFile && annotation.screenshot) {
           addImage(threadRef, {
@@ -408,7 +411,7 @@ export function PreviewView({
         }
       }
     })();
-  }, [addImage, tabId, threadRef]);
+  }, [addImage, addPreviewAnnotation, tabId, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle

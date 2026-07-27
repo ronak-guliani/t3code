@@ -125,6 +125,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { PreviewPanel } from "./preview/PreviewPanel";
+import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { useBrowserPanelState, useRightPanelStore } from "~/rightPanelStore";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
@@ -1794,15 +1795,24 @@ function ChatViewBody(
     setActiveRightPanel((current) => (current === "browser-preview" ? null : current));
   }, [activeThreadRef]);
   const browserPanel = useBrowserPanelState(activeThreadRef);
-  const browserPanelVisibleRef = useRef(browserPanel.visible);
-  // Automation (`preview.open` with `show`) reveals the browser from outside
-  // React; mirror that request into the fork's single right-panel slot.
+  const activeBrowserSurface = browserPanel.surfaces.find(
+    (surface) => surface.id === browserPanel.activeSurfaceId,
+  );
+  const browserTabId =
+    activeBrowserSurface?.kind === "preview" ? activeBrowserSurface.resourceId : null;
+  const configuredPreviewUrls = useMemo(
+    () => getConfiguredPreviewUrls(activeProject?.scripts),
+    [activeProject?.scripts],
+  );
+  const browserPanelVisibleRef = useRef(browserPanel.isOpen);
+  // Automation can reveal the browser from outside React; mirror a browser
+  // surface becoming visible into this fork's existing right-panel shell.
   useEffect(() => {
-    const becameVisible = browserPanel.visible && !browserPanelVisibleRef.current;
-    browserPanelVisibleRef.current = browserPanel.visible;
+    const becameVisible = browserPanel.isOpen && !browserPanelVisibleRef.current;
+    browserPanelVisibleRef.current = browserPanel.isOpen;
     if (!becameVisible) return;
     setActiveRightPanel("browser-preview");
-  }, [browserPanel.visible]);
+  }, [browserPanel.isOpen]);
   const toggleInsights = useCallback(() => {
     setActiveRightPanel((current) => {
       if (current === "insights") return null;
@@ -4401,7 +4411,8 @@ function ChatViewBody(
           <PreviewPanel
             mode="inline"
             threadRef={activeThreadRef}
-            tabId={browserPanel.tabId}
+            tabId={browserTabId}
+            configuredUrls={configuredPreviewUrls}
             visible
             onClose={closeBrowserPreview}
           />
