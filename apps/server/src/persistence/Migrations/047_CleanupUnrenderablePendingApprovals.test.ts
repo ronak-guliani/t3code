@@ -137,6 +137,15 @@ layer("047_CleanupUnrenderablePendingApprovals", (it) => {
             NULL,
             '2026-07-24T21:00:00.000Z',
             NULL
+          ),
+          (
+            'approval-resolved',
+            'thread-unrenderable',
+            NULL,
+            'resolved',
+            'denied',
+            '2026-07-24T21:00:00.000Z',
+            '2026-07-24T21:01:00.000Z'
           )
       `;
 
@@ -145,10 +154,12 @@ layer("047_CleanupUnrenderablePendingApprovals", (it) => {
       const approvalRows = yield* sql<{
         readonly requestId: string;
         readonly threadId: string;
+        readonly status: string;
       }>`
         SELECT
           request_id AS "requestId",
-          thread_id AS "threadId"
+          thread_id AS "threadId",
+          status
         FROM projection_pending_approvals
         ORDER BY request_id ASC
       `;
@@ -156,6 +167,12 @@ layer("047_CleanupUnrenderablePendingApprovals", (it) => {
         {
           requestId: "approval-actionable",
           threadId: "thread-actionable",
+          status: "pending",
+        },
+        {
+          requestId: "approval-resolved",
+          threadId: "thread-unrenderable",
+          status: "resolved",
         },
       ]);
 

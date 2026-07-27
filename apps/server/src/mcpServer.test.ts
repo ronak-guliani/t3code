@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -69,6 +70,30 @@ describe("MCP Streamable HTTP server", () => {
       expect(unauthenticated.status).toBe(401);
     } finally {
       await server.close();
+    }
+  });
+
+  it("closes active HTTP connections during shutdown", async () => {
+    const server = await startMcpHttpServer({
+      cwd: process.cwd(),
+      toolsets: new Set(),
+      threadId: "thread-1",
+      cliCommand: "t3-test",
+    });
+    const { hostname, port } = new URL(server.url);
+    const socket = createConnection(Number(port), hostname);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      const socketClosed = new Promise<void>((resolve) => {
+        socket.once("close", () => resolve());
+      });
+      await Promise.all([server.close(), socketClosed]);
+    } finally {
+      socket.destroy();
     }
   });
 });
