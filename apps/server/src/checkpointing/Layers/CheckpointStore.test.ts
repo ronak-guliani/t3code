@@ -90,8 +90,185 @@ function buildOversizedSingleLine(): string {
   return `${"x".repeat(11_000_000)}\n`;
 }
 
+function buildNumberedLines(lineCount: number): string {
+  return Array.from({ length: lineCount }, (_, index) => `line ${String(index)}`)
+    .join("\n")
+    .concat("\n");
+}
+
+function replaceLine(contents: string, lineIndex: number, replacement: string): string {
+  const lines = contents.split("\n");
+  lines[lineIndex] = replacement;
+  return lines.join("\n");
+}
+
 it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   describe("diffCheckpoints", () => {
+    it.effect("excludes base movement that entered the workspace during the turn", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const sharedPath = path.join(tmp, "shared.md");
+        yield* writeTextFile(sharedPath, buildNumberedLines(30));
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "add shared"]);
+        const baseBranch = yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-base-movement");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+        // Another branch advances the base while the turn is running.
+        yield* git(tmp, ["checkout", "-b", "other-branch", baseBranch]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 1, "foreign change"));
+        yield* git(tmp, ["commit", "-am", "foreign commit"]);
+
+        // The turn commits its own work, then rebases onto the advanced base.
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "turn commit"]);
+        yield* git(tmp, ["rebase", "other-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+turn change");
+        expect(diff).not.toContain("+foreign change");
+      }),
+    );
+
+    it.effect("keeps turn-authored commits that a stacked branch also contains", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const sharedPath = path.join(tmp, "shared.md");
+        yield* writeTextFile(sharedPath, buildNumberedLines(30));
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "add shared"]);
+
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-stacked");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 5, "earlier change"));
+        yield* git(tmp, ["commit", "-am", "earlier turn commit"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+        const turnContents = replaceLine(buildNumberedLines(30), 5, "earlier change");
+        yield* writeTextFile(sharedPath, replaceLine(turnContents, 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "turn commit"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        // A stacked branch built on top of this thread must not make the
+        // thread's own commits look like base movement.
+        yield* git(tmp, ["branch", "stacked-branch"]);
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+turn change");
+        expect(diff).not.toContain("+earlier change");
+      }),
+    );
+
+    it.effect("keeps earlier turns' commits out of a diff whose base was rebased", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const sharedPath = path.join(tmp, "shared.md");
+        yield* writeTextFile(sharedPath, buildNumberedLines(30));
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "add shared"]);
+        const baseBranch = yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-rebased-base");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        // The thread already carries a committed earlier turn, so the rebase
+        // rewrites thread history and the old base leaves the new base's chain.
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        const earlierContents = replaceLine(buildNumberedLines(30), 5, "earlier change");
+        yield* writeTextFile(sharedPath, earlierContents);
+        yield* git(tmp, ["commit", "-am", "earlier turn commit"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+        yield* git(tmp, ["checkout", "-b", "other-branch", baseBranch]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 1, "foreign change"));
+        yield* git(tmp, ["commit", "-am", "foreign commit"]);
+
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* writeTextFile(sharedPath, replaceLine(earlierContents, 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "turn commit"]);
+        yield* git(tmp, ["rebase", "other-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+turn change");
+        expect(diff).not.toContain("+foreign change");
+        expect(diff).not.toContain("+earlier change");
+      }),
+    );
+
+    it.effect("keeps turn-authored commits that a mid-turn push left a remote ref on", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const sharedPath = path.join(tmp, "shared.md");
+        yield* writeTextFile(sharedPath, buildNumberedLines(30));
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "add shared"]);
+
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-pushed");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 5, "pushed change"));
+        yield* git(tmp, ["commit", "-am", "first turn commit"]);
+        // A mid-turn push leaves the branch's remote-tracking ref on the turn's
+        // own commit; that must not be read as the base the turn started from.
+        const pushedCommit = yield* git(tmp, ["rev-parse", "HEAD"]);
+        yield* git(tmp, ["update-ref", "refs/remotes/origin/thread-branch", pushedCommit]);
+
+        const pushedContents = replaceLine(buildNumberedLines(30), 5, "pushed change");
+        yield* writeTextFile(sharedPath, replaceLine(pushedContents, 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "second turn commit"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+turn change");
+        expect(diff).toContain("+pushed change");
+      }),
+    );
+
     it.effect("returns full oversized checkpoint diffs without truncation", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
