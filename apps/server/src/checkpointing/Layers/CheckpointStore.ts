@@ -31,6 +31,9 @@ const CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES = 10_000_000;
  */
 const BASE_MOVEMENT_MAX_COMMITS = 1000;
 
+/** Reflog subjects for operations that move a workspace onto history it did not author. */
+const BASE_MOVING_REFLOG_OPERATIONS = /^(rebase|merge|pull)\b/;
+
 function parseCommitOids(stdout: string): ReadonlyArray<string> {
   return stdout
     .split("\n")
@@ -287,6 +290,57 @@ const makeCheckpointStore = Effect.gen(function* () {
       );
 
   /**
+   * Report whether the workspace adopted history it did not author between
+   * `fromBaseCommit` and now, using the operations Git records in HEAD's reflog.
+   *
+   * Ref topology alone cannot answer this. A branch forked off an intermediate
+   * turn commit and a branch carrying a base the turn rebased onto produce the
+   * same shape: an unrelated ref pointing into the first-parent chain above the
+   * prior turn's base. Only the reflog distinguishes commits the workspace
+   * authored from history a rebase, merge, or pull brought in.
+   *
+   * The scan is bounded and must reach `fromBaseCommit` to be trusted, so a
+   * trimmed reflog, or a checkpoint captured in a different worktree, reports no
+   * movement and leaves the plain checkpoint-to-checkpoint diff in place.
+   */
+  const hasBaseMovingOperation = Effect.fn("hasBaseMovingOperation")(function* (input: {
+    readonly cwd: string;
+    readonly fromBaseCommit: string;
+  }) {
+    const reflogResult = yield* git.execute({
+      operation: "CheckpointStore.resolveHeadReflog",
+      cwd: input.cwd,
+      args: [
+        "reflog",
+        "show",
+        "--no-abbrev",
+        "--format=%H %gs",
+        `--max-count=${BASE_MOVEMENT_MAX_COMMITS}`,
+        "HEAD",
+      ],
+      allowNonZeroExit: true,
+    });
+    if (reflogResult.code !== 0) {
+      return false;
+    }
+
+    let baseMoved = false;
+    for (const entry of reflogResult.stdout.split("\n")) {
+      const separatorIndex = entry.indexOf(" ");
+      if (separatorIndex === -1) {
+        continue;
+      }
+      if (entry.slice(0, separatorIndex) === input.fromBaseCommit) {
+        return baseMoved;
+      }
+      if (BASE_MOVING_REFLOG_OPERATIONS.test(entry.slice(separatorIndex + 1))) {
+        baseMoved = true;
+      }
+    }
+    return false;
+  });
+
+  /**
    * Resolve the newest commit on `toBaseCommit`'s first-parent chain that also
    * exists on an unrelated branch, i.e. the base the turn's own commits sit on.
    *
@@ -389,6 +443,14 @@ const makeCheckpointStore = Effect.gen(function* () {
         { concurrency: "unbounded" },
       );
       if (fromBaseCommit === null || toBaseCommit === null || fromBaseCommit === toBaseCommit) {
+        return input.fromCommitOid;
+      }
+
+      const baseMoved = yield* hasBaseMovingOperation({
+        cwd: input.cwd,
+        fromBaseCommit,
+      });
+      if (!baseMoved) {
         return input.fromCommitOid;
       }
 

@@ -145,7 +145,7 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
       }),
     );
 
-    it.effect("keeps turn-authored commits that a stacked branch also contains", () =>
+    it.effect("keeps turn-authored commits that a stacked branch forked from mid-turn", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
         yield* initRepoWithCommit(tmp);
@@ -160,18 +160,20 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
 
         yield* git(tmp, ["checkout", "-b", "thread-branch"]);
-        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 5, "earlier change"));
-        yield* git(tmp, ["commit", "-am", "earlier turn commit"]);
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
 
-        const turnContents = replaceLine(buildNumberedLines(30), 5, "earlier change");
-        yield* writeTextFile(sharedPath, replaceLine(turnContents, 25, "turn change"));
-        yield* git(tmp, ["commit", "-am", "turn commit"]);
-        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+        const earlierContents = replaceLine(buildNumberedLines(30), 5, "earlier change");
+        yield* writeTextFile(sharedPath, earlierContents);
+        yield* git(tmp, ["commit", "-am", "first turn commit"]);
 
-        // A stacked branch built on top of this thread must not make the
-        // thread's own commits look like base movement.
+        // A branch forked from an intermediate turn commit does not contain the
+        // turn's final commit, so reachability alone would read the commit it
+        // points at as the base the turn started from.
         yield* git(tmp, ["branch", "stacked-branch"]);
+
+        yield* writeTextFile(sharedPath, replaceLine(earlierContents, 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "second turn commit"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
 
         const diff = yield* checkpointStore.diffCheckpoints({
           cwd: tmp,
@@ -180,7 +182,7 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         });
 
         expect(diff).toContain("+turn change");
-        expect(diff).not.toContain("+earlier change");
+        expect(diff).toContain("+earlier change");
       }),
     );
 
