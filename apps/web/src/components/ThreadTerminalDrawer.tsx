@@ -39,6 +39,7 @@ import {
   terminalDeleteShortcutData,
   terminalNavigationShortcutData,
 } from "../keybindings";
+import { terminalLabelsById } from "../terminalLabels";
 import {
   DEFAULT_THREAD_TERMINAL_HEIGHT,
   DEFAULT_THREAD_TERMINAL_ID,
@@ -850,6 +851,7 @@ interface ThreadTerminalDrawerProps {
   visible?: boolean;
   height: number;
   terminalIds: string[];
+  terminalLabels?: Readonly<Record<string, string>> | undefined;
   activeTerminalId: string;
   terminalGroups: ThreadTerminalGroup[];
   activeTerminalGroupId: string;
@@ -904,6 +906,7 @@ export default function ThreadTerminalDrawer({
   visible = true,
   height,
   terminalIds,
+  terminalLabels,
   activeTerminalId,
   terminalGroups,
   activeTerminalGroupId,
@@ -1024,13 +1027,15 @@ export default function ThreadTerminalDrawer({
     resolvedTerminalGroups.length > 1 ||
     resolvedTerminalGroups.some((terminalGroup) => terminalGroup.terminalIds.length > 1);
   const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
-  const terminalLabelById = useMemo(
-    () =>
-      new Map(
-        normalizedTerminalIds.map((terminalId, index) => [terminalId, `Terminal ${index + 1}`]),
-      ),
-    [normalizedTerminalIds],
-  );
+  const terminalLabelById = useMemo(() => {
+    const defaultTerminalLabels = terminalLabelsById(normalizedTerminalIds);
+    return new Map(
+      normalizedTerminalIds.map((terminalId) => [
+        terminalId,
+        terminalLabels?.[terminalId] ?? defaultTerminalLabels[terminalId] ?? "Terminal",
+      ]),
+    );
+  }, [normalizedTerminalIds, terminalLabels]);
   const splitTerminalActionLabel = hasReachedSplitLimit
     ? `Split Terminal (max ${MAX_TERMINALS_PER_GROUP} per group)`
     : splitShortcutLabel

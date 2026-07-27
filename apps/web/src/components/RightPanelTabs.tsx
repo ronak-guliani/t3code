@@ -20,6 +20,7 @@ type Props = {
   readonly surfaces: readonly RightPanelSurface[];
   readonly activeSurfaceId: string | null;
   readonly previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
+  readonly terminalLabels: Readonly<Record<string, string>>;
   readonly onActivate: (surface: RightPanelSurface) => void;
   readonly onClose: (surface: RightPanelSurface) => void;
   readonly onCloseOthers: (surface: RightPanelSurface) => void;
@@ -38,6 +39,7 @@ type Props = {
 function titleFor(
   surface: RightPanelSurface,
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
+  terminalLabels: Readonly<Record<string, string>>,
 ): string {
   switch (surface.kind) {
     case "plan":
@@ -49,7 +51,7 @@ function titleFor(
     case "file":
       return surface.relativePath.split("/").at(-1) ?? surface.relativePath;
     case "terminal":
-      return `Terminal ${surface.resourceId}`;
+      return terminalLabels[surface.resourceId] ?? "Terminal";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -110,6 +112,7 @@ export function RightPanelTabs({
   surfaces,
   activeSurfaceId,
   previewSessions,
+  terminalLabels,
   onActivate,
   onClose,
   onCloseOthers,
@@ -141,7 +144,7 @@ export function RightPanelTabs({
       <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2">
         <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {surfaces.map((surface) => {
-            const title = titleFor(surface, previewSessions);
+            const title = titleFor(surface, previewSessions, terminalLabels);
             const active = surface.id === activeSurfaceId;
             return (
               <Menu key={surface.id}>

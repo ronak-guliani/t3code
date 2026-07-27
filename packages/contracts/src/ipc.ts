@@ -23,6 +23,7 @@ import type {
   GitCreateBranchResult,
 } from "./git.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
+import type { AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import type {
   ProjectReadFileInput,
   ProjectReadFileResult,
@@ -886,6 +887,9 @@ export interface EnvironmentApi {
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;
+  };
+  assets: {
+    createUrl: (input: AssetCreateUrlInput) => Promise<AssetCreateUrlResult>;
   };
   preview: {
     open: (input: PreviewOpenInput) => Promise<PreviewSessionSnapshot>;

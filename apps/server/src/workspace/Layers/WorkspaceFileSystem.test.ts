@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { symlink } from "node:fs/promises";
 import { it, describe, expect } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path } from "effect";
 
@@ -148,6 +149,29 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
         expect(result).toEqual({
           relativePath: "docs/preview.html",
           contents: "<h1>Preview</h1>",
+        });
+      }),
+    );
+
+    it.effect("rejects a symbolic link that escapes the workspace root", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const workspaceRoot = yield* makeTempDir;
+        const outsideRoot = yield* makeTempDir;
+        yield* writeTextFile(outsideRoot, "secret.txt", "secret");
+
+        yield* Effect.promise(() => symlink(outsideRoot, `${workspaceRoot}/linked`));
+
+        const error = yield* workspaceFileSystem
+          .readFile({
+            cwd: workspaceRoot,
+            relativePath: "linked/secret.txt",
+          })
+          .pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          operation: "workspaceFileSystem.readFile",
+          detail: "Workspace file path cannot traverse symbolic links",
         });
       }),
     );

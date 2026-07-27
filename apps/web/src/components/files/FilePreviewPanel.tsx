@@ -1,10 +1,11 @@
-import { Eye, FileText } from "lucide-react";
+import { Eye, FileText, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { readEnvironmentApi } from "~/environmentApi";
+import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -17,52 +18,101 @@ export function FilePreviewPanel(props: {
 }) {
   const [contents, setContents] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [entries, setEntries] = useState<ReadonlyArray<{ readonly path: string }>>([]);
   const openPreview = useAtomCommand(previewEnvironment.open);
   const api = readEnvironmentApi(props.threadRef.environmentId);
 
   useEffect(() => {
-    if (!props.relativePath || !api) {
-      setContents(null);
-      setError(null);
+    if (!api || props.relativePath) {
+      setEntries([]);
       return;
     }
     let cancelled = false;
-    void api.projects.readFile({ cwd: props.cwd, relativePath: props.relativePath }).then(
+    void api.projects.searchEntries({ cwd: props.cwd, query, limit: 100 }).then(
       (result) => {
-        if (!cancelled) {
-          setContents(result.contents);
-          setError(null);
-        }
+        if (!cancelled) setEntries(result.entries.filter((entry) => entry.kind === "file"));
       },
-      (cause: unknown) => {
-        if (!cancelled) {
-          setContents(null);
-          setError(cause instanceof Error ? cause.message : "Unable to read file.");
-        }
+      () => {
+        if (!cancelled) setEntries([]);
       },
     );
     return () => {
       cancelled = true;
     };
-  }, [api, props.cwd, props.relativePath]);
+  }, [api, props.cwd, props.relativePath, query]);
+
+  useEffect(() => {
+    if (!props.relativePath || !api || isBrowserPreviewFile(props.relativePath)) {
+      setContents(null);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    void api.projects
+      .readFile({ threadId: props.threadRef.threadId, relativePath: props.relativePath })
+      .then(
+        (result) => {
+          if (!cancelled) {
+            setContents(result.contents);
+            setError(null);
+          }
+        },
+        (cause: unknown) => {
+          if (!cancelled) {
+            setContents(null);
+            setError(cause instanceof Error ? cause.message : "Unable to read file.");
+          }
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [api, props.relativePath, props.threadRef.threadId]);
 
   if (!props.relativePath) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
-        Select a workspace file to preview it.
-      </div>
+      <section className="flex h-full min-h-0 flex-col" data-right-panel-files-surface>
+        <label className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
+          <Search className="size-4 text-muted-foreground" />
+          <input
+            aria-label="Search workspace files"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search files"
+            value={query}
+          />
+        </label>
+        <div className="min-h-0 flex-1 overflow-auto p-2">
+          {entries.map((entry) => (
+            <button
+              key={entry.path}
+              type="button"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+              onClick={() => props.onOpenFile(entry.path)}
+            >
+              <FileText className="size-4 shrink-0" />
+              <span className="truncate">{entry.path}</span>
+            </button>
+          ))}
+          {entries.length === 0 ? (
+            <p className="p-3 text-sm text-muted-foreground">No workspace files found.</p>
+          ) : null}
+        </div>
+      </section>
     );
   }
 
   const relativePath = props.relativePath;
+  const httpBaseUrl = getEnvironmentHttpBaseUrl(props.threadRef.environmentId);
   const openInBrowser =
-    isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath) && api
+    isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath) && api && httpBaseUrl
       ? () =>
           void openFileInPreview({
             threadRef: props.threadRef,
-            cwd: props.cwd,
             relativePath,
-            readFile: api.projects.readFile,
+            httpBaseUrl,
+            createAssetUrl: api.assets.createUrl,
             openPreview,
           })
       : null;
@@ -80,7 +130,11 @@ export function FilePreviewPanel(props: {
         ) : null}
       </header>
       <pre className="min-h-0 flex-1 overflow-auto p-4 text-xs">
-        {error ?? contents ?? "Loading file..."}
+        {error ??
+          contents ??
+          (isBrowserPreviewFile(relativePath)
+            ? "Open this file in the browser preview."
+            : "Loading file...")}
       </pre>
     </section>
   );

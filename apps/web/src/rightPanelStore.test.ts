@@ -56,4 +56,34 @@ describe("rightPanelStore", () => {
       false,
     );
   });
+
+  it("switches and closes independently identified terminal surfaces", () => {
+    const store = useRightPanelStore.getState();
+    store.openTerminal(ref, "terminal-a");
+    store.openTerminal(ref, "terminal-b");
+
+    store.activateSurface(ref, "terminal:terminal-a");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      activeSurfaceId: "terminal:terminal-a",
+      surfaces: [
+        { id: "terminal:terminal-a", kind: "terminal", resourceId: "terminal-a" },
+        { id: "terminal:terminal-b", kind: "terminal", resourceId: "terminal-b" },
+      ],
+    });
+
+    store.closeSurface(ref, "terminal:terminal-a");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      activeSurfaceId: "terminal:terminal-b",
+      surfaces: [{ id: "terminal:terminal-b", kind: "terminal", resourceId: "terminal-b" }],
+    });
+
+    store.closeSurface(ref, "terminal:terminal-b");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref).isOpen).toBe(
+      false,
+    );
+  });
 });

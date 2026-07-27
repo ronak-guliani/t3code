@@ -24,6 +24,9 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
     filesystem: {
       browse: rpcClient.filesystem.browse,
     },
+    assets: {
+      createUrl: rpcClient.assets.createUrl,
+    },
     preview: {
       open: rpcClient.preview.open,
       navigate: rpcClient.preview.navigate,

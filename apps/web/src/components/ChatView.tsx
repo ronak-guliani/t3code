@@ -127,6 +127,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { PreviewPanel } from "./preview/PreviewPanel";
+import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { useBrowserPanelState, useRightPanelStore } from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
@@ -153,6 +154,8 @@ import { getProviderModelCapabilities, resolveSelectableProvider } from "../prov
 import { useSettings } from "../hooks/useSettings";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { isPreviewFocused } from "../lib/previewFocus";
+import { terminalLabelsById } from "../terminalLabels";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import {
   useSavedEnvironmentRegistryStore,
@@ -465,6 +468,8 @@ interface PersistentThreadTerminalDrawerProps {
   threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
   threadId: ThreadId;
   visible: boolean;
+  terminalId?: string;
+  terminalLabels?: Readonly<Record<string, string>>;
   launchContext: PersistentTerminalLaunchContext | null;
   focusRequestId: number;
   splitShortcutLabel: string | undefined;
@@ -472,12 +477,15 @@ interface PersistentThreadTerminalDrawerProps {
   closeShortcutLabel: string | undefined;
   keybindings: ResolvedKeybindingsConfig;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  onTerminalClosed?: (terminalId: string) => void;
 }
 
 const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDrawer({
   threadRef,
   threadId,
   visible,
+  terminalId,
+  terminalLabels,
   launchContext,
   focusRequestId,
   splitShortcutLabel,
@@ -485,6 +493,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   closeShortcutLabel,
   keybindings,
   onAddTerminalContext,
+  onTerminalClosed,
 }: PersistentThreadTerminalDrawerProps) {
   const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
@@ -567,12 +576,11 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   const closeTerminal = useCallback(
     (terminalId: string) => {
       const api = readEnvironmentApi(threadRef.environmentId);
-      if (!api) return;
       const isFinalTerminal = terminalState.terminalIds.length <= 1;
       const fallbackExitWrite = () =>
-        api.terminal.write({ threadId, terminalId, data: "exit\n" }).catch(() => undefined);
+        api?.terminal.write({ threadId, terminalId, data: "exit\n" }).catch(() => undefined);
 
-      if ("close" in api.terminal && typeof api.terminal.close === "function") {
+      if (api && "close" in api.terminal && typeof api.terminal.close === "function") {
         void (async () => {
           if (isFinalTerminal) {
             await api.terminal.clear({ threadId, terminalId }).catch(() => undefined);
@@ -588,9 +596,17 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
       }
 
       storeCloseTerminal(threadRef, terminalId);
+      onTerminalClosed?.(terminalId);
       bumpFocusRequestId();
     },
-    [bumpFocusRequestId, storeCloseTerminal, terminalState.terminalIds.length, threadId, threadRef],
+    [
+      bumpFocusRequestId,
+      onTerminalClosed,
+      storeCloseTerminal,
+      terminalState.terminalIds.length,
+      threadId,
+      threadRef,
+    ],
   );
 
   const handleAddTerminalContext = useCallback(
@@ -606,6 +622,11 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   if (!project || !terminalState.terminalOpen || !cwd) {
     return null;
   }
+  const displayedTerminalIds = terminalId ? [terminalId] : terminalState.terminalIds;
+  const displayedActiveTerminalId = terminalId ?? terminalState.activeTerminalId;
+  const displayedTerminalGroups = terminalId
+    ? [{ id: `group-${terminalId}`, terminalIds: [terminalId] }]
+    : terminalState.terminalGroups;
 
   return (
     <div className={visible ? undefined : "hidden"}>
@@ -617,9 +638,10 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
         runtimeEnv={runtimeEnv}
         visible={visible}
         height={terminalState.terminalHeight}
-        terminalIds={terminalState.terminalIds}
-        activeTerminalId={terminalState.activeTerminalId}
-        terminalGroups={terminalState.terminalGroups}
+        terminalIds={displayedTerminalIds}
+        terminalLabels={terminalLabels}
+        activeTerminalId={displayedActiveTerminalId}
+        terminalGroups={displayedTerminalGroups}
         activeTerminalGroupId={terminalState.activeTerminalGroupId}
         focusRequestId={focusRequestId + localFocusRequestId + (visible ? 1 : 0)}
         onSplitTerminal={splitTerminal}
@@ -845,7 +867,9 @@ function ChatViewBody(
     [draftThreadsByThreadKey],
   );
   const [mountedTerminalThreadKeys, setMountedTerminalThreadKeys] = useState<string[]>([]);
-  const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
+  const [rightPanelMaximizedThreadKey, setRightPanelMaximizedThreadKey] = useState<string | null>(
+    null,
+  );
   const mountedTerminalThreadRefs = useMemo(
     () =>
       mountedTerminalThreadKeys.flatMap((mountedThreadKey) => {
@@ -1813,17 +1837,78 @@ function ChatViewBody(
   const closeBrowserPreview = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().close(activeThreadRef);
   }, [activeThreadRef]);
+  const closeTerminal = useCallback(
+    (terminalId: string) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!activeThreadId) return;
+      const isFinalTerminal = terminalState.terminalIds.length <= 1;
+      const fallbackExitWrite = () =>
+        api?.terminal
+          .write({ threadId: activeThreadId, terminalId, data: "exit\n" })
+          .catch(() => undefined);
+      if (api && "close" in api.terminal && typeof api.terminal.close === "function") {
+        void (async () => {
+          if (isFinalTerminal) {
+            await api.terminal
+              .clear({ threadId: activeThreadId, terminalId })
+              .catch(() => undefined);
+          }
+          await api.terminal.close({
+            threadId: activeThreadId,
+            terminalId,
+            deleteHistory: true,
+          });
+        })().catch(() => fallbackExitWrite());
+      } else {
+        void fallbackExitWrite();
+      }
+      if (activeThreadRef) {
+        storeCloseTerminal(activeThreadRef, terminalId);
+      }
+      setTerminalFocusRequestId((value) => value + 1);
+    },
+    [
+      activeThreadId,
+      activeThreadRef,
+      environmentId,
+      storeCloseTerminal,
+      terminalState.terminalIds.length,
+    ],
+  );
   const browserPanel = useBrowserPanelState(activeThreadRef);
+  const rightPanelMaximized =
+    rightPanelMaximizedThreadKey === activeThreadKey &&
+    browserPanel.isOpen &&
+    !shouldUseRightPanelSheet;
   useEffect(() => {
-    if (!browserPanel.isOpen || shouldUseRightPanelSheet) {
-      setRightPanelMaximized(false);
+    if (
+      !browserPanel.isOpen ||
+      shouldUseRightPanelSheet ||
+      rightPanelMaximizedThreadKey !== activeThreadKey
+    ) {
+      setRightPanelMaximizedThreadKey(null);
     }
-  }, [browserPanel.isOpen, shouldUseRightPanelSheet]);
+  }, [
+    activeThreadKey,
+    browserPanel.isOpen,
+    rightPanelMaximizedThreadKey,
+    shouldUseRightPanelSheet,
+  ]);
+  const toggleRightPanelMaximized = useCallback(() => {
+    if (!activeThreadKey) return;
+    setRightPanelMaximizedThreadKey((current) =>
+      current === activeThreadKey ? null : activeThreadKey,
+    );
+  }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
   const openPreview = useAtomCommand(previewEnvironment.open);
   const closePreview = useAtomCommand(previewEnvironment.close);
   const activeBrowserSurface = browserPanel.surfaces.find(
     (surface) => surface.id === browserPanel.activeSurfaceId,
+  );
+  const terminalLabels = useMemo(
+    () => terminalLabelsById(terminalState.terminalIds),
+    [terminalState.terminalIds],
   );
   const browserTabId =
     activeBrowserSurface?.kind === "preview" ? activeBrowserSurface.resourceId : null;
@@ -1845,13 +1930,21 @@ function ChatViewBody(
     (surface: (typeof browserPanel.surfaces)[number]) => {
       if (!activeThreadRef) return;
       useRightPanelStore.getState().activateSurface(activeThreadRef, surface.id);
+      if (surface.kind === "terminal") {
+        storeSetActiveTerminal(activeThreadRef, surface.resourceId);
+        setTerminalFocusRequestId((value) => value + 1);
+      }
     },
-    [activeThreadRef],
+    [activeThreadRef, storeSetActiveTerminal],
   );
   const closeRightPanelSurface = useCallback(
     (surface: (typeof browserPanel.surfaces)[number]) => {
       if (!activeThreadRef) return;
       useRightPanelStore.getState().closeSurface(activeThreadRef, surface.id);
+      if (surface.kind === "terminal") {
+        closeTerminal(surface.resourceId);
+        return;
+      }
       if (surface.kind === "preview" && surface.resourceId) {
         const snapshot = previewState.sessions[surface.resourceId] ?? null;
         void closePreviewSession({
@@ -1862,12 +1955,16 @@ function ChatViewBody(
         });
       }
     },
-    [activeThreadRef, closePreview, previewState.sessions],
+    [activeThreadRef, closePreview, closeTerminal, previewState.sessions],
   );
   const cleanupRightPanelSurfaces = useCallback(
     (surfaces: readonly (typeof browserPanel.surfaces)[number][]) => {
       if (!activeThreadRef) return;
       for (const surface of surfaces) {
+        if (surface.kind === "terminal") {
+          closeTerminal(surface.resourceId);
+          continue;
+        }
         if (surface.kind !== "preview" || !surface.resourceId) continue;
         const snapshot = previewState.sessions[surface.resourceId] ?? null;
         void closePreviewSession({
@@ -1878,7 +1975,7 @@ function ChatViewBody(
         });
       }
     },
-    [activeThreadRef, closePreview, previewState.sessions],
+    [activeThreadRef, closePreview, closeTerminal, previewState.sessions],
   );
   const closeOtherRightPanelSurfaces = useCallback(
     (surface: (typeof browserPanel.surfaces)[number]) => {
@@ -1947,44 +2044,6 @@ function ChatViewBody(
   const addDiffSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "diff");
   }, [activeThreadRef]);
-  const closeTerminal = useCallback(
-    (terminalId: string) => {
-      const api = readEnvironmentApi(environmentId);
-      if (!activeThreadId || !api) return;
-      const isFinalTerminal = terminalState.terminalIds.length <= 1;
-      const fallbackExitWrite = () =>
-        api.terminal
-          .write({ threadId: activeThreadId, terminalId, data: "exit\n" })
-          .catch(() => undefined);
-      if ("close" in api.terminal && typeof api.terminal.close === "function") {
-        void (async () => {
-          if (isFinalTerminal) {
-            await api.terminal
-              .clear({ threadId: activeThreadId, terminalId })
-              .catch(() => undefined);
-          }
-          await api.terminal.close({
-            threadId: activeThreadId,
-            terminalId,
-            deleteHistory: true,
-          });
-        })().catch(() => fallbackExitWrite());
-      } else {
-        void fallbackExitWrite();
-      }
-      if (activeThreadRef) {
-        storeCloseTerminal(activeThreadRef, terminalId);
-      }
-      setTerminalFocusRequestId((value) => value + 1);
-    },
-    [
-      activeThreadId,
-      activeThreadRef,
-      environmentId,
-      storeCloseTerminal,
-      terminalState.terminalIds.length,
-    ],
-  );
   const runProjectScript = useCallback(
     async (
       script: ProjectScript,
@@ -2732,6 +2791,10 @@ function ChatViewBody(
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
         terminalOpen: Boolean(terminalState.terminalOpen),
+        previewFocus: isPreviewFocused(),
+        previewOpen:
+          browserPanel.isOpen &&
+          browserPanel.surfaces.some((surface) => surface.kind === "preview"),
         modelPickerOpen: composerRef.current?.isModelPickerOpen() ?? false,
       };
 
@@ -2794,6 +2857,48 @@ function ChatViewBody(
         return;
       }
 
+      if (command === "preview.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleBrowserPreview();
+        return;
+      }
+
+      if (command === "preview.refresh") {
+        event.preventDefault();
+        event.stopPropagation();
+        dispatchPreviewAction("refresh");
+        return;
+      }
+
+      if (command === "preview.focusUrl") {
+        event.preventDefault();
+        event.stopPropagation();
+        dispatchPreviewAction("focus-url");
+        return;
+      }
+
+      if (command === "preview.zoomIn") {
+        event.preventDefault();
+        event.stopPropagation();
+        dispatchPreviewAction("zoom-in");
+        return;
+      }
+
+      if (command === "preview.zoomOut") {
+        event.preventDefault();
+        event.stopPropagation();
+        dispatchPreviewAction("zoom-out");
+        return;
+      }
+
+      if (command === "preview.resetZoom") {
+        event.preventDefault();
+        event.stopPropagation();
+        dispatchPreviewAction("reset-zoom");
+        return;
+      }
+
       if (command === "modelPicker.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -2836,7 +2941,10 @@ function ChatViewBody(
     splitTerminal,
     keybindings,
     onToggleDiff,
+    browserPanel.isOpen,
+    browserPanel.surfaces,
     toggleTerminalVisibility,
+    toggleBrowserPreview,
   ]);
 
   const onRevertToTurnCount = useCallback(
@@ -4312,7 +4420,9 @@ function ChatViewBody(
       {/* Main content area with optional plan sidebar */}
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          className={cn("flex min-h-0 min-w-0 flex-1 flex-col", rightPanelMaximized && "hidden")}
+        >
           {/* Messages Wrapper */}
           <div ref={messagesViewportRef} className="relative flex min-h-0 flex-1 flex-col">
             {/* Messages — LegendList handles virtualization and scrolling internally */}
@@ -4509,6 +4619,7 @@ function ChatViewBody(
             surfaces={browserPanel.surfaces}
             activeSurfaceId={browserPanel.activeSurfaceId}
             previewSessions={previewState.sessions}
+            terminalLabels={terminalLabels}
             onActivate={activateRightPanelSurface}
             onClose={closeRightPanelSurface}
             onCloseOthers={closeOtherRightPanelSurfaces}
@@ -4520,7 +4631,7 @@ function ChatViewBody(
             onAddFiles={addFilesSurface}
             onAddDiff={addDiffSurface}
             maximized={rightPanelMaximized}
-            onToggleMaximize={() => setRightPanelMaximized((value) => !value)}
+            onToggleMaximize={toggleRightPanelMaximized}
           >
             {activeBrowserSurface?.kind === "plan" ? (
               <PlanSidebar
@@ -4541,6 +4652,7 @@ function ChatViewBody(
                 tabId={browserTabId}
                 configuredUrls={configuredPreviewUrls}
                 visible
+                maximized={rightPanelMaximized}
                 onClose={closeBrowserPreview}
               />
             ) : activeBrowserSurface?.kind === "diff" ? (
@@ -4552,6 +4664,8 @@ function ChatViewBody(
                 threadRef={activeThreadRef}
                 threadId={activeThreadRef.threadId}
                 visible
+                terminalId={activeBrowserSurface.resourceId}
+                terminalLabels={terminalLabels}
                 launchContext={activeTerminalLaunchContext ?? null}
                 focusRequestId={terminalFocusRequestId}
                 splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
@@ -4559,6 +4673,11 @@ function ChatViewBody(
                 closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
                 keybindings={keybindings}
                 onAddTerminalContext={addTerminalContextToDraft}
+                onTerminalClosed={(terminalId) =>
+                  useRightPanelStore
+                    .getState()
+                    .closeSurface(activeThreadRef, `terminal:${terminalId}`)
+                }
               />
             ) : activeBrowserSurface?.kind === "files" || activeBrowserSurface?.kind === "file" ? (
               <FilePreviewPanel
@@ -4607,6 +4726,7 @@ function ChatViewBody(
               surfaces={browserPanel.surfaces}
               activeSurfaceId={browserPanel.activeSurfaceId}
               previewSessions={previewState.sessions}
+              terminalLabels={terminalLabels}
               onActivate={activateRightPanelSurface}
               onClose={closeRightPanelSurface}
               onCloseOthers={closeOtherRightPanelSurfaces}
@@ -4639,6 +4759,8 @@ function ChatViewBody(
                   threadRef={activeThreadRef}
                   threadId={activeThreadRef.threadId}
                   visible
+                  terminalId={activeBrowserSurface.resourceId}
+                  terminalLabels={terminalLabels}
                   launchContext={activeTerminalLaunchContext ?? null}
                   focusRequestId={terminalFocusRequestId}
                   splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
@@ -4646,6 +4768,11 @@ function ChatViewBody(
                   closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
                   keybindings={keybindings}
                   onAddTerminalContext={addTerminalContextToDraft}
+                  onTerminalClosed={(terminalId) =>
+                    useRightPanelStore
+                      .getState()
+                      .closeSurface(activeThreadRef, `terminal:${terminalId}`)
+                  }
                 />
               ) : activeBrowserSurface?.kind === "files" ||
                 activeBrowserSurface?.kind === "file" ? (

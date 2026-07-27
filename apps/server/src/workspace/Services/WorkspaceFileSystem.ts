@@ -10,7 +10,6 @@ import { Schema, Context } from "effect";
 import type { Effect } from "effect";
 
 import type {
-  ProjectReadFileInput,
   ProjectReadFileResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
@@ -28,12 +27,17 @@ export class WorkspaceFileSystemError extends Schema.TaggedErrorClass<WorkspaceF
   },
 ) {}
 
+export interface WorkspaceReadFileInput {
+  readonly cwd: string;
+  readonly relativePath: string;
+}
+
 /**
  * WorkspaceFileSystemShape - Service API for workspace-relative file operations.
  */
 export interface WorkspaceFileSystemShape {
   readonly readFile: (
-    input: ProjectReadFileInput,
+    input: WorkspaceReadFileInput,
   ) => Effect.Effect<
     ProjectReadFileResult,
     WorkspaceFileSystemError | WorkspacePathOutsideRootError

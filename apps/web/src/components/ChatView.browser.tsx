@@ -206,6 +206,7 @@ function createMockEnvironmentApi(input: {
     filesystem: {
       browse: input.browse,
     },
+    assets: {} as EnvironmentApi["assets"],
     preview: {} as EnvironmentApi["preview"],
     git: {} as EnvironmentApi["git"],
     workflow: {
