@@ -1227,40 +1227,63 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchEntries,
             Effect.gen(function* () {
-              const thread = yield* projectionSnapshotQuery
-                .getThreadDetailById(input.threadId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProjectSearchEntriesError({
-                        message: "Unable to authorize workspace entry search.",
-                        cause,
-                      }),
-                  ),
-                );
-              if (Option.isNone(thread)) {
-                return yield* new ProjectSearchEntriesError({
-                  message: "Workspace thread was not found.",
-                });
-              }
-              const project = yield* projectionSnapshotQuery
-                .getProjectShellById(thread.value.projectId)
-                .pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProjectSearchEntriesError({
-                        message: "Unable to authorize workspace entry search.",
-                        cause,
-                      }),
-                  ),
-                );
-              if (Option.isNone(project)) {
-                return yield* new ProjectSearchEntriesError({
-                  message: "Workspace project was not found.",
-                });
-              }
+              const cwd =
+                input.scope._tag === "thread"
+                  ? yield* Effect.gen(function* () {
+                      const thread = yield* projectionSnapshotQuery
+                        .getThreadDetailById(input.scope.threadId)
+                        .pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProjectSearchEntriesError({
+                                message: "Unable to authorize workspace entry search.",
+                                cause,
+                              }),
+                          ),
+                        );
+                      if (Option.isNone(thread)) {
+                        return yield* new ProjectSearchEntriesError({
+                          message: "Workspace thread was not found.",
+                        });
+                      }
+                      const project = yield* projectionSnapshotQuery
+                        .getProjectShellById(thread.value.projectId)
+                        .pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProjectSearchEntriesError({
+                                message: "Unable to authorize workspace entry search.",
+                                cause,
+                              }),
+                          ),
+                        );
+                      if (Option.isNone(project)) {
+                        return yield* new ProjectSearchEntriesError({
+                          message: "Workspace project was not found.",
+                        });
+                      }
+                      return thread.value.worktreePath ?? project.value.workspaceRoot;
+                    })
+                  : yield* projectionSnapshotQuery.getProjectShellById(input.scope.projectId).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProjectSearchEntriesError({
+                            message: "Unable to authorize workspace entry search.",
+                            cause,
+                          }),
+                      ),
+                      Effect.flatMap(
+                        Option.match({
+                          onNone: () =>
+                            new ProjectSearchEntriesError({
+                              message: "Workspace project was not found.",
+                            }),
+                          onSome: (project) => Effect.succeed(project.workspaceRoot),
+                        }),
+                      ),
+                    );
               return yield* workspaceEntries.search({
-                cwd: thread.value.worktreePath ?? project.value.workspaceRoot,
+                cwd,
                 query: input.query,
                 limit: input.limit,
               });

@@ -453,7 +453,6 @@ export interface ChatComposerProps {
   settings: UnifiedSettings;
   keybindings: ResolvedKeybindingsConfig;
   terminalOpen: boolean;
-  gitCwd: string | null;
 
   // Refs the parent needs kept in sync
   promptRef: React.MutableRefObject<string>;
@@ -872,7 +871,12 @@ export const ChatComposer = memo(
     const workspaceEntriesQuery = useQuery(
       projectSearchEntriesQueryOptions({
         environmentId,
-        threadId: activeThread?.id ?? null,
+        scope:
+          routeKind === "server" && activeThreadId
+            ? { _tag: "thread", threadId: activeThreadId }
+            : routeKind === "draft" && activeThread
+              ? { _tag: "project", projectId: activeThread.projectId }
+              : null,
         query: effectivePathQuery,
         enabled: isPathTrigger,
         limit: 80,

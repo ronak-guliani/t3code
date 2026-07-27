@@ -1,11 +1,20 @@
 import { Schema } from "effect";
-import { PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PositiveInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 
 export const ProjectSearchEntriesInput = Schema.Struct({
-  threadId: ThreadId,
+  scope: Schema.Union([
+    Schema.Struct({
+      _tag: Schema.Literal("thread"),
+      threadId: ThreadId,
+    }),
+    Schema.Struct({
+      _tag: Schema.Literal("project"),
+      projectId: ProjectId,
+    }),
+  ]),
   query: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
 });

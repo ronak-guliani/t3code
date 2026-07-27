@@ -786,12 +786,11 @@ function ChatViewBody(
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
   const [activeRightPanel, setActiveRightPanel] = useState<"insights" | null>(null);
-  const planSidebarOpen =
-    useBrowserPanelState(routeThreadRef).isOpen &&
-    useBrowserPanelState(routeThreadRef).activeSurfaceId === "plan";
+  const routeBrowserPanel = useBrowserPanelState(routeThreadRef);
+  const planSidebarOpen = routeBrowserPanel.isOpen && routeBrowserPanel.activeSurfaceId === "plan";
   const browserPreviewOpen =
-    useBrowserPanelState(routeThreadRef).isOpen &&
-    useBrowserPanelState(routeThreadRef).surfaces.some((surface) => surface.kind === "preview");
+    routeBrowserPanel.isOpen &&
+    routeBrowserPanel.surfaces.some((surface) => surface.kind === "preview");
   const insightsOpen = activeRightPanel === "insights";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
@@ -4539,7 +4538,6 @@ function ChatViewBody(
               settings={settings}
               keybindings={keybindings}
               terminalOpen={Boolean(terminalState.terminalOpen)}
-              gitCwd={gitCwd}
               promptRef={promptRef}
               composerImagesRef={composerImagesRef}
               composerTerminalContextsRef={composerTerminalContextsRef}
@@ -4633,63 +4631,70 @@ function ChatViewBody(
             maximized={rightPanelMaximized}
             onToggleMaximize={toggleRightPanelMaximized}
           >
-            {activeBrowserSurface?.kind === "plan" ? (
-              <PlanSidebar
-                activePlan={activePlan}
-                activeProposedPlan={sidebarProposedPlan}
-                label={planSidebarLabel}
-                environmentId={environmentId}
-                markdownCwd={gitCwd ?? undefined}
-                workspaceRoot={activeWorkspaceRoot}
-                timestampFormat={timestampFormat}
-                mode="sidebar"
-                onClose={closePlanSidebar}
-              />
-            ) : activeBrowserSurface?.kind === "preview" ? (
-              <PreviewPanel
-                mode="inline"
-                threadRef={activeThreadRef}
-                tabId={browserTabId}
-                configuredUrls={configuredPreviewUrls}
-                visible
-                maximized={rightPanelMaximized}
-                onClose={closeBrowserPreview}
-              />
-            ) : activeBrowserSurface?.kind === "diff" ? (
-              <Suspense fallback={null}>
-                <DiffPanel mode="inline" />
-              </Suspense>
-            ) : activeBrowserSurface?.kind === "terminal" ? (
-              <PersistentThreadTerminalDrawer
-                threadRef={activeThreadRef}
-                threadId={activeThreadRef.threadId}
-                visible
-                terminalId={activeBrowserSurface.resourceId}
-                terminalLabels={terminalLabels}
-                launchContext={activeTerminalLaunchContext ?? null}
-                focusRequestId={terminalFocusRequestId}
-                splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-                newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-                closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-                keybindings={keybindings}
-                onAddTerminalContext={addTerminalContextToDraft}
-                onTerminalClosed={(terminalId) =>
-                  useRightPanelStore
-                    .getState()
-                    .closeSurface(activeThreadRef, `terminal:${terminalId}`)
-                }
-              />
-            ) : activeBrowserSurface?.kind === "files" || activeBrowserSurface?.kind === "file" ? (
-              <FilePreviewPanel
-                relativePath={
-                  activeBrowserSurface.kind === "file" ? activeBrowserSurface.relativePath : null
-                }
-                threadRef={activeThreadRef}
-                onOpenFile={(relativePath) =>
-                  useRightPanelStore.getState().openFile(activeThreadRef, relativePath)
-                }
-              />
-            ) : null}
+            <div
+              className="h-full min-h-0"
+              data-chat-view-right-panel-surface={activeBrowserSurface?.kind ?? "none"}
+            >
+              {activeBrowserSurface?.kind === "plan" ? (
+                <PlanSidebar
+                  activePlan={activePlan}
+                  activeProposedPlan={sidebarProposedPlan}
+                  label={planSidebarLabel}
+                  environmentId={environmentId}
+                  markdownCwd={gitCwd ?? undefined}
+                  workspaceRoot={activeWorkspaceRoot}
+                  timestampFormat={timestampFormat}
+                  mode="sidebar"
+                  onClose={closePlanSidebar}
+                />
+              ) : activeBrowserSurface?.kind === "preview" ? (
+                <PreviewPanel
+                  mode="inline"
+                  threadRef={activeThreadRef}
+                  tabId={browserTabId}
+                  configuredUrls={configuredPreviewUrls}
+                  visible
+                  maximized={rightPanelMaximized}
+                  onClose={closeBrowserPreview}
+                />
+              ) : activeBrowserSurface?.kind === "diff" ? (
+                <Suspense fallback={null}>
+                  <DiffPanel mode="inline" />
+                </Suspense>
+              ) : activeBrowserSurface?.kind === "terminal" ? (
+                <PersistentThreadTerminalDrawer
+                  threadRef={activeThreadRef}
+                  threadId={activeThreadRef.threadId}
+                  visible
+                  terminalId={activeBrowserSurface.resourceId}
+                  terminalLabels={terminalLabels}
+                  launchContext={activeTerminalLaunchContext ?? null}
+                  focusRequestId={terminalFocusRequestId}
+                  splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+                  newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+                  closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+                  keybindings={keybindings}
+                  onAddTerminalContext={addTerminalContextToDraft}
+                  onTerminalClosed={(terminalId) =>
+                    useRightPanelStore
+                      .getState()
+                      .closeSurface(activeThreadRef, `terminal:${terminalId}`)
+                  }
+                />
+              ) : activeBrowserSurface?.kind === "files" ||
+                activeBrowserSurface?.kind === "file" ? (
+                <FilePreviewPanel
+                  cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
+                  relativePath={
+                    activeBrowserSurface.kind === "file" ? activeBrowserSurface.relativePath : null
+                  }
+                  threadRef={activeThreadRef}
+                  onOpenFile={(relativePath) =>
+                    useRightPanelStore.getState().openFile(activeThreadRef, relativePath)
+                  }
+                />
+              ) : null}
+            </div>
           </RightPanelTabs>
         ) : null}
         {insightsOpen && !shouldUseRightPanelSheet ? (
@@ -4737,63 +4742,71 @@ function ChatViewBody(
               onAddFiles={addFilesSurface}
               onAddDiff={addDiffSurface}
             >
-              {activeBrowserSurface?.kind === "plan" ? (
-                <PlanSidebar
-                  activePlan={activePlan}
-                  activeProposedPlan={sidebarProposedPlan}
-                  label={planSidebarLabel}
-                  environmentId={environmentId}
-                  markdownCwd={gitCwd ?? undefined}
-                  workspaceRoot={activeWorkspaceRoot}
-                  timestampFormat={timestampFormat}
-                  mode="sheet"
-                  onClose={closePlanSidebar}
-                />
-              ) : activeBrowserSurface?.kind === "diff" ? (
-                <Suspense fallback={null}>
-                  <DiffPanel mode="inline" />
-                </Suspense>
-              ) : activeBrowserSurface?.kind === "terminal" ? (
-                <PersistentThreadTerminalDrawer
-                  threadRef={activeThreadRef}
-                  threadId={activeThreadRef.threadId}
-                  visible
-                  terminalId={activeBrowserSurface.resourceId}
-                  terminalLabels={terminalLabels}
-                  launchContext={activeTerminalLaunchContext ?? null}
-                  focusRequestId={terminalFocusRequestId}
-                  splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-                  newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-                  closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-                  keybindings={keybindings}
-                  onAddTerminalContext={addTerminalContextToDraft}
-                  onTerminalClosed={(terminalId) =>
-                    useRightPanelStore
-                      .getState()
-                      .closeSurface(activeThreadRef, `terminal:${terminalId}`)
-                  }
-                />
-              ) : activeBrowserSurface?.kind === "files" ||
-                activeBrowserSurface?.kind === "file" ? (
-                <FilePreviewPanel
-                  relativePath={
-                    activeBrowserSurface.kind === "file" ? activeBrowserSurface.relativePath : null
-                  }
-                  threadRef={activeThreadRef}
-                  onOpenFile={(relativePath) =>
-                    useRightPanelStore.getState().openFile(activeThreadRef, relativePath)
-                  }
-                />
-              ) : (
-                <PreviewPanel
-                  mode="sheet"
-                  threadRef={activeThreadRef}
-                  tabId={browserTabId}
-                  configuredUrls={configuredPreviewUrls}
-                  visible
-                  onClose={closeBrowserPreview}
-                />
-              )}
+              <div
+                className="h-full min-h-0"
+                data-chat-view-right-panel-surface={activeBrowserSurface?.kind ?? "none"}
+              >
+                {activeBrowserSurface?.kind === "plan" ? (
+                  <PlanSidebar
+                    activePlan={activePlan}
+                    activeProposedPlan={sidebarProposedPlan}
+                    label={planSidebarLabel}
+                    environmentId={environmentId}
+                    markdownCwd={gitCwd ?? undefined}
+                    workspaceRoot={activeWorkspaceRoot}
+                    timestampFormat={timestampFormat}
+                    mode="sheet"
+                    onClose={closePlanSidebar}
+                  />
+                ) : activeBrowserSurface?.kind === "diff" ? (
+                  <Suspense fallback={null}>
+                    <DiffPanel mode="inline" />
+                  </Suspense>
+                ) : activeBrowserSurface?.kind === "terminal" ? (
+                  <PersistentThreadTerminalDrawer
+                    threadRef={activeThreadRef}
+                    threadId={activeThreadRef.threadId}
+                    visible
+                    terminalId={activeBrowserSurface.resourceId}
+                    terminalLabels={terminalLabels}
+                    launchContext={activeTerminalLaunchContext ?? null}
+                    focusRequestId={terminalFocusRequestId}
+                    splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+                    newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+                    closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+                    keybindings={keybindings}
+                    onAddTerminalContext={addTerminalContextToDraft}
+                    onTerminalClosed={(terminalId) =>
+                      useRightPanelStore
+                        .getState()
+                        .closeSurface(activeThreadRef, `terminal:${terminalId}`)
+                    }
+                  />
+                ) : activeBrowserSurface?.kind === "files" ||
+                  activeBrowserSurface?.kind === "file" ? (
+                  <FilePreviewPanel
+                    cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
+                    relativePath={
+                      activeBrowserSurface.kind === "file"
+                        ? activeBrowserSurface.relativePath
+                        : null
+                    }
+                    threadRef={activeThreadRef}
+                    onOpenFile={(relativePath) =>
+                      useRightPanelStore.getState().openFile(activeThreadRef, relativePath)
+                    }
+                  />
+                ) : (
+                  <PreviewPanel
+                    mode="sheet"
+                    threadRef={activeThreadRef}
+                    tabId={browserTabId}
+                    configuredUrls={configuredPreviewUrls}
+                    visible
+                    onClose={closeBrowserPreview}
+                  />
+                )}
+              </div>
             </RightPanelTabs>
           ) : (
             <InsightsPanel

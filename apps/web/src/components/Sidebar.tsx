@@ -64,6 +64,10 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
   type SidebarProjectSortOrder,
@@ -81,6 +85,7 @@ import {
   useStore,
 } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useThreadDiscoveredPorts } from "../portDiscoveryState";
 import { createThreadExpandedOverridesSelector, useUiStateStore } from "../uiStateStore";
 import {
   resolveShortcutCommand,
@@ -170,8 +175,6 @@ import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 import { readEnvironmentApi } from "../environmentApi";
-import { useThreadDiscoveredPorts } from "../portDiscoveryState";
-import { openDiscoveredPort } from "./preview/openDiscoveredPort";
 import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
@@ -186,6 +189,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import type { SidebarThreadSummary } from "../types";
+import { openDiscoveredPort } from "./preview/openDiscoveredPort";
 import {
   buildPhysicalToLogicalProjectKeyMap,
   buildSidebarProjectSnapshots,
@@ -463,19 +467,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const threadKey = scopedThreadKey(threadRef);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
+  const discoveredPorts = useThreadDiscoveredPorts({
+    environmentId: thread.environmentId,
+    threadId: virtualAgentRun?.parentThreadId ?? thread.id,
+  });
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const gitCwd = resolveSidebarThreadGitCwd({
     worktreePath: thread.worktreePath,
     threadProjectCwd,
     projectCwd: props.projectCwd,
   });
   const isHighlighted = isActive || isSelected;
-  const discoveredPorts = useThreadDiscoveredPorts({
-    environmentId: thread.environmentId,
-    threadId: virtualAgentRun?.parentThreadId ?? thread.id,
-  });
-  const openPreview = useAtomCommand(previewEnvironment.open, {
-    reportFailure: false,
-  });
   const handleOpenDiscoveredPort = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       const port = discoveredPorts[0];
@@ -483,16 +485,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       event.preventDefault();
       event.stopPropagation();
       navigateToThread(threadRef);
-      void openDiscoveredPort({ threadRef, port, openPreview }).then((result) => {
-        if (result._tag === "Success") return;
+      void (async () => {
+        const result = await openDiscoveredPort({ threadRef, port, openPreview });
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
         toastManager.add(
           stackedThreadToast({
             type: "error",
             title: "Unable to open preview",
-            description: "The local server could not be opened.",
+            description:
+              error instanceof Error ? error.message : "The preview could not be opened.",
           }),
         );
-      });
+      })();
     },
     [discoveredPorts, navigateToThread, openPreview, threadRef],
   );
@@ -812,32 +817,30 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           ) : null}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <SidebarThreadTerminalStatus
-            environmentId={thread.environmentId}
-            threadId={virtualAgentRun?.parentThreadId ?? thread.id}
-          />
           {discoveredPorts.length > 0 ? (
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     type="button"
-                    data-thread-selection-safe
                     aria-label={`Open localhost:${discoveredPorts[0]?.port ?? ""}`}
                     className="inline-flex cursor-pointer items-center justify-center text-emerald-600 outline-hidden focus-visible:ring-1 focus-visible:ring-ring dark:text-emerald-400"
-                    onPointerDown={stopPropagationOnPointerDown}
                     onClick={handleOpenDiscoveredPort}
-                  >
-                    <Globe2Icon className="size-3" />
-                  </button>
+                  />
                 }
-              />
+              >
+                <Globe2Icon className="size-3" />
+              </TooltipTrigger>
               <TooltipPopup side="top">
                 Open localhost:{discoveredPorts[0]?.port}
                 {discoveredPorts.length > 1 ? ` (+${discoveredPorts.length - 1})` : ""}
               </TooltipPopup>
             </Tooltip>
           ) : null}
+          <SidebarThreadTerminalStatus
+            environmentId={thread.environmentId}
+            threadId={virtualAgentRun?.parentThreadId ?? thread.id}
+          />
           <div
             className={`flex min-w-12 justify-end ${
               isRemoteThread ? "max-sm:min-w-24" : "max-sm:min-w-20"

@@ -3,9 +3,20 @@ import "../index.css";
 import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import { scopeThreadRef } from "@t3tools/client-runtime";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
-const { openInPreferredEditorMock, readLocalApiMock } = vi.hoisted(() => ({
+const {
+  createAssetUrlMock,
+  openFileInPreviewMock,
+  openInPreferredEditorMock,
+  openPreviewMock,
+  readLocalApiMock,
+} = vi.hoisted(() => ({
+  createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
+  openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openInPreferredEditorMock: vi.fn(async () => "vscode"),
+  openPreviewMock: vi.fn(),
   readLocalApiMock: vi.fn(() => ({
     server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
     shell: { openInEditor: vi.fn(async () => undefined) },
@@ -23,11 +34,46 @@ vi.mock("../localApi", () => ({
   readLocalApi: readLocalApiMock,
 }));
 
+vi.mock("../environmentApi", () => ({
+  readEnvironmentApi: vi.fn(() => ({
+    assets: { createUrl: createAssetUrlMock },
+  })),
+}));
+
+vi.mock("../environments/runtime", () => ({
+  getEnvironmentHttpBaseUrl: vi.fn(() => "http://localhost:3773"),
+}));
+
+vi.mock("../previewStateStore", () => ({
+  isPreviewSupportedInRuntime: vi.fn(() => true),
+}));
+
+vi.mock("../state/use-atom-command", () => ({
+  useAtomCommand: vi.fn(() => openPreviewMock),
+}));
+
+vi.mock("../state/preview", () => ({
+  previewEnvironment: { open: {} },
+}));
+
+vi.mock("../browser/openFileInPreview", () => ({
+  isBrowserPreviewFile: (path: string) => /\.(?:html?|pdf)$/i.test(path),
+  openFileInPreview: openFileInPreviewMock,
+}));
+
 import ChatMarkdown from "./ChatMarkdown";
+
+const threadRef = scopeThreadRef(
+  EnvironmentId.make("environment-markdown"),
+  ThreadId.make("thread-markdown"),
+);
 
 describe("ChatMarkdown", () => {
   afterEach(() => {
     openInPreferredEditorMock.mockClear();
+    openFileInPreviewMock.mockClear();
+    openPreviewMock.mockClear();
+    createAssetUrlMock.mockClear();
     readLocalApiMock.mockClear();
     localStorage.clear();
     document.body.innerHTML = "";
@@ -163,4 +209,33 @@ describe("ChatMarkdown", () => {
       await screen.unmount();
     }
   });
+
+  it.each(["report.html", "report.pdf"])(
+    "opens linked %s files in the integrated browser",
+    async (fileName) => {
+      const screen = await render(
+        <ChatMarkdown
+          text={`[${fileName}](./${fileName})`}
+          cwd="/repo/project"
+          threadRef={threadRef}
+        />,
+      );
+
+      try {
+        await page.getByRole("link", { name: fileName }).click();
+        await vi.waitFor(() => {
+          expect(openFileInPreviewMock).toHaveBeenCalledWith({
+            threadRef,
+            relativePath: `/repo/project/./${fileName}`,
+            httpBaseUrl: "http://localhost:3773",
+            createAssetUrl: createAssetUrlMock,
+            openPreview: openPreviewMock,
+          });
+        });
+        expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
 });

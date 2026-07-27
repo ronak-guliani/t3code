@@ -15,7 +15,7 @@ import { Button } from "~/components/ui/button";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
-import { ensureLocalApi } from "~/localApi";
+import { readLocalApi } from "~/localApi";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
@@ -40,7 +40,6 @@ import {
 } from "~/browser/browserViewportActions";
 import { resolveResponsiveBrowserViewportSize } from "~/browser/browserViewportLayout";
 import { PreviewUnreachable } from "./PreviewUnreachable";
-import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
@@ -63,8 +62,6 @@ interface Props {
   /** When provided, renders a panel close affordance in the chrome row. */
   onClose?: (() => void) | undefined;
 }
-
-const localApi = typeof window === "undefined" ? null : ensureLocalApi();
 
 /**
  * Single-tab preview surface: chrome row on top, one webview below, empty
@@ -235,6 +232,7 @@ export function PreviewView({
   }, [tabId]);
 
   const handleOpenInBrowser = useCallback(() => {
+    const localApi = readLocalApi();
     if (!localApi || !url) return;
     void localApi.shell.openExternal(url).catch(() => undefined);
   }, [url]);

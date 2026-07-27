@@ -25,7 +25,7 @@ export interface ComposerPathSearchTarget {
 
 export interface ComposerPathSearchClient {
   readonly searchEntries: (input: {
-    readonly threadId: ThreadId;
+    readonly scope: { readonly _tag: "thread"; readonly threadId: ThreadId };
     readonly query: string;
     readonly limit: number;
   }) => Promise<ProjectSearchEntriesResult>;
@@ -142,7 +142,7 @@ export function createComposerPathSearchManager(config: {
   ): void {
     void client
       .searchEntries({
-        threadId: target.threadId,
+        scope: { _tag: "thread", threadId: target.threadId },
         query: normalizeComposerPathSearchQuery(target.query),
         limit,
       })

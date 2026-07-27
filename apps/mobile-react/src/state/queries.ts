@@ -95,7 +95,7 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
       ? projectEnvironment.searchEntries({
           environmentId: debouncedTarget.environmentId,
           input: {
-            threadId: debouncedTarget.threadId,
+            scope: { _tag: "thread", threadId: debouncedTarget.threadId },
             query: debouncedTarget.query,
             limit: COMPOSER_PATH_SEARCH_LIMIT,
           },

@@ -11,6 +11,7 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 export function FilePreviewPanel(props: {
+  readonly cwd: string;
   readonly relativePath: string | null;
   readonly threadRef: ScopedThreadRef;
   readonly onOpenFile: (relativePath: string) => void;
@@ -23,19 +24,26 @@ export function FilePreviewPanel(props: {
   const api = readEnvironmentApi(props.threadRef.environmentId);
 
   useEffect(() => {
-    if (!api || props.relativePath) {
+    const normalizedQuery = query.trim();
+    if (!api || props.relativePath || normalizedQuery.length === 0) {
       setEntries([]);
       return;
     }
     let cancelled = false;
-    void api.projects.searchEntries({ threadId: props.threadRef.threadId, query, limit: 100 }).then(
-      (result) => {
-        if (!cancelled) setEntries(result.entries.filter((entry) => entry.kind === "file"));
-      },
-      () => {
-        if (!cancelled) setEntries([]);
-      },
-    );
+    void api.projects
+      .searchEntries({
+        scope: { _tag: "thread", threadId: props.threadRef.threadId },
+        query: normalizedQuery,
+        limit: 100,
+      })
+      .then(
+        (result) => {
+          if (!cancelled) setEntries(result.entries.filter((entry) => entry.kind === "file"));
+        },
+        () => {
+          if (!cancelled) setEntries([]);
+        },
+      );
     return () => {
       cancelled = true;
     };

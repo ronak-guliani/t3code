@@ -251,6 +251,9 @@ export function selectThreadRightPanelState(
   return ref ? (byThreadKey[scopedThreadKey(ref)] ?? EMPTY_STATE) : EMPTY_STATE;
 }
 
+const selectRightPanelStates = (state: RightPanelStoreState) => state.byThreadKey;
+
 export function useBrowserPanelState(ref: ScopedThreadRef | null): ThreadRightPanelState {
-  return useRightPanelStore((state) => selectThreadRightPanelState(state.byThreadKey, ref));
+  const byThreadKey = useRightPanelStore(selectRightPanelStates);
+  return selectThreadRightPanelState(byThreadKey, ref);
 }
