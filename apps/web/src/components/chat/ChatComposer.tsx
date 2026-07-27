@@ -545,7 +545,6 @@ export const ChatComposer = memo(
       settings,
       keybindings,
       terminalOpen,
-      gitCwd,
       promptRef,
       composerImagesRef,
       composerTerminalContextsRef,
@@ -873,7 +872,7 @@ export const ChatComposer = memo(
     const workspaceEntriesQuery = useQuery(
       projectSearchEntriesQueryOptions({
         environmentId,
-        cwd: gitCwd,
+        threadId: activeThread?.id ?? null,
         query: effectivePathQuery,
         enabled: isPathTrigger,
         limit: 80,

@@ -1226,13 +1226,52 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.projectsSearchEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchEntries,
-            workspaceEntries.search(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectSearchEntriesError({
-                    message: `Failed to search workspace entries: ${cause.detail}`,
-                    cause,
-                  }),
+            Effect.gen(function* () {
+              const thread = yield* projectionSnapshotQuery
+                .getThreadDetailById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectSearchEntriesError({
+                        message: "Unable to authorize workspace entry search.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(thread)) {
+                return yield* new ProjectSearchEntriesError({
+                  message: "Workspace thread was not found.",
+                });
+              }
+              const project = yield* projectionSnapshotQuery
+                .getProjectShellById(thread.value.projectId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectSearchEntriesError({
+                        message: "Unable to authorize workspace entry search.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(project)) {
+                return yield* new ProjectSearchEntriesError({
+                  message: "Workspace project was not found.",
+                });
+              }
+              return yield* workspaceEntries.search({
+                cwd: thread.value.worktreePath ?? project.value.workspaceRoot,
+                query: input.query,
+                limit: input.limit,
+              });
+            }).pipe(
+              Effect.mapError((cause) =>
+                cause instanceof ProjectSearchEntriesError
+                  ? cause
+                  : new ProjectSearchEntriesError({
+                      message: `Failed to search workspace entries: ${cause.detail}`,
+                      cause,
+                    }),
               ),
             ),
             { "rpc.aggregate": "workspace" },

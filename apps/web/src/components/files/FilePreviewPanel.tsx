@@ -11,7 +11,6 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 export function FilePreviewPanel(props: {
-  readonly cwd: string;
   readonly relativePath: string | null;
   readonly threadRef: ScopedThreadRef;
   readonly onOpenFile: (relativePath: string) => void;
@@ -29,7 +28,7 @@ export function FilePreviewPanel(props: {
       return;
     }
     let cancelled = false;
-    void api.projects.searchEntries({ cwd: props.cwd, query, limit: 100 }).then(
+    void api.projects.searchEntries({ threadId: props.threadRef.threadId, query, limit: 100 }).then(
       (result) => {
         if (!cancelled) setEntries(result.entries.filter((entry) => entry.kind === "file"));
       },
@@ -40,7 +39,7 @@ export function FilePreviewPanel(props: {
     return () => {
       cancelled = true;
     };
-  }, [api, props.cwd, props.relativePath, query]);
+  }, [api, props.relativePath, props.threadRef.threadId, query]);
 
   useEffect(() => {
     if (!props.relativePath || !api || isBrowserPreviewFile(props.relativePath)) {

@@ -4681,7 +4681,6 @@ function ChatViewBody(
               />
             ) : activeBrowserSurface?.kind === "files" || activeBrowserSurface?.kind === "file" ? (
               <FilePreviewPanel
-                cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
                 relativePath={
                   activeBrowserSurface.kind === "file" ? activeBrowserSurface.relativePath : null
                 }
@@ -4777,7 +4776,6 @@ function ChatViewBody(
               ) : activeBrowserSurface?.kind === "files" ||
                 activeBrowserSurface?.kind === "file" ? (
                 <FilePreviewPanel
-                  cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
                   relativePath={
                     activeBrowserSurface.kind === "file" ? activeBrowserSurface.relativePath : null
                   }

@@ -12,7 +12,6 @@ import type { Effect } from "effect";
 import type {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
-  ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
 
@@ -53,9 +52,11 @@ export interface WorkspaceEntriesShape {
    * Search indexed workspace entries for files and directories matching the
    * provided query.
    */
-  readonly search: (
-    input: ProjectSearchEntriesInput,
-  ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceEntriesError>;
+  readonly search: (input: {
+    readonly cwd: string;
+    readonly query: string;
+    readonly limit: number;
+  }) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceEntriesError>;
 
   /**
    * Drop any cached workspace entries for the given workspace root.
