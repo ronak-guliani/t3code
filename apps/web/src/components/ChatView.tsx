@@ -619,7 +619,7 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
     [onAddTerminalContext, visible],
   );
 
-  if (!project || !terminalState.terminalOpen || !cwd) {
+  if (!project || (!terminalId && !terminalState.terminalOpen) || !cwd) {
     return null;
   }
   const displayedTerminalIds = terminalId ? [terminalId] : terminalState.terminalIds;
@@ -2032,11 +2032,8 @@ function ChatViewBody(
   const addTerminalSurface = useCallback(() => {
     if (!activeThreadRef) return;
     const terminalId = `terminal-${randomUUID()}`;
-    storeNewTerminal(activeThreadRef, terminalId);
-    storeSetTerminalOpen(activeThreadRef, true);
     useRightPanelStore.getState().openTerminal(activeThreadRef, terminalId);
-    setTerminalFocusRequestId((value) => value + 1);
-  }, [activeThreadRef, storeNewTerminal, storeSetTerminalOpen]);
+  }, [activeThreadRef]);
   const addFilesSurface = useCallback(() => {
     if (activeThreadRef) useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeThreadRef]);
