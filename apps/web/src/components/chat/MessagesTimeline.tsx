@@ -18,6 +18,7 @@ import {
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import { deriveTimelineEntries, formatElapsed, type AgentRun } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -102,7 +103,7 @@ interface TimelineRowSharedState {
   onForkAssistantMessage: (messageId: MessageId) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
-  reviewResultMessageId: string | null;
+  reviewOutputMessageIds: ReadonlySet<string>;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -204,12 +205,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
-  const reviewResultMessageId = useMemo(() => {
-    if (!reviewResultActive) return null;
-    const row = rawRows
-      .toReversed()
-      .find((entry) => entry.kind === "message" && entry.message.role === "assistant");
-    return row?.id ?? null;
+  // The reviewer's structured output is rendered as the findings card, so hide
+  // the raw JSON message it came from — identified by content, because later
+  // turns in the same review thread append ordinary assistant replies.
+  const reviewOutputMessageIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!reviewResultActive) return ids;
+    for (const entry of rawRows) {
+      if (
+        entry.kind === "message" &&
+        entry.message.role === "assistant" &&
+        isReviewOutputText(entry.message.text ?? "")
+      ) {
+        ids.add(entry.id);
+      }
+    }
+    return ids;
   }, [rawRows, reviewResultActive]);
 
   const handleScroll = useCallback(() => {
@@ -259,7 +270,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onForkAssistantMessage: handleForkAssistantMessage,
       onImageExpand,
       onOpenTurnDiff,
-      reviewResultMessageId,
+      reviewOutputMessageIds,
     }),
     [
       activeTurnInProgress,
@@ -280,7 +291,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       handleForkAssistantMessage,
       onImageExpand,
       onOpenTurnDiff,
-      reviewResultMessageId,
+      reviewOutputMessageIds,
     ],
   );
 
@@ -466,7 +477,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
           return (
             <>
               <div className="min-w-0 px-1 py-0.5">
-                {ctx.reviewResultMessageId === row.id ? null : (
+                {ctx.reviewOutputMessageIds.has(row.id) ? null : (
                   <ChatMarkdown
                     text={messageText}
                     cwd={ctx.markdownCwd}
@@ -681,6 +692,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
         {visibleEntries.map((workEntry) => (
           <SimpleWorkEntryRow
             key={`work-row:${workEntry.id}`}
+            canExpandCommand={onlyToolEntries}
             workEntry={workEntry}
             workspaceRoot={workspaceRoot}
           />
@@ -1161,10 +1173,11 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 }
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+  canExpandCommand?: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
 }) {
-  const { workEntry, workspaceRoot } = props;
+  const { canExpandCommand = false, workEntry, workspaceRoot } = props;
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
@@ -1184,6 +1197,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const hasChangedFiles = (workEntry.changedFiles?.length ?? 0) > 0;
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const CommandToggleIcon = isCommandExpanded ? ChevronDownIcon : ChevronRightIcon;
+  const expandableCommand = canExpandCommand ? fullCommand : null;
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1194,27 +1208,37 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           {entryIcon}
         </span>
         <div className="min-w-0 flex-1 overflow-hidden">
-          {fullCommand ? (
+          {expandableCommand ? (
             <button
               type="button"
-              className="flex w-full min-w-0 items-center gap-1 text-left"
+              className="flex w-full min-w-0 items-start gap-1 text-left"
               onClick={() => setIsCommandExpanded((value) => !value)}
               aria-expanded={isCommandExpanded}
               aria-label={`${isCommandExpanded ? "Collapse" : "Expand"} command: ${heading}`}
             >
-              <p
-                className={cn(
-                  "min-w-0 flex-1 truncate text-[length:inherit] leading-[1.67]",
-                  workToneClass(workEntry.tone),
-                  preview ? "text-muted-foreground/70" : "",
-                )}
-                title={displayText}
-              >
-                <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-                  {heading}
-                </span>
-                {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
-              </p>
+              {isCommandExpanded ? (
+                <code
+                  data-tool-command-details
+                  data-testid="tool-command-details"
+                  className="block min-w-0 flex-1 overflow-x-auto rounded-md border border-border/45 bg-background/60 px-2 py-1.5 font-mono text-[0.9em] leading-[1.5] whitespace-pre-wrap wrap-break-word text-foreground/80"
+                >
+                  {expandableCommand}
+                </code>
+              ) : (
+                <p
+                  className={cn(
+                    "min-w-0 flex-1 truncate text-[length:inherit] leading-[1.67]",
+                    workToneClass(workEntry.tone),
+                    preview ? "text-muted-foreground/70" : "",
+                  )}
+                  title={displayText}
+                >
+                  <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                    {heading}
+                  </span>
+                  {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
+                </p>
+              )}
               <CommandToggleIcon
                 className="size-3 shrink-0 text-muted-foreground/55"
                 aria-hidden="true"
@@ -1249,15 +1273,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           )}
         </div>
       </div>
-      {fullCommand && isCommandExpanded && (
-        <pre
-          data-tool-command-details
-          data-testid="tool-command-details"
-          className="mt-1 ml-7 overflow-x-auto rounded-md border border-border/45 bg-background/60 px-2 py-1.5 font-mono text-[0.9em] leading-[1.5] whitespace-pre-wrap wrap-break-word text-foreground/80"
-        >
-          {fullCommand}
-        </pre>
-      )}
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
           {workEntry.changedFiles?.slice(0, 4).map((filePath) => {

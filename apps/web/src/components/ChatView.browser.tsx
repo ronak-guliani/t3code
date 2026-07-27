@@ -233,6 +233,9 @@ function createMockEnvironmentApi(input: {
       getFullThreadDiffState: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getFullThreadDiffState"],
+      searchTranscript: (() => {
+        throw new Error("Not implemented in browser test.");
+      }) as EnvironmentApi["orchestration"]["searchTranscript"],
       subscribeShell: (() => () => undefined) as EnvironmentApi["orchestration"]["subscribeShell"],
       subscribeThread: (() => () =>
         undefined) as EnvironmentApi["orchestration"]["subscribeThread"],
@@ -973,6 +976,9 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
   const tag = body._tag;
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
+  }
+  if (tag === WS_METHODS.serverListSkills) {
+    return { skills: [], issues: [] };
   }
   if (tag === WS_METHODS.gitListBranches) {
     return {
@@ -6134,6 +6140,51 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows available skills when typing the skill trigger", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-skill-menu-target" as MessageId,
+        targetText: "skill menu thread",
+      }),
+      resolveRpc: (request) => {
+        if (request._tag !== WS_METHODS.serverListSkills) return undefined;
+        return {
+          skills: [
+            {
+              id: "agent-browser",
+              name: "agent-browser",
+              displayName: "Agent Browser",
+              description: "Open pages, click around, and inspect web apps.",
+              canonicalPath: "/Users/test/.codex/skills/agent-browser",
+              paths: ["/Users/test/.codex/skills/agent-browser"],
+              installations: [
+                {
+                  agentId: "codex",
+                  agentName: "Codex",
+                  path: "/Users/test/.codex/skills/agent-browser",
+                  source: "primary",
+                },
+              ],
+              hasPathConflict: false,
+            },
+          ],
+          issues: [],
+        };
+      },
+    });
+
+    try {
+      await waitForComposerEditor();
+      await page.getByTestId("composer-editor").fill("$");
+
+      const menuItem = await waitForComposerMenuItem("skill:codex:agent-browser");
+      expect(menuItem.textContent).toContain("Agent Browser");
     } finally {
       await mounted.cleanup();
     }

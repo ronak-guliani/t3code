@@ -160,6 +160,7 @@ export interface WsRpcClient {
     readonly getFullThreadDiffState: RpcUnaryMethod<
       typeof ORCHESTRATION_WS_METHODS.getFullThreadDiffState
     >;
+    readonly searchTranscript: RpcUnaryMethod<typeof ORCHESTRATION_WS_METHODS.searchTranscript>;
     readonly subscribeShell: RpcStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeShell>;
     readonly subscribeThread: RpcInputStreamMethod<typeof ORCHESTRATION_WS_METHODS.subscribeThread>;
   };
@@ -348,6 +349,8 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) =>
           client[ORCHESTRATION_WS_METHODS.getFullThreadDiffState](input),
         ),
+      searchTranscript: (input) =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.searchTranscript](input)),
       subscribeShell: (listener, options) =>
         transport.subscribe(
           (client) => client[ORCHESTRATION_WS_METHODS.subscribeShell]({}),

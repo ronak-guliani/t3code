@@ -54,6 +54,8 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsError,
   OrchestrationReplayEventsInput,
+  OrchestrationSearchTranscriptInput,
+  OrchestrationSearchTranscriptResult,
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -628,6 +630,14 @@ export const WsOrchestrationReplayEventsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.
   success: OrchestrationRpcSchemas.replayEvents.output,
   error: OrchestrationReplayEventsError,
 });
+export const WsOrchestrationSearchTranscriptRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.searchTranscript,
+  {
+    payload: OrchestrationSearchTranscriptInput,
+    success: OrchestrationSearchTranscriptResult,
+    error: OrchestrationGetSnapshotError,
+  },
+);
 
 export const WsOrchestrationGetShellSnapshotRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getShellSnapshot,
@@ -927,6 +937,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffStateRpc,
   WsOrchestrationGetFullThreadDiffStateRpc,
   WsOrchestrationReplayEventsRpc,
+  WsOrchestrationSearchTranscriptRpc,
   WsOrchestrationGetShellSnapshotRpc,
   WsOrchestrationGetThreadSnapshotRpc,
   WsOrchestrationSubscribeShellRpc,
