@@ -153,6 +153,7 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         yield* writeTextFile(sharedPath, buildNumberedLines(30));
         yield* git(tmp, ["add", "."]);
         yield* git(tmp, ["commit", "-m", "add shared"]);
+        const baseBranch = yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
         const checkpointStore = yield* CheckpointStore;
         const threadId = ThreadId.make("thread-checkpoint-store-stacked");
@@ -173,6 +174,13 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
 
         yield* writeTextFile(sharedPath, replaceLine(earlierContents, 25, "turn change"));
         yield* git(tmp, ["commit", "-am", "second turn commit"]);
+
+        // Real base movement, so the reflog gate cannot mask the ref exclusions.
+        yield* git(tmp, ["checkout", "-b", "other-branch", baseBranch]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 1, "foreign change"));
+        yield* git(tmp, ["commit", "-am", "foreign commit"]);
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* git(tmp, ["rebase", "other-branch"]);
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
 
         const diff = yield* checkpointStore.diffCheckpoints({
@@ -181,6 +189,7 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
           toCheckpointRef,
         });
 
+        expect(diff).not.toContain("+foreign change");
         expect(diff).toContain("+turn change");
         expect(diff).toContain("+earlier change");
       }),
@@ -239,6 +248,7 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         yield* writeTextFile(sharedPath, buildNumberedLines(30));
         yield* git(tmp, ["add", "."]);
         yield* git(tmp, ["commit", "-m", "add shared"]);
+        const baseBranch = yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
         const checkpointStore = yield* CheckpointStore;
         const threadId = ThreadId.make("thread-checkpoint-store-pushed");
@@ -248,14 +258,25 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         yield* git(tmp, ["checkout", "-b", "thread-branch"]);
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
 
-        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 5, "pushed change"));
+        // Real base movement, so the reflog gate cannot mask the ref exclusions.
+        yield* git(tmp, ["checkout", "-b", "other-branch", baseBranch]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 1, "foreign change"));
+        yield* git(tmp, ["commit", "-am", "foreign commit"]);
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* git(tmp, ["rebase", "other-branch"]);
+
+        const pushedContents = replaceLine(
+          replaceLine(buildNumberedLines(30), 1, "foreign change"),
+          5,
+          "pushed change",
+        );
+        yield* writeTextFile(sharedPath, pushedContents);
         yield* git(tmp, ["commit", "-am", "first turn commit"]);
         // A mid-turn push leaves the branch's remote-tracking ref on the turn's
         // own commit; that must not be read as the base the turn started from.
         const pushedCommit = yield* git(tmp, ["rev-parse", "HEAD"]);
         yield* git(tmp, ["update-ref", "refs/remotes/origin/thread-branch", pushedCommit]);
 
-        const pushedContents = replaceLine(buildNumberedLines(30), 5, "pushed change");
         yield* writeTextFile(sharedPath, replaceLine(pushedContents, 25, "turn change"));
         yield* git(tmp, ["commit", "-am", "second turn commit"]);
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
@@ -266,8 +287,95 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
           toCheckpointRef,
         });
 
+        expect(diff).not.toContain("+foreign change");
         expect(diff).toContain("+turn change");
         expect(diff).toContain("+pushed change");
+      }),
+    );
+
+    it.effect("excludes a base the turn merged in mid-turn", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const sharedPath = path.join(tmp, "shared.md");
+        yield* writeTextFile(sharedPath, buildNumberedLines(30));
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "add shared"]);
+        const baseBranch = yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-merge");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+        yield* git(tmp, ["checkout", "-b", "other-branch", baseBranch]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 1, "foreign change"));
+        yield* git(tmp, ["commit", "-am", "foreign commit"]);
+
+        // A merge keeps the turn's history as its first parent, so the adopted
+        // base is only reachable through the merge's second parent.
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "turn commit"]);
+        yield* git(tmp, ["merge", "--no-edit", "other-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+turn change");
+        expect(diff).not.toContain("+foreign change");
+      }),
+    );
+
+    it.effect("ignores base movement from a later turn when diffing an earlier one", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const sharedPath = path.join(tmp, "shared.md");
+        yield* writeTextFile(sharedPath, buildNumberedLines(30));
+        yield* git(tmp, ["add", "."]);
+        yield* git(tmp, ["commit", "-m", "add shared"]);
+        const baseBranch = yield* git(tmp, ["rev-parse", "--abbrev-ref", "HEAD"]);
+
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-later-turn");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+
+        // Turn 2 moves no base; a stacked branch forks between its commits.
+        const earlierContents = replaceLine(buildNumberedLines(30), 5, "earlier change");
+        yield* writeTextFile(sharedPath, earlierContents);
+        yield* git(tmp, ["commit", "-am", "first turn commit"]);
+        yield* git(tmp, ["branch", "stacked-branch"]);
+        yield* writeTextFile(sharedPath, replaceLine(earlierContents, 25, "turn change"));
+        yield* git(tmp, ["commit", "-am", "second turn commit"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        // Turn 3 rebases. Diffing turn 2 afterwards must not see that rebase.
+        yield* git(tmp, ["checkout", "-b", "other-branch", baseBranch]);
+        yield* writeTextFile(sharedPath, replaceLine(buildNumberedLines(30), 1, "foreign change"));
+        yield* git(tmp, ["commit", "-am", "foreign commit"]);
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* git(tmp, ["rebase", "other-branch"]);
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+turn change");
+        expect(diff).toContain("+earlier change");
       }),
     );
 

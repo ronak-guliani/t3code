@@ -172,7 +172,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         const message = `t3 checkpoint ref=${input.checkpointRef}\n\nt3-worktree=${worktreeRoot}`;
         // The workspace HEAD is recorded as the checkpoint's parent so later
         // diffs can tell turn-authored work apart from base movement (rebase,
-        // merge, branch switch) that happened during the turn.
+        // merge, pull) that happened during the turn.
         const commitTreeResult = yield* git.execute({
           operation,
           cwd: input.cwd,
@@ -291,7 +291,8 @@ const makeCheckpointStore = Effect.gen(function* () {
 
   /**
    * Report whether the workspace adopted history it did not author between
-   * `fromBaseCommit` and now, using the operations Git records in HEAD's reflog.
+   * `fromBaseCommit` and `toBaseCommit`, using the operations Git records in
+   * HEAD's reflog.
    *
    * Ref topology alone cannot answer this. A branch forked off an intermediate
    * turn commit and a branch carrying a base the turn rebased onto produce the
@@ -299,13 +300,16 @@ const makeCheckpointStore = Effect.gen(function* () {
    * prior turn's base. Only the reflog distinguishes commits the workspace
    * authored from history a rebase, merge, or pull brought in.
    *
-   * The scan is bounded and must reach `fromBaseCommit` to be trusted, so a
-   * trimmed reflog, or a checkpoint captured in a different worktree, reports no
-   * movement and leaves the plain checkpoint-to-checkpoint diff in place.
+   * The scan is bounded to the turn's own window so an on-demand diff of an
+   * older turn cannot observe base movement from a later one, and it must reach
+   * both ends of that window to be trusted. A trimmed reflog, or a checkpoint
+   * captured in a different worktree, therefore reports no movement and leaves
+   * the plain checkpoint-to-checkpoint diff in place.
    */
   const hasBaseMovingOperation = Effect.fn("hasBaseMovingOperation")(function* (input: {
     readonly cwd: string;
     readonly fromBaseCommit: string;
+    readonly toBaseCommit: string;
   }) {
     const reflogResult = yield* git.execute({
       operation: "CheckpointStore.resolveHeadReflog",
@@ -324,16 +328,22 @@ const makeCheckpointStore = Effect.gen(function* () {
       return false;
     }
 
+    let insideTurnWindow = false;
     let baseMoved = false;
     for (const entry of reflogResult.stdout.split("\n")) {
       const separatorIndex = entry.indexOf(" ");
       if (separatorIndex === -1) {
         continue;
       }
-      if (entry.slice(0, separatorIndex) === input.fromBaseCommit) {
-        return baseMoved;
+      const commit = entry.slice(0, separatorIndex);
+      if (!insideTurnWindow) {
+        // Entries above the turn's end belong to later turns.
+        insideTurnWindow = commit === input.toBaseCommit;
       }
-      if (BASE_MOVING_REFLOG_OPERATIONS.test(entry.slice(separatorIndex + 1))) {
+      if (commit === input.fromBaseCommit) {
+        return insideTurnWindow && baseMoved;
+      }
+      if (insideTurnWindow && BASE_MOVING_REFLOG_OPERATIONS.test(entry.slice(separatorIndex + 1))) {
         baseMoved = true;
       }
     }
@@ -356,6 +366,9 @@ const makeCheckpointStore = Effect.gen(function* () {
    * checked-out branch itself (a same-branch fast-forward pull) is therefore not
    * detected; that case degrades to a plain checkpoint-to-checkpoint diff rather
    * than dropping turn-authored work.
+   *
+   * A merge keeps the turn's own history as its first parent, so the adopted
+   * base is the merge's other parent rather than a commit on the chain.
    */
   const resolveForeignBaseCommit = Effect.fn("resolveForeignBaseCommit")(function* (input: {
     readonly cwd: string;
@@ -389,6 +402,7 @@ const makeCheckpointStore = Effect.gen(function* () {
           cwd: input.cwd,
           args: [
             "rev-list",
+            "--parents",
             "--first-parent",
             `--max-count=${BASE_MOVEMENT_MAX_COMMITS}`,
             input.toBaseCommit,
@@ -410,12 +424,17 @@ const makeCheckpointStore = Effect.gen(function* () {
     );
 
     const turnAuthored = new Set(parseCommitOids(turnAuthoredResult.stdout));
-    for (const commit of parseCommitOids(chainResult.stdout)) {
-      if (commit === input.fromBaseCommit) {
+    for (const entry of parseCommitOids(chainResult.stdout)) {
+      const [commit, ...parents] = entry.split(" ");
+      if (commit === undefined || commit === input.fromBaseCommit) {
         return null;
       }
       if (!turnAuthored.has(commit)) {
         return commit;
+      }
+      const adoptedParent = parents.slice(1).find((parent) => !turnAuthored.has(parent));
+      if (adoptedParent !== undefined) {
+        return adoptedParent;
       }
     }
     return null;
@@ -449,6 +468,7 @@ const makeCheckpointStore = Effect.gen(function* () {
       const baseMoved = yield* hasBaseMovingOperation({
         cwd: input.cwd,
         fromBaseCommit,
+        toBaseCommit,
       });
       if (!baseMoved) {
         return input.fromCommitOid;
