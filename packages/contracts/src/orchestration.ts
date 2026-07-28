@@ -203,6 +203,7 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  previewUrl: Schema.optionalKey(Schema.String),
 });
 export type ProjectScript = typeof ProjectScript.Type;
 

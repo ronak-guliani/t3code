@@ -33,6 +33,13 @@ import {
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import { readEnvironmentApi } from "~/environmentApi";
+import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
+import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -59,6 +66,7 @@ interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
   isStreaming?: boolean;
+  threadRef?: ScopedThreadRef;
 }
 
 type MarkdownFunctionComponentProps<K extends keyof Components> = Parameters<
@@ -295,6 +303,7 @@ interface MarkdownFileLinkProps {
   filePath: string;
   label: string;
   theme: "light" | "dark";
+  threadRef?: ScopedThreadRef;
   className?: string | undefined;
 }
 
@@ -386,11 +395,39 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   filePath,
   label,
   theme,
+  threadRef,
   className,
 }: MarkdownFileLinkProps) {
+  const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
+  const openPreview = useAtomCommand(previewEnvironment.open);
   const handleOpen = useCallback(() => {
-    const api = readLocalApi();
-    if (!api) {
+    const httpBaseUrl = threadRef ? getEnvironmentHttpBaseUrl(threadRef.environmentId) : null;
+    if (
+      threadRef &&
+      environmentApi &&
+      httpBaseUrl &&
+      isPreviewSupportedInRuntime() &&
+      isBrowserPreviewFile(filePath)
+    ) {
+      void openFileInPreview({
+        threadRef,
+        relativePath: targetPath,
+        httpBaseUrl,
+        createAssetUrl: environmentApi.assets.createUrl,
+        openPreview,
+      }).catch((error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open preview",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      });
+      return;
+    }
+    const localApi = readLocalApi();
+    if (!localApi) {
       toastManager.add({
         type: "error",
         title: "Open in editor is unavailable",
@@ -398,7 +435,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
 
-    void openInPreferredEditor(api, targetPath).catch((error) => {
+    void openInPreferredEditor(localApi, targetPath).catch((error) => {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -407,7 +444,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [targetPath]);
+  }, [environmentApi, filePath, openPreview, targetPath, threadRef]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -520,6 +557,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.filePath === next.filePath &&
     previous.label === next.label &&
     previous.theme === next.theme &&
+    previous.threadRef?.environmentId === next.threadRef?.environmentId &&
+    previous.threadRef?.threadId === next.threadRef?.threadId &&
     previous.className === next.className
   );
 }
@@ -563,7 +602,7 @@ const markdownComponentsWithoutRuntimeState = {
   },
 } satisfies Components;
 
-function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
+function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const markdownFileLinkMetaByHref = useMemo(() => {
@@ -615,11 +654,12 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
           filePath={fileLinkMeta.filePath}
           label={labelParts.join(" · ")}
           theme={resolvedTheme}
+          {...(threadRef ? { threadRef } : {})}
           className={props.className}
         />
       );
     },
-    [fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme],
+    [fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme, threadRef],
   );
   const markdownPre = useCallback(
     ({ node: _node, children, ...props }: MarkdownFunctionComponentProps<"pre">) => {

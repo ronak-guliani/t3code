@@ -14,6 +14,7 @@ import { APP_DISPLAY_NAME } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { PreviewAutomationHosts } from "../components/preview/PreviewAutomationHosts";
+import { ElectronBrowserHost } from "../browser/ElectronBrowserHost";
 import {
   SlowRpcAckToastCoordinator,
   WebSocketConnectionCoordinator,
@@ -111,6 +112,7 @@ function RootRouteView() {
         <StaleActiveTurnToastCoordinator />
         <EventRouter />
         <PreviewAutomationHosts />
+        <ElectronBrowserHost />
         <WebSocketConnectionCoordinator />
         <SlowRpcAckToastCoordinator />
         <WebSocketConnectionSurface>

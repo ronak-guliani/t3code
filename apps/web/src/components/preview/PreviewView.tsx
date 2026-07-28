@@ -15,7 +15,7 @@ import { Button } from "~/components/ui/button";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
-import { ensureLocalApi } from "~/localApi";
+import { readLocalApi } from "~/localApi";
 import {
   rememberPreviewUrl,
   updatePreviewServerSnapshot,
@@ -29,6 +29,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { previewBridge } from "./previewBridge";
 import { subscribePreviewAction } from "./previewActionBus";
 import { openPreviewSession } from "./openPreviewSession";
+import { openDiscoveredPort } from "./openDiscoveredPort";
 import { PreviewChromeRow } from "./PreviewChromeRow";
 import { formatPreviewUrl } from "./previewUrlPresentation";
 import { PreviewEmptyState } from "./PreviewEmptyState";
@@ -39,7 +40,6 @@ import {
 } from "~/browser/browserViewportActions";
 import { resolveResponsiveBrowserViewportSize } from "~/browser/browserViewportLayout";
 import { PreviewUnreachable } from "./PreviewUnreachable";
-import { revealInFileExplorerLabel } from "./fileExplorerLabel";
 import { shouldShowPreviewEmptyState } from "./previewEmptyStateLogic";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
@@ -63,8 +63,6 @@ interface Props {
   onClose?: (() => void) | undefined;
 }
 
-const localApi = typeof window === "undefined" ? null : ensureLocalApi();
-
 /**
  * Single-tab preview surface: chrome row on top, one webview below, empty
  * state when no session exists for the thread.
@@ -82,6 +80,7 @@ export function PreviewView({
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
+  const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
   const environmentHttpBaseUrl = useEnvironmentHttpBaseUrl(threadRef.environmentId);
@@ -233,6 +232,7 @@ export function PreviewView({
   }, [tabId]);
 
   const handleOpenInBrowser = useCallback(() => {
+    const localApi = readLocalApi();
     if (!localApi || !url) return;
     void localApi.shell.openExternal(url).catch(() => undefined);
   }, [url]);
@@ -246,14 +246,15 @@ export function PreviewView({
         void stopBrowserRecording(tabId).then(
           (artifact) => {
             if (!artifact) return;
+            const revealAction = {
+              children: "Reveal in Finder",
+              onClick: () => void bridge.revealArtifact(artifact.path),
+            };
             toastManager.add(
               stackedThreadToast({
                 type: "success",
                 title: "Recording saved",
-                actionProps: {
-                  children: revealInFileExplorerLabel(navigator.platform),
-                  onClick: () => void bridge.revealArtifact(artifact.path),
-                },
+                actionProps: revealAction,
               }),
             );
           },
@@ -373,6 +374,7 @@ export function PreviewView({
       try {
         const annotation = await previewBridge.pickElement(tabId);
         if (!annotation) return;
+        addPreviewAnnotation(threadRef, annotation);
         const screenshotFile = await previewAnnotationScreenshotFile(annotation);
         if (screenshotFile && annotation.screenshot) {
           addImage(threadRef, {
@@ -408,7 +410,7 @@ export function PreviewView({
         }
       }
     })();
-  }, [addImage, tabId, threadRef]);
+  }, [addImage, addPreviewAnnotation, tabId, threadRef]);
 
   // If the active tab changes mid-pick (close, thread switch, hot restart),
   // tell main to tear down the in-flight session AND reset our local toggle
@@ -523,7 +525,16 @@ export function PreviewView({
             environmentId={threadRef.environmentId}
             configuredUrls={configuredUrls}
             recentlySeenUrls={previewState.recentlySeenUrls}
-            onOpenUrl={(next) => void handleOpenServerUrl(next)}
+            onOpenUrl={(url) => void handleOpenServerUrl(url)}
+            onOpenServer={(server) =>
+              tabId
+                ? void handleOpenServerUrl(server.url)
+                : void openDiscoveredPort({
+                    threadRef,
+                    port: server,
+                    openPreview: open,
+                  })
+            }
           />
         ) : null}
         {snapshot && desktopOverlay ? (

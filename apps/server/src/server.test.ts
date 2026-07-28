@@ -2609,7 +2609,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            scope: { _tag: "project", projectId: defaultProjectId },
             query: "needle",
             limit: 10,
           }),
@@ -2813,13 +2813,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const needle = 1;",
       );
 
-      yield* buildAppUnderTest();
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+            getProjectShellById: () =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationReadModel().projects[0]!,
+                  workspaceRoot: workspaceDir,
+                }),
+              ),
+          },
+        },
+      });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            scope: { _tag: "thread", threadId: defaultThreadId },
             query: "needle",
             limit: 10,
           }),
@@ -2851,8 +2865,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const ok = 1;",
       );
 
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
       yield* buildAppUnderTest({
         layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+            getProjectShellById: () =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationReadModel().projects[0]!,
+                  workspaceRoot: workspaceDir,
+                }),
+              ),
+          },
           gitCore: {
             isInsideWorkTree: () => Effect.succeed(true),
             listWorkspaceFiles: () =>
@@ -2872,7 +2897,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            scope: { _tag: "thread", threadId: defaultThreadId },
             query: "ignored-search-target",
             limit: 10,
           }),
@@ -2884,7 +2909,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc projects.searchEntries errors", () =>
+  it.effect("rejects projects.searchEntries for unknown threads", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
 
@@ -2892,7 +2917,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: "/definitely/not/a/real/workspace/path",
+            scope: { _tag: "thread", threadId: ThreadId.make("thread-missing") },
             query: "needle",
             limit: 10,
           }),
@@ -2901,9 +2926,54 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "ProjectSearchEntriesError");
-      assertInclude(
-        result.failure.message,
-        "Workspace root does not exist: /definitely/not/a/real/workspace/path",
+      assertInclude(result.failure.message, "Workspace thread was not found.");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("scopes projects.searchEntries to the thread-owned workspace root", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parentDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-search-scope-",
+      });
+      const workspaceDir = path.join(parentDir, "authorized");
+      const adjacentDir = path.join(parentDir, "adjacent");
+      yield* fs.makeDirectory(workspaceDir);
+      yield* fs.makeDirectory(adjacentDir);
+      yield* fs.writeFileString(path.join(workspaceDir, "authorized-needle.ts"), "authorized");
+      yield* fs.writeFileString(path.join(adjacentDir, "adjacent-needle.ts"), "adjacent");
+
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+            getProjectShellById: () =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationReadModel().projects[0]!,
+                  workspaceRoot: workspaceDir,
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsSearchEntries]({
+            scope: { _tag: "thread", threadId: defaultThreadId },
+            query: "needle",
+            limit: 10,
+          }),
+        ),
+      );
+
+      assert.deepEqual(
+        response.entries.map((entry) => entry.path),
+        ["authorized-needle.ts"],
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

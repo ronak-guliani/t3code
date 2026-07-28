@@ -482,6 +482,10 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                     text={messageText}
                     cwd={ctx.markdownCwd}
                     isStreaming={Boolean(row.message.streaming)}
+                    threadRef={{
+                      environmentId: ctx.activeThreadEnvironmentId,
+                      threadId: ctx.activeThreadId,
+                    }}
                   />
                 )}
                 <AssistantChangedFilesSection
