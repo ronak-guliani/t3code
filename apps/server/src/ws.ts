@@ -642,6 +642,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               title,
               prompt: buildFixReviewIssuesPrompt({
                 issues,
+                ...(thread.reviewResult?.snapshot.scope.kind === "pull-request"
+                  ? { pullRequestNumber: thread.reviewResult.snapshot.scope.number }
+                  : {}),
                 settings: {
                   promptTemplate: override?.promptTemplate ?? fixSettings.promptTemplate,
                 },
