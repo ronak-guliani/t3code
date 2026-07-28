@@ -43,7 +43,6 @@ export interface McpSessionRegistryShape {
     providerInstanceId: ProviderInstanceId,
   ) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
-  readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
 }
 
@@ -67,6 +66,8 @@ export interface McpSessionRegistryOptions {
   readonly now?: () => number;
 }
 
+// A provider crash can bypass teardown. This is a backstop, not a normal
+// session lifetime: active credentials remain valid until explicitly revoked.
 const DEFAULT_MAXIMUM_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 
 const bytesToHex = (bytes: Uint8Array): string =>
@@ -112,10 +113,13 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       .pipe(Effect.map(bytesToHex), Effect.orDie);
 
   const pruneExpired = (current: RegistryState, timestamp: number): RegistryState => {
+    const hasExpiredRecord = Array.from(current.records.values()).some(
+      (record) => timestamp > record.scope.expiresAt,
+    );
+    if (!hasExpiredRecord) return current;
     const records = new Map(
       Array.from(current.records).filter(([, record]) => timestamp <= record.scope.expiresAt),
     );
-    if (records.size === current.records.size) return current;
     const activeProviderSessionIds = new Set(
       Array.from(records.values(), (record) => record.scope.providerSessionId),
     );
@@ -239,11 +243,6 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         );
       },
     ),
-    revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
-      yield* SynchronizedRef.update(state, (current) =>
-        revokeWhere(current, (record) => record.scope.threadId === threadId),
-      );
-    }),
     revokeAll: SynchronizedRef.set(state, { records: new Map(), providerSessions: new Map() }),
   });
 });

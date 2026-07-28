@@ -502,12 +502,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
               yield* adapter.stopSession(input.threadId).pipe(
                 Effect.tap(() =>
-                  Effect.all([
-                    analytics.record("provider.session.stopped", {
-                      provider: adapter.provider,
-                    }),
-                    McpSessionRegistry.revokeActiveMcpProviderInstance(input.threadId, instanceId),
-                  ]).pipe(Effect.asVoid),
+                  analytics.record("provider.session.stopped", {
+                    provider: adapter.provider,
+                  }),
+                ),
+                Effect.ensuring(
+                  McpSessionRegistry.revokeActiveMcpProviderInstance(input.threadId, instanceId),
                 ),
                 Effect.catchCause((cause) =>
                   Effect.logWarning("provider.session.stop-stale-failed", {

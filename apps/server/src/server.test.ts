@@ -510,7 +510,6 @@ const buildAppUnderTest = (options?: {
           resolve: () => Effect.succeed(undefined),
           revokeProviderInstance: () => Effect.void,
           revokeProviderSession: () => Effect.void,
-          revokeThread: () => Effect.void,
           revokeAll: Effect.void,
         }),
       ),

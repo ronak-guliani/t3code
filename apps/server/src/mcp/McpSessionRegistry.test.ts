@@ -56,27 +56,29 @@ it.effect("advertises explicit bound hosts and normalizes wildcard and IPv6 host
   }),
 );
 
-it.effect("stores only a token hash, resolves the bearer token, and revokes by thread", () =>
-  Effect.gen(function* () {
-    let timestamp = 1_000;
-    const registry = yield* makeRegistry(() => timestamp);
-    const threadId = ThreadId.make("thread-1");
-    const issued = yield* registry.issue({
-      threadId,
-      providerInstanceId: ProviderInstanceId.make("codex"),
-    });
-    expect(issued.config.endpoint).toBe("http://127.0.0.1:43123/mcp");
-    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
-    expect(token.length).toBeGreaterThan(20);
+it.effect(
+  "stores only a token hash, resolves the bearer token, and revokes by provider session",
+  () =>
+    Effect.gen(function* () {
+      let timestamp = 1_000;
+      const registry = yield* makeRegistry(() => timestamp);
+      const threadId = ThreadId.make("thread-1");
+      const issued = yield* registry.issue({
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      });
+      expect(issued.config.endpoint).toBe("http://127.0.0.1:43123/mcp");
+      const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      expect(token.length).toBeGreaterThan(20);
 
-    const resolved = yield* registry.resolve(token);
-    expect(resolved?.threadId).toBe(threadId);
+      const resolved = yield* registry.resolve(token);
+      expect(resolved?.threadId).toBe(threadId);
 
-    yield* registry.revokeThread(threadId);
-    expect(yield* registry.resolve(token)).toBeUndefined();
+      yield* registry.revokeProviderSession(issued.config.providerSessionId);
+      expect(yield* registry.resolve(token)).toBeUndefined();
 
-    timestamp += 2_000;
-  }),
+      timestamp += 2_000;
+    }),
 );
 
 it.effect(

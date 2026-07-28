@@ -1221,7 +1221,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           return yield* new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId: ctx.threadId,
-            providerInstanceId: ctx.providerInstanceId,
             detail: "Copilot runtime restart requires a resumable session id.",
           });
         }
@@ -1402,7 +1401,6 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                 new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId: input.threadId,
-                  providerInstanceId: input.providerInstanceId,
                   detail: error.message,
                   cause: error,
                 }),

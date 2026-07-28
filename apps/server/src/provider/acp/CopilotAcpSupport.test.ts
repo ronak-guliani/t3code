@@ -1,7 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
+import { Effect, Logger } from "effect";
 import { HttpServer } from "effect/unstable/http";
 
 import { ServerEnvironment } from "../../environment/Services/ServerEnvironment.ts";
@@ -17,6 +17,7 @@ import {
   buildCopilotMcpServerOptions,
   buildCopilotMcpServers,
   isCopilotPlanModeId,
+  logMissingCopilotMcpProviderSession,
   normalizeCopilotAcpModeId,
   resolveCopilotAcpModeId,
 } from "./CopilotAcpSupport.ts";
@@ -157,6 +158,26 @@ describe("buildCopilotAcpSpawnInput", () => {
 });
 
 describe("buildCopilotRuntimeModeArgs", () => {
+  it.effect("logs a missing provider MCP session at spawn", () => {
+    const messages: Array<string> = [];
+    const logger = Logger.make(({ message }) => {
+      messages.push(String(message));
+    });
+    return logMissingCopilotMcpProviderSession(
+      "thread-missing-provider-session",
+      ProviderInstanceId.make("copilot"),
+    ).pipe(
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(messages).toContainEqual(
+            expect.stringContaining("copilot.mcp.provider-session-missing"),
+          );
+        }),
+      ),
+    );
+  });
+
   it("keeps ACP permission interception active in full-access mode", () => {
     expect(buildCopilotRuntimeModeArgs("full-access")).toEqual([]);
   });

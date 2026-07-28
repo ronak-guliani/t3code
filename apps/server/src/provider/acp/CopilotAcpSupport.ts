@@ -174,6 +174,15 @@ export function buildCopilotMcpServers(
   return servers;
 }
 
+export const logMissingCopilotMcpProviderSession = (
+  threadId: string,
+  providerInstanceId: ProviderInstanceId,
+) =>
+  Effect.logWarning("copilot.mcp.provider-session-missing", {
+    threadId,
+    providerInstanceId,
+  });
+
 export function resolveCopilotAcpModeId(
   interactionMode: ProviderInteractionMode | null | undefined,
 ): typeof COPILOT_AGENT_MODE_ID | typeof COPILOT_PLAN_MODE_ID {
@@ -229,10 +238,7 @@ export const makeCopilotAcpRuntime = (
         )
       : undefined;
     if (input.threadId && !providerSession) {
-      yield* Effect.logWarning("copilot.mcp.provider-session-missing", {
-        threadId: input.threadId,
-        providerInstanceId: input.providerInstanceId,
-      });
+      yield* logMissingCopilotMcpProviderSession(input.threadId, input.providerInstanceId);
     }
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
