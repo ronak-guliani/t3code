@@ -57,6 +57,7 @@ import Migration0046 from "./Migrations/046_SidebarAppliedMutations.ts";
 import Migration0047 from "./Migrations/047_CleanupUnrenderablePendingApprovals.ts";
 import Migration0048 from "./Migrations/048_ProjectionThreadMessageSearch.ts";
 import Migration0054 from "./Migrations/054_ProjectionWorkspaceHandoffOrigin.ts";
+import Migration0055 from "./Migrations/055_ExcludeHandoffContinuationsFromSearch.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -113,6 +114,7 @@ export const migrationEntries = [
   [47, "CleanupUnrenderablePendingApprovals", Migration0047],
   [48, "ProjectionThreadMessageSearch", Migration0048],
   [54, "ProjectionWorkspaceHandoffOrigin", Migration0054],
+  [55, "ExcludeHandoffContinuationsFromSearch", Migration0055],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
