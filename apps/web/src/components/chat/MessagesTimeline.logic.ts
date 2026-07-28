@@ -204,9 +204,16 @@ export function deriveMessagesTimelineRows(input: {
       } else {
         const revertTurnCount = input.revertTurnCountByUserMessageId.get(message.id);
         const lastPendingRow = pendingHandoffRows.at(-1);
-        if (lastPendingRow && revertTurnCount !== undefined) {
-          lastPendingRow.revertMessageId = message.id;
-          lastPendingRow.revertTurnCount = revertTurnCount;
+        if (lastPendingRow) {
+          if (revertTurnCount !== undefined) {
+            lastPendingRow.revertMessageId = message.id;
+            lastPendingRow.revertTurnCount = revertTurnCount;
+          }
+          // The continuation already moved the boundary as a user message, but
+          // it is never rendered. Anchor elapsed time to the marker instead so
+          // the post-handoff turn does not report a duration measured from a
+          // row the user cannot see.
+          lastDurationBoundary = lastPendingRow.createdAt;
         }
         nextRows.push(...pendingHandoffRows);
         pendingHandoffRows.length = 0;

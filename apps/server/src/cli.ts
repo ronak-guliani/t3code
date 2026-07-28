@@ -2078,12 +2078,6 @@ const chatHandoffCommand = Command.make("handoff", {
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
         const createdAt = new Date().toISOString();
-        const origin = {
-          kind: "workspace-handoff",
-          role: "continuation",
-          branch: flags.branch,
-          worktreePath: flags.worktree,
-        } as const;
         const result = yield* dispatch({
           type: "thread.workspace.handoff",
           commandId: CommandId.make(Option.getOrUndefined(flags.commandId) ?? crypto.randomUUID()),
@@ -2100,7 +2094,6 @@ const chatHandoffCommand = Command.make("handoff", {
               text: flags.continuePrompt,
               attachments: [],
             },
-            origin,
             modelSelection: thread.modelSelection,
             runtimeMode: thread.runtimeMode,
             interactionMode: thread.interactionMode,

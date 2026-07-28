@@ -972,6 +972,22 @@ describe("workspace handoff rows", () => {
     expect(markerRow?.revertTurnCount).toBe(2);
   });
 
+  it("gives the post-handoff assistant row the same anchor as its reasoning row", () => {
+    const rows = deriveHandoffRows();
+
+    const markerRow = rows.find((row) => row.kind === "workspace-handoff");
+    const postHandoffAssistant = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
+        row.kind === "message" && row.message.id === "assistant-2",
+    );
+
+    // The hidden continuation must not become the anchor: it is a user-role
+    // message the user never sees, so measuring from it would show a duration
+    // that corresponds to nothing on screen.
+    expect(postHandoffAssistant?.durationStart).toBe(markerRow?.createdAt);
+    expect(postHandoffAssistant?.durationStart).not.toBe("2026-01-01T00:00:13Z");
+  });
+
   it("anchors the post-handoff elapsed time to the move, not the original request", () => {
     const rows = deriveHandoffRows();
 

@@ -665,6 +665,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
+      const handoffOrigin = {
+        kind: "workspace-handoff",
+        role: "marker",
+        branch: command.branch,
+        worktreePath: command.worktreePath,
+      } as const;
       // The marker is the invariant of a handoff: it records the workspace move
       // whether the thread continues on a generated continuation or on a turn
       // the user had already queued.
@@ -681,12 +687,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           messageId: command.markerMessageId,
           role: "system",
           text: `Moved to ${command.branch} (${command.worktreePath})`,
-          origin: {
-            kind: "workspace-handoff",
-            role: "marker",
-            branch: command.branch,
-            worktreePath: command.worktreePath,
-          },
+          origin: handoffOrigin,
           turnId: null,
           streaming: false,
           createdAt: occurredAt,
@@ -709,7 +710,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           type: "thread.queued-turn-created",
           payload: {
             threadId: command.threadId,
-            queuedTurn: command.continuation,
+            // The origin is derived here, not trusted from the caller: it is
+            // what suppresses the boilerplate bubble, so an untagged or
+            // mistagged continuation would re-expose it or render a second
+            // divider. It must also agree with the marker it accompanies.
+            queuedTurn: {
+              ...command.continuation,
+              origin: { ...handoffOrigin, role: "continuation" },
+            },
           },
         },
       ];

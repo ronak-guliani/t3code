@@ -162,6 +162,71 @@ describe("decider queued turns", () => {
       queuedTurn: {
         id: queuedTurnId,
         message: { text: "continue in workspace" },
+        // Derived by the decider even though the caller supplied no origin.
+        origin: {
+          kind: "workspace-handoff",
+          role: "continuation",
+          branch: "feature/handoff",
+          worktreePath: "/tmp/handoff",
+        },
+      },
+    });
+  });
+
+  it("derives the continuation origin instead of trusting the caller", async () => {
+    const now = "2026-03-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-handoff");
+    const queuedTurnId = asQueuedTurnId("queued-turn-handoff");
+    const readModel = await makeThreadReadModel({ now, threadId });
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.workspace.handoff",
+          commandId: CommandId.make("cmd-workspace-handoff"),
+          threadId,
+          branch: "feature/handoff",
+          worktreePath: "/tmp/handoff",
+          markerMessageId: MessageId.make("message-handoff-marker"),
+          continuation: {
+            id: queuedTurnId,
+            threadId,
+            message: {
+              messageId: asMessageId("message-handoff"),
+              role: "user",
+              text: "continue in workspace",
+              attachments: [],
+            },
+            // A schema-valid but wrong tag: the marker role would render the
+            // continuation as a second divider, and a stale branch would label
+            // the move with a workspace the thread is not bound to.
+            origin: {
+              kind: "workspace-handoff",
+              role: "marker",
+              branch: "stale/branch",
+              worktreePath: "/tmp/stale",
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: now,
+            updatedAt: now,
+            failedAt: null,
+            failureMessage: null,
+          },
+        },
+        readModel,
+      }),
+    );
+
+    const events = Array.isArray(result) ? result : [result];
+    expect(events[2]?.payload).toMatchObject({
+      queuedTurn: {
+        origin: {
+          kind: "workspace-handoff",
+          role: "continuation",
+          branch: "feature/handoff",
+          worktreePath: "/tmp/handoff",
+        },
       },
     });
   });
