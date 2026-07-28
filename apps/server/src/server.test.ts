@@ -506,6 +506,7 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
           issue: () => Effect.die("Not implemented in server test."),
+          readProviderSession: () => undefined,
           resolve: () => Effect.succeed(undefined),
           revokeProviderSession: () => Effect.void,
           revokeThread: () => Effect.void,

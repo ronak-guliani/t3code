@@ -9,14 +9,12 @@ import { Effect, Fiber, Layer, Stream } from "effect";
 
 import {
   ApprovalRequestId,
-  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import { COPILOT_PLAN_MODE_ID } from "../acp/CopilotAcpSupport.ts";
@@ -1387,7 +1385,6 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
-          McpProviderSession.clearMcpProviderSession(threadId);
           if (previousEnableMcp === undefined) {
             delete process.env.T3_COPILOT_ACP_ENABLE_MCP;
           } else {
@@ -1409,15 +1406,6 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       process.env.T3_COPILOT_ACP_ENABLE_MCP = "1";
       process.env.T3_COPILOT_ACP_MCP_COMMAND = "t3-test";
       process.env.T3_COPILOT_ACP_MCP_TOOLSETS = "read_file,search_files";
-      McpProviderSession.setMcpProviderSession({
-        environmentId: EnvironmentId.make("environment-1"),
-        threadId,
-        providerSessionId: "provider-session-1",
-        providerInstanceId: COPILOT_INSTANCE_ID,
-        endpoint: "http://127.0.0.1:3000/mcp",
-        authorizationHeader: "******",
-      });
-
       yield* isolateCopilotHome();
 
       const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "copilot-mcp-")));
@@ -1478,16 +1466,6 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         body.result?.tools?.map((tool) => tool.name),
         ["read_file", "search_files", "create_isolated_workspace", "switch_workspace"],
       );
-      assert.deepEqual(
-        mcpServers?.find((server) => server.name === "t3-code"),
-        {
-          type: "http",
-          name: "t3-code",
-          url: "http://127.0.0.1:3000/mcp",
-          headers: [{ name: "Authorization", value: "******" }],
-        },
-      );
-
       yield* adapter.stopSession(threadId);
     }),
   );

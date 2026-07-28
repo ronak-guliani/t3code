@@ -22,8 +22,6 @@ const makeRegistry = (now: () => number, hostname = "127.0.0.1") =>
   McpSessionRegistry.__testing
     .make({
       now,
-      idleTimeoutMs: 100,
-      maximumLifetimeMs: 1_000,
     })
     .pipe(
       Effect.provideService(HttpServer.HttpServer, makeFakeHttpServer(hostname)),
@@ -76,16 +74,62 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
   }),
 );
 
-it.effect("expires credentials after inactivity", () =>
-  Effect.gen(function* () {
-    let timestamp = 1_000;
-    const registry = yield* makeRegistry(() => timestamp);
-    const issued = yield* registry.issue({
-      threadId: ThreadId.make("thread-2"),
-      providerInstanceId: ProviderInstanceId.make("claude"),
-    });
-    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
-    timestamp += 101;
-    expect(yield* registry.resolve(token)).toBeUndefined();
-  }),
+it.effect(
+  "keeps credentials valid across the idle window while their provider session is alive",
+  () =>
+    Effect.gen(function* () {
+      let timestamp = 1_000;
+      const registry = yield* makeRegistry(() => timestamp);
+      const issued = yield* registry.issue({
+        threadId: ThreadId.make("thread-2"),
+        providerInstanceId: ProviderInstanceId.make("claude"),
+      });
+      const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      timestamp += 101;
+      expect(yield* registry.resolve(token)).toMatchObject({
+        threadId: ThreadId.make("thread-2"),
+        providerSessionId: issued.config.providerSessionId,
+      });
+
+      yield* registry.revokeProviderSession(issued.config.providerSessionId);
+      expect(yield* registry.resolve(token)).toBeUndefined();
+    }),
+);
+
+it.effect("does not revoke a live credential when a second session starts for its thread", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const threadId = ThreadId.make("thread-3");
+      const first = yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("copilot-first"),
+      });
+      const second = yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("copilot-second"),
+      });
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      if (!first || !second) {
+        return;
+      }
+
+      const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
+      expect(yield* registry.resolve(firstToken)).toMatchObject({
+        providerSessionId: first.config.providerSessionId,
+      });
+      expect(registry.readProviderSession(threadId, ProviderInstanceId.make("copilot-first"))).toBe(
+        first.config,
+      );
+      expect(
+        registry.readProviderSession(threadId, ProviderInstanceId.make("copilot-second")),
+      ).toBe(second.config);
+    }).pipe(
+      Effect.provide(McpSessionRegistry.layer),
+      Effect.provideService(HttpServer.HttpServer, makeFakeHttpServer("127.0.0.1")),
+      Effect.provideService(ServerEnvironment, fakeEnvironment),
+      Effect.provide(NodeServices.layer),
+    ),
+  ),
 );

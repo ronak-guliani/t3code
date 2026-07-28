@@ -130,6 +130,7 @@ interface CopilotRetainedTurnSnapshot {
 
 interface CopilotSessionContext {
   readonly threadId: ThreadId;
+  readonly providerInstanceId: ProviderInstanceId | undefined;
   readonly copilotSettings: CopilotRuntimeCopilotSettings;
   session: ProviderSession;
   scope: Scope.Closeable;
@@ -817,6 +818,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
     const openRuntime = (input: {
       readonly threadId: ThreadId;
+      readonly providerInstanceId?: ProviderInstanceId;
       readonly cwd: string;
       readonly runtimeMode: ProviderSession["runtimeMode"];
       readonly copilotSettings: CopilotRuntimeCopilotSettings;
@@ -850,6 +852,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             : undefined,
           childProcessSpawner,
           threadId: input.threadId,
+          providerInstanceId: input.providerInstanceId,
           cwd: input.cwd,
           baseDir: serverConfig.baseDir,
           runtimeMode: input.runtimeMode,
@@ -1217,6 +1220,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           return yield* new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId: ctx.threadId,
+            providerInstanceId: ctx.providerInstanceId,
             detail: "Copilot runtime restart requires a resumable session id.",
           });
         }
@@ -1231,6 +1235,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
         yield* closeRuntimeInternal(ctx);
         const runtime = yield* openRuntime({
           threadId: ctx.threadId,
+          providerInstanceId: ctx.providerInstanceId,
           cwd,
           runtimeMode: ctx.session.runtimeMode,
           copilotSettings: ctx.copilotSettings,
@@ -1389,6 +1394,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                 new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId: input.threadId,
+                  providerInstanceId: input.providerInstanceId,
                   detail: error.message,
                   cause: error,
                 }),
@@ -1408,6 +1414,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           const resumeSessionId = parseCopilotResume(input.resumeCursor)?.sessionId;
           const runtime = yield* openRuntime({
             threadId: input.threadId,
+            providerInstanceId: input.providerInstanceId,
             cwd,
             runtimeMode: input.runtimeMode,
             copilotSettings: { binaryPath: copilotSettings.binaryPath },
@@ -1449,6 +1456,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           return yield* Effect.gen(function* () {
             ctx = {
               threadId: input.threadId,
+              providerInstanceId: input.providerInstanceId,
               copilotSettings: { binaryPath: copilotSettings.binaryPath },
               session,
               scope: runtime.scope,

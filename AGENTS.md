@@ -6,6 +6,7 @@
 - Use `pnpm test` for the Vite Plus test suite.
 - Current toolchain: `pnpm@11.10.0`, `node@^24.13.1`.
 - When creating a worktree for a chat, create a new pull request after the work is complete.
+- When a user requests a pull request, create it without separately confirming the title or body.
 
 ## Core Priorities
 

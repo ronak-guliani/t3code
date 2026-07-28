@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
-
-import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   COPILOT_AGENT_MODE_ID,
   COPILOT_LEGACY_AGENT_MODE_ID,
@@ -96,14 +94,15 @@ describe("buildCopilotAcpSpawnInput", () => {
 
     it("appends the provider-scoped browser automation server", () => {
       const threadId = ThreadId.make("thread-1");
-      McpProviderSession.setMcpProviderSession({
+      const providerInstanceId = ProviderInstanceId.make("copilot");
+      const providerSession = {
         environmentId: EnvironmentId.make("environment-1"),
         threadId,
         providerSessionId: "provider-session-1",
-        providerInstanceId: ProviderInstanceId.make("copilot"),
+        providerInstanceId,
         endpoint: "http://127.0.0.1:3000/mcp",
         authorizationHeader: "******",
-      });
+      };
 
       expect(
         buildCopilotMcpServers(
@@ -112,6 +111,8 @@ describe("buildCopilotAcpSpawnInput", () => {
             authorization: "t3-tools-token",
           },
           threadId,
+          providerInstanceId,
+          providerSession,
         ),
       ).toEqual([
         {
@@ -127,8 +128,6 @@ describe("buildCopilotAcpSpawnInput", () => {
           headers: [{ name: "Authorization", value: "******" }],
         },
       ]);
-
-      McpProviderSession.clearMcpProviderSession(threadId);
     });
   });
 });
