@@ -187,9 +187,12 @@ import {
   createLocalDispatchSnapshot,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
+  getActivityHistoryKey,
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
+  mergeActivityWindows,
+  mergeInsightActivityWindows,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
   cloneComposerImageForRetry,
@@ -218,12 +221,13 @@ import { InsightsPanel } from "./InsightsPanel";
 import { deriveMessagesTimelineRows } from "./chat/MessagesTimeline.logic";
 import { FindInChatBar } from "./chat/FindInChatBar";
 import { useChatFind } from "./chat/useChatFind";
+import { isInsightActivity } from "../insights";
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_OLDER_ACTIVITY_STATE = {
-  requestKey: null,
+  historyKey: null,
   activities: EMPTY_ACTIVITIES as ReadonlyArray<OrchestrationThreadActivity>,
   loaded: false,
   hasMore: false,
@@ -1161,7 +1165,7 @@ function ChatViewBody(
       : rawPhase;
   const isConnecting = phase === "connecting";
   const [olderActivityState, setOlderActivityState] = useState<{
-    requestKey: string | null;
+    historyKey: string | null;
     activities: ReadonlyArray<OrchestrationThreadActivity>;
     loaded: boolean;
     hasMore: boolean;
@@ -1170,40 +1174,49 @@ function ChatViewBody(
   const activeThreadActivityRequestKey = activeThread
     ? `${activeThread.environmentId}\u0000${activeThread.id}`
     : null;
-  const activeThreadActivityRequestKeyRef = useRef(activeThreadActivityRequestKey);
-  activeThreadActivityRequestKeyRef.current = activeThreadActivityRequestKey;
+  const liveThreadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const activeThreadActivityHistoryKey = getActivityHistoryKey(
+    activeThreadActivityRequestKey,
+    liveThreadActivities,
+  );
+  const activeThreadActivityHistoryKeyRef = useRef(activeThreadActivityHistoryKey);
+  activeThreadActivityHistoryKeyRef.current = activeThreadActivityHistoryKey;
   const inFlightOlderActivitiesKeyRef = useRef<string | null>(null);
   const activeOlderActivityState =
-    olderActivityState.requestKey === activeThreadActivityRequestKey
+    olderActivityState.historyKey === activeThreadActivityHistoryKey
       ? olderActivityState
       : EMPTY_OLDER_ACTIVITY_STATE;
 
-  const liveThreadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const threadActivities = useMemo(
-    () =>
-      activeOlderActivityState.activities.length > 0
-        ? [...activeOlderActivityState.activities, ...liveThreadActivities]
-        : liveThreadActivities,
+    () => mergeActivityWindows(activeOlderActivityState.activities, liveThreadActivities),
     [activeOlderActivityState.activities, liveThreadActivities],
+  );
+  const insightActivities = useMemo(
+    () =>
+      mergeInsightActivityWindows(
+        activeOlderActivityState.activities,
+        activeThread?.insightActivities ?? liveThreadActivities.filter(isInsightActivity),
+      ),
+    [activeOlderActivityState.activities, activeThread?.insightActivities, liveThreadActivities],
   );
   const hasMoreOlderActivities = activeOlderActivityState.loaded
     ? activeOlderActivityState.hasMore
     : (activeThread?.hasMoreActivities ?? false);
   const loadOlderActivities = useCallback(() => {
-    if (!activeThread || !activeThreadActivityRequestKey || !hasMoreOlderActivities) return;
+    if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
     const oldestActivity = threadActivities[0];
     if (!oldestActivity) return;
-    if (inFlightOlderActivitiesKeyRef.current === activeThreadActivityRequestKey) return;
+    if (inFlightOlderActivitiesKeyRef.current === activeThreadActivityHistoryKey) return;
 
     const api = readEnvironmentApi(activeThread.environmentId);
     if (!api) return;
-    const requestKey = activeThreadActivityRequestKey;
+    const requestKey = activeThreadActivityHistoryKey;
     inFlightOlderActivitiesKeyRef.current = requestKey;
     setOlderActivityState((previous) => ({
-      requestKey,
-      activities: previous.requestKey === requestKey ? previous.activities : EMPTY_ACTIVITIES,
-      loaded: previous.requestKey === requestKey ? previous.loaded : false,
-      hasMore: previous.requestKey === requestKey ? previous.hasMore : false,
+      historyKey: requestKey,
+      activities: previous.historyKey === requestKey ? previous.activities : EMPTY_ACTIVITIES,
+      loaded: previous.historyKey === requestKey ? previous.loaded : false,
+      hasMore: previous.historyKey === requestKey ? previous.hasMore : false,
       loading: true,
     }));
     const cursor =
@@ -1220,13 +1233,13 @@ function ChatViewBody(
         ...cursor,
       })
       .then((page) => {
-        if (activeThreadActivityRequestKeyRef.current !== requestKey) return;
+        if (activeThreadActivityHistoryKeyRef.current !== requestKey) return;
         setOlderActivityState((previous) => {
           const previousActivities =
-            previous.requestKey === requestKey ? previous.activities : EMPTY_ACTIVITIES;
+            previous.historyKey === requestKey ? previous.activities : EMPTY_ACTIVITIES;
           const seen = new Set(previousActivities.map((activity) => activity.id));
           return {
-            requestKey,
+            historyKey: requestKey,
             activities: [
               ...page.activities.filter((activity) => !seen.has(activity.id)),
               ...previousActivities,
@@ -1238,7 +1251,7 @@ function ChatViewBody(
         });
       })
       .catch((error: unknown) => {
-        if (activeThreadActivityRequestKeyRef.current !== requestKey) return;
+        if (activeThreadActivityHistoryKeyRef.current !== requestKey) return;
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -1251,15 +1264,15 @@ function ChatViewBody(
         if (inFlightOlderActivitiesKeyRef.current === requestKey) {
           inFlightOlderActivitiesKeyRef.current = null;
         }
-        if (activeThreadActivityRequestKeyRef.current === requestKey) {
+        if (activeThreadActivityHistoryKeyRef.current === requestKey) {
           setOlderActivityState((previous) =>
-            previous.requestKey === requestKey && previous.loading
+            previous.historyKey === requestKey && previous.loading
               ? { ...previous, loading: false }
               : previous,
           );
         }
       });
-  }, [activeThread, activeThreadActivityRequestKey, hasMoreOlderActivities, threadActivities]);
+  }, [activeThread, activeThreadActivityHistoryKey, hasMoreOlderActivities, threadActivities]);
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
@@ -4516,10 +4529,7 @@ function ChatViewBody(
           />
         ) : null}
         {insightsOpen && !shouldUseRightPanelSheet ? (
-          <InsightsPanel
-            activities={activeThread.insightActivities ?? activeThread.activities}
-            onClose={closeInsights}
-          />
+          <InsightsPanel activities={insightActivities} onClose={closeInsights} />
         ) : null}
       </div>
       {/* end horizontal flex container */}
@@ -4556,11 +4566,7 @@ function ChatViewBody(
               onClose={closePlanSidebar}
             />
           ) : (
-            <InsightsPanel
-              activities={activeThread.insightActivities ?? activeThread.activities}
-              mode="sheet"
-              onClose={closeInsights}
-            />
+            <InsightsPanel activities={insightActivities} mode="sheet" onClose={closeInsights} />
           )}
         </RightPanelSheet>
       ) : null}
