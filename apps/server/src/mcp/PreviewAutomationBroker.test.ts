@@ -34,6 +34,15 @@ const scope = {
   expiresAt: Number.MAX_SAFE_INTEGER,
 };
 
+it("bounds host assignment leases independently of credential expiry", () => {
+  expect(PreviewAutomationBroker.previewHostAssignmentExpiresAt(1_000)).toBe(
+    1_000 + PreviewAutomationBroker.PREVIEW_HOST_ASSIGNMENT_LEASE_MS,
+  );
+  expect(PreviewAutomationBroker.previewHostAssignmentExpiresAt(1_000)).toBeLessThan(
+    scope.expiresAt,
+  );
+});
+
 const makeHost = (overrides: Partial<PreviewAutomationHost> = {}): PreviewAutomationHost => ({
   clientId: "client-1",
   environmentId: scope.environmentId,

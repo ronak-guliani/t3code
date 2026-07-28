@@ -35,6 +35,10 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
+export const PREVIEW_HOST_ASSIGNMENT_LEASE_MS = 30 * 60 * 1_000;
+export const previewHostAssignmentExpiresAt = (now: number): number =>
+  now + PREVIEW_HOST_ASSIGNMENT_LEASE_MS;
+
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpInvocationScope;
   readonly operation: PreviewAutomationOperation;
@@ -473,7 +477,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         clientId: connection.clientId,
         connectionId: connection.connectionId,
         queue: connection.queue,
-        expiresAt: input.scope.expiresAt,
+        expiresAt: previewHostAssignmentExpiresAt(now),
         ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
         ...(canReuseAssignedTab && assigned.tabSequence !== undefined
           ? { tabSequence: assigned.tabSequence }

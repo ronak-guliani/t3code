@@ -34,10 +34,14 @@ export interface McpSessionRegistryShape {
   readonly readProviderSession: (
     threadId: ThreadId,
     providerInstanceId: ProviderInstanceId,
-  ) => McpProviderSessionConfig | undefined;
+  ) => Effect.Effect<McpProviderSessionConfig | undefined>;
   readonly resolve: (
     rawToken: string,
   ) => Effect.Effect<McpInvocationContext.McpInvocationScope | undefined>;
+  readonly revokeProviderInstance: (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  ) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeAll: Effect.Effect<void>;
@@ -51,21 +55,27 @@ export class McpSessionRegistry extends Context.Service<
 interface CredentialRecord {
   readonly tokenHash: string;
   readonly scope: McpInvocationContext.McpInvocationScope;
-  readonly lastUsedAt: number;
 }
 
 interface RegistryState {
   readonly records: ReadonlyMap<string, CredentialRecord>;
+  readonly providerSessions: ReadonlyMap<string, McpProviderSessionConfig>;
 }
 
 export interface McpSessionRegistryOptions {
+  readonly maximumLifetimeMs?: number;
   readonly now?: () => number;
 }
+
+const DEFAULT_MAXIMUM_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 
 const bytesToHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 const tokenFromBytes = (bytes: Uint8Array): string => Buffer.from(bytes).toString("base64url");
+
+const providerSessionKey = (threadId: ThreadId, providerInstanceId: ProviderInstanceId): string =>
+  JSON.stringify([threadId, providerInstanceId]);
 
 const getHttpMcpEndpointHost = (hostname: string): string => {
   const normalized = hostname.toLowerCase();
@@ -85,9 +95,12 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const environment = yield* ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
-  const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
+  const state = yield* SynchronizedRef.make<RegistryState>({
+    records: new Map(),
+    providerSessions: new Map(),
+  });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
-  const providerSessions = new Map<string, McpProviderSessionConfig>();
+  const maximumLifetimeMs = options.maximumLifetimeMs ?? DEFAULT_MAXIMUM_LIFETIME_MS;
   const endpoint =
     httpServer.address._tag === "TcpAddress"
       ? `http://${getHttpMcpEndpointHost(httpServer.address.hostname)}:${httpServer.address.port}/mcp`
@@ -98,15 +111,50 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       .digest("SHA-256", new TextEncoder().encode(token))
       .pipe(Effect.map(bytesToHex), Effect.orDie);
 
+  const pruneExpired = (current: RegistryState, timestamp: number): RegistryState => {
+    const records = new Map(
+      Array.from(current.records).filter(([, record]) => timestamp <= record.scope.expiresAt),
+    );
+    if (records.size === current.records.size) return current;
+    const activeProviderSessionIds = new Set(
+      Array.from(records.values(), (record) => record.scope.providerSessionId),
+    );
+    return {
+      records,
+      providerSessions: new Map(
+        Array.from(current.providerSessions).filter(([, config]) =>
+          activeProviderSessionIds.has(config.providerSessionId),
+        ),
+      ),
+    };
+  };
+
+  const revokeWhere = (
+    current: RegistryState,
+    predicate: (record: CredentialRecord) => boolean,
+  ): RegistryState => {
+    const records = new Map(Array.from(current.records).filter(([, record]) => !predicate(record)));
+    if (records.size === current.records.size) return current;
+    const activeProviderSessionIds = new Set(
+      Array.from(records.values(), (record) => record.scope.providerSessionId),
+    );
+    return {
+      records,
+      providerSessions: new Map(
+        Array.from(current.providerSessions).filter(([, config]) =>
+          activeProviderSessionIds.has(config.providerSessionId),
+        ),
+      ),
+    };
+  };
+
   const issue: McpSessionRegistryShape["issue"] = Effect.fn("McpSessionRegistry.issue")(
     function* (request) {
       const issuedAt = yield* currentTimeMillis;
       const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
-      // ACP fixes HTTP headers at process spawn, so this credential remains valid
-      // until its owning provider session is explicitly stopped or the server closes.
-      const expiresAt = Number.MAX_SAFE_INTEGER;
+      const expiresAt = issuedAt + maximumLifetimeMs;
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         threadId: ThreadId.make(request.threadId),
@@ -124,11 +172,19 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         endpoint,
         authorizationHeader: `Bearer ${rawToken}`,
       };
-      yield* SynchronizedRef.update(state, ({ records }) => {
-        const next = new Map(records);
-        next.set(tokenHash, { tokenHash, scope, lastUsedAt: issuedAt });
-        providerSessions.set(providerSessionId, config);
-        return { records: next };
+      yield* SynchronizedRef.update(state, (current) => {
+        const pruned = pruneExpired(current, issuedAt);
+        const replaced = revokeWhere(
+          pruned,
+          (record) =>
+            record.scope.threadId === scope.threadId &&
+            record.scope.providerInstanceId === scope.providerInstanceId,
+        );
+        const records = new Map(replaced.records);
+        records.set(tokenHash, { tokenHash, scope });
+        const providerSessions = new Map(replaced.providerSessions);
+        providerSessions.set(providerSessionKey(scope.threadId, scope.providerInstanceId), config);
+        return { records, providerSessions };
       });
       return {
         config,
@@ -142,46 +198,53 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       if (rawToken.length === 0) return undefined;
       const tokenHash = yield* hashToken(rawToken);
       const timestamp = yield* currentTimeMillis;
-      return yield* SynchronizedRef.modify(state, ({ records }) => {
-        const record = records.get(tokenHash);
-        if (!record) return [undefined, { records }] as const;
-        const next = new Map(records);
-        next.set(tokenHash, { ...record, lastUsedAt: timestamp });
-        return [record.scope, { records: next }] as const;
+      return yield* SynchronizedRef.modify(state, (current) => {
+        const pruned = pruneExpired(current, timestamp);
+        return [pruned.records.get(tokenHash)?.scope, pruned] as const;
       });
     },
   );
 
-  const revokeWhere = (predicate: (record: CredentialRecord) => boolean) =>
-    SynchronizedRef.update(state, ({ records }) => {
-      const removed = Array.from(records.values()).filter(predicate);
-      for (const record of removed) {
-        providerSessions.delete(record.scope.providerSessionId);
-      }
-      return {
-        records: new Map(Array.from(records).filter(([, record]) => !predicate(record))),
-      };
-    });
-
   return McpSessionRegistry.of({
     issue,
     readProviderSession: (threadId, providerInstanceId) =>
-      Array.from(providerSessions.values()).findLast(
-        (config) =>
-          config.threadId === threadId && config.providerInstanceId === providerInstanceId,
+      currentTimeMillis.pipe(
+        Effect.flatMap((timestamp) =>
+          SynchronizedRef.modify(state, (current) => {
+            const pruned = pruneExpired(current, timestamp);
+            return [
+              pruned.providerSessions.get(providerSessionKey(threadId, providerInstanceId)),
+              pruned,
+            ] as const;
+          }),
+        ),
       ),
     resolve,
+    revokeProviderInstance: Effect.fn("McpSessionRegistry.revokeProviderInstance")(
+      function* (threadId, providerInstanceId) {
+        yield* SynchronizedRef.update(state, (current) =>
+          revokeWhere(
+            current,
+            (record) =>
+              record.scope.threadId === threadId &&
+              record.scope.providerInstanceId === providerInstanceId,
+          ),
+        );
+      },
+    ),
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {
-        yield* revokeWhere((record) => record.scope.providerSessionId === providerSessionId);
+        yield* SynchronizedRef.update(state, (current) =>
+          revokeWhere(current, (record) => record.scope.providerSessionId === providerSessionId),
+        );
       },
     ),
     revokeThread: Effect.fn("McpSessionRegistry.revokeThread")(function* (threadId) {
-      yield* revokeWhere((record) => record.scope.threadId === threadId);
+      yield* SynchronizedRef.update(state, (current) =>
+        revokeWhere(current, (record) => record.scope.threadId === threadId),
+      );
     }),
-    revokeAll: SynchronizedRef.set(state, { records: new Map() }).pipe(
-      Effect.tap(() => Effect.sync(() => providerSessions.clear())),
-    ),
+    revokeAll: SynchronizedRef.set(state, { records: new Map(), providerSessions: new Map() }),
   });
 });
 
@@ -223,8 +286,10 @@ export const issueActiveMcpCredential = (
 export const readActiveMcpProviderSession = (
   threadId: ThreadId,
   providerInstanceId: ProviderInstanceId,
-): McpProviderSessionConfig | undefined =>
-  activeMcpSessionRegistry?.readProviderSession(threadId, providerInstanceId);
+): Effect.Effect<McpProviderSessionConfig | undefined> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.readProviderSession(threadId, providerInstanceId)
+    : Effect.succeed(undefined);
 
 export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
   activeMcpSessionRegistry
@@ -234,13 +299,10 @@ export const revokeActiveMcpProviderSession = (providerSessionId: string): Effec
 export const revokeActiveMcpProviderInstance = (
   threadId: ThreadId,
   providerInstanceId: ProviderInstanceId,
-): Effect.Effect<void> => {
-  const providerSessionId = activeMcpSessionRegistry?.readProviderSession(
-    threadId,
-    providerInstanceId,
-  )?.providerSessionId;
-  return providerSessionId ? revokeActiveMcpProviderSession(providerSessionId) : Effect.void;
-};
+): Effect.Effect<void> =>
+  activeMcpSessionRegistry
+    ? activeMcpSessionRegistry.revokeProviderInstance(threadId, providerInstanceId)
+    : Effect.void;
 
 export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeAll : Effect.void;
