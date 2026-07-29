@@ -105,10 +105,12 @@ interface TimelineRowSharedState {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   reviewOutputMessageIds: ReadonlySet<string>;
+  responseMetaByTurnId: ReadonlyMap<TurnId, AssistantResponseMeta>;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const NOOP_FORK_ASSISTANT_MESSAGE = () => undefined;
+const EMPTY_RESPONSE_META_BY_TURN_ID = new Map<TurnId, AssistantResponseMeta>();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -126,6 +128,7 @@ interface MessagesTimelineProps {
   completionSummary: string | null;
   copilotResumeCommand: string | null;
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
+  responseMetaByTurnId?: ReadonlyMap<TurnId, AssistantResponseMeta>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
@@ -147,6 +150,15 @@ interface MessagesTimelineProps {
   onLoadOlder?: () => void;
 }
 
+export interface AssistantResponseMeta {
+  model?: string;
+  usedTokens?: number;
+  cost?: {
+    amount: number;
+    currency: string;
+  };
+}
+
 const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
 const USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD = 900;
 
@@ -166,6 +178,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   completionSummary,
   copilotResumeCommand,
   turnDiffSummaryByAssistantMessageId,
+  responseMetaByTurnId = EMPTY_RESPONSE_META_BY_TURN_ID,
   routeThreadKey,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
@@ -281,6 +294,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       reviewOutputMessageIds,
+      responseMetaByTurnId,
     }),
     [
       activeTurnInProgress,
@@ -302,6 +316,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       reviewOutputMessageIds,
+      responseMetaByTurnId,
     ],
   );
 
@@ -506,6 +521,12 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             !row.message.streaming &&
             !assistantTurnStillInProgress &&
             ctx.copilotResumeCommand;
+          const responseMeta =
+            !row.showAssistantTerminalMetadata ||
+            row.message.turnId === null ||
+            row.message.turnId === undefined
+              ? undefined
+              : ctx.responseMetaByTurnId.get(row.message.turnId);
           return (
             <>
               <div className="min-w-0 px-1 py-0.5">
@@ -523,6 +544,11 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                   workspaceRoot={ctx.workspaceRoot}
                 />
                 <div className="mt-1.5 flex min-w-0 items-center gap-2">
+                  {responseMeta ? (
+                    <span className="shrink-0 text-[length:var(--app-status-line-font-size)] text-muted-foreground/50">
+                      {formatAssistantResponseMeta(responseMeta)}
+                    </span>
+                  ) : null}
                   <p className="shrink-0 text-[length:var(--app-status-line-font-size)] text-muted-foreground/30">
                     {row.message.streaming ? (
                       <LiveMessageMeta
@@ -665,6 +691,39 @@ function TimelineRowContent(props: { row: TimelineRow }) {
       )}
     </div>
   );
+}
+
+function formatAssistantResponseMeta(meta: AssistantResponseMeta): string {
+  const parts = [
+    meta.model,
+    meta.usedTokens === undefined ? undefined : `${formatCompactNumber(meta.usedTokens)} tokens`,
+    meta.cost === undefined ? undefined : formatResponseCost(meta.cost),
+  ].filter((part): part is string => part !== undefined);
+  return parts.join(" · ");
+}
+
+function formatResponseCost(cost: NonNullable<AssistantResponseMeta["cost"]>): string {
+  const amount = formatBillingAmount(cost.amount);
+  if (cost.currency.toUpperCase() === "USD") {
+    return `$${amount}`;
+  }
+  return `${amount} ${cost.currency}`;
+}
+
+function formatBillingAmount(value: number): string {
+  const absoluteValue = Math.abs(value);
+  const fractionDigits =
+    absoluteValue > 0 && absoluteValue < 1
+      ? Math.min(20, Math.max(2, Math.ceil(-Math.log10(absoluteValue))))
+      : 2;
+  return value.toFixed(fractionDigits);
+}
+
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat("en", {
+    notation: value >= 1_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(value);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
 
+import type { WorkflowRunId } from "@t3tools/contracts";
+
 /**
  * Reconciles durable workflow runs with their scoped worker threads.
  *
@@ -10,6 +12,11 @@ import type { Effect, Scope } from "effect";
 export interface WorkflowCoordinatorReactorShape {
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   readonly drain: Effect.Effect<void>;
+  /**
+   * Reconciles a single run inline so callers that just requested it do not
+   * have to wait for the event-stream reconciliation hop.
+   */
+  readonly drainRun: (runId: WorkflowRunId) => Effect.Effect<void>;
 }
 
 export class WorkflowCoordinatorReactor extends Context.Service<
