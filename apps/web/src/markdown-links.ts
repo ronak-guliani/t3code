@@ -203,6 +203,7 @@ const INLINE_CODE_DISQUALIFIER_PATTERN = /[\s`]/;
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
 const FILE_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/;
 const NUMERIC_DOTTED_PATTERN = /^\d+(?:\.\d+)+$/;
+const SEMVER_LIKE_PATTERN = /^v?\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.-]+)?$/;
 const BARE_EXTENSIONLESS_POSITION_PATTERN = /^[A-Za-z0-9_-]+(?::\d+){1,2}$/;
 const EXTENSIONLESS_FILE_NAMES = new Set([
   "Makefile",
@@ -234,33 +235,6 @@ const EXTENSIONLESS_FILE_NAMES = new Set([
   "CODEOWNERS",
 ]);
 const SINGLE_LABEL_HOSTNAMES = new Set(["localhost"]);
-const GENERIC_HOSTNAME_TLDS = new Set([
-  "com",
-  "net",
-  "org",
-  "io",
-  "dev",
-  "app",
-  "ai",
-  "co",
-  "edu",
-  "gov",
-  "mil",
-  "info",
-  "biz",
-  "xyz",
-  "me",
-  "tv",
-  "cc",
-  "gg",
-  "chat",
-  "cloud",
-  "site",
-  "online",
-  "tech",
-  "store",
-  "link",
-]);
 const COUNTRY_HOSTNAME_TLDS = new Set([
   "uk",
   "de",
@@ -302,9 +276,16 @@ function looksLikeHostname(segment: string, hasPosition: boolean): boolean {
   if (NUMERIC_DOTTED_PATTERN.test(segment)) return true;
   const labels = lowered.split(".");
   const lastLabel = labels[labels.length - 1];
-  if (labels.length < 2 || lastLabel === undefined) return false;
-  if (GENERIC_HOSTNAME_TLDS.has(lastLabel)) return true;
-  return !hasPosition && COUNTRY_HOSTNAME_TLDS.has(lastLabel);
+  if (labels.length < 2 || !lastLabel || !/^[a-z]{2,}$/.test(lastLabel)) return false;
+  return !(hasPosition && COUNTRY_HOSTNAME_TLDS.has(lastLabel));
+}
+
+function hasInlineCodeFileShape(candidate: string, hasPosition: boolean): boolean {
+  const withoutPosition = candidate.replace(POSITION_SUFFIX_PATTERN, "");
+  const basename = basenameOfPath(withoutPosition);
+  if (SEMVER_LIKE_PATTERN.test(basename)) return false;
+  if (hasPosition) return true;
+  return FILE_EXTENSION_PATTERN.test(basename) || EXTENSIONLESS_FILE_NAMES.has(basename);
 }
 
 export function resolveInlineCodeFileLinkMeta(
@@ -330,10 +311,8 @@ export function resolveInlineCodeFileLinkMeta(
     const withoutPosition = candidate.replace(POSITION_SUFFIX_PATTERN, "");
     const firstSegment = withoutPosition.split("/")[0] ?? withoutPosition;
     if (looksLikeHostname(firstSegment, hasPosition)) return null;
-    if (!hasPosition && !FILE_EXTENSION_PATTERN.test(basenameOfPath(withoutPosition))) {
-      return null;
-    }
   }
+  if (!hasInlineCodeFileShape(candidate, hasPosition)) return null;
 
   const resolved = resolveMarkdownFileLinkMeta(candidate, cwd);
   if (resolved) return resolved;

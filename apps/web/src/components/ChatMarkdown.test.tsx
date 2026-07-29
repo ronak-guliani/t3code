@@ -29,4 +29,17 @@ describe("ChatMarkdown", () => {
     expect(markup).toContain("chat-markdown-codeblock");
     expect(markup).toContain("<code>src/main.ts:1</code>");
   });
+
+  it("disambiguates only rendered inline file links", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={"[Open `src/a/foo.ts`](https://example.com) and `src/b/foo.ts`."}
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup.match(/href="\/Users\/julius\/project\/src\/b\/foo\.ts"/g)).toHaveLength(1);
+    expect(markup).not.toContain("foo.ts · src/a");
+    expect(markup).not.toContain("foo.ts · src/b");
+  });
 });
