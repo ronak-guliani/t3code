@@ -142,6 +142,9 @@ interface MessagesTimelineProps {
   onIsAtEndChange: (isAtEnd: boolean) => void;
   activeChatFindRowId?: string | null;
   reviewResultActive?: boolean;
+  hasMoreOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }
 
 const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
@@ -179,6 +182,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onIsAtEndChange,
   activeChatFindRowId = null,
   reviewResultActive = false,
+  hasMoreOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
 }: MessagesTimelineProps) {
   const handleForkAssistantMessage = onForkAssistantMessage ?? NOOP_FORK_ASSISTANT_MESSAGE;
   const rawRows = useMemo(
@@ -228,8 +234,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const state = listRef.current?.getState?.();
     if (state) {
       onIsAtEndChange(state.isAtEnd);
+      if (state.isAtStart && hasMoreOlder && !loadingOlder) {
+        onLoadOlder?.();
+      }
     }
-  }, [listRef, onIsAtEndChange]);
+  }, [hasMoreOlder, listRef, loadingOlder, onIsAtEndChange, onLoadOlder]);
 
   const previousRowCountRef = useRef(rows.length);
   useEffect(() => {
@@ -307,6 +316,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
+  const listHeader = useMemo(() => {
+    if (loadingOlder) {
+      return (
+        <div className="flex items-center justify-center py-2 text-xs text-muted-foreground">
+          Loading older history...
+        </div>
+      );
+    }
+    if (hasMoreOlder) {
+      return (
+        <button
+          type="button"
+          onClick={onLoadOlder}
+          className="flex w-full cursor-pointer items-center justify-center py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Load older history
+        </button>
+      );
+    }
+    return <div className="h-3 sm:h-4" />;
+  }, [hasMoreOlder, loadingOlder, onLoadOlder]);
+
   if (rows.length === 0 && !isWorking) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -331,7 +362,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         maintainVisibleContentPosition
         onScroll={handleScroll}
         className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-        ListHeaderComponent={<div className="h-3 sm:h-4" />}
+        ListHeaderComponent={listHeader}
         ListFooterComponent={<div className="h-3 sm:h-4" />}
       />
     </TimelineRowCtx.Provider>
