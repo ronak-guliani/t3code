@@ -155,9 +155,14 @@ const makeSidebarState = Effect.gen(function* () {
     } satisfies SidebarStateSnapshot;
   });
 
-  const toError = (cause: unknown) =>
+  const toPersistError = (cause: unknown) =>
     new SidebarStateError({
       message: "Failed to persist sidebar state.",
+      cause,
+    });
+  const toLoadError = (cause: unknown) =>
+    new SidebarStateError({
+      message: "Failed to load sidebar state.",
       cause,
     });
   const stateRef = yield* Ref.make<SidebarStateSnapshot>({
@@ -169,7 +174,7 @@ const makeSidebarState = Effect.gen(function* () {
     Effect.gen(function* () {
       const initializationExit = yield* Effect.exit(
         loadSnapshot.pipe(
-          Effect.mapError(toError),
+          Effect.mapError(toLoadError),
           Effect.tap((snapshot) => Ref.set(stateRef, snapshot)),
         ),
       );
@@ -224,50 +229,51 @@ const makeSidebarState = Effect.gen(function* () {
   const update: SidebarStateShape["update"] = (mutation) =>
     awaitInitialized.pipe(
       Effect.andThen(
-        mutex.withPermits(1)(
-          Effect.uninterruptible(
-            Effect.gen(function* () {
-              const current = yield* Ref.get(stateRef);
-              const appliedRows = yield* sql<{ readonly applied: number }>`
+        mutex
+          .withPermits(1)(
+            Effect.uninterruptible(
+              Effect.gen(function* () {
+                const current = yield* Ref.get(stateRef);
+                const appliedRows = yield* sql<{ readonly applied: number }>`
               SELECT 1 AS applied
               FROM sidebar_applied_mutations
               WHERE mutation_id = ${mutation.mutationId}
               LIMIT 1
             `;
-              if (appliedRows.length > 0) {
-                return current;
-              }
-              const nextPins = applySidebarStateMutation(current, mutation);
-              if (nextPins === current.pinnedThreadKeysByProjectKey) {
-                yield* recordAppliedMutation(mutation.mutationId);
-                return current;
-              }
-              const changedProjectKeys = new Set([
-                ...Object.keys(current.pinnedThreadKeysByProjectKey),
-                ...Object.keys(nextPins),
-              ])
-                .values()
-                .filter(
-                  (projectKey) =>
-                    !arraysEqual(
-                      current.pinnedThreadKeysByProjectKey[projectKey] ?? [],
-                      nextPins[projectKey] ?? [],
-                    ),
-                )
-                .toArray();
-              yield* persist(current, nextPins, changedProjectKeys, mutation.mutationId);
-              const next = {
-                revision: current.revision + 1,
-                pinnedThreadKeysByProjectKey: nextPins,
-              } satisfies SidebarStateSnapshot;
-              yield* Ref.set(stateRef, next);
-              yield* PubSub.publish(changes, next);
-              return next;
-            }),
-          ),
-        ),
+                if (appliedRows.length > 0) {
+                  return current;
+                }
+                const nextPins = applySidebarStateMutation(current, mutation);
+                if (nextPins === current.pinnedThreadKeysByProjectKey) {
+                  yield* recordAppliedMutation(mutation.mutationId);
+                  return current;
+                }
+                const changedProjectKeys = new Set([
+                  ...Object.keys(current.pinnedThreadKeysByProjectKey),
+                  ...Object.keys(nextPins),
+                ])
+                  .values()
+                  .filter(
+                    (projectKey) =>
+                      !arraysEqual(
+                        current.pinnedThreadKeysByProjectKey[projectKey] ?? [],
+                        nextPins[projectKey] ?? [],
+                      ),
+                  )
+                  .toArray();
+                yield* persist(current, nextPins, changedProjectKeys, mutation.mutationId);
+                const next = {
+                  revision: current.revision + 1,
+                  pinnedThreadKeysByProjectKey: nextPins,
+                } satisfies SidebarStateSnapshot;
+                yield* Ref.set(stateRef, next);
+                yield* PubSub.publish(changes, next);
+                return next;
+              }),
+            ),
+          )
+          .pipe(Effect.mapError(toPersistError)),
       ),
-      Effect.mapError(toError),
     );
 
   return {

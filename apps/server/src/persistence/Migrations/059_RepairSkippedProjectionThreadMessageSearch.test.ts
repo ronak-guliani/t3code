@@ -8,7 +8,7 @@ import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 const skippedMigrationLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 const existingMigrationLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-skippedMigrationLayer("053_RepairSkippedProjectionThreadMessageSearch skipped migration", (it) => {
+skippedMigrationLayer("059_RepairSkippedProjectionThreadMessageSearch skipped migration", (it) => {
   it.effect("applies after migration 48 was skipped by a newer historical ledger", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -24,11 +24,22 @@ skippedMigrationLayer("053_RepairSkippedProjectionThreadMessageSearch skipped mi
         INSERT INTO effect_sql_migrations (migration_id, name)
         VALUES (52, 'HistoricalMigration')
       `;
+      // `origin_json` only exists from migration 056, so the handoff
+      // continuation that migration 057 excludes is seeded once it is present.
+      yield* runMigrations({ toMigrationInclusive: 56 });
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at, origin_json
+        ) VALUES (
+          'handoff', 'thread-search', NULL, 'user', 'continued searchable history', 0,
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', '{"kind":"workspace-handoff"}'
+        )
+      `;
       const messagesBefore = yield* sql`
         SELECT * FROM projection_thread_messages ORDER BY message_id
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 53 });
+      yield* runMigrations({ toMigrationInclusive: 59 });
 
       const messagesAfter = yield* sql`
         SELECT * FROM projection_thread_messages ORDER BY message_id
@@ -39,7 +50,7 @@ skippedMigrationLayer("053_RepairSkippedProjectionThreadMessageSearch skipped mi
         WHERE projection_thread_message_fts MATCH '"searchable history"'
       `;
       const repairMigration = yield* sql<{ readonly name: string }>`
-        SELECT name FROM effect_sql_migrations WHERE migration_id = 53
+        SELECT name FROM effect_sql_migrations WHERE migration_id = 59
       `;
 
       assert.deepStrictEqual(messagesAfter, messagesBefore);
@@ -52,7 +63,7 @@ skippedMigrationLayer("053_RepairSkippedProjectionThreadMessageSearch skipped mi
 });
 
 existingMigrationLayer(
-  "053_RepairSkippedProjectionThreadMessageSearch existing migration",
+  "059_RepairSkippedProjectionThreadMessageSearch existing migration",
   (it) => {
     it.effect("preserves messages and existing index entries when migration 48 already ran", () =>
       Effect.gen(function* () {
@@ -78,7 +89,7 @@ existingMigrationLayer(
         SELECT * FROM projection_thread_messages ORDER BY message_id
       `;
 
-        yield* runMigrations({ toMigrationInclusive: 53 });
+        yield* runMigrations({ toMigrationInclusive: 59 });
 
         const messagesAfter = yield* sql`
         SELECT * FROM projection_thread_messages ORDER BY message_id
