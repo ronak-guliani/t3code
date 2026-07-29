@@ -5,6 +5,8 @@ import * as NodePath from "node:path";
 import { DateTime, Duration, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import {
   type AuthAccessStreamEvent,
+  AssetWorkspaceContextNotFoundError,
+  AssetWorkspaceContextResolutionError,
   AuthSessionId,
   CommandId,
   DEFAULT_REVIEW_CHANGES_SCOPE,
@@ -24,6 +26,7 @@ import {
   OrchestrationGetTurnDiffStateError,
   ORCHESTRATION_WS_METHODS,
   ProjectSearchEntriesError,
+  ProjectReadFileError,
   ProjectWriteFileError,
   OrchestrationReplayEventsError,
   FilesystemBrowseError,
@@ -85,12 +88,12 @@ import { GitManager } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
 import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
+import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import {
   projectActivityEvent,
   projectActivityPayload,
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
-import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -134,6 +137,7 @@ import {
 } from "./auth/Services/SessionCredentialService.ts";
 import { respondToAuthError } from "./auth/http.ts";
 import { expandHomePath } from "./pathExpansion.ts";
+import { issueAssetUrl } from "./assets/AssetAccess.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
@@ -641,6 +645,24 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
 
             const title = input.title ?? "Fix review issues";
             const nodeId = WorkflowNodeId.make(FIX_REVIEW_ISSUES_WORKFLOW_ID);
+            const threadDetailOption = yield* projectionSnapshotQuery.getThreadDetailById(
+              input.threadId,
+            );
+            const reviewScope = Option.isSome(threadDetailOption)
+              ? threadDetailOption.value.reviewResult?.snapshot.scope
+              : undefined;
+            const workerWorkspace =
+              reviewScope?.kind === "pull-request"
+                ? yield* gitManager.preparePullRequestThread({
+                    cwd: project.workspaceRoot,
+                    reference: reviewScope.url,
+                    mode: "worktree",
+                    threadId: ThreadId.make(`workflow:${runId}:node:${nodeId}:worker`),
+                  })
+                : {
+                    branch: thread.branch,
+                    worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                  };
             return yield* dispatchSingleNodeWorkflow({
               request: input,
               runId,
@@ -648,6 +670,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               title,
               prompt: buildFixReviewIssuesPrompt({
                 issues,
+                ...(thread.reviewResult?.snapshot.scope.kind === "pull-request"
+                  ? { pullRequestNumber: thread.reviewResult.snapshot.scope.number }
+                  : {}),
                 settings: {
                   promptTemplate: override?.promptTemplate ?? fixSettings.promptTemplate,
                 },
@@ -661,8 +686,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   thread.modelSelection,
                 runtimeMode: input.runtimeMode ?? thread.runtimeMode,
                 interactionMode: input.interactionMode ?? thread.interactionMode,
-                branch: thread.branch,
-                worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                branch: workerWorkspace.branch,
+                worktreePath: workerWorkspace.worktreePath,
               },
               createdAt,
             });
@@ -869,9 +894,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getThreadActivities,
             projectionSnapshotQuery.getThreadActivitiesPage(input).pipe(
-              Effect.map((result) => ({
-                ...result,
-                activities: result.activities.map(projectActivityPayload),
+              Effect.map((page) => ({
+                ...page,
+                activities: page.activities.map(projectActivityPayload),
               })),
               Effect.mapError(
                 (cause) =>
@@ -994,12 +1019,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     cause: input.threadId,
                   });
                 }
-                return Effect.succeed(
-                  projectThreadDetailSnapshot({
-                    snapshotSequence: shellSnapshot.snapshotSequence,
-                    thread: threadDetail.value,
-                  }),
-                );
+                return Effect.succeed({
+                  snapshotSequence: shellSnapshot.snapshotSequence,
+                  thread: threadDetail.value,
+                }).pipe(Effect.map(projectThreadDetailSnapshot));
               }),
               Effect.mapError((cause) =>
                 cause instanceof OrchestrationGetSnapshotError
@@ -1266,14 +1289,127 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         [WS_METHODS.projectsSearchEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchEntries,
-            workspaceEntries.search(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectSearchEntriesError({
-                    message: `Failed to search workspace entries: ${cause.detail}`,
-                    cause,
-                  }),
+            Effect.gen(function* () {
+              const cwd =
+                input.scope._tag === "thread"
+                  ? yield* Effect.gen(function* () {
+                      const thread = yield* projectionSnapshotQuery
+                        .getThreadDetailById(input.scope.threadId)
+                        .pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProjectSearchEntriesError({
+                                message: "Unable to authorize workspace entry search.",
+                                cause,
+                              }),
+                          ),
+                        );
+                      if (Option.isNone(thread)) {
+                        return yield* new ProjectSearchEntriesError({
+                          message: "Workspace thread was not found.",
+                        });
+                      }
+                      const project = yield* projectionSnapshotQuery
+                        .getProjectShellById(thread.value.projectId)
+                        .pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProjectSearchEntriesError({
+                                message: "Unable to authorize workspace entry search.",
+                                cause,
+                              }),
+                          ),
+                        );
+                      if (Option.isNone(project)) {
+                        return yield* new ProjectSearchEntriesError({
+                          message: "Workspace project was not found.",
+                        });
+                      }
+                      return thread.value.worktreePath ?? project.value.workspaceRoot;
+                    })
+                  : yield* projectionSnapshotQuery.getProjectShellById(input.scope.projectId).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProjectSearchEntriesError({
+                            message: "Unable to authorize workspace entry search.",
+                            cause,
+                          }),
+                      ),
+                      Effect.flatMap(
+                        Option.match({
+                          onNone: () =>
+                            new ProjectSearchEntriesError({
+                              message: "Workspace project was not found.",
+                            }),
+                          onSome: (project) => Effect.succeed(project.workspaceRoot),
+                        }),
+                      ),
+                    );
+              return yield* workspaceEntries.search({
+                cwd,
+                query: input.query,
+                limit: input.limit,
+              });
+            }).pipe(
+              Effect.mapError((cause) =>
+                cause instanceof ProjectSearchEntriesError
+                  ? cause
+                  : new ProjectSearchEntriesError({
+                      message: `Failed to search workspace entries: ${cause.detail}`,
+                      cause,
+                    }),
               ),
+            ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.projectsReadFile]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.projectsReadFile,
+            Effect.gen(function* () {
+              const thread = yield* projectionSnapshotQuery
+                .getThreadDetailById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectReadFileError({
+                        message: "Unable to authorize workspace file access.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(thread)) {
+                return yield* new ProjectReadFileError({
+                  message: "Workspace thread was not found.",
+                });
+              }
+              const project = yield* projectionSnapshotQuery
+                .getProjectShellById(thread.value.projectId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProjectReadFileError({
+                        message: "Unable to authorize workspace file access.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(project)) {
+                return yield* new ProjectReadFileError({
+                  message: "Workspace project was not found.",
+                });
+              }
+              return yield* workspaceFileSystem.readFile({
+                cwd: thread.value.worktreePath ?? project.value.workspaceRoot,
+                relativePath: input.relativePath,
+              });
+            }).pipe(
+              Effect.mapError((cause) => {
+                if (cause instanceof ProjectReadFileError) return cause;
+                const message = isWorkspacePathOutsideRootError(cause)
+                  ? "Workspace file path must stay within the project root."
+                  : "Failed to read workspace file";
+                return new ProjectReadFileError({ message, cause });
+              }),
             ),
             { "rpc.aggregate": "workspace" },
           ),
@@ -1317,6 +1453,74 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                   }),
               ),
             ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.assetsCreateUrl]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.assetsCreateUrl,
+            Effect.gen(function* () {
+              if (input.resource._tag === "attachment") {
+                return yield* issueAssetUrl({ resource: input.resource });
+              }
+              if (input.resource._tag === "project-favicon") {
+                const project = yield* projectionSnapshotQuery
+                  .getProjectShellById(input.resource.projectId)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new AssetWorkspaceContextResolutionError({
+                          resource: input.resource,
+                          cause,
+                        }),
+                    ),
+                  );
+                if (Option.isNone(project)) {
+                  return yield* new AssetWorkspaceContextNotFoundError({
+                    resource: input.resource,
+                  });
+                }
+                return yield* issueAssetUrl({
+                  resource: input.resource,
+                  workspaceRoot: project.value.workspaceRoot,
+                });
+              }
+              const thread = yield* projectionSnapshotQuery
+                .getThreadDetailById(input.resource.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AssetWorkspaceContextResolutionError({
+                        resource: input.resource,
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(thread)) {
+                return yield* new AssetWorkspaceContextNotFoundError({
+                  resource: input.resource,
+                });
+              }
+              const project = yield* projectionSnapshotQuery
+                .getProjectShellById(thread.value.projectId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AssetWorkspaceContextResolutionError({
+                        resource: input.resource,
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(project)) {
+                return yield* new AssetWorkspaceContextNotFoundError({
+                  resource: input.resource,
+                });
+              }
+              return yield* issueAssetUrl({
+                resource: input.resource,
+                workspaceRoot: thread.value.worktreePath ?? project.value.workspaceRoot,
+              });
+            }),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.previewOpen]: (input) =>

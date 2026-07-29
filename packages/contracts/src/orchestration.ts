@@ -204,6 +204,7 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  previewUrl: Schema.optionalKey(Schema.String),
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
@@ -223,11 +224,28 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+/**
+ * Marks messages that T3 authored on behalf of a workspace handoff rather than
+ * the user: the transition marker itself and the boilerplate continuation turn
+ * that resumes the task in the newly bound worktree.
+ */
+export const WorkspaceHandoffOrigin = Schema.Struct({
+  kind: Schema.Literal("workspace-handoff"),
+  role: Schema.Literals(["marker", "continuation"]),
+  branch: TrimmedNonEmptyString,
+  worktreePath: TrimmedNonEmptyString,
+});
+export type WorkspaceHandoffOrigin = typeof WorkspaceHandoffOrigin.Type;
+
+export const MessageOrigin = WorkspaceHandoffOrigin;
+export type MessageOrigin = typeof MessageOrigin.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  origin: Schema.optional(MessageOrigin),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -275,6 +293,7 @@ export const OrchestrationQueuedTurn = Schema.Struct({
   id: QueuedTurnId,
   threadId: ThreadId,
   message: QueuedTurnMessage,
+  origin: Schema.optional(MessageOrigin),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -368,23 +387,6 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
-export const OrchestrationThreadActivityCursor = Schema.Union([
-  Schema.Struct({
-    beforeSequence: NonNegativeInt,
-  }),
-  Schema.Struct({
-    beforeCreatedAt: IsoDateTime,
-    beforeActivityId: EventId,
-  }),
-]);
-export type OrchestrationThreadActivityCursor = typeof OrchestrationThreadActivityCursor.Type;
-
-export const OrchestrationThreadActivityPage = Schema.Struct({
-  hasMore: Schema.Boolean,
-  nextCursor: Schema.NullOr(OrchestrationThreadActivityCursor),
-});
-export type OrchestrationThreadActivityPage = typeof OrchestrationThreadActivityPage.Type;
-
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -431,7 +433,7 @@ export const OrchestrationThread = Schema.Struct({
   queuedTurns: Schema.optionalKey(Schema.Array(OrchestrationQueuedTurn)),
   activities: Schema.Array(OrchestrationThreadActivity),
   activityContext: Schema.optionalKey(Schema.Array(OrchestrationThreadActivity)),
-  activityPage: Schema.optionalKey(OrchestrationThreadActivityPage),
+  hasMoreActivities: Schema.optionalKey(Schema.Boolean),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -585,6 +587,12 @@ const ThreadUnarchiveCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
+const ThreadDecoupleCommand = Schema.Struct({
+  type: Schema.Literal("thread.decouple"),
+  commandId: CommandId,
+  threadId: ThreadId,
+});
+
 const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
@@ -601,6 +609,7 @@ const ThreadWorkspaceHandoffCommand = Schema.Struct({
   threadId: ThreadId,
   branch: TrimmedNonEmptyString,
   worktreePath: TrimmedNonEmptyString,
+  markerMessageId: MessageId,
   continuation: OrchestrationQueuedTurn,
 });
 
@@ -866,6 +875,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
+  ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
   ThreadWorkspaceHandoffCommand,
   ThreadForkCommand,
@@ -894,6 +904,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
+  ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
   ThreadWorkspaceHandoffCommand,
   ThreadForkCommand,
@@ -1022,6 +1033,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.deleted",
   "thread.archived",
   "thread.unarchived",
+  "thread.decoupled",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.pending-runtime-mode-set",
@@ -1117,6 +1129,11 @@ export const ThreadUnarchivedPayload = Schema.Struct({
   updatedAt: IsoDateTime,
 });
 
+export const ThreadDecoupledPayload = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
@@ -1152,6 +1169,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  origin: Schema.optional(MessageOrigin),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
@@ -1370,6 +1388,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unarchived"),
     payload: ThreadUnarchivedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.decoupled"),
+    payload: ThreadDecoupledPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1806,7 +1829,8 @@ export type OrchestrationGetTurnDiffResult = typeof OrchestrationGetTurnDiffResu
 
 export const OrchestrationGetThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
-  cursor: OrchestrationThreadActivityCursor,
+  beforeCreatedAt: IsoDateTime,
+  beforeActivityId: EventId,
   limit: Schema.optionalKey(NonNegativeInt),
 });
 export type OrchestrationGetThreadActivitiesInput =
@@ -1814,7 +1838,7 @@ export type OrchestrationGetThreadActivitiesInput =
 
 export const OrchestrationGetThreadActivitiesResult = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
-  page: OrchestrationThreadActivityPage,
+  hasMore: Schema.Boolean,
 });
 export type OrchestrationGetThreadActivitiesResult =
   typeof OrchestrationGetThreadActivitiesResult.Type;

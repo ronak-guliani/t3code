@@ -28,11 +28,20 @@ import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
 import {
   normalizeMarkdownLinkDestination,
+  resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
   rewriteMarkdownFileUriHref,
+  type MarkdownFileLinkMeta,
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import { readEnvironmentApi } from "~/environmentApi";
+import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
+import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import { previewEnvironment } from "~/state/preview";
+import { useAtomCommand } from "~/state/use-atom-command";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -59,6 +68,7 @@ interface ChatMarkdownProps {
   text: string;
   cwd: string | undefined;
   isStreaming?: boolean;
+  threadRef?: ScopedThreadRef;
 }
 
 type MarkdownFunctionComponentProps<K extends keyof Components> = Parameters<
@@ -104,15 +114,64 @@ function extractCodeBlock(
 
   const onlyChild = childNodes[0];
   if (
-    !isValidElement<{ className?: string; children?: ReactNode }>(onlyChild) ||
-    onlyChild.type !== "code"
+    !isValidElement<{
+      className?: string;
+      children?: ReactNode;
+      node?: { tagName?: string };
+    }>(onlyChild)
   ) {
+    return null;
+  }
+  if (onlyChild.type !== "code" && onlyChild.props.node?.tagName !== "code") {
     return null;
   }
 
   return {
     className: onlyChild.props.className,
     code: nodeToPlainText(onlyChild.props.children),
+  };
+}
+
+type MarkdownAstNode = {
+  type: string;
+  value?: string;
+  children?: Array<MarkdownAstNode>;
+  data?: {
+    hProperties?: Record<string, unknown>;
+  };
+};
+
+function remarkTagInlineCode(cwd?: string) {
+  return () => (tree: MarkdownAstNode) => {
+    const inlineCodeCandidates: Array<{
+      node: MarkdownAstNode;
+      meta: MarkdownFileLinkMeta;
+    }> = [];
+    const visit = (node: MarkdownAstNode, insideLink: boolean) => {
+      if (node.type === "inlineCode" && !insideLink) {
+        const meta = resolveInlineCodeFileLinkMeta(node.value ?? "", cwd);
+        if (meta) {
+          inlineCodeCandidates.push({ node, meta });
+        }
+      }
+      const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
+      node.children?.forEach((child) => visit(child, childInsideLink));
+    };
+
+    visit(tree, false);
+    const suffixByPath = buildFileLinkParentSuffixByPath(
+      inlineCodeCandidates.map(({ meta }) => meta.filePath),
+    );
+    for (const { node, meta } of inlineCodeCandidates) {
+      node.data = {
+        ...node.data,
+        hProperties: {
+          ...node.data?.hProperties,
+          dataInlineCode: "",
+          dataInlineCodeLabel: buildFileLinkLabel(meta, suffixByPath.get(meta.filePath)),
+        },
+      };
+    }
   };
 }
 
@@ -295,6 +354,7 @@ interface MarkdownFileLinkProps {
   filePath: string;
   label: string;
   theme: "light" | "dark";
+  threadRef?: ScopedThreadRef;
   className?: string | undefined;
 }
 
@@ -364,6 +424,17 @@ function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<
   return suffixByPath;
 }
 
+function buildFileLinkLabel(meta: MarkdownFileLinkMeta, parentSuffix?: string): string {
+  const labelParts = [meta.basename];
+  if (parentSuffix) {
+    labelParts.push(parentSuffix);
+  }
+  if (meta.line) {
+    labelParts.push(`L${meta.line}${meta.column ? `:C${meta.column}` : ""}`);
+  }
+  return labelParts.join(" · ");
+}
+
 function extractMarkdownLinkHrefs(text: string): string[] {
   const hrefs: string[] = [];
   for (const match of text.matchAll(MARKDOWN_LINK_HREF_PATTERN)) {
@@ -386,11 +457,39 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   filePath,
   label,
   theme,
+  threadRef,
   className,
 }: MarkdownFileLinkProps) {
+  const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
+  const openPreview = useAtomCommand(previewEnvironment.open);
   const handleOpen = useCallback(() => {
-    const api = readLocalApi();
-    if (!api) {
+    const httpBaseUrl = threadRef ? getEnvironmentHttpBaseUrl(threadRef.environmentId) : null;
+    if (
+      threadRef &&
+      environmentApi &&
+      httpBaseUrl &&
+      isPreviewSupportedInRuntime() &&
+      isBrowserPreviewFile(filePath)
+    ) {
+      void openFileInPreview({
+        threadRef,
+        relativePath: filePath,
+        httpBaseUrl,
+        createAssetUrl: environmentApi.assets.createUrl,
+        openPreview,
+      }).catch((error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open preview",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      });
+      return;
+    }
+    const localApi = readLocalApi();
+    if (!localApi) {
       toastManager.add({
         type: "error",
         title: "Open in editor is unavailable",
@@ -398,7 +497,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
 
-    void openInPreferredEditor(api, targetPath).catch((error) => {
+    void openInPreferredEditor(localApi, targetPath).catch((error) => {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -407,7 +506,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [targetPath]);
+  }, [environmentApi, filePath, openPreview, targetPath, threadRef]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -520,6 +619,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.filePath === next.filePath &&
     previous.label === next.label &&
     previous.theme === next.theme &&
+    previous.threadRef?.environmentId === next.threadRef?.environmentId &&
+    previous.threadRef?.threadId === next.threadRef?.threadId &&
     previous.className === next.className
   );
 }
@@ -563,7 +664,7 @@ const markdownComponentsWithoutRuntimeState = {
   },
 } satisfies Components;
 
-function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
+function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const markdownFileLinkMetaByHref = useMemo(() => {
@@ -582,8 +683,9 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
     return metaByHref;
   }, [cwd, text]);
   const fileLinkParentSuffixByPath = useMemo(() => {
-    const filePaths = [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath);
-    return buildFileLinkParentSuffixByPath(filePaths);
+    return buildFileLinkParentSuffixByPath(
+      [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath),
+    );
   }, [markdownFileLinkMetaByHref]);
   const markdownUrlTransform = useCallback((href: string) => {
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
@@ -596,30 +698,23 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
         return <a {...props} href={href} target="_blank" rel="noopener noreferrer" />;
       }
 
-      const parentSuffix = fileLinkParentSuffixByPath.get(fileLinkMeta.filePath);
-      const labelParts = [fileLinkMeta.basename];
-      if (typeof parentSuffix === "string" && parentSuffix.length > 0) {
-        labelParts.push(parentSuffix);
-      }
-      if (fileLinkMeta.line) {
-        labelParts.push(
-          `L${fileLinkMeta.line}${fileLinkMeta.column ? `:C${fileLinkMeta.column}` : ""}`,
-        );
-      }
-
       return (
         <MarkdownFileLink
           href={fileLinkMeta.targetPath}
           targetPath={fileLinkMeta.targetPath}
           displayPath={fileLinkMeta.displayPath}
           filePath={fileLinkMeta.filePath}
-          label={labelParts.join(" · ")}
+          label={buildFileLinkLabel(
+            fileLinkMeta,
+            fileLinkParentSuffixByPath.get(fileLinkMeta.filePath),
+          )}
           theme={resolvedTheme}
+          {...(threadRef ? { threadRef } : {})}
           className={props.className}
         />
       );
     },
-    [fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme],
+    [fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme, threadRef],
   );
   const markdownPre = useCallback(
     ({ node: _node, children, ...props }: MarkdownFunctionComponentProps<"pre">) => {
@@ -645,19 +740,47 @@ function ChatMarkdown({ text, cwd, isStreaming = false }: ChatMarkdownProps) {
     },
     [diffThemeName, isStreaming],
   );
+  const markdownCode = useCallback(
+    ({ node, children, className, ...props }: MarkdownFunctionComponentProps<"code">) => {
+      if (node?.properties?.dataInlineCode != null) {
+        const codeText = nodeToPlainText(children);
+        const fileLinkMeta = resolveInlineCodeFileLinkMeta(codeText, cwd);
+        const label = node.properties.dataInlineCodeLabel;
+        if (fileLinkMeta && typeof label === "string") {
+          return (
+            <MarkdownFileLink
+              href={fileLinkMeta.targetPath}
+              targetPath={fileLinkMeta.targetPath}
+              displayPath={fileLinkMeta.displayPath}
+              filePath={fileLinkMeta.filePath}
+              label={label}
+              theme={resolvedTheme}
+            />
+          );
+        }
+      }
+      return (
+        <code {...props} className={className}>
+          {children}
+        </code>
+      );
+    },
+    [cwd, resolvedTheme],
+  );
   const markdownComponents = useMemo<Components>(
     () => ({
       ...markdownComponentsWithoutRuntimeState,
       a: markdownAnchor,
+      code: markdownCode,
       pre: markdownPre,
     }),
-    [markdownAnchor, markdownPre],
+    [markdownAnchor, markdownCode, markdownPre],
   );
 
   return (
     <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground/80">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkTagInlineCode(cwd)]}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >

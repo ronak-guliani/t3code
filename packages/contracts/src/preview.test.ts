@@ -161,6 +161,25 @@ describe("PreviewAutomationHost", () => {
 });
 
 describe("PreviewAutomationError", () => {
+  it("preserves a pinned host capability failure", () => {
+    const error = decodeAutomationError({
+      _tag: "PreviewAutomationPinnedHostUnsupportedOperationError",
+      operation: "resize",
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      providerSessionId: "provider-session-1",
+      providerInstanceId: "codex",
+      clientId: "client-1",
+      connectionId: "connection-1",
+      supportedOperations: ["status"],
+    });
+
+    expect(error._tag).toBe("PreviewAutomationPinnedHostUnsupportedOperationError");
+    if (error._tag === "PreviewAutomationPinnedHostUnsupportedOperationError") {
+      expect(error.message).toContain("Start a new provider session");
+    }
+  });
+
   it("preserves a typed non-editable target failure", () => {
     const error = decodeAutomationError({
       _tag: "PreviewAutomationTargetNotEditableError",
@@ -216,6 +235,8 @@ describe("PreviewEvent", () => {
       threadId: "t",
       tabId: "preview-t",
       createdAt: "2026-01-01T00:00:00.000Z",
+      serverEpoch: "server-a",
+      revision: 1,
       snapshot: {
         threadId: "t",
         tabId: "preview-t",
@@ -234,6 +255,8 @@ describe("PreviewEvent", () => {
       threadId: "t",
       tabId: "preview-t",
       createdAt: "2026-01-01T00:00:00.000Z",
+      serverEpoch: "server-a",
+      revision: 1,
       url: "https://example.com/",
       title: "",
       code: -105,
@@ -251,6 +274,8 @@ describe("PreviewEvent", () => {
       threadId: "t",
       tabId: "preview-t",
       createdAt: "2026-01-01T00:00:00.000Z",
+      serverEpoch: "server-a",
+      revision: 1,
       snapshot: {
         threadId: "t",
         tabId: "preview-t",
@@ -270,6 +295,8 @@ describe("PreviewEvent", () => {
       threadId: "t",
       tabId: "preview-t",
       createdAt: "2026-01-01T00:00:00.000Z",
+      serverEpoch: "server-a",
+      revision: 1,
     });
     expect(event.type).toBe("closed");
   });

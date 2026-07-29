@@ -83,10 +83,7 @@ export function projectActivityPayload(
     if (key in data) projectedData[key] = data[key];
   }
 
-  const files = extractNormalizedChangedFilePathsFromToolPayload(data, {
-    maxDepth: 4,
-    maxPaths: 12,
-  });
+  const files = extractNormalizedChangedFilePathsFromToolPayload(data);
   if (files.length > 0) {
     projectedData.files = files.map((path) => ({ path }));
   }

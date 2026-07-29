@@ -11,8 +11,14 @@ import { useActivePreviewSessions } from "~/previewStateStore";
 import { readPreviewAnnotationTheme } from "./annotationTheme";
 import { useBrowserPointerStore } from "./browserPointerStore";
 import { HostedBrowserWebview } from "./HostedBrowserWebview";
+import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 export function ElectronBrowserHost() {
+  if (!isElectron) return null;
+  return <ElectronBrowserHostContent />;
+}
+
+function ElectronBrowserHostContent() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
   const sessions = useMemo(
@@ -23,6 +29,11 @@ export function ElectronBrowserHost() {
           ? Object.values(previewState.sessions).map((snapshot) => ({
               threadRef,
               snapshot,
+              runtimeTabId: previewRuntimeTabId(
+                threadRef,
+                previewState.serverEpoch,
+                snapshot.tabId,
+              ),
               zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,
             }))
           : [];
@@ -71,16 +82,16 @@ export function ElectronBrowserHost() {
     });
   }, []);
 
-  if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
-      {sessions.map(({ threadRef, snapshot, zoomFactor }) => {
+      {sessions.map(({ threadRef, snapshot, runtimeTabId, zoomFactor }) => {
         const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
         return (
           <HostedBrowserWebview
-            key={snapshot.tabId}
+            key={runtimeTabId}
             threadRef={threadRef}
             tabId={snapshot.tabId}
+            runtimeTabId={runtimeTabId}
             initialUrl={url}
             viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
             zoomFactor={zoomFactor}

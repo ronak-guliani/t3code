@@ -84,7 +84,7 @@ export interface EnvironmentState {
   activityIdsByThreadId: Record<ThreadId, string[]>;
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
   activityContextByThreadId: Record<ThreadId, readonly OrchestrationThreadActivity[]>;
-  activityPageByThreadId: Partial<Record<ThreadId, NonNullable<Thread["activityPage"]>>>;
+  hasMoreActivitiesByThreadId?: Record<ThreadId, boolean>;
   // Insights lifecycle records retained independently of `activityByThreadId`
   // so thread-wide timing stays complete after the capped activity window
   // evicts older turns. Bounded by distinct turns, not raw activity count.
@@ -127,7 +127,7 @@ const initialEnvironmentState: EnvironmentState = {
   activityIdsByThreadId: {},
   activityByThreadId: {},
   activityContextByThreadId: {},
-  activityPageByThreadId: {},
+  hasMoreActivitiesByThreadId: {},
   insightActivitiesByThreadId: {},
   proposedPlanIdsByThreadId: {},
   proposedPlanByThreadId: {},
@@ -250,6 +250,7 @@ function mapMessage(environmentId: EnvironmentId, message: OrchestrationMessage)
     turnId: message.turnId,
     createdAt: message.createdAt,
     streaming: message.streaming,
+    ...(message.origin !== undefined ? { origin: message.origin } : {}),
     ...(message.streaming ? {} : { completedAt: message.updatedAt }),
     ...(attachments && attachments.length > 0 ? { attachments } : {}),
   };
@@ -330,8 +331,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
-    activityContext: (thread.activityContext ?? []).map((activity) => ({ ...activity })),
-    ...(thread.activityPage ? { activityPage: thread.activityPage } : {}),
+    activityContext: thread.activityContext?.map((activity) => ({ ...activity })) ?? [],
+    hasMoreActivities: thread.hasMoreActivities ?? false,
   };
 }
 
@@ -829,16 +830,13 @@ function writeThreadState(
     };
   }
 
-  if (previousThread?.activityPage !== nextThread.activityPage) {
-    const activityPageByThreadId = { ...nextState.activityPageByThreadId };
-    if (nextThread.activityPage) {
-      activityPageByThreadId[nextThread.id] = nextThread.activityPage;
-    } else {
-      delete activityPageByThreadId[nextThread.id];
-    }
+  if (previousThread?.hasMoreActivities !== nextThread.hasMoreActivities) {
     nextState = {
       ...nextState,
-      activityPageByThreadId,
+      hasMoreActivitiesByThreadId: {
+        ...nextState.hasMoreActivitiesByThreadId,
+        [nextThread.id]: nextThread.hasMoreActivities ?? false,
+      },
     };
   }
 
@@ -1022,8 +1020,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedActivities, ...activityByThreadId } = state.activityByThreadId;
   const { [threadId]: _removedActivityContext, ...activityContextByThreadId } =
     state.activityContextByThreadId;
-  const { [threadId]: _removedActivityPage, ...activityPageByThreadId } =
-    state.activityPageByThreadId;
+  const { [threadId]: _removedHasMoreActivities, ...hasMoreActivitiesByThreadId } =
+    state.hasMoreActivitiesByThreadId ?? {};
   const { [threadId]: _removedInsightActivities, ...insightActivitiesByThreadId } =
     state.insightActivitiesByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
@@ -1050,7 +1048,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     activityIdsByThreadId,
     activityByThreadId,
     activityContextByThreadId,
-    activityPageByThreadId,
+    hasMoreActivitiesByThreadId,
     insightActivitiesByThreadId,
     proposedPlanIdsByThreadId,
     proposedPlanByThreadId,
@@ -1083,17 +1081,23 @@ function compareActivities(
   left: Thread["activities"][number],
   right: Thread["activities"][number],
 ): number {
-  if (left.sequence !== undefined && right.sequence !== undefined) {
-    if (left.sequence !== right.sequence) {
-      return left.sequence - right.sequence;
-    }
-  } else if (left.sequence !== undefined) {
-    return 1;
-  } else if (right.sequence !== undefined) {
-    return -1;
-  }
-
-  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+  const leftLifecycleRank =
+    left.kind.endsWith(".completed") ||
+    left.kind.endsWith(".resolved") ||
+    left.kind.endsWith(".failed")
+      ? 2
+      : 1;
+  const rightLifecycleRank =
+    right.kind.endsWith(".completed") ||
+    right.kind.endsWith(".resolved") ||
+    right.kind.endsWith(".failed")
+      ? 2
+      : 1;
+  return (
+    left.createdAt.localeCompare(right.createdAt) ||
+    leftLifecycleRank - rightLifecycleRank ||
+    left.id.localeCompare(right.id)
+  );
 }
 
 /**
@@ -1345,15 +1349,13 @@ function updateThreadMessageState(
 
   const messageIds = state.messageIdsByThreadId[threadId] ?? [];
   const messagesById = state.messageByThreadId[threadId] ?? ({} as Record<MessageId, ChatMessage>);
+  // Spread the payload rather than copying field by field: the live path and
+  // the snapshot path must agree, and rebuilding by hand silently drops any
+  // field added to a message later (as it did with `origin`, which left
+  // handoff markers rendering as raw system bubbles until a reload).
   const incoming = mapMessage(environmentId, {
+    ...event.payload,
     id: event.payload.messageId,
-    role: event.payload.role,
-    text: event.payload.text,
-    ...(event.payload.attachments !== undefined ? { attachments: event.payload.attachments } : {}),
-    turnId: event.payload.turnId,
-    streaming: event.payload.streaming,
-    createdAt: event.payload.createdAt,
-    updatedAt: event.payload.updatedAt,
   });
   const previousMessage = messagesById[incoming.id];
   const message =
@@ -1376,6 +1378,7 @@ function updateThreadMessageState(
               ? { completedAt: incoming.completedAt }
               : {}),
           ...(incoming.attachments !== undefined ? { attachments: incoming.attachments } : {}),
+          ...(incoming.origin !== undefined ? { origin: incoming.origin } : {}),
         };
 
   let nextMessageIds = messageIds;
@@ -1587,7 +1590,14 @@ function syncEnvironmentShellSnapshot(
       state.activityContextByThreadId,
       nextThreadIds,
     ),
-    activityPageByThreadId: retainThreadScopedRecord(state.activityPageByThreadId, nextThreadIds),
+    ...(state.hasMoreActivitiesByThreadId
+      ? {
+          hasMoreActivitiesByThreadId: retainThreadScopedRecord(
+            state.hasMoreActivitiesByThreadId,
+            nextThreadIds,
+          ),
+        }
+      : {}),
     insightActivitiesByThreadId: retainThreadScopedRecord(
       state.insightActivitiesByThreadId,
       nextThreadIds,
@@ -1803,6 +1813,13 @@ function applyEnvironmentOrchestrationEvent(
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
         archivedAt: null,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.decoupled":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        parentThreadId: null,
         updatedAt: event.payload.updatedAt,
       }));
 
@@ -2067,15 +2084,15 @@ function applyEnvironmentOrchestrationEvent(
 
     case "thread.activity-appended":
       return updateThreadState(state, event.payload.threadId, (thread) => {
-        const activities = [
+        const allActivities = [
           ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
           { ...event.payload.activity },
-        ]
-          .toSorted(compareActivities)
-          .slice(-MAX_THREAD_ACTIVITIES);
+        ].toSorted(compareActivities);
         return {
           ...thread,
-          activities,
+          activities: allActivities.slice(-MAX_THREAD_ACTIVITIES),
+          hasMoreActivities:
+            (thread.hasMoreActivities ?? false) || allActivities.length > MAX_THREAD_ACTIVITIES,
           updatedAt: event.occurredAt,
         };
       });

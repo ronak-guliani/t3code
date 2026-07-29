@@ -5,6 +5,7 @@ import {
   CloudIcon,
   GitPullRequestIcon,
   FolderPlusIcon,
+  Globe2Icon,
   PinIcon,
   SearchIcon,
   SparklesIcon,
@@ -63,6 +64,10 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { useLocation, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import {
   type SidebarProjectSortOrder,
@@ -80,6 +85,7 @@ import {
   useStore,
 } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useThreadDiscoveredPorts } from "../portDiscoveryState";
 import { createThreadExpandedOverridesSelector, useUiStateStore } from "../uiStateStore";
 import {
   resolveShortcutCommand,
@@ -150,7 +156,8 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import {
-  getSidebarThreadIdsToPrewarm,
+  createSidebarHoverPrewarmController,
+  SIDEBAR_THREAD_HOVER_PREWARM_DELAY_MS,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   resolveProjectStatusIndicator,
@@ -169,6 +176,8 @@ import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { CommandDialogTrigger } from "./ui/command";
 import { readEnvironmentApi } from "../environmentApi";
+import { previewEnvironment } from "../state/preview";
+import { useAtomCommand } from "../state/use-atom-command";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
 import {
@@ -181,6 +190,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import type { SidebarThreadSummary } from "../types";
+import { openDiscoveredPort } from "./preview/openDiscoveredPort";
 import {
   buildPhysicalToLogicalProjectKeyMap,
   buildSidebarProjectSnapshots,
@@ -212,6 +222,43 @@ const SIDEBAR_LIST_ANIMATION_OPTIONS = {
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 const EMPTY_THREAD_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
 type ContextMenuPosition = { x: number; y: number };
+
+function SidebarThreadDetailPrewarmer({ threadRef }: { readonly threadRef: ScopedThreadRef }) {
+  useEffect(
+    () => retainThreadDetailSubscription(threadRef.environmentId, threadRef.threadId),
+    [threadRef.environmentId, threadRef.threadId],
+  );
+  return null;
+}
+
+function SidebarHoverThreadPrewarmer() {
+  const [threadKey, setThreadKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = createSidebarHoverPrewarmController({
+      delayMs: SIDEBAR_THREAD_HOVER_PREWARM_DELAY_MS,
+      onPrewarmTargetChange: setThreadKey,
+    });
+    const onPointerOver = (event: globalThis.PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      controller.hover(
+        target?.closest("[data-thread-prewarm-key]")?.getAttribute("data-thread-prewarm-key") ??
+          null,
+      );
+    };
+    window.addEventListener("pointerover", onPointerOver, { passive: true });
+    return () => {
+      window.removeEventListener("pointerover", onPointerOver);
+      controller.dispose();
+    };
+  }, []);
+
+  const threadRef = useMemo(
+    () => (threadKey === null ? null : parseScopedThreadKey(threadKey)),
+    [threadKey],
+  );
+  return threadRef ? <SidebarThreadDetailPrewarmer threadRef={threadRef} /> : null;
+}
 
 function resolveContextMenuPosition(event: React.MouseEvent): ContextMenuPosition | undefined {
   if (window.desktopBridge) {
@@ -461,12 +508,40 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const threadKey = scopedThreadKey(threadRef);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
+  const discoveredPorts = useThreadDiscoveredPorts({
+    environmentId: thread.environmentId,
+    threadId: virtualAgentRun?.parentThreadId ?? thread.id,
+  });
+  const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   const gitCwd = resolveSidebarThreadGitCwd({
     worktreePath: thread.worktreePath,
     threadProjectCwd,
     projectCwd: props.projectCwd,
   });
   const isHighlighted = isActive || isSelected;
+  const handleOpenDiscoveredPort = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      const port = discoveredPorts[0];
+      if (!port) return;
+      event.preventDefault();
+      event.stopPropagation();
+      navigateToThread(threadRef);
+      void (async () => {
+        const result = await openDiscoveredPort({ threadRef, port, openPreview });
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to open preview",
+            description:
+              error instanceof Error ? error.message : "The preview could not be opened.",
+          }),
+        );
+      })();
+    },
+    [discoveredPorts, navigateToThread, openPreview, threadRef],
+  );
   const isThreadRunning =
     virtualAgentRun?.status === "running" ||
     isThreadActivelyWorking(thread.latestTurn, thread.session);
@@ -705,6 +780,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         sortable?.isOver && !sortable.isDragging ? "rounded-md ring-1 ring-primary/40" : ""
       }`}
       data-thread-item
+      data-thread-prewarm-key={threadKey}
       onMouseLeave={handleMouseLeave}
       onBlurCapture={handleBlurCapture}
       {...sortable?.attributes}
@@ -785,6 +861,26 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           ) : null}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {discoveredPorts.length > 0 ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    aria-label={`Open localhost:${discoveredPorts[0]?.port ?? ""}`}
+                    className="inline-flex cursor-pointer items-center justify-center text-emerald-600 outline-hidden focus-visible:ring-1 focus-visible:ring-ring dark:text-emerald-400"
+                    onClick={handleOpenDiscoveredPort}
+                  />
+                }
+              >
+                <Globe2Icon className="size-3" />
+              </TooltipTrigger>
+              <TooltipPopup side="top">
+                Open localhost:{discoveredPorts[0]?.port}
+                {discoveredPorts.length > 1 ? ` (+${discoveredPorts.length - 1})` : ""}
+              </TooltipPopup>
+            </Tooltip>
+          ) : null}
           <SidebarThreadTerminalStatus
             environmentId={thread.environmentId}
             threadId={virtualAgentRun?.parentThreadId ?? thread.id}
@@ -1308,6 +1404,7 @@ interface SidebarProjectItemProps {
   newThreadShortcutLabel: string | null;
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
+  decoupleThread: ReturnType<typeof useThreadActions>["decoupleThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   handleParentThreadSelected: (threadKey: string, hasChildren: boolean) => void;
   threadJumpLabelByKey: ReadonlyMap<string, string>;
@@ -1329,6 +1426,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     newThreadShortcutLabel,
     handleNewThread,
     archiveThread,
+    decoupleThread,
     deleteThread,
     handleParentThreadSelected,
     threadJumpLabelByKey,
@@ -2432,6 +2530,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const clicked = await api.contextMenu.show(
         [
           { id: "new-subchat", label: "New subchat" },
+          ...(thread.parentThreadId === null ? [] : [{ id: "decouple", label: "Decouple chat" }]),
           { id: "rename", label: "Rename thread" },
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-path", label: "Copy Path" },
@@ -2446,6 +2545,21 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
       if (clicked === "new-subchat") {
         createSubchatForThread(threadRef);
+        return;
+      }
+
+      if (clicked === "decouple") {
+        try {
+          await decoupleThread(threadRef);
+        } catch (error) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to decouple chat",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
         return;
       }
 
@@ -2502,6 +2616,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       copyPathToClipboard,
       copyThreadIdToClipboard,
       createSubchatForThread,
+      decoupleThread,
       deleteThread,
       markThreadUnread,
       memberProjectByScopedKey,
@@ -2958,6 +3073,7 @@ interface SidebarProjectsContentProps {
   handleProjectDragCancel: (event: DragCancelEvent) => void;
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
+  decoupleThread: ReturnType<typeof useThreadActions>["decoupleThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   handleParentThreadSelected: (threadKey: string, hasChildren: boolean) => void;
   primaryEnvironmentId: SidebarThreadSummary["environmentId"] | null;
@@ -2999,6 +3115,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     handleProjectDragCancel,
     handleNewThread,
     archiveThread,
+    decoupleThread,
     deleteThread,
     handleParentThreadSelected,
     primaryEnvironmentId,
@@ -3159,6 +3276,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         newThreadShortcutLabel={newThreadShortcutLabel}
                         handleNewThread={handleNewThread}
                         archiveThread={archiveThread}
+                        decoupleThread={decoupleThread}
                         deleteThread={deleteThread}
                         handleParentThreadSelected={handleParentThreadSelected}
                         threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3192,6 +3310,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 newThreadShortcutLabel={newThreadShortcutLabel}
                 handleNewThread={handleNewThread}
                 archiveThread={archiveThread}
+                decoupleThread={decoupleThread}
                 deleteThread={deleteThread}
                 handleParentThreadSelected={handleParentThreadSelected}
                 threadJumpLabelByKey={threadJumpLabelByKey}
@@ -3238,7 +3357,7 @@ export default function Sidebar() {
   }));
   const { updateSettings } = useUpdateSettings();
   const { handleNewThread } = useNewThreadHandler();
-  const { archiveThread, deleteThread } = useThreadActions();
+  const { archiveThread, decoupleThread, deleteThread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -3613,49 +3732,6 @@ export default function Sidebar() {
     ? threadJumpLabelByKey
     : EMPTY_THREAD_JUMP_LABELS;
   const orderedSidebarThreadKeys = visibleSidebarThreadKeys;
-  const prewarmedSidebarThreadKeys = useMemo(
-    () => getSidebarThreadIdsToPrewarm(visibleSidebarThreadKeys),
-    [visibleSidebarThreadKeys],
-  );
-  const prewarmedSidebarThreadRefs = useMemo(
-    () =>
-      prewarmedSidebarThreadKeys.flatMap((threadKey) => {
-        const ref = parseScopedThreadKey(threadKey);
-        return ref ? [ref] : [];
-      }),
-    [prewarmedSidebarThreadKeys],
-  );
-  const retainedSidebarThreadDetailsRef = useRef(new Map<string, () => void>());
-
-  useEffect(() => {
-    const retained = retainedSidebarThreadDetailsRef.current;
-    const nextThreadKeys = new Set<string>();
-
-    for (const ref of prewarmedSidebarThreadRefs) {
-      const threadKey = scopedThreadKey(ref);
-      nextThreadKeys.add(threadKey);
-      if (!retained.has(threadKey)) {
-        retained.set(threadKey, retainThreadDetailSubscription(ref.environmentId, ref.threadId));
-      }
-    }
-
-    for (const [threadKey, release] of retained) {
-      if (!nextThreadKeys.has(threadKey)) {
-        release();
-        retained.delete(threadKey);
-      }
-    }
-  }, [prewarmedSidebarThreadRefs]);
-
-  useEffect(() => {
-    const retained = retainedSidebarThreadDetailsRef.current;
-    return () => {
-      for (const release of retained.values()) {
-        release();
-      }
-      retained.clear();
-    };
-  }, []);
 
   useEffect(() => {
     updateThreadJumpHintsVisibility(shouldShowThreadJumpHintsNow);
@@ -3881,6 +3957,7 @@ export default function Sidebar() {
 
   return (
     <>
+      <SidebarHoverThreadPrewarmer />
       <SidebarChromeHeader isElectron={isElectron} />
 
       {isOnSettings ? (
@@ -3906,6 +3983,7 @@ export default function Sidebar() {
             handleProjectDragCancel={handleProjectDragCancel}
             handleNewThread={handleNewThread}
             archiveThread={archiveThread}
+            decoupleThread={decoupleThread}
             deleteThread={deleteThread}
             handleParentThreadSelected={handleParentThreadSelected}
             primaryEnvironmentId={primaryEnvironmentId}

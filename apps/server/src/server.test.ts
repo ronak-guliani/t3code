@@ -31,6 +31,7 @@ import {
   WsRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
+import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
@@ -498,7 +499,7 @@ const buildAppUnderTest = (options?: {
           resize: () => Effect.die("Not implemented in server test."),
           refresh: () => Effect.void,
           close: () => Effect.void,
-          list: () => Effect.succeed({ sessions: [] }),
+          list: () => Effect.succeed({ sessions: [], serverEpoch: "test-epoch", revision: 0 }),
           events: Stream.empty,
         }),
       ),
@@ -506,9 +507,10 @@ const buildAppUnderTest = (options?: {
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
           issue: () => Effect.die("Not implemented in server test."),
+          readProviderSession: () => Effect.succeed(undefined),
           resolve: () => Effect.succeed(undefined),
+          revokeProviderInstance: () => Effect.void,
           revokeProviderSession: () => Effect.void,
-          revokeThread: () => Effect.void,
           revokeAll: Effect.void,
         }),
       ),
@@ -2610,7 +2612,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            scope: { _tag: "project", projectId: defaultProjectId },
             query: "needle",
             limit: 10,
           }),
@@ -2814,13 +2816,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const needle = 1;",
       );
 
-      yield* buildAppUnderTest();
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+            getProjectShellById: () =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationReadModel().projects[0]!,
+                  workspaceRoot: workspaceDir,
+                }),
+              ),
+          },
+        },
+      });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            scope: { _tag: "thread", threadId: defaultThreadId },
             query: "needle",
             limit: 10,
           }),
@@ -2852,8 +2868,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const ok = 1;",
       );
 
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
       yield* buildAppUnderTest({
         layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+            getProjectShellById: () =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationReadModel().projects[0]!,
+                  workspaceRoot: workspaceDir,
+                }),
+              ),
+          },
           gitCore: {
             isInsideWorkTree: () => Effect.succeed(true),
             listWorkspaceFiles: () =>
@@ -2873,7 +2900,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            scope: { _tag: "thread", threadId: defaultThreadId },
             query: "ignored-search-target",
             limit: 10,
           }),
@@ -2885,7 +2912,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc projects.searchEntries errors", () =>
+  it.effect("rejects projects.searchEntries for unknown threads", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
 
@@ -2893,7 +2920,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: "/definitely/not/a/real/workspace/path",
+            scope: { _tag: "thread", threadId: ThreadId.make("thread-missing") },
             query: "needle",
             limit: 10,
           }),
@@ -2902,9 +2929,54 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assertTrue(result._tag === "Failure");
       assertTrue(result.failure._tag === "ProjectSearchEntriesError");
-      assertInclude(
-        result.failure.message,
-        "Workspace root does not exist: /definitely/not/a/real/workspace/path",
+      assertInclude(result.failure.message, "Workspace thread was not found.");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("scopes projects.searchEntries to the thread-owned workspace root", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parentDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-ws-project-search-scope-",
+      });
+      const workspaceDir = path.join(parentDir, "authorized");
+      const adjacentDir = path.join(parentDir, "adjacent");
+      yield* fs.makeDirectory(workspaceDir);
+      yield* fs.makeDirectory(adjacentDir);
+      yield* fs.writeFileString(path.join(workspaceDir, "authorized-needle.ts"), "authorized");
+      yield* fs.writeFileString(path.join(adjacentDir, "adjacent-needle.ts"), "adjacent");
+
+      const thread = makeDefaultOrchestrationReadModel().threads[0]!;
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadDetailById: () => Effect.succeed(Option.some(thread)),
+            getProjectShellById: () =>
+              Effect.succeed(
+                Option.some({
+                  ...makeDefaultOrchestrationReadModel().projects[0]!,
+                  workspaceRoot: workspaceDir,
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsSearchEntries]({
+            scope: { _tag: "thread", threadId: defaultThreadId },
+            query: "needle",
+            limit: 10,
+          }),
+        ),
+      );
+
+      assert.deepEqual(
+        response.entries.map((entry) => entry.path),
+        ["authorized-needle.ts"],
       );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -3129,6 +3201,101 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertInclude(contents, "Export this prompt.");
       assertInclude(contents, "Exported response.");
       assert.deepEqual(openedInput, { cwd: result.path, editor: "cursor" });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("runs pull request review fixes in the pull request worktree", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: OrchestrationCommand[] = [];
+      let preparedInput: Parameters<GitManagerShape["preparePullRequestThread"]>[0] | undefined;
+      const project = makeDefaultOrchestrationReadModel().projects[0]!;
+      const reviewResult = {
+        status: "parsed",
+        snapshot: {
+          scope: {
+            kind: "pull-request",
+            number: 42,
+            title: "Fork contribution",
+            url: "https://github.com/example/repo/pull/42",
+            baseBranch: "main",
+            headBranch: "feature/fork-fix",
+          },
+          diff: "diff --git a/file.ts b/file.ts",
+          diffHash: "review-diff-hash",
+        },
+        findings: [],
+        verdict: "comment",
+        summary: "A review finding needs attention.",
+      } satisfies NonNullable<OrchestrationThread["reviewResult"]>;
+      const reviewThread = makeDefaultOrchestrationThreadShell({ branch: "main" });
+      const reviewThreadDetail: OrchestrationThread = {
+        ...makeDefaultOrchestrationReadModel().threads[0]!,
+        branch: "main",
+        reviewResult,
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          gitManager: {
+            preparePullRequestThread: (input) =>
+              Effect.sync(() => {
+                preparedInput = input;
+                return {
+                  pullRequest: {
+                    number: 42,
+                    title: "Fork contribution",
+                    url: "https://github.com/example/repo/pull/42",
+                    baseBranch: "main",
+                    headBranch: "feature/fork-fix",
+                    state: "open" as const,
+                  },
+                  branch: "contributor/feature/fork-fix",
+                  worktreePath: "/tmp/pr-42-worktree",
+                };
+              }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getThreadShellById: () => Effect.succeed(Option.some(reviewThread)),
+            getThreadDetailById: () => Effect.succeed(Option.some(reviewThreadDetail)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.workflowRun]({
+            workflowId: FIX_REVIEW_ISSUES_WORKFLOW_ID,
+            threadId: defaultThreadId,
+            destinationMode: "child-chat",
+            input: { issues: "Fix the finding." },
+            trigger: "manual",
+            idempotencyKey: "fix-pr-42",
+          }),
+        ),
+      );
+
+      assert.equal(result.status, "started");
+      assert.deepEqual(preparedInput, {
+        cwd: project.workspaceRoot,
+        reference: "https://github.com/example/repo/pull/42",
+        mode: "worktree",
+        threadId: ThreadId.make(`workflow:fix-pr-42:node:${FIX_REVIEW_ISSUES_WORKFLOW_ID}:worker`),
+      });
+      const workflowCommand = dispatchedCommands.find(
+        (command) => command.type === "workflow.run.request",
+      );
+      assertTrue(workflowCommand?.type === "workflow.run.request");
+      assert.equal(workflowCommand.workerConfig.branch, "contributor/feature/fork-fix");
+      assert.equal(workflowCommand.workerConfig.worktreePath, "/tmp/pr-42-worktree");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

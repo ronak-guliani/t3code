@@ -1508,7 +1508,7 @@ const projectSearchCommand = Command.make("search", {
     withProjectRpc(flags, flags.project, ({ project, client }) =>
       Effect.gen(function* () {
         const result = yield* client[WS_METHODS.projectsSearchEntries]({
-          cwd: project.workspaceRoot,
+          scope: { _tag: "project", projectId: project.id },
           query: flags.query,
           limit: flags.limit,
         });
@@ -2084,6 +2084,7 @@ const chatHandoffCommand = Command.make("handoff", {
           threadId: thread.id,
           branch: flags.branch,
           worktreePath: flags.worktree,
+          markerMessageId: MessageId.make(crypto.randomUUID()),
           continuation: {
             id: QueuedTurnId.make(crypto.randomUUID()),
             threadId: thread.id,

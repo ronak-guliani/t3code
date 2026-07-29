@@ -17,6 +17,11 @@ import { acquireDesktopTab, type AcquiredDesktopTab } from "./desktopTabLifetime
 import { resolveHostedBrowserWebviewWrapperStyle } from "./hostedBrowserWebviewStyle";
 import { usePreviewWebviewConfig } from "./previewWebviewConfigState";
 import { useBrowserViewportResize } from "./useBrowserViewportResize";
+import {
+  INITIAL_WEBVIEW_CRASH_RECOVERY_STATE,
+  planWebviewCrashRecovery,
+  type WebviewCrashRecoveryState,
+} from "./webviewCrashRecovery";
 
 interface ElectronWebview extends HTMLElement {
   src: string;
@@ -36,47 +41,85 @@ declare global {
 export function HostedBrowserWebview(props: {
   readonly threadRef: ScopedThreadRef;
   readonly tabId: string;
+  /** Desktop-scoped identity; see previewRuntimeTabId. */
+  readonly runtimeTabId: string;
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly zoomFactor: number;
 }) {
-  const { threadRef, tabId, initialUrl, viewport, zoomFactor } = props;
+  const { threadRef, tabId, runtimeTabId, initialUrl, viewport, zoomFactor } = props;
   const config = usePreviewWebviewConfig(threadRef.environmentId);
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
+  const crashRecoveryRef = useRef<WebviewCrashRecoveryState>(INITIAL_WEBVIEW_CRASH_RECOVERY_STATE);
   const [aspectRatioLocked, setAspectRatioLocked] = useState(false);
   const activeRecordingTabId = useActiveBrowserRecordingTabId();
   const presentation = useBrowserSurfaceStore(
     useShallow((state) => {
-      const current = state.byTabId[tabId];
+      const current = state.byTabId[runtimeTabId];
       return {
-        rect: resolveBrowserSurfacePanelRect(state.byTabId, tabId),
+        rect: resolveBrowserSurfacePanelRect(state.byTabId, runtimeTabId),
         visible: current?.visible ?? false,
       };
     }),
   );
-  usePreviewBridge({ threadRef, tabId });
+  usePreviewBridge({ threadRef, tabId, runtimeTabId });
 
   useEffect(() => {
-    if (presentation.visible || activeRecordingTabId !== tabId) return;
-    void stopBrowserRecording(tabId).catch(() => undefined);
-  }, [activeRecordingTabId, presentation.visible, tabId]);
+    if (presentation.visible || activeRecordingTabId !== runtimeTabId) return;
+    void stopBrowserRecording(runtimeTabId).catch(() => undefined);
+  }, [activeRecordingTabId, presentation.visible, runtimeTabId]);
 
   useEffect(() => {
-    const lease = acquireDesktopTab(tabId);
+    crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
+    const lease = acquireDesktopTab(runtimeTabId);
     tabLeaseRef.current = lease;
     return () => {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       lease.release();
     };
-  }, [tabId]);
+  }, [runtimeTabId]);
+
+  // Remounting the guest is the only way to recover a dead render process, so
+  // recovery bumps a generation key. The reload target tracks the tab's latest
+  // URL rather than the URL it was first mounted with.
+  const [webviewGeneration, setWebviewGeneration] = useState(0);
+  const [recoverySrc, setRecoverySrc] = useState(initialSrc);
+  const latestUrlRef = useRef(initialUrl);
+  const hasConfig = config !== null;
+
+  useEffect(() => {
+    latestUrlRef.current = initialUrl;
+  }, [initialUrl]);
 
   const setWebviewRef = useCallback((node: HTMLElement | null) => {
     webviewRef.current = node as ElectronWebview | null;
     if (node && !node.hasAttribute("allowpopups")) node.setAttribute("allowpopups", "true");
   }, []);
+
+  useEffect(() => {
+    const webview = webviewRef.current;
+    if (!webview || !hasConfig) return;
+    let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
+    const recoverGuest = () => {
+      if (recoveryTimeout !== null) return;
+      const recovery = planWebviewCrashRecovery(crashRecoveryRef.current, Date.now());
+      if (!recovery) return;
+      crashRecoveryRef.current = recovery.state;
+      recoveryTimeout = setTimeout(() => {
+        recoveryTimeout = null;
+        setRecoverySrc(latestUrlRef.current ?? initialSrc);
+        setWebviewGeneration((generation) => generation + 1);
+      }, recovery.delayMs);
+    };
+    webview.addEventListener("render-process-gone", recoverGuest);
+    return () => {
+      if (recoveryTimeout !== null) clearTimeout(recoveryTimeout);
+      webview.removeEventListener("render-process-gone", recoverGuest);
+    };
+  }, [hasConfig, initialSrc, webviewGeneration]);
 
   useEffect(() => {
     const webview = webviewRef.current;
@@ -95,7 +138,7 @@ export function HostedBrowserWebview(props: {
           if (disposed || webviewRef.current !== webview) return;
           const webContentsId = webview.getWebContentsId();
           if (Number.isInteger(webContentsId) && webContentsId > 0) {
-            await bridge.registerWebview(tabId, webContentsId);
+            await bridge.registerWebview(runtimeTabId, webContentsId);
           }
         } catch {
           // did-attach/dom-ready will retry if the guest was not ready yet.
@@ -110,7 +153,7 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("did-attach", register);
       webview.removeEventListener("dom-ready", register);
     };
-  }, [config, tabId]);
+  }, [config, runtimeTabId, webviewGeneration]);
 
   const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;
@@ -141,7 +184,7 @@ export function HostedBrowserWebview(props: {
     handleResizePointerDown,
     layout,
   } = useBrowserViewportResize({
-    tabId,
+    tabId: runtimeTabId,
     viewport,
     zoomFactor,
     containerSize,
@@ -152,7 +195,7 @@ export function HostedBrowserWebview(props: {
   const syncContentPresentation = useCallback(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
-    useBrowserSurfaceStore.getState().presentContent(tabId, {
+    useBrowserSurfaceStore.getState().presentContent(runtimeTabId, {
       x: layout.viewportX,
       y: layout.viewportY,
       width: layout.viewportWidth,
@@ -161,7 +204,7 @@ export function HostedBrowserWebview(props: {
       scrollLeft: wrapper.scrollLeft,
       scrollTop: wrapper.scrollTop,
     });
-  }, [layout, tabId]);
+  }, [layout, runtimeTabId]);
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(syncContentPresentation);
@@ -172,7 +215,7 @@ export function HostedBrowserWebview(props: {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
     wrapper.scrollTo({ left: 0, top: 0 });
-  }, [tabId, viewport._tag, viewportHeight, viewportWidth]);
+  }, [runtimeTabId, viewport._tag, viewportHeight, viewportWidth]);
 
   if (!config) return null;
 
@@ -188,7 +231,7 @@ export function HostedBrowserWebview(props: {
       className="fixed overflow-hidden bg-muted/35"
       style={{ ...wrapperStyle, overscrollBehavior: "contain" }}
       onScroll={syncContentPresentation}
-      data-preview-viewport={tabId}
+      data-preview-viewport={runtimeTabId}
     >
       <div className="relative" style={{ width: layout.canvasWidth, height: layout.canvasHeight }}>
         {deviceToolbarVisible && effectiveViewport._tag !== "fill" ? (
@@ -201,12 +244,13 @@ export function HostedBrowserWebview(props: {
           />
         ) : null}
         <webview
+          key={webviewGeneration}
           ref={setWebviewRef}
-          src={initialSrc}
+          src={webviewGeneration === 0 ? initialSrc : recoverySrc}
           partition={config.partition}
           webpreferences={config.webPreferences}
           {...(config.preloadUrl ? { preload: config.preloadUrl } : {})}
-          data-preview-tab={tabId}
+          data-preview-tab={runtimeTabId}
           data-preview-viewport-mode={effectiveViewport._tag}
           data-preview-viewport-key={browserViewportSettingKey(effectiveViewport)}
           data-preview-css-width={

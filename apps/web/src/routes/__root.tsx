@@ -11,9 +11,11 @@ import { useEffect, useRef } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
+import { DesktopBrowserRuntime } from "../browser/DesktopBrowserRuntime";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { PreviewAutomationHosts } from "../components/preview/PreviewAutomationHosts";
+import { ElectronBrowserHost } from "../browser/ElectronBrowserHost";
 import {
   SlowRpcAckToastCoordinator,
   WebSocketConnectionCoordinator,
@@ -110,7 +112,9 @@ function RootRouteView() {
         <ThreadCompletionNotificationCoordinator />
         <StaleActiveTurnToastCoordinator />
         <EventRouter />
+        <DesktopBrowserRuntime authenticated />
         <PreviewAutomationHosts />
+        <ElectronBrowserHost />
         <WebSocketConnectionCoordinator />
         <SlowRpcAckToastCoordinator />
         <WebSocketConnectionSurface>

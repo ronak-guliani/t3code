@@ -4,9 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(async (_tabId: string, _url: string): Promise<void> => undefined),
+  captureScreenshot: vi.fn(async () => ({ path: "/tmp/screenshot.png" })),
+  revealArtifact: vi.fn(),
+  copyArtifactToClipboard: vi.fn(),
   rememberPreviewUrl: vi.fn(),
   readPreparedConnection: vi.fn(() => ({ httpBaseUrl: "http://172.25.85.75:3773" })),
   submittedUrl: null as ((url: string) => void) | null,
+  capture: null as ((record: boolean) => void) | null,
   emptyStateUrl: null as ((url: string) => void) | null,
   showEmptyState: false,
 }));
@@ -26,7 +30,7 @@ vi.mock("~/lib/previewAnnotation", () => ({
 }));
 
 vi.mock("~/localApi", () => ({
-  ensureLocalApi: vi.fn(),
+  readLocalApi: vi.fn(),
 }));
 
 vi.mock("~/previewStateStore", () => ({
@@ -34,6 +38,7 @@ vi.mock("~/previewStateStore", () => ({
   updatePreviewServerSnapshot: vi.fn(),
   useThreadPreviewState: () => ({
     activeTabId: "tab-1",
+    serverEpoch: "epoch-1",
     desktopByTabId: {
       "tab-1": {
         canGoBack: false,
@@ -78,7 +83,7 @@ vi.mock("~/state/use-atom-command", () => ({
 }));
 
 vi.mock("~/browser/browserRecording", () => ({
-  startBrowserRecording: vi.fn(),
+  startBrowserRecording: vi.fn(async () => "2026-07-29T00:00:00.000Z"),
   stopBrowserRecording: vi.fn(),
   useActiveBrowserRecordingTabId: () => null,
 }));
@@ -90,17 +95,26 @@ vi.mock("~/browser/browserSurfaceStore", () => ({
 }));
 
 vi.mock("~/components/ui/toast", () => ({
-  stackedThreadToast: vi.fn(),
-  toastManager: { add: vi.fn() },
+  stackedThreadToast: vi.fn((options) => options),
+  toastManager: { add: vi.fn(() => "toast-1"), update: vi.fn() },
 }));
 
 vi.mock("./previewBridge", () => ({
-  previewBridge: { navigate: mocks.navigate },
+  previewBridge: {
+    navigate: mocks.navigate,
+    captureScreenshot: mocks.captureScreenshot,
+    revealArtifact: mocks.revealArtifact,
+    copyArtifactToClipboard: mocks.copyArtifactToClipboard,
+  },
 }));
 
 vi.mock("./PreviewChromeRow", () => ({
-  PreviewChromeRow: (props: { onSubmit: (url: string) => void }) => {
+  PreviewChromeRow: (props: {
+    onSubmit: (url: string) => void;
+    onCapture?: (record: boolean) => void;
+  }) => {
     mocks.submittedUrl = props.onSubmit;
+    mocks.capture = props.onCapture ?? null;
     return null;
   },
 }));
@@ -119,7 +133,15 @@ vi.mock("~/browser/BrowserSurfaceSlot", () => ({ BrowserSurfaceSlot: () => null 
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
+import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
+
 import { PreviewView } from "./PreviewView";
+
+const runtimeTabId = previewRuntimeTabId(
+  { environmentId: EnvironmentId.make("environment-1"), threadId: ThreadId.make("thread-1") },
+  "epoch-1",
+  "tab-1",
+);
 
 describe("PreviewView navigation", () => {
   beforeEach(() => {
@@ -127,6 +149,7 @@ describe("PreviewView navigation", () => {
     mocks.rememberPreviewUrl.mockClear();
     mocks.readPreparedConnection.mockClear();
     mocks.submittedUrl = null;
+    mocks.capture = null;
     mocks.emptyStateUrl = null;
     mocks.showEmptyState = false;
   });
@@ -152,7 +175,7 @@ describe("PreviewView navigation", () => {
     expect(mocks.submittedUrl).not.toBeNull();
     mocks.submittedUrl?.(submitted);
 
-    await vi.waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith("tab-1", expected));
+    await vi.waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith(runtimeTabId, expected));
     expect(mocks.rememberPreviewUrl).toHaveBeenCalledWith(
       {
         environmentId: "environment-1",
@@ -180,7 +203,7 @@ describe("PreviewView navigation", () => {
 
     await vi.waitFor(() =>
       expect(mocks.navigate).toHaveBeenCalledWith(
-        "tab-1",
+        runtimeTabId,
         "http://172.25.85.75:5173/app?mode=test#top",
       ),
     );
@@ -190,6 +213,64 @@ describe("PreviewView navigation", () => {
         threadId: "thread-1",
       },
       "http://172.25.85.75:5173/app?mode=test#top",
+    );
+  });
+
+  it("offers screenshot reveal, image copy, and path copy actions", async () => {
+    vi.stubGlobal("navigator", {
+      platform: "Win32",
+      clipboard: { writeText: vi.fn() },
+    });
+
+    renderToStaticMarkup(
+      <PreviewView
+        threadRef={{
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+        }}
+        tabId="tab-1"
+        visible
+      />,
+    );
+
+    mocks.capture?.(false);
+
+    const { stackedThreadToast, toastManager } = await import("~/components/ui/toast");
+    await vi.waitFor(() => expect(toastManager.add).toHaveBeenCalled());
+    expect(stackedThreadToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Screenshot saved",
+        actionProps: expect.objectContaining({ children: "Copy image" }),
+        data: expect.objectContaining({
+          additionalActions: [
+            expect.objectContaining({
+              id: "copy-path",
+              props: expect.objectContaining({ children: "Copy path" }),
+            }),
+          ],
+          secondaryActionProps: expect.objectContaining({ children: "Reveal in File Explorer" }),
+        }),
+      }),
+    );
+  });
+
+  it("preserves the raw server tab id when starting a recording", async () => {
+    const recording = await import("~/browser/browserRecording");
+    renderToStaticMarkup(
+      <PreviewView
+        threadRef={{
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+        }}
+        tabId="tab-1"
+        visible
+      />,
+    );
+
+    mocks.capture?.(true);
+
+    await vi.waitFor(() =>
+      expect(recording.startBrowserRecording).toHaveBeenCalledWith(runtimeTabId, "tab-1"),
     );
   });
 });

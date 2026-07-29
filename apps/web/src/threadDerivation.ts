@@ -31,7 +31,7 @@ const threadCache = new WeakMap<
     messages: Thread["messages"];
     activities: Thread["activities"];
     activityContext: NonNullable<Thread["activityContext"]>;
-    activityPage: Thread["activityPage"];
+    hasMoreActivities: boolean;
     insightActivities: NonNullable<Thread["insightActivities"]>;
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
@@ -120,7 +120,7 @@ export function getThreadFromEnvironmentState(
   const messages = selectThreadMessages(state, threadId);
   const activities = selectThreadActivities(state, threadId);
   const activityContext = state.activityContextByThreadId[threadId] ?? EMPTY_ACTIVITY_CONTEXT;
-  const activityPage = state.activityPageByThreadId[threadId];
+  const hasMoreActivities = state.hasMoreActivitiesByThreadId?.[threadId] ?? false;
   const insightActivities = state.insightActivitiesByThreadId[threadId] ?? EMPTY_INSIGHT_ACTIVITIES;
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
@@ -135,7 +135,7 @@ export function getThreadFromEnvironmentState(
     cached.messages === messages &&
     cached.activities === activities &&
     cached.activityContext === activityContext &&
-    cached.activityPage === activityPage &&
+    cached.hasMoreActivities === hasMoreActivities &&
     cached.insightActivities === insightActivities &&
     cached.proposedPlans === proposedPlans &&
     cached.turnDiffSummaries === turnDiffSummaries &&
@@ -153,7 +153,7 @@ export function getThreadFromEnvironmentState(
     messages,
     activities,
     activityContext,
-    ...(activityPage ? { activityPage } : {}),
+    hasMoreActivities,
     insightActivities,
     proposedPlans,
     turnDiffSummaries,
@@ -167,7 +167,7 @@ export function getThreadFromEnvironmentState(
     messages,
     activities,
     activityContext,
-    activityPage,
+    hasMoreActivities,
     insightActivities,
     proposedPlans,
     turnDiffSummaries,

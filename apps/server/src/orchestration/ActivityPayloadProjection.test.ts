@@ -75,4 +75,20 @@ describe("projectActivityPayload", () => {
     const projected = projectActivityPayload(original);
     expect(JSON.stringify(projected).length).toBeLessThan(JSON.stringify(original).length * 0.02);
   });
+
+  it("preserves every changed file path used by exact UI counts", () => {
+    const paths = Array.from({ length: 20 }, (_, index) => `src/file-${index}.ts`);
+    const projected = projectActivityPayload(
+      activity({
+        itemType: "file_change",
+        data: {
+          changes: paths.map((path) => ({ path, patch: "large patch contents" })),
+        },
+      }),
+    );
+    const payload = projected.payload as {
+      data: { files: ReadonlyArray<{ path: string }> };
+    };
+    expect(payload.data.files.map((file) => file.path)).toEqual(paths);
+  });
 });

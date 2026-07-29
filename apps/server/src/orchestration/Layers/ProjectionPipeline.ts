@@ -644,6 +644,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.decoupled": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            parentThreadId: null,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
         case "thread.meta-updated": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -846,6 +861,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             role: event.payload.role,
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
+            ...(event.payload.origin !== undefined
+              ? { origin: event.payload.origin }
+              : previousMessage?.origin !== undefined
+                ? { origin: previousMessage.origin }
+                : {}),
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -1056,6 +1076,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             messageId: event.payload.queuedTurn.message.messageId,
             text: event.payload.queuedTurn.message.text,
             attachments: event.payload.queuedTurn.message.attachments,
+            origin: event.payload.queuedTurn.origin ?? null,
             modelSelection: event.payload.queuedTurn.modelSelection ?? null,
             titleSeed: event.payload.queuedTurn.titleSeed ?? null,
             runtimeMode: event.payload.queuedTurn.runtimeMode,
