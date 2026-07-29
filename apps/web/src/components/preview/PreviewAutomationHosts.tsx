@@ -245,7 +245,6 @@ const raisePreviewAutomationHostError = (
 
 export function PreviewAutomationHosts() {
   const { environments } = useEnvironments();
-  if (!isElectron || !previewBridge?.automation) return null;
   return (
     <>
       {/*
@@ -253,14 +252,40 @@ export function PreviewAutomationHosts() {
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
        */}
-      {environments.map((environment) => (
-        <PreviewAutomationHost
-          key={environment.environmentId}
-          environmentId={environment.environmentId}
-        />
-      ))}
+      {environments.map((environment) =>
+        isElectron && previewBridge?.automation ? (
+          <PreviewAutomationHost
+            key={environment.environmentId}
+            environmentId={environment.environmentId}
+          />
+        ) : (
+          <PreviewAutomationUnavailableHost
+            key={environment.environmentId}
+            environmentId={environment.environmentId}
+          />
+        ),
+      )}
     </>
   );
+}
+
+function PreviewAutomationUnavailableHost(props: { readonly environmentId: EnvironmentId }) {
+  const { environmentId } = props;
+  const [automationClientId] = useState(createPreviewAutomationClientId);
+  const unavailableAutomationHost = useMemo<PreviewAutomationHostState>(
+    () => ({
+      clientId: automationClientId,
+      environmentId,
+      supportedOperations: [],
+    }),
+    [automationClientId, environmentId],
+  );
+  const automationRequestsAtom = previewEnvironment.automationRequests({
+    environmentId,
+    input: unavailableAutomationHost,
+  });
+  useAtomValue(automationRequestsAtom);
+  return null;
 }
 
 function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId }) {
