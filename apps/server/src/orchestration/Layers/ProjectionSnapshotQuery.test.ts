@@ -1264,6 +1264,126 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect(
+    "excludes soft-deleted projects and threads from the shell snapshot while still tracking their update time",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+
+        yield* sql`DELETE FROM projection_turns`;
+        yield* sql`DELETE FROM projection_thread_sessions`;
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_projects`;
+
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id,
+            title,
+            workspace_root,
+            default_model_selection_json,
+            scripts_json,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'live-project',
+              'Live project',
+              '/tmp/live-project',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              '[]',
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-01T00:00:01.000Z',
+              NULL
+            ),
+            (
+              'deleted-project',
+              'Deleted project',
+              '/tmp/deleted-project',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              '[]',
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-09T00:00:00.000Z',
+              '2026-05-09T00:00:00.000Z'
+            )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            branch,
+            worktree_path,
+            latest_turn_id,
+            latest_user_message_at,
+            pending_approval_count,
+            pending_user_input_count,
+            has_actionable_proposed_plan,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'live-thread',
+              'live-project',
+              'Live thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0,
+              0,
+              0,
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-01T00:00:02.000Z',
+              NULL
+            ),
+            (
+              'deleted-thread',
+              'live-project',
+              'Deleted thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0,
+              0,
+              0,
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-10T00:00:00.000Z',
+              '2026-05-10T00:00:00.000Z'
+            )
+        `;
+
+        const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+
+        assert.deepStrictEqual(
+          shellSnapshot.projects.map((project) => project.id),
+          ["live-project"],
+        );
+        assert.deepStrictEqual(
+          shellSnapshot.threads.map((thread) => thread.id),
+          ["live-thread"],
+        );
+        // Soft-deleted rows are no longer loaded, but deleting still bumps
+        // `updated_at`, so snapshot freshness must keep reflecting it.
+        assert.equal(shellSnapshot.updatedAt, "2026-05-10T00:00:00.000Z");
+      }),
+  );
+
   it.effect("windows thread activities and pages older history without data loss", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
