@@ -1264,6 +1264,285 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("searches active transcripts and returns the best match per thread", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-search', 'Search Project', '/tmp/search', NULL, '[]',
+          '2026-04-04T00:00:00.000Z', '2026-04-04T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, created_at, updated_at, archived_at, deleted_at
+        ) VALUES
+          (
+            'thread-active', 'project-search', 'Active thread',
+            '{"instanceId":"codex","model":"gpt-5"}', 'full-access', 'default',
+            NULL, NULL, '2026-04-04T00:00:00.000Z', '2026-04-04T00:00:03.000Z', NULL, NULL
+          ),
+          (
+            'thread-archived', 'project-search', 'Archived thread',
+            '{"instanceId":"codex","model":"gpt-5"}', 'full-access', 'default',
+            NULL, NULL, '2026-04-04T00:00:00.000Z', '2026-04-04T00:00:03.000Z',
+            '2026-04-04T00:00:04.000Z', NULL
+          )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        ) VALUES
+          (
+            'active-older', 'thread-active', NULL, 'user', 'needle in an older message', 0,
+            '2026-04-04T00:00:01.000Z', '2026-04-04T00:00:01.000Z'
+          ),
+          (
+            'active-newer', 'thread-active', NULL, 'assistant', 'needle in a newer message', 0,
+            '2026-04-04T00:00:02.000Z', '2026-04-04T00:00:02.000Z'
+          ),
+          (
+            'archived', 'thread-archived', NULL, 'assistant', 'needle in archived text', 0,
+            '2026-04-04T00:00:02.000Z', '2026-04-04T00:00:02.000Z'
+          )
+      `;
+
+      const searchTranscript = snapshotQuery.searchTranscript;
+      assert.ok(searchTranscript);
+      const result = yield* searchTranscript("needle");
+
+      assert.deepStrictEqual(result.matches, [
+        {
+          threadId: ThreadId.make("thread-active"),
+          title: "Active thread",
+          projectTitle: "Search Project",
+          branch: null,
+          role: "assistant",
+          excerpt: "needle in a newer mess...",
+          updatedAt: "2026-04-04T00:00:02.000Z",
+        },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "excludes soft-deleted projects and threads from the shell snapshot while still tracking their update time",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+
+        yield* sql`DELETE FROM projection_turns`;
+        yield* sql`DELETE FROM projection_thread_sessions`;
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_projects`;
+
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id,
+            title,
+            workspace_root,
+            default_model_selection_json,
+            scripts_json,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'live-project',
+              'Live project',
+              '/tmp/live-project',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              '[]',
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-01T00:00:01.000Z',
+              NULL
+            ),
+            (
+              'deleted-project',
+              'Deleted project',
+              '/tmp/deleted-project',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              '[]',
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-09T00:00:00.000Z',
+              '2026-05-09T00:00:00.000Z'
+            )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            branch,
+            worktree_path,
+            latest_turn_id,
+            latest_user_message_at,
+            pending_approval_count,
+            pending_user_input_count,
+            has_actionable_proposed_plan,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'live-thread',
+              'live-project',
+              'Live thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0,
+              0,
+              0,
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-01T00:00:02.000Z',
+              NULL
+            ),
+            (
+              'deleted-thread',
+              'live-project',
+              'Deleted thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0,
+              0,
+              0,
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-10T00:00:00.000Z',
+              '2026-05-10T00:00:00.000Z'
+            )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id,
+            status,
+            provider_name,
+            provider_session_id,
+            provider_thread_id,
+            runtime_mode,
+            active_turn_id,
+            resume_cursor_json,
+            last_error,
+            updated_at
+          )
+          VALUES
+            (
+              'live-thread',
+              'running',
+              'codex',
+              'live-session',
+              'provider-live-thread',
+              'full-access',
+              NULL,
+              NULL,
+              NULL,
+              '2026-05-01T00:00:03.000Z'
+            ),
+            (
+              'deleted-thread',
+              'running',
+              'codex',
+              'deleted-session',
+              'provider-deleted-thread',
+              'full-access',
+              NULL,
+              'not-json',
+              NULL,
+              '2026-05-02T00:00:00.000Z'
+            )
+        `;
+
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id,
+            turn_id,
+            state,
+            requested_at,
+            started_at,
+            completed_at,
+            assistant_message_id,
+            checkpoint_turn_count,
+            checkpoint_files_json,
+            checkpoint_agent_touched_paths_json,
+            checkpoint_turn_files_json
+          )
+          VALUES
+            (
+              'live-thread',
+              'live-turn',
+              'completed',
+              '2026-05-01T00:00:04.000Z',
+              NULL,
+              NULL,
+              NULL,
+              0,
+              '[]',
+              '[]',
+              '[]'
+            ),
+            (
+              'deleted-thread',
+              'deleted-turn',
+              'completed',
+              '2026-05-01T00:00:05.000Z',
+              NULL,
+              NULL,
+              '   ',
+              0,
+              '[]',
+              '[]',
+              '[]'
+            )
+        `;
+
+        const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+
+        assert.deepStrictEqual(
+          shellSnapshot.projects.map((project) => project.id),
+          ["live-project"],
+        );
+        assert.deepStrictEqual(
+          shellSnapshot.threads.map((thread) => thread.id),
+          ["live-thread"],
+        );
+        // The deleted thread's session and turn carry values that cannot be
+        // decoded, so these assertions fail loudly if the live-only session or
+        // latest-turn queries ever stop filtering deleted threads in SQL.
+        assert.equal(shellSnapshot.threads[0]?.session?.threadId, "live-thread");
+        assert.equal(shellSnapshot.threads[0]?.session?.updatedAt, "2026-05-01T00:00:03.000Z");
+        assert.equal(shellSnapshot.threads[0]?.latestTurn?.turnId, "live-turn");
+        // Soft-deleted rows are no longer loaded, but deleting still bumps
+        // `updated_at`, so snapshot freshness must keep reflecting it.
+        assert.equal(shellSnapshot.updatedAt, "2026-05-10T00:00:00.000Z");
+      }),
+  );
+
   it.effect("windows thread activities and pages older history without data loss", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
