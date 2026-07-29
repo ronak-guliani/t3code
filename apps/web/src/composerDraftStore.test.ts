@@ -331,6 +331,31 @@ describe("composerDraftStore clearComposerContent", () => {
     expect(draft).toBeUndefined();
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:optimistic");
   });
+
+  it("clears preview annotations with their paired screenshots", () => {
+    const annotation: PreviewAnnotationPayload = {
+      id: "annotation-clear",
+      pageUrl: "http://localhost:3000",
+      pageTitle: "Preview",
+      comment: "Change the heading",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-07-29T00:00:00.000Z",
+    };
+    const store = useComposerDraftStore.getState();
+    store.addImage(
+      threadRef,
+      makeImage({ id: annotation.id, previewUrl: "blob:annotation-clear" }),
+    );
+    store.addPreviewAnnotation(threadRef, annotation);
+
+    store.clearComposerContent(threadRef);
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
 });
 
 describe("composerDraftStore syncPersistedAttachments", () => {

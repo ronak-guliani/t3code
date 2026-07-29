@@ -3034,6 +3034,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nonPersistedImageIds: [],
               persistedAttachments: [],
               terminalContexts: [],
+              previewAnnotations: [],
             };
             const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
             if (shouldRemoveDraft(nextDraft)) {

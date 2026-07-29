@@ -180,11 +180,11 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
     set((state) => ({
       byThreadKey: updateState(state.byThreadKey, ref, (current) => {
         const browserIds = new Set(tabIds.map((tabId) => `browser:${tabId}`));
-        const retained = current.surfaces.filter(
-          (surface) =>
-            surface.kind !== "preview" ||
-            (surface.id !== "browser:new" && browserIds.has(surface.id)),
-        );
+        const retained = current.surfaces.filter((surface) => {
+          if (surface.kind !== "preview") return true;
+          if (surface.id === "browser:new") return tabIds.length === 0;
+          return browserIds.has(surface.id);
+        });
         const known = new Set(retained.map((surface) => surface.id));
         const surfaces = [
           ...retained,

@@ -57,6 +57,28 @@ describe("rightPanelStore", () => {
     );
   });
 
+  it("preserves a new browser surface until a session exists", () => {
+    const store = useRightPanelStore.getState();
+    store.open(ref, "preview");
+    store.reconcileBrowserSurfaces(ref, []);
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      activeSurfaceId: "browser:new",
+      surfaces: [{ id: "browser:new", kind: "preview", resourceId: null }],
+    });
+
+    store.reconcileBrowserSurfaces(ref, ["preview-a"]);
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      activeSurfaceId: "browser:preview-a",
+      surfaces: [{ id: "browser:preview-a", kind: "preview", resourceId: "preview-a" }],
+    });
+  });
+
   it("switches and closes independently identified terminal surfaces", () => {
     const store = useRightPanelStore.getState();
     store.openTerminal(ref, "terminal-a");
