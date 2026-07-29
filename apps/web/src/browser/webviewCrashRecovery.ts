@@ -20,7 +20,10 @@ export const INITIAL_WEBVIEW_CRASH_RECOVERY_STATE: WebviewCrashRecoveryState = {
 /**
  * Bounded exponential backoff for reloading a crashed guest. A guest that
  * crashes on load would otherwise reload forever, so attempts are capped per
- * rolling window; `null` means stop retrying and leave the failure visible.
+ * fixed window anchored at the first crash; `null` means stop retrying and
+ * leave the failure visible. This bounds crash-reload loops rather than
+ * precisely rate-limiting them: retries across a window boundary remain
+ * bounded and self-limiting while preserving the upstream recovery behavior.
  */
 export function planWebviewCrashRecovery(
   state: WebviewCrashRecoveryState,

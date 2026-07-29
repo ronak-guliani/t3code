@@ -86,6 +86,7 @@ export function HostedBrowserWebview(props: {
   const [webviewGeneration, setWebviewGeneration] = useState(0);
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
   const latestUrlRef = useRef(initialUrl);
+  const hasConfig = config !== null;
 
   useEffect(() => {
     latestUrlRef.current = initialUrl;
@@ -98,10 +99,31 @@ export function HostedBrowserWebview(props: {
 
   useEffect(() => {
     const webview = webviewRef.current;
+    if (!webview || !hasConfig) return;
+    let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
+    const recoverGuest = () => {
+      if (recoveryTimeout !== null) return;
+      const recovery = planWebviewCrashRecovery(crashRecoveryRef.current, Date.now());
+      if (!recovery) return;
+      crashRecoveryRef.current = recovery.state;
+      recoveryTimeout = setTimeout(() => {
+        recoveryTimeout = null;
+        setRecoverySrc(latestUrlRef.current ?? initialSrc);
+        setWebviewGeneration((generation) => generation + 1);
+      }, recovery.delayMs);
+    };
+    webview.addEventListener("render-process-gone", recoverGuest);
+    return () => {
+      if (recoveryTimeout !== null) clearTimeout(recoveryTimeout);
+      webview.removeEventListener("render-process-gone", recoverGuest);
+    };
+  }, [hasConfig, initialSrc, webviewGeneration]);
+
+  useEffect(() => {
+    const webview = webviewRef.current;
     const bridge = previewBridge;
     if (!webview || !config || !bridge) return;
     let disposed = false;
-    let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
       const lease = tabLeaseRef.current;
       if (!lease) return;
@@ -121,30 +143,15 @@ export function HostedBrowserWebview(props: {
         }
       })();
     };
-    const recoverGuest = () => {
-      if (disposed || recoveryTimeout !== null) return;
-      const recovery = planWebviewCrashRecovery(crashRecoveryRef.current, Date.now());
-      if (!recovery) return;
-      crashRecoveryRef.current = recovery.state;
-      recoveryTimeout = setTimeout(() => {
-        recoveryTimeout = null;
-        if (disposed) return;
-        setRecoverySrc(latestUrlRef.current ?? initialSrc);
-        setWebviewGeneration((generation) => generation + 1);
-      }, recovery.delayMs);
-    };
     webview.addEventListener("did-attach", register);
     webview.addEventListener("dom-ready", register);
-    webview.addEventListener("render-process-gone", recoverGuest);
     register();
     return () => {
       disposed = true;
-      if (recoveryTimeout !== null) clearTimeout(recoveryTimeout);
       webview.removeEventListener("did-attach", register);
       webview.removeEventListener("dom-ready", register);
-      webview.removeEventListener("render-process-gone", recoverGuest);
     };
-  }, [config, initialSrc, tabId, webviewGeneration]);
+  }, [config, tabId, webviewGeneration]);
 
   const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;

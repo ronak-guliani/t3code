@@ -23,7 +23,7 @@ describe("planWebviewCrashRecovery", () => {
     expect(planWebviewCrashRecovery(third!.state, 1_300)).toBeNull();
   });
 
-  it("allows recovery again after the crash window expires", () => {
+  it("resets the attempt cap when the fixed first-crash window expires", () => {
     const first = planWebviewCrashRecovery(INITIAL_WEBVIEW_CRASH_RECOVERY_STATE, 1_000)!;
     const second = planWebviewCrashRecovery(first.state, 1_100)!;
     const third = planWebviewCrashRecovery(second.state, 1_200)!;
@@ -45,5 +45,19 @@ describe("planWebviewCrashRecovery", () => {
 
     expect(second.state.windowStartedAt).toBe(1_000);
     expect(planWebviewCrashRecovery(second.state, 25_000)?.delayMs).toBe(1_000);
+  });
+
+  it("allows another bounded sequence immediately after the fixed-window boundary", () => {
+    const first = planWebviewCrashRecovery(INITIAL_WEBVIEW_CRASH_RECOVERY_STATE, 0)!;
+    const second = planWebviewCrashRecovery(first.state, 100)!;
+    const third = planWebviewCrashRecovery(second.state, 200)!;
+
+    const afterBoundary = planWebviewCrashRecovery(third.state, WEBVIEW_CRASH_RECOVERY_WINDOW_MS)!;
+
+    expect(afterBoundary.delayMs).toBe(250);
+    expect(afterBoundary.state).toEqual({
+      attempts: 1,
+      windowStartedAt: WEBVIEW_CRASH_RECOVERY_WINDOW_MS,
+    });
   });
 });
