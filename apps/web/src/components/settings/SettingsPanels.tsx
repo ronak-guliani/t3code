@@ -102,6 +102,7 @@ import {
   buildArchivedThreadGroups,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
+  runSequentiallySettled,
 } from "./SettingsPanels.logic";
 import {
   SettingResetButton,
@@ -2873,7 +2874,9 @@ export function ArchivedThreadsPanel() {
     const selectedThreads = archivedGroups.flatMap(({ threads: projectThreads }) =>
       projectThreads.flatMap((thread) => {
         const threadRef = scopeThreadRef(thread.environmentId, thread.id);
-        return selectedThreadKeys.has(scopedThreadKey(threadRef)) ? [threadRef] : [];
+        return selectedThreadKeys.has(scopedThreadKey(threadRef))
+          ? [{ key: scopedThreadKey(threadRef), threadRef }]
+          : [];
       }),
     );
     if (confirmThreadDelete) {
@@ -2888,19 +2891,24 @@ export function ArchivedThreadsPanel() {
     }
 
     const deletedThreadKeys = new Set(selectedThreadKeys);
-    try {
-      for (const threadRef of selectedThreads) {
-        await deleteThread(threadRef, { deletedThreadKeys });
-      }
-    } catch (error) {
+    const results = await runSequentiallySettled(selectedThreads, ({ threadRef }) =>
+      deleteThread(threadRef, { deletedThreadKeys }),
+    );
+    const failedThreadKeys = new Set(
+      selectedThreads.flatMap(({ key }, index) =>
+        results[index]?.status === "rejected" ? [key] : [],
+      ),
+    );
+    if (failedThreadKeys.size > 0) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
-          title: "Failed to delete selected chats",
-          description: error instanceof Error ? error.message : "An error occurred.",
+          title: "Failed to delete some chats",
+          description: `${failedThreadKeys.size} chat${failedThreadKeys.size === 1 ? "" : "s"} could not be deleted.`,
         }),
       );
     }
+    setSelectedThreadKeys(failedThreadKeys);
   }, [archivedGroups, confirmThreadDelete, deleteThread, selectedThreadKeys]);
 
   const handleArchivedThreadContextMenu = useCallback(

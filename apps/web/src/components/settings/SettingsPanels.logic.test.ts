@@ -13,6 +13,7 @@ import {
   buildArchivedThreadGroups,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
+  runSequentiallySettled,
 } from "./SettingsPanels.logic";
 
 describe("buildProviderInstanceUpdatePatch", () => {
@@ -67,6 +68,21 @@ describe("buildProviderInstanceUpdatePatch", () => {
 
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
+  });
+});
+
+describe("runSequentiallySettled", () => {
+  it("continues after an item fails", async () => {
+    const visited: number[] = [];
+    const results = await runSequentiallySettled([1, 2, 3], async (item) => {
+      visited.push(item);
+      if (item === 2) {
+        throw new Error("failed");
+      }
+    });
+
+    expect(visited).toEqual([1, 2, 3]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
   });
 });
 

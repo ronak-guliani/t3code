@@ -1120,8 +1120,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                           lastUsedTokens: event.used,
                           ...(cost
                             ? {
-                                costAmount: cost.amount,
-                                costCurrency: cost.currency,
+                                cost,
                               }
                             : {}),
                         },

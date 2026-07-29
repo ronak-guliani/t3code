@@ -429,14 +429,7 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
         return;
       }
       yield* reconcileRun(run.value);
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("workflow coordinator run reconciliation failed", {
-          runId,
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    );
+    });
 
   const start: WorkflowCoordinatorReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(

@@ -542,8 +542,10 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       const usageEvent = usageEvents[0];
       assert.equal(usageEvent?.type, "thread.token-usage.updated");
       if (usageEvent?.type === "thread.token-usage.updated") {
-        assert.equal(usageEvent.payload.usage.costAmount, 0.25);
-        assert.equal(usageEvent.payload.usage.costCurrency, "USD");
+        assert.deepEqual(usageEvent.payload.usage.cost, {
+          amount: 0.25,
+          currency: "USD",
+        });
       }
 
       yield* adapter.stopSession(threadId);

@@ -90,3 +90,19 @@ export function filterArchivedThreadGroups(
     return threads.length > 0 ? [{ ...group, threads }] : [];
   });
 }
+
+export async function runSequentiallySettled<T>(
+  items: readonly T[],
+  operation: (item: T) => Promise<void>,
+): Promise<ReadonlyArray<PromiseSettledResult<void>>> {
+  const results: Array<PromiseSettledResult<void>> = [];
+  for (const item of items) {
+    try {
+      await operation(item);
+      results.push({ status: "fulfilled", value: undefined });
+    } catch (reason) {
+      results.push({ status: "rejected", reason });
+    }
+  }
+  return results;
+}

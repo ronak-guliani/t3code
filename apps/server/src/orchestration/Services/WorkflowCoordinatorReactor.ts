@@ -2,6 +2,8 @@ import { Context } from "effect";
 import type { Effect, Scope } from "effect";
 
 import type { WorkflowRunId } from "@t3tools/contracts";
+import type { OrchestrationDispatchError } from "../Errors.ts";
+import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 
 /**
  * Reconciles durable workflow runs with their scoped worker threads.
@@ -16,7 +18,9 @@ export interface WorkflowCoordinatorReactorShape {
    * Reconciles a single run inline so callers that just requested it do not
    * have to wait for the event-stream reconciliation hop.
    */
-  readonly drainRun: (runId: WorkflowRunId) => Effect.Effect<void>;
+  readonly drainRun: (
+    runId: WorkflowRunId,
+  ) => Effect.Effect<void, OrchestrationDispatchError | ProjectionRepositoryError>;
 }
 
 export class WorkflowCoordinatorReactor extends Context.Service<

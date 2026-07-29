@@ -22,6 +22,7 @@ import {
   type ProjectionWorkflowRepositoryShape,
   type ProjectionWorkflowRun,
 } from "../../persistence/Services/ProjectionWorkflows.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { projectEvent } from "../projector.ts";
 import {
@@ -255,6 +256,43 @@ describe("WorkflowCoordinatorReactor", () => {
     requestedRun = finalizedRun;
     await runtime.runPromise(coordinator.drainRun(runId));
     expect(commands).toHaveLength(3);
+  });
+
+  it("propagates inline reconciliation failures", async () => {
+    const failure = new PersistenceSqlError({
+      operation: "workflow.getByRunId",
+      detail: "database unavailable",
+    });
+    const engine: OrchestrationEngineShape = {
+      getReadModel: () => Effect.succeed(readModel),
+      readEvents: () => Stream.empty,
+      dispatch: () => Effect.succeed({ sequence: 1 }),
+      streamDomainEvents: Stream.empty,
+    };
+    const workflows: ProjectionWorkflowRepositoryShape = {
+      upsertRun: () => Effect.void,
+      getByRunId: () => Effect.fail(failure),
+      listIncomplete: () => Effect.succeed([]),
+      listAll: () => Effect.succeed([]),
+      listShellSnapshot: () => Effect.succeed({ runs: [], artifacts: [] }),
+      upsertArtifact: () => Effect.void,
+      getArtifactById: () => Effect.succeed(Option.none()),
+      listAllArtifacts: () => Effect.succeed([]),
+      setNodeInputArtifact: () => Effect.void,
+      startNode: () => Effect.void,
+      recordNodeResult: () => Effect.void,
+      finalizeRun: () => Effect.void,
+    };
+
+    runtime = ManagedRuntime.make(
+      WorkflowCoordinatorReactorLive.pipe(
+        Layer.provideMerge(Layer.succeed(OrchestrationEngineService, engine)),
+        Layer.provideMerge(Layer.succeed(ProjectionWorkflowRepository, workflows)),
+      ),
+    );
+    const coordinator = await runtime.runPromise(Effect.service(WorkflowCoordinatorReactor));
+
+    await expect(runtime.runPromise(coordinator.drainRun(runId))).rejects.toBe(failure);
   });
 
   it("fails a pending run when its parent thread was deleted", async () => {

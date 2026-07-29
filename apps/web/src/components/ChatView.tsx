@@ -1617,9 +1617,15 @@ function ChatViewBody(
             : typeof payload.usedTokens === "number"
               ? payload.usedTokens
               : undefined;
+        const rawCost = payload.cost;
         const cost =
-          typeof payload.costAmount === "number" && typeof payload.costCurrency === "string"
-            ? { amount: payload.costAmount, currency: payload.costCurrency }
+          typeof rawCost === "object" &&
+          rawCost !== null &&
+          "amount" in rawCost &&
+          typeof rawCost.amount === "number" &&
+          "currency" in rawCost &&
+          typeof rawCost.currency === "string"
+            ? { amount: rawCost.amount, currency: rawCost.currency }
             : undefined;
         if (usedTokens !== undefined || cost !== undefined) {
           metadata.set(activity.turnId, {
