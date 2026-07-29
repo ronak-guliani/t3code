@@ -44,6 +44,8 @@ function makeEnvironmentState(overrides: {
     messageByThreadId: {},
     activityIdsByThreadId: {},
     activityByThreadId: {},
+    activityContextByThreadId: {},
+    activityPageByThreadId: {},
     insightActivitiesByThreadId: {},
     proposedPlanIdsByThreadId: {},
     proposedPlanByThreadId: {},

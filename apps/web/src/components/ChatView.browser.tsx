@@ -221,6 +221,9 @@ function createMockEnvironmentApi(input: {
     },
     orchestration: {
       dispatchCommand: input.dispatchCommand,
+      getThreadActivities: (() => {
+        throw new Error("Not implemented in browser test.");
+      }) as EnvironmentApi["orchestration"]["getThreadActivities"],
       getTurnDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getTurnDiff"],

@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   EnvironmentId,
+  EventId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -20,6 +21,7 @@ import {
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
   hasServerAcknowledgedLocalDispatch,
+  mergeThreadActivities,
   reconcileMountedTerminalThreadIds,
   resolveInterruptTurnId,
   resolveSendEnvMode,
@@ -28,6 +30,29 @@ import {
 } from "./ChatView.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("mergeThreadActivities", () => {
+  it("deduplicates overlapping pages and keeps legacy history before sequenced activity", () => {
+    const legacy = {
+      id: EventId.make("legacy"),
+      tone: "info" as const,
+      kind: "runtime.note" as const,
+      summary: "legacy",
+      payload: {},
+      turnId: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const sequenced = {
+      ...legacy,
+      id: EventId.make("sequenced"),
+      sequence: 1,
+      summary: "sequenced",
+      createdAt: "2025-01-01T00:00:00.000Z",
+    };
+
+    expect(mergeThreadActivities([sequenced], [legacy, sequenced])).toEqual([legacy, sequenced]);
+  });
+});
 
 describe("deriveComposerSendState", () => {
   it("treats expired terminal pills as non-sendable content", () => {
@@ -405,6 +430,8 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
         Object.fromEntries(thread.activities.map((activity) => [activity.id, activity])),
       ]),
     ),
+    activityContextByThreadId: {},
+    activityPageByThreadId: {},
     insightActivitiesByThreadId: Object.fromEntries(
       threads.map((thread) => [thread.id, thread.activities.filter(isInsightActivity)]),
     ),

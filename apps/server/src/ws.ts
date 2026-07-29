@@ -19,6 +19,7 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffStateError,
   OrchestrationGetSnapshotError,
+  OrchestrationGetThreadActivitiesError,
   OrchestrationGetTurnDiffError,
   OrchestrationGetTurnDiffStateError,
   ORCHESTRATION_WS_METHODS,
@@ -84,6 +85,11 @@ import { GitManager } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
 import { Keybindings } from "./keybindings.ts";
 import { Open, resolveAvailableEditors } from "./open.ts";
+import {
+  projectActivityEvent,
+  projectActivityPayload,
+  projectThreadDetailSnapshot,
+} from "./orchestration/ActivityPayloadProjection.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
@@ -859,6 +865,24 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.getThreadActivities]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getThreadActivities,
+            projectionSnapshotQuery.getThreadActivitiesPage(input).pipe(
+              Effect.map((result) => ({
+                ...result,
+                activities: result.activities.map(projectActivityPayload),
+              })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetThreadActivitiesError({
+                    message: "Failed to load older thread activity",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.getFullThreadDiff]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getFullThreadDiff,
@@ -914,6 +938,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ).pipe(
               Effect.map((events) => Array.from(events)),
               Effect.flatMap(enrichOrchestrationEvents),
+              Effect.map((events) => events.map(projectActivityEvent)),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationReplayEventsError({
@@ -969,10 +994,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     cause: input.threadId,
                   });
                 }
-                return Effect.succeed({
-                  snapshotSequence: shellSnapshot.snapshotSequence,
-                  thread: threadDetail.value,
-                });
+                return Effect.succeed(
+                  projectThreadDetailSnapshot({
+                    snapshotSequence: shellSnapshot.snapshotSequence,
+                    thread: threadDetail.value,
+                  }),
+                );
               }),
               Effect.mapError((cause) =>
                 cause instanceof OrchestrationGetSnapshotError
@@ -1058,17 +1085,17 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 ),
                 Stream.map((event) => ({
                   kind: "event" as const,
-                  event,
+                  event: projectActivityEvent(event),
                 })),
               );
 
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
-                  snapshot: {
+                  snapshot: projectThreadDetailSnapshot({
                     snapshotSequence,
                     thread: threadDetail.value,
-                  },
+                  }),
                 }),
                 liveStream,
               );

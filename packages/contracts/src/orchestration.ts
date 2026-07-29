@@ -29,6 +29,7 @@ import {
 export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
+  getThreadActivities: "orchestration.getThreadActivities",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   getTurnDiffState: "orchestration.getTurnDiffState",
   getFullThreadDiffState: "orchestration.getFullThreadDiffState",
@@ -367,6 +368,23 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const OrchestrationThreadActivityCursor = Schema.Union([
+  Schema.Struct({
+    beforeSequence: NonNegativeInt,
+  }),
+  Schema.Struct({
+    beforeCreatedAt: IsoDateTime,
+    beforeActivityId: EventId,
+  }),
+]);
+export type OrchestrationThreadActivityCursor = typeof OrchestrationThreadActivityCursor.Type;
+
+export const OrchestrationThreadActivityPage = Schema.Struct({
+  hasMore: Schema.Boolean,
+  nextCursor: Schema.NullOr(OrchestrationThreadActivityCursor),
+});
+export type OrchestrationThreadActivityPage = typeof OrchestrationThreadActivityPage.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -412,6 +430,8 @@ export const OrchestrationThread = Schema.Struct({
   ),
   queuedTurns: Schema.optionalKey(Schema.Array(OrchestrationQueuedTurn)),
   activities: Schema.Array(OrchestrationThreadActivity),
+  activityContext: Schema.optionalKey(Schema.Array(OrchestrationThreadActivity)),
+  activityPage: Schema.optionalKey(OrchestrationThreadActivityPage),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -1784,6 +1804,21 @@ export type OrchestrationGetTurnDiffInput = typeof OrchestrationGetTurnDiffInput
 export const OrchestrationGetTurnDiffResult = ThreadTurnDiff;
 export type OrchestrationGetTurnDiffResult = typeof OrchestrationGetTurnDiffResult.Type;
 
+export const OrchestrationGetThreadActivitiesInput = Schema.Struct({
+  threadId: ThreadId,
+  cursor: OrchestrationThreadActivityCursor,
+  limit: Schema.optionalKey(NonNegativeInt),
+});
+export type OrchestrationGetThreadActivitiesInput =
+  typeof OrchestrationGetThreadActivitiesInput.Type;
+
+export const OrchestrationGetThreadActivitiesResult = Schema.Struct({
+  activities: Schema.Array(OrchestrationThreadActivity),
+  page: OrchestrationThreadActivityPage,
+});
+export type OrchestrationGetThreadActivitiesResult =
+  typeof OrchestrationGetThreadActivitiesResult.Type;
+
 export const OrchestrationGetFullThreadDiffInput = Schema.Struct({
   threadId: ThreadId,
   toTurnCount: NonNegativeInt,
@@ -1837,6 +1872,10 @@ export const OrchestrationRpcSchemas = {
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,
     output: OrchestrationGetTurnDiffResult,
+  },
+  getThreadActivities: {
+    input: OrchestrationGetThreadActivitiesInput,
+    output: OrchestrationGetThreadActivitiesResult,
   },
   getFullThreadDiff: {
     input: OrchestrationGetFullThreadDiffInput,
@@ -1898,6 +1937,14 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<O
 
 export class OrchestrationGetTurnDiffError extends Schema.TaggedErrorClass<OrchestrationGetTurnDiffError>()(
   "OrchestrationGetTurnDiffError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Unknown),
+  },
+) {}
+
+export class OrchestrationGetThreadActivitiesError extends Schema.TaggedErrorClass<OrchestrationGetThreadActivitiesError>()(
+  "OrchestrationGetThreadActivitiesError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Unknown),

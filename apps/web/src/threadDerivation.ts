@@ -12,6 +12,7 @@ import type {
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const EMPTY_ACTIVITIES: Thread["activities"] = [];
+const EMPTY_ACTIVITY_CONTEXT: NonNullable<Thread["activityContext"]> = [];
 const EMPTY_INSIGHT_ACTIVITIES: NonNullable<Thread["insightActivities"]> = [];
 const EMPTY_PROPOSED_PLANS: ProposedPlan[] = [];
 const EMPTY_TURN_DIFF_SUMMARIES: TurnDiffSummary[] = [];
@@ -29,6 +30,8 @@ const threadCache = new WeakMap<
     turnState: ThreadTurnState | undefined;
     messages: Thread["messages"];
     activities: Thread["activities"];
+    activityContext: NonNullable<Thread["activityContext"]>;
+    activityPage: Thread["activityPage"];
     insightActivities: NonNullable<Thread["insightActivities"]>;
     proposedPlans: Thread["proposedPlans"];
     turnDiffSummaries: Thread["turnDiffSummaries"];
@@ -116,6 +119,8 @@ export function getThreadFromEnvironmentState(
   const turnState = state.threadTurnStateById[threadId];
   const messages = selectThreadMessages(state, threadId);
   const activities = selectThreadActivities(state, threadId);
+  const activityContext = state.activityContextByThreadId[threadId] ?? EMPTY_ACTIVITY_CONTEXT;
+  const activityPage = state.activityPageByThreadId[threadId];
   const insightActivities = state.insightActivitiesByThreadId[threadId] ?? EMPTY_INSIGHT_ACTIVITIES;
   const proposedPlans = selectThreadProposedPlans(state, threadId);
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
@@ -129,6 +134,8 @@ export function getThreadFromEnvironmentState(
     cached.turnState === turnState &&
     cached.messages === messages &&
     cached.activities === activities &&
+    cached.activityContext === activityContext &&
+    cached.activityPage === activityPage &&
     cached.insightActivities === insightActivities &&
     cached.proposedPlans === proposedPlans &&
     cached.turnDiffSummaries === turnDiffSummaries &&
@@ -145,6 +152,8 @@ export function getThreadFromEnvironmentState(
     pendingSourceProposedPlan: turnState?.pendingSourceProposedPlan,
     messages,
     activities,
+    activityContext,
+    ...(activityPage ? { activityPage } : {}),
     insightActivities,
     proposedPlans,
     turnDiffSummaries,
@@ -157,6 +166,8 @@ export function getThreadFromEnvironmentState(
     turnState,
     messages,
     activities,
+    activityContext,
+    activityPage,
     insightActivities,
     proposedPlans,
     turnDiffSummaries,

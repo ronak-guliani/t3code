@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   isProviderDriverKind,
+  type OrchestrationThreadActivity,
   ProjectId,
   type ModelSelection,
   type ProviderDriverKind,
@@ -25,6 +26,23 @@ export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
+
+export function mergeThreadActivities(
+  ...activityGroups: ReadonlyArray<ReadonlyArray<OrchestrationThreadActivity>>
+): OrchestrationThreadActivity[] {
+  const byId = new Map<string, OrchestrationThreadActivity>();
+  for (const activities of activityGroups) {
+    for (const activity of activities) {
+      byId.set(activity.id, activity);
+    }
+  }
+  return [...byId.values()].toSorted(
+    (left, right) =>
+      (left.sequence ?? Number.MIN_SAFE_INTEGER) - (right.sequence ?? Number.MIN_SAFE_INTEGER) ||
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.id.localeCompare(right.id),
+  );
+}
 
 export type ThreadPlanCatalogEntry = Pick<Thread, "id" | "proposedPlans">;
 

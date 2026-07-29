@@ -83,6 +83,8 @@ export interface EnvironmentState {
   messageByThreadId: Record<ThreadId, Record<MessageId, ChatMessage>>;
   activityIdsByThreadId: Record<ThreadId, string[]>;
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
+  activityContextByThreadId: Record<ThreadId, readonly OrchestrationThreadActivity[]>;
+  activityPageByThreadId: Partial<Record<ThreadId, NonNullable<Thread["activityPage"]>>>;
   // Insights lifecycle records retained independently of `activityByThreadId`
   // so thread-wide timing stays complete after the capped activity window
   // evicts older turns. Bounded by distinct turns, not raw activity count.
@@ -124,6 +126,8 @@ const initialEnvironmentState: EnvironmentState = {
   messageByThreadId: {},
   activityIdsByThreadId: {},
   activityByThreadId: {},
+  activityContextByThreadId: {},
+  activityPageByThreadId: {},
   insightActivitiesByThreadId: {},
   proposedPlanIdsByThreadId: {},
   proposedPlanByThreadId: {},
@@ -146,6 +150,7 @@ const MAX_THREAD_CHECKPOINTS = 500;
 const MAX_THREAD_PROPOSED_PLANS = 200;
 const MAX_THREAD_ACTIVITIES = 500;
 const MAX_THREAD_INSIGHT_TURNS = 500;
+const EMPTY_ACTIVITY_CONTEXT: readonly OrchestrationThreadActivity[] = [];
 const EMPTY_INSIGHT_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
 const EMPTY_THREAD_IDS: ThreadId[] = [];
 const EMPTY_QUEUED_TURNS: readonly OrchestrationQueuedTurn[] = [];
@@ -325,6 +330,8 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
+    activityContext: (thread.activityContext ?? []).map((activity) => ({ ...activity })),
+    ...(thread.activityPage ? { activityPage: thread.activityPage } : {}),
   };
 }
 
@@ -812,6 +819,29 @@ function writeThreadState(
     };
   }
 
+  if (previousThread?.activityContext !== nextThread.activityContext) {
+    nextState = {
+      ...nextState,
+      activityContextByThreadId: {
+        ...nextState.activityContextByThreadId,
+        [nextThread.id]: nextThread.activityContext ?? EMPTY_ACTIVITY_CONTEXT,
+      },
+    };
+  }
+
+  if (previousThread?.activityPage !== nextThread.activityPage) {
+    const activityPageByThreadId = { ...nextState.activityPageByThreadId };
+    if (nextThread.activityPage) {
+      activityPageByThreadId[nextThread.id] = nextThread.activityPage;
+    } else {
+      delete activityPageByThreadId[nextThread.id];
+    }
+    nextState = {
+      ...nextState,
+      activityPageByThreadId,
+    };
+  }
+
   if (previousThread?.proposedPlans !== nextThread.proposedPlans) {
     const nextProposedPlanSlice = buildProposedPlanSlice(nextThread);
     nextState = {
@@ -990,6 +1020,10 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedMessages, ...messageByThreadId } = state.messageByThreadId;
   const { [threadId]: _removedActivityIds, ...activityIdsByThreadId } = state.activityIdsByThreadId;
   const { [threadId]: _removedActivities, ...activityByThreadId } = state.activityByThreadId;
+  const { [threadId]: _removedActivityContext, ...activityContextByThreadId } =
+    state.activityContextByThreadId;
+  const { [threadId]: _removedActivityPage, ...activityPageByThreadId } =
+    state.activityPageByThreadId;
   const { [threadId]: _removedInsightActivities, ...insightActivitiesByThreadId } =
     state.insightActivitiesByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
@@ -1015,6 +1049,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     messageByThreadId,
     activityIdsByThreadId,
     activityByThreadId,
+    activityContextByThreadId,
+    activityPageByThreadId,
     insightActivitiesByThreadId,
     proposedPlanIdsByThreadId,
     proposedPlanByThreadId,
@@ -1547,6 +1583,11 @@ function syncEnvironmentShellSnapshot(
     messageByThreadId: retainThreadScopedRecord(state.messageByThreadId, nextThreadIds),
     activityIdsByThreadId: retainThreadScopedRecord(state.activityIdsByThreadId, nextThreadIds),
     activityByThreadId: retainThreadScopedRecord(state.activityByThreadId, nextThreadIds),
+    activityContextByThreadId: retainThreadScopedRecord(
+      state.activityContextByThreadId,
+      nextThreadIds,
+    ),
+    activityPageByThreadId: retainThreadScopedRecord(state.activityPageByThreadId, nextThreadIds),
     insightActivitiesByThreadId: retainThreadScopedRecord(
       state.insightActivitiesByThreadId,
       nextThreadIds,

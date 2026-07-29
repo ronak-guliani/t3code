@@ -190,6 +190,7 @@ import {
   hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
+  mergeThreadActivities,
   type LocalDispatchSnapshot,
   PullRequestDialogState,
   cloneComposerImageForRetry,
@@ -222,6 +223,13 @@ import { useChatFind } from "./chat/useChatFind";
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_OLDER_ACTIVITY_STATE = {
+  requestKey: null,
+  activities: EMPTY_ACTIVITIES as ReadonlyArray<OrchestrationThreadActivity>,
+  loaded: false,
+  page: null,
+  loading: false,
+} as const;
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
@@ -1153,7 +1161,104 @@ function ChatViewBody(
       ? "ready"
       : rawPhase;
   const isConnecting = phase === "connecting";
-  const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const [olderActivityState, setOlderActivityState] = useState<{
+    requestKey: string | null;
+    activities: ReadonlyArray<OrchestrationThreadActivity>;
+    loaded: boolean;
+    page: Thread["activityPage"] | null;
+    loading: boolean;
+  }>(EMPTY_OLDER_ACTIVITY_STATE);
+  const activeThreadActivityRequestKey = activeThread
+    ? `${activeThread.environmentId}\u0000${activeThread.id}`
+    : null;
+  const activeThreadActivityRequestKeyRef = useRef(activeThreadActivityRequestKey);
+  activeThreadActivityRequestKeyRef.current = activeThreadActivityRequestKey;
+  const inFlightOlderActivitiesKeyRef = useRef<string | null>(null);
+  const activeOlderActivityState =
+    olderActivityState.requestKey === activeThreadActivityRequestKey
+      ? olderActivityState
+      : EMPTY_OLDER_ACTIVITY_STATE;
+  const liveThreadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
+  const threadActivities = useMemo(
+    () => mergeThreadActivities(activeOlderActivityState.activities, liveThreadActivities),
+    [activeOlderActivityState.activities, liveThreadActivities],
+  );
+  const threadStateActivities = useMemo(
+    () =>
+      mergeThreadActivities(
+        activeThread?.activityContext ?? EMPTY_ACTIVITIES,
+        activeOlderActivityState.activities,
+        liveThreadActivities,
+      ),
+    [activeOlderActivityState.activities, activeThread?.activityContext, liveThreadActivities],
+  );
+  const olderActivityPage = activeOlderActivityState.loaded
+    ? activeOlderActivityState.page
+    : (activeThread?.activityPage ?? null);
+  const loadOlderActivities = useCallback(() => {
+    if (
+      !activeThread ||
+      !activeThreadActivityRequestKey ||
+      !olderActivityPage?.hasMore ||
+      !olderActivityPage.nextCursor
+    ) {
+      return;
+    }
+    if (inFlightOlderActivitiesKeyRef.current === activeThreadActivityRequestKey) return;
+
+    const api = readEnvironmentApi(activeThread.environmentId);
+    if (!api) return;
+    const requestKey = activeThreadActivityRequestKey;
+    inFlightOlderActivitiesKeyRef.current = requestKey;
+    setOlderActivityState((previous) => ({
+      requestKey,
+      activities: previous.requestKey === requestKey ? previous.activities : EMPTY_ACTIVITIES,
+      loaded: previous.requestKey === requestKey ? previous.loaded : false,
+      page: previous.requestKey === requestKey ? previous.page : null,
+      loading: true,
+    }));
+
+    void api.orchestration
+      .getThreadActivities({
+        threadId: activeThread.id,
+        cursor: olderActivityPage.nextCursor,
+      })
+      .then((result) => {
+        if (activeThreadActivityRequestKeyRef.current !== requestKey) return;
+        setOlderActivityState((previous) => ({
+          requestKey,
+          activities: mergeThreadActivities(
+            result.activities,
+            previous.requestKey === requestKey ? previous.activities : EMPTY_ACTIVITIES,
+          ),
+          loaded: true,
+          page: result.page,
+          loading: false,
+        }));
+      })
+      .catch((error: unknown) => {
+        if (activeThreadActivityRequestKeyRef.current !== requestKey) return;
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not load older chat history",
+            description: error instanceof Error ? error.message : "An unexpected error occurred.",
+          }),
+        );
+      })
+      .finally(() => {
+        if (inFlightOlderActivitiesKeyRef.current === requestKey) {
+          inFlightOlderActivitiesKeyRef.current = null;
+        }
+        if (activeThreadActivityRequestKeyRef.current === requestKey) {
+          setOlderActivityState((previous) =>
+            previous.requestKey === requestKey && previous.loading
+              ? { ...previous, loading: false }
+              : previous,
+          );
+        }
+      });
+  }, [activeThread, activeThreadActivityRequestKey, olderActivityPage]);
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
@@ -1163,12 +1268,12 @@ function ChatViewBody(
     [activeLatestTurn?.turnId, threadActivities],
   );
   const pendingApprovals = useMemo(
-    () => derivePendingApprovals(threadActivities),
-    [threadActivities],
+    () => derivePendingApprovals(threadStateActivities),
+    [threadStateActivities],
   );
   const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadActivities),
-    [threadActivities],
+    () => derivePendingUserInputs(threadStateActivities),
+    [threadStateActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingDraftAnswers = useMemo(
@@ -1223,8 +1328,8 @@ function ChatViewBody(
     [activeLatestTurn, activeThread?.id, latestTurnSettled, threadPlanCatalog],
   );
   const activePlan = useMemo(
-    () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
-    [activeLatestTurn?.turnId, threadActivities],
+    () => deriveActivePlanState(threadStateActivities, activeLatestTurn?.turnId ?? undefined),
+    [activeLatestTurn?.turnId, threadStateActivities],
   );
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
@@ -4222,6 +4327,9 @@ function ChatViewBody(
               timestampFormat={timestampFormat}
               workspaceRoot={activeWorkspaceRoot}
               onIsAtEndChange={onIsAtEndChange}
+              hasMoreOlder={olderActivityPage?.hasMore ?? false}
+              loadingOlder={activeOlderActivityState.loading}
+              onLoadOlder={loadOlderActivities}
               activeChatFindRowId={chatFindOpen ? (activeChatFindMatch?.rowId ?? null) : null}
               reviewResultActive={activeThread.reviewResult?.status === "parsed"}
             />

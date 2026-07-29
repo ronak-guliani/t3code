@@ -8,6 +8,7 @@ import type {
   RepositoryIdentity,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  OrchestrationThreadActivityPage,
   ProjectScript as ContractProjectScript,
   ThreadId,
   ProjectId,
@@ -126,6 +127,8 @@ export interface Thread {
   reviewResult?: ReviewResult | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  activityContext?: readonly OrchestrationThreadActivity[];
+  activityPage?: OrchestrationThreadActivityPage;
   // Lifecycle activities retained for Insights beyond the capped `activities`
   // window. Derived in the store; may be absent on directly-built fixtures.
   insightActivities?: readonly OrchestrationThreadActivity[];
