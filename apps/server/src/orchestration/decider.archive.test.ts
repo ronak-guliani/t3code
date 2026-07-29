@@ -107,6 +107,33 @@ async function seedReadModel(): Promise<OrchestrationReadModel> {
 }
 
 describe("decider archive cascade", () => {
+  it("rejects decoupling a root thread with an omitted parentThreadId", async () => {
+    const readModel = await seedReadModel();
+    const legacyReadModel = {
+      ...readModel,
+      threads: readModel.threads.map((thread) => {
+        if (thread.id !== asThreadId("unrelated")) {
+          return thread;
+        }
+        const { parentThreadId: _parentThreadId, ...legacyRoot } = thread;
+        return legacyRoot;
+      }),
+    };
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.decouple",
+            commandId: asCommandId("cmd-decouple-legacy-root"),
+            threadId: asThreadId("unrelated"),
+          } satisfies OrchestrationCommand,
+          readModel: legacyReadModel,
+        }),
+      ),
+    ).rejects.toThrow("is not nested under another thread");
+  });
+
   it("decouples a nested thread so later parent archive does not include it", async () => {
     const readModel = await seedReadModel();
     const decoupled = await Effect.runPromise(

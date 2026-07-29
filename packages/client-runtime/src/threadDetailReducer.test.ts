@@ -168,6 +168,30 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.decoupled", () => {
+    it("clears parentThreadId and updates updatedAt", () => {
+      const nestedThread = { ...baseThread, parentThreadId: ThreadId.make("parent-thread") };
+      const result = applyThreadDetailEvent(nestedThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.decoupled",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.parentThreadId).toBeNull();
+        expect(result.thread.updatedAt).toBe("2026-04-01T05:00:00.000Z");
+      }
+    });
+  });
+
   describe("thread.meta-updated", () => {
     it("patches title and branch", () => {
       const result = applyThreadDetailEvent(baseThread, {

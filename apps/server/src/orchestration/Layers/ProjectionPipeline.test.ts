@@ -170,6 +170,69 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       }
     }),
   );
+
+  it.effect("clears a nested thread parent when bootstrapping a decoupled event", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-07-29T00:00:00.000Z";
+      const decoupledAt = "2026-07-29T00:01:00.000Z";
+      const threadId = ThreadId.make("thread-decoupled");
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-thread-decoupled-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-thread-decoupled-created"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-thread-decoupled-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-1"),
+          parentThreadId: ThreadId.make("parent-thread"),
+          title: "Nested Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+
+      yield* eventStore.append({
+        type: "thread.decoupled",
+        eventId: EventId.make("evt-thread-decoupled"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: decoupledAt,
+        commandId: CommandId.make("cmd-thread-decoupled"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-thread-decoupled"),
+        metadata: {},
+        payload: {
+          threadId,
+          updatedAt: decoupledAt,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const threadRows = yield* sql<{ readonly parentThreadId: string | null }>`
+        SELECT parent_thread_id AS "parentThreadId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [{ parentThreadId: null }]);
+    }),
+  );
 });
 
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(

@@ -612,7 +612,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (thread.parentThreadId === null) {
+      if (thread.parentThreadId === undefined || thread.parentThreadId === null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' is not nested under another thread.`,
