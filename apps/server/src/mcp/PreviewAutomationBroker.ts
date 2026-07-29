@@ -37,10 +37,6 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 
-export const PREVIEW_HOST_ASSIGNMENT_LEASE_MS = 30 * 60 * 1_000;
-export const previewHostAssignmentExpiresAt = (now: number): number =>
-  now + PREVIEW_HOST_ASSIGNMENT_LEASE_MS;
-
 export interface PreviewAutomationInvokeInput {
   readonly scope: McpInvocationContext.McpInvocationScope;
   readonly operation: PreviewAutomationOperation;
@@ -130,7 +126,6 @@ interface PinnedHostUnsupportedOperation {
 
 interface NoRoutableHost {
   readonly kind: "no-routable-host";
-  readonly environmentHasConnectedClients: boolean;
 }
 
 type HostRoute = RoutedHostRequest | PinnedHostUnsupportedOperation | NoRoutableHost;
@@ -467,9 +462,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             );
           }),
         );
-        const environmentHasConnectedClients = Array.from(current.clients.values()).some(
-          (host) => host.environmentId === input.scope.environmentId,
-        );
         const assignmentKey = hostAssignmentKey(input.scope);
         const assigned = assignments.get(assignmentKey);
         const assignedConnection = assigned ? current.clients.get(assigned.clientId) : undefined;
@@ -487,10 +479,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         }
         if (now >= deadline) {
           return [
-            {
-              kind: "no-routable-host",
-              environmentHasConnectedClients,
-            } satisfies NoRoutableHost,
+            { kind: "no-routable-host" } satisfies NoRoutableHost,
             { ...current, assignments },
           ] as const;
         }
@@ -515,10 +504,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         if (!connection) {
           if (!hasLiveAssignment) assignments.delete(assignmentKey);
           return [
-            {
-              kind: "no-routable-host",
-              environmentHasConnectedClients,
-            } satisfies NoRoutableHost,
+            { kind: "no-routable-host" } satisfies NoRoutableHost,
             { ...current, assignments },
           ] as const;
         }
@@ -530,7 +516,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           clientId: connection.clientId,
           connectionId: connection.connectionId,
           queue: connection.queue,
-          expiresAt: previewHostAssignmentExpiresAt(now),
+          expiresAt: input.scope.expiresAt,
           ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
           ...(canReuseAssignedTab && assigned.tabSequence !== undefined
             ? { tabSequence: assigned.tabSequence }
@@ -568,16 +554,25 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ] as const;
       });
     });
-    const noAvailableHostError = (environmentHasConnectedClients: boolean) =>
-      new PreviewAutomationNoAvailableHostError({
-        operation: input.operation,
-        environmentId: input.scope.environmentId,
-        threadId: input.scope.threadId,
-        providerSessionId: input.scope.providerSessionId,
-        providerInstanceId: input.scope.providerInstanceId,
-        timeoutMs,
-        environmentHasConnectedClients,
-      });
+    // Distinguishes "nothing is connected to this environment" from "a client is
+    // connected but cannot automate" (a browser-served UI registers with zero
+    // supported operations), so the caller gets an actionable remediation.
+    const noAvailableHostError = Effect.fn("PreviewAutomationBroker.noAvailableHostError")(
+      function* () {
+        const current = yield* SynchronizedRef.get(state);
+        return new PreviewAutomationNoAvailableHostError({
+          operation: input.operation,
+          environmentId: input.scope.environmentId,
+          threadId: input.scope.threadId,
+          providerSessionId: input.scope.providerSessionId,
+          providerInstanceId: input.scope.providerInstanceId,
+          timeoutMs,
+          environmentHasConnectedClients: Array.from(current.clients.values()).some(
+            (host) => host.environmentId === input.scope.environmentId,
+          ),
+        });
+      },
+    );
     const route = yield* Effect.scoped(
       Effect.gen(function* () {
         const registration = yield* PubSub.subscribe(hostRouteChanges);
@@ -609,22 +604,17 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                 return { ...current, pending };
               });
             }
-            const environmentHasConnectedClients =
-              selected.kind === "no-routable-host" && selected.environmentHasConnectedClients;
-            return yield* noAvailableHostError(environmentHasConnectedClients);
+            return yield* yield* noAvailableHostError();
           }
           const registered = yield* PubSub.take(registration).pipe(
             Effect.timeoutOption(remainingTimeoutMs),
           );
-          if (Option.isNone(registered)) {
-            const latest = yield* selectHostRoute();
-            const environmentHasConnectedClients =
-              latest.kind === "no-routable-host" && latest.environmentHasConnectedClients;
-            return yield* noAvailableHostError(environmentHasConnectedClients);
-          }
+          if (Option.isNone(registered)) return yield* yield* noAvailableHostError();
         }
       }),
     );
+    // Routing can create a pin. Wake concurrent waiters so one that is now
+    // blocked behind an incapable pin fails fast instead of burning its budget.
     yield* PubSub.publish(hostRouteChanges, undefined);
     const { connection, requestId, requestContext, requestSequence } = route.route;
     const requestTimeoutMs = route.remainingTimeoutMs;

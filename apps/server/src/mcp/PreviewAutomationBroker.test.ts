@@ -17,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -35,15 +36,6 @@ const scope = {
   issuedAt: 1,
   expiresAt: Number.MAX_SAFE_INTEGER,
 };
-
-it("bounds host assignment leases independently of credential expiry", () => {
-  expect(PreviewAutomationBroker.previewHostAssignmentExpiresAt(1_000)).toBe(
-    1_000 + PreviewAutomationBroker.PREVIEW_HOST_ASSIGNMENT_LEASE_MS,
-  );
-  expect(PreviewAutomationBroker.previewHostAssignmentExpiresAt(1_000)).toBeLessThan(
-    scope.expiresAt,
-  );
-});
 
 const makeHost = (overrides: Partial<PreviewAutomationHost> = {}): PreviewAutomationHost => ({
   clientId: "client-1",
@@ -731,6 +723,32 @@ it.effect("does not route new operations to legacy hosts that did not advertise 
   ),
 );
 
+it.effect("reports a connected browser-only client as unable to automate", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      // A browser-served UI registers presence with zero supported operations so
+      // routing can tell "nothing connected" apart from "cannot automate".
+      const browserOnlyEvents = yield* broker.connect(
+        makeHost({ clientId: "client-browser", supportedOperations: [] }),
+      );
+      yield* Stream.runDrain(browserOnlyEvents).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const errorFiber = yield* broker
+        .invoke<void>({ scope, operation: "status", input: {}, timeoutMs: 10 })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("10 millis");
+      const error = yield* Fiber.join(errorFiber);
+
+      expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      expect(error).toMatchObject({ operation: "status", environmentHasConnectedClients: true });
+      expect(error.message).toContain("no desktop preview automation host is ready");
+    }),
+  ),
+);
+
 it.effect("routes resize to a capable host instead of a newer legacy connection", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -855,6 +873,65 @@ it.effect("wakes waiting calls when a concurrent request creates an incapable pi
       const error = yield* Fiber.join(resize);
       expect(error).toBeInstanceOf(PreviewAutomationPinnedHostUnsupportedOperationError);
       expect(error).toMatchObject({ clientId: "client-legacy", operation: "resize" });
+    }),
+  ),
+);
+
+it.effect("keeps a provider session pinned for the credential lifetime", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      let firstConnectionId = "";
+      let secondConnectionId = "";
+      const firstRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-first" })),
+        (connectionId) => {
+          firstConnectionId = connectionId;
+        },
+      );
+      const secondRequests = requestsFrom(
+        yield* broker.connect(makeHost({ clientId: "client-second" })),
+        (connectionId) => {
+          secondConnectionId = connectionId;
+        },
+      );
+      yield* Stream.runForEach(firstRequests, (request) =>
+        broker.respond({
+          clientId: "client-first",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "first",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(secondRequests, (request) =>
+        broker.respond({
+          clientId: "client-second",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "second",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.focusHost({
+        clientId: "client-first",
+        environmentId: scope.environmentId,
+        connectionId: firstConnectionId,
+        focused: true,
+      });
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe("first");
+
+      yield* broker.focusHost({
+        clientId: "client-second",
+        environmentId: scope.environmentId,
+        connectionId: secondConnectionId,
+        focused: true,
+      });
+      yield* TestClock.adjust(Duration.minutes(31));
+
+      expect(yield* broker.invoke<string>({ scope, operation: "status", input: {} })).toBe("first");
     }),
   ),
 );

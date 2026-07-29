@@ -39,7 +39,7 @@ import {
 import { resolveBrowserRecordingStopTarget } from "~/browser/browserRecordingScope";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { isElectron } from "~/env";
-import { useEnvironments } from "~/state/environments";
+import { useEnvironmentConnectionEpoch, useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -251,21 +251,31 @@ export function PreviewAutomationHosts() {
        * Host lifetime follows the desktop runtime's environment connections,
        * not the routed thread. This keeps background threads automatable and
        * lets the subscription runtime own reconnects for every saved target.
+       * Browser-served clients still register, with zero supported operations,
+       * so routing can report "connected but cannot automate" instead of
+       * "nothing is connected".
        */}
-      {environments.map((environment) =>
-        isElectron && previewBridge?.automation ? (
-          <PreviewAutomationHost
-            key={environment.environmentId}
-            environmentId={environment.environmentId}
-          />
-        ) : (
-          <PreviewAutomationUnavailableHost
-            key={environment.environmentId}
-            environmentId={environment.environmentId}
-          />
-        ),
-      )}
+      {environments.map((environment) => (
+        <PreviewAutomationEnvironmentHost
+          key={environment.environmentId}
+          environmentId={environment.environmentId}
+        />
+      ))}
     </>
+  );
+}
+
+function PreviewAutomationEnvironmentHost(props: { readonly environmentId: EnvironmentId }) {
+  const { environmentId } = props;
+  // Saved environments are listed before their websocket connects, and the host
+  // subscription fails terminally if it is created first. Gate on the live
+  // connection and remount when it is replaced so a reconnect re-registers.
+  const connectionEpoch = useEnvironmentConnectionEpoch(environmentId);
+  if (connectionEpoch === null) return null;
+  return isElectron && previewBridge?.automation ? (
+    <PreviewAutomationHost key={connectionEpoch} environmentId={environmentId} />
+  ) : (
+    <PreviewAutomationUnavailableHost key={connectionEpoch} environmentId={environmentId} />
   );
 }
 

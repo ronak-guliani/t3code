@@ -13,6 +13,7 @@ import type {
   ProjectId,
   TurnId,
   MessageId,
+  MessageOrigin,
   ProviderDriverKind,
   ProviderInstanceId,
   CheckpointRef,
@@ -52,6 +53,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   attachments?: ChatAttachment[];
+  origin?: MessageOrigin | undefined;
   turnId?: TurnId | null;
   createdAt: string;
   completedAt?: string | undefined;
@@ -126,6 +128,7 @@ export interface Thread {
   reviewResult?: ReviewResult | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  hasMoreActivities?: boolean;
   // Lifecycle activities retained for Insights beyond the capped `activities`
   // window. Derived in the store; may be absent on directly-built fixtures.
   insightActivities?: readonly OrchestrationThreadActivity[];

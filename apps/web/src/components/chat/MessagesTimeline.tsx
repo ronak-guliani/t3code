@@ -32,6 +32,7 @@ import {
   CircleAlertIcon,
   DiffIcon,
   EyeIcon,
+  GitBranchIcon,
   GitForkIcon,
   GlobeIcon,
   HammerIcon,
@@ -141,6 +142,9 @@ interface MessagesTimelineProps {
   onIsAtEndChange: (isAtEnd: boolean) => void;
   activeChatFindRowId?: string | null;
   reviewResultActive?: boolean;
+  hasMoreOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }
 
 const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
@@ -178,6 +182,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onIsAtEndChange,
   activeChatFindRowId = null,
   reviewResultActive = false,
+  hasMoreOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
 }: MessagesTimelineProps) {
   const handleForkAssistantMessage = onForkAssistantMessage ?? NOOP_FORK_ASSISTANT_MESSAGE;
   const rawRows = useMemo(
@@ -227,8 +234,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const state = listRef.current?.getState?.();
     if (state) {
       onIsAtEndChange(state.isAtEnd);
+      if (state.isAtStart && hasMoreOlder && !loadingOlder) {
+        onLoadOlder?.();
+      }
     }
-  }, [listRef, onIsAtEndChange]);
+  }, [hasMoreOlder, listRef, loadingOlder, onIsAtEndChange, onLoadOlder]);
 
   const previousRowCountRef = useRef(rows.length);
   useEffect(() => {
@@ -306,6 +316,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
+  const listHeader = useMemo(() => {
+    if (loadingOlder) {
+      return (
+        <div className="flex items-center justify-center py-2 text-xs text-muted-foreground">
+          Loading older history...
+        </div>
+      );
+    }
+    if (hasMoreOlder) {
+      return (
+        <button
+          type="button"
+          onClick={onLoadOlder}
+          className="flex w-full cursor-pointer items-center justify-center py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Load older history
+        </button>
+      );
+    }
+    return <div className="h-3 sm:h-4" />;
+  }, [hasMoreOlder, loadingOlder, onLoadOlder]);
+
   if (rows.length === 0 && !isWorking) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -330,7 +362,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         maintainVisibleContentPosition
         onScroll={handleScroll}
         className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-        ListHeaderComponent={<div className="h-3 sm:h-4" />}
+        ListHeaderComponent={listHeader}
         ListFooterComponent={<div className="h-3 sm:h-4" />}
       />
     </TimelineRowCtx.Provider>
@@ -569,6 +601,47 @@ function TimelineRowContent(props: { row: TimelineRow }) {
           />
         </div>
       )}
+
+      {row.kind === "workspace-handoff" &&
+        (() => {
+          const revertMessageId = row.revertMessageId;
+          const canRevertAgentWork =
+            revertMessageId !== undefined && typeof row.revertTurnCount === "number";
+          return (
+            <div className="group/handoff mx-1 flex items-center gap-2 py-2 text-[length:var(--app-status-line-font-size)] text-muted-foreground">
+              <span className="h-px flex-1 bg-border/60" aria-hidden="true" />
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <GitBranchIcon className="size-3 shrink-0" aria-hidden="true" />
+                      <span className="shrink-0">Moved to</span>
+                      <span className="truncate font-medium text-foreground/80">
+                        {row.origin.branch}
+                      </span>
+                    </span>
+                  }
+                />
+                <TooltipPopup>{row.origin.worktreePath}</TooltipPopup>
+              </Tooltip>
+              {canRevertAgentWork && (
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  disabled={ctx.isRevertingCheckpoint || ctx.isWorking}
+                  onClick={() => ctx.onRevertUserMessage(revertMessageId)}
+                  title="Revert to this workspace move"
+                  aria-label="Revert to this workspace move"
+                  className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/handoff:opacity-100"
+                >
+                  <Undo2Icon className="size-3" />
+                </Button>
+              )}
+              <span className="h-px flex-1 bg-border/60" aria-hidden="true" />
+            </div>
+          );
+        })()}
 
       {row.kind === "working" && (
         <div className="py-0.5 pl-1.5">

@@ -125,7 +125,56 @@ function buildUserTimelineEntry(text: string) {
   };
 }
 
+function buildWorkspaceHandoffEntries() {
+  const origin = {
+    kind: "workspace-handoff",
+    branch: "feature/handoff",
+    worktreePath: "/tmp/handoff",
+  } as const;
+
+  return [
+    {
+      id: "marker-entry",
+      kind: "message" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      message: {
+        id: MessageId.make("message-marker"),
+        role: "system" as const,
+        text: "Moved to feature/handoff (/tmp/handoff)",
+        origin: { ...origin, role: "marker" },
+        createdAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+    },
+    {
+      id: "continuation-entry",
+      kind: "message" as const,
+      createdAt: MESSAGE_CREATED_AT,
+      message: {
+        id: MessageId.make("message-continuation"),
+        role: "user" as const,
+        text: "Continue the task from the previous user request in the newly bound workspace.",
+        origin: { ...origin, role: "continuation" },
+        createdAt: MESSAGE_CREATED_AT,
+        streaming: false,
+      },
+    },
+  ] as never;
+}
+
 describe("MessagesTimeline", () => {
+  it("renders a workspace handoff marker instead of the boilerplate continuation", async () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={buildWorkspaceHandoffEntries()} />,
+    );
+
+    expect(markup).toContain('data-timeline-row-kind="workspace-handoff"');
+    expect(markup).toContain("Moved to");
+    expect(markup).toContain("feature/handoff");
+    expect(markup).not.toContain("Continue the task from the previous user request");
+    expect(markup).not.toContain('data-message-id="message-continuation"');
+  });
+
   it("renders collapse controls for long user messages", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -215,6 +264,31 @@ describe("MessagesTimeline", () => {
     // Text content renders as plain text (highlighting is via CSS Custom Highlight API)
     expect(markup).toContain("Needle alpha");
     expect(markup).toContain("needle");
+  });
+
+  it("offers older activity history without loading it into the initial timeline", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Hi")]}
+        hasMoreOlder
+      />,
+    );
+
+    expect(markup).toContain("Load older history");
+  });
+
+  it("shows when older activity history is loading", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[buildUserTimelineEntry("Hi")]}
+        hasMoreOlder
+        loadingOlder
+      />,
+    );
+
+    expect(markup).toContain("Loading older history");
   });
 
   it("renders inline terminal labels with the composer chip UI", async () => {
