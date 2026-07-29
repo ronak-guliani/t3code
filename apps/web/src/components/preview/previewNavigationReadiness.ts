@@ -36,6 +36,19 @@ export function assertPreviewRuntimeCurrent(
   });
 }
 
+export async function withCurrentPreviewRuntime<T>(
+  threadRef: ScopedThreadRef,
+  tabId: string,
+  runtimeTabId: string,
+  request: Pick<PreviewAutomationRequest, "operation" | "requestId">,
+  operation: () => Promise<T>,
+): Promise<T> {
+  assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, request);
+  const result = await operation();
+  assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, request);
+  return result;
+}
+
 export async function waitForNavigationReadiness(
   threadRef: ScopedThreadRef,
   requestId: string,
@@ -46,19 +59,32 @@ export async function waitForNavigationReadiness(
   timeoutMs: number,
 ): Promise<void> {
   const targetReadiness = readiness ?? "load";
-  if (!previewBridge) return;
+  const bridge = previewBridge;
+  if (!bridge) return;
   assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, { operation, requestId });
   if (targetReadiness === "none") return;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
-    assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, { operation, requestId });
     if (targetReadiness === "domContentLoaded") {
-      const readyState = await previewBridge.automation.evaluate(runtimeTabId, {
-        expression: "document.readyState",
-      });
+      const readyState = await withCurrentPreviewRuntime(
+        threadRef,
+        tabId,
+        runtimeTabId,
+        { operation, requestId },
+        () =>
+          bridge.automation.evaluate(runtimeTabId, {
+            expression: "document.readyState",
+          }),
+      );
       if (readyState === "interactive" || readyState === "complete") return;
     } else {
-      const status = await previewBridge.automation.status(runtimeTabId);
+      const status = await withCurrentPreviewRuntime(
+        threadRef,
+        tabId,
+        runtimeTabId,
+        { operation, requestId },
+        () => bridge.automation.status(runtimeTabId),
+      );
       if (status.available && !status.loading) return;
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, 50));

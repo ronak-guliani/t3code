@@ -247,7 +247,7 @@ export function PreviewView({
 
   const handleCapture = useCallback(
     (record: boolean) => {
-      if (!previewBridge || !runtimeTabId) return;
+      if (!previewBridge || !runtimeTabId || !tabId) return;
       const bridge = previewBridge;
       const recordingThisTab = activeRecordingTabId === runtimeTabId;
       if (recordingThisTab) {
@@ -344,7 +344,7 @@ export function PreviewView({
           });
           return;
         }
-        void startBrowserRecording(runtimeTabId).catch((error) => {
+        void startBrowserRecording(runtimeTabId, tabId).catch((error) => {
           toastManager.add({
             type: "error",
             title: "Unable to start recording",
@@ -477,7 +477,7 @@ export function PreviewView({
         },
       );
     },
-    [activeRecordingTabId, runtimeTabId],
+    [activeRecordingTabId, runtimeTabId, tabId],
   );
 
   const handlePickElement = useCallback(() => {

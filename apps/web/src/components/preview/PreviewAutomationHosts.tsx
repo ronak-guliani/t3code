@@ -36,7 +36,11 @@ import {
   startBrowserRecording,
   stopBrowserRecording,
 } from "~/browser/browserRecording";
-import { resolveBrowserRecordingStopTarget } from "~/browser/browserRecordingScope";
+import {
+  resolveBrowserRecordingStopTarget,
+  rewriteBrowserRecordingArtifactTabId,
+  type BrowserRecordingStopTarget,
+} from "~/browser/browserRecordingScope";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { isElectron } from "~/env";
 import { useEnvironmentConnectionEpoch, useEnvironments } from "~/state/environments";
@@ -62,9 +66,14 @@ import {
 } from "./previewAutomationTarget";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { isPreviewViewportReady } from "./previewViewportReadiness";
-import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
+import {
+  beginPreviewViewportMutation,
+  finishPreviewViewportMutation,
+  shouldRollbackPreviewViewport,
+} from "./previewViewportRollback";
 import {
   assertPreviewRuntimeCurrent,
+  withCurrentPreviewRuntime,
   waitForNavigationReadiness,
 } from "./previewNavigationReadiness";
 
@@ -82,8 +91,15 @@ const waitForDesktopOverlay = async (
       operation,
       requestId,
     });
-    if (state.desktopByTabId[tabId] && previewBridge) {
-      const status = await previewBridge.automation.status(runtimeTabId);
+    const bridge = previewBridge;
+    if (state.desktopByTabId[tabId] && bridge) {
+      const status = await withCurrentPreviewRuntime(
+        threadRef,
+        tabId,
+        runtimeTabId,
+        { operation, requestId },
+        () => bridge.automation.status(runtimeTabId),
+      );
       if (status.available) return;
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
@@ -486,6 +502,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               return raiseAtomCommandFailure(result);
             }
             updatePreviewServerSnapshot(threadRef, result.value);
+            const mutation = beginPreviewViewportMutation(ready.runtimeTabId);
             let viewport: PreviewRenderedViewportSize;
             try {
               viewport = await waitForRenderedViewport(
@@ -506,6 +523,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 latestState.sessions[ready.tabId]?.viewport ?? FILL_PREVIEW_VIEWPORT;
               if (
                 shouldRollbackPreviewViewport(
+                  ready.runtimeTabId,
+                  mutation,
                   previousSetting,
                   setting,
                   latestSetting,
@@ -526,6 +545,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 }
               }
               throw cause;
+            } finally {
+              finishPreviewViewportMutation(ready.runtimeTabId, mutation);
             }
             return {
               tabId: ready.tabId,
@@ -599,16 +620,25 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           }
           case "recordingStop": {
             const activeRecording = readActiveBrowserRecordingTarget();
-            const stopTabId = resolveBrowserRecordingStopTarget(
-              activeRecording?.serverTabId ?? null,
-              request.tabIdExplicit ? request.tabId : undefined,
+            const activeTarget: BrowserRecordingStopTarget | null = activeRecording;
+            const requestedRuntimeTabId =
+              request.tabIdExplicit && request.tabId
+                ? previewRuntimeTabId(
+                    threadRef,
+                    readThreadPreviewState(threadRef).serverEpoch,
+                    request.tabId,
+                  )
+                : undefined;
+            const stopTarget = resolveBrowserRecordingStopTarget(
+              activeTarget,
+              requestedRuntimeTabId,
             );
-            tabId = stopTabId ?? tabId;
+            tabId = stopTarget?.serverTabId ?? tabId;
             const artifact =
-              stopTabId && activeRecording
-                ? await stopBrowserRecording(activeRecording.runtimeTabId)
+              stopTarget && activeRecording
+                ? await stopBrowserRecording(stopTarget.runtimeTabId)
                 : null;
-            if (!artifact) {
+            if (!artifact || !stopTarget) {
               return raisePreviewAutomationHostError(
                 new PreviewAutomationRecordingNotActiveError({
                   requestId: request.requestId,
@@ -618,7 +648,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 }),
               );
             }
-            return artifact;
+            return rewriteBrowserRecordingArtifactTabId(artifact, stopTarget);
           }
         }
       } catch (cause) {

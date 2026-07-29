@@ -83,7 +83,7 @@ vi.mock("~/state/use-atom-command", () => ({
 }));
 
 vi.mock("~/browser/browserRecording", () => ({
-  startBrowserRecording: vi.fn(),
+  startBrowserRecording: vi.fn(async () => "2026-07-29T00:00:00.000Z"),
   stopBrowserRecording: vi.fn(),
   useActiveBrowserRecordingTabId: () => null,
 }));
@@ -221,6 +221,7 @@ describe("PreviewView navigation", () => {
       platform: "Win32",
       clipboard: { writeText: vi.fn() },
     });
+
     renderToStaticMarkup(
       <PreviewView
         threadRef={{
@@ -250,6 +251,26 @@ describe("PreviewView navigation", () => {
           secondaryActionProps: expect.objectContaining({ children: "Reveal in File Explorer" }),
         }),
       }),
+    );
+  });
+
+  it("preserves the raw server tab id when starting a recording", async () => {
+    const recording = await import("~/browser/browserRecording");
+    renderToStaticMarkup(
+      <PreviewView
+        threadRef={{
+          environmentId: EnvironmentId.make("environment-1"),
+          threadId: ThreadId.make("thread-1"),
+        }}
+        tabId="tab-1"
+        visible
+      />,
+    );
+
+    mocks.capture?.(true);
+
+    await vi.waitFor(() =>
+      expect(recording.startBrowserRecording).toHaveBeenCalledWith(runtimeTabId, "tab-1"),
     );
   });
 });
