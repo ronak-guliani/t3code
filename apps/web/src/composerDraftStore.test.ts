@@ -14,6 +14,7 @@ import {
   ThreadId,
   type ModelSelection,
   type ProviderOptionSelection,
+  type PreviewAnnotationPayload,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
@@ -183,6 +184,48 @@ describe("composerDraftStore addImages", () => {
     originalRevokeObjectUrl = URL.revokeObjectURL;
     revokeSpy = vi.fn();
     URL.revokeObjectURL = revokeSpy;
+  });
+
+  describe("composerDraftStore preview annotations", () => {
+    const threadRef = scopeThreadRef(
+      TEST_ENVIRONMENT_ID,
+      ThreadId.make("thread-preview-annotation"),
+    );
+    const annotation: PreviewAnnotationPayload = {
+      id: "annotation-1",
+      pageUrl: "http://localhost:3000",
+      pageTitle: "Preview",
+      comment: "Change the heading",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: null,
+      createdAt: "2026-07-26T00:00:00.000Z",
+    };
+
+    beforeEach(resetComposerDraftStore);
+
+    it("removes the paired screenshot when removing an annotation", () => {
+      const store = useComposerDraftStore.getState();
+      store.addImage(threadRef, makeImage({ id: annotation.id, previewUrl: "blob:annotation" }));
+      store.addPreviewAnnotation(threadRef, annotation);
+
+      store.removePreviewAnnotation(threadRef, annotation.id);
+
+      expect(draftFor(threadRef.threadId, threadRef.environmentId)).toBeUndefined();
+      expect(revokeSpy).toHaveBeenCalledWith("blob:annotation");
+    });
+
+    it("removes the paired annotation when removing its screenshot", () => {
+      const store = useComposerDraftStore.getState();
+      store.addImage(threadRef, makeImage({ id: annotation.id, previewUrl: "blob:annotation" }));
+      store.addPreviewAnnotation(threadRef, annotation);
+
+      store.removeImage(threadRef, annotation.id);
+
+      expect(draftFor(threadRef.threadId, threadRef.environmentId)).toBeUndefined();
+    });
   });
 
   afterEach(() => {
