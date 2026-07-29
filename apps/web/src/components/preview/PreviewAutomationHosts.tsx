@@ -20,7 +20,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { resolvePreviewViewport } from "@t3tools/shared/previewViewport";
-import { useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Atom } from "effect/unstable/reactivity";
 
 import {
@@ -328,6 +328,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   );
   const [automationConnectionAtom] = useState(() => Atom.make<string | null>(null));
   const automationConnectionId = useAtomValue(automationConnectionAtom);
+  const synchronizedThreadIdsRef = useRef(new Set<string>());
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -338,7 +339,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
       let tabId = request.tabId ?? null;
       try {
         let state = readThreadPreviewState(threadRef);
-        const needsSessionSync = needsPreviewAutomationSessionSync(state, request.tabId);
+        const needsSessionSync = needsPreviewAutomationSessionSync(
+          state,
+          request.tabId,
+          synchronizedThreadIdsRef.current.has(request.threadId),
+        );
         if (needsSessionSync) {
           const listTarget = {
             environmentId,
@@ -350,6 +355,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             return raiseAtomCommandFailure(result);
           }
           reconcilePreviewServerSessions(threadRef, result.value);
+          synchronizedThreadIdsRef.current.add(request.threadId);
           state = readThreadPreviewState(threadRef);
         }
         tabId = request.tabId ?? state.snapshot?.tabId ?? null;
