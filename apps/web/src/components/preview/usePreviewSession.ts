@@ -51,7 +51,7 @@ const previewSessionSyncAtom = Atom.family((threadKey: string) => {
       if (result.value.sessions.length > 0) {
         recoveringUrl = null;
         recoveryId += 1;
-        reconcilePreviewServerSessions(threadRef, result.value.sessions);
+        reconcilePreviewServerSessions(threadRef, result.value);
         return;
       }
 

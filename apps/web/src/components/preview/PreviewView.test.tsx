@@ -38,6 +38,7 @@ vi.mock("~/previewStateStore", () => ({
   updatePreviewServerSnapshot: vi.fn(),
   useThreadPreviewState: () => ({
     activeTabId: "tab-1",
+    serverEpoch: "epoch-1",
     desktopByTabId: {
       "tab-1": {
         canGoBack: false,
@@ -132,7 +133,15 @@ vi.mock("~/browser/BrowserSurfaceSlot", () => ({ BrowserSurfaceSlot: () => null 
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
+import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
+
 import { PreviewView } from "./PreviewView";
+
+const runtimeTabId = previewRuntimeTabId(
+  { environmentId: EnvironmentId.make("environment-1"), threadId: ThreadId.make("thread-1") },
+  "epoch-1",
+  "tab-1",
+);
 
 describe("PreviewView navigation", () => {
   beforeEach(() => {
@@ -166,7 +175,7 @@ describe("PreviewView navigation", () => {
     expect(mocks.submittedUrl).not.toBeNull();
     mocks.submittedUrl?.(submitted);
 
-    await vi.waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith("tab-1", expected));
+    await vi.waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith(runtimeTabId, expected));
     expect(mocks.rememberPreviewUrl).toHaveBeenCalledWith(
       {
         environmentId: "environment-1",
@@ -194,7 +203,7 @@ describe("PreviewView navigation", () => {
 
     await vi.waitFor(() =>
       expect(mocks.navigate).toHaveBeenCalledWith(
-        "tab-1",
+        runtimeTabId,
         "http://172.25.85.75:5173/app?mode=test#top",
       ),
     );
