@@ -245,7 +245,10 @@ const raisePreviewAutomationHostError = (
 
 export function PreviewAutomationHosts() {
   if (!isElectron || !previewBridge?.automation) return null;
+  return <PreviewAutomationHostsContent />;
+}
 
+function PreviewAutomationHostsContent() {
   const { environments } = useEnvironments();
   return (
     <>

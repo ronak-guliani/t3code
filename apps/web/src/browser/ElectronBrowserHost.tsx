@@ -14,7 +14,10 @@ import { HostedBrowserWebview } from "./HostedBrowserWebview";
 
 export function ElectronBrowserHost() {
   if (!isElectron) return null;
+  return <ElectronBrowserHostContent />;
+}
 
+function ElectronBrowserHostContent() {
   const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
   const sessions = useMemo(
