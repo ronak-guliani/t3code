@@ -13,6 +13,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
+import type { CopilotPrewarmPoolShape } from "./CopilotSessionPrewarmPool.ts";
 import { startMcpHttpServer, type McpHttpServer, type McpServeOptions } from "../../mcpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import type { McpProviderSessionConfig } from "../../mcp/McpSessionRegistry.ts";
@@ -90,6 +91,8 @@ type CopilotAcpRuntimeBaseInput = Omit<
   readonly runtimeMode: RuntimeMode;
   readonly baseDir?: string;
   readonly customInstructionsDir?: string;
+  /** When present, a matching warmed process is adopted instead of spawning. */
+  readonly prewarmPool?: CopilotPrewarmPoolShape;
 };
 export type CopilotAcpRuntimeInput =
   | (CopilotAcpRuntimeBaseInput & {
@@ -262,6 +265,38 @@ export function isCopilotPlanModeId(modeId: string | null | undefined): boolean 
   return normalizeCopilotAcpModeId(modeId) === COPILOT_PLAN_MODE_ID;
 }
 
+export const COPILOT_ACP_AUTH_OPTIONS = {
+  methodId: COPILOT_AUTH_METHOD_ID,
+  required: true,
+  missingMessage:
+    'GitHub Copilot ACP did not advertise the expected login method. Run "copilot login" in a terminal, then try again.',
+} as const;
+
+/**
+ * Runtime options that do not depend on a thread. Shared with the prewarm pool
+ * so a warmed process is byte-for-byte the process a session would have built.
+ */
+export const COPILOT_ACP_SHARED_RUNTIME_OPTIONS = {
+  auth: COPILOT_ACP_AUTH_OPTIONS,
+  clientInfo: COPILOT_CLIENT_INFO,
+  clientCapabilities: COPILOT_CLIENT_CAPABILITIES,
+  modeSwitchMethod: "set_mode",
+} as const;
+
+/**
+ * Binds a prewarmed process to a thread. The warmed process was created without
+ * any MCP credential, so `session/new` must be given this thread's servers and
+ * nothing may override them — otherwise a warmed process could carry another
+ * thread's credential.
+ */
+export const bindPrewarmedCopilotRuntime = (
+  pooled: AcpSessionRuntimeShape,
+  mcpServers: ReturnType<typeof buildCopilotMcpServers>,
+): AcpSessionRuntimeShape => ({
+  ...pooled,
+  start: (overrides) => pooled.start({ ...overrides, mcpServers }),
+});
+
 export const makeCopilotAcpRuntime = (
   input: CopilotAcpRuntimeInput,
 ): Effect.Effect<AcpSessionRuntimeShape, EffectAcpErrors.AcpError, Scope.Scope> =>
@@ -289,25 +324,37 @@ export const makeCopilotAcpRuntime = (
     if (input.threadId && !providerSession) {
       yield* logMissingCopilotMcpProviderSession(input.threadId, input.providerInstanceId);
     }
+    const spawn = buildCopilotAcpSpawnInput(
+      input.copilotSettings,
+      input.cwd,
+      input.runtimeMode,
+      input.customInstructionsDir,
+    );
+    // The MCP servers carry this thread's credential, so they are supplied at
+    // `session/new` time rather than baked into the process.
+    const mcpServers = buildCopilotMcpServers(mcpHttpServer, providerSession);
+
+    // A resumed session replays a specific session id; only fresh sessions can
+    // adopt a warmed process.
+    const pooled =
+      input.resumeSessionId || !input.prewarmPool
+        ? undefined
+        : yield* input.prewarmPool.acquire(spawn);
+
+    if (pooled) {
+      yield* Effect.logDebug("copilot acp runtime adopted prewarmed process", {
+        threadId: input.threadId,
+        cwd: input.cwd,
+      });
+      return bindPrewarmedCopilotRuntime(pooled, mcpServers);
+    }
+
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...input,
-        spawn: buildCopilotAcpSpawnInput(
-          input.copilotSettings,
-          input.cwd,
-          input.runtimeMode,
-          input.customInstructionsDir,
-        ),
-        auth: {
-          methodId: COPILOT_AUTH_METHOD_ID,
-          required: true,
-          missingMessage:
-            'GitHub Copilot ACP did not advertise the expected login method. Run "copilot login" in a terminal, then try again.',
-        },
-        clientInfo: COPILOT_CLIENT_INFO,
-        clientCapabilities: COPILOT_CLIENT_CAPABILITIES,
-        modeSwitchMethod: "set_mode",
-        mcpServers: buildCopilotMcpServers(mcpHttpServer, providerSession),
+        spawn,
+        ...COPILOT_ACP_SHARED_RUNTIME_OPTIONS,
+        mcpServers,
       }).pipe(
         Layer.provide(
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, input.childProcessSpawner),

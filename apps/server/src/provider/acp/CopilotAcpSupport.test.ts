@@ -17,6 +17,7 @@ import {
   buildCopilotAcpSpawnInput,
   buildCopilotMcpServerOptions,
   buildCopilotMcpServers,
+  bindPrewarmedCopilotRuntime,
   isCopilotPlanModeId,
   logMissingCopilotMcpProviderSession,
   normalizeCopilotAcpModeId,
@@ -255,4 +256,46 @@ describe("Copilot ACP mode ids", () => {
     expect(isCopilotPlanModeId(COPILOT_LEGACY_PLAN_MODE_ID)).toBe(true);
     expect(isCopilotPlanModeId(COPILOT_LEGACY_AGENT_MODE_ID)).toBe(false);
   });
+});
+
+describe("bindPrewarmedCopilotRuntime", () => {
+  const makePooledRuntime = () => {
+    const starts: Array<unknown> = [];
+    const runtime = {
+      start: (overrides?: unknown) => {
+        starts.push(overrides);
+        return Effect.void;
+      },
+      warmup: Effect.void,
+    } as unknown as Parameters<typeof bindPrewarmedCopilotRuntime>[0];
+    return { runtime, starts };
+  };
+
+  const threadMcpServers = [
+    { name: "t3-code", url: "http://127.0.0.1:1/mcp", headers: [] },
+  ] as unknown as ReturnType<typeof buildCopilotMcpServers>;
+
+  it("supplies this thread's MCP servers at session/new", () =>
+    Effect.gen(function* () {
+      const { runtime, starts } = makePooledRuntime();
+
+      yield* bindPrewarmedCopilotRuntime(runtime, threadMcpServers).start();
+
+      expect(starts).toHaveLength(1);
+      expect((starts[0] as { mcpServers: unknown }).mcpServers).toBe(threadMcpServers);
+    }).pipe(Effect.runPromise));
+
+  it("refuses to let overrides replace the thread's MCP credential", () =>
+    Effect.gen(function* () {
+      const { runtime, starts } = makePooledRuntime();
+      const otherThreadServers = [
+        { name: "t3-code", url: "http://127.0.0.1:2/mcp", headers: [] },
+      ] as unknown as ReturnType<typeof buildCopilotMcpServers>;
+
+      yield* bindPrewarmedCopilotRuntime(runtime, threadMcpServers).start({
+        mcpServers: otherThreadServers,
+      });
+
+      expect((starts[0] as { mcpServers: unknown }).mcpServers).toBe(threadMcpServers);
+    }).pipe(Effect.runPromise));
 });
