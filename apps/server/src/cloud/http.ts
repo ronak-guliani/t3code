@@ -48,6 +48,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
@@ -529,6 +530,8 @@ const CLOUD_RELAY_CONFIG_SECRET_NAMES = [
   CLOUD_LINKED_USER_ID,
 ] as const;
 
+const cloudRelayConfigSemaphore = Effect.runSync(Semaphore.make(1));
+
 export const persistCloudRelayConfig = Effect.fn("environment.cloud.persistRelayConfig")(function* (
   secrets: ServerSecretStore.ServerSecretStore["Service"],
   config: {
@@ -540,46 +543,50 @@ export const persistCloudRelayConfig = Effect.fn("environment.cloud.persistRelay
     readonly endpointRuntimeJson: string | null;
   },
 ) {
-  const previous = yield* Effect.forEach(
-    CLOUD_RELAY_CONFIG_SECRET_NAMES,
-    (name) => secrets.get(name).pipe(Effect.map((value) => [name, value] as const)),
-    { concurrency: "unbounded" },
-  );
-  const next = new Map<string, string | null>([
-    [RELAY_URL_SECRET, config.relayUrl],
-    [RELAY_ISSUER_SECRET, config.relayIssuer],
-    [RELAY_ENVIRONMENT_CREDENTIAL_SECRET, config.environmentCredential],
-    [CLOUD_MINT_PUBLIC_KEY, config.cloudMintPublicKey],
-    [CLOUD_ENDPOINT_RUNTIME_CONFIG, config.endpointRuntimeJson],
-    [CLOUD_LINKED_USER_ID, config.cloudUserId],
-  ]);
-  const restore = Effect.forEach(
-    previous,
-    ([name, value]) =>
-      Option.isSome(value) ? secrets.set(name, value.value) : secrets.remove(name),
-    { concurrency: 1, discard: true },
-  );
+  yield* cloudRelayConfigSemaphore.withPermits(1)(
+    Effect.gen(function* () {
+      const previous = yield* Effect.forEach(
+        CLOUD_RELAY_CONFIG_SECRET_NAMES,
+        (name) => secrets.get(name).pipe(Effect.map((value) => [name, value] as const)),
+        { concurrency: "unbounded" },
+      );
+      const next = new Map<string, string | null>([
+        [RELAY_URL_SECRET, config.relayUrl],
+        [RELAY_ISSUER_SECRET, config.relayIssuer],
+        [RELAY_ENVIRONMENT_CREDENTIAL_SECRET, config.environmentCredential],
+        [CLOUD_MINT_PUBLIC_KEY, config.cloudMintPublicKey],
+        [CLOUD_ENDPOINT_RUNTIME_CONFIG, config.endpointRuntimeJson],
+        [CLOUD_LINKED_USER_ID, config.cloudUserId],
+      ]);
+      const restore = Effect.forEach(
+        previous,
+        ([name, value]) =>
+          Option.isSome(value) ? secrets.set(name, value.value) : secrets.remove(name),
+        { concurrency: 1, discard: true },
+      );
 
-  yield* Effect.forEach(
-    CLOUD_RELAY_CONFIG_SECRET_NAMES,
-    (name) => {
-      const value = next.get(name);
-      return value === null || value === undefined
-        ? secrets.remove(name)
-        : secrets.set(name, stringToBytes(value));
-    },
-    { concurrency: 1, discard: true },
-  ).pipe(
-    Effect.catch((cause) =>
-      restore.pipe(
-        Effect.catch((rollbackCause) =>
-          Effect.logError("Failed to restore relay configuration after a persistence failure", {
-            cause: rollbackCause,
-          }),
+      yield* Effect.forEach(
+        CLOUD_RELAY_CONFIG_SECRET_NAMES,
+        (name) => {
+          const value = next.get(name);
+          return value === null || value === undefined
+            ? secrets.remove(name)
+            : secrets.set(name, stringToBytes(value));
+        },
+        { concurrency: 1, discard: true },
+      ).pipe(
+        Effect.catch((cause) =>
+          restore.pipe(
+            Effect.catch((rollbackCause) =>
+              Effect.logError("Failed to restore relay configuration after a persistence failure", {
+                cause: rollbackCause,
+              }),
+            ),
+            Effect.andThen(Effect.fail(cause)),
+          ),
         ),
-        Effect.andThen(Effect.fail(cause)),
-      ),
-    ),
+      );
+    }),
   );
 });
 
@@ -601,7 +608,7 @@ const cloudRelayConfigHandler = Effect.fn("environment.cloud.relayConfig")(
   ),
 );
 
-const relayClientRequest = <A>(
+export const relayClientRequest = <A>(
   dependencies: CloudHttpDependencies,
   input: {
     readonly url: string;

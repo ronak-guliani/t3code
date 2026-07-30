@@ -305,27 +305,19 @@ const resolveListeningLocalOrigin = Effect.gen(function* () {
 });
 
 export const reconcileDesiredConnectLink = Effect.gen(function* () {
-  const desiredLink = yield* (
-    readCliDesiredCloudLink as Effect.Effect<boolean, unknown, never>
-  ).pipe(
-    Effect.catch((cause) =>
-      Effect.logWarning("failed to read desired T3 Connect link state", { cause }).pipe(
-        Effect.as(false),
-      ),
-    ),
-  );
-  if (!desiredLink) {
-    return;
-  }
-
-  const localOrigin = yield* resolveListeningLocalOrigin;
   yield* retryConnectReconciliation(
-    reconcileDesiredCloudLink(localOrigin) as Effect.Effect<unknown, unknown, never>,
+    Effect.gen(function* () {
+      const desiredLink = yield* readCliDesiredCloudLink as Effect.Effect<boolean, unknown, never>;
+      if (!desiredLink) {
+        return;
+      }
+      const localOrigin = yield* resolveListeningLocalOrigin;
+      yield* reconcileDesiredCloudLink(localOrigin) as Effect.Effect<unknown, unknown, never>;
+    }),
   ).pipe(
     Effect.catch((cause) =>
       Effect.logWarning("failed to reconcile desired T3 Connect link after bounded retries", {
         cause,
-        localOrigin,
       }),
     ),
   );
