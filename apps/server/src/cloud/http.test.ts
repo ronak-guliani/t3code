@@ -12,9 +12,20 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
-import { consumeCloudReplayGuards, reconcileDesiredCloudLink } from "./http.ts";
+import {
+  consumeCloudReplayGuards,
+  persistCloudRelayConfig,
+  reconcileDesiredCloudLink,
+} from "./http.ts";
 import * as ManagedEndpointRuntime from "./ManagedEndpointRuntime.ts";
 import { traceAuthenticatedRelayRequest, traceRelayRequest } from "./traceRelayRequest.ts";
+import {
+  CLOUD_LINKED_USER_ID,
+  CLOUD_MINT_PUBLIC_KEY,
+  RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+  RELAY_ISSUER_SECRET,
+  RELAY_URL_SECRET,
+} from "./config.ts";
 
 const storeFailure = (tag: "AlreadyExists" | "PermissionDenied") =>
   new ServerSecretStore.SecretStorePersistError({
@@ -268,3 +279,53 @@ describe("reconcileDesiredCloudLink", () => {
     ),
   );
 });
+
+it.effect("rolls back incomplete relay configuration writes before exposing a linked user", () =>
+  Effect.gen(function* () {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const values = new Map<string, Uint8Array>([
+      [RELAY_URL_SECRET, encoder.encode("https://old-relay.example.test")],
+      [CLOUD_LINKED_USER_ID, encoder.encode("old-user")],
+    ]);
+    let failCredentialWrite = true;
+    const secrets = {
+      get: (name: string) =>
+        Effect.sync(() => {
+          const value = values.get(name);
+          return value === undefined ? Option.none<Uint8Array>() : Option.some(value);
+        }),
+      set: (name: string, value: Uint8Array) =>
+        Effect.suspend(() => {
+          if (name === RELAY_ENVIRONMENT_CREDENTIAL_SECRET && failCredentialWrite) {
+            failCredentialWrite = false;
+            return Effect.fail(new Error("disk unavailable"));
+          }
+          return Effect.sync(() => {
+            values.set(name, value);
+          });
+        }),
+      remove: (name: string) =>
+        Effect.sync(() => {
+          values.delete(name);
+        }),
+    } as ServerSecretStore.ServerSecretStore["Service"];
+
+    yield* Effect.flip(
+      persistCloudRelayConfig(secrets, {
+        relayUrl: "https://relay.example.test",
+        relayIssuer: "https://relay.example.test",
+        cloudUserId: "new-user",
+        environmentCredential: "environment-credential",
+        cloudMintPublicKey: "public-key",
+        endpointRuntimeJson: null,
+      }),
+    );
+
+    expect(decoder.decode(values.get(RELAY_URL_SECRET))).toBe("https://old-relay.example.test");
+    expect(decoder.decode(values.get(CLOUD_LINKED_USER_ID))).toBe("old-user");
+    expect(values.has(RELAY_ISSUER_SECRET)).toBe(false);
+    expect(values.has(RELAY_ENVIRONMENT_CREDENTIAL_SECRET)).toBe(false);
+    expect(values.has(CLOUD_MINT_PUBLIC_KEY)).toBe(false);
+  }),
+);
