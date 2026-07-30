@@ -127,9 +127,21 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
   return latestMessage.createdAt >= thread.latestTurn.completedAt;
 }
 
-export function threadHasQueuedTurnStart(thread: OrchestrationThread): boolean {
+export function threadHasQueuedTurnStart(
+  thread: OrchestrationThread,
+  options: { readonly now: string },
+): boolean {
   const latestMessage = thread.messages.at(-1);
   if (latestMessage?.role !== "user") {
+    return false;
+  }
+  const latestMessageAt = Date.parse(latestMessage.createdAt);
+  const nowAt = Date.parse(options.now);
+  if (
+    !Number.isFinite(latestMessageAt) ||
+    !Number.isFinite(nowAt) ||
+    Math.abs(nowAt - latestMessageAt) > 2 * 60 * 1_000
+  ) {
     return false;
   }
   const failedTurnStart = thread.activities.some((activity) => {

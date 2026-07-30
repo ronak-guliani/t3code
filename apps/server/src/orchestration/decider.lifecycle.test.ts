@@ -91,20 +91,21 @@ describe("decider thread lifecycle", () => {
 
   it("stores a future snooze and permits an explicit wake", async () => {
     const readModel = await lifecycleReadModel();
+    const snoozedUntil = new Date(Date.now() + 60 * 60 * 1_000).toISOString();
     const snoozed = await Effect.runPromise(
       decideOrchestrationCommand({
         command: {
           type: "thread.snooze",
           commandId,
           threadId,
-          snoozedUntil: "2026-07-31T00:00:00.000Z",
+          snoozedUntil,
         } satisfies OrchestrationCommand,
         readModel,
       }),
     );
     expect(snoozed).toMatchObject({
       type: "thread.snoozed",
-      payload: { threadId, snoozedUntil: "2026-07-31T00:00:00.000Z" },
+      payload: { threadId, snoozedUntil },
     });
 
     const woken = await Effect.runPromise(

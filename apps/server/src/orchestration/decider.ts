@@ -18,7 +18,6 @@ import {
   requireThreadNotArchived,
   requireQueuedTurn,
   requireThreadReadyForTurnStart,
-  threadHasInFlightTurn,
   threadHasPendingInteraction,
   threadHasQueuedTurnStart,
 } from "./commandInvariants.ts";
@@ -588,17 +587,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const occurredAt = nowIso();
+      const hasActiveTurn =
+        thread.latestTurn?.state === "running" ||
+        (thread.session?.status === "running" && thread.session.activeTurnId !== null);
       if (
-        threadHasInFlightTurn(thread) ||
-        thread.session?.status === "running" ||
-        threadHasPendingInteraction(thread)
+        hasActiveTurn ||
+        threadHasQueuedTurnStart(thread, { now: occurredAt }) ||
+        threadHasPendingInteraction(thread) ||
+        thread.session?.status === "error"
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has active work or a pending interaction and cannot settle.`,
         });
       }
-      const occurredAt = nowIso();
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -644,13 +647,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      if (threadHasQueuedTurnStart(thread) || threadHasPendingInteraction(thread)) {
+      const occurredAt = nowIso();
+      if (
+        threadHasQueuedTurnStart(thread, { now: occurredAt }) ||
+        threadHasPendingInteraction(thread) ||
+        thread.session?.status === "error"
+      ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: `Thread '${command.threadId}' has a queued turn or pending interaction and cannot snooze.`,
         });
       }
-      const occurredAt = nowIso();
       if (Date.parse(command.snoozedUntil) <= Date.parse(occurredAt)) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,

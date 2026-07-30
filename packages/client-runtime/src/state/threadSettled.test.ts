@@ -44,6 +44,27 @@ describe("thread sidebar lifecycle", () => {
     ).toBe(true);
   });
 
+  it("allows an idle running runtime but not a failed session", () => {
+    expect(
+      canSettle(
+        {
+          ...baseThread,
+          session: { status: "running", updatedAt: now },
+        },
+        { now },
+      ),
+    ).toBe(true);
+    expect(
+      canSettle(
+        {
+          ...baseThread,
+          session: { status: "error", updatedAt: now },
+        },
+        { now },
+      ),
+    ).toBe(false);
+  });
+
   it("only applies explicit settlement in V1", () => {
     expect(effectiveSettled(baseThread, { now })).toBe(false);
     expect(effectiveSettled({ ...baseThread, settledOverride: "settled" }, { now })).toBe(true);

@@ -61,7 +61,8 @@ export function canSettle(
     !shell.hasPendingApprovals &&
     !shell.hasPendingUserInput &&
     shell.session?.status !== "starting" &&
-    shell.session?.status !== "running" &&
+    shell.session?.status !== "error" &&
+    shell.latestTurn?.state !== "running" &&
     !hasQueuedTurnStart(shell, options)
   );
 }

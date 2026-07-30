@@ -103,7 +103,8 @@ export function useThreadActions() {
       const resolved = resolveThreadTarget(target);
       if (!api || !resolved) return;
       if (
-        resolved.thread.session?.status === "running" ||
+        (resolved.thread.session?.status === "running" &&
+          resolved.thread.session.activeTurnId != null) ||
         resolved.thread.latestTurn?.state === "running"
       ) {
         throw new Error("Cannot settle a thread with active work.");

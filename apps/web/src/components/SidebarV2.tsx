@@ -9,7 +9,7 @@ import {
   PlusIcon,
   RotateCcwIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import { useParams, useRouter } from "@tanstack/react-router";
@@ -202,10 +202,13 @@ function Shelf({
   readonly defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const contentId = useId();
   return (
     <SidebarGroup className="px-2 py-0">
       <button
         type="button"
+        aria-controls={contentId}
+        aria-expanded={open}
         className="flex h-8 w-full items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
         onClick={() => setOpen((value) => !value)}
       >
@@ -218,7 +221,7 @@ function Shelf({
         <span>{title}</span>
         <span className="ml-auto tabular-nums">{count}</span>
       </button>
-      {open ? children : null}
+      <div id={contentId}>{open ? children : null}</div>
     </SidebarGroup>
   );
 }
