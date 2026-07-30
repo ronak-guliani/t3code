@@ -219,7 +219,7 @@ import {
   revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
   type ThreadPlanCatalogEntry,
-  waitForStartedServerThread,
+  waitForRoutableServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -4029,7 +4029,9 @@ function ChatViewBody(
         });
       })
       .then(() => {
-        return waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId));
+        return waitForRoutableServerThread(
+          scopeThreadRef(activeThread.environmentId, nextThreadId),
+        );
       })
       .then(() => {
         // Signal that the plan sidebar should open on the new thread when enabled.
@@ -4339,7 +4341,7 @@ function ChatViewBody(
           }
 
           if (result.threadId !== activeThread.id) {
-            await waitForStartedServerThread(scopeThreadRef(environmentId, result.threadId));
+            await waitForRoutableServerThread(scopeThreadRef(environmentId, result.threadId));
             await navigate({
               to: "/$environmentId/$threadId",
               params: {
