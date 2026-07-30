@@ -1526,30 +1526,39 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
   // The review path needs only `isRepo` and `branch`. `statusDetailsLocal` also
   // computes numstat totals, the default ref, and remote presence — four extra
   // subprocess spawns whose output the review capture discards.
-  const readReviewRepoContext = (cwd: string) =>
-    executeGit(
+  const readReviewRepoContext = Effect.fn("readReviewRepoContext")(function* (cwd: string) {
+    const result = yield* executeGit(
       "GitCore.resolveReviewChangesContext.branch",
       cwd,
       ["status", "--porcelain=2", "--branch"],
       {
         allowNonZeroExit: true,
       },
-    ).pipe(
-      Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)),
-      Effect.map((result) => {
-        if (result === null || result.code !== 0) {
-          return { isRepo: false, branch: null } as const;
-        }
-        const headLine = result.stdout
-          .split(/\r?\n/g)
-          .find((line) => line.startsWith("# branch.head "));
-        const value = headLine?.slice("# branch.head ".length).trim() ?? "";
-        return {
-          isRepo: true,
-          branch: value.length === 0 || value.startsWith("(") ? null : value,
-        } as const;
-      }),
-    );
+    ).pipe(Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)));
+
+    if (result === null) {
+      return { isRepo: false, branch: null as string | null };
+    }
+    // Only a missing working directory means "not a repository". Other failures
+    // (unsafe ownership, permissions, corrupt index) must keep Git's own
+    // diagnostic instead of collapsing into a generic message.
+    if (result.code !== 0) {
+      return yield* createGitCommandError(
+        "GitCore.resolveReviewChangesContext.branch",
+        cwd,
+        ["status", "--porcelain=2", "--branch"],
+        result.stderr.trim() || "git status failed",
+      );
+    }
+    const headLine = result.stdout
+      .split(/\r?\n/g)
+      .find((line) => line.startsWith("# branch.head "));
+    const value = headLine?.slice("# branch.head ".length).trim() ?? "";
+    return {
+      isRepo: true,
+      branch: (value.length === 0 || value.startsWith("(") ? null : value) as string | null,
+    };
+  });
 
   const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = Effect.fn(
     "resolveReviewChangesContext",
