@@ -10,6 +10,7 @@ const host = process.env.HOST?.trim() || "localhost";
 const configuredHttpUrl = process.env.VITE_HTTP_URL?.trim();
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
 const configuredCliOAuthClientId = process.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID?.trim();
+const configuredHostedAppUrl = process.env.VITE_HOSTED_APP_URL?.trim();
 const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
 
 const buildSourcemap =
@@ -72,6 +73,7 @@ export default defineConfig({
     "import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID": JSON.stringify(
       configuredCliOAuthClientId ?? "",
     ),
+    "import.meta.env.VITE_HOSTED_APP_URL": JSON.stringify(configuredHostedAppUrl ?? ""),
     "import.meta.env.APP_VERSION": JSON.stringify(pkg.version),
   },
   resolve: {

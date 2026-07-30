@@ -82,6 +82,29 @@ function idTokenIdentity(idToken: string | undefined): string | null {
   );
 }
 
+const exchangeOAuthToken = Effect.fn("cloud.cli_token.exchange")(function* (
+  metadata: CloudCliOAuthConfig,
+  params: Record<string, string>,
+) {
+  const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+  const response = yield* HttpClientRequest.post(metadata.tokenEndpoint).pipe(
+    HttpClientRequest.bodyUrlParams(params),
+    httpClient.execute,
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(OAuthTokenResponse)),
+  );
+  const now = yield* Clock.currentTimeMillis;
+  const identity = idTokenIdentity(response.id_token);
+  return {
+    token: {
+      accessToken: response.access_token,
+      refreshToken: response.refresh_token ?? params.refresh_token ?? "",
+      expiresAtEpochMs: now + response.expires_in * 1_000,
+      ...(identity === null ? {} : { identity }),
+    } satisfies PersistedToken,
+    identity,
+  };
+});
+
 export class CloudCliCredentialRemovalError extends Schema.TaggedErrorClass<CloudCliCredentialRemovalError>()(
   "CloudCliCredentialRemovalError",
   { cause: Schema.Unknown },
@@ -162,7 +185,6 @@ function bytesToString(value: Uint8Array): string {
 
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
-  const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const semaphore = yield* Semaphore.make(1);
   const persist = Effect.fn("cloud.cli_token.persist")(function* (token: PersistedToken) {
@@ -181,31 +203,9 @@ export const make = Effect.gen(function* () {
     return Option.some(yield* decodePersistedToken(bytesToString(encoded.value)));
   });
 
-  const exchangeToken = Effect.fn("cloud.cli_token.exchange")(function* (
-    metadata: CloudCliOAuthConfig,
-    params: Record<string, string>,
-  ) {
-    const response = yield* HttpClientRequest.post(metadata.tokenEndpoint).pipe(
-      HttpClientRequest.bodyUrlParams(params),
-      httpClient.execute,
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(OAuthTokenResponse)),
-    );
-    const now = yield* Clock.currentTimeMillis;
-    const identity = idTokenIdentity(response.id_token);
-    return {
-      token: {
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token ?? params.refresh_token ?? "",
-        expiresAtEpochMs: now + response.expires_in * 1_000,
-        ...(identity === null ? {} : { identity }),
-      } satisfies PersistedToken,
-      identity,
-    };
-  });
-
   const refresh = Effect.fn("cloud.cli_token.refresh")(function* (token: PersistedToken) {
     const metadata = yield* cloudCliOAuthConfig;
-    const { token: refreshed } = yield* exchangeToken(metadata, {
+    const { token: refreshed } = yield* exchangeOAuthToken(metadata, {
       grant_type: "refresh_token",
       refresh_token: token.refreshToken,
       client_id: metadata.clientId,
@@ -278,7 +278,7 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
-    return (yield* exchangeToken(metadata, {
+    return (yield* exchangeOAuthToken(metadata, {
       grant_type: "authorization_code",
       code,
       redirect_uri: metadata.redirectUri,
@@ -337,7 +337,6 @@ export const outOfBandOAuthLogin = Effect.fn("cloud.cli_token.out_of_band_oauth_
   R,
 >(promptForCode: (input: OutOfBandOAuthPromptInput) => Effect.Effect<string, E, R>) {
   const crypto = yield* Crypto.Crypto;
-  const httpClient = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
   const metadata = yield* cloudCliOAuthConfig;
   const hostedAppUrl = yield* hostedAppUrlConfig;
   const verifier = Encoding.encodeBase64Url(yield* crypto.randomBytes(32));
@@ -356,26 +355,11 @@ export const outOfBandOAuthLogin = Effect.fn("cloud.cli_token.out_of_band_oauth_
   if (typeof checked === "string") {
     return yield* Effect.fail(new CloudCliAuthorizationError({ cause: checked }));
   }
-  const result = yield* HttpClientRequest.post(metadata.tokenEndpoint).pipe(
-    HttpClientRequest.bodyUrlParams({
-      grant_type: "authorization_code",
-      code: checked.code,
-      redirect_uri: connectCallbackUrl(hostedAppUrl),
-      client_id: metadata.clientId,
-      code_verifier: verifier,
-    }),
-    httpClient.execute,
-    Effect.flatMap(HttpClientResponse.schemaBodyJson(OAuthTokenResponse)),
-  );
-  const now = yield* Clock.currentTimeMillis;
-  const identity = idTokenIdentity(result.id_token);
-  return {
-    token: {
-      accessToken: result.access_token,
-      refreshToken: result.refresh_token ?? "",
-      expiresAtEpochMs: now + result.expires_in * 1_000,
-      ...(identity === null ? {} : { identity }),
-    } satisfies PersistedToken,
-    identity,
-  };
+  return yield* exchangeOAuthToken(metadata, {
+    grant_type: "authorization_code",
+    code: checked.code,
+    redirect_uri: connectCallbackUrl(hostedAppUrl),
+    client_id: metadata.clientId,
+    code_verifier: verifier,
+  });
 });

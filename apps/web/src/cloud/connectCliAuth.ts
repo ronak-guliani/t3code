@@ -2,12 +2,12 @@ import {
   buildConnectClerkAuthorizeUrl,
   connectCallbackUrl,
   CONNECT_OAUTH_SCOPES,
+  DEFAULT_HOSTED_APP_URL,
   type ConnectAuthorizeRequest,
 } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 
 const stateStorageKey = "t3code-connect-cli-auth-state";
-const defaultHostedAppUrl = "https://app.t3.codes";
 
 function value(name: string): string | null {
   const resolved = import.meta.env[name]?.trim();
@@ -25,7 +25,7 @@ export function isConnectCliAuthEnabled(): boolean {
 }
 
 function configuredHostedAppUrl(): string {
-  return value("VITE_HOSTED_APP_URL") ?? defaultHostedAppUrl;
+  return value("VITE_HOSTED_APP_URL") ?? DEFAULT_HOSTED_APP_URL;
 }
 
 export function buildConnectCliAuthorizeUrl(request: ConnectAuthorizeRequest): string | null {

@@ -10,10 +10,12 @@ import * as References from "effect/References";
 
 import {
   acquireRelayClientForLink,
+  authorizeCliWith,
   formatHeadlessAuthorizationPrompt,
   isHeadlessConnectEnvironment,
   reportCloudDisconnectResults,
 } from "./connect.ts";
+import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 
 it("selects out-of-band authorization for SSH sessions and formats its prompt", () => {
   assert.isTrue(isHeadlessConnectEnvironment({ SSH_CONNECTION: "127.0.0.1 1 127.0.0.1 2" }));
@@ -30,6 +32,62 @@ it("selects out-of-band authorization for SSH sessions and formats its prompt", 
     ].join("\n"),
   );
 });
+
+const token = (identity: string): CliTokenManager.PersistedToken => ({
+  accessToken: "access-token",
+  refreshToken: "refresh-token",
+  expiresAtEpochMs: Date.now() + 60_000,
+  identity,
+});
+
+it.effect("reuses a stored headless credential without starting authorization", () =>
+  Effect.gen(function* () {
+    let loginCalls = 0;
+    const identity = yield* authorizeCliWith(
+      { headless: true },
+      {
+        get: Effect.die("unexpected browser login"),
+        getExisting: Effect.succeed(Option.some(token("stored@example.test"))),
+        hasCredential: Effect.succeed(true),
+        store: () => Effect.die("unexpected token store"),
+        clear: Effect.void,
+      },
+      Effect.sync(() => {
+        loginCalls += 1;
+        return { token: token("new@example.test"), identity: "new@example.test" };
+      }),
+    );
+
+    assert.equal(identity, "stored@example.test");
+    assert.equal(loginCalls, 0);
+  }),
+);
+
+it.effect("falls back to headless authorization after refresh failure and stores the token", () =>
+  Effect.gen(function* () {
+    const stored: CliTokenManager.PersistedToken[] = [];
+    const replacement = token("replacement@example.test");
+    const identity = yield* authorizeCliWith(
+      { headless: true },
+      {
+        get: Effect.die("unexpected browser login"),
+        getExisting: Effect.fail(
+          new CliTokenManager.CloudCliCredentialRefreshError({ cause: "revoked" }),
+        ),
+        hasCredential: Effect.succeed(true),
+        store: (value) =>
+          Effect.sync(() => {
+            stored.push(value);
+          }),
+        clear: Effect.void,
+      },
+      Effect.succeed({ token: replacement, identity: "replacement@example.test" }),
+    );
+
+    assert.equal(identity, "replacement@example.test");
+    assert.deepEqual(stored, [replacement]);
+  }),
+);
 
 const managedExecutable = {
   status: "available",

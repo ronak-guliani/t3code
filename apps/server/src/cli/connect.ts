@@ -64,6 +64,14 @@ export function formatHeadlessAuthorizationPrompt(authorizeUrl: string): string 
   ].join("\n");
 }
 
+const requireCloudPublicConfig = hasCloudPublicConfig
+  ? Effect.void
+  : Effect.fail(
+      new Error(
+        "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.",
+      ),
+    );
+
 const promptForOutOfBandOAuthCode = Effect.fn("cloud.cli.prompt_out_of_band_code")(function* (
   input: CliTokenManager.OutOfBandOAuthPromptInput,
 ) {
@@ -73,11 +81,15 @@ const promptForOutOfBandOAuthCode = Effect.fn("cloud.cli.prompt_out_of_band_code
   );
 });
 
-const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
-  readonly headless: boolean;
-}) {
-  const tokens = yield* CliTokenManager.CloudCliTokenManager;
-  if (!options.headless && !isHeadlessConnectEnvironment()) {
+export const authorizeCliWith = Effect.fn("cloud.cli.authorize_with")(function* (
+  options: { readonly headless: boolean; readonly sshSession?: boolean },
+  tokens: CliTokenManager.CloudCliTokenManager["Service"],
+  loginOutOfBand: Effect.Effect<{
+    readonly token: CliTokenManager.PersistedToken;
+    readonly identity: string | null;
+  }>,
+) {
+  if (!options.headless && !options.sshSession) {
     const token = yield* tokens.get;
     return token.identity ?? null;
   }
@@ -89,11 +101,22 @@ const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
     ),
   );
   if (Option.isSome(existing)) return existing.value.identity ?? null;
-  const authorization = yield* CliTokenManager.outOfBandOAuthLogin(promptForOutOfBandOAuthCode);
+  const authorization = yield* loginOutOfBand;
   yield* tokens.store(authorization.token);
   return authorization.identity;
 });
 
+const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
+  readonly headless: boolean;
+}) {
+  yield* requireCloudPublicConfig;
+  const tokens = yield* CliTokenManager.CloudCliTokenManager;
+  return yield* authorizeCliWith(
+    { ...options, sshSession: isHeadlessConnectEnvironment() },
+    tokens,
+    CliTokenManager.outOfBandOAuthLogin(promptForOutOfBandOAuthCode),
+  );
+});
 function bytesToString(value: Uint8Array): string {
   return new TextDecoder().decode(value);
 }
@@ -384,13 +407,6 @@ const runCloudCommand = <A, E>(
   },
 ) =>
   Effect.gen(function* () {
-    if (!hasCloudPublicConfig) {
-      return yield* Effect.fail(
-        new Error(
-          "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.",
-        ),
-      );
-    }
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCliAuthConfig(flags, logLevel);
     const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
@@ -434,6 +450,7 @@ const connectLinkCommand = Command.make("link", {
     runCloudCommand(
       flags,
       Effect.gen(function* () {
+        yield* requireCloudPublicConfig;
         const relayClient = yield* RelayClient.RelayClient;
         const installed = yield* acquireRelayClientForLink(
           relayClient,
@@ -524,6 +541,7 @@ const connectSetupCommand = Command.make("connect", {
     runCloudCommand(
       flags,
       Effect.gen(function* () {
+        yield* requireCloudPublicConfig;
         const relayClient = yield* RelayClient.RelayClient;
         const installed = yield* acquireRelayClientForLink(
           relayClient,
