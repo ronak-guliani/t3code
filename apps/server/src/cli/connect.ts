@@ -31,7 +31,7 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 import { CLOUD_LINKED_USER_ID, RELAY_URL_SECRET } from "../cloud/config.ts";
-import { relayUrlConfig } from "../cloud/publicConfig.ts";
+import { hasCloudPublicConfig, relayUrlConfig } from "../cloud/publicConfig.ts";
 import { headlessRelayClientTracingLayer } from "../cloud/relayTracing.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -42,6 +42,57 @@ const jsonFlag = Flag.boolean("json").pipe(
   Flag.withDescription("Emit JSON instead of human-readable output."),
   Flag.withDefault(false),
 );
+
+const headlessFlag = Flag.boolean("headless").pipe(
+  Flag.withDescription("Authorize without a local browser using an authorization code."),
+  Flag.withDefault(false),
+);
+
+export function isHeadlessConnectEnvironment(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return Boolean(env.SSH_CONNECTION?.trim() || env.SSH_TTY?.trim());
+}
+
+export function formatHeadlessAuthorizationPrompt(authorizeUrl: string): string {
+  return [
+    "Headless authorization",
+    "Open this URL on a device with a browser:",
+    `  ${authorizeUrl}`,
+    "",
+    "After signing in, return here and enter the code shown in your browser.",
+  ].join("\n");
+}
+
+const promptForOutOfBandOAuthCode = Effect.fn("cloud.cli.prompt_out_of_band_code")(function* (
+  input: CliTokenManager.OutOfBandOAuthPromptInput,
+) {
+  yield* Console.log(formatHeadlessAuthorizationPrompt(input.authorizeUrl));
+  return yield* Prompt.run(
+    Prompt.text({ message: "Authorization code", validate: input.validate }),
+  );
+});
+
+const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
+  readonly headless: boolean;
+}) {
+  const tokens = yield* CliTokenManager.CloudCliTokenManager;
+  if (!options.headless && !isHeadlessConnectEnvironment()) {
+    const token = yield* tokens.get;
+    return token.identity ?? null;
+  }
+  const existing = yield* tokens.getExisting.pipe(
+    Effect.catchTag("CloudCliCredentialRefreshError", () =>
+      Console.log(
+        "The stored T3 Connect credential could not be refreshed; signing in again.",
+      ).pipe(Effect.as(Option.none())),
+    ),
+  );
+  if (Option.isSome(existing)) return existing.value.identity ?? null;
+  const authorization = yield* CliTokenManager.outOfBandOAuthLogin(promptForOutOfBandOAuthCode);
+  yield* tokens.store(authorization.token);
+  return authorization.identity;
+});
 
 function bytesToString(value: Uint8Array): string {
   return new TextDecoder().decode(value);
@@ -333,6 +384,13 @@ const runCloudCommand = <A, E>(
   },
 ) =>
   Effect.gen(function* () {
+    if (!hasCloudPublicConfig) {
+      return yield* Effect.fail(
+        new Error(
+          "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.",
+        ),
+      );
+    }
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCliAuthConfig(flags, logLevel);
     const minimumLogLevel = options?.quietLogs ? "Error" : config.logLevel;
@@ -353,15 +411,15 @@ const runCloudCommand = <A, E>(
 
 const connectLoginCommand = Command.make("login", {
   ...projectLocationFlags,
+  headless: headlessFlag,
 }).pipe(
   Command.withDescription("Authorize the T3 Connect CLI without enabling remote access."),
   Command.withHandler((flags) =>
     runCloudCommand(
       flags,
       Effect.gen(function* () {
-        const tokens = yield* CliTokenManager.CloudCliTokenManager;
-        yield* tokens.get;
-        yield* Console.log("Signed in to T3 Connect.");
+        const identity = yield* authorizeCli(flags);
+        yield* Console.log(`Signed in to T3 Connect${identity ? ` as ${identity}` : ""}.`);
       }),
     ),
   ),
@@ -369,6 +427,7 @@ const connectLoginCommand = Command.make("login", {
 
 const connectLinkCommand = Command.make("link", {
   ...projectLocationFlags,
+  headless: headlessFlag,
 }).pipe(
   Command.withDescription("Authorize this environment for T3 Connect on next start."),
   Command.withHandler((flags) =>
@@ -389,11 +448,10 @@ const connectLinkCommand = Command.make("link", {
           `Using relay client ${installed.value.version} from ${installed.value.executablePath}.`,
         );
 
-        const tokens = yield* CliTokenManager.CloudCliTokenManager;
-        yield* tokens.get;
+        const identity = yield* authorizeCli(flags);
         yield* CliState.setCliDesiredCloudLink(true);
         yield* Console.log(
-          "This T3 environment will be available through T3 Connect the next time T3 starts.",
+          `This T3 environment${identity ? ` (${identity})` : ""} will be available through T3 Connect the next time T3 starts.`,
         );
       }),
     ),
@@ -457,8 +515,36 @@ const connectLogoutCommand = Command.make("logout", {
   ),
 );
 
-export const connectCommand = Command.make("connect").pipe(
-  Command.withDescription("Manage headless T3 Connect access."),
+const connectSetupCommand = Command.make("connect", {
+  ...projectLocationFlags,
+  headless: headlessFlag,
+}).pipe(
+  Command.withDescription("Set up T3 Connect for this machine."),
+  Command.withHandler((flags) =>
+    runCloudCommand(
+      flags,
+      Effect.gen(function* () {
+        const relayClient = yield* RelayClient.RelayClient;
+        const installed = yield* acquireRelayClientForLink(
+          relayClient,
+          confirmRelayClientInstall,
+          reportRelayClientInstallProgress,
+        );
+        if (Option.isNone(installed)) {
+          yield* Console.log("T3 Connect setup cancelled. The relay client was not installed.");
+          return;
+        }
+        const identity = yield* authorizeCli(flags);
+        yield* CliState.setCliDesiredCloudLink(true);
+        yield* Console.log(
+          `Connected${identity ? ` as ${identity}` : ""}. Start T3 to provision this environment.`,
+        );
+      }),
+    ),
+  ),
+);
+
+export const connectCommand = connectSetupCommand.pipe(
   Command.withSubcommands([
     connectLoginCommand,
     connectLinkCommand,

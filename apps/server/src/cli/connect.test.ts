@@ -8,7 +8,28 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 
-import { acquireRelayClientForLink, reportCloudDisconnectResults } from "./connect.ts";
+import {
+  acquireRelayClientForLink,
+  formatHeadlessAuthorizationPrompt,
+  isHeadlessConnectEnvironment,
+  reportCloudDisconnectResults,
+} from "./connect.ts";
+
+it("selects out-of-band authorization for SSH sessions and formats its prompt", () => {
+  assert.isTrue(isHeadlessConnectEnvironment({ SSH_CONNECTION: "127.0.0.1 1 127.0.0.1 2" }));
+  assert.isTrue(isHeadlessConnectEnvironment({ SSH_TTY: "/dev/pts/1" }));
+  assert.isFalse(isHeadlessConnectEnvironment({}));
+  assert.equal(
+    formatHeadlessAuthorizationPrompt("https://app.example.test/connect#state=abc"),
+    [
+      "Headless authorization",
+      "Open this URL on a device with a browser:",
+      "  https://app.example.test/connect#state=abc",
+      "",
+      "After signing in, return here and enter the code shown in your browser.",
+    ].join("\n"),
+  );
+});
 
 const managedExecutable = {
   status: "available",
