@@ -11,11 +11,25 @@ import * as References from "effect/References";
 import {
   acquireRelayClientForLink,
   authorizeCliWith,
+  cloudConfigurationError,
   formatHeadlessAuthorizationPrompt,
   isHeadlessConnectEnvironment,
   reportCloudDisconnectResults,
 } from "./connect.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
+
+it("permits credential-only login without a relay URL", () => {
+  const oauthOnly = {
+    hasCliOAuthConfig: true,
+    hasPublicConfig: false,
+  };
+
+  assert.isUndefined(cloudConfigurationError("oauth", oauthOnly));
+  assert.equal(
+    cloudConfigurationError("full", oauthOnly),
+    "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.",
+  );
+});
 
 it("selects out-of-band authorization for SSH sessions and formats its prompt", () => {
   assert.isTrue(isHeadlessConnectEnvironment({ SSH_CONNECTION: "127.0.0.1 1 127.0.0.1 2" }));

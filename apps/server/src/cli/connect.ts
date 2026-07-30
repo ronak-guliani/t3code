@@ -31,7 +31,11 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 import { CLOUD_LINKED_USER_ID, RELAY_URL_SECRET } from "../cloud/config.ts";
-import { hasCloudPublicConfig, relayUrlConfig } from "../cloud/publicConfig.ts";
+import {
+  hasCloudCliOAuthConfig,
+  hasCloudPublicConfig,
+  relayUrlConfig,
+} from "../cloud/publicConfig.ts";
 import { headlessRelayClientTracingLayer } from "../cloud/relayTracing.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -64,13 +68,38 @@ export function formatHeadlessAuthorizationPrompt(authorizeUrl: string): string 
   ].join("\n");
 }
 
-const requireCloudPublicConfig = hasCloudPublicConfig
-  ? Effect.void
-  : Effect.fail(
-      new Error(
-        "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.",
-      ),
-    );
+type CloudConfigurationRequirement = "oauth" | "full";
+
+interface CloudConfigurationAvailability {
+  readonly hasCliOAuthConfig: boolean;
+  readonly hasPublicConfig: boolean;
+}
+
+export function cloudConfigurationError(
+  requirement: CloudConfigurationRequirement,
+  availability: CloudConfigurationAvailability = {
+    hasCliOAuthConfig: hasCloudCliOAuthConfig,
+    hasPublicConfig: hasCloudPublicConfig,
+  },
+): string | undefined {
+  if (requirement === "oauth" && !availability.hasCliOAuthConfig) {
+    return "T3 Connect login is not configured. Set T3CODE_CLERK_PUBLISHABLE_KEY and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.";
+  }
+  if (requirement === "full" && !availability.hasPublicConfig) {
+    return "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.";
+  }
+  return undefined;
+}
+
+const requireCloudCliOAuthConfig = (() => {
+  const message = cloudConfigurationError("oauth");
+  return message ? Effect.fail(new Error(message)) : Effect.void;
+})();
+
+const requireCloudPublicConfig = (() => {
+  const message = cloudConfigurationError("full");
+  return message ? Effect.fail(new Error(message)) : Effect.void;
+})();
 
 const promptForOutOfBandOAuthCode = Effect.fn("cloud.cli.prompt_out_of_band_code")(function* (
   input: CliTokenManager.OutOfBandOAuthPromptInput,
@@ -109,7 +138,7 @@ export const authorizeCliWith = Effect.fn("cloud.cli.authorize_with")(function* 
 const authorizeCli = Effect.fn("cloud.cli.authorize")(function* (options: {
   readonly headless: boolean;
 }) {
-  yield* requireCloudPublicConfig;
+  yield* requireCloudCliOAuthConfig;
   const tokens = yield* CliTokenManager.CloudCliTokenManager;
   return yield* authorizeCliWith(
     { ...options, sshSession: isHeadlessConnectEnvironment() },
