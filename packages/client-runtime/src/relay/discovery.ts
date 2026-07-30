@@ -317,7 +317,11 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
               yield* refresh.pipe(Effect.forkScoped);
             }
           })
-        : Effect.void,
+        : Ref.get(hasRefreshed).pipe(
+            Effect.flatMap((shouldRefresh) =>
+              shouldRefresh ? refresh.pipe(Effect.forkScoped) : Effect.void,
+            ),
+          ),
     ),
     Effect.forkScoped,
   );

@@ -251,6 +251,27 @@ describe("RelayEnvironmentDiscovery", () => {
       }),
   );
 
+  it.effect("refreshes the catalog after the application returns to the foreground", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* Effect.gen(function* () {
+        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+        const requests = yield* Ref.get(harness.statusRequests);
+        for (const environment of environments) {
+          yield* Deferred.succeed(
+            requests.get(environment.environmentId)!,
+            status(environment, "online"),
+          );
+        }
+        yield* discovery.refresh;
+
+        yield* harness.wake("application-active");
+        yield* Deferred.await(harness.secondListCall);
+        expect(yield* Ref.get(harness.listCalls)).toBe(2);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+  );
+
   it.effect("publishes listing failures without rejecting the refresh command", () =>
     Effect.gen(function* () {
       const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
