@@ -58,6 +58,13 @@ export interface AcpSessionRuntimeOptions {
   };
 }
 
+/**
+ * The parts of the runtime's logging that are bound to a thread. A prewarmed
+ * process is created before its thread is known, so these are late-bound at
+ * adoption rather than captured at construction.
+ */
+export type AcpNativeLoggers = Pick<AcpSessionRuntimeOptions, "requestLogger" | "protocolLogging">;
+
 export interface AcpSessionRequestLogEvent {
   readonly method: string;
   readonly payload: unknown;
@@ -107,6 +114,12 @@ export interface AcpSessionRuntimeShape {
    * pooled runtime whose process died while it sat idle.
    */
   readonly isProcessAlive: Effect.Effect<boolean>;
+  /**
+   * Rebinds the thread-scoped native loggers. A prewarmed process is spawned
+   * before its thread exists, so the adopting session must install its own
+   * loggers or the session would emit no native ACP request/protocol events.
+   */
+  readonly bindNativeLoggers: (loggers: AcpNativeLoggers) => Effect.Effect<void>;
   readonly getEvents: () => Stream.Stream<AcpParsedSessionEvent, never>;
   readonly discardPendingEvents: Effect.Effect<ReadonlyArray<AcpParsedSessionEvent>>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
@@ -201,8 +214,19 @@ const makeAcpSessionRuntime = (
     const handshakeStateRef = yield* Ref.make<AcpHandshakeState>({ _tag: "NotStarted" });
     const sessionMcpServers = options.mcpServers ?? [];
 
+    // Read through a ref so an adopted prewarmed process logs into the thread
+    // that took it, not the (absent) thread it was spawned for.
+    const nativeLoggersRef = yield* Ref.make<AcpNativeLoggers>({
+      ...(options.requestLogger ? { requestLogger: options.requestLogger } : {}),
+      ...(options.protocolLogging ? { protocolLogging: options.protocolLogging } : {}),
+    });
+
     const logRequest = (event: AcpSessionRequestLogEvent) =>
-      options.requestLogger ? options.requestLogger(event) : Effect.void;
+      Ref.get(nativeLoggersRef).pipe(
+        Effect.flatMap((loggers) =>
+          loggers.requestLogger ? loggers.requestLogger(event) : Effect.void,
+        ),
+      );
 
     const runLoggedRequest = <A>(
       method: string,
@@ -265,7 +289,12 @@ const makeAcpSessionRuntime = (
         ...(options.protocolLogging?.logOutgoing !== undefined
           ? { logOutgoing: options.protocolLogging.logOutgoing }
           : {}),
-        ...(options.protocolLogging?.logger ? { logger: options.protocolLogging.logger } : {}),
+        logger: (event: EffectAcpProtocol.AcpProtocolLogEvent) =>
+          Ref.get(nativeLoggersRef).pipe(
+            Effect.flatMap((loggers) =>
+              loggers.protocolLogging?.logger ? loggers.protocolLogging.logger(event) : Effect.void,
+            ),
+          ),
       }),
     ).pipe(Effect.provideService(Scope.Scope, runtimeScope));
 
@@ -655,6 +684,7 @@ const makeAcpSessionRuntime = (
       start: (overrides) => start(overrides),
       warmup: Effect.asVoid(handshakeOnceCached),
       isProcessAlive: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+      bindNativeLoggers: (loggers) => Ref.set(nativeLoggersRef, loggers),
       getEvents: () => Stream.fromQueue(eventQueue),
       discardPendingEvents,
       getModeState: Ref.get(modeStateRef),

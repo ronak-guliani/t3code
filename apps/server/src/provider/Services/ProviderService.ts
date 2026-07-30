@@ -92,9 +92,6 @@ export interface ProviderServiceShape {
   readonly listSessions: () => Effect.Effect<ReadonlyArray<ProviderSession>>;
 
   /**
-   * Read capabilities for the adapter bound to a configured provider instance.
-   */
-  /**
    * Warms an agent process for an anticipated turn. Best effort: unsupported
    * providers and failures resolve successfully.
    */
@@ -104,6 +101,9 @@ export interface ProviderServiceShape {
     readonly runtimeMode: RuntimeMode;
   }) => Effect.Effect<void>;
 
+  /**
+   * Read capabilities for the adapter bound to a configured provider instance.
+   */
   readonly getCapabilities: (
     instanceId: ProviderInstanceId,
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;

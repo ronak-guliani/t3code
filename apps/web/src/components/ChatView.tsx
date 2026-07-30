@@ -4407,12 +4407,16 @@ function ChatViewBody(
     if (!api || !gitCwd) {
       return;
     }
-    // Mirror the workflow's own model resolution: warming a different provider
-    // instance than the run will use would spawn a process nobody adopts.
-    const instanceId =
-      settings.agentWorkflows.reviewChanges.modelSelection?.instanceId ??
-      activeProject?.defaultModelSelection?.instanceId ??
-      activeThread?.modelSelection?.instanceId;
+    // Must mirror `onRunWorkflow`'s resolution exactly, including the
+    // composer's selection: warming a different provider instance than the run
+    // will use spawns a process nobody adopts and leaves the worker cold.
+    const sendCtx = composerRef.current?.getSendContext();
+    const instanceId = (
+      settings.agentWorkflows.reviewChanges.modelSelection ??
+      sendCtx?.selectedModelSelection ??
+      activeProject?.defaultModelSelection ??
+      activeThread?.modelSelection
+    )?.instanceId;
     if (!instanceId) {
       return;
     }

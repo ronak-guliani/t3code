@@ -2028,6 +2028,12 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           runtimeOptions: {
             ...COPILOT_ACP_SHARED_RUNTIME_OPTIONS,
             cwd: nodePath.resolve(input.cwd.trim()),
+            // Whether protocol logging is on is adapter-level, so it can be set
+            // now; only the logger itself is thread-bound and late-bound at
+            // adoption.
+            ...(nativeEventLogger
+              ? { protocolLogging: { logIncoming: true, logOutgoing: true } }
+              : {}),
           },
           childProcessSpawner,
         });

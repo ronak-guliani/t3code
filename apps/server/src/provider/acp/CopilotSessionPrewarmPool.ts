@@ -12,11 +12,14 @@
  * supplies the thread-bound MCP servers at `session/new` time, so a prewarmed
  * process can never carry another thread's credential.
  *
- * A single slot bounds the cost to at most one idle agent process.
+ * A single slot bounds the cost to at most one idle agent process. Warming is
+ * speculative, so it never blocks acquisition: the in-flight build runs outside
+ * the pool lock and is bounded by a timeout, meaning a stalled or hung warmup
+ * degrades to an ordinary cold session start rather than wedging it.
  *
  * @module CopilotSessionPrewarmPool
  */
-import { Effect, Exit, Layer, Scope, SynchronizedRef } from "effect";
+import { Duration, Effect, Exit, Layer, Scope, SynchronizedRef } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import {
@@ -27,6 +30,14 @@ import {
 
 /** Warmed processes older than this are discarded rather than adopted. */
 export const COPILOT_PREWARM_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * A warmup that has not reached `authenticate` by now is abandoned and its
+ * process killed. `initialize` + `authenticate` normally cost ~650ms; ACP
+ * requests carry no timeout of their own, so without this a hung agent would
+ * hold a process forever.
+ */
+export const COPILOT_PREWARM_WARMUP_TIMEOUT_MS = 30 * 1000;
 
 export interface CopilotPrewarmRequest {
   readonly spawn: AcpSpawnInput;
@@ -99,17 +110,33 @@ interface PrewarmEntry {
   readonly warmedAt: number;
 }
 
+interface PoolState {
+  readonly entry: PrewarmEntry | undefined;
+  /** Spawn key of a build running outside the lock, if any. */
+  readonly warmingKey: string | undefined;
+  readonly closed: boolean;
+}
+
 const closeEntry = (entry: PrewarmEntry) => Scope.close(entry.scope, Exit.void).pipe(Effect.ignore);
 
 export const makeCopilotSessionPrewarmPool = (
   buildRuntime: CopilotPrewarmRuntimeBuilder = buildPrewarmedCopilotRuntime,
 ) =>
   Effect.gen(function* () {
-    const slot = yield* SynchronizedRef.make<PrewarmEntry | undefined>(undefined);
+    const state = yield* SynchronizedRef.make<PoolState>({
+      entry: undefined,
+      warmingKey: undefined,
+      closed: false,
+    });
 
     yield* Effect.addFinalizer(() =>
-      SynchronizedRef.updateEffect(slot, (entry) =>
-        entry ? closeEntry(entry).pipe(Effect.as(undefined)) : Effect.succeed(undefined),
+      SynchronizedRef.updateEffect(state, (current) =>
+        Effect.gen(function* () {
+          if (current.entry) {
+            yield* closeEntry(current.entry);
+          }
+          return { entry: undefined, warmingKey: current.warmingKey, closed: true };
+        }),
       ),
     );
 
@@ -117,8 +144,9 @@ export const makeCopilotSessionPrewarmPool = (
       Effect.gen(function* () {
         const scope = yield* Scope.make("sequential");
         const runtime = yield* buildRuntime(request).pipe(
+          Effect.timeout(Duration.millis(COPILOT_PREWARM_WARMUP_TIMEOUT_MS)),
           Effect.provideService(Scope.Scope, scope),
-          // A failed warmup must not leak the spawned process.
+          // A failed, timed-out or interrupted warmup must not leak the process.
           Effect.onError(() => Scope.close(scope, Exit.void).pipe(Effect.ignore)),
         );
 
@@ -130,46 +158,74 @@ export const makeCopilotSessionPrewarmPool = (
         } satisfies PrewarmEntry;
       });
 
-    const prewarm: CopilotPrewarmPoolShape["prewarm"] = (request) => {
-      const key = copilotPrewarmKey(request.spawn);
-      return SynchronizedRef.updateEffect(slot, (current) =>
-        Effect.gen(function* () {
-          if (current && current.key === key && (yield* current.runtime.isProcessAlive)) {
-            return current;
-          }
-          if (current) {
-            yield* closeEntry(current);
-          }
-          const entry = yield* buildEntry(request, key).pipe(
-            Effect.tapError((error) =>
-              Effect.logDebug("copilot prewarm failed", { key, error: String(error) }),
-            ),
-            Effect.catchCause(() => Effect.succeed(undefined)),
-          );
-          return entry;
-        }),
-      ).pipe(Effect.ignore);
-    };
+    const isUsable = (entry: PrewarmEntry, key: string, now: number) =>
+      entry.key === key && now - entry.warmedAt < COPILOT_PREWARM_TTL_MS
+        ? entry.runtime.isProcessAlive
+        : Effect.succeed(false);
+
+    const prewarm: CopilotPrewarmPoolShape["prewarm"] = (request) =>
+      Effect.gen(function* () {
+        const key = copilotPrewarmKey(request.spawn);
+        const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+
+        // Claim the slot in a critical section that only does bookkeeping, so
+        // `acquire` never waits on a network round trip.
+        const claimed = yield* SynchronizedRef.modifyEffect(state, (current) =>
+          Effect.gen(function* () {
+            if (current.closed || current.warmingKey !== undefined) {
+              return [false, current] as const;
+            }
+            if (current.entry && (yield* isUsable(current.entry, key, now))) {
+              return [false, current] as const;
+            }
+            return [true, { ...current, warmingKey: key }] as const;
+          }),
+        );
+        if (!claimed) {
+          return;
+        }
+
+        const entry = yield* buildEntry(request, key).pipe(
+          Effect.tapError((error) =>
+            Effect.logDebug("copilot prewarm failed", { key, error: String(error) }),
+          ),
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        );
+
+        yield* SynchronizedRef.updateEffect(state, (current) =>
+          Effect.gen(function* () {
+            const released = { ...current, warmingKey: undefined };
+            if (!entry) {
+              return released;
+            }
+            // The pool shut down while this was building: do not resurrect it.
+            if (current.closed) {
+              yield* closeEntry(entry);
+              return released;
+            }
+            if (current.entry) {
+              yield* closeEntry(current.entry);
+            }
+            return { ...released, entry };
+          }),
+        );
+      }).pipe(Effect.ignore);
 
     const acquire: CopilotPrewarmPoolShape["acquire"] = (spawn) =>
       Effect.gen(function* () {
         const key = copilotPrewarmKey(spawn);
         const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
 
-        const taken = yield* SynchronizedRef.modifyEffect(slot, (current) =>
+        const taken = yield* SynchronizedRef.modifyEffect(state, (current) =>
           Effect.gen(function* () {
-            if (!current) {
-              return [undefined, undefined] as const;
+            if (!current.entry) {
+              return [undefined, current] as const;
             }
-            const usable =
-              current.key === key &&
-              now - current.warmedAt < COPILOT_PREWARM_TTL_MS &&
-              (yield* current.runtime.isProcessAlive);
-            if (!usable) {
-              yield* closeEntry(current);
-              return [undefined, undefined] as const;
+            if (!(yield* isUsable(current.entry, key, now))) {
+              yield* closeEntry(current.entry);
+              return [undefined, { ...current, entry: undefined }] as const;
             }
-            return [current, undefined] as const;
+            return [current.entry, { ...current, entry: undefined }] as const;
           }),
         );
 

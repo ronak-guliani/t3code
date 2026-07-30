@@ -20,6 +20,7 @@ import type { McpProviderSessionConfig } from "../../mcp/McpSessionRegistry.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
+  type AcpNativeLoggers,
   type AcpSessionRuntimeShape,
   type AcpSpawnInput,
 } from "./AcpSessionRuntime.ts";
@@ -285,17 +286,23 @@ export const COPILOT_ACP_SHARED_RUNTIME_OPTIONS = {
 
 /**
  * Binds a prewarmed process to a thread. The warmed process was created without
- * any MCP credential, so `session/new` must be given this thread's servers and
- * nothing may override them — otherwise a warmed process could carry another
- * thread's credential.
+ * a thread, so it holds neither an MCP credential nor thread-scoped loggers:
+ * `session/new` must be given this thread's servers, nothing may override them
+ * (otherwise a warmed process could carry another thread's credential), and the
+ * thread's native loggers must be installed or the adopted session would emit
+ * no ACP request/protocol events for its whole lifetime.
  */
 export const bindPrewarmedCopilotRuntime = (
   pooled: AcpSessionRuntimeShape,
   mcpServers: ReturnType<typeof buildCopilotMcpServers>,
-): AcpSessionRuntimeShape => ({
-  ...pooled,
-  start: (overrides) => pooled.start({ ...overrides, mcpServers }),
-});
+  nativeLoggers: AcpNativeLoggers,
+): Effect.Effect<AcpSessionRuntimeShape> =>
+  pooled.bindNativeLoggers(nativeLoggers).pipe(
+    Effect.as({
+      ...pooled,
+      start: (overrides) => pooled.start({ ...overrides, mcpServers }),
+    } satisfies AcpSessionRuntimeShape),
+  );
 
 export const makeCopilotAcpRuntime = (
   input: CopilotAcpRuntimeInput,
@@ -346,7 +353,10 @@ export const makeCopilotAcpRuntime = (
         threadId: input.threadId,
         cwd: input.cwd,
       });
-      return bindPrewarmedCopilotRuntime(pooled, mcpServers);
+      return yield* bindPrewarmedCopilotRuntime(pooled, mcpServers, {
+        ...(input.requestLogger ? { requestLogger: input.requestLogger } : {}),
+        ...(input.protocolLogging ? { protocolLogging: input.protocolLogging } : {}),
+      });
     }
 
     const acpContext = yield* Layer.build(

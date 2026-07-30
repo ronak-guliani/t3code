@@ -1,10 +1,11 @@
-import { Duration, Effect, Exit, Ref, Scope } from "effect";
+import { Duration, Effect, Exit, Fiber, Ref, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import type { AcpSessionRuntimeShape, AcpSpawnInput } from "./AcpSessionRuntime.ts";
 import {
   COPILOT_PREWARM_TTL_MS,
+  COPILOT_PREWARM_WARMUP_TIMEOUT_MS,
   copilotPrewarmKey,
   type CopilotPrewarmRequest,
   makeCopilotSessionPrewarmPool,
@@ -196,5 +197,56 @@ describe("CopilotSessionPrewarmPool", () => {
 
       yield* Scope.close(poolScope, Exit.void);
       expect(processes[0]?.closed).toBe(true);
+    }).pipe(Effect.scoped, Effect.runPromise));
+
+  it("does not let a stalled warmup block acquisition", () =>
+    Effect.gen(function* () {
+      const started = yield* Ref.make(0);
+      // A warmup that never resolves, standing in for a hung `initialize` or
+      // `authenticate` against a live-but-unresponsive agent process.
+      const pool = yield* makeCopilotSessionPrewarmPool(() =>
+        Ref.update(started, (count) => count + 1).pipe(Effect.andThen(Effect.never)),
+      );
+
+      yield* pool.prewarm(requestOf(spawnOf())).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      expect(yield* Ref.get(started)).toBe(1);
+
+      // Must fall back to a cold start rather than wait on the stalled build.
+      const acquired = yield* pool
+        .acquire(spawnOf())
+        .pipe(Effect.timeout(Duration.seconds(5)), Effect.scoped);
+      expect(acquired).toBeUndefined();
+    }).pipe(Effect.scoped, Effect.runPromise));
+
+  it("abandons and tears down a warmup that exceeds the timeout", () =>
+    Effect.gen(function* () {
+      const processes: Array<FakeProcess> = [];
+      const build = makeFakeBuilder(processes);
+      const pool = yield* makeCopilotSessionPrewarmPool((request) =>
+        build(request).pipe(Effect.andThen(Effect.never)),
+      );
+
+      const fiber = yield* pool.prewarm(requestOf(spawnOf())).pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.millis(COPILOT_PREWARM_WARMUP_TIMEOUT_MS + 1));
+      yield* Fiber.await(fiber);
+
+      expect(processes[0]?.closed).toBe(true);
+      expect(yield* pool.acquire(spawnOf())).toBeUndefined();
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer()), Effect.runPromise));
+
+  it("does not start a second build while one is already in flight", () =>
+    Effect.gen(function* () {
+      const started = yield* Ref.make(0);
+      const pool = yield* makeCopilotSessionPrewarmPool(() =>
+        Ref.update(started, (count) => count + 1).pipe(Effect.andThen(Effect.never)),
+      );
+
+      yield* pool.prewarm(requestOf(spawnOf())).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* pool.prewarm(requestOf(spawnOf({ cwd: "/other" })));
+      yield* pool.prewarm(requestOf(spawnOf()));
+
+      expect(yield* Ref.get(started)).toBe(1);
     }).pipe(Effect.scoped, Effect.runPromise));
 });
