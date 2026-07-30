@@ -18,6 +18,9 @@ import {
   requireThreadNotArchived,
   requireQueuedTurn,
   requireThreadReadyForTurnStart,
+  threadHasInFlightTurn,
+  threadHasPendingInteraction,
+  threadHasQueuedTurnStart,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
@@ -579,6 +582,121 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return unarchivedEvent;
     }
 
+    case "thread.settle": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        threadHasInFlightTurn(thread) ||
+        thread.session?.status === "running" ||
+        threadHasPendingInteraction(thread)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has active work or a pending interaction and cannot settle.`,
+        });
+      }
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.settled",
+        payload: {
+          threadId: command.threadId,
+          settledAt: thread.settledAt ?? occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.unsettle": {
+      yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.unsettled",
+        payload: {
+          threadId: command.threadId,
+          reason: command.reason,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.snooze": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (threadHasQueuedTurnStart(thread) || threadHasPendingInteraction(thread)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' has a queued turn or pending interaction and cannot snooze.`,
+        });
+      }
+      const occurredAt = nowIso();
+      if (Date.parse(command.snoozedUntil) <= Date.parse(occurredAt)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A snooze must end in the future.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.snoozed",
+        payload: {
+          threadId: command.threadId,
+          snoozedUntil: command.snoozedUntil,
+          snoozedAt: thread.snoozedAt ?? occurredAt,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.unsnooze": {
+      yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.unsnoozed",
+        payload: {
+          threadId: command.threadId,
+          reason: command.reason,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       yield* requireThread({
         readModel,
@@ -866,7 +984,41 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         source: command.source,
         at: command.createdAt,
       });
-      return [userMessageEvent, turnStartRequestedEvent];
+      const occurredAt = command.createdAt;
+      const lifecycleEvents: PlannedOrchestrationEvent[] = [];
+      if (targetThread.settledOverride !== null || targetThread.settledAt !== null) {
+        lifecycleEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: occurredAt,
+          },
+        });
+      }
+      if (targetThread.snoozedUntil !== null || targetThread.snoozedAt !== null) {
+        lifecycleEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.unsnoozed",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: occurredAt,
+          },
+        });
+      }
+      return [userMessageEvent, turnStartRequestedEvent, ...lifecycleEvents];
     }
 
     case "thread.queued-turn.create": {
@@ -1207,12 +1359,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.set": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const sessionSetEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1226,6 +1378,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           session: command.session,
         },
       };
+      if (
+        command.session?.status !== "running" ||
+        (thread.settledOverride === null && thread.settledAt === null)
+      ) {
+        return sessionSetEvent;
+      }
+      return [
+        sessionSetEvent,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
     }
 
     case "thread.message.assistant.delta": {
@@ -1375,7 +1550,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1388,7 +1563,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? ((command.activity.payload as { requestId: string })
               .requestId as OrchestrationEvent["metadata"]["requestId"])
           : undefined;
-      return {
+      const activityEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1402,6 +1577,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           activity: command.activity,
         },
       };
+      if (
+        !["approval.requested", "user-input.requested", "provider.turn.start.failed"].includes(
+          command.activity.kind,
+        ) ||
+        (thread.settledOverride === null && thread.settledAt === null)
+      ) {
+        return activityEvent;
+      }
+      return [
+        activityEvent,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.unsettled",
+          payload: {
+            threadId: command.threadId,
+            reason: "activity",
+            updatedAt: command.createdAt,
+          },
+        },
+      ];
     }
 
     case "workflow.run.request": {

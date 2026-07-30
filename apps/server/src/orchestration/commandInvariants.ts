@@ -127,6 +127,35 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
   return latestMessage.createdAt >= thread.latestTurn.completedAt;
 }
 
+export function threadHasQueuedTurnStart(thread: OrchestrationThread): boolean {
+  const latestMessage = thread.messages.at(-1);
+  if (latestMessage?.role !== "user") {
+    return false;
+  }
+  const failedTurnStart = thread.activities.some((activity) => {
+    if (
+      activity.kind !== "provider.turn.start.failed" ||
+      activity.createdAt < latestMessage.createdAt
+    ) {
+      return false;
+    }
+    const messageId =
+      typeof activity.payload === "object" &&
+      activity.payload !== null &&
+      "messageId" in activity.payload &&
+      typeof activity.payload.messageId === "string"
+        ? activity.payload.messageId
+        : null;
+    return messageId === null || messageId === latestMessage.id;
+  });
+  if (failedTurnStart) {
+    return false;
+  }
+  return thread.latestTurn === null || thread.latestTurn.completedAt === null
+    ? thread.latestTurn?.state !== "running"
+    : latestMessage.createdAt >= thread.latestTurn.completedAt;
+}
+
 function activityRequestId(payload: unknown): string | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
