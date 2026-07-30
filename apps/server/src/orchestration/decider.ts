@@ -668,7 +668,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           snoozedUntil: command.snoozedUntil,
-          snoozedAt: thread.snoozedAt ?? occurredAt,
+          snoozedAt: occurredAt,
           updatedAt: occurredAt,
         },
       };
