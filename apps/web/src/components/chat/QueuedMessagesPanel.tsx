@@ -72,7 +72,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
           const isEditing = editingId === queuedTurn.id;
           const isPaused = queuedTurn.failedAt !== null;
           const meta = attachmentLabel(queuedTurn);
-          const label = queueIndex === 0 ? "Up next" : `Queued ${queueIndex + 1}`;
+          const label = queueIndex === 0 ? "Up next" : `Stashed ${queueIndex + 1}`;
           return (
             <li
               key={queuedTurn.id}
@@ -85,7 +85,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="composer-input-font-secondary font-medium text-muted-foreground">
-                      Editing queued message
+                      Editing scheduled stash
                     </span>
                     <div className="flex items-center gap-1">
                       <Button type="button" size="xs" variant="ghost" onClick={stopEditing}>
@@ -131,7 +131,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                     {isPaused ? "Paused" : label}
                   </span>
                   <div className="min-w-0 flex-1 truncate text-foreground/85">
-                    {queuedTurnLabel(queuedTurn) || (meta ?? "Queued message")}
+                    {queuedTurnLabel(queuedTurn) || (meta ?? "Scheduled stash")}
                     {meta ? (
                       <span className="composer-input-font-secondary ml-2 text-muted-foreground">
                         {meta}
@@ -143,7 +143,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                       type="button"
                       size="icon-xs"
                       variant="ghost"
-                      aria-label="Edit queued message"
+                      aria-label="Edit scheduled stash"
                       title="Edit"
                       onClick={() => {
                         setEditingId(queuedTurn.id);
@@ -156,7 +156,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                       type="button"
                       size="icon-xs"
                       variant="ghost"
-                      aria-label="Delete queued message"
+                      aria-label="Delete scheduled stash"
                       title="Delete"
                       onClick={() => onDeleteQueuedTurn(queuedTurn.id)}
                     >

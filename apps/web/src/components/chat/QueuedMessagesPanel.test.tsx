@@ -54,7 +54,7 @@ describe("QueuedMessagesPanel", () => {
 
   it("labels the first visible turn by its real queue position", () => {
     // The hidden continuation is always dispatched first, so the user's own
-    // queued message is not actually "Up next".
+    // scheduled stash is not actually "Up next".
     const html = render([
       queuedTurn("q-1", "Continue the task", handoffOrigin),
       queuedTurn("q-2", "Then run the tests"),
@@ -62,7 +62,7 @@ describe("QueuedMessagesPanel", () => {
 
     expect(html).toContain("Then run the tests");
     expect(html).not.toContain("Up next");
-    expect(html).toContain("Queued 2");
+    expect(html).toContain("Stashed 2");
   });
 
   it("keeps a failed handoff continuation visible and actionable", () => {
@@ -72,6 +72,6 @@ describe("QueuedMessagesPanel", () => {
 
     expect(html).toContain("Continue in feature/handoff");
     expect(html).toContain("Paused");
-    expect(html).toContain("Delete queued message");
+    expect(html).toContain("Delete scheduled stash");
   });
 });

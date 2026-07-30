@@ -443,6 +443,8 @@ interface ComposerDraftStoreState {
     threadRef: ComposerThreadTarget,
     attachments: PersistedComposerImageAttachment[],
   ) => void;
+  /** Clears only payload that can be restored from a saved stash. */
+  clearPromptAndImages: (threadRef: ComposerThreadTarget) => void;
   clearComposerContent: (threadRef: ComposerThreadTarget) => void;
 }
 
@@ -1924,7 +1926,7 @@ function hydratePersistedComposerImageAttachment(
   }
 }
 
-function hydrateImagesFromPersisted(
+export function hydrateImagesFromPersisted(
   attachments: ReadonlyArray<PersistedComposerImageAttachment>,
 ): ComposerImageAttachment[] {
   return attachments.flatMap((attachment) => {
@@ -3015,6 +3017,32 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           });
           Promise.resolve().then(() => {
             verifyPersistedAttachments(threadKey, attachments, set);
+          });
+        },
+        clearPromptAndImages: (threadRef) => {
+          const threadKey = resolveComposerDraftKey(get(), threadRef) ?? "";
+          if (threadKey.length === 0) {
+            return;
+          }
+          set((state) => {
+            const current = state.draftsByThreadKey[threadKey];
+            if (!current) {
+              return state;
+            }
+            const nextDraft: ComposerThreadDraftState = {
+              ...current,
+              prompt: "",
+              images: [],
+              nonPersistedImageIds: [],
+              persistedAttachments: [],
+            };
+            const nextDraftsByThreadKey = { ...state.draftsByThreadKey };
+            if (shouldRemoveDraft(nextDraft)) {
+              delete nextDraftsByThreadKey[threadKey];
+            } else {
+              nextDraftsByThreadKey[threadKey] = nextDraft;
+            }
+            return { draftsByThreadKey: nextDraftsByThreadKey };
           });
         },
         clearComposerContent: (threadRef) => {

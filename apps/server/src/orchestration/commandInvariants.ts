@@ -220,6 +220,25 @@ export function requireThreadReadyForTurnStart(input: {
   );
 }
 
+export function requireThreadReadyForQueuedDispatch(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly command: OrchestrationCommand;
+  readonly threadId: ThreadId;
+}): Effect.Effect<OrchestrationThread, OrchestrationCommandInvariantError> {
+  return requireThread(input).pipe(
+    Effect.flatMap((thread) =>
+      isThreadReadyForQueuedDispatch(thread)
+        ? Effect.succeed(thread)
+        : Effect.fail(
+            invariantError(
+              input.command.type,
+              `Thread '${input.threadId}' is not ready to dispatch a scheduled stash.`,
+            ),
+          ),
+    ),
+  );
+}
+
 export function requireThreadArchived(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;

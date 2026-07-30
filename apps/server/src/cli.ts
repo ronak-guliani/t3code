@@ -2294,9 +2294,11 @@ const chatQueueAddCommand = Command.make("add", {
   ...liveTargetFlags,
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
-  prompt: Argument.string("prompt").pipe(Argument.withDescription("Queued prompt text.")),
+  prompt: Argument.string("prompt").pipe(
+    Argument.withDescription("Prompt text to stash for the next turn."),
+  ),
 }).pipe(
-  Command.withDescription("Add a queued turn."),
+  Command.withDescription("Add a scheduled stash."),
   Command.withHandler((flags) =>
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
@@ -2327,10 +2329,10 @@ const chatQueueAddCommand = Command.make("add", {
 const chatQueueUpdateCommand = Command.make("update", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
-  queuedTurn: Argument.string("queued-turn").pipe(Argument.withDescription("Queued turn id.")),
-  text: Argument.string("text").pipe(Argument.withDescription("Updated queued prompt text.")),
+  queuedTurn: Argument.string("queued-turn").pipe(Argument.withDescription("Scheduled stash id.")),
+  text: Argument.string("text").pipe(Argument.withDescription("Updated scheduled stash text.")),
 }).pipe(
-  Command.withDescription("Update queued turn text."),
+  Command.withDescription("Update scheduled stash text."),
   Command.withHandler((flags) =>
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
@@ -2351,9 +2353,9 @@ const chatQueueUpdateCommand = Command.make("update", {
 const chatQueueDeleteCommand = Command.make("delete", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
-  queuedTurn: Argument.string("queued-turn").pipe(Argument.withDescription("Queued turn id.")),
+  queuedTurn: Argument.string("queued-turn").pipe(Argument.withDescription("Scheduled stash id.")),
 }).pipe(
-  Command.withDescription("Delete a queued turn."),
+  Command.withDescription("Delete a scheduled stash."),
   Command.withHandler((flags) =>
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
@@ -2373,9 +2375,9 @@ const chatQueueDeleteCommand = Command.make("delete", {
 const chatQueueDispatchCommand = Command.make("dispatch", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
-  queuedTurn: Argument.string("queued-turn").pipe(Argument.withDescription("Queued turn id.")),
+  queuedTurn: Argument.string("queued-turn").pipe(Argument.withDescription("Scheduled stash id.")),
 }).pipe(
-  Command.withDescription("Dispatch a queued turn."),
+  Command.withDescription("Dispatch a scheduled stash."),
   Command.withHandler((flags) =>
     withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
       Effect.gen(function* () {
@@ -2393,7 +2395,17 @@ const chatQueueDispatchCommand = Command.make("dispatch", {
 );
 
 const chatQueueCommand = Command.make("queue").pipe(
-  Command.withDescription("Manage queued turns."),
+  Command.withDescription("Manage scheduled stashes (legacy alias)."),
+  Command.withSubcommands([
+    chatQueueAddCommand,
+    chatQueueUpdateCommand,
+    chatQueueDeleteCommand,
+    chatQueueDispatchCommand,
+  ]),
+);
+
+const chatStashCommand = Command.make("stash").pipe(
+  Command.withDescription("Manage scheduled stashes."),
   Command.withSubcommands([
     chatQueueAddCommand,
     chatQueueUpdateCommand,
@@ -2408,6 +2420,7 @@ const chatCommand = Command.make("chat").pipe(
     chatListCommand,
     chatShowCommand,
     chatArchivedCommand,
+    chatStashCommand,
     chatCreateCommand,
     chatRenameCommand,
     chatDeleteCommand,

@@ -1990,13 +1990,13 @@ export function GeneralSettingsPanel() {
                 />
               </label>
               <label className="flex items-center justify-between gap-4 text-xs text-foreground">
-                <span>Queued turns</span>
+                <span>Scheduled stashes</span>
                 <Switch
                   checked={settings.chatExportDetail.includeQueuedTurns}
                   onCheckedChange={(checked) =>
                     updateChatExportDetail({ includeQueuedTurns: Boolean(checked) })
                   }
-                  aria-label="Include queued turns in chat exports"
+                  aria-label="Include scheduled stashes in chat exports"
                 />
               </label>
             </div>
