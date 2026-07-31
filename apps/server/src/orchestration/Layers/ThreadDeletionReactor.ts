@@ -6,7 +6,10 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
-import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import {
+  type WorktreeCleanupJob,
+  WorktreeCleanupJobRepository,
+} from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -17,24 +20,54 @@ import {
 
 type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 
-export function hasActiveWorktreeOwner(
-  readModel: {
-    readonly threads: ReadonlyArray<{
-      readonly id: ThreadId;
-      readonly deletedAt: string | null;
-      readonly worktreePath: string | null;
-    }>;
-  },
-  deletedThreadId: ThreadId,
-  worktreePath: string,
-): boolean {
-  return readModel.threads.some(
-    (thread) =>
-      thread.id !== deletedThreadId &&
-      thread.deletedAt === null &&
-      thread.worktreePath === worktreePath,
+const MAX_WORKTREE_CLEANUP_ATTEMPTS = 5;
+
+export const processAfterWorktreeReservation = <A, E1, R1, E2, R2>(
+  withLock: (
+    effect: Effect.Effect<Option.Option<A>, E1, R1>,
+  ) => Effect.Effect<Option.Option<A>, E1, R1>,
+  reserve: Effect.Effect<Option.Option<A>, E1, R1>,
+  process: (reservation: A) => Effect.Effect<void, E2, R2>,
+): Effect.Effect<void, E1 | E2, R1 | R2> =>
+  withLock(reserve).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.void,
+        onSome: process,
+      }),
+    ),
   );
-}
+
+export const findCanonicalActiveWorktreeOwner = Effect.fn("findCanonicalActiveWorktreeOwner")(
+  function* (
+    readModel: {
+      readonly threads: ReadonlyArray<{
+        readonly id: ThreadId;
+        readonly deletedAt: string | null;
+        readonly worktreePath: string | null;
+      }>;
+    },
+    deletedThreadId: ThreadId,
+    canonicalWorktreePath: string,
+  ) {
+    const activeThreads = readModel.threads.flatMap((thread) =>
+      thread.id !== deletedThreadId && thread.deletedAt === null && thread.worktreePath !== null
+        ? [{ id: thread.id, worktreePath: thread.worktreePath }]
+        : [],
+    );
+    const matches = yield* Effect.forEach(
+      activeThreads,
+      (thread) =>
+        Effect.promise(() => canonicalizeWorktreePath(thread.worktreePath)).pipe(
+          Effect.map((activePath) => activePath === canonicalWorktreePath),
+        ),
+      { concurrency: 4 },
+    );
+    const ownerIndex = matches.findIndex(Boolean);
+    const owner = ownerIndex === -1 ? undefined : activeThreads[ownerIndex];
+    return owner === undefined ? Option.none<ThreadId>() : Option.some(owner.id);
+  },
+);
 
 export const logCleanupCauseUnlessInterrupted = <R, E>({
   effect,
@@ -83,11 +116,15 @@ const make = Effect.gen(function* () {
   const processWorktreeCleanup = Effect.fn("processWorktreeCleanup")(function* (
     threadId: ThreadDeletedEvent["payload"]["threadId"],
   ) {
-    return yield* orchestrationEngine.withWorktreeLock(
+    return yield* processAfterWorktreeReservation(
+      orchestrationEngine.withWorktreeLock,
       Effect.gen(function* () {
         const cleanupOption = yield* worktreeCleanupJobs.getPendingByThreadId(threadId);
         if (Option.isNone(cleanupOption)) {
-          return;
+          return Option.none<{
+            readonly cleanup: WorktreeCleanupJob;
+            readonly canonicalPath: string;
+          }>();
         }
 
         const cleanup = cleanupOption.value;
@@ -95,66 +132,99 @@ const make = Effect.gen(function* () {
           canonicalizeWorktreePath(cleanup.worktreePath),
         );
         const readModel = yield* orchestrationEngine.getReadModel();
-        const matches = yield* Effect.forEach(
-          readModel.threads.flatMap((thread) =>
-            thread.id !== cleanup.threadId &&
-            thread.deletedAt === null &&
-            thread.worktreePath !== null
-              ? [thread.worktreePath]
-              : [],
-          ),
-          (worktreePath) =>
-            Effect.promise(() => canonicalizeWorktreePath(worktreePath)).pipe(
-              Effect.map((activePath) => activePath === canonicalPath),
-            ),
-          { concurrency: 4 },
+        const activeOwner = yield* findCanonicalActiveWorktreeOwner(
+          readModel,
+          cleanup.threadId,
+          canonicalPath,
         );
 
-        if (matches.some(Boolean)) {
+        if (Option.isSome(activeOwner)) {
           yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
           yield* Effect.logInfo("retained shared worktree after thread deletion", {
             threadId: cleanup.threadId,
             worktreePath: canonicalPath,
+            activeOwnerThreadId: activeOwner.value,
           });
-          return;
+          return Option.none();
         }
 
-        const exists = yield* fileSystem.exists(canonicalPath);
-        const outcome = !exists
-          ? yield* git.pruneWorktrees(cleanup.cwd).pipe(Effect.as("removed" as const))
-          : yield* git.statusDetailsLocal(canonicalPath).pipe(
-              Effect.flatMap((status) =>
-                status.hasWorkingTreeChanges
-                  ? Effect.succeed("retained-dirty" as const)
-                  : git
-                      .removeWorktree({
-                        cwd: cleanup.cwd,
-                        path: canonicalPath,
-                      })
-                      .pipe(Effect.as("removed" as const)),
-              ),
-            );
+        return Option.some({ cleanup, canonicalPath });
+      }),
+      ({ cleanup, canonicalPath }) =>
+        Effect.gen(function* () {
+          const exists = yield* fileSystem.exists(canonicalPath);
+          const outcome = !exists
+            ? yield* git.pruneWorktrees(cleanup.cwd).pipe(Effect.as("removed" as const))
+            : yield* git.statusDetailsLocal(canonicalPath).pipe(
+                Effect.flatMap((status) =>
+                  status.hasWorkingTreeChanges
+                    ? Effect.succeed("retained-dirty" as const)
+                    : git
+                        .removeWorktree({
+                          cwd: cleanup.cwd,
+                          path: canonicalPath,
+                        })
+                        .pipe(Effect.as("removed" as const)),
+                ),
+              );
 
-        if (outcome === "removed") {
-          yield* worktreeCleanupJobs.deleteByThreadId(cleanup.threadId);
-          yield* gitStatusBroadcaster
-            .refreshStatus(cleanup.cwd)
-            .pipe(Effect.ignoreCause({ log: true }));
-          yield* Effect.logInfo("removed orphaned worktree after thread deletion", {
+          if (outcome === "removed") {
+            yield* worktreeCleanupJobs.deleteByThreadId(cleanup.threadId);
+            yield* gitStatusBroadcaster
+              .refreshStatus(cleanup.cwd)
+              .pipe(Effect.ignoreCause({ log: true }));
+            yield* Effect.logInfo("removed orphaned worktree after thread deletion", {
+              threadId: cleanup.threadId,
+              worktreePath: canonicalPath,
+            });
+            return;
+          }
+
+          yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
+          yield* Effect.logWarning("retained dirty worktree after thread deletion", {
             threadId: cleanup.threadId,
             worktreePath: canonicalPath,
           });
-          return;
-        }
-
-        yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
-        yield* Effect.logWarning("retained dirty worktree after thread deletion", {
-          threadId: cleanup.threadId,
-          worktreePath: canonicalPath,
-        });
-      }),
+        }),
     );
   });
+
+  const recordWorktreeCleanupFailure = (
+    threadId: ThreadDeletedEvent["payload"]["threadId"],
+    cause: Cause.Cause<unknown>,
+  ) =>
+    worktreeCleanupJobs
+      .recordFailure({
+        threadId,
+        error: Cause.pretty(cause),
+        maxAttempts: MAX_WORKTREE_CLEANUP_ATTEMPTS,
+      })
+      .pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.void,
+            onSome: (result) =>
+              result.status === "cancelled"
+                ? Effect.logError("worktree cleanup abandoned after repeated failures", {
+                    threadId,
+                    attemptCount: result.attemptCount,
+                    cause: Cause.pretty(cause),
+                  })
+                : Effect.logWarning("worktree cleanup failed and will retry", {
+                    threadId,
+                    attemptCount: result.attemptCount,
+                    cause: Cause.pretty(cause),
+                  }),
+          }),
+        ),
+        Effect.catch((recordError) =>
+          Effect.logError("failed to record worktree cleanup failure", {
+            threadId,
+            cleanupCause: Cause.pretty(cause),
+            recordError: recordError.message,
+          }),
+        ),
+      );
 
   const queuedWorktreeCleanups = new Set<ThreadDeletedEvent["payload"]["threadId"]>();
   const worktreeCleanupWorker = yield* makeDrainableWorker(
@@ -164,10 +234,7 @@ const make = Effect.gen(function* () {
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);
           }
-          return Effect.logWarning("retained worktree after thread deletion", {
-            threadId,
-            cause: Cause.pretty(cause),
-          });
+          return recordWorktreeCleanupFailure(threadId, cause);
         }),
         Effect.ensuring(
           Effect.sync(() => {

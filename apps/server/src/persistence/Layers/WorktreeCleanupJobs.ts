@@ -4,6 +4,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
+  WorktreeCleanupFailureResult,
   WorktreeCleanupJob,
   WorktreeCleanupJobRepository,
   type WorktreeCleanupJobRepositoryShape,
@@ -35,7 +36,9 @@ const make = Effect.gen(function* () {
           cwd = excluded.cwd,
           worktree_path = excluded.worktree_path,
           requested_at = excluded.requested_at,
-          status = 'pending'
+          status = 'pending',
+          attempt_count = 0,
+          last_error = NULL
       `,
   });
 
@@ -90,6 +93,31 @@ const make = Effect.gen(function* () {
       `,
   });
 
+  const recordJobFailure = SqlSchema.findOneOption({
+    Request: Schema.Struct({
+      threadId: WorktreeCleanupJob.fields.threadId,
+      error: Schema.String,
+      maxAttempts: Schema.Int,
+    }),
+    Result: WorktreeCleanupFailureResult,
+    execute: ({ threadId, error, maxAttempts }) =>
+      sql`
+        UPDATE worktree_cleanup_jobs
+        SET
+          attempt_count = attempt_count + 1,
+          last_error = ${error},
+          status = CASE
+            WHEN attempt_count + 1 >= ${maxAttempts} THEN 'cancelled'
+            ELSE 'pending'
+          END
+        WHERE thread_id = ${threadId}
+          AND status = 'pending'
+        RETURNING
+          attempt_count AS "attemptCount",
+          status
+      `,
+  });
+
   const worktreePathExists = SqlSchema.findOne({
     Request: Schema.Struct({ worktreePath: Schema.String }),
     Result: Schema.Struct({ found: Schema.Number }),
@@ -129,6 +157,10 @@ const make = Effect.gen(function* () {
         Effect.mapError(
           toPersistenceSqlError("WorktreeCleanupJobRepository.cancelByThreadId:query"),
         ),
+      ),
+    recordFailure: (input) =>
+      recordJobFailure(input).pipe(
+        Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.recordFailure:query")),
       ),
     deleteByThreadId: (threadId) =>
       deleteJob({ threadId }).pipe(

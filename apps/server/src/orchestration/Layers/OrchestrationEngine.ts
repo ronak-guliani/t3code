@@ -32,6 +32,7 @@ import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
+  OrchestrationCommandWorktreeCleanupPendingError,
   type OrchestrationDispatchError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
@@ -202,9 +203,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
         const worktreePath = commandWorktreePath(command);
         if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
-          return yield* new OrchestrationCommandInvariantError({
+          return yield* new OrchestrationCommandWorktreeCleanupPendingError({
             commandType: command.type,
-            detail: `Worktree '${worktreePath}' is pending cleanup and cannot be assigned.`,
+            worktreePath,
           });
         }
 

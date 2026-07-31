@@ -30,6 +30,26 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
       assert.isTrue(yield* jobs.existsByPath(worktreePath));
       assert.deepEqual(yield* jobs.getPendingByThreadId(threadId), Option.some(job));
 
+      assert.deepEqual(
+        yield* jobs.recordFailure({
+          threadId,
+          error: "first failure",
+          maxAttempts: 2,
+        }),
+        Option.some({ attemptCount: 1, status: "pending" }),
+      );
+      assert.isTrue(yield* jobs.existsByPath(worktreePath));
+      assert.deepEqual(
+        yield* jobs.recordFailure({
+          threadId,
+          error: "second failure",
+          maxAttempts: 2,
+        }),
+        Option.some({ attemptCount: 2, status: "cancelled" }),
+      );
+      assert.isFalse(yield* jobs.existsByPath(worktreePath));
+
+      yield* jobs.upsert(job);
       yield* jobs.cancelByThreadId(threadId);
       assert.isFalse(yield* jobs.existsByPath(worktreePath));
       assert.isTrue(Option.isNone(yield* jobs.getPendingByThreadId(threadId)));

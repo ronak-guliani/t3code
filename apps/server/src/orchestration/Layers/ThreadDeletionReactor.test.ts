@@ -4,12 +4,13 @@ import {
   ThreadId,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
-  hasActiveWorktreeOwner,
+  findCanonicalActiveWorktreeOwner,
   logCleanupCauseUnlessInterrupted,
+  processAfterWorktreeReservation,
 } from "./ThreadDeletionReactor.ts";
 
 function makeReadModel(threads: OrchestrationReadModel["threads"]): OrchestrationReadModel {
@@ -71,27 +72,62 @@ describe("logCleanupCauseUnlessInterrupted", () => {
     expect(Exit.isSuccess(exit)).toBe(true);
   });
 
-  describe("hasActiveWorktreeOwner", () => {
+  describe("processAfterWorktreeReservation", () => {
+    it("releases the ownership lock before slow cleanup work", async () => {
+      let lockHeld = false;
+
+      await Effect.runPromise(
+        processAfterWorktreeReservation(
+          (effect) =>
+            Effect.sync(() => {
+              lockHeld = true;
+            }).pipe(
+              Effect.andThen(effect),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  lockHeld = false;
+                }),
+              ),
+            ),
+          Effect.succeed(Option.some("reserved")),
+          () =>
+            Effect.sync(() => {
+              expect(lockHeld).toBe(false);
+            }),
+        ),
+      );
+    });
+  });
+
+  describe("findCanonicalActiveWorktreeOwner", () => {
     const deletedThreadId = ThreadId.make("thread-deleted");
     const worktreePath = "/tmp/worktree";
 
-    it("detects another active thread using the worktree", () => {
+    it("detects another active thread using a canonical path alias", async () => {
       const readModel = makeReadModel([
         makeThread("thread-deleted", worktreePath, "2026-07-30T00:00:01.000Z"),
-        makeThread("thread-active", worktreePath),
+        makeThread("thread-active", "/tmp/parent/../worktree"),
       ]);
 
-      expect(hasActiveWorktreeOwner(readModel, deletedThreadId, worktreePath)).toBe(true);
+      await expect(
+        Effect.runPromise(
+          findCanonicalActiveWorktreeOwner(readModel, deletedThreadId, worktreePath),
+        ),
+      ).resolves.toEqual(Option.some(ThreadId.make("thread-active")));
     });
 
-    it("ignores deleted threads and different worktrees", () => {
+    it("ignores deleted threads and different worktrees", async () => {
       const readModel = makeReadModel([
         makeThread("thread-deleted", worktreePath, "2026-07-30T00:00:01.000Z"),
         makeThread("thread-old", worktreePath, "2026-07-30T00:00:02.000Z"),
         makeThread("thread-other", "/tmp/other"),
       ]);
 
-      expect(hasActiveWorktreeOwner(readModel, deletedThreadId, worktreePath)).toBe(false);
+      await expect(
+        Effect.runPromise(
+          findCanonicalActiveWorktreeOwner(readModel, deletedThreadId, worktreePath),
+        ),
+      ).resolves.toEqual(Option.none());
     });
   });
 

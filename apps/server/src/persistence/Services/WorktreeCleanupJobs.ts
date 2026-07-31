@@ -12,6 +12,12 @@ export const WorktreeCleanupJob = Schema.Struct({
 });
 export type WorktreeCleanupJob = typeof WorktreeCleanupJob.Type;
 
+export const WorktreeCleanupFailureResult = Schema.Struct({
+  attemptCount: Schema.Int,
+  status: Schema.Literals(["pending", "cancelled"]),
+});
+export type WorktreeCleanupFailureResult = typeof WorktreeCleanupFailureResult.Type;
+
 export interface WorktreeCleanupJobRepositoryShape {
   readonly upsert: (job: WorktreeCleanupJob) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly list: () => Effect.Effect<ReadonlyArray<WorktreeCleanupJob>, ProjectionRepositoryError>;
@@ -22,6 +28,11 @@ export interface WorktreeCleanupJobRepositoryShape {
     worktreePath: string,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
   readonly cancelByThreadId: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly recordFailure: (input: {
+    readonly threadId: ThreadId;
+    readonly error: string;
+    readonly maxAttempts: number;
+  }) => Effect.Effect<Option.Option<WorktreeCleanupFailureResult>, ProjectionRepositoryError>;
   readonly deleteByThreadId: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
