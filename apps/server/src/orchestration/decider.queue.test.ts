@@ -55,6 +55,60 @@ async function makeThreadReadModel(input: { readonly now: string; readonly threa
 }
 
 describe("decider queued turns", () => {
+  it("rejects a scheduled stash beyond the per-thread cap", async () => {
+    const now = "2026-03-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-stash-cap");
+    let readModel = await makeThreadReadModel({ now, threadId });
+    const thread = readModel.threads[0]!;
+    readModel = {
+      ...readModel,
+      threads: [
+        {
+          ...thread,
+          queuedTurns: Array.from({ length: 50 }, (_, index) => ({
+            id: asQueuedTurnId(`queued-turn-${index}`),
+            threadId,
+            message: {
+              messageId: asMessageId(`message-${index}`),
+              role: "user" as const,
+              text: "scheduled",
+              attachments: [],
+            },
+            runtimeMode: "approval-required" as const,
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: now,
+            updatedAt: now,
+            failedAt: null,
+            failureMessage: null,
+          })),
+        },
+      ],
+    };
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.queued-turn.create",
+            commandId: CommandId.make("cmd-stash-cap"),
+            threadId,
+            queuedTurnId: asQueuedTurnId("queued-turn-overflow"),
+            message: {
+              messageId: asMessageId("message-overflow"),
+              role: "user",
+              text: "overflow",
+              attachments: [],
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("scheduled stashes");
+  });
+
   it("creates queued turns without starting a provider turn", async () => {
     const now = "2026-03-01T00:00:00.000Z";
     const threadId = asThreadId("thread-queue");

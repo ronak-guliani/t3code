@@ -12,6 +12,22 @@ function threadIdForEvent(event: OrchestrationEvent): ThreadId | null {
   return event.aggregateKind === "thread" ? (event.aggregateId as ThreadId) : null;
 }
 
+function canChangeQueuedDispatchReadiness(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.queued-turn-created":
+    case "thread.queued-turn-updated":
+    case "thread.queued-turn-deleted":
+    case "thread.queued-turn-failed":
+    case "thread.session-set":
+    case "thread.activity-appended":
+    case "thread.approval-response-requested":
+    case "thread.user-input-response-requested":
+      return true;
+    default:
+      return false;
+  }
+}
+
 const makeQueuedTurnReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const drainingThreadIds = new Set<string>();
@@ -107,7 +123,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         const threadId = threadIdForEvent(event);
-        return threadId === null ? Effect.void : drainThreadSafely(threadId);
+        return threadId === null || !canChangeQueuedDispatchReadiness(event)
+          ? Effect.void
+          : drainThreadSafely(threadId);
       }),
     );
   });

@@ -17,6 +17,7 @@ import {
   requireThreadAbsent,
   requireThreadNotArchived,
   requireQueuedTurn,
+  requireThreadReadyForQueuedDispatch,
   requireThreadReadyForTurnStart,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
@@ -24,6 +25,8 @@ import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
+const MAX_SCHEDULED_STASHES_PER_THREAD = 50;
+const MAX_SCHEDULED_STASH_ATTACHMENT_BYTES = 50_000_000;
 const nowIso = () => new Date().toISOString();
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -881,6 +884,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Queued turn '${command.queuedTurnId}' already exists on thread '${command.threadId}'.`,
         });
       }
+      if ((thread.queuedTurns ?? []).length >= MAX_SCHEDULED_STASHES_PER_THREAD) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' already has ${MAX_SCHEDULED_STASHES_PER_THREAD} scheduled stashes.`,
+        });
+      }
+      const attachmentBytes = command.message.attachments.reduce(
+        (total, attachment) => total + attachment.sizeBytes,
+        0,
+      );
+      if (attachmentBytes > MAX_SCHEDULED_STASH_ATTACHMENT_BYTES) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Scheduled stash attachments exceed the 50MB limit.",
+        });
+      }
       const queuedTurn = {
         id: command.queuedTurnId,
         threadId: command.threadId,
@@ -966,7 +985,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
         queuedTurnId: command.queuedTurnId,
       });
-      yield* requireThreadReadyForTurnStart({
+      yield* requireThreadReadyForQueuedDispatch({
         readModel,
         command,
         threadId: command.threadId,

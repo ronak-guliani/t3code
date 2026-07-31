@@ -234,12 +234,12 @@ function formatQueuedTurns(
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn> | undefined,
 ): string {
   if (!queuedTurns || queuedTurns.length === 0) {
-    return "_No queued turns._";
+    return "_No scheduled stashes._";
   }
   return queuedTurns
     .map((turn, index) =>
       [
-        `### Queued turn ${index + 1}: ${turn.id}`,
+        `### Scheduled stash ${index + 1}: ${turn.id}`,
         "",
         formatTable([
           ["Thread ID", turn.threadId],
@@ -325,7 +325,7 @@ export function formatThreadMarkdownExport(input: {
         ]
       : []),
     ...(detail.includeQueuedTurns
-      ? ["## Queued turns", "", formatQueuedTurns(thread.queuedTurns), ""]
+      ? ["## Scheduled stashes", "", formatQueuedTurns(thread.queuedTurns), ""]
       : []),
     ...(detail.includePlans
       ? ["## Proposed plans", "", formatPlans(thread.proposedPlans), ""]

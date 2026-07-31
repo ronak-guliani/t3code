@@ -3220,7 +3220,7 @@ function ChatViewBody(
           } else if (composerTerminalContextsSnapshot.length > 0) {
             titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
           } else {
-            titleSeed = "Queued message";
+            titleSeed = "Scheduled stash";
           }
         }
         const queuedAttachments = await Promise.all(
@@ -3274,7 +3274,7 @@ function ChatViewBody(
       } catch (err) {
         setThreadError(
           activeThread.id,
-          err instanceof Error ? err.message : "Failed to queue message.",
+          err instanceof Error ? err.message : "Failed to save scheduled stash.",
         );
       } finally {
         sendInFlightRef.current = false;
@@ -3561,7 +3561,7 @@ function ChatViewBody(
         .catch((err: unknown) => {
           setThreadError(
             activeThreadId,
-            err instanceof Error ? err.message : "Failed to update queued message.",
+            err instanceof Error ? err.message : "Failed to update scheduled stash.",
           );
         });
     },
@@ -3583,7 +3583,7 @@ function ChatViewBody(
         .catch((err: unknown) => {
           setThreadError(
             activeThreadId,
-            err instanceof Error ? err.message : "Failed to delete queued message.",
+            err instanceof Error ? err.message : "Failed to delete scheduled stash.",
           );
         });
     },

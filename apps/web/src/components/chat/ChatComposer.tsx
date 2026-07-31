@@ -49,11 +49,21 @@ import {
   type ComposerImageAttachment,
   type DraftId,
   type PersistedComposerImageAttachment,
+  hydrateImagesFromPersisted,
   useComposerDraftStore,
   useComposerThreadDraft,
   useEffectiveComposerModelState,
 } from "../../composerDraftStore";
 import {
+  MAX_SAVED_STASHES,
+  partitionSavedStashAttachments,
+  type PromptStashEntry,
+  usePromptStashStore,
+} from "../../promptStashStore";
+import { isTerminalFocused } from "../../lib/terminalFocus";
+import { resolveShortcutCommand } from "../../keybindings";
+import {
+  INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   type TerminalContextDraft,
   type TerminalContextSelection,
   insertInlineTerminalContextPlaceholder,
@@ -73,6 +83,8 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { ComposerStashBadge } from "./ComposerStashBadge";
+import { ComposerStashMenu } from "./ComposerStashMenu";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
@@ -569,6 +581,9 @@ export const ChatComposer = memo(
     const syncComposerDraftPersistedAttachments = useComposerDraftStore(
       (store) => store.syncPersistedAttachments,
     );
+    const clearComposerDraftPromptAndImages = useComposerDraftStore(
+      (store) => store.clearPromptAndImages,
+    );
     const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
 
     // ------------------------------------------------------------------
@@ -785,6 +800,7 @@ export const ChatComposer = memo(
     const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
     const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
     const [isComposerFocused, setIsComposerFocused] = useState(false);
+    const [isStashMenuOpen, setIsStashMenuOpen] = useState(false);
     const isMobileViewport = useMediaQuery("max-sm");
     const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
 
@@ -1064,7 +1080,7 @@ export const ChatComposer = memo(
     const collapsedComposerPrimaryActionDisabled =
       isSendBusy || isConnecting || !composerSendState.hasSendableContent;
     const collapsedComposerPrimaryActionLabel =
-      phase === "running" ? "Queue message" : "Send message";
+      phase === "running" ? "Stash for next turn" : "Send message";
     const showMobilePendingAnswerActions =
       isMobileViewport && !isComposerCollapsedMobile && pendingPrimaryAction !== null;
 
@@ -1077,6 +1093,170 @@ export const ChatComposer = memo(
       },
       [composerDraftTarget, setComposerDraftPrompt],
     );
+
+    const savedStashes = usePromptStashStore((store) => store.entries);
+    const saveStash = usePromptStashStore((store) => store.stash);
+    const takeSavedStash = usePromptStashStore((store) => store.take);
+
+    const restoreSavedStash = useCallback(
+      (entry: PromptStashEntry) => {
+        const { entry: taken, durable } = takeSavedStash(entry.id);
+        if (!taken) return;
+        const currentPrompt = promptRef.current;
+        const nextPrompt =
+          taken.prompt.length === 0
+            ? currentPrompt
+            : currentPrompt.trim().length > 0
+              ? `${currentPrompt.replace(/\s+$/, "")}\n\n${taken.prompt}`
+              : taken.prompt;
+        promptRef.current = nextPrompt;
+        setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+        const availableImageSlots = Math.max(
+          0,
+          PROVIDER_SEND_TURN_MAX_ATTACHMENTS - composerImagesRef.current.length,
+        );
+        const restoredImages = hydrateImagesFromPersisted(
+          taken.attachments.slice(0, availableImageSlots),
+        );
+        if (restoredImages.length > 0) {
+          addComposerDraftImages(composerDraftTarget, restoredImages);
+        }
+        const omittedImages =
+          taken.droppedImageNames.length +
+          Math.max(0, taken.attachments.length - availableImageSlots);
+        if (omittedImages > 0) {
+          toastManager.add({
+            type: "warning",
+            title: "Some stashed images were not restored",
+            description: `${omittedImages} image${omittedImages === 1 ? "" : "s"} exceeded stash or composer limits.`,
+          });
+        }
+        if (!durable) {
+          toastManager.add({
+            type: "warning",
+            title: "Saved prompt may reappear",
+            description: "Browser storage could not persist its removal.",
+            data: { hideCopyButton: true },
+          });
+        }
+        setComposerCursor(collapseExpandedComposerCursor(nextPrompt, nextPrompt.length));
+        setComposerTrigger(null);
+        setIsStashMenuOpen(false);
+        window.requestAnimationFrame(() => composerEditorRef.current?.focusAtEnd());
+      },
+      [
+        addComposerDraftImages,
+        composerDraftTarget,
+        composerImagesRef,
+        promptRef,
+        setComposerDraftPrompt,
+        takeSavedStash,
+      ],
+    );
+
+    const stashCurrentPrompt = useCallback(async () => {
+      const stashedPrompt = promptRef.current
+        .split(INLINE_TERMINAL_CONTEXT_PLACEHOLDER)
+        .join("")
+        .trim();
+      const images = [...composerImagesRef.current];
+      if (stashedPrompt.length === 0 && images.length === 0) {
+        setIsStashMenuOpen((open) => !open);
+        return;
+      }
+      try {
+        const attachments = await Promise.all(
+          images.map(
+            async (image): Promise<PersistedComposerImageAttachment> => ({
+              id: image.id,
+              name: image.name,
+              mimeType: image.mimeType,
+              sizeBytes: image.sizeBytes,
+              dataUrl: await readFileAsDataUrl(image.file),
+            }),
+          ),
+        );
+        const { kept, droppedNames } = partitionSavedStashAttachments(attachments);
+        const { written, durable, evicted } = saveStash({
+          id: randomUUID(),
+          createdAt: new Date().toISOString(),
+          prompt: stashedPrompt,
+          attachments: kept,
+          droppedImageNames: droppedNames,
+        });
+        if (!written) {
+          toastManager.add({
+            type: "error",
+            title: "Could not save this prompt",
+            description: "Browser storage rejected the write, so the composer was left unchanged.",
+          });
+          return;
+        }
+        promptRef.current = "";
+        clearComposerDraftPromptAndImages(composerDraftTarget);
+        setComposerCursor(0);
+        setComposerTrigger(null);
+        if (!durable) {
+          toastManager.add({
+            type: "warning",
+            title: "Saved prompt will not survive a reload",
+            description:
+              "Browser storage is unavailable, so this stash exists only for this session.",
+          });
+        } else if (evicted) {
+          toastManager.add({
+            type: "warning",
+            title: "Oldest saved prompt discarded",
+            description: `Saved stashes are limited to ${MAX_SAVED_STASHES} prompts.`,
+          });
+        }
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not save this prompt",
+          description:
+            error instanceof Error ? error.message : "Failed to prepare prompt attachments.",
+        });
+      }
+    }, [
+      clearComposerDraftPromptAndImages,
+      composerDraftTarget,
+      composerImagesRef,
+      promptRef,
+      saveStash,
+    ]);
+
+    useEffect(() => {
+      const handler = (event: KeyboardEvent) => {
+        const command = resolveShortcutCommand(event, keybindings, {
+          context: {
+            terminalFocus: isTerminalFocused(),
+            terminalOpen,
+            modelPickerOpen: isComposerModelPickerOpen,
+          },
+        });
+        if (command !== "composer.stash") return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (isComposerApprovalState || pendingUserInputs.length > 0) return;
+        void stashCurrentPrompt();
+      };
+      window.addEventListener("keydown", handler, true);
+      return () => window.removeEventListener("keydown", handler, true);
+    }, [
+      isComposerApprovalState,
+      isComposerModelPickerOpen,
+      keybindings,
+      pendingUserInputs.length,
+      stashCurrentPrompt,
+      terminalOpen,
+    ]);
+
+    useEffect(() => {
+      if (composerMenuOpen) {
+        setIsStashMenuOpen(false);
+      }
+    }, [composerMenuOpen]);
 
     const addComposerImage = useCallback(
       (image: ComposerImageAttachment) => {
@@ -2091,6 +2271,23 @@ export const ChatComposer = memo(
                 isComposerCollapsedMobile && "hidden",
               )}
             >
+              <ComposerStashBadge
+                count={savedStashes.length + queuedTurns.length}
+                open={isStashMenuOpen}
+                onToggle={() => setIsStashMenuOpen((open) => !open)}
+              />
+              {isStashMenuOpen && !composerMenuOpen && !isComposerApprovalState ? (
+                <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
+                  <ComposerStashMenu
+                    scheduled={queuedTurns}
+                    saved={savedStashes}
+                    onRestoreSaved={restoreSavedStash}
+                    onDeleteSaved={(entry) => {
+                      takeSavedStash(entry.id);
+                    }}
+                  />
+                </div>
+              ) : null}
               {composerMenuOpen && !isComposerApprovalState && (
                 <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
                   <ComposerCommandMenu
