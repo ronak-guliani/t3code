@@ -1,6 +1,6 @@
 import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { Cause, Effect, FileSystem, Layer, Option, Schedule, Stream } from "effect";
+import { Cause, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
@@ -90,6 +90,25 @@ export const logCleanupCauseUnlessInterrupted = <R, E>({
     }),
   );
 
+export const runAfterThreadRuntimeTeardown = <A, E1, R1, E2, R2, E3, R3>(
+  stopProviderSession: Effect.Effect<void, E1, R1>,
+  closeThreadTerminals: Effect.Effect<void, E2, R2>,
+  effect: Effect.Effect<A, E3, R3>,
+) =>
+  Effect.gen(function* () {
+    const [providerExit, terminalExit] = yield* Effect.all(
+      [Effect.exit(stopProviderSession), Effect.exit(closeThreadTerminals)] as const,
+      { concurrency: "unbounded" },
+    );
+    if (Exit.isFailure(providerExit)) {
+      return yield* Effect.failCause(providerExit.cause);
+    }
+    if (Exit.isFailure(terminalExit)) {
+      return yield* Effect.failCause(terminalExit.cause);
+    }
+    return yield* effect;
+  });
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
@@ -99,16 +118,29 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
 
+  const stopActiveProviderSession = Effect.fn("stopActiveProviderSession")(function* (
+    threadId: ThreadDeletedEvent["payload"]["threadId"],
+  ) {
+    const sessions = yield* providerService.listSessions();
+    if (!sessions.some((session) => session.threadId === threadId)) {
+      return;
+    }
+    yield* providerService.stopSession({ threadId });
+  });
+
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
-      effect: providerService.stopSession({ threadId }),
+      effect: stopActiveProviderSession(threadId),
       message: "thread deletion cleanup skipped provider session stop",
       threadId,
     });
 
+  const closeThreadTerminalsEffect = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    terminalManager.close({ threadId, deleteHistory: true });
+
   const closeThreadTerminals = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
-      effect: terminalManager.close({ threadId, deleteHistory: true }),
+      effect: closeThreadTerminalsEffect(threadId),
       message: "thread deletion cleanup skipped terminal close",
       threadId,
     });
@@ -229,7 +261,11 @@ const make = Effect.gen(function* () {
   const queuedWorktreeCleanups = new Set<ThreadDeletedEvent["payload"]["threadId"]>();
   const worktreeCleanupWorker = yield* makeDrainableWorker(
     (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
-      processWorktreeCleanup(threadId).pipe(
+      runAfterThreadRuntimeTeardown(
+        stopActiveProviderSession(threadId),
+        closeThreadTerminalsEffect(threadId),
+        processWorktreeCleanup(threadId),
+      ).pipe(
         Effect.catchCause((cause) => {
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);
@@ -263,11 +299,14 @@ const make = Effect.gen(function* () {
     event: ThreadDeletedEvent,
   ) {
     const { threadId } = event.payload;
-    yield* stopProviderSession(threadId);
-    yield* closeThreadTerminals(threadId);
     if (event.payload.worktreeCleanup !== undefined) {
       yield* enqueueWorktreeCleanup(threadId);
+      return;
     }
+    yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
+      concurrency: "unbounded",
+      discard: true,
+    });
   });
 
   const processThreadDeletedSafely = (event: ThreadDeletedEvent) =>

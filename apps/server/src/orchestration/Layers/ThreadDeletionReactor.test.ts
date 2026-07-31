@@ -11,6 +11,7 @@ import {
   findCanonicalActiveWorktreeOwner,
   logCleanupCauseUnlessInterrupted,
   processAfterWorktreeReservation,
+  runAfterThreadRuntimeTeardown,
 } from "./ThreadDeletionReactor.ts";
 
 function makeReadModel(threads: OrchestrationReadModel["threads"]): OrchestrationReadModel {
@@ -96,6 +97,50 @@ describe("logCleanupCauseUnlessInterrupted", () => {
             }),
         ),
       );
+    });
+  });
+
+  describe("runAfterThreadRuntimeTeardown", () => {
+    it("runs cleanup only after both teardown operations settle successfully", async () => {
+      const events: string[] = [];
+
+      await Effect.runPromise(
+        runAfterThreadRuntimeTeardown(
+          Effect.sync(() => {
+            events.push("provider");
+          }),
+          Effect.sync(() => {
+            events.push("terminal");
+          }),
+          Effect.sync(() => {
+            events.push("cleanup");
+          }),
+        ),
+      );
+
+      expect(events.slice(0, 2).toSorted()).toEqual(["provider", "terminal"]);
+      expect(events.at(-1)).toBe("cleanup");
+    });
+
+    it("does not run cleanup when teardown fails but still settles the other teardown", async () => {
+      let terminalClosed = false;
+      let cleanupRan = false;
+
+      const exit = await Effect.runPromiseExit(
+        runAfterThreadRuntimeTeardown(
+          Effect.fail("provider stop failed"),
+          Effect.sync(() => {
+            terminalClosed = true;
+          }),
+          Effect.sync(() => {
+            cleanupRan = true;
+          }),
+        ),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(terminalClosed).toBe(true);
+      expect(cleanupRan).toBe(false);
     });
   });
 
