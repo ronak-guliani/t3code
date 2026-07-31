@@ -89,9 +89,10 @@ describe("ChatMarkdown", () => {
 
   it("navigates thread references within the current environment", async () => {
     const linkedThreadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
+    const uppercaseThreadId = linkedThreadId.toUpperCase();
     const screen = await render(
       <ChatMarkdown
-        text={`Created replacement thread: \`${linkedThreadId}\``}
+        text={`Created replacement thread: \`${uppercaseThreadId}\``}
         cwd="/repo/project"
         threadRef={threadRef}
       />,

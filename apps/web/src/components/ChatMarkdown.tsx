@@ -150,15 +150,19 @@ const THREAD_REFERENCE_PATTERN = new RegExp(
   "gi",
 );
 
+function normalizeThreadId(threadId: string): string {
+  return threadId.toLowerCase();
+}
+
 function threadLinkProperties(environmentId: EnvironmentId, threadId: string) {
   return {
     dataThreadEnvironmentId: environmentId,
-    dataThreadId: threadId,
+    dataThreadId: normalizeThreadId(threadId),
   };
 }
 
 function buildThreadHref(environmentId: EnvironmentId, threadId: string): string {
-  return `/${encodeURIComponent(environmentId)}/${encodeURIComponent(threadId)}`;
+  return `/${encodeURIComponent(environmentId)}/${encodeURIComponent(normalizeThreadId(threadId))}`;
 }
 
 function linkThreadReferencesInText(
@@ -174,6 +178,7 @@ function linkThreadReferencesInText(
     const prefix = match[1];
     const threadId = match[2];
     if (matchIndex === undefined || !prefix || !threadId) continue;
+    const normalizedThreadId = normalizeThreadId(threadId);
 
     const threadIdStart = matchIndex + prefix.length;
     if (threadIdStart > cursor) {
@@ -181,11 +186,11 @@ function linkThreadReferencesInText(
     }
     nextNodes.push({
       type: "link",
-      url: buildThreadHref(environmentId, threadId),
+      url: buildThreadHref(environmentId, normalizedThreadId),
       data: {
-        hProperties: threadLinkProperties(environmentId, threadId),
+        hProperties: threadLinkProperties(environmentId, normalizedThreadId),
       },
-      children: [{ type: "text", value: threadId }],
+      children: [{ type: "text", value: normalizedThreadId }],
     });
     cursor = threadIdStart + threadId.length;
   }
@@ -905,7 +910,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       if (linkedThreadRef) {
         return (
           <MarkdownThreadLink threadRef={linkedThreadRef} className={className}>
-            {children}
+            {linkedThreadRef.threadId}
           </MarkdownThreadLink>
         );
       }

@@ -14,6 +14,7 @@ describe("ChatMarkdown", () => {
   it.each([
     `Thread bc880b45-fd48-42db-98fa-f211bae7cc0a`,
     "Created replacement thread: `bc880b45-fd48-42db-98fa-f211bae7cc0a`",
+    "Thread BC880B45-FD48-42DB-98FA-F211BAE7CC0A",
   ])("renders thread references as internal links", (text) => {
     const markup = renderToStaticMarkup(
       <ChatMarkdown
@@ -29,6 +30,7 @@ describe("ChatMarkdown", () => {
     expect(markup).toContain("chat-markdown-thread-link");
     expect(markup).toContain('href="/environment-local/bc880b45-fd48-42db-98fa-f211bae7cc0a"');
     expect(markup).toContain("Open thread bc880b45-fd48-42db-98fa-f211bae7cc0a");
+    expect(markup).not.toContain("BC880B45-FD48-42DB-98FA-F211BAE7CC0A");
   });
 
   it("does not link thread references without an environment context", () => {
