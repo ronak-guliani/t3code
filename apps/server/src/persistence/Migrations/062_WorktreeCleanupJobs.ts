@@ -11,7 +11,9 @@ export default Effect.gen(function* () {
       worktree_path TEXT NOT NULL,
       requested_at TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'cancelled'))
+        CHECK (status IN ('pending', 'cancelled')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
     )
   `;
 
