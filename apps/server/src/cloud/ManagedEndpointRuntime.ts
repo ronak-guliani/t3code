@@ -91,14 +91,26 @@ const waitForConnectorExit = (connector: ActiveConnector) =>
   );
 
 const signalConnector = (connector: ActiveConnector, killSignal: NodeJS.Signals) =>
-  connector.child.kill({
-    killSignal,
-    forceKillAfter: CONNECTOR_FORCE_KILL_AFTER,
-  });
+  Effect.raceFirst(
+    connector.child
+      .kill({
+        killSignal,
+        forceKillAfter: CONNECTOR_FORCE_KILL_AFTER,
+      })
+      .pipe(
+        Effect.as("signaled" as const),
+        Effect.catchCause(() => Effect.succeed("failed" as const)),
+      ),
+    Effect.sleep(CONNECTOR_FORCE_KILL_AFTER).pipe(Effect.as("timed-out" as const)),
+  );
 
 const forceStopConnector = (connector: ActiveConnector) =>
   signalConnector(connector, "SIGKILL").pipe(
-    Effect.andThen(waitForConnectorExit(connector)),
+    Effect.flatMap((signal) =>
+      signal === "signaled"
+        ? waitForConnectorExit(connector)
+        : Effect.fail(new Error("Relay client SIGKILL did not complete.")),
+    ),
     Effect.flatMap((exit) =>
       exit === "exited"
         ? Effect.void
@@ -108,7 +120,11 @@ const forceStopConnector = (connector: ActiveConnector) =>
 
 const stopRetainedConnector = (connector: ActiveConnector) =>
   signalConnector(connector, "SIGTERM").pipe(
-    Effect.andThen(waitForConnectorExit(connector)),
+    Effect.flatMap((signal) =>
+      signal === "signaled"
+        ? waitForConnectorExit(connector)
+        : Effect.succeed("timed-out" as const),
+    ),
     Effect.flatMap((exit) => (exit === "exited" ? Effect.void : forceStopConnector(connector))),
   );
 
@@ -117,7 +133,9 @@ const closeConnectorScope = (connector: ActiveConnector) =>
     Scope.close(connector.scope, Exit.void).pipe(Effect.as("closed" as const)),
     Effect.sleep(CONNECTOR_FORCE_KILL_AFTER).pipe(Effect.as("timed-out" as const)),
   ).pipe(
-    Effect.flatMap((closed) => (closed === "closed" ? Effect.void : forceStopConnector(connector))),
+    Effect.flatMap((closed) =>
+      closed === "closed" ? Effect.void : stopRetainedConnector(connector),
+    ),
   );
 
 const stopConnector = (connector: ActiveConnector | null) =>
@@ -181,11 +199,7 @@ export const make = Effect.gen(function* () {
           yield* Ref.set(activeRef, null);
 
           const desiredConfig = yield* Ref.get(desiredConfigRef);
-          if (
-            !desiredConfig ||
-            desiredConfig.providerKind !== "cloudflare_tunnel" ||
-            runtimeConfigKey(desiredConfig) !== connector.configKey
-          ) {
+          if (!desiredConfig || desiredConfig.providerKind !== "cloudflare_tunnel") {
             return;
           }
 
@@ -357,7 +371,10 @@ export const make = Effect.gen(function* () {
       } satisfies ActiveConnector;
       yield* Ref.set(activeRef, connector);
       yield* Effect.forkIn(observeConnectorOutput(connector), connectorScope);
-      yield* Effect.forkIn(superviseConnector(connector), connectorScope);
+      // A failed scope close leaves this connector retained for a later stop
+      // retry. Keep its exit supervisor alive on the runtime scope so an
+      // eventual process exit can still reconcile the desired replacement.
+      yield* Effect.forkScoped(superviseConnector(connector));
       return connectorStatus(connector, "starting");
     }
 

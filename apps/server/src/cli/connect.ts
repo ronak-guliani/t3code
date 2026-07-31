@@ -579,7 +579,9 @@ export const executeCloudDisconnect = Effect.fn("cloud.cli.execute_disconnect")(
   // deliberate local disconnect into a link on the next server restart.
   yield* input.disableLocal;
   return {
-    liveResult: yield* input.stopLiveTunnel,
+    liveResult: yield* input.stopLiveTunnel.pipe(
+      Effect.catchCause((cause) => Effect.succeed({ status: "failed" as const, cause })),
+    ),
     relayResult: yield* Effect.exit(input.revokeRelayEnvironment),
     metadataResult: yield* Effect.exit(input.clearMetadata),
     authorizationResult: input.clearAuthorization

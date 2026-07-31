@@ -498,10 +498,53 @@ describe("CloudManagedEndpointRuntime", () => {
         yield* Effect.yieldNow;
         expect(signals).toEqual([]);
         yield* TestClock.adjust("1 second");
+        expect(signals).toEqual(["SIGTERM"]);
+        yield* TestClock.adjust("1 second");
         expect(yield* Fiber.join(stopping)).toEqual({ status: "disabled" });
-        expect(signals).toEqual(["SIGKILL"]);
+        expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
       }),
     ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("bounds hanging kill effects during runtime finalization", () =>
+    Effect.gen(function* () {
+      const configured = yield* Deferred.make<void>();
+      const signals: Array<string | undefined> = [];
+      const finalizing = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const runtime = yield* buildCloudManagedEndpointRuntime(
+            ChildProcessSpawner.make(() =>
+              Effect.gen(function* () {
+                const handle = makeHandle({
+                  pid: 576,
+                  onKill: ({ killSignal } = {}) => {
+                    signals.push(killSignal);
+                  },
+                  onKillEffect: () => Effect.never,
+                });
+                yield* Effect.addFinalizer(() => Effect.fail(new Error("scope close failed")));
+                return handle;
+              }),
+            ),
+          );
+          yield* runtime.applyConfig({
+            providerKind: "cloudflare_tunnel",
+            connectorToken: "token",
+          });
+          yield* Deferred.succeed(configured, undefined);
+        }),
+      )
+        .pipe(Effect.exit)
+        .pipe(Effect.forkDetach);
+
+      yield* Deferred.await(configured);
+      yield* Effect.yieldNow;
+      expect(signals).toEqual(["SIGTERM"]);
+      yield* TestClock.adjust("1 second");
+      expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+      yield* TestClock.adjust("1 second");
+      expect((yield* Fiber.join(finalizing))._tag).toBe("Failure");
+    }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("retries a failed connector stop from the runtime finalizer", () => {
@@ -587,6 +630,52 @@ describe("CloudManagedEndpointRuntime", () => {
         yield* Deferred.succeed(releaseReplacementSpawn, undefined);
         yield* Effect.yieldNow;
         expect(yield* runtime.getStatus).toMatchObject({ status: "running", pid: 581 });
+      }),
+    ),
+  );
+
+  it.effect("starts the desired replacement after a retained connector exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const oldConnectorExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const replacementSpawned = yield* Deferred.make<void>();
+        let spawns = 0;
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const first = spawns++ === 0;
+              const handle = makeHandle({
+                pid: first ? 585 : 586,
+                onKill: () => undefined,
+                exitCode: first ? Deferred.await(oldConnectorExit) : Effect.never,
+              });
+              if (first) {
+                yield* Effect.addFinalizer(() =>
+                  Effect.fail(new Error("old connector could not be stopped")),
+                );
+              } else {
+                yield* Deferred.succeed(replacementSpawned, undefined);
+              }
+              return handle;
+            }),
+          ),
+        );
+
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token-1",
+        });
+        expect(
+          yield* runtime.applyConfig({
+            providerKind: "cloudflare_tunnel",
+            connectorToken: "token-2",
+          }),
+        ).toMatchObject({ status: "failed" });
+
+        yield* Deferred.succeed(oldConnectorExit, ChildProcessSpawner.ExitCode(1));
+        yield* Deferred.await(replacementSpawned);
+        yield* Effect.yieldNow;
+        expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 586 });
       }),
     ),
   );

@@ -516,7 +516,13 @@ export const applyCloudRelayConfig = Effect.fn("environment.cloud.applyRelayConf
       // Recheck after durable writes: a CLI unlink can run in another process
       // while the relay request is in flight.
       if (!(yield* readCliDesiredCloudLink)) {
-        yield* dependencies.endpointRuntime.applyConfig(null);
+        const stoppedStatus = yield* dependencies.endpointRuntime.applyConfig(null);
+        if (stoppedStatus.status === "failed") {
+          return yield* new EnvironmentCloudEndpointUnavailableError({
+            message: "T3 Connect was disabled while the managed endpoint was starting.",
+            endpointRuntimeStatus: stoppedStatus,
+          });
+        }
         return yield* new EnvironmentHttpConflictError({
           message: "T3 Connect was disabled while the relay configuration was being applied.",
         });

@@ -501,6 +501,76 @@ it.effect("stops a newly started tunnel when unlink disables Connect during runt
   ),
 );
 
+it.effect("reports a failed stop when Connect is disabled before runtime apply", () =>
+  Effect.gen(function* () {
+    const values = new Map<string, Uint8Array>();
+    const runtimeConfigs: Array<RelayManagedEndpointRuntimeConfig | null> = [];
+    const publicKey = NodeCrypto.generateKeyPairSync("ed25519")
+      .publicKey.export({ type: "spki", format: "pem" })
+      .toString();
+    const secrets = {
+      get: (name: string) =>
+        Effect.sync(() => {
+          const value = values.get(name);
+          return value === undefined ? Option.none<Uint8Array>() : Option.some(value);
+        }),
+      set: (name: string, value: Uint8Array) =>
+        Effect.sync(() => {
+          values.set(name, value);
+          if (name === CLOUD_MINT_PUBLIC_KEY) {
+            values.delete(CliState.CLOUD_CLI_DESIRED_LINK_SECRET);
+          }
+        }),
+      create: unusedSecretStoreOperation,
+      getOrCreateRandom: unusedSecretStoreOperation,
+      remove: (name: string) =>
+        Effect.sync(() => {
+          values.delete(name);
+        }),
+      list: () => Effect.succeed([]),
+    } as ServerSecretStore.ServerSecretStore["Service"];
+
+    yield* CliState.setCliDesiredCloudLink(true).pipe(
+      Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+    );
+    const failure = yield* Effect.flip(
+      applyCloudRelayConfig(
+        {
+          secrets,
+          endpointRuntime: ManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
+            applyConfig: (config) =>
+              Effect.sync(() => {
+                runtimeConfigs.push(config);
+                return {
+                  status: "failed" as const,
+                  providerKind: "cloudflare_tunnel" as const,
+                  reason: "The relay client could not be stopped.",
+                };
+              }),
+            getStatus: Effect.succeed({ status: "disabled" }),
+          }),
+        } as never,
+        {
+          relayUrl: "https://relay.example.test",
+          cloudUserId: "cloud-user",
+          environmentCredential: "credential",
+          cloudMintPublicKey: publicKey,
+          endpointRuntime: {
+            providerKind: "cloudflare_tunnel",
+            connectorToken: "connector-token",
+          },
+        },
+      ).pipe(Effect.provideService(ServerSecretStore.ServerSecretStore, secrets)),
+    );
+
+    expect(failure).toMatchObject({
+      _tag: "EnvironmentCloudEndpointUnavailableError",
+      endpointRuntimeStatus: { status: "failed" },
+    });
+    expect(runtimeConfigs).toEqual([null]);
+  }),
+);
+
 it.effect("reports failed live tunnel teardown while keeping Connect durably disabled", () =>
   Effect.gen(function* () {
     const values = new Map<string, Uint8Array>();

@@ -168,6 +168,32 @@ it.effect("retains disablement when relay and local cleanup fail", () =>
   }),
 );
 
+it.effect("continues cleanup when live tunnel teardown fails through its error channel", () =>
+  Effect.gen(function* () {
+    const operations: string[] = [];
+    const result = yield* executeCloudDisconnect({
+      disableLocal: Effect.sync(() => {
+        operations.push("disable");
+      }),
+      stopLiveTunnel: Effect.fail(new Error("live tunnel teardown failed")),
+      revokeRelayEnvironment: Effect.sync(() => {
+        operations.push("revoke");
+        return { status: "not-linked" as const };
+      }),
+      clearMetadata: Effect.sync(() => {
+        operations.push("metadata");
+      }),
+      clearAuthorization: Effect.sync(() => {
+        operations.push("authorization");
+      }),
+    });
+
+    assert.equal(result.liveResult.status, "failed");
+    assert.deepEqual(operations, ["disable", "revoke", "metadata", "authorization"]);
+    yield* Effect.flip(completeCloudDisconnect(result));
+  }),
+);
+
 it.effect("fails unlink and logout after live teardown failure without skipping cleanup", () =>
   Effect.gen(function* () {
     for (const clearAuthorization of [false, true]) {
