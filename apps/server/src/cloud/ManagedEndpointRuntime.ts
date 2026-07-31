@@ -16,6 +16,8 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 
 export type CloudManagedEndpointRuntimeStatus = EnvironmentCloudEndpointRuntimeStatus;
 
+const CONNECTOR_FORCE_KILL_AFTER = "1 second";
+
 export class CloudManagedEndpointRuntime extends Context.Service<
   CloudManagedEndpointRuntime,
   {
@@ -82,11 +84,47 @@ const logStoppedConnector = (connector: ActiveConnector) =>
     pid: Number(connector.child.pid),
   });
 
+const waitForConnectorExit = (connector: ActiveConnector) =>
+  Effect.raceFirst(
+    connector.child.exitCode.pipe(Effect.as("exited" as const)),
+    Effect.sleep(CONNECTOR_FORCE_KILL_AFTER).pipe(Effect.as("timed-out" as const)),
+  );
+
+const signalConnector = (connector: ActiveConnector, killSignal: NodeJS.Signals) =>
+  connector.child.kill({
+    killSignal,
+    forceKillAfter: CONNECTOR_FORCE_KILL_AFTER,
+  });
+
+const forceStopConnector = (connector: ActiveConnector) =>
+  signalConnector(connector, "SIGKILL").pipe(
+    Effect.andThen(waitForConnectorExit(connector)),
+    Effect.flatMap((exit) =>
+      exit === "exited"
+        ? Effect.void
+        : Effect.fail(new Error("Relay client did not exit after SIGKILL.")),
+    ),
+  );
+
+const stopRetainedConnector = (connector: ActiveConnector) =>
+  signalConnector(connector, "SIGTERM").pipe(
+    Effect.andThen(waitForConnectorExit(connector)),
+    Effect.flatMap((exit) => (exit === "exited" ? Effect.void : forceStopConnector(connector))),
+  );
+
+const closeConnectorScope = (connector: ActiveConnector) =>
+  Effect.raceFirst(
+    Scope.close(connector.scope, Exit.void).pipe(Effect.as("closed" as const)),
+    Effect.sleep(CONNECTOR_FORCE_KILL_AFTER).pipe(Effect.as("timed-out" as const)),
+  ).pipe(
+    Effect.flatMap((closed) => (closed === "closed" ? Effect.void : forceStopConnector(connector))),
+  );
+
 const stopConnector = (connector: ActiveConnector | null) =>
   connector
     ? Ref.get(connector.retryStopWithKill).pipe(
         Effect.flatMap((retryWithKill) =>
-          (retryWithKill ? connector.child.kill() : Scope.close(connector.scope, Exit.void)).pipe(
+          (retryWithKill ? stopRetainedConnector(connector) : closeConnectorScope(connector)).pipe(
             Effect.tap(() => logStoppedConnector(connector)),
             Effect.as(null),
             Effect.catchCause((cause) =>
@@ -130,11 +168,9 @@ export const make = Effect.gen(function* () {
           ) {
             return;
           }
-          const stopped = yield* stopConnector(connector);
-          if (stopped) {
-            yield* Ref.set(statusRef, stopped);
-            return;
-          }
+          // The process has exited, so its last registered connection is no
+          // longer a usable endpoint while restart work is in progress.
+          yield* Ref.set(statusRef, connectorStatus(connector, "starting"));
           yield* Ref.set(activeRef, null);
 
           const desiredConfig = yield* Ref.get(desiredConfigRef);
@@ -264,6 +300,7 @@ export const make = Effect.gen(function* () {
           shell: false,
           stderr: "pipe",
           stdout: "pipe",
+          forceKillAfter: CONNECTOR_FORCE_KILL_AFTER,
         }),
       )
       .pipe(
@@ -338,7 +375,29 @@ export const make = Effect.gen(function* () {
 
   // Startup reconciliation validates the desired link and uses the listener's
   // actual port before applying a tunnel config. Do not revive stale config here.
-  yield* Effect.addFinalizer(() => runtime.applyConfig(null));
+  yield* Effect.addFinalizer(() =>
+    runtime
+      .applyConfig(null)
+      .pipe(
+        Effect.flatMap((stopped) =>
+          stopped.status === "failed"
+            ? runtime
+                .applyConfig(null)
+                .pipe(
+                  Effect.flatMap((retried) =>
+                    retried.status === "failed"
+                      ? Effect.logError("Failed to stop relay client during runtime shutdown").pipe(
+                          Effect.andThen(
+                            Effect.fail(new Error("Managed relay connector could not be stopped.")),
+                          ),
+                        )
+                      : Effect.void,
+                  ),
+                )
+            : Effect.void,
+        ),
+      ),
+  );
   return runtime;
 });
 

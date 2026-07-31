@@ -9,6 +9,7 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as RelayClient from "@t3tools/shared/relayClient";
 
@@ -58,7 +59,8 @@ const buildCloudManagedEndpointRuntime = (
 
 function makeHandle(input: {
   readonly pid: number;
-  readonly onKill: () => void;
+  readonly onKill: (options?: { readonly killSignal?: string }) => void;
+  readonly onKillEffect?: (options?: { readonly killSignal?: string }) => Effect.Effect<void>;
   readonly isRunning?: () => boolean;
   readonly exitCode?: Effect.Effect<ChildProcessSpawner.ExitCode>;
   readonly all?: Stream.Stream<Uint8Array>;
@@ -67,10 +69,10 @@ function makeHandle(input: {
     pid: ChildProcessSpawner.ProcessId(input.pid),
     exitCode: input.exitCode ?? Effect.never,
     isRunning: Effect.sync(() => input.isRunning?.() ?? true),
-    kill: () =>
+    kill: (options) =>
       Effect.sync(() => {
-        input.onKill();
-      }),
+        input.onKill(options);
+      }).pipe(Effect.andThen(input.onKillEffect?.(options) ?? Effect.void)),
     unref: Effect.succeed(Effect.void),
     stdin: Sink.drain,
     stdout: Stream.empty,
@@ -219,6 +221,10 @@ describe("CloudManagedEndpointRuntime", () => {
       expect(spawned.map((command) => command.options.stderr)).toEqual(["pipe", "pipe"]);
       expect(spawned.map((command) => command.options.detached)).toEqual([false, false]);
       expect(spawned.map((command) => command.options.shell)).toEqual([false, false]);
+      expect(spawned.map((command) => command.options.forceKillAfter)).toEqual([
+        "1 second",
+        "1 second",
+      ]);
       expect(killed).toEqual([100, 101]);
       expect(stopped).toEqual({ status: "disabled" });
     }),
@@ -333,7 +339,6 @@ describe("CloudManagedEndpointRuntime", () => {
 
       expect(started).toMatchObject({ status: "starting", pid: 400 });
       expect(spawned).toEqual([400, 401]);
-      expect(killed).toEqual([400]);
       yield* Effect.yieldNow;
       expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 401 });
     }),
@@ -422,6 +427,7 @@ describe("CloudManagedEndpointRuntime", () => {
     Effect.gen(function* () {
       let firstStop = true;
       const killed: number[] = [];
+      const connectorExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
       const spawner = ChildProcessSpawner.make(() =>
         Effect.gen(function* () {
           const handle = makeHandle({
@@ -429,6 +435,8 @@ describe("CloudManagedEndpointRuntime", () => {
             onKill: () => {
               killed.push(550);
             },
+            onKillEffect: () => Deferred.succeed(connectorExit, ChildProcessSpawner.ExitCode(0)),
+            exitCode: Deferred.await(connectorExit),
           });
           yield* Effect.addFinalizer(() => {
             if (firstStop) {
@@ -456,6 +464,131 @@ describe("CloudManagedEndpointRuntime", () => {
       expect(yield* runtime.applyConfig(null)).toEqual({ status: "disabled" });
       expect(killed).toEqual([550]);
     }),
+  );
+
+  it.effect("force-kills a stuck connector after the bounded scope-close grace period", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const signals: Array<string | undefined> = [];
+        let forceKilled = false;
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const handle = makeHandle({
+                pid: 575,
+                onKill: ({ killSignal } = {}) => {
+                  signals.push(killSignal);
+                  forceKilled ||= killSignal === "SIGKILL";
+                },
+                exitCode: Effect.suspend(() =>
+                  forceKilled ? Effect.succeed(ChildProcessSpawner.ExitCode(137)) : Effect.never,
+                ),
+              });
+              yield* Effect.addFinalizer(() => Effect.never);
+              return handle;
+            }),
+          ),
+        );
+
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token",
+        });
+        const stopping = yield* runtime.applyConfig(null).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        expect(signals).toEqual([]);
+        yield* TestClock.adjust("1 second");
+        expect(yield* Fiber.join(stopping)).toEqual({ status: "disabled" });
+        expect(signals).toEqual(["SIGKILL"]);
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("retries a failed connector stop from the runtime finalizer", () => {
+    const signals: Array<string | undefined> = [];
+    let firstScopeClose = true;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const connectorExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const handle = makeHandle({
+                pid: 576,
+                onKill: ({ killSignal } = {}) => {
+                  signals.push(killSignal);
+                },
+                onKillEffect: () =>
+                  Deferred.succeed(connectorExit, ChildProcessSpawner.ExitCode(0)),
+                exitCode: Deferred.await(connectorExit),
+              });
+              yield* Effect.addFinalizer(() => {
+                if (firstScopeClose) {
+                  firstScopeClose = false;
+                  return Effect.fail(new Error("SIGTERM failed"));
+                }
+                return Effect.void;
+              });
+              return handle;
+            }),
+          ),
+        );
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token",
+        });
+      }),
+    ).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          expect(signals).toEqual(["SIGTERM"]);
+        }),
+      ),
+    );
+  });
+
+  it.effect("clears online status before a replacement connector finishes spawning", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const replacementSpawnEntered = yield* Deferred.make<void>();
+        const releaseReplacementSpawn = yield* Deferred.make<void>();
+        const registered = new TextEncoder().encode(
+          "2026-06-17T02:00:00Z INF Registered tunnel connection connIndex=0\n",
+        );
+        let spawns = 0;
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const first = spawns++ === 0;
+              if (!first) {
+                yield* Deferred.succeed(replacementSpawnEntered, undefined);
+                yield* Deferred.await(releaseReplacementSpawn);
+              }
+              return makeHandle({
+                pid: first ? 580 : 581,
+                onKill: () => undefined,
+                exitCode: first ? Deferred.await(firstExit) : Effect.never,
+                all: Stream.make(registered),
+              });
+            }),
+          ),
+        );
+
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token",
+        });
+        yield* Effect.yieldNow;
+        expect(yield* runtime.getStatus).toMatchObject({ status: "running", pid: 580 });
+        yield* Deferred.succeed(firstExit, ChildProcessSpawner.ExitCode(1));
+        yield* Deferred.await(replacementSpawnEntered);
+        expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 580 });
+        yield* Deferred.succeed(releaseReplacementSpawn, undefined);
+        yield* Effect.yieldNow;
+        expect(yield* runtime.getStatus).toMatchObject({ status: "running", pid: 581 });
+      }),
+    ),
   );
 
   it.effect("installs a missing relay client before launching the managed tunnel", () =>

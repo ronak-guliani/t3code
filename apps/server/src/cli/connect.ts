@@ -531,21 +531,42 @@ const disconnectCloud = Effect.fn("cloud.cli.disconnect")(function* (options: {
     yield* Console.log("Signed out of T3 Connect locally.");
   }
 
-  if (Exit.isFailure(result.metadataResult)) {
-    return yield* Effect.fail(
-      new Error(
-        "T3 Connect local metadata cleanup was incomplete; the connection remains disabled.",
-      ),
-    );
-  }
-  if (result.authorizationResult && Exit.isFailure(result.authorizationResult)) {
-    return yield* Effect.fail(
-      new Error(
-        "T3 Connect authorization cleanup was incomplete; the connection remains disabled.",
-      ),
-    );
-  }
+  yield* completeCloudDisconnect({
+    liveResult: result.liveResult,
+    metadataResult: result.metadataResult,
+    ...(result.authorizationResult ? { authorizationResult: result.authorizationResult } : {}),
+  });
 });
+
+export const completeCloudDisconnect = Effect.fn("cloud.cli.complete_disconnect")(
+  function* (result: {
+    readonly liveResult: LiveCloudActionResult;
+    readonly metadataResult: Exit.Exit<void, unknown>;
+    readonly authorizationResult?: Exit.Exit<void, unknown> | undefined;
+  }) {
+    if (result.liveResult.status === "failed") {
+      return yield* Effect.fail(
+        new Error(
+          "T3 Connect is disabled locally, but the running server could not stop its tunnel. Restart that server to stop the connector.",
+        ),
+      );
+    }
+    if (Exit.isFailure(result.metadataResult)) {
+      return yield* Effect.fail(
+        new Error(
+          "T3 Connect local metadata cleanup was incomplete; the connection remains disabled.",
+        ),
+      );
+    }
+    if (result.authorizationResult && Exit.isFailure(result.authorizationResult)) {
+      return yield* Effect.fail(
+        new Error(
+          "T3 Connect authorization cleanup was incomplete; the connection remains disabled.",
+        ),
+      );
+    }
+  },
+);
 
 export const executeCloudDisconnect = Effect.fn("cloud.cli.execute_disconnect")(function* (input: {
   readonly disableLocal: Effect.Effect<void, unknown>;

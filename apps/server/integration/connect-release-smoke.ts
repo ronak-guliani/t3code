@@ -6,23 +6,25 @@ import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/con
 import {
   RelayEnvironmentConnectScope,
   RelayEnvironmentStatusScope,
-  type RelayClientEnvironmentRecord,
   type RelayEnvironmentLinkResponse,
+  RelayWebClientId,
 } from "@t3tools/contracts/relay";
 import * as ClientCapabilities from "../../../packages/client-runtime/src/platform/capabilities.ts";
 import * as Connectivity from "../../../packages/client-runtime/src/connection/connectivity.ts";
 import * as ConnectionWakeups from "../../../packages/client-runtime/src/connection/wakeups.ts";
 import * as ManagedRelay from "../../../packages/client-runtime/src/relay/managedRelay.ts";
 import * as RelayEnvironmentDiscovery from "../../../packages/client-runtime/src/relay/discovery.ts";
+import { remoteHttpClientLayer } from "../../../packages/client-runtime/src/rpc/http.ts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as Headers from "effect/unstable/http/Headers";
+import * as HttpClient from "effect/unstable/http/HttpClient";
 
 import * as EnvironmentAuth from "../src/auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../src/auth/ServerSecretStore.ts";
@@ -100,24 +102,62 @@ function readSecret(values: ReadonlyMap<string, Uint8Array>, name: string): stri
   return new TextDecoder().decode(value);
 }
 
-async function startFakeEnvironmentServer() {
+function writeJson(response: NodeHttp.ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+function readBearerToken(request: NodeHttp.IncomingMessage): string | null {
+  const authorization = request.headers.authorization;
+  return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
+}
+
+function readDpopToken(request: NodeHttp.IncomingMessage): string | null {
+  const authorization = request.headers.authorization;
+  return authorization?.startsWith("DPoP ") ? authorization.slice("DPoP ".length) : null;
+}
+
+async function readRequestBody(request: NodeHttp.IncomingMessage): Promise<string> {
+  request.setEncoding("utf8");
+  let body = "";
+  for await (const chunk of request) {
+    body += chunk;
+  }
+  return body;
+}
+
+async function readJsonRequest(request: NodeHttp.IncomingMessage): Promise<unknown> {
+  return JSON.parse(await readRequestBody(request));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+interface FakeRelayState {
+  link: RelayEnvironmentLinkResponse | null;
+  connectCredential: string | null;
+  readonly dpopTokens: Set<string>;
+}
+
+async function startFakeEnvironmentServer(state: FakeRelayState) {
   const server = NodeHttp.createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (url.pathname === "/api/orchestration/shell-snapshot") {
-      if (request.headers.authorization !== `Bearer ${connect.credential}`) {
+      if (
+        state.connectCredential === null ||
+        readBearerToken(request) !== state.connectCredential
+      ) {
         response.writeHead(401);
         response.end();
         return;
       }
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          snapshotSequence: 1,
-          projects: [],
-          threads: [],
-          updatedAt: "2026-07-30T00:00:00.000Z",
-        }),
-      );
+      writeJson(response, 200, {
+        snapshotSequence: 1,
+        projects: [],
+        threads: [],
+        updatedAt: "2026-07-30T00:00:00.000Z",
+      });
       return;
     }
     response.writeHead(404);
@@ -131,33 +171,12 @@ async function startFakeEnvironmentServer() {
   if (!address || typeof address === "string") {
     throw new Error("Fake environment server did not bind a TCP port.");
   }
-  const endpoint = {
-    httpBaseUrl: `http://127.0.0.1:${address.port}`,
-    wsBaseUrl: `ws://127.0.0.1:${address.port}`,
-    providerKind: "cloudflare_tunnel" as const,
-  };
-  const link = {
-    ok: true,
-    cloudUserId: "release-smoke-user",
-    environmentId,
-    endpoint,
-    endpointRuntime: null,
-    relayIssuer: RELAY_ORIGIN,
-    environmentCredential: "release-smoke-environment-credential",
-    cloudMintPublicKey: NodeCrypto.generateKeyPairSync("ed25519")
-      .publicKey.export({ type: "spki", format: "pem" })
-      .toString()
-      .trim(),
-  } satisfies RelayEnvironmentLinkResponse;
-  const connect = {
-    environmentId,
-    endpoint,
-    credential: "release-smoke-connect-credential",
-    expiresAt: "2026-07-30T01:00:00.000Z",
-  };
   return {
-    link,
-    connect,
+    endpoint: {
+      httpBaseUrl: `http://127.0.0.1:${address.port}`,
+      wsBaseUrl: `ws://127.0.0.1:${address.port}`,
+      providerKind: "cloudflare_tunnel" as const,
+    },
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -165,29 +184,183 @@ async function startFakeEnvironmentServer() {
   };
 }
 
-function makeFakeRelayHttpClient(link: RelayEnvironmentLinkResponse) {
-  return HttpClient.make((request) => {
-    const url = new URL(request.url);
-    const body =
-      url.pathname === "/oauth/token"
-        ? {
+function linkedEnvironment(state: FakeRelayState): RelayEnvironmentLinkResponse {
+  assert(state.link !== null, "Relay received an environment request before linking.");
+  return state.link;
+}
+
+async function handleFakeRelayRequest(
+  request: NodeHttp.IncomingMessage,
+  response: NodeHttp.ServerResponse,
+  state: FakeRelayState,
+  endpoint: RelayEnvironmentLinkResponse["endpoint"],
+): Promise<void> {
+  const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "POST" && url.pathname === "/v1/client/environment-link-challenges") {
+    assert(
+      readBearerToken(request) === "release-smoke-cli-access",
+      "Relay link challenge was not authenticated with the CLI access token.",
+    );
+    writeJson(response, 200, {
+      challenge: "release-smoke-link-challenge",
+      expiresAt: "2026-07-30T01:00:00.000Z",
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/client/environment-links") {
+    assert(
+      readBearerToken(request) === "release-smoke-cli-access",
+      "Relay environment link was not authenticated with the CLI access token.",
+    );
+    const payload = await readJsonRequest(request);
+    assert(
+      isRecord(payload) && typeof payload.proof === "string" && payload.proof.length > 0,
+      "Relay environment link did not include its signed proof.",
+    );
+    const link = {
+      ok: true,
+      cloudUserId: "release-smoke-user",
+      environmentId,
+      endpoint,
+      endpointRuntime: null,
+      relayIssuer: RELAY_ORIGIN,
+      environmentCredential: "release-smoke-environment-credential",
+      cloudMintPublicKey: NodeCrypto.generateKeyPairSync("ed25519")
+        .publicKey.export({ type: "spki", format: "pem" })
+        .toString()
+        .trim(),
+    } satisfies RelayEnvironmentLinkResponse;
+    state.link = link;
+    writeJson(response, 200, link);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/environments") {
+    assert(
+      readBearerToken(request) === "release-smoke-clerk-token",
+      "Relay environment listing was not authenticated with the cloud session.",
+    );
+    const link = linkedEnvironment(state);
+    writeJson(response, 200, {
+      environments: [
+        {
+          environmentId: link.environmentId,
+          label: descriptor.label,
+          endpoint: link.endpoint,
+          linkedAt: "2026-07-30T00:00:00.000Z",
+        },
+      ],
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/client/dpop-token") {
+    assert(request.headers.dpop, "Relay DPoP token exchange did not include a proof.");
+    const payload = new URLSearchParams(await readRequestBody(request));
+    assert(
+      payload.get("subject_token") === "release-smoke-clerk-token",
+      "Relay DPoP token exchange used an unexpected cloud session.",
+    );
+    const scope = payload.get("scope");
+    assert(scope !== null && scope.length > 0, "Relay DPoP token exchange did not request scopes.");
+    const token = `release-smoke-dpop-${state.dpopTokens.size + 1}`;
+    state.dpopTokens.add(token);
+    writeJson(response, 200, {
+      access_token: token,
+      issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      token_type: "DPoP",
+      expires_in: 3600,
+      scope,
+    });
+    return;
+  }
+
+  const environmentRequest = /^\/v1\/environments\/([^/]+)\/(status|connect)$/u.exec(url.pathname);
+  if (request.method === "POST" && environmentRequest) {
+    const [, requestedEnvironmentId, action] = environmentRequest;
+    const token = readDpopToken(request);
+    assert(
+      token !== null && state.dpopTokens.has(token) && request.headers.dpop,
+      `Relay environment ${action} request was not DPoP authenticated.`,
+    );
+    const link = linkedEnvironment(state);
+    assert(
+      requestedEnvironmentId === link.environmentId,
+      "Relay received a request for an environment other than the linked environment.",
+    );
+    if (action === "status") {
+      writeJson(response, 200, {
+        environmentId: link.environmentId,
+        endpoint: link.endpoint,
+        status: "online",
+        checkedAt: "2026-07-30T00:00:00.000Z",
+        descriptor,
+      });
+      return;
+    }
+    state.connectCredential ??= "release-smoke-connect-credential";
+    writeJson(response, 200, {
+      environmentId: link.environmentId,
+      endpoint: link.endpoint,
+      credential: state.connectCredential,
+      expiresAt: "2026-07-30T01:00:00.000Z",
+    });
+    return;
+  }
+
+  response.writeHead(404);
+  response.end();
+}
+
+async function startFakeRelayServer(
+  endpoint: RelayEnvironmentLinkResponse["endpoint"],
+  state: FakeRelayState,
+) {
+  const server = NodeHttp.createServer((request, response) => {
+    void handleFakeRelayRequest(request, response, state, endpoint).catch((error: unknown) => {
+      writeJson(response, 500, { error: String(error) });
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Fake relay server did not bind a TCP port.");
+  }
+  const localOrigin = `http://127.0.0.1:${address.port}`;
+  const fetch = Object.assign(
+    (input: string | URL | Request, init?: RequestInit) => {
+      const request =
+        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+      const url = new URL(request.url);
+      if (url.origin === RELAY_ORIGIN) {
+        const localUrl = new URL(`${url.pathname}${url.search}`, localOrigin);
+        return globalThis.fetch(new Request(localUrl.toString(), request));
+      }
+      if (url.origin === "https://clerk.invalid" && url.pathname === "/oauth/token") {
+        return Promise.resolve(
+          Response.json({
             access_token: "release-smoke-cli-access",
             refresh_token: "release-smoke-cli-refresh",
             expires_in: 3600,
             token_type: "Bearer",
-          }
-        : url.origin === RELAY_ORIGIN && url.pathname === "/v1/client/environment-link-challenges"
-          ? {
-              challenge: "release-smoke-link-challenge",
-              expiresAt: "2026-07-30T01:00:00.000Z",
-            }
-          : url.origin === RELAY_ORIGIN && url.pathname === "/v1/client/environment-links"
-            ? link
-            : undefined;
-    return body === undefined
-      ? Effect.die(new Error(`Unexpected release smoke HTTP request: ${request.url}`))
-      : Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(body)));
-  });
+          }),
+        );
+      }
+      return Promise.reject(new Error(`Unexpected release smoke HTTP request: ${request.url}`));
+    },
+    { preconnect: globalThis.fetch.preconnect },
+  ) satisfies typeof globalThis.fetch;
+  return {
+    fetch,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  };
 }
 
 const fakeEndpointRuntime = ManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
@@ -202,14 +375,22 @@ const fakeEnvironmentAuth = EnvironmentAuth.EnvironmentAuth.of({
 });
 
 async function main() {
-  const fakeServer = await startFakeEnvironmentServer();
+  const relayState: FakeRelayState = {
+    link: null,
+    connectCredential: null,
+    dpopTokens: new Set(),
+  };
+  const fakeEnvironment = await startFakeEnvironmentServer(relayState);
+  const fakeRelay = await startFakeRelayServer(fakeEnvironment.endpoint, relayState);
   try {
     await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const secrets = memorySecretStore();
           const callbackState = "release-smoke-callback-state";
-          const httpClient = makeFakeRelayHttpClient(fakeServer.link);
+          const relayHttpClientLayer: Layer.Layer<HttpClient.HttpClient> = remoteHttpClientLayer(
+            fakeRelay.fetch,
+          ).pipe(Layer.provide(Layer.succeed(Headers.CurrentRedactedNames, [])));
           const tokens = yield* CliTokenManager.make.pipe(
             Effect.provide(
               Layer.mergeAll(
@@ -250,7 +431,7 @@ async function main() {
                 );
                 yield* tokens.store(exchanged.token);
               }),
-          ).pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
+          ).pipe(Effect.provide(relayHttpClientLayer));
 
           const persisted = yield* tokens.getExisting;
           const cliToken = Option.getOrThrow(persisted);
@@ -269,7 +450,7 @@ async function main() {
             "Desired link state was not persisted.",
           );
 
-          yield* reconcileDesiredCloudLink(fakeServer.link.endpoint.httpBaseUrl).pipe(
+          yield* reconcileDesiredCloudLink(fakeEnvironment.endpoint.httpBaseUrl).pipe(
             Effect.provide(
               Layer.mergeAll(
                 NodeServices.layer,
@@ -287,7 +468,7 @@ async function main() {
                 ),
                 Layer.succeed(EnvironmentAuth.EnvironmentAuth, fakeEnvironmentAuth),
                 Layer.succeed(CliTokenManager.CloudCliTokenManager, tokens),
-                Layer.succeed(HttpClient.HttpClient, httpClient),
+                relayHttpClientLayer,
                 ConfigProvider.layer(
                   ConfigProvider.fromEnv({
                     env: { T3CODE_RELAY_URL: RELAY_ORIGIN },
@@ -297,76 +478,52 @@ async function main() {
             ),
           ) as Effect.Effect<unknown, unknown, never>;
 
+          const link = linkedEnvironment(relayState);
           assert(
             readSecret(secrets.values, RELAY_URL_SECRET) === RELAY_ORIGIN,
             "Reconciliation did not persist the relay URL from the link response.",
           );
           assert(
-            readSecret(secrets.values, RELAY_ISSUER_SECRET) === fakeServer.link.relayIssuer,
+            readSecret(secrets.values, RELAY_ISSUER_SECRET) === link.relayIssuer,
             "Reconciliation did not persist the relay issuer from the link response.",
           );
           assert(
-            readSecret(secrets.values, CLOUD_LINKED_USER_ID) === fakeServer.link.cloudUserId,
+            readSecret(secrets.values, CLOUD_LINKED_USER_ID) === link.cloudUserId,
             "Reconciliation did not persist the linked cloud user from the link response.",
           );
           assert(
             readSecret(secrets.values, RELAY_ENVIRONMENT_CREDENTIAL_SECRET) ===
-              fakeServer.link.environmentCredential,
+              link.environmentCredential,
             "Reconciliation did not persist the environment credential from the link response.",
           );
           assert(
-            readSecret(secrets.values, CLOUD_MINT_PUBLIC_KEY) ===
-              fakeServer.link.cloudMintPublicKey,
+            readSecret(secrets.values, CLOUD_MINT_PUBLIC_KEY) === link.cloudMintPublicKey,
             "Reconciliation did not persist the mint key from the link response.",
           );
 
-          const environment: RelayClientEnvironmentRecord = {
-            environmentId: fakeServer.link.environmentId,
-            label: descriptor.label,
-            endpoint: fakeServer.link.endpoint,
-            linkedAt: "2026-07-30T00:00:00.000Z",
-          };
-          const relay = ManagedRelay.ManagedRelayClient.of({
-            relayUrl: readSecret(secrets.values, RELAY_URL_SECRET),
-            listEnvironments: () =>
-              Effect.sync(() => {
-                assert(
-                  readSecret(secrets.values, RELAY_ENVIRONMENT_CREDENTIAL_SECRET) ===
-                    fakeServer.link.environmentCredential,
-                  "Relay environment was served before the reconciled credential was persisted.",
-                );
-                return [environment];
-              }),
-            getEnvironmentStatus: ({ environmentId: requestedEnvironmentId }) =>
-              Effect.sync(() => {
-                assert(
-                  requestedEnvironmentId === environment.environmentId,
-                  "Discovery requested status for an unexpected environment.",
-                );
-                return {
-                  environmentId: environment.environmentId,
-                  endpoint: environment.endpoint,
-                  status: "online" as const,
-                  checkedAt: "2026-07-30T00:00:00.000Z",
-                };
-              }),
-            listDevices: () => Effect.die("unused"),
-            createEnvironmentLinkChallenge: () => Effect.die("unused"),
-            linkEnvironment: () => Effect.die("unused"),
-            unlinkEnvironment: () => Effect.die("unused"),
-            connectEnvironment: ({ environmentId: requestedEnvironmentId }) =>
-              Effect.sync(() => {
-                assert(
-                  requestedEnvironmentId === environment.environmentId,
-                  "Connect requested an environment that was not discovered.",
-                );
-                return fakeServer.connect;
-              }),
-            registerDevice: () => Effect.die("unused"),
-            unregisterDevice: () => Effect.die("unused"),
-            registerLiveActivity: () => Effect.die("unused"),
-            resetTokenCache: Effect.void,
-          });
+          const managedRelayLayer: Layer.Layer<ManagedRelay.ManagedRelayClient> =
+            ManagedRelay.layer({
+              relayUrl: readSecret(secrets.values, RELAY_URL_SECRET),
+              clientId: RelayWebClientId,
+            }).pipe(
+              Layer.provide(
+                Layer.succeed(
+                  ManagedRelay.ManagedRelayDpopSigner,
+                  ManagedRelay.ManagedRelayDpopSigner.of({
+                    thumbprint: Effect.succeed("release-smoke-dpop-thumbprint"),
+                    createProof: (input) =>
+                      Effect.succeed(
+                        [input.method, input.url, input.accessToken ?? "token-exchange"].join(":"),
+                      ),
+                  }),
+                ),
+              ),
+              Layer.provide(relayHttpClientLayer),
+            );
+          const relay = Context.get(
+            yield* Layer.build(managedRelayLayer),
+            ManagedRelay.ManagedRelayClient,
+          );
           const network = yield* SubscriptionRef.make<"online">("online");
           const discoveryLayer = RelayEnvironmentDiscovery.layer.pipe(
             Layer.provide(
@@ -391,11 +548,11 @@ async function main() {
           );
           yield* discovery.refresh;
           const discovered = (yield* SubscriptionRef.get(discovery.state)).environments.get(
-            environment.environmentId,
+            link.environmentId,
           );
           assert(
             discovered?.availability === "online",
-            "Relay discovery did not consume the reconciled environment endpoint.",
+            "Relay discovery did not consume the linked environment endpoint.",
           );
 
           const connected = yield* relay.connectEnvironment({
@@ -407,8 +564,12 @@ async function main() {
             connected.endpoint.httpBaseUrl === discovered.environment.endpoint.httpBaseUrl,
             "Relay connect returned an endpoint other than the discovered environment.",
           );
+          assert(
+            connected.credential === relayState.connectCredential,
+            "Relay connect did not return the credential stored by the fake relay.",
+          );
           const snapshot = yield* fetchLiveOrchestrationShellSnapshot(
-            discovered.environment.endpoint.httpBaseUrl,
+            connected.endpoint.httpBaseUrl,
             connected.credential,
           ).pipe(Effect.provide(FetchHttpClient.layer));
           assert(snapshot.snapshotSequence === 1, "Authenticated shell snapshot was not returned.");
@@ -417,7 +578,8 @@ async function main() {
     );
     console.log("Composed T3 Connect release smoke passed.");
   } finally {
-    await fakeServer.close();
+    await fakeRelay.close();
+    await fakeEnvironment.close();
   }
 }
 

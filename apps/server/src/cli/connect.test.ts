@@ -13,6 +13,7 @@ import {
   authorizeCliWith,
   cloudConnectionStatus,
   cloudConfigurationError,
+  completeCloudDisconnect,
   executeCloudDisconnect,
   formatHeadlessAuthorizationPrompt,
   isHeadlessConnectEnvironment,
@@ -164,6 +165,52 @@ it.effect("retains disablement when relay and local cleanup fail", () =>
     assert.isTrue(Exit.isFailure(result.relayResult));
     assert.isTrue(Exit.isFailure(result.metadataResult));
     assert.isTrue(Exit.isFailure(result.authorizationResult!));
+  }),
+);
+
+it.effect("fails unlink and logout after live teardown failure without skipping cleanup", () =>
+  Effect.gen(function* () {
+    for (const clearAuthorization of [false, true]) {
+      const operations: string[] = [];
+      let desired = true;
+      const result = yield* executeCloudDisconnect({
+        disableLocal: Effect.sync(() => {
+          desired = false;
+          operations.push("disable");
+        }),
+        stopLiveTunnel: Effect.sync(() => {
+          operations.push("stop");
+          return { status: "failed" as const, cause: Cause.die("tunnel did not stop") };
+        }),
+        revokeRelayEnvironment: Effect.sync(() => {
+          operations.push("revoke");
+          return { status: "not-linked" as const };
+        }),
+        clearMetadata: Effect.sync(() => {
+          operations.push("metadata");
+        }),
+        ...(clearAuthorization
+          ? {
+              clearAuthorization: Effect.sync(() => {
+                operations.push("authorization");
+              }),
+            }
+          : {}),
+      });
+
+      const error = yield* Effect.flip(completeCloudDisconnect(result));
+      assert.equal(
+        error.message,
+        "T3 Connect is disabled locally, but the running server could not stop its tunnel. Restart that server to stop the connector.",
+      );
+      assert.isFalse(desired);
+      assert.deepEqual(
+        operations,
+        clearAuthorization
+          ? ["disable", "stop", "revoke", "metadata", "authorization"]
+          : ["disable", "stop", "revoke", "metadata"],
+      );
+    }
   }),
 );
 
