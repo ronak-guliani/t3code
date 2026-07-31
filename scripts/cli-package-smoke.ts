@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,9 +9,8 @@ import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverDir = resolve(repoRoot, "apps/server");
 const serverManifestPath = resolve(serverDir, "package.json");
-const tempDir = mkdtempSync(join(tmpdir(), "t3-cli-package-smoke-"));
-let tarball: string | undefined;
-const originalManifest = readFileSync(serverManifestPath, "utf8");
+let tempDir: string | undefined;
+let originalManifest: string | undefined;
 
 function run(command: string, args: ReadonlyArray<string>, cwd: string) {
   return execFileSync(command, args, {
@@ -33,6 +31,8 @@ function assertContains(output: string, value: string) {
 }
 
 try {
+  originalManifest = readFileSync(serverManifestPath, "utf8");
+  tempDir = mkdtempSync(join(repoRoot, "t3-cli-package-smoke-"));
   run(process.execPath, ["apps/server/scripts/cli.ts", "build"], repoRoot);
   const manifest = JSON.parse(originalManifest) as {
     readonly dependencies: Record<string, string>;
@@ -55,13 +55,15 @@ try {
       2,
     )}\n`,
   );
-  const packed = JSON.parse(run("npm", ["pack", "--json"], serverDir)) as ReadonlyArray<{
+  const packed = JSON.parse(
+    run("npm", ["pack", "--json", "--pack-destination", tempDir], serverDir),
+  ) as ReadonlyArray<{
     readonly filename: string;
   }>;
-  tarball = resolve(serverDir, packed[0]?.filename ?? "");
   if (!packed[0]?.filename) {
     throw new Error("npm pack did not produce a CLI tarball.");
   }
+  const tarball = resolve(tempDir, packed[0].filename);
 
   run("npm", ["init", "--yes"], tempDir);
   run("npm", ["install", "--ignore-scripts", "--no-package-lock", tarball], tempDir);
@@ -81,9 +83,10 @@ try {
   );
   console.log("Packaged T3 Connect CLI smoke passed.");
 } finally {
-  writeFileSync(serverManifestPath, originalManifest);
-  if (tarball) {
-    rmSync(tarball, { force: true });
+  if (originalManifest !== undefined) {
+    writeFileSync(serverManifestPath, originalManifest);
   }
-  rmSync(tempDir, { recursive: true, force: true });
+  if (tempDir !== undefined) {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }

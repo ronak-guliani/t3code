@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
+import type { EnvironmentCloudEndpointRuntimeStatus } from "@t3tools/contracts/environmentHttp";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -13,28 +14,7 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
-export type CloudManagedEndpointRuntimeStatus =
-  | {
-      readonly status: "disabled";
-    }
-  | {
-      readonly status: "failed";
-      readonly providerKind: RelayManagedEndpointRuntimeConfig["providerKind"];
-      readonly reason: string;
-      readonly tunnelId?: string;
-      readonly tunnelName?: string;
-    }
-  | {
-      readonly status: "running";
-      readonly providerKind: "cloudflare_tunnel";
-      readonly pid: number;
-      readonly tunnelId?: string;
-      readonly tunnelName?: string;
-    }
-  | {
-      readonly status: "unsupported";
-      readonly providerKind: RelayManagedEndpointRuntimeConfig["providerKind"];
-    };
+export type CloudManagedEndpointRuntimeStatus = EnvironmentCloudEndpointRuntimeStatus;
 
 export class CloudManagedEndpointRuntime extends Context.Service<
   CloudManagedEndpointRuntime,
@@ -49,9 +29,21 @@ export class CloudManagedEndpointRuntime extends Context.Service<
 interface ActiveConnector {
   readonly child: ChildProcessSpawner.ChildProcessHandle;
   readonly scope: Scope.Closeable;
+  readonly retryStopWithKill: Ref.Ref<boolean>;
   readonly configKey: string;
   readonly config: RelayManagedEndpointRuntimeConfig;
 }
+
+const connectorStatus = (
+  connector: ActiveConnector,
+  status: "starting" | "running",
+): CloudManagedEndpointRuntimeStatus => ({
+  status,
+  providerKind: "cloudflare_tunnel",
+  pid: Number(connector.child.pid),
+  ...(connector.config.tunnelId ? { tunnelId: connector.config.tunnelId } : {}),
+  ...(connector.config.tunnelName ? { tunnelName: connector.config.tunnelName } : {}),
+});
 
 export function classifyRelayClientOutput(line: string): "connected" | "warning" | "debug" {
   if (/\bRegistered tunnel connection\b/iu.test(line)) {
@@ -69,29 +61,41 @@ function runtimeConfigKey(config: RelayManagedEndpointRuntimeConfig): string {
   });
 }
 
+const stopFailure = (connector: ActiveConnector, cause: unknown) =>
+  Effect.logError("Failed to stop relay client", {
+    cause,
+    pid: Number(connector.child.pid),
+    tunnelId: connector.config.tunnelId,
+    tunnelName: connector.config.tunnelName,
+  }).pipe(
+    Effect.as({
+      status: "failed",
+      providerKind: connector.config.providerKind,
+      reason: "The relay client could not be stopped.",
+      ...(connector.config.tunnelId ? { tunnelId: connector.config.tunnelId } : {}),
+      ...(connector.config.tunnelName ? { tunnelName: connector.config.tunnelName } : {}),
+    } satisfies CloudManagedEndpointRuntimeStatus),
+  );
+
+const logStoppedConnector = (connector: ActiveConnector) =>
+  Effect.logInfo("Relay client stopped", {
+    pid: Number(connector.child.pid),
+  });
+
 const stopConnector = (connector: ActiveConnector | null) =>
   connector
-    ? Scope.close(connector.scope, Exit.void).pipe(
-        Effect.tap(() =>
-          Effect.logInfo("Relay client stopped", {
-            pid: Number(connector.child.pid),
-          }),
-        ),
-        Effect.as(null),
-        Effect.catchCause((cause) =>
-          Effect.logError("Failed to stop relay client", {
-            cause,
-            pid: Number(connector.child.pid),
-            tunnelId: connector.config.tunnelId,
-            tunnelName: connector.config.tunnelName,
-          }).pipe(
-            Effect.as({
-              status: "failed",
-              providerKind: connector.config.providerKind,
-              reason: "The relay client could not be stopped.",
-              ...(connector.config.tunnelId ? { tunnelId: connector.config.tunnelId } : {}),
-              ...(connector.config.tunnelName ? { tunnelName: connector.config.tunnelName } : {}),
-            } satisfies CloudManagedEndpointRuntimeStatus),
+    ? Ref.get(connector.retryStopWithKill).pipe(
+        Effect.flatMap((retryWithKill) =>
+          (retryWithKill ? connector.child.kill() : Scope.close(connector.scope, Exit.void)).pipe(
+            Effect.tap(() => logStoppedConnector(connector)),
+            Effect.as(null),
+            Effect.catchCause((cause) =>
+              retryWithKill
+                ? stopFailure(connector, cause)
+                : Ref.set(connector.retryStopWithKill, true).pipe(
+                    Effect.andThen(stopFailure(connector, cause)),
+                  ),
+            ),
           ),
         ),
       )
@@ -107,8 +111,11 @@ export const make = Effect.gen(function* () {
   let reconcileConfig: CloudManagedEndpointRuntime["Service"]["applyConfig"];
 
   const stopActive = Effect.gen(function* () {
-    const active = yield* Ref.getAndSet(activeRef, null);
-    return yield* stopConnector(active);
+    const active = yield* Ref.get(activeRef);
+    const stopped = yield* stopConnector(active);
+    if (stopped) return stopped;
+    yield* Ref.set(activeRef, null);
+    return null;
   });
 
   const superviseConnector = (connector: ActiveConnector) =>
@@ -123,12 +130,12 @@ export const make = Effect.gen(function* () {
           ) {
             return;
           }
-          yield* Ref.set(activeRef, null);
           const stopped = yield* stopConnector(connector);
           if (stopped) {
             yield* Ref.set(statusRef, stopped);
             return;
           }
+          yield* Ref.set(activeRef, null);
 
           const desiredConfig = yield* Ref.get(desiredConfigRef);
           if (
@@ -171,7 +178,18 @@ export const make = Effect.gen(function* () {
         };
         switch (classifyRelayClientOutput(line)) {
           case "connected":
-            return Effect.logInfo("Relay client tunnel connection registered", attributes);
+            return Effect.logInfo("Relay client tunnel connection registered", attributes).pipe(
+              Effect.andThen(
+                Ref.get(activeRef).pipe(
+                  Effect.flatMap((active) =>
+                    active?.child.pid === connector.child.pid &&
+                    active.configKey === connector.configKey
+                      ? Ref.set(statusRef, connectorStatus(connector, "running"))
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            );
           case "warning":
             return Effect.logWarning("Relay client reported a transport warning", attributes);
           case "debug":
@@ -202,13 +220,8 @@ export const make = Effect.gen(function* () {
     if (active?.configKey === nextConfigKey) {
       const isRunning = yield* active.child.isRunning.pipe(Effect.orElseSucceed(() => false));
       if (isRunning) {
-        return {
-          status: "running",
-          providerKind: "cloudflare_tunnel",
-          pid: Number(active.child.pid),
-          ...(active.config.tunnelId ? { tunnelId: active.config.tunnelId } : {}),
-          ...(active.config.tunnelName ? { tunnelName: active.config.tunnelName } : {}),
-        } satisfies CloudManagedEndpointRuntimeStatus;
+        const status = yield* Ref.get(statusRef);
+        return connectorStatus(active, status.status === "running" ? "running" : "starting");
       }
     }
 
@@ -285,22 +298,18 @@ export const make = Effect.gen(function* () {
     }
 
     if (!("status" in child)) {
+      const retryStopWithKill = yield* Ref.make(false);
       const connector = {
         child,
         scope: connectorScope,
+        retryStopWithKill,
         configKey: nextConfigKey,
         config,
       } satisfies ActiveConnector;
       yield* Ref.set(activeRef, connector);
       yield* Effect.forkIn(observeConnectorOutput(connector), connectorScope);
       yield* Effect.forkIn(superviseConnector(connector), connectorScope);
-      return {
-        status: "running",
-        providerKind: "cloudflare_tunnel",
-        pid: Number(child.pid),
-        ...(config.tunnelId ? { tunnelId: config.tunnelId } : {}),
-        ...(config.tunnelName ? { tunnelName: config.tunnelName } : {}),
-      } satisfies CloudManagedEndpointRuntimeStatus;
+      return connectorStatus(connector, "starting");
     }
 
     return {

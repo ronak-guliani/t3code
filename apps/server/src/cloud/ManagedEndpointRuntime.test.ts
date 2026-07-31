@@ -61,6 +61,7 @@ function makeHandle(input: {
   readonly onKill: () => void;
   readonly isRunning?: () => boolean;
   readonly exitCode?: Effect.Effect<ChildProcessSpawner.ExitCode>;
+  readonly all?: Stream.Stream<Uint8Array>;
 }) {
   return ChildProcessSpawner.makeHandle({
     pid: ChildProcessSpawner.ProcessId(input.pid),
@@ -74,7 +75,7 @@ function makeHandle(input: {
     stdin: Sink.drain,
     stdout: Stream.empty,
     stderr: Stream.empty,
-    all: Stream.empty,
+    all: input.all ?? Stream.empty,
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
   });
@@ -106,6 +107,59 @@ describe("CloudManagedEndpointRuntime", () => {
       ),
     ).toBe("debug");
   });
+
+  it.effect("reports a spawned connector as starting until it registers a tunnel connection", () =>
+    Effect.gen(function* () {
+      const output = new TextEncoder().encode(
+        "2026-06-17T02:00:00Z INF Registered tunnel connection connIndex=0\n",
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            makeHandle({
+              pid: 90,
+              onKill: () => undefined,
+              all: Stream.make(output),
+            }),
+          ),
+        ),
+      );
+
+      const started = yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+      expect(started).toMatchObject({ status: "starting", pid: 90 });
+      yield* Effect.yieldNow;
+      expect(yield* runtime.getStatus).toMatchObject({ status: "running", pid: 90 });
+    }),
+  );
+
+  it.effect("keeps a spawned connector pending when Cloudflare reports a warning", () =>
+    Effect.gen(function* () {
+      const output = new TextEncoder().encode(
+        "2026-06-17T02:00:00Z WRN Failed to serve tunnel connection\n",
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(() =>
+          Effect.succeed(
+            makeHandle({
+              pid: 91,
+              onKill: () => undefined,
+              all: Stream.make(output),
+            }),
+          ),
+        ),
+      );
+
+      yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+      yield* Effect.yieldNow;
+      expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 91 });
+    }),
+  );
 
   it.effect("starts, deduplicates, rotates, and stops the Cloudflare connector", () =>
     Effect.gen(function* () {
@@ -196,7 +250,7 @@ describe("CloudManagedEndpointRuntime", () => {
         connectorToken: "manual-token",
       });
 
-      expect(started.status).toBe("running");
+      expect(started.status).toBe("starting");
       expect(unsupported).toEqual({ status: "unsupported", providerKind: "manual" });
       expect(killed).toEqual([200]);
     }),
@@ -233,8 +287,8 @@ describe("CloudManagedEndpointRuntime", () => {
       firstRunning = false;
       const second = yield* runtime.applyConfig(config);
 
-      expect(first).toMatchObject({ status: "running", pid: 300 });
-      expect(second).toMatchObject({ status: "running", pid: 301 });
+      expect(first).toMatchObject({ status: "starting", pid: 300 });
+      expect(second).toMatchObject({ status: "starting", pid: 301 });
       expect(spawned).toEqual([300, 301]);
       expect(killed).toEqual([300]);
     }),
@@ -277,9 +331,11 @@ describe("CloudManagedEndpointRuntime", () => {
       yield* Deferred.succeed(firstExit, ChildProcessSpawner.ExitCode(1));
       yield* Deferred.await(secondSpawned);
 
-      expect(started).toMatchObject({ status: "running", pid: 400 });
+      expect(started).toMatchObject({ status: "starting", pid: 400 });
       expect(spawned).toEqual([400, 401]);
       expect(killed).toEqual([400]);
+      yield* Effect.yieldNow;
+      expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 401 });
     }),
   );
 
@@ -327,7 +383,7 @@ describe("CloudManagedEndpointRuntime", () => {
       yield* Fiber.join(first);
       const status = yield* Fiber.join(second);
 
-      expect(status).toMatchObject({ status: "running", pid: 501 });
+      expect(status).toMatchObject({ status: "starting", pid: 501 });
       expect(spawned).toEqual([500, 501]);
       expect(killed).toEqual([500]);
     }),
@@ -362,15 +418,25 @@ describe("CloudManagedEndpointRuntime", () => {
     }),
   );
 
-  it.effect("reports a tunnel stop failure without retaining a restartable runtime config", () =>
+  it.effect("retains a failed connector so a later unlink can retry teardown", () =>
     Effect.gen(function* () {
+      let firstStop = true;
+      const killed: number[] = [];
       const spawner = ChildProcessSpawner.make(() =>
         Effect.gen(function* () {
           const handle = makeHandle({
             pid: 550,
-            onKill: () => undefined,
+            onKill: () => {
+              killed.push(550);
+            },
           });
-          yield* Effect.addFinalizer(() => Effect.fail(new Error("kill failed")));
+          yield* Effect.addFinalizer(() => {
+            if (firstStop) {
+              firstStop = false;
+              return Effect.fail(new Error("kill failed"));
+            }
+            return handle.kill();
+          });
           return handle;
         }),
       );
@@ -387,6 +453,8 @@ describe("CloudManagedEndpointRuntime", () => {
         reason: "The relay client could not be stopped.",
       });
       expect(yield* runtime.getStatus).toEqual(stopped);
+      expect(yield* runtime.applyConfig(null)).toEqual({ status: "disabled" });
+      expect(killed).toEqual([550]);
     }),
   );
 
@@ -431,7 +499,7 @@ describe("CloudManagedEndpointRuntime", () => {
       });
 
       expect(status).toMatchObject({
-        status: "running",
+        status: "starting",
         providerKind: "cloudflare_tunnel",
         pid: 600,
       });

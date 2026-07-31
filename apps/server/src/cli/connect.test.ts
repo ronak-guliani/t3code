@@ -36,7 +36,7 @@ it("distinguishes durable Connect status states without treating stale link meta
       desired: false,
       authenticated: true,
       linked: true,
-      endpointRuntime: { status: "running" },
+      endpointRuntime: { status: "running", providerKind: "cloudflare_tunnel", pid: 1 },
     }),
     "authenticated-disabled",
   );
@@ -63,7 +63,16 @@ it("distinguishes durable Connect status states without treating stale link meta
       desired: true,
       authenticated: true,
       linked: true,
-      endpointRuntime: { status: "running" },
+      endpointRuntime: { status: "starting", providerKind: "cloudflare_tunnel", pid: 1 },
+    }),
+    "linked-offline",
+  );
+  assert.equal(
+    cloudConnectionStatus({
+      desired: true,
+      authenticated: true,
+      linked: true,
+      endpointRuntime: { status: "running", providerKind: "cloudflare_tunnel", pid: 1 },
     }),
     "linked-online",
   );

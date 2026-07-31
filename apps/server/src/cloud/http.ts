@@ -525,8 +525,25 @@ export const applyCloudRelayConfig = Effect.fn("environment.cloud.applyRelayConf
       const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(
         payload.endpointRuntime,
       );
+      // A separate CLI process can durably disable Connect while installation
+      // or process startup is in flight. Stop anything this request started
+      // before reporting that the provision was rejected.
+      if (!(yield* readCliDesiredCloudLink)) {
+        const stoppedStatus = yield* dependencies.endpointRuntime.applyConfig(null);
+        if (stoppedStatus.status === "failed") {
+          return yield* new EnvironmentCloudEndpointUnavailableError({
+            message: "T3 Connect was disabled while the managed endpoint was starting.",
+            endpointRuntimeStatus: stoppedStatus,
+          });
+        }
+        return yield* new EnvironmentHttpConflictError({
+          message: "T3 Connect was disabled while the relay configuration was being applied.",
+        });
+      }
       const ok =
-        endpointRuntimeStatus.status === "disabled" || endpointRuntimeStatus.status === "running";
+        endpointRuntimeStatus.status === "disabled" ||
+        endpointRuntimeStatus.status === "starting" ||
+        endpointRuntimeStatus.status === "running";
       if (!ok) {
         return yield* new EnvironmentCloudEndpointUnavailableError({
           message: "Managed endpoint runtime could not be started.",
@@ -786,31 +803,39 @@ const cloudLinkStateHandler = Effect.fn("environment.cloud.linkState")(
   ),
 );
 
+export const unlinkCloudRuntime = Effect.fn("environment.cloud.unlinkRuntime")(function* (
+  dependencies: CloudHttpDependencies,
+) {
+  // This is intentionally the first durable operation. If later tunnel
+  // teardown or metadata cleanup fails, restart reconciliation remains off.
+  yield* setCliDesiredCloudLink(false);
+  const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(null);
+  yield* Effect.forEach(
+    [
+      CLOUD_LINKED_USER_ID,
+      RELAY_URL_SECRET,
+      RELAY_ISSUER_SECRET,
+      RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+      CLOUD_MINT_PUBLIC_KEY,
+      CLOUD_ENDPOINT_RUNTIME_CONFIG,
+      PUBLISH_AGENT_ACTIVITY_SECRET,
+    ],
+    (secret) => dependencies.secrets.remove(secret),
+    { concurrency: 1, discard: true },
+  );
+  if (endpointRuntimeStatus.status === "failed") {
+    return yield* new EnvironmentCloudEndpointUnavailableError({
+      message: "Managed endpoint runtime could not be stopped.",
+      endpointRuntimeStatus,
+    });
+  }
+  return { ok: true, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
+});
+
 const cloudUnlinkHandler = Effect.fn("environment.cloud.unlink")(
   function* (dependencies: CloudHttpDependencies) {
     yield* requireEnvironmentScope(AuthRelayWriteScope);
-    return yield* cloudConnectLifecycleSemaphore.withPermits(1)(
-      Effect.gen(function* () {
-        // This is intentionally the first durable operation. If later tunnel
-        // teardown or metadata cleanup fails, restart reconciliation remains off.
-        yield* setCliDesiredCloudLink(false);
-        const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(null);
-        yield* Effect.forEach(
-          [
-            CLOUD_LINKED_USER_ID,
-            RELAY_URL_SECRET,
-            RELAY_ISSUER_SECRET,
-            RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
-            CLOUD_MINT_PUBLIC_KEY,
-            CLOUD_ENDPOINT_RUNTIME_CONFIG,
-            PUBLISH_AGENT_ACTIVITY_SECRET,
-          ],
-          (secret) => dependencies.secrets.remove(secret),
-          { concurrency: 1, discard: true },
-        );
-        return { ok: true, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
-      }),
-    );
+    return yield* cloudConnectLifecycleSemaphore.withPermits(1)(unlinkCloudRuntime(dependencies));
   },
   Effect.catchIf(
     ServerSecretStore.isSecretStoreError,

@@ -685,7 +685,7 @@ const connectStatusCommand = Command.make("status", {
           { concurrency: "unbounded" },
         );
         const live = yield* runLiveCloudLinkState();
-        const liveState = live.status === "available" ? live.value : null;
+        const liveState = live.status === "available" ? live.value : undefined;
         const linked = liveState?.linked ?? Option.isSome(cloudUserId);
         const endpointRuntime =
           liveState?.endpointRuntimeStatus ??
@@ -703,10 +703,17 @@ const connectStatusCommand = Command.make("status", {
           authenticated,
           linked,
           cloudUserId:
-            liveState?.cloudUserId ??
-            (Option.isSome(cloudUserId) ? bytesToString(cloudUserId.value) : null),
+            liveState === undefined
+              ? Option.isSome(cloudUserId)
+                ? bytesToString(cloudUserId.value)
+                : null
+              : liveState.cloudUserId,
           relayUrl:
-            liveState?.relayUrl ?? (Option.isSome(relayUrl) ? bytesToString(relayUrl.value) : null),
+            liveState === undefined
+              ? Option.isSome(relayUrl)
+                ? bytesToString(relayUrl.value)
+                : null
+              : liveState.relayUrl,
           endpointRuntime,
           relayClient: executable,
         };
