@@ -159,6 +159,13 @@ export const make = Effect.gen(function* () {
   const superviseConnector = (connector: ActiveConnector) =>
     Effect.gen(function* () {
       const result = yield* Effect.result(connector.child.exitCode);
+      const active = yield* Ref.get(activeRef);
+      if (active?.child.pid !== connector.child.pid || active.configKey !== connector.configKey) {
+        return;
+      }
+      // Publish the lost connection before waiting behind an in-flight
+      // reconciliation or beginning replacement work.
+      yield* Ref.set(statusRef, connectorStatus(connector, "starting"));
       yield* reconcileSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const active = yield* Ref.get(activeRef);
@@ -261,6 +268,11 @@ export const make = Effect.gen(function* () {
       }
     }
 
+    if (active) {
+      // The old connector is no longer a usable endpoint while its scope is
+      // closing and relay resolution or installation may still be pending.
+      yield* Ref.set(statusRef, connectorStatus(active, "starting"));
+    }
     const stopped = yield* stopActive;
     if (stopped) return stopped;
 

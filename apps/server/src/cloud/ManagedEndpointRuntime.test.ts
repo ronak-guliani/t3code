@@ -591,6 +591,76 @@ describe("CloudManagedEndpointRuntime", () => {
     ),
   );
 
+  it.effect("clears online status before resolving a rotated connector replacement", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const replacementResolutionStarted = yield* Deferred.make<void>();
+        const releaseReplacementResolution = yield* Deferred.make<void>();
+        const registered = new TextEncoder().encode(
+          "2026-06-17T02:00:00Z INF Registered tunnel connection connIndex=0\n",
+        );
+        let resolveCalls = 0;
+        let spawns = 0;
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.succeed(
+              makeHandle({
+                pid: spawns++ === 0 ? 590 : 591,
+                onKill: () => undefined,
+                all: Stream.make(registered),
+              }),
+            ),
+          ),
+          Layer.succeed(
+            RelayClient.RelayClient,
+            RelayClient.RelayClient.of({
+              resolve: Effect.suspend(() => {
+                if (resolveCalls++ === 0) {
+                  return Effect.succeed({
+                    status: "available" as const,
+                    executablePath: "cloudflared",
+                    source: "path" as const,
+                    version: RelayClient.CLOUDFLARED_VERSION,
+                  });
+                }
+                return Deferred.succeed(replacementResolutionStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseReplacementResolution)),
+                  Effect.as({
+                    status: "available" as const,
+                    executablePath: "cloudflared",
+                    source: "path" as const,
+                    version: RelayClient.CLOUDFLARED_VERSION,
+                  }),
+                );
+              }),
+              install: Effect.die("unused"),
+              installWithProgress: () => Effect.die("unused"),
+            }),
+          ),
+        );
+
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token-1",
+        });
+        yield* Effect.yieldNow;
+        expect(yield* runtime.getStatus).toMatchObject({ status: "running", pid: 590 });
+
+        const rotating = yield* runtime
+          .applyConfig({
+            providerKind: "cloudflare_tunnel",
+            connectorToken: "token-2",
+          })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(replacementResolutionStarted);
+        expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 590 });
+
+        yield* Deferred.succeed(releaseReplacementResolution, undefined);
+        expect(yield* Fiber.join(rotating)).toMatchObject({ status: "starting", pid: 591 });
+      }),
+    ),
+  );
+
   it.effect("installs a missing relay client before launching the managed tunnel", () =>
     Effect.gen(function* () {
       const spawn = vi.fn();
