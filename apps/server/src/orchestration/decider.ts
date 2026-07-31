@@ -20,12 +20,24 @@ import {
   requireThreadReadyForTurnStart,
   threadHasPendingInteraction,
   threadHasQueuedTurnStart,
+  threadHasSettlementOverride,
+  threadIsSnoozed,
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
+/**
+ * Blocked-on-you work must never stay hidden inside a settled row, so these
+ * activity kinds reset the settlement lifecycle. Hoisted because
+ * `thread.activity.append` is the hottest command in the system.
+ */
+const SETTLEMENT_WAKING_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
+  "approval.requested",
+  "user-input.requested",
+  "provider.turn.start.failed",
+]);
 const nowIso = () => new Date().toISOString();
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -588,6 +600,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
+      // Re-settling an already settled thread must project as a no-op: keep the
+      // original settledAt and updatedAt so a duplicate command neither rewinds
+      // the settlement nor churns sidebar ordering.
+      const alreadySettled = thread.settledOverride === "settled";
       const hasActiveTurn =
         thread.latestTurn?.state === "running" ||
         (thread.session?.status === "running" && thread.session.activeTurnId !== null);
@@ -613,18 +629,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           settledAt: thread.settledAt ?? occurredAt,
-          updatedAt: occurredAt,
+          updatedAt: alreadySettled ? thread.updatedAt : occurredAt,
         },
       };
     }
 
     case "thread.unsettle": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
+      // Idempotent by re-emission (see thread.settle): a thread already pinned
+      // active reduces to the same state, so keep updatedAt to avoid reordering.
+      const alreadyPinnedActive = thread.settledOverride === "active";
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -636,7 +655,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           reason: command.reason,
-          updatedAt: occurredAt,
+          updatedAt: alreadyPinnedActive ? thread.updatedAt : occurredAt,
         },
       };
     }
@@ -658,7 +677,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' has a queued turn or pending interaction and cannot snooze.`,
         });
       }
-      if (Date.parse(command.snoozedUntil) <= Date.parse(occurredAt)) {
+      // Negated so an unparseable wake time is rejected too: IsoDateTime is
+      // structurally just a string, and NaN fails every comparison, so `<=`
+      // would let an unparseable snoozedUntil persist as a permanent snooze.
+      if (!(Date.parse(command.snoozedUntil) > Date.parse(occurredAt))) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "A snooze must end in the future.",
@@ -993,7 +1015,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       const occurredAt = command.createdAt;
       const lifecycleEvents: PlannedOrchestrationEvent[] = [];
-      if (targetThread.settledOverride !== null || targetThread.settledAt !== null) {
+      if (threadHasSettlementOverride(targetThread)) {
         lifecycleEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
@@ -1009,7 +1031,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      if (targetThread.snoozedUntil !== null || targetThread.snoozedAt !== null) {
+      if (threadIsSnoozed(targetThread)) {
         lifecycleEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
@@ -1385,10 +1407,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           session: command.session,
         },
       };
-      if (
-        command.session?.status !== "running" ||
-        (thread.settledOverride === null && thread.settledAt === null)
-      ) {
+      if (command.session?.status !== "running" || !threadHasSettlementOverride(thread)) {
         return sessionSetEvent;
       }
       return [
@@ -1585,10 +1604,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       if (
-        !["approval.requested", "user-input.requested", "provider.turn.start.failed"].includes(
-          command.activity.kind,
-        ) ||
-        (thread.settledOverride === null && thread.settledAt === null)
+        !SETTLEMENT_WAKING_ACTIVITY_KINDS.has(command.activity.kind) ||
+        !threadHasSettlementOverride(thread)
       ) {
         return activityEvent;
       }

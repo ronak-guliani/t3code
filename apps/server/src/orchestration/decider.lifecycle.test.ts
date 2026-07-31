@@ -124,4 +124,95 @@ describe("decider thread lifecycle", () => {
       payload: { threadId, reason: "user" },
     });
   });
+
+  it("rejects a wake time that cannot be parsed", async () => {
+    const readModel = await lifecycleReadModel();
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.snooze",
+            commandId,
+            threadId,
+            // IsoDateTime is structurally a plain string, so an unparseable
+            // wake time reaches the decider and must not persist as a snooze.
+            snoozedUntil: "not-a-date",
+          } satisfies OrchestrationCommand,
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("A snooze must end in the future.");
+  });
+
+  it("re-settling a settled thread keeps its settledAt and ordering", async () => {
+    const settledAt = "2026-07-30T01:00:00.000Z";
+    const updatedAt = "2026-07-30T02:00:00.000Z";
+    const readModel = await Effect.runPromise(
+      projectEvent(await lifecycleReadModel(), {
+        sequence: 2,
+        eventId: EventId.make("event-thread-settled"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.settled",
+        occurredAt: settledAt,
+        commandId,
+        causationEventId: null,
+        correlationId: commandId,
+        metadata: {},
+        payload: { threadId, settledAt, updatedAt },
+      }),
+    );
+
+    const resettled = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.settle",
+          commandId,
+          threadId,
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+
+    expect(resettled).toMatchObject({
+      type: "thread.settled",
+      payload: { threadId, settledAt, updatedAt },
+    });
+  });
+
+  it("re-unsettling a thread already pinned active keeps its ordering", async () => {
+    const updatedAt = "2026-07-30T03:00:00.000Z";
+    const readModel = await Effect.runPromise(
+      projectEvent(await lifecycleReadModel(), {
+        sequence: 2,
+        eventId: EventId.make("event-thread-unsettled"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.unsettled",
+        occurredAt: updatedAt,
+        commandId,
+        causationEventId: null,
+        correlationId: commandId,
+        metadata: {},
+        payload: { threadId, reason: "user", updatedAt },
+      }),
+    );
+
+    const reopened = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.unsettle",
+          commandId,
+          threadId,
+          reason: "user",
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+
+    expect(reopened).toMatchObject({
+      type: "thread.unsettled",
+      payload: { threadId, reason: "user", updatedAt },
+    });
+  });
 });

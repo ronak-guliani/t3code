@@ -9,11 +9,14 @@ import {
   PlusIcon,
   RotateCcwIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useState } from "react";
+import { type ReactNode, memo, useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { scopedProjectKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import { useParams, useRouter } from "@tanstack/react-router";
 import {
+  QUEUED_TURN_START_GRACE_MS,
+  canSettle,
+  canSnooze,
   effectiveSettled,
   effectiveSnoozed,
   threadRaisedHandWhileSnoozed,
@@ -46,14 +49,15 @@ import {
 
 const SETTLED_PAGE_SIZE = 25;
 
-type ShelfThread = SidebarThreadSummary & {
-  readonly projectName: string;
-};
-
-function sortByRecent(left: ShelfThread, right: ShelfThread): number {
+function sortByRecent(left: SidebarThreadSummary, right: SidebarThreadSummary): number {
   const leftAt = left.updatedAt ?? left.createdAt;
   const rightAt = right.updatedAt ?? right.createdAt;
-  return rightAt.localeCompare(leftAt) || left.title.localeCompare(right.title);
+  // ISO-8601 UTC timestamps sort lexicographically, so a plain comparison is
+  // both correct and far cheaper than locale-aware collation.
+  if (leftAt !== rightAt) {
+    return leftAt < rightAt ? 1 : -1;
+  }
+  return left.title.localeCompare(right.title);
 }
 
 function projectNameByScopedKey(projects: readonly Project[]): Map<string, string> {
@@ -80,26 +84,34 @@ function fourHoursFromNow(): string {
   return new Date(Date.now() + 4 * 60 * 60 * 1_000).toISOString();
 }
 
-function ThreadRow({
+const ThreadRow = memo(function ThreadRow({
   thread,
+  projectName,
   active,
+  now,
   onOpen,
   onSettle,
   onUnsettle,
   onSnooze,
   onUnsnooze,
 }: {
-  readonly thread: ShelfThread;
+  readonly thread: SidebarThreadSummary;
+  readonly projectName: string;
   readonly active: boolean;
-  readonly onOpen: (thread: ShelfThread) => void;
-  readonly onSettle: (thread: ShelfThread) => void;
-  readonly onUnsettle: (thread: ShelfThread) => void;
-  readonly onSnooze: (thread: ShelfThread, until: string) => void;
-  readonly onUnsnooze: (thread: ShelfThread) => void;
+  readonly now: string;
+  readonly onOpen: (thread: SidebarThreadSummary) => void;
+  readonly onSettle: (thread: SidebarThreadSummary) => void;
+  readonly onUnsettle: (thread: SidebarThreadSummary) => void;
+  readonly onSnooze: (thread: SidebarThreadSummary, until: string) => void;
+  readonly onUnsnooze: (thread: SidebarThreadSummary) => void;
 }) {
   const status = resolveThreadStatusPill({ thread });
-  const snoozed = effectiveSnoozed(thread, { now: nowIso() });
+  const snoozed = effectiveSnoozed(thread, { now });
   const raisedHand = threadRaisedHandWhileSnoozed(thread);
+  const settled = thread.settledOverride === "settled";
+  // Reopening is always allowed; only the settle direction has preconditions.
+  const settleBlocked = !settled && !canSettle(thread, { now });
+  const snoozeBlocked = !canSnooze(thread, { now });
 
   return (
     <SidebarMenuItem className="group/thread">
@@ -118,7 +130,7 @@ function ThreadRow({
             <span className="truncate font-medium">{thread.title}</span>
           </span>
           <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span className="truncate">{thread.projectName}</span>
+            <span className="truncate">{projectName}</span>
             <span aria-hidden="true">-</span>
             <span className="shrink-0">
               {formatRelativeTimeLabel(thread.updatedAt ?? thread.createdAt)}
@@ -152,42 +164,48 @@ function ThreadRow({
           <>
             <Button
               aria-label={`Snooze ${thread.title} for four hours`}
+              disabled={snoozeBlocked}
               onClick={(event) => {
                 event.stopPropagation();
                 onSnooze(thread, fourHoursFromNow());
               }}
               size="icon-xs"
-              title="Snooze for 4 hours"
+              title={
+                snoozeBlocked ? "Cannot snooze work that is waiting on you" : "Snooze for 4 hours"
+              }
               variant="ghost"
             >
               <Clock3Icon />
             </Button>
             <Button
-              aria-label={
-                thread.settledOverride === "settled"
-                  ? `Reopen ${thread.title}`
-                  : `Settle ${thread.title}`
-              }
+              aria-label={settled ? `Reopen ${thread.title}` : `Settle ${thread.title}`}
+              disabled={settleBlocked}
               onClick={(event) => {
                 event.stopPropagation();
-                if (thread.settledOverride === "settled") {
+                if (settled) {
                   onUnsettle(thread);
                 } else {
                   onSettle(thread);
                 }
               }}
               size="icon-xs"
-              title={thread.settledOverride === "settled" ? "Reopen thread" : "Settle thread"}
+              title={
+                settled
+                  ? "Reopen thread"
+                  : settleBlocked
+                    ? "Cannot settle a thread with active or pending work"
+                    : "Settle thread"
+              }
               variant="ghost"
             >
-              {thread.settledOverride === "settled" ? <RotateCcwIcon /> : <CheckCircle2Icon />}
+              {settled ? <RotateCcwIcon /> : <CheckCircle2Icon />}
             </Button>
           </>
         )}
       </div>
     </SidebarMenuItem>
   );
-}
+});
 
 function Shelf({
   title,
@@ -235,6 +253,9 @@ export default function SidebarV2() {
   const router = useRouter();
   const params = useParams({ strict: false });
   const activeThreadRef = resolveThreadRouteRef(params);
+  const activeThreadKey = activeThreadRef
+    ? `${activeThreadRef.environmentId}:${activeThreadRef.threadId}`
+    : null;
   const { projects, threads } = useStore(
     useShallow((state) => ({
       projects: selectProjectsAcrossEnvironments(state),
@@ -242,28 +263,47 @@ export default function SidebarV2() {
     })),
   );
 
+  // Classification only changes on its own at two known instants: a snooze
+  // elapsing, or a queued turn start ageing out of its grace window. Waking
+  // exactly then beats polling every minute and keeps snoozes punctual.
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(nowIso()), 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
+    const nowMs = Date.parse(now);
+    let nextAt = Number.POSITIVE_INFINITY;
+    for (const thread of threads) {
+      const snoozedUntil = thread.snoozedUntil ?? null;
+      const wakeAt = snoozedUntil === null ? Number.NaN : Date.parse(snoozedUntil);
+      if (wakeAt > nowMs) {
+        nextAt = Math.min(nextAt, wakeAt);
+      }
+      const messageAt =
+        thread.latestUserMessageAt === null ? Number.NaN : Date.parse(thread.latestUserMessageAt);
+      const graceEndsAt = messageAt + QUEUED_TURN_START_GRACE_MS;
+      if (graceEndsAt > nowMs) {
+        nextAt = Math.min(nextAt, graceEndsAt);
+      }
+    }
+    if (!Number.isFinite(nextAt)) {
+      return undefined;
+    }
+    // setTimeout delays are signed 32-bit: anything larger overflows and fires
+    // immediately. The padding keeps the wake strictly past the boundary.
+    const delayMs = Math.min(Math.max(0, nextAt - Date.now()) + 50, 2_147_483_647);
+    const timer = window.setTimeout(() => setNow(nowIso()), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [now, threads]);
 
+  const projectNames = useMemo(() => projectNameByScopedKey(projects), [projects]);
+
+  // Classifies the store's own thread objects rather than rebuilt copies, so
+  // rows that did not change keep their identity and stay memoized.
   const shelves = useMemo(() => {
-    const projectsByKey = projectNameByScopedKey(projects);
-    const visible = threads
-      .filter((thread) => thread.archivedAt === null)
-      .map(
-        (thread): ShelfThread => ({
-          ...thread,
-          projectName:
-            projectsByKey.get(
-              scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-            ) ?? "Unknown project",
-        }),
-      );
-    const active: ShelfThread[] = [];
-    const snoozed: ShelfThread[] = [];
-    const settled: ShelfThread[] = [];
-    for (const thread of visible) {
+    const active: SidebarThreadSummary[] = [];
+    const snoozed: SidebarThreadSummary[] = [];
+    const settled: SidebarThreadSummary[] = [];
+    for (const thread of threads) {
+      if (thread.archivedAt !== null) {
+        continue;
+      }
       if (effectiveSnoozed(thread, { now })) {
         snoozed.push(thread);
       } else if (effectiveSettled(thread, { now })) {
@@ -277,27 +317,24 @@ export default function SidebarV2() {
       snoozed: snoozed.toSorted(sortByRecent),
       settled: settled.toSorted(sortByRecent),
     };
-  }, [now, projects, threads]);
+  }, [now, threads]);
 
   const openedSettled = useMemo(() => {
-    const activeKey = activeThreadRef
-      ? `${activeThreadRef.environmentId}:${activeThreadRef.threadId}`
-      : null;
     const included = shelves.settled.slice(0, settledVisibleCount);
     if (
-      activeKey !== null &&
-      !included.some((thread) => `${thread.environmentId}:${thread.id}` === activeKey)
+      activeThreadKey !== null &&
+      !included.some((thread) => `${thread.environmentId}:${thread.id}` === activeThreadKey)
     ) {
       const routed = shelves.settled.find(
-        (thread) => `${thread.environmentId}:${thread.id}` === activeKey,
+        (thread) => `${thread.environmentId}:${thread.id}` === activeThreadKey,
       );
       if (routed) return [...included, routed];
     }
     return included;
-  }, [activeThreadRef, settledVisibleCount, shelves.settled]);
+  }, [activeThreadKey, settledVisibleCount, shelves.settled]);
 
   const openThread = useCallback(
-    (thread: ShelfThread) => {
+    (thread: SidebarThreadSummary) => {
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
@@ -319,46 +356,73 @@ export default function SidebarV2() {
       );
     });
   }, []);
-  const isActive = useCallback(
-    (thread: ShelfThread) =>
-      activeThreadRef?.environmentId === thread.environmentId &&
-      activeThreadRef.threadId === thread.id,
-    [activeThreadRef],
+  // Stable per-action handlers: inline arrows would give every row fresh props
+  // on each render and defeat ThreadRow's memoization.
+  const handleSettle = useCallback(
+    (thread: SidebarThreadSummary) => {
+      runAction(
+        () => settleThread(scopeThreadRef(thread.environmentId, thread.id)),
+        "settle thread",
+      );
+    },
+    [runAction, settleThread],
+  );
+  const handleUnsettle = useCallback(
+    (thread: SidebarThreadSummary) => {
+      runAction(
+        () => unsettleThread(scopeThreadRef(thread.environmentId, thread.id)),
+        "reopen thread",
+      );
+    },
+    [runAction, unsettleThread],
+  );
+  const handleSnooze = useCallback(
+    (thread: SidebarThreadSummary, until: string) => {
+      runAction(
+        () => snoozeThread(scopeThreadRef(thread.environmentId, thread.id), until),
+        "snooze thread",
+      );
+    },
+    [runAction, snoozeThread],
+  );
+  const handleUnsnooze = useCallback(
+    (thread: SidebarThreadSummary) => {
+      runAction(
+        () => unsnoozeThread(scopeThreadRef(thread.environmentId, thread.id)),
+        "wake thread",
+      );
+    },
+    [runAction, unsnoozeThread],
   );
   const renderThread = useCallback(
-    (thread: ShelfThread) => (
+    (thread: SidebarThreadSummary) => (
       <ThreadRow
         key={`${thread.environmentId}:${thread.id}`}
-        active={isActive(thread)}
+        active={`${thread.environmentId}:${thread.id}` === activeThreadKey}
+        now={now}
         onOpen={openThread}
-        onSettle={(selected) =>
-          runAction(
-            () => settleThread(scopeThreadRef(selected.environmentId, selected.id)),
-            "settle thread",
-          )
-        }
-        onSnooze={(selected, until) =>
-          runAction(
-            () => snoozeThread(scopeThreadRef(selected.environmentId, selected.id), until),
-            "snooze thread",
-          )
-        }
-        onUnsettle={(selected) =>
-          runAction(
-            () => unsettleThread(scopeThreadRef(selected.environmentId, selected.id)),
-            "reopen thread",
-          )
-        }
-        onUnsnooze={(selected) =>
-          runAction(
-            () => unsnoozeThread(scopeThreadRef(selected.environmentId, selected.id)),
-            "wake thread",
-          )
+        onSettle={handleSettle}
+        onSnooze={handleSnooze}
+        onUnsettle={handleUnsettle}
+        onUnsnooze={handleUnsnooze}
+        projectName={
+          projectNames.get(
+            scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+          ) ?? "Unknown project"
         }
         thread={thread}
       />
     ),
-    [isActive, openThread, runAction, settleThread, snoozeThread, unsettleThread, unsnoozeThread],
+    [
+      activeThreadKey,
+      handleSettle,
+      handleSnooze,
+      handleUnsettle,
+      handleUnsnooze,
+      now,
+      openThread,
+      projectNames,
+    ],
   );
 
   return (

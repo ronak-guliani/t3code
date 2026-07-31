@@ -168,6 +168,19 @@ export function threadHasQueuedTurnStart(
     : latestMessage.createdAt >= thread.latestTurn.completedAt;
 }
 
+/**
+ * `settledAt` is written exactly when `settledOverride` becomes "settled", so
+ * the override alone decides whether real activity must reset the lifecycle:
+ * a settled thread wakes, and a user-pinned "active" thread unpins.
+ */
+export function threadHasSettlementOverride(thread: OrchestrationThread): boolean {
+  return (thread.settledOverride ?? null) !== null;
+}
+
+export function threadIsSnoozed(thread: OrchestrationThread): boolean {
+  return (thread.snoozedUntil ?? null) !== null || (thread.snoozedAt ?? null) !== null;
+}
+
 function activityRequestId(payload: unknown): string | null {
   if (typeof payload !== "object" || payload === null) {
     return null;
