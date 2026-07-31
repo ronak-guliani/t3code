@@ -1,6 +1,5 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { useShallow } from "zustand/react/shallow";
 
 import ThreadSidebar from "./Sidebar";
 import SidebarV2 from "./SidebarV2";
@@ -10,9 +9,6 @@ import {
   syncShortcutModifierStateFromKeyboardEvent,
 } from "../shortcutModifierState";
 import { useSettings } from "../hooks/useSettings";
-import { usePrimaryEnvironmentDescriptor } from "../environments/primary";
-import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
-import { selectSidebarThreadsAcrossEnvironments, useStore } from "../store";
 
 const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
 const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
@@ -20,29 +16,6 @@ const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const sidebarV2Enabled = useSettings((settings) => settings.sidebarV2Enabled);
-  const primaryDescriptor = usePrimaryEnvironmentDescriptor();
-  const remoteEnvironmentDescriptors = useSavedEnvironmentRuntimeStore((state) => state.byId);
-  const sidebarEnvironmentIds = useStore(
-    useShallow((state) => [
-      ...new Set(
-        selectSidebarThreadsAcrossEnvironments(state).map((thread) => thread.environmentId),
-      ),
-    ]),
-  );
-  const sidebarV2Supported = useMemo(
-    () =>
-      sidebarEnvironmentIds.every((environmentId) => {
-        const descriptor =
-          primaryDescriptor?.environmentId === environmentId
-            ? primaryDescriptor
-            : remoteEnvironmentDescriptors[environmentId]?.descriptor;
-        return (
-          descriptor?.capabilities.threadSettlement === true &&
-          descriptor.capabilities.threadSnooze === true
-        );
-      }),
-    [primaryDescriptor, remoteEnvironmentDescriptors, sidebarEnvironmentIds],
-  );
 
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
@@ -96,7 +69,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
         }}
       >
-        {sidebarV2Enabled && sidebarV2Supported ? <SidebarV2 /> : <ThreadSidebar />}
+        {sidebarV2Enabled ? <SidebarV2 /> : <ThreadSidebar />}
         <SidebarRail />
       </Sidebar>
       {children}

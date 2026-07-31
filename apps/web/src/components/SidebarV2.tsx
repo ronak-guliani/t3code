@@ -24,6 +24,8 @@ import {
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { usePrimaryEnvironmentDescriptor } from "../environments/primary";
+import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
 import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../timestampFormat";
 import {
   selectProjectsAcrossEnvironments,
@@ -33,6 +35,7 @@ import {
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import type { Project, SidebarThreadSummary } from "../types";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
+import { resolveThreadLifecycleSupport, selectSnoozeShelfBulkTargets } from "./SidebarV2.logic";
 import { ThreadStatusLabel } from "./ThreadStatusIndicators";
 import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -89,6 +92,8 @@ const ThreadRow = memo(function ThreadRow({
   projectName,
   active,
   now,
+  settlementSupported,
+  snoozeSupported,
   onOpen,
   onSettle,
   onUnsettle,
@@ -99,6 +104,12 @@ const ThreadRow = memo(function ThreadRow({
   readonly projectName: string;
   readonly active: boolean;
   readonly now: string;
+  // False on environments whose server predates thread.settle/unsettle. The
+  // affordance hides entirely rather than failing on click, so one stale
+  // environment degrades only its own rows.
+  readonly settlementSupported: boolean;
+  // Same contract for thread.snooze/unsnooze.
+  readonly snoozeSupported: boolean;
   readonly onOpen: (thread: SidebarThreadSummary) => void;
   readonly onSettle: (thread: SidebarThreadSummary) => void;
   readonly onUnsettle: (thread: SidebarThreadSummary) => void;
@@ -148,58 +159,64 @@ const ThreadRow = memo(function ThreadRow({
       </SidebarMenuButton>
       <div className="absolute right-2 top-1.5 hidden items-center gap-0.5 group-hover/thread:flex group-focus-within/thread:flex">
         {snoozed ? (
-          <Button
-            aria-label={`Wake ${thread.title}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onUnsnooze(thread);
-            }}
-            size="icon-xs"
-            title="Wake now"
-            variant="ghost"
-          >
-            <RotateCcwIcon />
-          </Button>
+          snoozeSupported ? (
+            <Button
+              aria-label={`Wake ${thread.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onUnsnooze(thread);
+              }}
+              size="icon-xs"
+              title="Wake now"
+              variant="ghost"
+            >
+              <RotateCcwIcon />
+            </Button>
+          ) : null
         ) : (
           <>
-            <Button
-              aria-label={`Snooze ${thread.title} for four hours`}
-              disabled={snoozeBlocked}
-              onClick={(event) => {
-                event.stopPropagation();
-                onSnooze(thread, fourHoursFromNow());
-              }}
-              size="icon-xs"
-              title={
-                snoozeBlocked ? "Cannot snooze work that is waiting on you" : "Snooze for 4 hours"
-              }
-              variant="ghost"
-            >
-              <Clock3Icon />
-            </Button>
-            <Button
-              aria-label={settled ? `Reopen ${thread.title}` : `Settle ${thread.title}`}
-              disabled={settleBlocked}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (settled) {
-                  onUnsettle(thread);
-                } else {
-                  onSettle(thread);
+            {snoozeSupported ? (
+              <Button
+                aria-label={`Snooze ${thread.title} for four hours`}
+                disabled={snoozeBlocked}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSnooze(thread, fourHoursFromNow());
+                }}
+                size="icon-xs"
+                title={
+                  snoozeBlocked ? "Cannot snooze work that is waiting on you" : "Snooze for 4 hours"
                 }
-              }}
-              size="icon-xs"
-              title={
-                settled
-                  ? "Reopen thread"
-                  : settleBlocked
-                    ? "Cannot settle a thread with active or pending work"
-                    : "Settle thread"
-              }
-              variant="ghost"
-            >
-              {settled ? <RotateCcwIcon /> : <CheckCircle2Icon />}
-            </Button>
+                variant="ghost"
+              >
+                <Clock3Icon />
+              </Button>
+            ) : null}
+            {settlementSupported ? (
+              <Button
+                aria-label={settled ? `Reopen ${thread.title}` : `Settle ${thread.title}`}
+                disabled={settleBlocked}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (settled) {
+                    onUnsettle(thread);
+                  } else {
+                    onSettle(thread);
+                  }
+                }}
+                size="icon-xs"
+                title={
+                  settled
+                    ? "Reopen thread"
+                    : settleBlocked
+                      ? "Cannot settle a thread with active or pending work"
+                      : "Settle thread"
+                }
+                variant="ghost"
+              >
+                {settled ? <RotateCcwIcon /> : <CheckCircle2Icon />}
+              </Button>
+            ) : null}
           </>
         )}
       </div>
@@ -262,6 +279,16 @@ export default function SidebarV2() {
       threads: selectSidebarThreadsAcrossEnvironments(state),
     })),
   );
+  const primaryDescriptor = usePrimaryEnvironmentDescriptor();
+  const remoteEnvironmentDescriptors = useSavedEnvironmentRuntimeStore((state) => state.byId);
+  const lifecycleSupport = useMemo(
+    () =>
+      resolveThreadLifecycleSupport([
+        primaryDescriptor,
+        ...Object.values(remoteEnvironmentDescriptors).map((saved) => saved.descriptor),
+      ]),
+    [primaryDescriptor, remoteEnvironmentDescriptors],
+  );
 
   // Classification only changes on its own at two known instants: a snooze
   // elapsing, or a queued turn start ageing out of its grace window. Waking
@@ -319,6 +346,12 @@ export default function SidebarV2() {
     };
   }, [now, threads]);
 
+  // Snoozed rows the shelf's bulk buttons may actually target.
+  const bulkSnoozeTargets = useMemo(
+    () => selectSnoozeShelfBulkTargets({ snoozed: shelves.snoozed, lifecycleSupport, now }),
+    [lifecycleSupport, now, shelves.snoozed],
+  );
+
   const openedSettled = useMemo(() => {
     const included = shelves.settled.slice(0, settledVisibleCount);
     if (
@@ -356,6 +389,41 @@ export default function SidebarV2() {
       );
     });
   }, []);
+  // Bulk shelf actions fan out to one command per thread — there is no bulk
+  // command — so failures are collapsed into a single toast rather than one
+  // per thread, which could otherwise bury the screen in duplicates.
+  const runBulkAction = useCallback(
+    (
+      targets: readonly SidebarThreadSummary[],
+      action: (thread: SidebarThreadSummary) => Promise<void>,
+      actionLabel: string,
+    ) => {
+      if (targets.length === 0) {
+        return;
+      }
+      void Promise.allSettled(targets.map((thread) => action(thread))).then((results) => {
+        const failures = results.filter(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failures.length === 0) {
+          return;
+        }
+        console.error("Sidebar inbox bulk lifecycle action failed", failures);
+        const firstReason: unknown = failures[0]?.reason;
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: `Failed to ${actionLabel} ${failures.length} of ${targets.length} threads`,
+            description:
+              firstReason instanceof Error
+                ? firstReason.message
+                : "An unexpected error prevented this action.",
+          }),
+        );
+      });
+    },
+    [],
+  );
   // Stable per-action handlers: inline arrows would give every row fresh props
   // on each render and defeat ThreadRow's memoization.
   const handleSettle = useCallback(
@@ -410,6 +478,8 @@ export default function SidebarV2() {
             scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
           ) ?? "Unknown project"
         }
+        settlementSupported={lifecycleSupport.get(thread.environmentId)?.settlement === true}
+        snoozeSupported={lifecycleSupport.get(thread.environmentId)?.snooze === true}
         thread={thread}
       />
     ),
@@ -419,6 +489,7 @@ export default function SidebarV2() {
       handleSnooze,
       handleUnsettle,
       handleUnsnooze,
+      lifecycleSupport,
       now,
       openThread,
       projectNames,
@@ -458,15 +529,14 @@ export default function SidebarV2() {
           title="Snoozed"
         >
           <SidebarMenu>{shelves.snoozed.map(renderThread)}</SidebarMenu>
-          {shelves.snoozed.length > 0 ? (
+          {bulkSnoozeTargets.wakeable.length > 0 ? (
             <div className="flex gap-1 px-2 py-1">
               <Button
                 onClick={() =>
-                  shelves.snoozed.forEach((thread) =>
-                    runAction(
-                      () => unsnoozeThread(scopeThreadRef(thread.environmentId, thread.id)),
-                      "wake thread",
-                    ),
+                  runBulkAction(
+                    bulkSnoozeTargets.wakeable,
+                    (thread) => unsnoozeThread(scopeThreadRef(thread.environmentId, thread.id)),
+                    "wake",
                   )
                 }
                 size="xs"
@@ -474,24 +544,25 @@ export default function SidebarV2() {
               >
                 Wake all
               </Button>
-              <Button
-                onClick={() =>
-                  shelves.snoozed.forEach((thread) =>
-                    runAction(
-                      () =>
+              {bulkSnoozeTargets.reschedulable.length > 0 ? (
+                <Button
+                  onClick={() =>
+                    runBulkAction(
+                      bulkSnoozeTargets.reschedulable,
+                      (thread) =>
                         snoozeThread(
                           scopeThreadRef(thread.environmentId, thread.id),
                           startOfTomorrow(),
                         ),
-                      "snooze thread",
-                    ),
-                  )
-                }
-                size="xs"
-                variant="ghost"
-              >
-                Until tomorrow
-              </Button>
+                      "snooze",
+                    )
+                  }
+                  size="xs"
+                  variant="ghost"
+                >
+                  Until tomorrow
+                </Button>
+              ) : null}
             </div>
           ) : null}
         </Shelf>
