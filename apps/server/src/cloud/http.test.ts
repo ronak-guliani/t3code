@@ -1,4 +1,5 @@
 // @ts-nocheck
+import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -16,7 +17,9 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
+import * as CliState from "./CliState.ts";
 import {
+  applyCloudRelayConfig,
   consumeCloudReplayGuards,
   persistCloudRelayConfig,
   reconcileDesiredCloudLink,
@@ -403,6 +406,91 @@ it.effect("serializes relay configuration rollback with overlapping writes", () 
       );
     }),
   ),
+);
+
+it.effect(
+  "does not relaunch a tunnel when unlink disables Connect during relay configuration",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const values = new Map<string, Uint8Array>();
+        const configurationWriteStarted = yield* Deferred.make<void>();
+        const releaseConfigurationWrite = yield* Deferred.make<void>();
+        const runtimeConfigs: Array<unknown> = [];
+        const publicKey = NodeCrypto.generateKeyPairSync("ed25519")
+          .publicKey.export({ type: "spki", format: "pem" })
+          .toString();
+        const secrets = {
+          get: (name: string) =>
+            Effect.sync(() => {
+              const value = values.get(name);
+              return value === undefined ? Option.none<Uint8Array>() : Option.some(value);
+            }),
+          set: (name: string, value: Uint8Array) =>
+            Effect.gen(function* () {
+              if (name === RELAY_URL_SECRET) {
+                yield* Deferred.succeed(configurationWriteStarted, undefined);
+                yield* Deferred.await(releaseConfigurationWrite);
+              }
+              values.set(name, value);
+            }),
+          create: unusedSecretStoreOperation,
+          getOrCreateRandom: unusedSecretStoreOperation,
+          remove: (name: string) =>
+            Effect.sync(() => {
+              values.delete(name);
+            }),
+          list: () => Effect.succeed([]),
+        } as ServerSecretStore.ServerSecretStore["Service"];
+
+        yield* CliState.setCliDesiredCloudLink(true).pipe(
+          Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        );
+        const applying = yield* Effect.result(
+          applyCloudRelayConfig(
+            {
+              secrets,
+              endpointRuntime: ManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
+                applyConfig: (config) =>
+                  Effect.sync(() => {
+                    runtimeConfigs.push(config);
+                    return { status: "disabled" as const };
+                  }),
+                getStatus: Effect.succeed({ status: "disabled" }),
+              }),
+            } as never,
+            {
+              relayUrl: "https://relay.example.test",
+              cloudUserId: "cloud-user",
+              environmentCredential: "credential",
+              cloudMintPublicKey: publicKey,
+              endpointRuntime: {
+                providerKind: "cloudflare_tunnel",
+                connectorToken: "connector-token",
+              },
+            },
+          ),
+        ).pipe(
+          Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+          Effect.forkScoped,
+        );
+
+        yield* Deferred.await(configurationWriteStarted);
+        yield* CliState.setCliDesiredCloudLink(false).pipe(
+          Effect.provideService(ServerSecretStore.ServerSecretStore, secrets),
+        );
+        yield* Deferred.succeed(releaseConfigurationWrite, undefined);
+
+        const exit = yield* Fiber.join(applying);
+        expect(exit).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "EnvironmentHttpConflictError",
+          },
+        });
+        expect(runtimeConfigs).toEqual([null]);
+      }),
+    ),
 );
 
 it.effect("times out stalled relay requests after fifteen seconds", () =>

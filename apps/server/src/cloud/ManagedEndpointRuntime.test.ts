@@ -345,6 +345,7 @@ describe("CloudManagedEndpointRuntime", () => {
           }),
         ),
       );
+
       const runtime = yield* buildCloudManagedEndpointRuntime(spawner);
 
       const status = yield* runtime.applyConfig({
@@ -358,6 +359,34 @@ describe("CloudManagedEndpointRuntime", () => {
         providerKind: "cloudflare_tunnel",
         tunnelId: "tunnel-1",
       });
+    }),
+  );
+
+  it.effect("reports a tunnel stop failure without retaining a restartable runtime config", () =>
+    Effect.gen(function* () {
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.gen(function* () {
+          const handle = makeHandle({
+            pid: 550,
+            onKill: () => undefined,
+          });
+          yield* Effect.addFinalizer(() => Effect.fail(new Error("kill failed")));
+          return handle;
+        }),
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(spawner);
+
+      yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+      const stopped = yield* runtime.applyConfig(null);
+
+      expect(stopped).toMatchObject({
+        status: "failed",
+        reason: "The relay client could not be stopped.",
+      });
+      expect(yield* runtime.getStatus).toEqual(stopped);
     }),
   );
 
@@ -408,6 +437,38 @@ describe("CloudManagedEndpointRuntime", () => {
       });
       expect(install).toHaveBeenCalledTimes(1);
       expect(spawn).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  it.effect("does not launch a tunnel when managed relay-client installation fails", () =>
+    Effect.gen(function* () {
+      const spawn = vi.fn();
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(spawn),
+        Layer.succeed(
+          RelayClient.RelayClient,
+          RelayClient.RelayClient.of({
+            resolve: Effect.succeed({
+              status: "missing",
+              version: RelayClient.CLOUDFLARED_VERSION,
+            }),
+            install: Effect.fail(new Error("managed relay-client installation failed")),
+            installWithProgress: () => Effect.die("unused"),
+          }),
+        ),
+      );
+
+      const status = yield* runtime.applyConfig({
+        providerKind: "cloudflare_tunnel",
+        connectorToken: "token",
+      });
+
+      expect(status).toMatchObject({
+        status: "failed",
+        providerKind: "cloudflare_tunnel",
+        reason: "The relay client is not installed.",
+      });
+      expect(spawn).not.toHaveBeenCalled();
     }),
   );
 });

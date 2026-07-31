@@ -319,6 +319,7 @@ export const EnvironmentCloudLinkStateResult = Schema.Struct({
   relayUrl: Schema.NullOr(Schema.String),
   relayIssuer: Schema.NullOr(Schema.String),
   publishAgentActivity: Schema.Boolean,
+  endpointRuntimeStatus: Schema.Unknown,
 });
 export type EnvironmentCloudLinkStateResult = typeof EnvironmentCloudLinkStateResult.Type;
 

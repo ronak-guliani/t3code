@@ -42,6 +42,7 @@ export class CloudManagedEndpointRuntime extends Context.Service<
     readonly applyConfig: (
       config: RelayManagedEndpointRuntimeConfig | null,
     ) => Effect.Effect<CloudManagedEndpointRuntimeStatus>;
+    readonly getStatus: Effect.Effect<CloudManagedEndpointRuntimeStatus>;
   }
 >()("t3/cloud/ManagedEndpointRuntime/CloudManagedEndpointRuntime") {}
 
@@ -76,21 +77,38 @@ const stopConnector = (connector: ActiveConnector | null) =>
             pid: Number(connector.child.pid),
           }),
         ),
-        Effect.ignore,
+        Effect.as(null),
+        Effect.catchCause((cause) =>
+          Effect.logError("Failed to stop relay client", {
+            cause,
+            pid: Number(connector.child.pid),
+            tunnelId: connector.config.tunnelId,
+            tunnelName: connector.config.tunnelName,
+          }).pipe(
+            Effect.as({
+              status: "failed",
+              providerKind: connector.config.providerKind,
+              reason: "The relay client could not be stopped.",
+              ...(connector.config.tunnelId ? { tunnelId: connector.config.tunnelId } : {}),
+              ...(connector.config.tunnelName ? { tunnelName: connector.config.tunnelName } : {}),
+            } satisfies CloudManagedEndpointRuntimeStatus),
+          ),
+        ),
       )
-    : Effect.void;
+    : Effect.succeed(null);
 
 export const make = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const relayClient = yield* RelayClient.RelayClient;
   const activeRef = yield* Ref.make<ActiveConnector | null>(null);
   const desiredConfigRef = yield* Ref.make<RelayManagedEndpointRuntimeConfig | null>(null);
+  const statusRef = yield* Ref.make<CloudManagedEndpointRuntimeStatus>({ status: "disabled" });
   const reconcileSemaphore = yield* Semaphore.make(1);
   let reconcileConfig: CloudManagedEndpointRuntime["Service"]["applyConfig"];
 
   const stopActive = Effect.gen(function* () {
     const active = yield* Ref.getAndSet(activeRef, null);
-    yield* stopConnector(active);
+    return yield* stopConnector(active);
   });
 
   const superviseConnector = (connector: ActiveConnector) =>
@@ -106,7 +124,11 @@ export const make = Effect.gen(function* () {
             return;
           }
           yield* Ref.set(activeRef, null);
-          yield* stopConnector(connector);
+          const stopped = yield* stopConnector(connector);
+          if (stopped) {
+            yield* Ref.set(statusRef, stopped);
+            return;
+          }
 
           const desiredConfig = yield* Ref.get(desiredConfigRef);
           if (
@@ -125,7 +147,8 @@ export const make = Effect.gen(function* () {
             tunnelId: connector.config.tunnelId,
             tunnelName: connector.config.tunnelName,
           });
-          yield* reconcileConfig(desiredConfig);
+          const restarted = yield* reconcileConfig(desiredConfig);
+          yield* Ref.set(statusRef, restarted);
         }),
       );
     }).pipe(
@@ -167,7 +190,8 @@ export const make = Effect.gen(function* () {
 
   reconcileConfig = Effect.fn("CloudManagedEndpointRuntime.reconcileConfig")(function* (config) {
     if (!config || config.providerKind !== "cloudflare_tunnel") {
-      yield* stopActive;
+      const stopped = yield* stopActive;
+      if (stopped) return stopped;
       return config
         ? { status: "unsupported", providerKind: config.providerKind }
         : { status: "disabled" };
@@ -188,7 +212,8 @@ export const make = Effect.gen(function* () {
       }
     }
 
-    yield* stopActive;
+    const stopped = yield* stopActive;
+    if (stopped) return stopped;
 
     const resolvedExecutable = yield* relayClient.resolve;
     const executable =
@@ -290,12 +315,16 @@ export const make = Effect.gen(function* () {
   const applyConfig = Effect.fn("CloudManagedEndpointRuntime.applyConfig")(
     (config: RelayManagedEndpointRuntimeConfig | null) =>
       reconcileSemaphore.withPermits(1)(
-        Ref.set(desiredConfigRef, config).pipe(Effect.andThen(reconcileConfig(config))),
+        Ref.set(desiredConfigRef, config).pipe(
+          Effect.andThen(reconcileConfig(config)),
+          Effect.tap((status) => Ref.set(statusRef, status)),
+        ),
       ),
   );
 
   const runtime = CloudManagedEndpointRuntime.of({
     applyConfig,
+    getStatus: Ref.get(statusRef),
   });
 
   // Startup reconciliation validates the desired link and uses the listener's
