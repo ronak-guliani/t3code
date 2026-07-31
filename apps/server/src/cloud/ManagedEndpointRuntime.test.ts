@@ -427,16 +427,16 @@ describe("CloudManagedEndpointRuntime", () => {
     Effect.gen(function* () {
       let firstStop = true;
       const killed: number[] = [];
-      const connectorExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      const signals: Array<string | undefined> = [];
       const spawner = ChildProcessSpawner.make(() =>
         Effect.gen(function* () {
           const handle = makeHandle({
             pid: 550,
-            onKill: () => {
+            onKill: ({ killSignal } = {}) => {
               killed.push(550);
+              signals.push(killSignal);
             },
-            onKillEffect: () => Deferred.succeed(connectorExit, ChildProcessSpawner.ExitCode(0)),
-            exitCode: Deferred.await(connectorExit),
+            exitCode: Effect.fail(new Error("Relay client exited after SIGTERM.")),
           });
           yield* Effect.addFinalizer(() => {
             if (firstStop) {
@@ -463,6 +463,7 @@ describe("CloudManagedEndpointRuntime", () => {
       expect(yield* runtime.getStatus).toEqual(stopped);
       expect(yield* runtime.applyConfig(null)).toEqual({ status: "disabled" });
       expect(killed).toEqual([550]);
+      expect(signals).toEqual(["SIGTERM"]);
     }),
   );
 
@@ -481,7 +482,9 @@ describe("CloudManagedEndpointRuntime", () => {
                   forceKilled ||= killSignal === "SIGKILL";
                 },
                 exitCode: Effect.suspend(() =>
-                  forceKilled ? Effect.succeed(ChildProcessSpawner.ExitCode(137)) : Effect.never,
+                  forceKilled
+                    ? Effect.fail(new Error("Relay client exited after SIGKILL."))
+                    : Effect.never,
                 ),
               });
               yield* Effect.addFinalizer(() => Effect.never);
@@ -676,6 +679,80 @@ describe("CloudManagedEndpointRuntime", () => {
         yield* Deferred.await(replacementSpawned);
         yield* Effect.yieldNow;
         expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 586 });
+      }),
+    ),
+  );
+
+  it.effect("becomes disabled when a retained connector exits after unlink", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const oldConnectorExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const handle = makeHandle({
+                pid: 587,
+                onKill: () => undefined,
+                exitCode: Deferred.await(oldConnectorExit),
+              });
+              yield* Effect.addFinalizer(() =>
+                Effect.fail(new Error("old connector could not be stopped")),
+              );
+              return handle;
+            }),
+          ),
+        );
+
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token",
+        });
+        expect(yield* runtime.applyConfig(null)).toMatchObject({ status: "failed" });
+
+        yield* Deferred.succeed(oldConnectorExit, ChildProcessSpawner.ExitCode(1));
+        yield* Effect.yieldNow;
+        expect(yield* runtime.getStatus).toEqual({ status: "disabled" });
+      }),
+    ),
+  );
+
+  it.effect("becomes unsupported when a retained connector exits after a manual config", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const oldConnectorExit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(() =>
+            Effect.gen(function* () {
+              const handle = makeHandle({
+                pid: 588,
+                onKill: () => undefined,
+                exitCode: Deferred.await(oldConnectorExit),
+              });
+              yield* Effect.addFinalizer(() =>
+                Effect.fail(new Error("old connector could not be stopped")),
+              );
+              return handle;
+            }),
+          ),
+        );
+
+        yield* runtime.applyConfig({
+          providerKind: "cloudflare_tunnel",
+          connectorToken: "token",
+        });
+        expect(
+          yield* runtime.applyConfig({
+            providerKind: "manual",
+            connectorToken: "manual-token",
+          }),
+        ).toMatchObject({ status: "failed" });
+
+        yield* Deferred.succeed(oldConnectorExit, ChildProcessSpawner.ExitCode(1));
+        yield* Effect.yieldNow;
+        expect(yield* runtime.getStatus).toEqual({
+          status: "unsupported",
+          providerKind: "manual",
+        });
       }),
     ),
   );

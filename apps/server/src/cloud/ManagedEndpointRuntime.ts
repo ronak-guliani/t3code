@@ -86,7 +86,13 @@ const logStoppedConnector = (connector: ActiveConnector) =>
 
 const waitForConnectorExit = (connector: ActiveConnector) =>
   Effect.raceFirst(
-    connector.child.exitCode.pipe(Effect.as("exited" as const)),
+    connector.child.exitCode.pipe(
+      Effect.as("exited" as const),
+      // Node reports a signal exit through the failure channel. That still
+      // proves the child process exited; interruption is intentionally not
+      // caught so cancelling this wait never masquerades as a process exit.
+      Effect.catch(() => Effect.succeed("exited" as const)),
+    ),
     Effect.sleep(CONNECTOR_FORCE_KILL_AFTER).pipe(Effect.as("timed-out" as const)),
   );
 
@@ -199,18 +205,16 @@ export const make = Effect.gen(function* () {
           yield* Ref.set(activeRef, null);
 
           const desiredConfig = yield* Ref.get(desiredConfigRef);
-          if (!desiredConfig || desiredConfig.providerKind !== "cloudflare_tunnel") {
-            return;
+          if (desiredConfig?.providerKind === "cloudflare_tunnel") {
+            yield* Effect.logWarning("Relay client exited; restarting", {
+              pid: Number(connector.child.pid),
+              ...(Result.isSuccess(result)
+                ? { exitCode: Number(result.success) }
+                : { cause: result.failure }),
+              tunnelId: connector.config.tunnelId,
+              tunnelName: connector.config.tunnelName,
+            });
           }
-
-          yield* Effect.logWarning("Relay client exited; restarting", {
-            pid: Number(connector.child.pid),
-            ...(Result.isSuccess(result)
-              ? { exitCode: Number(result.success) }
-              : { cause: result.failure }),
-            tunnelId: connector.config.tunnelId,
-            tunnelName: connector.config.tunnelName,
-          });
           const restarted = yield* reconcileConfig(desiredConfig);
           yield* Ref.set(statusRef, restarted);
         }),
