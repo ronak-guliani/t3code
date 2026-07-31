@@ -54,6 +54,7 @@ Write only the small, concise amount of code needed to solve the problem; avoid 
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
 - Mount desktop browser hosts at authenticated app lifetime, not thread-route lifetime.
 - A user-requested workflow run must be reconciled inline before its RPC resolves; leaving worker-thread creation to the coordinator's event-stream pass makes the client poll for a thread that does not exist yet. Keep the periodic sweep idempotent but cheap — never re-dispatch a worker turn for a thread that already has activity, or every domain event costs an artifact read plus a command-queue hop per incomplete run and delays the next requested run.
+- Worktree cleanup intent must be persisted as a durable job from `thread.deleted`; canonicalize paths, reserve pending paths against reassignment, recheck active ownership under the worktree lock, and never force-remove a dirty worktree.
 
 ## Keep This File Updated
 

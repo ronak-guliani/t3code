@@ -145,6 +145,65 @@ function normalizeDeleteEvent(event: PlannedEvent | ReadonlyArray<PlannedEvent>)
 }
 
 describe("decider deletion flows", () => {
+  it("records safe worktree cleanup context for the last active thread", async () => {
+    const baseReadModel = await seedReadModel();
+    const worktreePath = "/tmp/project-delete-worktree";
+    const readModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) =>
+        thread.id === asThreadId("thread-delete-1") ? { ...thread, worktreePath } : thread,
+      ),
+    };
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.delete",
+          commandId: asCommandId("cmd-thread-cleanup"),
+          threadId: asThreadId("thread-delete-1"),
+          cleanupWorktree: true,
+        },
+        readModel,
+      }),
+    );
+    const event = Array.isArray(result) ? result[0] : result;
+
+    expect(event?.type).toBe("thread.deleted");
+    if (event?.type === "thread.deleted") {
+      expect(event.payload.worktreeCleanup).toEqual({
+        cwd: "/tmp/project-delete",
+        path: worktreePath,
+      });
+    }
+  });
+
+  it("does not request cleanup while another active thread shares the worktree", async () => {
+    const baseReadModel = await seedReadModel();
+    const worktreePath = "/tmp/shared-worktree";
+    const readModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) => ({ ...thread, worktreePath })),
+    };
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.delete",
+          commandId: asCommandId("cmd-thread-shared-cleanup"),
+          threadId: asThreadId("thread-delete-1"),
+          cleanupWorktree: true,
+        },
+        readModel,
+      }),
+    );
+    const event = Array.isArray(result) ? result[0] : result;
+
+    expect(event?.type).toBe("thread.deleted");
+    if (event?.type === "thread.deleted") {
+      expect(event.payload.worktreeCleanup).toBeUndefined();
+    }
+  });
+
   it("rejects deleting a non-empty project without force", async () => {
     const readModel = await seedReadModel();
 

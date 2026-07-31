@@ -1,8 +1,60 @@
-import { ThreadId } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationReadModel,
+} from "@t3tools/contracts";
 import { Cause, Effect, Exit } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { logCleanupCauseUnlessInterrupted } from "./ThreadDeletionReactor.ts";
+import {
+  hasActiveWorktreeOwner,
+  logCleanupCauseUnlessInterrupted,
+} from "./ThreadDeletionReactor.ts";
+
+function makeReadModel(threads: OrchestrationReadModel["threads"]): OrchestrationReadModel {
+  return {
+    snapshotSequence: 0,
+    projects: [],
+    threads,
+    workflowRuns: [],
+    updatedAt: "2026-07-30T00:00:00.000Z",
+  };
+}
+
+function makeThread(
+  id: string,
+  worktreePath: string | null,
+  deletedAt: string | null = null,
+): OrchestrationReadModel["threads"][number] {
+  return {
+    id: ThreadId.make(id),
+    projectId: ProjectId.make("project-1"),
+    parentThreadId: null,
+    title: id,
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.3-codex",
+    },
+    runtimeMode: "approval-required",
+    pendingRuntimeMode: null,
+    interactionMode: "default",
+    branch: null,
+    worktreePath,
+    reviewResult: null,
+    latestTurn: null,
+    createdAt: "2026-07-30T00:00:00.000Z",
+    updatedAt: "2026-07-30T00:00:00.000Z",
+    archivedAt: null,
+    deletedAt,
+    messages: [],
+    proposedPlans: [],
+    queuedTurns: [],
+    activities: [],
+    checkpoints: [],
+    session: null,
+  };
+}
 
 describe("logCleanupCauseUnlessInterrupted", () => {
   const threadId = ThreadId.make("thread-deletion-reactor-test");
@@ -17,6 +69,30 @@ describe("logCleanupCauseUnlessInterrupted", () => {
     );
 
     expect(Exit.isSuccess(exit)).toBe(true);
+  });
+
+  describe("hasActiveWorktreeOwner", () => {
+    const deletedThreadId = ThreadId.make("thread-deleted");
+    const worktreePath = "/tmp/worktree";
+
+    it("detects another active thread using the worktree", () => {
+      const readModel = makeReadModel([
+        makeThread("thread-deleted", worktreePath, "2026-07-30T00:00:01.000Z"),
+        makeThread("thread-active", worktreePath),
+      ]);
+
+      expect(hasActiveWorktreeOwner(readModel, deletedThreadId, worktreePath)).toBe(true);
+    });
+
+    it("ignores deleted threads and different worktrees", () => {
+      const readModel = makeReadModel([
+        makeThread("thread-deleted", worktreePath, "2026-07-30T00:00:01.000Z"),
+        makeThread("thread-old", worktreePath, "2026-07-30T00:00:02.000Z"),
+        makeThread("thread-other", "/tmp/other"),
+      ]);
+
+      expect(hasActiveWorktreeOwner(readModel, deletedThreadId, worktreePath)).toBe(false);
+    });
   });
 
   it("preserves interrupt causes", async () => {

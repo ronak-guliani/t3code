@@ -486,12 +486,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
       const occurredAt = nowIso();
+      const project = readModel.projects.find((entry) => entry.id === thread.projectId);
+      const worktreeCleanup =
+        command.cleanupWorktree === true &&
+        thread.worktreePath !== null &&
+        project !== undefined &&
+        !readModel.threads.some(
+          (entry) =>
+            entry.id !== thread.id &&
+            entry.deletedAt === null &&
+            entry.worktreePath === thread.worktreePath,
+        )
+          ? {
+              cwd: project.workspaceRoot,
+              path: thread.worktreePath,
+            }
+          : undefined;
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -503,6 +519,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           deletedAt: occurredAt,
+          ...(worktreeCleanup !== undefined ? { worktreeCleanup } : {}),
         },
       };
     }

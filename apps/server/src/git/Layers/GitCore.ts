@@ -2393,6 +2393,12 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     },
   );
 
+  const pruneWorktrees: GitCoreShape["pruneWorktrees"] = (cwd) =>
+    executeGit("GitCore.pruneWorktrees", cwd, ["worktree", "prune"], {
+      timeoutMs: 15_000,
+      fallbackErrorMessage: "git worktree prune failed",
+    });
+
   const renameBranch: GitCoreShape["renameBranch"] = Effect.fn("renameBranch")(function* (input) {
     if (input.oldBranch === input.newBranch) {
       return { branch: input.newBranch };
@@ -2548,6 +2554,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     fetchRemoteBranch,
     setBranchUpstream,
     removeWorktree,
+    pruneWorktrees,
     renameBranch,
     createBranch,
     checkoutBranch,
