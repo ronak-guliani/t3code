@@ -4421,12 +4421,15 @@ function ChatViewBody(
       return;
     }
     void api.server
-      .prewarmProviderSession({ instanceId, cwd: gitCwd, runtimeMode })
+      .prewarmProviderSession({
+        instanceId,
+        cwd: gitCwd,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+      })
       .catch(() => undefined);
   }, [
     environmentId,
     gitCwd,
-    runtimeMode,
     settings.agentWorkflows.reviewChanges.modelSelection,
     activeProject?.defaultModelSelection,
     activeThread?.modelSelection,
