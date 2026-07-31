@@ -32,6 +32,7 @@ import type { Project, SidebarThreadSummary } from "../types";
 import { resolveThreadStatusPill } from "./Sidebar.logic";
 import { ThreadStatusLabel } from "./ThreadStatusIndicators";
 import { Button } from "./ui/button";
+import { stackedThreadToast, toastManager } from "./ui/toast";
 import {
   SidebarContent,
   SidebarFooter,
@@ -304,9 +305,18 @@ export default function SidebarV2() {
     },
     [router],
   );
-  const runAction = useCallback((action: () => Promise<void>) => {
+  const runAction = useCallback((action: () => Promise<void>, actionLabel: string) => {
     void action().catch((error: unknown) => {
+      const description =
+        error instanceof Error ? error.message : "An unexpected error prevented this action.";
       console.error("Sidebar inbox lifecycle action failed", error);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: `Failed to ${actionLabel}`,
+          description,
+        }),
+      );
     });
   }, []);
   const isActive = useCallback(
@@ -322,16 +332,28 @@ export default function SidebarV2() {
         active={isActive(thread)}
         onOpen={openThread}
         onSettle={(selected) =>
-          runAction(() => settleThread(scopeThreadRef(selected.environmentId, selected.id)))
+          runAction(
+            () => settleThread(scopeThreadRef(selected.environmentId, selected.id)),
+            "settle thread",
+          )
         }
         onSnooze={(selected, until) =>
-          runAction(() => snoozeThread(scopeThreadRef(selected.environmentId, selected.id), until))
+          runAction(
+            () => snoozeThread(scopeThreadRef(selected.environmentId, selected.id), until),
+            "snooze thread",
+          )
         }
         onUnsettle={(selected) =>
-          runAction(() => unsettleThread(scopeThreadRef(selected.environmentId, selected.id)))
+          runAction(
+            () => unsettleThread(scopeThreadRef(selected.environmentId, selected.id)),
+            "reopen thread",
+          )
         }
         onUnsnooze={(selected) =>
-          runAction(() => unsnoozeThread(scopeThreadRef(selected.environmentId, selected.id)))
+          runAction(
+            () => unsnoozeThread(scopeThreadRef(selected.environmentId, selected.id)),
+            "wake thread",
+          )
         }
         thread={thread}
       />
@@ -377,8 +399,9 @@ export default function SidebarV2() {
               <Button
                 onClick={() =>
                   shelves.snoozed.forEach((thread) =>
-                    runAction(() =>
-                      unsnoozeThread(scopeThreadRef(thread.environmentId, thread.id)),
+                    runAction(
+                      () => unsnoozeThread(scopeThreadRef(thread.environmentId, thread.id)),
+                      "wake thread",
                     ),
                   )
                 }
@@ -390,11 +413,13 @@ export default function SidebarV2() {
               <Button
                 onClick={() =>
                   shelves.snoozed.forEach((thread) =>
-                    runAction(() =>
-                      snoozeThread(
-                        scopeThreadRef(thread.environmentId, thread.id),
-                        startOfTomorrow(),
-                      ),
+                    runAction(
+                      () =>
+                        snoozeThread(
+                          scopeThreadRef(thread.environmentId, thread.id),
+                          startOfTomorrow(),
+                        ),
+                      "snooze thread",
                     ),
                   )
                 }
