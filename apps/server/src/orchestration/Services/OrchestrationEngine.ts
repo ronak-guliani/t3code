@@ -58,7 +58,7 @@ export interface OrchestrationEngineShape {
   /**
    * Serialize worktree binding and cleanup operations to prevent ownership races.
    */
-  readonly withWorktreeLock?: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  readonly withWorktreeLock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 
   /**
    * Stream persisted domain events in dispatch order.

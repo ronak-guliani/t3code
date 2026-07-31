@@ -189,6 +189,7 @@ describe("ProviderSessionReaper", () => {
           dispatchedCommands.push(command);
           return { sequence: dispatchedCommands.length };
         }),
+      withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
     };
 

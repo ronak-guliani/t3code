@@ -1,5 +1,5 @@
 import { Context, Schema } from "effect";
-import type { Effect } from "effect";
+import type { Effect, Option } from "effect";
 import { IsoDateTime, ThreadId } from "@t3tools/contracts";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
@@ -15,6 +15,9 @@ export type WorktreeCleanupJob = typeof WorktreeCleanupJob.Type;
 export interface WorktreeCleanupJobRepositoryShape {
   readonly upsert: (job: WorktreeCleanupJob) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly list: () => Effect.Effect<ReadonlyArray<WorktreeCleanupJob>, ProjectionRepositoryError>;
+  readonly getPendingByThreadId: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly existsByPath: (
     worktreePath: string,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;

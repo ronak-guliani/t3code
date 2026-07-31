@@ -55,6 +55,22 @@ const make = Effect.gen(function* () {
       `,
   });
 
+  const getPendingJob = SqlSchema.findOneOption({
+    Request: Schema.Struct({ threadId: WorktreeCleanupJob.fields.threadId }),
+    Result: WorktreeCleanupJob,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          cwd,
+          worktree_path AS "worktreePath",
+          requested_at AS "requestedAt"
+        FROM worktree_cleanup_jobs
+        WHERE thread_id = ${threadId}
+          AND status = 'pending'
+      `,
+  });
+
   const cancelJob = SqlSchema.void({
     Request: Schema.Struct({ threadId: WorktreeCleanupJob.fields.threadId }),
     execute: ({ threadId }) =>
@@ -96,6 +112,12 @@ const make = Effect.gen(function* () {
     list: () =>
       listJobs(undefined).pipe(
         Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.list:query")),
+      ),
+    getPendingByThreadId: (threadId) =>
+      getPendingJob({ threadId }).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("WorktreeCleanupJobRepository.getPendingByThreadId:query"),
+        ),
       ),
     existsByPath: (worktreePath) =>
       worktreePathExists({ worktreePath }).pipe(

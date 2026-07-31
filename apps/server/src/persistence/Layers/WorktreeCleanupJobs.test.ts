@@ -1,6 +1,6 @@
 import { ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { WorktreeCleanupJobRepositoryLive } from "./WorktreeCleanupJobs.ts";
@@ -28,9 +28,11 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
 
       yield* jobs.upsert(job);
       assert.isTrue(yield* jobs.existsByPath(worktreePath));
+      assert.deepEqual(yield* jobs.getPendingByThreadId(threadId), Option.some(job));
 
       yield* jobs.cancelByThreadId(threadId);
       assert.isFalse(yield* jobs.existsByPath(worktreePath));
+      assert.isTrue(Option.isNone(yield* jobs.getPendingByThreadId(threadId)));
       assert.deepEqual(yield* jobs.list(), []);
 
       yield* jobs.upsert({
