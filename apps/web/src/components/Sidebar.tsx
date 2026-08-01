@@ -1511,7 +1511,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
     },
   });
-  const openPrLink = openPullRequestLink;
   const sidebarThreads = useStore(
     useShallow(
       useMemo(
@@ -2745,7 +2744,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         setThreadPinned={setThreadPinned}
         toggleThreadExpanded={toggleThreadExpanded}
         reorderPinnedThreads={reorderPinnedThreads}
-        openPrLink={openPrLink}
+        openPrLink={openPullRequestLink}
         expandThreadListForProject={expandThreadListForProject}
         collapseThreadListForProject={collapseThreadListForProject}
       />

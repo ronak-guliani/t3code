@@ -228,6 +228,9 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
   const gitCwd = thread.worktreePath ?? projectCwd;
+  // Gated on the branch, not the worktree: resolveThreadPr yields null without
+  // one, so a branchless worktree row would pay for a status query it can
+  // never render.
   const gitStatus = useGitStatus({
     environmentId: thread.environmentId,
     cwd: thread.branch !== null ? gitCwd : null,
