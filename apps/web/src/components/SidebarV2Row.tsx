@@ -36,6 +36,7 @@ import {
   resolveSidebarV2StatusLabel,
   resolveWorkingStartedAt,
 } from "./SidebarV2.logic";
+import { getSidebarThreadPrewarmKey } from "./SidebarThreadPrewarmer";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import {
@@ -204,6 +205,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   onSnooze,
   onUnsnooze,
 }: SidebarV2RowProps) {
+  const prewarmThreadKey = getSidebarThreadPrewarmKey(thread);
   const raisedHand = threadRaisedHandWhileSnoozed(thread);
   const lastVisitedAt = useUiStateStore(
     (state) =>
@@ -389,7 +391,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
 
   if (variant === "slim") {
     return (
-      <SidebarMenuItem className="group/thread">
+      <SidebarMenuItem className="group/thread" data-thread-prewarm-key={prewarmThreadKey}>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -435,7 +437,10 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   }
 
   return (
-    <SidebarMenuItem className="group/thread [contain-intrinsic-size:auto_3.5rem] [content-visibility:auto]">
+    <SidebarMenuItem
+      className="group/thread [contain-intrinsic-size:auto_3.5rem] [content-visibility:auto]"
+      data-thread-prewarm-key={prewarmThreadKey}
+    >
       <Tooltip>
         <TooltipTrigger
           render={

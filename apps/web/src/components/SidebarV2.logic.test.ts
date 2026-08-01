@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  classifySidebarV2Shelves,
   compactSidebarTimeLabel,
   formatWorkingDurationLabel,
   latestTurnDiffStats,
@@ -129,6 +130,35 @@ describe("selectSnoozeShelfBulkTargets", () => {
 
     expect(targets.wakeable).toEqual([queued]);
     expect(targets.reschedulable).toEqual([]);
+  });
+});
+
+describe("classifySidebarV2Shelves", () => {
+  it("excludes descendants of archived parents before shelf classification", () => {
+    const archivedParent = thread({
+      id: ThreadId.make("archived-parent"),
+      archivedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const archivedChild = thread({
+      id: ThreadId.make("archived-child"),
+      parentThreadId: archivedParent.id,
+      settledOverride: "settled",
+    });
+    const archivedGrandchild = thread({
+      id: ThreadId.make("archived-grandchild"),
+      parentThreadId: archivedChild.id,
+      snoozedUntil: "2026-01-02T00:00:00.000Z",
+    });
+    const visibleThread = thread({ id: ThreadId.make("visible") });
+
+    const shelves = classifySidebarV2Shelves({
+      threads: [archivedParent, archivedChild, archivedGrandchild, visibleThread],
+      now,
+    });
+
+    expect(shelves.active).toEqual([visibleThread]);
+    expect(shelves.snoozed).toEqual([]);
+    expect(shelves.settled).toEqual([]);
   });
 });
 
