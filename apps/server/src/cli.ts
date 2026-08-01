@@ -126,6 +126,7 @@ import {
   type CliSnapshot,
 } from "./cli/liveContext.ts";
 import { connectCommand } from "./cli/connect.ts";
+import { serviceCommand } from "./cli/service.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
@@ -4914,5 +4915,6 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       rpcCommand,
       orchestrationCommand,
       connectCommand,
+      serviceCommand,
     ]),
   );

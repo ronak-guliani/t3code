@@ -32,6 +32,8 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
+import * as BootService from "../cloud/bootService.ts";
+import { offerServiceDuringOnboarding, recoverServiceOnboardingOffer } from "./service.ts";
 import { CLOUD_LINKED_USER_ID, RELAY_URL_SECRET } from "../cloud/config.ts";
 import {
   hasCloudCliOAuthConfig,
@@ -789,9 +791,15 @@ const connectSetupCommand = Command.make("connect", {
         }
         const identity = yield* authorizeCli(flags);
         yield* CliState.setCliDesiredCloudLink(true);
-        yield* Console.log(
-          `Connected${identity ? ` as ${identity}` : ""}. Start T3 to provision this environment.`,
+        yield* Console.log(`Connected${identity ? ` as ${identity}` : ""}.`);
+        const background = yield* recoverServiceOnboardingOffer(
+          offerServiceDuringOnboarding({
+            baseDir: Option.getOrUndefined(flags.baseDir),
+          }).pipe(Effect.provide(Layer.effect(BootService.BootService, BootService.make()))),
         );
+        if (!background) {
+          yield* Console.log("Start T3 to provision this environment.");
+        }
       }),
       { configuration: "full" },
     ),
