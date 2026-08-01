@@ -75,7 +75,7 @@ jobs:
   release_smoke:
     name: Release Smoke
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -93,6 +93,12 @@ jobs:
 
       - name: Exercise release-only workflow steps
         run: node scripts/release-smoke.ts
+
+      - name: Exercise composed T3 Connect flow
+        run: pnpm release:connect-smoke
+
+      - name: Exercise packaged T3 Connect CLI
+        run: pnpm release:cli-smoke
 
   windows_smoke:
     name: Windows Smoke
@@ -117,10 +123,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: pnpm --filter '!@t3tools/mobile' -r run typecheck
+        run: pnpm -r run typecheck
 
       - name: Test
-        run: pnpm --filter '!@t3tools/mobile' -r --if-present run test
+        run: pnpm -r --if-present run test
 
       - name: Verify cross-platform clean script
         run: node scripts/clean.ts

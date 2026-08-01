@@ -1,14 +1,12 @@
 import { parseScopedThreadKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import { type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useLayoutEffect, useRef } from "react";
 
 import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useNewThreadHandler } from "./useHandleNewThread";
-import { ensureEnvironmentApi, readEnvironmentApi } from "../environmentApi";
-import { invalidateGitQueries } from "../lib/gitReactQuery";
+import { readEnvironmentApi } from "../environmentApi";
 import { newCommandId } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import {
@@ -20,7 +18,6 @@ import {
 import { useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
-import { stackedThreadToast, toastManager } from "../components/ui/toast";
 import { useSettings } from "./useSettings";
 
 export function useThreadActions() {
@@ -41,8 +38,6 @@ export function useThreadActions() {
   useLayoutEffect(() => {
     handleNewThreadRef.current = handleNewThread;
   }, [handleNewThread]);
-  const queryClient = useQueryClient();
-
   const resolveThreadTarget = useCallback((target: ScopedThreadRef) => {
     const state = useStore.getState();
     const thread = selectThreadByRef(state, target);
@@ -94,6 +89,67 @@ export function useThreadActions() {
       type: "thread.unarchive",
       commandId: newCommandId(),
       threadId: target.threadId,
+    });
+  }, []);
+
+  const settleThread = useCallback(
+    async (target: ScopedThreadRef) => {
+      const api = readEnvironmentApi(target.environmentId);
+      const resolved = resolveThreadTarget(target);
+      if (!api || !resolved) return;
+      if (
+        (resolved.thread.session?.status === "running" &&
+          resolved.thread.session.activeTurnId != null) ||
+        resolved.thread.latestTurn?.state === "running"
+      ) {
+        throw new Error("Cannot settle a thread with active work.");
+      }
+      await api.orchestration.dispatchCommand({
+        type: "thread.settle",
+        commandId: newCommandId(),
+        threadId: target.threadId,
+      });
+    },
+    [resolveThreadTarget],
+  );
+
+  const unsettleThread = useCallback(async (target: ScopedThreadRef) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.unsettle",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+      reason: "user",
+    });
+  }, []);
+
+  const snoozeThread = useCallback(
+    async (target: ScopedThreadRef, snoozedUntil: string) => {
+      const api = readEnvironmentApi(target.environmentId);
+      const resolved = resolveThreadTarget(target);
+      if (!api || !resolved) return;
+      if (resolved.thread.session?.status === "error") {
+        throw new Error("Cannot snooze a thread that needs attention.");
+      }
+      await api.orchestration.dispatchCommand({
+        type: "thread.snooze",
+        commandId: newCommandId(),
+        threadId: target.threadId,
+        snoozedUntil,
+      });
+    },
+    [resolveThreadTarget],
+  );
+
+  const unsnoozeThread = useCallback(async (target: ScopedThreadRef) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.unsnooze",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+      reason: "user",
     });
   }, []);
 
@@ -159,25 +215,9 @@ export function useThreadActions() {
             displayWorktreePath ?? orphanedWorktreePath,
             "",
             "Delete the worktree too?",
+            "Worktrees with uncommitted changes will be retained.",
           ].join("\n"),
         ));
-
-      if (thread.session && thread.session.status !== "closed") {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.session.stop",
-            commandId: newCommandId(),
-            threadId: threadRef.threadId,
-            createdAt: new Date().toISOString(),
-          })
-          .catch(() => undefined);
-      }
-
-      try {
-        await api.terminal.close({ threadId: threadRef.threadId, deleteHistory: true });
-      } catch {
-        // Terminal may already be closed.
-      }
 
       const deletedThreadIds = deletedIds ?? new Set<ThreadId>();
       const currentRouteThreadRef = getCurrentRouteThreadRef();
@@ -194,6 +234,7 @@ export function useThreadActions() {
         type: "thread.delete",
         commandId: newCommandId(),
         threadId: threadRef.threadId,
+        cleanupWorktree: shouldDeleteWorktree,
       });
       clearComposerDraftForThread(threadRef);
       clearProjectDraftThreadById(
@@ -223,36 +264,6 @@ export function useThreadActions() {
           await router.navigate({ to: "/", replace: true });
         }
       }
-
-      if (!shouldDeleteWorktree || !orphanedWorktreePath || !threadProject) {
-        return;
-      }
-
-      try {
-        await ensureEnvironmentApi(threadRef.environmentId).git.removeWorktree({
-          cwd: threadProject.cwd,
-          path: orphanedWorktreePath,
-          force: true,
-        });
-        await invalidateGitQueries(queryClient, {
-          environmentId: threadRef.environmentId,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
-        console.error("Failed to remove orphaned worktree after thread deletion", {
-          threadId: threadRef.threadId,
-          projectCwd: threadProject.cwd,
-          worktreePath: orphanedWorktreePath,
-          error,
-        });
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Thread deleted, but worktree removal failed",
-            description: `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
-          }),
-        );
-      }
     },
     [
       clearComposerDraftForThread,
@@ -260,7 +271,6 @@ export function useThreadActions() {
       clearTerminalState,
       getCurrentRouteThreadRef,
       router,
-      queryClient,
       resolveThreadTarget,
       sidebarThreadSortOrder,
     ],
@@ -295,6 +305,10 @@ export function useThreadActions() {
   return {
     archiveThread,
     unarchiveThread,
+    settleThread,
+    unsettleThread,
+    snoozeThread,
+    unsnoozeThread,
     decoupleThread,
     deleteThread,
     confirmAndDeleteThread,

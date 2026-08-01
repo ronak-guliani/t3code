@@ -35,6 +35,7 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-chat-background: var(--chat-background);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -131,6 +132,10 @@
   --app-code-font-size: 12px;
   --app-chat-font-size: 14px;
   --app-sidebar-font-size: 12px;
+  /* Secondary sidebar text (project, branch, timestamps) tracks the sidebar
+     font-size knob instead of a fixed size, so one setting scales the whole
+     row. Floored so a small sidebar font never renders sub-legible metadata. */
+  --app-sidebar-meta-font-size: max(10px, calc(var(--app-sidebar-font-size) - 1px));
   --app-tool-font-size: 12px;
   --app-input-font-size: 14px;
   --sidebar-translucency-alpha: 100%;
@@ -139,6 +144,7 @@
 
   --radius: 0.625rem;
   --background: var(--color-white);
+  --chat-background: var(--background);
   --app-chrome-background: var(--background);
   --foreground: var(--color-neutral-800);
   --card: var(--color-white);
@@ -169,6 +175,7 @@
   @variant dark {
     color-scheme: dark;
     --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-white));
+    --chat-background: var(--color-neutral-950);
     --app-chrome-background: var(--background);
     --foreground: var(--color-neutral-100);
     --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
@@ -563,6 +570,31 @@ label:has(> select#reasoning-effort) select {
   line-height: 1.1;
 }
 
+.chat-markdown-thread-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  border: 1px solid color-mix(in srgb, var(--info-foreground) 28%, var(--border));
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--info-foreground) 8%, var(--muted));
+  padding: 0.08rem 0.34rem;
+  color: color-mix(in srgb, var(--info-foreground) 82%, var(--foreground));
+  font-size: var(--app-code-font-size);
+  line-height: 1.1;
+  vertical-align: baseline;
+}
+
+.chat-markdown-thread-link:hover {
+  border-color: color-mix(in srgb, var(--info-foreground) 55%, var(--border));
+  background: color-mix(in srgb, var(--info-foreground) 13%, var(--muted));
+  opacity: 1;
+}
+
+.chat-markdown-thread-link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ring) 70%, transparent);
+}
+
 .chat-markdown pre {
   max-width: 100%;
   overflow-x: auto;
@@ -707,6 +739,18 @@ label:has(> select#reasoning-effort) select {
 
 [data-chat-composer-footer] [data-slot="separator"] {
   height: 1.25em;
+}
+
+/* Single-line toolbar shared by the browser chrome and file preview headers.
+   Without the explicit flex context the row's controls stack vertically. */
+.surface-subheader {
+  display: flex;
+  height: calc(var(--spacing) * 10);
+  min-height: calc(var(--spacing) * 10);
+  flex-shrink: 0;
+  align-items: center;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: var(--background);
 }
 
 /* Diffs theme bridge (match diff surfaces to app palette) */

@@ -163,6 +163,7 @@ describe("ProviderSessionReaper", () => {
       stopSession,
       listSessions:
         input.listSessionsImplementation ?? (() => Effect.succeed(input.activeSessions ?? [])),
+      prewarmSession: () => Effect.void,
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       getInstanceInfo: (instanceId) => {
         const driverKind = ProviderDriverKind.make(String(instanceId));
@@ -189,6 +190,7 @@ describe("ProviderSessionReaper", () => {
           dispatchedCommands.push(command);
           return { sequence: dispatchedCommands.length };
         }),
+      withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
     };
 

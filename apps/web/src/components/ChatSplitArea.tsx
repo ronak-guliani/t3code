@@ -27,6 +27,7 @@ import { threadHasStarted } from "./ChatView.logic";
 import { Button } from "./ui/button";
 import { scopeProjectRef } from "@t3tools/client-runtime";
 import { DraftId, useComposerDraftStore, type DraftThreadEnvMode } from "../composerDraftStore";
+import { DEFAULT_NEW_THREAD_WORKSPACE } from "../lib/newThreadDefaults";
 import { newDraftId, newThreadId } from "../lib/utils";
 import { useStore } from "../store";
 import {
@@ -758,7 +759,10 @@ function ChatPaneLeaf(props: ChatPaneLeafProps) {
     return (
       <div
         {...paneDragProps}
-        className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col bg-background", focusRing)}
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-1 flex-col bg-chat-background",
+          focusRing,
+        )}
       >
         <div className="drag-region flex h-13 shrink-0 items-center justify-end border-b border-border/40 px-2">
           <div className="no-drag">{paneActions}</div>
@@ -776,7 +780,10 @@ function ChatPaneLeaf(props: ChatPaneLeafProps) {
     return (
       <div
         {...paneDragProps}
-        className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col bg-background", focusRing)}
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-1 flex-col bg-chat-background",
+          focusRing,
+        )}
       >
         <ChatSplitDraftPane
           leafId={leafId}
@@ -794,7 +801,7 @@ function ChatPaneLeaf(props: ChatPaneLeafProps) {
   return (
     <div
       {...paneDragProps}
-      className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col bg-background", focusRing)}
+      className={cn("relative flex min-h-0 min-w-0 flex-1 flex-col bg-chat-background", focusRing)}
     >
       <ChatView
         environmentId={serverTarget.threadRef.environmentId}
@@ -842,15 +849,21 @@ function ChatSplitEmptyPane(props: {
       }
       const draftId = newDraftId();
       const threadId = newThreadId();
-      const envMode: DraftThreadEnvMode = sourceThread.worktreePath ? "worktree" : "local";
+      const envMode: DraftThreadEnvMode = asSubchat
+        ? sourceThread.worktreePath
+          ? "worktree"
+          : "local"
+        : DEFAULT_NEW_THREAD_WORKSPACE.envMode;
       createDetachedDraftSession(
         scopeProjectRef(sourceThread.environmentId, sourceThread.projectId),
         draftId,
         {
           threadId,
           parentThreadId: asSubchat ? sourceThread.id : null,
-          branch: sourceThread.branch,
-          worktreePath: sourceThread.worktreePath,
+          branch: asSubchat ? sourceThread.branch : DEFAULT_NEW_THREAD_WORKSPACE.branch,
+          worktreePath: asSubchat
+            ? sourceThread.worktreePath
+            : DEFAULT_NEW_THREAD_WORKSPACE.worktreePath,
           envMode,
         },
       );

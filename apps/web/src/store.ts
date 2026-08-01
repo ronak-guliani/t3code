@@ -322,6 +322,10 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    settledOverride: thread.settledOverride ?? null,
+    settledAt: thread.settledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozedAt: thread.snoozedAt ?? null,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
@@ -359,6 +363,10 @@ function mapThreadShell(
     error: sanitizeThreadErrorMessage(thread.session?.lastError),
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    settledOverride: thread.settledOverride ?? null,
+    settledAt: thread.settledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozedAt: thread.snoozedAt ?? null,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
@@ -378,6 +386,10 @@ function mapThreadShell(
     session,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    settledOverride: thread.settledOverride ?? null,
+    settledAt: thread.settledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozedAt: thread.snoozedAt ?? null,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
     branch: thread.branch,
@@ -411,6 +423,10 @@ function toThreadShell(thread: Thread): ThreadShell {
     error: thread.error,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    settledOverride: thread.settledOverride ?? null,
+    settledAt: thread.settledAt ?? null,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozedAt: thread.snoozedAt ?? null,
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
@@ -509,6 +525,10 @@ function sidebarThreadSummariesEqual(
     threadSessionsEqual(left.session, right.session) &&
     left.createdAt === right.createdAt &&
     left.archivedAt === right.archivedAt &&
+    left.settledOverride === right.settledOverride &&
+    left.settledAt === right.settledAt &&
+    left.snoozedUntil === right.snoozedUntil &&
+    left.snoozedAt === right.snoozedAt &&
     left.updatedAt === right.updatedAt &&
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
     left.branch === right.branch &&
@@ -556,6 +576,10 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.error === right.error &&
     left.createdAt === right.createdAt &&
     left.archivedAt === right.archivedAt &&
+    left.settledOverride === right.settledOverride &&
+    left.settledAt === right.settledAt &&
+    left.snoozedUntil === right.snoozedUntil &&
+    left.snoozedAt === right.snoozedAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath
@@ -1816,6 +1840,38 @@ function applyEnvironmentOrchestrationEvent(
         updatedAt: event.payload.updatedAt,
       }));
 
+    case "thread.settled":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        settledOverride: "settled",
+        settledAt: event.payload.settledAt,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.unsettled":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        settledOverride: event.payload.reason === "user" ? "active" : null,
+        settledAt: null,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.snoozed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        snoozedUntil: event.payload.snoozedUntil,
+        snoozedAt: event.payload.snoozedAt,
+        updatedAt: event.payload.updatedAt,
+      }));
+
+    case "thread.unsnoozed":
+      return updateThreadState(state, event.payload.threadId, (thread) => ({
+        ...thread,
+        snoozedUntil: null,
+        snoozedAt: null,
+        updatedAt: event.payload.updatedAt,
+      }));
+
     case "thread.decoupled":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
         ...thread,
@@ -2469,6 +2525,25 @@ export function selectSidebarThreadSummaryByRef(
   return ref
     ? selectEnvironmentState(state, ref.environmentId).sidebarThreadSummaryById[ref.threadId]
     : undefined;
+}
+
+/**
+ * Latest checkpoint summary for a thread, straight out of the store's own map
+ * so the returned object keeps a stable identity across unrelated updates.
+ * Only hydrated threads carry checkpoints, so sidebar rows for threads the
+ * user has not opened resolve to `undefined`.
+ */
+export function selectLatestTurnDiffSummaryByRef(
+  state: AppState,
+  ref: ScopedThreadRef | null | undefined,
+): TurnDiffSummary | undefined {
+  if (!ref) return undefined;
+  const environmentState = selectEnvironmentState(state, ref.environmentId);
+  const turnIds = environmentState.turnDiffIdsByThreadId[ref.threadId];
+  const latestTurnId = turnIds?.at(-1);
+  return latestTurnId === undefined
+    ? undefined
+    : environmentState.turnDiffSummaryByThreadId[ref.threadId]?.[latestTurnId];
 }
 
 export function selectThreadIdsByProjectRef(

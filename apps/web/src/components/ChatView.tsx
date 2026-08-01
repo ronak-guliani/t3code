@@ -64,10 +64,7 @@ import {
   normalizeDiffRouteSearch,
   parseDiffRouteSearch,
 } from "../diffRouteSearch";
-import {
-  collapseExpandedComposerCursor,
-  parseStandaloneComposerSlashCommand,
-} from "../composer-logic";
+import { collapseExpandedComposerCursor } from "../composer-logic";
 import {
   deriveCompletionDividerBeforeEntryId,
   derivePendingApprovals,
@@ -179,7 +176,7 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
-import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { MessagesTimeline, type AssistantResponseMeta } from "./chat/MessagesTimeline";
 import { ReviewFindingsCard } from "./chat/ReviewFindingsCard";
 import { formatReviewFindings } from "../lib/reviewFindingFormat";
 import { ChatHeader } from "./chat/ChatHeader";
@@ -219,7 +216,7 @@ import {
   revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
   type ThreadPlanCatalogEntry,
-  waitForStartedServerThread,
+  waitForRoutableServerThread,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
@@ -738,9 +735,6 @@ function ChatViewBody(
   const composerRuntimeMode = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.runtimeMode ?? null,
   );
-  const composerInteractionMode = useComposerDraftStore(
-    (store) => store.getComposerDraft(composerDraftTarget)?.interactionMode ?? null,
-  );
   const composerActiveProvider = useComposerDraftStore(
     (store) => store.getComposerDraft(composerDraftTarget)?.activeProvider ?? null,
   );
@@ -926,8 +920,7 @@ function ChatViewBody(
     ),
   );
   const runtimeMode = composerRuntimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-  const interactionMode =
-    composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
+  const interactionMode = DEFAULT_INTERACTION_MODE;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const diffOpen = diffSearch.diff === "1";
@@ -1393,7 +1386,6 @@ function ChatViewBody(
   const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
-    interactionMode === "plan" &&
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
   const activePendingApproval = pendingApprovals[0] ?? null;
@@ -1643,6 +1635,53 @@ function ChatViewBody(
     }
     return byMessageId;
   }, [turnDiffSummaries, timelineMessages]);
+  const responseMetaByTurnId = useMemo(() => {
+    const metadata = new Map<TurnId, AssistantResponseMeta>();
+    for (const activity of threadActivities) {
+      if (activity.turnId === null || typeof activity.payload !== "object" || !activity.payload) {
+        continue;
+      }
+      const payload = activity.payload as Record<string, unknown>;
+      const existing = metadata.get(activity.turnId) ?? {};
+      if (activity.kind === "insights.turn.started" && typeof payload.model === "string") {
+        metadata.set(activity.turnId, { ...existing, model: payload.model });
+        continue;
+      }
+      if (activity.kind === "context-window.updated") {
+        const usedTokens =
+          typeof payload.lastUsedTokens === "number"
+            ? payload.lastUsedTokens
+            : typeof payload.usedTokens === "number"
+              ? payload.usedTokens
+              : undefined;
+        const rawCost = payload.cost;
+        const cost =
+          typeof rawCost === "object" &&
+          rawCost !== null &&
+          "amount" in rawCost &&
+          typeof rawCost.amount === "number" &&
+          "currency" in rawCost &&
+          typeof rawCost.currency === "string"
+            ? { amount: rawCost.amount, currency: rawCost.currency }
+            : undefined;
+        if (usedTokens !== undefined || cost !== undefined) {
+          metadata.set(activity.turnId, {
+            ...existing,
+            ...(usedTokens !== undefined ? { usedTokens } : {}),
+            ...(cost !== undefined ? { cost } : {}),
+          });
+        }
+        continue;
+      }
+      if (activity.kind === "insights.turn.completed" && typeof payload.totalCostUsd === "number") {
+        metadata.set(activity.turnId, {
+          ...existing,
+          cost: { amount: payload.totalCostUsd, currency: "USD" },
+        });
+      }
+    }
+    return metadata;
+  }, [threadActivities]);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
     for (let index = 0; index < timelineEntries.length; index += 1) {
@@ -2419,27 +2458,6 @@ function ChatViewBody(
     ],
   );
 
-  const handleInteractionModeChange = useCallback(
-    (mode: ProviderInteractionMode) => {
-      if (mode === interactionMode) return;
-      setComposerDraftInteractionMode(composerDraftTarget, mode);
-      if (isLocalDraftThread) {
-        setDraftThreadContext(composerDraftTarget, { interactionMode: mode });
-      }
-      scheduleComposerFocus();
-    },
-    [
-      interactionMode,
-      isLocalDraftThread,
-      scheduleComposerFocus,
-      composerDraftTarget,
-      setComposerDraftInteractionMode,
-      setDraftThreadContext,
-    ],
-  );
-  const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
-  }, [handleInteractionModeChange, interactionMode]);
   const togglePlanSidebar = useCallback(() => {
     const nextOpen = !planSidebarOpen;
     planSidebarDismissedForTurnRef.current = nextOpen
@@ -3163,17 +3181,6 @@ function ChatViewBody(
         text: followUp.text,
         interactionMode: followUp.interactionMode,
       });
-      return;
-    }
-    const standaloneSlashCommand =
-      composerImages.length === 0 && sendableComposerTerminalContexts.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
-        : null;
-    if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
       return;
     }
     if (!hasSendableContent) {
@@ -3979,7 +3986,9 @@ function ChatViewBody(
         });
       })
       .then(() => {
-        return waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId));
+        return waitForRoutableServerThread(
+          scopeThreadRef(activeThread.environmentId, nextThreadId),
+        );
       })
       .then(() => {
         // Signal that the plan sidebar should open on the new thread when enabled.
@@ -4289,7 +4298,7 @@ function ChatViewBody(
           }
 
           if (result.threadId !== activeThread.id) {
-            await waitForStartedServerThread(scopeThreadRef(environmentId, result.threadId));
+            await waitForRoutableServerThread(scopeThreadRef(environmentId, result.threadId));
             await navigate({
               to: "/$environmentId/$threadId",
               params: {
@@ -4349,6 +4358,41 @@ function ChatViewBody(
     }
     return (await api.git.listOpenPullRequests({ cwd: gitCwd })).pullRequests;
   }, [environmentId, gitCwd]);
+
+  // Copilot session startup is ~2.2s, and only `session/new` needs the thread.
+  // Warming on intent lets the agent be ready by the time the run dispatches.
+  const prewarmProviderSession = useCallback(() => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !gitCwd) {
+      return;
+    }
+    // Must mirror `onRunWorkflow`'s resolution exactly, including the
+    // composer's selection: warming a different provider instance than the run
+    // will use spawns a process nobody adopts and leaves the worker cold.
+    const sendCtx = composerRef.current?.getSendContext();
+    const instanceId = (
+      settings.agentWorkflows.reviewChanges.modelSelection ??
+      sendCtx?.selectedModelSelection ??
+      activeProject?.defaultModelSelection ??
+      activeThread?.modelSelection
+    )?.instanceId;
+    if (!instanceId) {
+      return;
+    }
+    void api.server
+      .prewarmProviderSession({
+        instanceId,
+        cwd: gitCwd,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+      })
+      .catch(() => undefined);
+  }, [
+    environmentId,
+    gitCwd,
+    settings.agentWorkflows.reviewChanges.modelSelection,
+    activeProject?.defaultModelSelection,
+    activeThread?.modelSelection,
+  ]);
 
   const workflowHeaderActions = useMemo((): AgentWorkflowHeaderAction[] => {
     const projectUnavailableReason =
@@ -4467,7 +4511,7 @@ function ChatViewBody(
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-chat-background">
       {/* Top bar */}
       <header
         className={cn(
@@ -4509,6 +4553,7 @@ function ChatViewBody(
           onRunProjectScript={runProjectScript}
           onRunWorkflow={onRunWorkflow}
           onListOpenPullRequests={listOpenPullRequests}
+          onPrewarmProviderSession={prewarmProviderSession}
           onNavigateThread={navigateToThread}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
@@ -4563,6 +4608,7 @@ function ChatViewBody(
               completionSummary={completionSummary}
               copilotResumeCommand={copilotResumeCommand}
               turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
+              responseMetaByTurnId={responseMetaByTurnId}
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
               routeThreadKey={routeThreadKey}
@@ -4655,7 +4701,6 @@ function ChatViewBody(
               planSidebarLabel={planSidebarLabel}
               planSidebarOpen={planSidebarOpen}
               runtimeMode={runtimeMode}
-              interactionMode={interactionMode}
               lockedProvider={lockedProvider}
               providerStatuses={providerStatuses as ServerProvider[]}
               activeProjectDefaultModelSelection={activeProject?.defaultModelSelection}
@@ -4683,9 +4728,7 @@ function ChatViewBody(
                 onChangeActivePendingUserInputCustomAnswer
               }
               onProviderModelSelect={onProviderModelSelect}
-              toggleInteractionMode={toggleInteractionMode}
               handleRuntimeModeChange={handleRuntimeModeChange}
-              handleInteractionModeChange={handleInteractionModeChange}
               togglePlanSidebar={togglePlanSidebar}
               focusComposer={focusComposer}
               scheduleComposerFocus={scheduleComposerFocus}
@@ -4741,6 +4784,7 @@ function ChatViewBody(
 
         {browserPanel.isOpen && !shouldUseRightPanelSheet && activeThreadRef ? (
           <RightPanelTabs
+            mode="inline"
             surfaces={browserPanel.surfaces}
             activeSurfaceId={browserPanel.activeSurfaceId}
             previewSessions={previewState.sessions}
@@ -4771,22 +4815,21 @@ function ChatViewBody(
                   markdownCwd={gitCwd ?? undefined}
                   workspaceRoot={activeWorkspaceRoot}
                   timestampFormat={timestampFormat}
-                  mode="sidebar"
+                  mode="sheet"
                   onClose={closePlanSidebar}
                 />
               ) : activeBrowserSurface?.kind === "preview" ? (
                 <PreviewPanel
-                  mode="inline"
+                  mode="embedded"
                   threadRef={activeThreadRef}
                   tabId={browserTabId}
                   configuredUrls={configuredPreviewUrls}
                   visible
-                  maximized={rightPanelMaximized}
                   onClose={closeBrowserPreview}
                 />
               ) : activeBrowserSurface?.kind === "diff" ? (
                 <Suspense fallback={null}>
-                  <DiffPanel mode="inline" />
+                  <DiffPanel mode="sheet" />
                 </Suspense>
               ) : activeBrowserSurface?.kind === "terminal" ? (
                 <PersistentThreadTerminalDrawer
@@ -4853,6 +4896,7 @@ function ChatViewBody(
         <RightPanelSheet open onClose={browserPanel.isOpen ? closeBrowserPreview : closeInsights}>
           {browserPanel.isOpen && activeThreadRef ? (
             <RightPanelTabs
+              mode="sheet"
               surfaces={browserPanel.surfaces}
               activeSurfaceId={browserPanel.activeSurfaceId}
               previewSessions={previewState.sessions}
@@ -4924,7 +4968,7 @@ function ChatViewBody(
                   />
                 ) : (
                   <PreviewPanel
-                    mode="sheet"
+                    mode="embedded"
                     threadRef={activeThreadRef}
                     tabId={browserTabId}
                     configuredUrls={configuredPreviewUrls}

@@ -4,23 +4,30 @@ import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 
 const {
   createAssetUrlMock,
   openFileInPreviewMock,
   openInPreferredEditorMock,
   openPreviewMock,
+  navigateMock,
   readLocalApiMock,
 } = vi.hoisted(() => ({
   createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
   openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openInPreferredEditorMock: vi.fn(async () => "vscode"),
   openPreviewMock: vi.fn(),
+  navigateMock: vi.fn(async () => undefined),
   readLocalApiMock: vi.fn(() => ({
     server: { getConfig: vi.fn(async () => ({ availableEditors: ["vscode"] })) },
     shell: { openInEditor: vi.fn(async () => undefined) },
   })),
+}));
+
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => navigateMock,
 }));
 
 vi.mock("../editorPreferences", () => ({
@@ -42,6 +49,7 @@ vi.mock("../environmentApi", () => ({
 
 vi.mock("../environments/runtime", () => ({
   getEnvironmentHttpBaseUrl: vi.fn(() => "http://localhost:3773"),
+  resolveEnvironmentHttpUrl: vi.fn((_environmentId: string, path: string) => path),
 }));
 
 vi.mock("../previewStateStore", () => ({
@@ -62,21 +70,90 @@ vi.mock("../browser/openFileInPreview", () => ({
 }));
 
 import ChatMarkdown from "./ChatMarkdown";
+import { selectEnvironmentState, useStore } from "../store";
 
 const threadRef = scopeThreadRef(
   EnvironmentId.make("environment-markdown"),
   ThreadId.make("thread-markdown"),
 );
+const initialStoreState = useStore.getState();
+
+function addThreadSummary(threadId: ThreadId, title: string) {
+  const state = useStore.getState();
+  const environmentState = selectEnvironmentState(state, threadRef.environmentId);
+  useStore.setState({
+    environmentStateById: {
+      ...state.environmentStateById,
+      [threadRef.environmentId]: {
+        ...environmentState,
+        sidebarThreadSummaryById: {
+          ...environmentState.sidebarThreadSummaryById,
+          [threadId]: {
+            id: threadId,
+            environmentId: threadRef.environmentId,
+            projectId: ProjectId.make("project-markdown"),
+            parentThreadId: null,
+            title,
+            interactionMode: "default",
+            session: null,
+            createdAt: "2026-07-31T00:00:00.000Z",
+            archivedAt: null,
+            latestTurn: null,
+            branch: null,
+            worktreePath: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          },
+        },
+      },
+    },
+  });
+}
 
 describe("ChatMarkdown", () => {
   afterEach(() => {
+    useStore.setState(initialStoreState, true);
     openInPreferredEditorMock.mockClear();
     openFileInPreviewMock.mockClear();
     openPreviewMock.mockClear();
+    navigateMock.mockClear();
     createAssetUrlMock.mockClear();
     readLocalApiMock.mockClear();
     localStorage.clear();
     document.body.innerHTML = "";
+  });
+
+  it("navigates thread references within the current environment", async () => {
+    const linkedThreadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
+    const uppercaseThreadId = linkedThreadId.toUpperCase();
+    addThreadSummary(ThreadId.make(linkedThreadId), "Finish PR review fixes");
+    const screen = await render(
+      <ChatMarkdown
+        text={`Created replacement thread: \`${uppercaseThreadId}\``}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "Open thread Finish PR review fixes" });
+      await expect.element(link).toHaveTextContent("Finish PR review fixes");
+      await expect.element(link).not.toHaveTextContent(linkedThreadId);
+      await link.click();
+      await vi.waitFor(() => {
+        expect(navigateMock).toHaveBeenCalledWith({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: threadRef.environmentId,
+            threadId: linkedThreadId,
+          },
+        });
+      });
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it("rewrites file uri hrefs into direct paths before rendering", async () => {

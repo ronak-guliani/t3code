@@ -125,6 +125,7 @@ import {
   type ActiveProject,
   type CliSnapshot,
 } from "./cli/liveContext.ts";
+import { connectCommand } from "./cli/connect.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
@@ -1882,6 +1883,9 @@ const chatRenameCommand = Command.make("rename", {
 const chatDeleteCommand = Command.make("delete", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  cleanupWorktree: Flag.boolean("cleanup-worktree").pipe(
+    Flag.withDescription("Remove the worktree if this is its last active chat and it is clean."),
+  ),
 }).pipe(
   Command.withDescription("Delete a chat."),
   Command.withHandler((flags) =>
@@ -1891,6 +1895,7 @@ const chatDeleteCommand = Command.make("delete", {
           type: "thread.delete",
           commandId: CommandId.make(crypto.randomUUID()),
           threadId: thread.id,
+          cleanupWorktree: flags.cleanupWorktree,
         });
         yield* printJson(result);
       }),
@@ -4908,5 +4913,6 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       mcpCommand,
       rpcCommand,
       orchestrationCommand,
+      connectCommand,
     ]),
   );

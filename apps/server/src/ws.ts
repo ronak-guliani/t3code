@@ -18,6 +18,7 @@ import {
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
+  type OrchestrationThreadStreamItem,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffStateError,
   OrchestrationGetSnapshotError,
@@ -82,6 +83,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { DiffStateQuery } from "./diffState/Services/DiffStateQuery.ts";
 import { ServerConfig } from "./config.ts";
+import { loadAuthAccessSnapshot } from "./auth/authAccessSnapshot.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
@@ -97,6 +99,7 @@ import {
 import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
@@ -242,12 +245,6 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         gitStatusBroadcaster,
         projectSetupScriptRunner,
       });
-
-      const loadAuthAccessSnapshot = () =>
-        Effect.all({
-          pairingLinks: serverAuth.listPairingLinks().pipe(Effect.orDie),
-          clientSessions: serverAuth.listClientSessions(currentSessionId).pipe(Effect.orDie),
-        });
 
       const enrichProjectEvent = (
         event: OrchestrationEvent,
@@ -447,6 +444,13 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             },
             createdAt: input.createdAt,
           });
+          // Drive the coordinator inline so the worker thread and its first turn
+          // exist by the time this call resolves; otherwise the client polls for
+          // a thread that only appears after the event-stream reconciliation hop.
+          const coordinator = yield* Effect.serviceOption(WorkflowCoordinatorReactor);
+          if (Option.isSome(coordinator)) {
+            yield* coordinator.value.drainRun(input.runId);
+          }
           return {
             status: "started" as const,
             runId: input.runId,
@@ -1070,35 +1074,6 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
-              const [threadDetail, snapshotSequence] = yield* Effect.all([
-                projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
-                  ),
-                ),
-                projectionSnapshotQuery.getShellSnapshot().pipe(
-                  Effect.map((snapshot) => snapshot.snapshotSequence),
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
-                  ),
-                ),
-              ]);
-
-              if (Option.isNone(threadDetail)) {
-                return yield* new OrchestrationGetSnapshotError({
-                  message: `Thread ${input.threadId} was not found`,
-                  cause: input.threadId,
-                });
-              }
-
               const liveStream = orchestrationEngine.streamDomainEvents.pipe(
                 Stream.filter(
                   (event) =>
@@ -1112,6 +1087,36 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 })),
               );
 
+              // Attach live delivery before loading the snapshot so events emitted during the read
+              // are buffered rather than permanently lost.
+              const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
+              yield* Effect.forkScoped(
+                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
+              );
+
+              const [threadDetail, snapshotSequence] = yield* Effect.all(
+                [
+                  projectionSnapshotQuery.getThreadDetailById(input.threadId),
+                  projectionSnapshotQuery.getSnapshotSequence(),
+                ],
+                { concurrency: "unbounded" },
+              ).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: `Failed to load thread ${input.threadId}`,
+                      cause,
+                    }),
+                ),
+              );
+
+              if (Option.isNone(threadDetail)) {
+                return yield* new OrchestrationGetSnapshotError({
+                  message: `Thread ${input.threadId} was not found`,
+                  cause: input.threadId,
+                });
+              }
+
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
@@ -1120,7 +1125,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     thread: threadDetail.value,
                   }),
                 }),
-                liveStream,
+                Stream.fromQueue(liveBuffer),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -1152,6 +1157,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 })
               : Effect.succeed([])
             ).pipe(Effect.map((commands) => ({ commands }))),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverPrewarmProviderSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverPrewarmProviderSession,
+            providerService
+              .prewarmSession({
+                instanceId: input.instanceId,
+                cwd: input.cwd,
+                runtimeMode: input.runtimeMode,
+              })
+              .pipe(Effect.as({})),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverListSkills]: (_input) =>
@@ -2098,7 +2115,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcStreamEffect(
             WS_METHODS.subscribeAuthAccess,
             Effect.gen(function* () {
-              const initialSnapshot = yield* loadAuthAccessSnapshot();
+              const initialSnapshot = yield* loadAuthAccessSnapshot(serverAuth, currentSessionId);
               const revisionRef = yield* Ref.make(1);
               const accessChanges: Stream.Stream<
                 BootstrapCredentialChange | SessionCredentialChange

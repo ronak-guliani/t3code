@@ -68,10 +68,12 @@ function AgentWorkflowActionButton({
   action,
   onRun,
   onListOpenPullRequests,
+  onPrewarmProviderSession,
 }: {
   readonly action: AgentWorkflowHeaderAction;
   readonly onRun: (request: AgentWorkflowRunRequest) => void;
   readonly onListOpenPullRequests: () => Promise<ReadonlyArray<GitResolvedPullRequest>>;
+  readonly onPrewarmProviderSession: () => void;
 }) {
   const [pullRequests, setPullRequests] = useState<ReadonlyArray<GitResolvedPullRequest> | null>(
     null,
@@ -116,7 +118,13 @@ function AgentWorkflowActionButton({
       <Tooltip>
         <TooltipTrigger
           render={
-            <Group aria-label={action.label}>
+            <Group
+              aria-label={action.label}
+              // The one-click path never opens the menu, so warm the agent on
+              // intent instead: session startup dwarfs the review capture.
+              onPointerEnter={onPrewarmProviderSession}
+              onFocus={onPrewarmProviderSession}
+            >
               <Button
                 size="icon-xs"
                 variant="outline"
@@ -133,7 +141,18 @@ function AgentWorkflowActionButton({
                 <span className="sr-only">{REVIEW_SCOPE_LABELS[defaultReviewScope!]}</span>
               </Button>
               <GroupSeparator />
-              <Menu highlightItemOnHover={false}>
+              <Menu
+                highlightItemOnHover={false}
+                onOpenChange={(open) => {
+                  // Warm the PR list as soon as the menu opens: `gh pr list` is a
+                  // network round trip, and starting it here overlaps it with the
+                  // pointer travel to the submenu instead of stalling on it.
+                  if (open) {
+                    loadPullRequests();
+                    onPrewarmProviderSession();
+                  }
+                }}
+              >
                 <MenuTrigger
                   render={
                     <Button
@@ -241,10 +260,12 @@ export function AgentWorkflowHeaderActions({
   actions,
   onRun,
   onListOpenPullRequests,
+  onPrewarmProviderSession,
 }: {
   readonly actions: ReadonlyArray<AgentWorkflowHeaderAction>;
   readonly onRun: (request: AgentWorkflowRunRequest) => void;
   readonly onListOpenPullRequests: () => Promise<ReadonlyArray<GitResolvedPullRequest>>;
+  readonly onPrewarmProviderSession: () => void;
 }) {
   return actions.map((action) => (
     <AgentWorkflowActionButton
@@ -252,6 +273,7 @@ export function AgentWorkflowHeaderActions({
       action={action}
       onRun={onRun}
       onListOpenPullRequests={onListOpenPullRequests}
+      onPrewarmProviderSession={onPrewarmProviderSession}
     />
   ));
 }

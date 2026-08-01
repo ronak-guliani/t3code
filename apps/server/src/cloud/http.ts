@@ -48,6 +48,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
@@ -69,7 +70,7 @@ import {
   RELAY_URL_SECRET,
 } from "./config.ts";
 import { relayUrlConfig } from "./publicConfig.ts";
-import { setCliDesiredCloudLink } from "./CliState.ts";
+import { readCliDesiredCloudLink, setCliDesiredCloudLink } from "./CliState.ts";
 import * as CliTokenManager from "./CliTokenManager.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "./environmentKeys.ts";
 import { traceRelayRequest } from "./traceRelayRequest.ts";
@@ -82,6 +83,7 @@ const CLOUD_PROOF_MAX_LIFETIME_SECONDS = 5 * 60;
 const CLOUD_PROOF_CLOCK_SKEW_SECONDS = 60;
 const CLOUD_REPLAY_GUARD_TTL_MILLIS =
   (CLOUD_PROOF_MAX_LIFETIME_SECONDS + CLOUD_PROOF_CLOCK_SKEW_SECONDS) * 1_000;
+export const CLOUD_RELAY_REQUEST_TIMEOUT = Duration.seconds(15);
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const CLOUD_CREDENTIAL_RESPONSE_HEADERS = {
   "cache-control": "no-store",
@@ -481,56 +483,157 @@ const cloudLinkProofHandler = Effect.fn("environment.cloud.linkProof")(
   ),
 );
 
-const applyCloudRelayConfig = Effect.fn("environment.cloud.applyRelayConfig")(function* (
+export const applyCloudRelayConfig = Effect.fn("environment.cloud.applyRelayConfig")(function* (
   dependencies: CloudHttpDependencies,
   payload: RelayEnvironmentConfigRequest,
 ) {
-  yield* validateRelayConfigPayload(payload);
-  yield* validateLinkedCloudUser({
-    secrets: dependencies.secrets,
-    cloudUserId: payload.cloudUserId,
-  });
-  yield* validateCloudMintPublicKey(payload.cloudMintPublicKey);
+  return yield* cloudConnectLifecycleSemaphore.withPermits(1)(
+    Effect.gen(function* () {
+      if (!(yield* readCliDesiredCloudLink)) {
+        return yield* new EnvironmentHttpConflictError({
+          message: "T3 Connect is disabled locally. Run `t3 connect link` before provisioning it.",
+        });
+      }
+      yield* validateRelayConfigPayload(payload);
+      yield* validateLinkedCloudUser({
+        secrets: dependencies.secrets,
+        cloudUserId: payload.cloudUserId,
+      });
+      yield* validateCloudMintPublicKey(payload.cloudMintPublicKey);
 
-  // Persist relay credentials and endpoint runtime config before (re)starting the managed
-  // endpoint runtime. Starting the tunnel first risks leaving it running with a new connector
-  // token that was never durably persisted if a later secret write fails. With persistence
-  // first, the stored config is the source of truth and startup reconciliation converges the
-  // runtime to it on the next restart.
-  yield* dependencies.secrets.set(RELAY_URL_SECRET, stringToBytes(payload.relayUrl));
-  yield* dependencies.secrets.set(
-    RELAY_ISSUER_SECRET,
-    stringToBytes(payload.relayIssuer ?? payload.relayUrl),
-  );
-  yield* dependencies.secrets.set(CLOUD_LINKED_USER_ID, stringToBytes(payload.cloudUserId));
-  yield* dependencies.secrets.set(
-    RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
-    stringToBytes(payload.environmentCredential),
-  );
-  yield* dependencies.secrets.set(CLOUD_MINT_PUBLIC_KEY, stringToBytes(payload.cloudMintPublicKey));
-  if (payload.endpointRuntime) {
-    const endpointRuntimeJson = yield* encodeEndpointRuntimeConfigJson(payload.endpointRuntime);
-    yield* dependencies.secrets.set(
-      CLOUD_ENDPOINT_RUNTIME_CONFIG,
-      stringToBytes(endpointRuntimeJson),
-    );
-  } else {
-    yield* dependencies.secrets.remove(CLOUD_ENDPOINT_RUNTIME_CONFIG);
-  }
+      const endpointRuntimeJson = payload.endpointRuntime
+        ? yield* encodeEndpointRuntimeConfigJson(payload.endpointRuntime)
+        : null;
+      yield* persistCloudRelayConfig(dependencies.secrets, {
+        relayUrl: payload.relayUrl,
+        relayIssuer: payload.relayIssuer ?? payload.relayUrl,
+        cloudUserId: payload.cloudUserId,
+        environmentCredential: payload.environmentCredential,
+        cloudMintPublicKey: payload.cloudMintPublicKey,
+        endpointRuntimeJson,
+      });
 
-  const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(
-    payload.endpointRuntime,
-  );
-  const ok =
-    endpointRuntimeStatus.status === "disabled" || endpointRuntimeStatus.status === "running";
-  if (!ok) {
-    return yield* new EnvironmentCloudEndpointUnavailableError({
-      message: "Managed endpoint runtime could not be started.",
-      endpointRuntimeStatus,
-    });
-  }
+      // Recheck after durable writes: a CLI unlink can run in another process
+      // while the relay request is in flight.
+      if (!(yield* readCliDesiredCloudLink)) {
+        const stoppedStatus = yield* dependencies.endpointRuntime.applyConfig(null);
+        if (stoppedStatus.status === "failed") {
+          return yield* new EnvironmentCloudEndpointUnavailableError({
+            message: "T3 Connect was disabled while the managed endpoint was starting.",
+            endpointRuntimeStatus: stoppedStatus,
+          });
+        }
+        return yield* new EnvironmentHttpConflictError({
+          message: "T3 Connect was disabled while the relay configuration was being applied.",
+        });
+      }
 
-  return { ok, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
+      const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(
+        payload.endpointRuntime,
+      );
+      // A separate CLI process can durably disable Connect while installation
+      // or process startup is in flight. Stop anything this request started
+      // before reporting that the provision was rejected.
+      if (!(yield* readCliDesiredCloudLink)) {
+        const stoppedStatus = yield* dependencies.endpointRuntime.applyConfig(null);
+        if (stoppedStatus.status === "failed") {
+          return yield* new EnvironmentCloudEndpointUnavailableError({
+            message: "T3 Connect was disabled while the managed endpoint was starting.",
+            endpointRuntimeStatus: stoppedStatus,
+          });
+        }
+        return yield* new EnvironmentHttpConflictError({
+          message: "T3 Connect was disabled while the relay configuration was being applied.",
+        });
+      }
+      const ok =
+        endpointRuntimeStatus.status === "disabled" ||
+        endpointRuntimeStatus.status === "starting" ||
+        endpointRuntimeStatus.status === "running";
+      if (!ok) {
+        return yield* new EnvironmentCloudEndpointUnavailableError({
+          message: "Managed endpoint runtime could not be started.",
+          endpointRuntimeStatus,
+        });
+      }
+
+      return { ok, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
+    }),
+  );
+});
+
+// Config delivery, startup reconciliation, and live unlink share this process.
+// Serializing their storage/runtime transition prevents a late relay response
+// from reviving a tunnel after local disablement has begun.
+const cloudConnectLifecycleSemaphore = Effect.runSync(Semaphore.make(1));
+
+const CLOUD_RELAY_CONFIG_SECRET_NAMES = [
+  RELAY_URL_SECRET,
+  RELAY_ISSUER_SECRET,
+  RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+  CLOUD_MINT_PUBLIC_KEY,
+  CLOUD_ENDPOINT_RUNTIME_CONFIG,
+  CLOUD_LINKED_USER_ID,
+] as const;
+
+const cloudRelayConfigSemaphore = Effect.runSync(Semaphore.make(1));
+
+export const persistCloudRelayConfig = Effect.fn("environment.cloud.persistRelayConfig")(function* (
+  secrets: ServerSecretStore.ServerSecretStore["Service"],
+  config: {
+    readonly relayUrl: string;
+    readonly relayIssuer: string;
+    readonly cloudUserId: string;
+    readonly environmentCredential: string;
+    readonly cloudMintPublicKey: string;
+    readonly endpointRuntimeJson: string | null;
+  },
+) {
+  yield* cloudRelayConfigSemaphore.withPermits(1)(
+    Effect.gen(function* () {
+      const previous = yield* Effect.forEach(
+        CLOUD_RELAY_CONFIG_SECRET_NAMES,
+        (name) => secrets.get(name).pipe(Effect.map((value) => [name, value] as const)),
+        { concurrency: "unbounded" },
+      );
+      const next = new Map<string, string | null>([
+        [RELAY_URL_SECRET, config.relayUrl],
+        [RELAY_ISSUER_SECRET, config.relayIssuer],
+        [RELAY_ENVIRONMENT_CREDENTIAL_SECRET, config.environmentCredential],
+        [CLOUD_MINT_PUBLIC_KEY, config.cloudMintPublicKey],
+        [CLOUD_ENDPOINT_RUNTIME_CONFIG, config.endpointRuntimeJson],
+        [CLOUD_LINKED_USER_ID, config.cloudUserId],
+      ]);
+      const restore = Effect.forEach(
+        previous,
+        ([name, value]) =>
+          Option.isSome(value) ? secrets.set(name, value.value) : secrets.remove(name),
+        { concurrency: 1, discard: true },
+      );
+
+      yield* Effect.forEach(
+        CLOUD_RELAY_CONFIG_SECRET_NAMES,
+        (name) => {
+          const value = next.get(name);
+          return value === null || value === undefined
+            ? secrets.remove(name)
+            : secrets.set(name, stringToBytes(value));
+        },
+        { concurrency: 1, discard: true },
+      ).pipe(
+        Effect.catch((cause) =>
+          restore.pipe(
+            Effect.catch((rollbackCause) =>
+              Effect.logError("Failed to restore relay configuration after a persistence failure", {
+                cause: rollbackCause,
+              }),
+            ),
+            Effect.andThen(Effect.fail(cause)),
+          ),
+        ),
+      );
+    }),
+  );
 });
 
 const cloudRelayConfigHandler = Effect.fn("environment.cloud.relayConfig")(
@@ -551,7 +654,7 @@ const cloudRelayConfigHandler = Effect.fn("environment.cloud.relayConfig")(
   ),
 );
 
-const relayClientRequest = <A>(
+export const relayClientRequest = <A>(
   dependencies: CloudHttpDependencies,
   input: {
     readonly url: string;
@@ -566,6 +669,7 @@ const relayClientRequest = <A>(
     Effect.flatMap(dependencies.httpClient.execute),
     Effect.flatMap(HttpClientResponse.filterStatusOk),
     Effect.flatMap(HttpClientResponse.schemaBodyJson(input.schema)),
+    Effect.timeout(CLOUD_RELAY_REQUEST_TIMEOUT),
     Effect.mapError(
       (cause) =>
         new EnvironmentHttpInternalServerError({
@@ -642,7 +746,6 @@ const reconcileDesiredCloudLinkWith = Effect.fn("environment.cloud.reconcileDesi
       },
       schema: RelayEnvironmentLinkResponse,
     });
-    yield* setCliDesiredCloudLink(true);
     return yield* applyCloudRelayConfig(dependencies, {
       relayUrl,
       relayIssuer: link.relayIssuer,
@@ -691,6 +794,7 @@ const readCloudLinkState = Effect.fn("environment.cloud.readLinkState")(function
     publishAgentActivity: Option.isSome(publishAgentActivity)
       ? bytesToString(publishAgentActivity.value) === "true"
       : false,
+    endpointRuntimeStatus: yield* dependencies.endpointRuntime.getStatus,
   } satisfies EnvironmentCloudLinkStateResult;
 });
 
@@ -705,24 +809,39 @@ const cloudLinkStateHandler = Effect.fn("environment.cloud.linkState")(
   ),
 );
 
+export const unlinkCloudRuntime = Effect.fn("environment.cloud.unlinkRuntime")(function* (
+  dependencies: CloudHttpDependencies,
+) {
+  // This is intentionally the first durable operation. If later tunnel
+  // teardown or metadata cleanup fails, restart reconciliation remains off.
+  yield* setCliDesiredCloudLink(false);
+  const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(null);
+  yield* Effect.forEach(
+    [
+      CLOUD_LINKED_USER_ID,
+      RELAY_URL_SECRET,
+      RELAY_ISSUER_SECRET,
+      RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+      CLOUD_MINT_PUBLIC_KEY,
+      CLOUD_ENDPOINT_RUNTIME_CONFIG,
+      PUBLISH_AGENT_ACTIVITY_SECRET,
+    ],
+    (secret) => dependencies.secrets.remove(secret),
+    { concurrency: 1, discard: true },
+  );
+  if (endpointRuntimeStatus.status === "failed") {
+    return yield* new EnvironmentCloudEndpointUnavailableError({
+      message: "Managed endpoint runtime could not be stopped.",
+      endpointRuntimeStatus,
+    });
+  }
+  return { ok: true, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
+});
+
 const cloudUnlinkHandler = Effect.fn("environment.cloud.unlink")(
   function* (dependencies: CloudHttpDependencies) {
     yield* requireEnvironmentScope(AuthRelayWriteScope);
-    const endpointRuntimeStatus = yield* dependencies.endpointRuntime.applyConfig(null);
-    yield* Effect.all(
-      [
-        dependencies.secrets.remove(CLOUD_LINKED_USER_ID),
-        dependencies.secrets.remove(RELAY_URL_SECRET),
-        dependencies.secrets.remove(RELAY_ISSUER_SECRET),
-        dependencies.secrets.remove(RELAY_ENVIRONMENT_CREDENTIAL_SECRET),
-        dependencies.secrets.remove(CLOUD_MINT_PUBLIC_KEY),
-        dependencies.secrets.remove(CLOUD_ENDPOINT_RUNTIME_CONFIG),
-        dependencies.secrets.remove(PUBLISH_AGENT_ACTIVITY_SECRET),
-      ],
-      { concurrency: 7 },
-    );
-    yield* setCliDesiredCloudLink(false);
-    return { ok: true, endpointRuntimeStatus } satisfies EnvironmentCloudRelayConfigResult;
+    return yield* cloudConnectLifecycleSemaphore.withPermits(1)(unlinkCloudRuntime(dependencies));
   },
   Effect.catchIf(
     ServerSecretStore.isSecretStoreError,

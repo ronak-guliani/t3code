@@ -47,6 +47,10 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REVIEW_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 const REVIEW_DIFF_NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
+// Untracked-file diffs are independent single-file `git diff --no-index` spawns;
+// a bound keeps a large untracked set from saturating the process table while
+// still removing the per-file serialization from the review critical path.
+const REVIEW_UNTRACKED_DIFF_CONCURRENCY = 8;
 // Well-known empty tree object, used as the uncommitted-review diff base when
 // the repository has an unborn HEAD (initialized, not yet committed). Falls back
 // to this SHA-1 value when the repository's object format cannot be resolved.
@@ -1492,7 +1496,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
                 ),
           ),
         ),
-      { concurrency: 1 },
+      { concurrency: REVIEW_UNTRACKED_DIFF_CONCURRENCY },
     ).pipe(Effect.map((diffs) => diffs.join("")));
 
   const toReviewSnapshot = (input: {
@@ -1519,10 +1523,47 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     });
   };
 
+  // The review path needs only `isRepo` and `branch`. `statusDetailsLocal` also
+  // computes numstat totals, the default ref, and remote presence — four extra
+  // subprocess spawns whose output the review capture discards.
+  const readReviewRepoContext = Effect.fn("readReviewRepoContext")(function* (cwd: string) {
+    const result = yield* executeGit(
+      "GitCore.resolveReviewChangesContext.branch",
+      cwd,
+      ["status", "--porcelain=2", "--branch"],
+      {
+        allowNonZeroExit: true,
+      },
+    ).pipe(Effect.catchIf(isMissingGitCwdError, () => Effect.succeed(null)));
+
+    if (result === null) {
+      return { isRepo: false, branch: null as string | null };
+    }
+    // Only a missing working directory means "not a repository". Other failures
+    // (unsafe ownership, permissions, corrupt index) must keep Git's own
+    // diagnostic instead of collapsing into a generic message.
+    if (result.code !== 0) {
+      return yield* createGitCommandError(
+        "GitCore.resolveReviewChangesContext.branch",
+        cwd,
+        ["status", "--porcelain=2", "--branch"],
+        result.stderr.trim() || "git status failed",
+      );
+    }
+    const headLine = result.stdout
+      .split(/\r?\n/g)
+      .find((line) => line.startsWith("# branch.head "));
+    const value = headLine?.slice("# branch.head ".length).trim() ?? "";
+    return {
+      isRepo: true,
+      branch: (value.length === 0 || value.startsWith("(") ? null : value) as string | null,
+    };
+  });
+
   const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = Effect.fn(
     "resolveReviewChangesContext",
   )(function* (input) {
-    const details = yield* statusDetailsLocal(input.cwd);
+    const details = yield* readReviewRepoContext(input.cwd);
     if (!details.isRepo) {
       return yield* createGitCommandError(
         "GitCore.resolveReviewChangesContext",
@@ -1532,20 +1573,28 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       );
     }
 
-    const [statusShort, untrackedFiles] = yield* Effect.all(
-      [readStatusShort(input.cwd), readUntrackedFiles(input.cwd)],
-      { concurrency: "unbounded" },
-    );
+    // The pull-request scope reviews the PR patch, not the working tree, so it
+    // reports an empty status/untracked set. Reading them anyway spends two
+    // subprocess spawns on output that is discarded.
+    const [statusShort, untrackedFiles] =
+      input.scope === "pull-request"
+        ? (["", [] as ReadonlyArray<string>] as const)
+        : yield* Effect.all([readStatusShort(input.cwd), readUntrackedFiles(input.cwd)], {
+            concurrency: "unbounded",
+          });
 
     if (input.scope === "uncommitted") {
-      const diffBase = yield* resolveUncommittedDiffBase(input.cwd);
       const [trackedDiff, untrackedDiff] = yield* Effect.all(
         [
-          runGitStdoutWithOptions(
-            "GitCore.resolveReviewChangesContext.uncommittedDiff",
-            input.cwd,
-            ["diff", "--no-ext-diff", "--binary", "--full-index", diffBase],
-            { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+          resolveUncommittedDiffBase(input.cwd).pipe(
+            Effect.flatMap((diffBase) =>
+              runGitStdoutWithOptions(
+                "GitCore.resolveReviewChangesContext.uncommittedDiff",
+                input.cwd,
+                ["diff", "--no-ext-diff", "--binary", "--full-index", diffBase],
+                { maxOutputBytes: REVIEW_SNAPSHOT_MAX_BYTES },
+              ),
+            ),
           ),
           readUntrackedReviewDiff(input.cwd, untrackedFiles),
         ],
@@ -1593,10 +1642,15 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         );
       }
       const reference = String(input.pullRequestNumber);
-      const [pullRequest, trackedDiff] = yield* Effect.all([
-        gitHubCli.value.getPullRequest({ cwd: input.cwd, reference }),
-        gitHubCli.value.getPullRequestPatch({ cwd: input.cwd, reference }),
-      ]).pipe(
+      // `Effect.all` is sequential by default; these are two independent network
+      // round trips, so serializing them doubles the PR review's startup latency.
+      const [pullRequest, trackedDiff] = yield* Effect.all(
+        [
+          gitHubCli.value.getPullRequest({ cwd: input.cwd, reference }),
+          gitHubCli.value.getPullRequestPatch({ cwd: input.cwd, reference }),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(
         Effect.mapError(
           (error) =>
             new GitCommandError({
@@ -2381,6 +2435,12 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     },
   );
 
+  const pruneWorktrees: GitCoreShape["pruneWorktrees"] = (cwd) =>
+    executeGit("GitCore.pruneWorktrees", cwd, ["worktree", "prune"], {
+      timeoutMs: 15_000,
+      fallbackErrorMessage: "git worktree prune failed",
+    });
+
   const renameBranch: GitCoreShape["renameBranch"] = Effect.fn("renameBranch")(function* (input) {
     if (input.oldBranch === input.newBranch) {
       return { branch: input.newBranch };
@@ -2536,6 +2596,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     fetchRemoteBranch,
     setBranchUpstream,
     removeWorktree,
+    pruneWorktrees,
     renameBranch,
     createBranch,
     checkoutBranch,
