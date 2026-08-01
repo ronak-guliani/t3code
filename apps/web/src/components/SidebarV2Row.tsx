@@ -18,6 +18,7 @@ import {
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
 import { useGitStatus } from "../lib/gitStatusState";
+import { sanitizeThreadErrorMessage } from "../rpc/transportError";
 import { openPullRequestLink } from "../lib/openPullRequestLink";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import { type AppState, selectLatestTurnDiffSummaryByRef, useStore } from "../store";
@@ -116,6 +117,9 @@ function ThreadDetailsTooltip({
   readonly terminalProcessCount: number;
 }) {
   const driverKind = providerEntry?.driverKind ?? thread.session?.provider ?? null;
+  // Transport drops are connection noise, not a thread failure; the same
+  // sanitizer the chat surface uses keeps them out of the tooltip.
+  const sessionError = sanitizeThreadErrorMessage(thread.session?.lastError);
   return (
     <TooltipPopup align="start" className="max-w-80 whitespace-normal text-left" side="right">
       <div className="flex min-w-0 max-w-80 flex-col gap-2 px-0.5 py-1.5">
@@ -168,10 +172,10 @@ function ThreadDetailsTooltip({
               </div>
             </div>
           ) : null}
-          {thread.session?.lastError ? (
-            <div className="flex min-w-0 items-center gap-2 text-red-600 dark:text-red-400">
-              <CircleAlertIcon className="size-3 shrink-0 stroke-current" />
-              <div className="min-w-0 truncate">Error occurred</div>
+          {sessionError ? (
+            <div className="flex min-w-0 items-start gap-2 text-red-600 dark:text-red-400">
+              <CircleAlertIcon className="mt-0.5 size-3 shrink-0 stroke-current" />
+              <div className="min-w-0 flex-1 wrap-break-word">{sessionError}</div>
             </div>
           ) : null}
         </div>
@@ -281,12 +285,17 @@ export const SidebarV2Row = memo(function SidebarV2Row({
     [prStatus],
   );
 
-  const handlePrKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLElement>) => {
+  // A role="button" div is not natively activatable, so the card surface
+  // restores keyboard activation itself — and only for its own key events, so
+  // Enter on the nested PR badge does not also open the thread.
+  const handleRowKeyDown = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
-      if (prStatus) openPullRequestLink(event, prStatus.url);
+      event.preventDefault();
+      onOpen(thread);
     },
-    [prStatus],
+    [onOpen, thread],
   );
 
   const hoverActions = (
@@ -421,6 +430,11 @@ export const SidebarV2Row = memo(function SidebarV2Row({
               className="h-[4.875rem] items-stretch gap-0 px-2.5 py-2"
               isActive={active}
               onClick={handleOpen}
+              onKeyDown={handleRowKeyDown}
+              // A native <button> may not contain focusable descendants, and
+              // the card's PR badge is its own control. Rendering the surface
+              // as a role="button" div keeps both as independent focus targets.
+              render={<div role="button" tabIndex={0} />}
             />
           }
         >
@@ -470,22 +484,18 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                 <span className="flex-1" />
               )}
               {terminalIcon}
-              {/* role="link" rather than a nested <button>: the row surface
-                  is itself a button, and button-in-button is invalid markup. */}
               {prStatus && pr ? (
-                <span
+                <button
                   aria-label={prStatus.tooltip}
                   className={cn(
                     "shrink-0 cursor-pointer font-mono hover:underline",
                     prStatus.colorClass,
                   )}
                   onClick={handlePrClick}
-                  onKeyDown={handlePrKeyDown}
-                  role="link"
-                  tabIndex={0}
+                  type="button"
                 >
                   #{pr.number}
-                </span>
+                </button>
               ) : null}
               {diff ? (
                 <span className="shrink-0 font-mono">

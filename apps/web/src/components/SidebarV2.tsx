@@ -20,7 +20,7 @@ import {
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { usePrimaryEnvironmentDescriptor } from "../environments/primary";
+import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
 import {
   selectProjectsAcrossEnvironments,
@@ -29,7 +29,7 @@ import {
 } from "../store";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import type { Project, SidebarThreadSummary } from "../types";
-import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
+import { buildProviderEntriesByEnvironment, scopedProviderInstanceKey } from "../providerInstances";
 import { useServerProviders } from "../rpc/serverState";
 import { resolveThreadLifecycleSupport, selectSnoozeShelfBulkTargets } from "./SidebarV2.logic";
 import { SidebarV2Row } from "./SidebarV2Row";
@@ -133,6 +133,7 @@ export default function SidebarV2() {
     })),
   );
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const remoteEnvironmentDescriptors = useSavedEnvironmentRuntimeStore((state) => state.byId);
   const lifecycleSupport = useMemo(
     () =>
@@ -173,13 +174,22 @@ export default function SidebarV2() {
   }, [now, threads]);
 
   const projectsByKey = useMemo(() => projectByScopedKey(projects), [projects]);
-  const serverProviders = useServerProviders();
-  const providerEntryByInstanceId = useMemo(
+  // Provider instances are per environment: a saved environment publishes its
+  // own catalog, so scoping by instance ID alone would render a remote thread
+  // with the primary environment's provider whenever the IDs collide.
+  const primaryProviders = useServerProviders();
+  const providerEntryByKey = useMemo(
     () =>
-      new Map<string, ProviderInstanceEntry>(
-        deriveProviderInstanceEntries(serverProviders).map((entry) => [entry.instanceId, entry]),
-      ),
-    [serverProviders],
+      buildProviderEntriesByEnvironment([
+        ...(primaryEnvironmentId === null
+          ? []
+          : [{ environmentId: primaryEnvironmentId, providers: primaryProviders }]),
+        ...Object.entries(remoteEnvironmentDescriptors).map(([environmentId, saved]) => ({
+          environmentId,
+          providers: saved.serverConfig?.providers ?? [],
+        })),
+      ]),
+    [primaryEnvironmentId, primaryProviders, remoteEnvironmentDescriptors],
   );
 
   // Classifies the store's own thread objects rather than rebuilt copies, so
@@ -347,7 +357,11 @@ export default function SidebarV2() {
           projectCwd={project?.cwd ?? null}
           projectName={project?.name ?? "Unknown project"}
           providerEntry={
-            instanceId === null ? null : (providerEntryByInstanceId.get(instanceId) ?? null)
+            instanceId === null
+              ? null
+              : (providerEntryByKey.get(
+                  scopedProviderInstanceKey(thread.environmentId, instanceId),
+                ) ?? null)
           }
           settled={settled}
           // Reopening is always allowed; only the settle direction has
@@ -372,7 +386,7 @@ export default function SidebarV2() {
       now,
       openThread,
       projectsByKey,
-      providerEntryByInstanceId,
+      providerEntryByKey,
     ],
   );
   const renderCardThread = useCallback(
