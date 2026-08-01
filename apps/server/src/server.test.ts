@@ -3,6 +3,7 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
+  AuthStandardClientScopes,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -31,6 +32,14 @@ import {
   WsRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
+import { preparePairingRegistration } from "../../../packages/client-runtime/src/connection/onboarding.ts";
+import { ClientPresentation } from "../../../packages/client-runtime/src/platform/capabilities.ts";
+import { remoteHttpClientLayer } from "../../../packages/client-runtime/src/rpc/http.ts";
+import { resolveRemoteWebSocketConnectionUrl as resolveClientRuntimeWebSocketUrl } from "../../../packages/client-runtime/src/remote.ts";
+import {
+  bootstrapRemoteBearerSession as bootstrapBrowserRemoteBearerSession,
+  resolveRemoteWebSocketConnectionUrl as resolveBrowserRemoteWebSocketUrl,
+} from "../../web/src/environments/remote/api.ts";
 import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
@@ -39,6 +48,7 @@ import {
   Duration,
   Effect,
   FileSystem,
+  Fiber,
   Layer,
   ManagedRuntime,
   Option,
@@ -1705,6 +1715,194 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
         assert.equal(response.auth.policy, "desktop-managed-local");
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("smokes direct-paired browser and shared client runtime reconnect end to end", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      let snapshotSequence = 5;
+      let dispatchCount = 0;
+      const shellSnapshot = () => ({
+        snapshotSequence,
+        projects: [
+          {
+            id: defaultProjectId,
+            title: "Direct Connect Project",
+            workspaceRoot: "/tmp/direct-connect-project",
+            defaultModelSelection,
+            scripts: [],
+            createdAt: "2026-08-01T00:00:00.000Z",
+            updatedAt: "2026-08-01T00:00:00.000Z",
+            deletedAt: null,
+          },
+        ],
+        threads: [makeDefaultOrchestrationThreadShell()],
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      });
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+            dispatch: (command) =>
+              Effect.gen(function* () {
+                dispatchCount += 1;
+                snapshotSequence += 1;
+                yield* PubSub.publish(liveEvents, {
+                  sequence: snapshotSequence,
+                  eventId: EventId.make(`event-direct-connect-${snapshotSequence}`),
+                  aggregateKind: "thread",
+                  aggregateId: defaultThreadId,
+                  occurredAt: "2026-08-01T00:00:01.000Z",
+                  commandId: command.commandId,
+                  causationEventId: null,
+                  correlationId: command.commandId,
+                  metadata: {},
+                  type: "thread.message-sent",
+                  payload: {
+                    threadId: defaultThreadId,
+                    messageId: MessageId.make("message-direct-connect-smoke"),
+                    role: "user",
+                    text: "Direct connect smoke mutation",
+                    turnId: null,
+                    streaming: false,
+                    createdAt: "2026-08-01T00:00:01.000Z",
+                    updatedAt: "2026-08-01T00:00:01.000Z",
+                  },
+                } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>);
+                return { sequence: snapshotSequence };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () => Effect.succeed(shellSnapshot()),
+            getThreadShellById: () =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+          },
+        },
+      });
+
+      const origin = yield* getHttpServerUrl();
+      const wsOrigin = origin.replace(/^http/u, "ws");
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const createPairingCredential = Effect.gen(function* () {
+        const response = yield* HttpClient.post("/api/auth/pairing-token", {
+          headers: { cookie: ownerCookie },
+        });
+        const body = (yield* response.json) as { readonly credential: string };
+        assert.equal(response.status, 200);
+        return body.credential;
+      });
+
+      const browserCredential = yield* createPairingCredential;
+      const browserAccess = yield* Effect.promise(() =>
+        bootstrapBrowserRemoteBearerSession({
+          httpBaseUrl: origin,
+          credential: browserCredential,
+        }),
+      );
+      const browserWsUrl = yield* Effect.promise(() =>
+        resolveBrowserRemoteWebSocketUrl({
+          httpBaseUrl: origin,
+          wsBaseUrl: wsOrigin,
+          bearerToken: browserAccess.sessionToken,
+        }),
+      );
+      const browserRpcUrl = new URL(browserWsUrl);
+      browserRpcUrl.pathname = "/ws";
+      const browserConfig = yield* Effect.scoped(
+        withWsRpcClient(browserRpcUrl.toString(), (client) =>
+          client[WS_METHODS.serverGetConfig]({}),
+        ),
+      );
+      assert.equal(
+        browserConfig.environment.environmentId,
+        testEnvironmentDescriptor.environmentId,
+      );
+
+      const mobileCredential = yield* createPairingCredential;
+      const registration = yield* preparePairingRegistration({
+        pairingUrl: `${origin}/#token=${encodeURIComponent(mobileCredential)}`,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            remoteHttpClientLayer(globalThis.fetch),
+            Layer.succeed(
+              ClientPresentation,
+              ClientPresentation.of({
+                metadata: {
+                  label: "Direct Connect Smoke Mobile",
+                  deviceType: "mobile",
+                  os: "Test",
+                },
+                scopes: AuthStandardClientScopes,
+              }),
+            ),
+          ),
+        ),
+      );
+      const httpSnapshot = yield* getLiveOrchestrationShellSnapshot({
+        url: Option.some(new URL(registration.profile.httpBaseUrl).origin),
+        token: Option.some(registration.credential.token),
+        baseDir: Option.none(),
+      });
+      assert.equal(httpSnapshot.snapshotSequence, 5);
+      assert.equal(httpSnapshot.projects[0]?.title, "Direct Connect Project");
+
+      const firstClientWsUrl = yield* resolveClientRuntimeWebSocketUrl({
+        httpBaseUrl: registration.profile.httpBaseUrl,
+        wsBaseUrl: registration.profile.wsBaseUrl,
+        bearerToken: registration.credential.token,
+      }).pipe(Effect.provide(remoteHttpClientLayer(globalThis.fetch)));
+      const initialSnapshot = yield* Deferred.make<void>();
+      const firstConnectionItems = yield* Effect.scoped(
+        withWsRpcClient(firstClientWsUrl, (client) =>
+          Effect.gen(function* () {
+            const streamFiber = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+              Stream.tap((item) =>
+                item.kind === "snapshot"
+                  ? Deferred.succeed(initialSnapshot, undefined)
+                  : Effect.void,
+              ),
+              Stream.take(2),
+              Stream.runCollect,
+              Effect.forkScoped,
+            );
+            yield* Deferred.await(initialSnapshot).pipe(Effect.timeout("2 seconds"));
+            yield* Effect.sleep("50 millis");
+            const dispatchResult = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.session.stop",
+              commandId: CommandId.make("cmd-direct-connect-smoke"),
+              threadId: defaultThreadId,
+              createdAt: "2026-08-01T00:00:01.000Z",
+            });
+            assert.equal(dispatchResult.sequence, 6);
+            return yield* Fiber.join(streamFiber);
+          }),
+        ),
+      ).pipe(Effect.timeout("5 seconds"));
+      assert.equal(firstConnectionItems[0]?.kind, "snapshot");
+      assert.equal(firstConnectionItems[1]?.kind, "thread-upserted");
+
+      const reconnectWsUrl = yield* resolveClientRuntimeWebSocketUrl({
+        httpBaseUrl: registration.profile.httpBaseUrl,
+        wsBaseUrl: registration.profile.wsBaseUrl,
+        bearerToken: registration.credential.token,
+      }).pipe(Effect.provide(remoteHttpClientLayer(globalThis.fetch)));
+      const reconnectItems = yield* Effect.scoped(
+        withWsRpcClient(reconnectWsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("5 seconds"));
+      assert.equal(reconnectItems[0]?.kind, "snapshot");
+      assert.equal(
+        reconnectItems[0]?.kind === "snapshot" ? reconnectItems[0].snapshot.snapshotSequence : null,
+        6,
+      );
+
+      assert.equal(dispatchCount, 1);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), Effect.scoped, TestClock.withLive),
   );
 
   it.effect("loads a large CLI shell snapshot without reading the full projection", () =>

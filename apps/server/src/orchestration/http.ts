@@ -10,6 +10,7 @@ import {
 import { Effect } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
+import { respondToAuthError } from "../auth/http.ts";
 import { ServerAuth } from "../auth/Services/ServerAuth.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "../git/Services/GitStatusBroadcaster.ts";
@@ -53,23 +54,17 @@ const respondToOrchestrationHttpError = (
     );
   });
 
-const authenticateOwnerSession = Effect.gen(function* () {
+const authenticateClientSession = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const serverAuth = yield* ServerAuth;
-  const session = yield* serverAuth.authenticateHttpRequest(request);
-  if (session.role !== "owner") {
-    return yield* new OrchestrationDispatchCommandError({
-      message: "Only owner sessions can manage projects.",
-    });
-  }
-  return session;
+  return yield* serverAuth.authenticateHttpRequest(request);
 });
 
 export const orchestrationSnapshotRouteLayer = HttpRouter.add(
   "GET",
   "/api/orchestration/snapshot",
   Effect.gen(function* () {
-    yield* authenticateOwnerSession;
+    yield* authenticateClientSession;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const snapshot = yield* projectionSnapshotQuery.getSnapshot().pipe(
       Effect.mapError(
@@ -87,8 +82,10 @@ export const orchestrationSnapshotRouteLayer = HttpRouter.add(
       },
     );
   }).pipe(
-    Effect.catchTag("OrchestrationDispatchCommandError", respondToOrchestrationHttpError),
-    Effect.catchTag("OrchestrationGetSnapshotError", respondToOrchestrationHttpError),
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
   ),
 );
 
@@ -96,7 +93,7 @@ export const orchestrationShellSnapshotRouteLayer = HttpRouter.add(
   "GET",
   "/api/orchestration/shell-snapshot",
   Effect.gen(function* () {
-    yield* authenticateOwnerSession;
+    yield* authenticateClientSession;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
     const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
       Effect.mapError(
@@ -111,8 +108,10 @@ export const orchestrationShellSnapshotRouteLayer = HttpRouter.add(
       status: 200,
     });
   }).pipe(
-    Effect.catchTag("OrchestrationDispatchCommandError", respondToOrchestrationHttpError),
-    Effect.catchTag("OrchestrationGetSnapshotError", respondToOrchestrationHttpError),
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
   ),
 );
 
@@ -120,7 +119,7 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
   "GET",
   "/api/orchestration/threads/:threadId/snapshot",
   Effect.gen(function* () {
-    yield* authenticateOwnerSession;
+    yield* authenticateClientSession;
     const params = yield* HttpRouter.params;
     const threadId = ThreadId.make(params.threadId ?? "");
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
@@ -149,8 +148,10 @@ export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
       { status: 200 },
     );
   }).pipe(
-    Effect.catchTag("OrchestrationDispatchCommandError", respondToOrchestrationHttpError),
-    Effect.catchTag("OrchestrationGetSnapshotError", respondToOrchestrationHttpError),
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
   ),
 );
 
@@ -158,7 +159,7 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
   "POST",
   "/api/orchestration/dispatch",
   Effect.gen(function* () {
-    yield* authenticateOwnerSession;
+    yield* authenticateClientSession;
     const orchestrationEngine = yield* OrchestrationEngineService;
     const startup = yield* ServerRuntimeStartup;
     const git = yield* GitCore;
@@ -183,5 +184,10 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
     });
     const result = yield* dispatchCommand(normalizedCommand);
     return HttpServerResponse.jsonUnsafe(result, { status: 200 });
-  }).pipe(Effect.catchTag("OrchestrationDispatchCommandError", respondToOrchestrationHttpError)),
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationDispatchCommandError: respondToOrchestrationHttpError,
+    }),
+  ),
 );

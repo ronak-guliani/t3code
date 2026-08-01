@@ -37,6 +37,7 @@
     "release:smoke": "node scripts/release-smoke.ts",
     "release:cli-smoke": "node scripts/cli-package-smoke.ts",
     "release:connect-smoke": "node apps/server/integration/connect-release-smoke.ts",
+    "test:direct-connect-smoke": "vp test run apps/server/src/server.test.ts --no-file-parallelism -t \"smokes direct-paired browser and shared client runtime reconnect end to end\"",
     "clean": "node scripts/clean.ts",
     "sync:vscode-icons": "node scripts/sync-vscode-icons.mjs"
   },

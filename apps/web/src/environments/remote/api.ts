@@ -137,7 +137,7 @@ export async function resolveRemoteWebSocketConnectionUrl(input: {
     httpBaseUrl: input.httpBaseUrl,
     bearerToken: input.bearerToken,
   });
-  const url = new URL(input.wsBaseUrl, window.location.origin);
+  const url = new URL(input.wsBaseUrl);
   url.searchParams.set("wsToken", issued.token);
   return url.toString();
 }

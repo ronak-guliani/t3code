@@ -59,6 +59,46 @@ node ../../scripts/mobile-native-static-check.ts
 
 The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools are reported as warnings and skipped locally. CI installs the default toolset from `apps/mobile/Brewfile` before running the native checks.
 
+## Direct Connect acceptance
+
+The no-Clerk direct path requires a reachable HTTPS origin. Hosted browsers will block an
+`http://` API or `ws://` socket as mixed content, so use the Tailscale HTTPS URL for both browser
+and mobile pairing; the clients derive `wss://` from that origin.
+
+1. Install Tailscale on the workstation and test device, sign both into the same tailnet, and
+   enable HTTPS certificates for the tailnet.
+2. From the repository root, build and start the fork server on the tailnet:
+
+   ```bash
+   pnpm --filter t3 build
+   tailscale serve --bg --https=443 http://127.0.0.1:3773
+   pnpm start -- --host 127.0.0.1 --port 3773 --no-browser
+   ```
+
+3. In another terminal, create a one-time client pairing URL:
+
+   ```bash
+   pnpm --filter t3 start -- auth pairing create \
+     --base-url https://<workstation>.<tailnet>.ts.net
+   ```
+
+4. Open that HTTPS URL in the matching fork browser build, or in **T3 Code Dev** choose
+   **Add environment** and scan/paste the URL. Pairing persists a bearer session; Clerk and the
+   managed relay are not involved.
+5. Open a thread, send a message, then disable and re-enable Wi-Fi (or background/foreground the
+   app). Verify the connection returns to connected, the thread resnapshots without duplicate
+   messages, and a queued mobile message drains once.
+
+Automated protocol coverage is available from the repository root:
+
+```bash
+pnpm test:direct-connect-smoke
+```
+
+It starts the real server routes and verifies one-time browser and shared mobile-runtime pairing,
+authenticated HTTP shell bootstrap, authenticated WebSocket snapshots/events, a client mutation,
+fresh-ticket reconnect, and resnapshot. It does not replace the physical-device network check above.
+
 ## EAS Builds
 
 Create a cloud dev-client build:
