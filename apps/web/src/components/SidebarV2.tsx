@@ -93,22 +93,22 @@ function Shelf({
   const [open, setOpen] = useState(defaultOpen);
   const contentId = useId();
   return (
-    <SidebarGroup className="px-2 py-0">
+    <SidebarGroup className="px-1 py-0">
       <button
         type="button"
         aria-controls={contentId}
         aria-expanded={open}
-        className="flex h-8 w-full items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
+        className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-[length:var(--app-sidebar-meta-font-size)] font-medium text-muted-foreground/80 hover:bg-sidebar-accent hover:text-foreground"
         onClick={() => setOpen((value) => !value)}
       >
         {open ? (
-          <ChevronDownIcon className="size-3.5" />
+          <ChevronDownIcon className="size-3.5 shrink-0" />
         ) : (
-          <ChevronRightIcon className="size-3.5" />
+          <ChevronRightIcon className="size-3.5 shrink-0" />
         )}
         {icon}
         <span>{title}</span>
-        <span className="ml-auto tabular-nums">{count}</span>
+        <span className="ml-auto tabular-nums text-muted-foreground/60">{count}</span>
       </button>
       <div id={contentId}>{open ? children : null}</div>
     </SidebarGroup>
@@ -400,9 +400,9 @@ export default function SidebarV2() {
 
   return (
     <>
-      <SidebarHeader>
-        <div className="flex items-center justify-between px-2">
-          <span className="text-sm font-semibold">Inbox</span>
+      <SidebarHeader className="pb-1">
+        <div className="flex items-center justify-between gap-1 px-2">
+          <span className="text-[length:var(--app-sidebar-font-size)] font-semibold">Inbox</span>
           <Button
             disabled={defaultProjectRef === null}
             onClick={() => {
@@ -487,9 +487,12 @@ export default function SidebarV2() {
           ) : null}
         </Shelf>
       </SidebarContent>
-      <SidebarFooter>
-        <SidebarGroupLabel className="px-2 text-[11px]">
-          Manual settling only - active work always stays visible.
+      <SidebarFooter className="py-1">
+        <SidebarGroupLabel
+          className="h-auto truncate px-2 text-[length:var(--app-sidebar-meta-font-size)] text-muted-foreground/60"
+          title="Manual settling only - active work always stays visible."
+        >
+          Manual settling only
         </SidebarGroupLabel>
       </SidebarFooter>
     </>
