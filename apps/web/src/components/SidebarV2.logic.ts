@@ -1,4 +1,4 @@
-import type { ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
+import { type ExecutionEnvironmentDescriptor, type ThreadId } from "@t3tools/contracts";
 import {
   canSnooze,
   effectiveSettled,
@@ -85,6 +85,18 @@ export interface SidebarV2Shelves {
   readonly active: readonly SidebarThreadSummary[];
   readonly snoozed: readonly SidebarThreadSummary[];
   readonly settled: readonly SidebarThreadSummary[];
+}
+
+export function resolveSidebarV2ThreadRouteTarget(
+  thread: Pick<SidebarThreadSummary, "id" | "virtualAgentRun">,
+): {
+  readonly threadId: ThreadId;
+  readonly agentTaskId: string | null;
+} {
+  const agentRun = thread.virtualAgentRun;
+  return agentRun
+    ? { threadId: agentRun.parentThreadId, agentTaskId: agentRun.taskId }
+    : { threadId: thread.id, agentTaskId: null };
 }
 
 export function classifySidebarV2Shelves(input: {

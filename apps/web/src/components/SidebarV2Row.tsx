@@ -1,4 +1,5 @@
 import {
+  ArchiveIcon,
   CheckCircle2Icon,
   CircleAlertIcon,
   Clock3Icon,
@@ -71,6 +72,7 @@ export interface SidebarV2RowProps {
   // Same contract for thread.snooze/unsnooze.
   readonly snoozeSupported: boolean;
   readonly providerEntry: ProviderInstanceEntry | null;
+  readonly onDismissAgentRun: (thread: SidebarThreadSummary) => void;
   readonly onOpen: (thread: SidebarThreadSummary) => void;
   readonly onSettle: (thread: SidebarThreadSummary) => void;
   readonly onUnsettle: (thread: SidebarThreadSummary) => void;
@@ -199,6 +201,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   settlementSupported,
   snoozeSupported,
   providerEntry,
+  onDismissAgentRun,
   onOpen,
   onSettle,
   onUnsettle,
@@ -258,6 +261,18 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   const pill = resolveThreadStatusPill({ thread });
 
   const handleOpen = useCallback(() => onOpen(thread), [onOpen, thread]);
+  const agentRun = thread.virtualAgentRun;
+  const isVirtualAgentRun = agentRun !== undefined;
+  const dismissibleAgentRun = agentRun !== undefined && agentRun.status !== "running";
+  const handleDismissAgentRun = useCallback(
+    (event: React.MouseEvent) => {
+      event.stopPropagation();
+      if (dismissibleAgentRun) {
+        onDismissAgentRun(thread);
+      }
+    },
+    [dismissibleAgentRun, onDismissAgentRun, thread],
+  );
   const handleSnooze = useCallback(
     (event: React.MouseEvent) => {
       event.stopPropagation();
@@ -305,7 +320,17 @@ export const SidebarV2Row = memo(function SidebarV2Row({
 
   const hoverActions = (
     <div className="absolute right-2 top-1.5 hidden items-center gap-0.5 group-hover/thread:flex group-focus-within/thread:flex">
-      {snoozed ? (
+      {dismissibleAgentRun ? (
+        <Button
+          aria-label={`Archive ${thread.title}`}
+          onClick={handleDismissAgentRun}
+          size="icon-xs"
+          title="Archive run"
+          variant="ghost"
+        >
+          <ArchiveIcon />
+        </Button>
+      ) : isVirtualAgentRun ? null : snoozed ? (
         snoozeSupported ? (
           <Button
             aria-label={`Wake ${thread.title}`}

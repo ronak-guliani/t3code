@@ -23,15 +23,21 @@ import {
   selectThreadByRef,
   useStore,
 } from "../store";
-import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
+import {
+  buildThreadRouteParams,
+  clearAgentRunRouteSearch,
+  parseAgentRunRouteSearch,
+  resolveThreadRouteRef,
+} from "../threadRoutes";
 import type { Project, SidebarThreadSummary } from "../types";
 import { buildProviderEntriesByEnvironment, scopedProviderInstanceKey } from "../providerInstances";
 import { useServerKeybindings, useServerProviders } from "../rpc/serverState";
-import { deriveSidebarThreadsWithAgentRuns } from "../sidebarThreadTree";
+import { agentRunDismissKey, deriveSidebarThreadsWithAgentRuns } from "../sidebarThreadTree";
 import { useUiStateStore } from "../uiStateStore";
 import {
   classifySidebarV2Shelves,
   resolveThreadLifecycleSupport,
+  resolveSidebarV2ThreadRouteTarget,
   selectSnoozeShelfBulkTargets,
   shouldReserveMacSidebarChrome,
 } from "./SidebarV2.logic";
@@ -121,6 +127,7 @@ export default function SidebarV2() {
   const activeThreadKey = activeThreadRef
     ? `${activeThreadRef.environmentId}:${activeThreadRef.threadId}`
     : null;
+  const activeAgentTaskId = parseAgentRunRouteSearch(params).agent ?? null;
   const { projects, threads } = useStore(
     useShallow((state) => ({
       projects: selectProjectsAcrossEnvironments(state),
@@ -141,6 +148,7 @@ export default function SidebarV2() {
     ),
   );
   const dismissedAgentRunKeys = useUiStateStore((state) => state.dismissedAgentRunKeys);
+  const setAgentRunDismissed = useUiStateStore((state) => state.setAgentRunDismissed);
   const threadsWithAgentRuns = useMemo(
     () =>
       deriveSidebarThreadsWithAgentRuns({
@@ -254,12 +262,26 @@ export default function SidebarV2() {
 
   const openThread = useCallback(
     (thread: SidebarThreadSummary) => {
+      const target = resolveSidebarV2ThreadRouteTarget(thread);
       void router.navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, target.threadId)),
+        search: target.agentTaskId
+          ? (previous) => ({ ...previous, agent: target.agentTaskId ?? undefined })
+          : clearAgentRunRouteSearch,
       });
     },
     [router],
+  );
+  const handleDismissAgentRun = useCallback(
+    (thread: SidebarThreadSummary) => {
+      const agentRun = thread.virtualAgentRun;
+      if (!agentRun || agentRun.status === "running") {
+        return;
+      }
+      setAgentRunDismissed(agentRunDismissKey(agentRun.parentThreadId, agentRun.taskId), true);
+    },
+    [setAgentRunDismissed],
   );
   const runAction = useCallback((action: () => Promise<void>, actionLabel: string) => {
     void action().catch((error: unknown) => {
@@ -355,6 +377,8 @@ export default function SidebarV2() {
   const renderThread = useCallback(
     (thread: SidebarThreadSummary, variant: "card" | "slim") => {
       const threadKey = `${thread.environmentId}:${thread.id}`;
+      const routeTarget = resolveSidebarV2ThreadRouteTarget(thread);
+      const isVirtualAgentRun = thread.virtualAgentRun !== undefined;
       const project = projectsByKey.get(
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
@@ -363,7 +387,13 @@ export default function SidebarV2() {
       return (
         <SidebarV2Row
           key={threadKey}
-          active={threadKey === activeThreadKey}
+          active={
+            `${thread.environmentId}:${routeTarget.threadId}` === activeThreadKey &&
+            (routeTarget.agentTaskId === null
+              ? activeAgentTaskId === null
+              : routeTarget.agentTaskId === activeAgentTaskId)
+          }
+          onDismissAgentRun={handleDismissAgentRun}
           onOpen={openThread}
           onSettle={handleSettle}
           onSnooze={handleSnooze}
@@ -382,9 +412,13 @@ export default function SidebarV2() {
           // Reopening is always allowed; only the settle direction has
           // preconditions.
           settleBlocked={!settled && !canSettle(thread, { now })}
-          settlementSupported={lifecycleSupport.get(thread.environmentId)?.settlement === true}
+          settlementSupported={
+            !isVirtualAgentRun && lifecycleSupport.get(thread.environmentId)?.settlement === true
+          }
           snoozeBlocked={!canSnooze(thread, { now })}
-          snoozeSupported={lifecycleSupport.get(thread.environmentId)?.snooze === true}
+          snoozeSupported={
+            !isVirtualAgentRun && lifecycleSupport.get(thread.environmentId)?.snooze === true
+          }
           snoozed={effectiveSnoozed(thread, { now })}
           thread={thread}
           variant={variant}
@@ -393,6 +427,8 @@ export default function SidebarV2() {
     },
     [
       activeThreadKey,
+      activeAgentTaskId,
+      handleDismissAgentRun,
       handleSettle,
       handleSnooze,
       handleUnsettle,

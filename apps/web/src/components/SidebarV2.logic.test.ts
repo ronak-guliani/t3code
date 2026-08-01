@@ -13,6 +13,7 @@ import {
   latestTurnDiffStats,
   resolveSidebarV2Status,
   resolveSidebarV2StatusLabel,
+  resolveSidebarV2ThreadRouteTarget,
   resolveThreadLifecycleSupport,
   resolveWorkingStartedAt,
   selectSnoozeShelfBulkTargets,
@@ -159,6 +160,33 @@ describe("classifySidebarV2Shelves", () => {
     expect(shelves.active).toEqual([visibleThread]);
     expect(shelves.snoozed).toEqual([]);
     expect(shelves.settled).toEqual([]);
+  });
+});
+
+describe("resolveSidebarV2ThreadRouteTarget", () => {
+  it("routes a virtual agent row to its parent and selects the agent run", () => {
+    const parentThreadId = ThreadId.make("parent-thread");
+    const target = resolveSidebarV2ThreadRouteTarget(
+      thread({
+        id: ThreadId.make("agent-run:parent-thread:agent-1"),
+        virtualAgentRun: {
+          parentThreadId,
+          taskId: "agent-1",
+          status: "completed",
+        },
+      }),
+    );
+
+    expect(target).toEqual({ threadId: parentThreadId, agentTaskId: "agent-1" });
+  });
+
+  it("routes a real thread without an agent selection", () => {
+    const realThread = thread({ id: ThreadId.make("real-thread") });
+
+    expect(resolveSidebarV2ThreadRouteTarget(realThread)).toEqual({
+      threadId: realThread.id,
+      agentTaskId: null,
+    });
   });
 });
 
