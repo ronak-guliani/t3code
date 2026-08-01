@@ -1060,20 +1060,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ) AS lifecycle_rank
           FROM projection_thread_activities AS activities
           WHERE thread_id = ${threadId}
+            AND kind IN (
+              'approval.requested',
+              'approval.resolved',
+              'provider.approval.respond.failed'
+            )
             AND json_extract(payload_json, '$.requestId') IS NOT NULL
             AND (
-              kind IN ('approval.requested', 'approval.resolved')
-              OR (
-                kind = 'provider.approval.respond.failed'
-                AND (
-                  lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
-                    LIKE '%stale pending approval request%'
-                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
-                    LIKE '%unknown pending approval request%'
-                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
-                    LIKE '%unknown pending permission request%'
-                )
-              )
+              kind <> 'provider.approval.respond.failed'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                LIKE '%stale pending approval request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                LIKE '%unknown pending approval request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                LIKE '%unknown pending permission request%'
             )
         ),
         user_input_ranked AS (
@@ -1088,18 +1088,18 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ) AS lifecycle_rank
           FROM projection_thread_activities AS activities
           WHERE thread_id = ${threadId}
+            AND kind IN (
+              'user-input.requested',
+              'user-input.resolved',
+              'provider.user-input.respond.failed'
+            )
             AND json_extract(payload_json, '$.requestId') IS NOT NULL
             AND (
-              kind IN ('user-input.requested', 'user-input.resolved')
-              OR (
-                kind = 'provider.user-input.respond.failed'
-                AND (
-                  lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
-                    LIKE '%stale pending user-input request%'
-                  OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
-                    LIKE '%unknown pending user-input request%'
-                )
-              )
+              kind <> 'provider.user-input.respond.failed'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                LIKE '%stale pending user-input request%'
+              OR lower(COALESCE(json_extract(payload_json, '$.detail'), ''))
+                LIKE '%unknown pending user-input request%'
             )
         ),
         task_ranked AS (
@@ -1114,6 +1114,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ) AS lifecycle_rank
           FROM projection_thread_activities AS activities
           WHERE thread_id = ${threadId}
+            AND kind IN ('task.started', 'task.completed')
             AND json_extract(payload_json, '$.taskId') IS NOT NULL
             AND (
               kind = 'task.completed'
