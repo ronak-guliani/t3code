@@ -45,7 +45,10 @@ import {
 import { headlessRelayClientTracingLayer } from "../cloud/relayTracing.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import {
+  readPersistedServerRuntimeState,
+  type PersistedServerRuntimeState,
+} from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
 const jsonFlag = Flag.boolean("json").pipe(
@@ -327,24 +330,40 @@ const runtimeProcessIsAlive = (pid: number): boolean => {
   }
 };
 
-export const readPreferredCloudRuntimeState = Effect.gen(function* () {
-  const config = yield* ServerConfig.ServerConfig;
-  if (process.platform === "darwin" && typeof process.getuid === "function") {
-    const canonicalBaseDir = yield* Effect.tryPromise(() =>
-      BootService.liveServiceHost.canonicalize(config.baseDir),
-    );
-    const serviceState = yield* readPersistedServerRuntimeState(
-      BootService.servicePaths({
-        homeDir: homedir(),
-        canonicalBaseDir,
-        userId: process.getuid(),
-      }).runtimeStatePath,
-    );
-    if (Option.isSome(serviceState) && runtimeProcessIsAlive(serviceState.value.pid)) {
-      return serviceState;
+export const readPreferredCloudRuntimeStateWith = (
+  probe: (state: PersistedServerRuntimeState) => Promise<boolean>,
+) =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    if (process.platform === "darwin" && typeof process.getuid === "function") {
+      const canonicalBaseDir = yield* Effect.tryPromise(() =>
+        BootService.liveServiceHost.canonicalize(config.baseDir),
+      );
+      const serviceState = yield* readPersistedServerRuntimeState(
+        BootService.servicePaths({
+          homeDir: homedir(),
+          canonicalBaseDir,
+          userId: process.getuid(),
+        }).runtimeStatePath,
+      );
+      if (
+        Option.isSome(serviceState) &&
+        runtimeProcessIsAlive(serviceState.value.pid) &&
+        (yield* Effect.tryPromise(() => probe(serviceState.value)).pipe(
+          Effect.orElseSucceed(() => false),
+        ))
+      ) {
+        return serviceState;
+      }
     }
-  }
-  return yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+    return yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+  });
+
+export const readPreferredCloudRuntimeState = readPreferredCloudRuntimeStateWith(async (state) => {
+  const response = await fetch(state.origin, {
+    signal: AbortSignal.timeout(Duration.toMillis(CLOUD_CLI_LIVE_SERVER_TIMEOUT)),
+  });
+  return response.ok;
 });
 
 const runLiveCloudUnlink = Effect.fn("cloud.cli.run_live_unlink")(function* () {

@@ -6,6 +6,8 @@ import * as Effect from "effect/Effect";
 
 import {
   liveServiceHost,
+  filesystemErrorIsAbsence,
+  lockOwnerRemainsActive,
   make,
   parseLaunchctlState,
   renderLaunchAgent,
@@ -382,6 +384,35 @@ it("bounds live lock acquisition, preserves live owners, and reclaims dead owner
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+it("treats unavailable process identity as inconclusive for a live lock owner", () => {
+  assert.isTrue(
+    lockOwnerRemainsActive({
+      pidAlive: true,
+      recordedProcessStart: "recorded",
+    }),
+  );
+  assert.isFalse(
+    lockOwnerRemainsActive({
+      pidAlive: true,
+      recordedProcessStart: "recorded",
+      currentProcessStart: "different",
+    }),
+  );
+  assert.isFalse(
+    lockOwnerRemainsActive({
+      pidAlive: false,
+      recordedProcessStart: "recorded",
+    }),
+  );
+});
+
+it("classifies only actual path absence as missing", () => {
+  assert.isTrue(filesystemErrorIsAbsence({ code: "ENOENT" }));
+  assert.isTrue(filesystemErrorIsAbsence({ code: "ENOTDIR" }));
+  assert.isFalse(filesystemErrorIsAbsence({ code: "EACCES" }));
+  assert.isFalse(filesystemErrorIsAbsence({ code: "EIO" }));
 });
 
 it("only removes live runtime state claimed by the expected pid", async () => {

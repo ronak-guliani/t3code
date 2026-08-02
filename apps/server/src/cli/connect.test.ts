@@ -23,7 +23,7 @@ import {
   executeCloudDisconnect,
   formatHeadlessAuthorizationPrompt,
   isHeadlessConnectEnvironment,
-  readPreferredCloudRuntimeState,
+  readPreferredCloudRuntimeStateWith,
   relayUnlinkResultFromStatus,
   reportCloudDisconnectResults,
 } from "./connect.ts";
@@ -143,7 +143,14 @@ it("prefers service-instance runtime discovery over shared foreground state", as
         state: state(process.pid, 3774),
       });
 
-      assert.equal(Option.getOrThrow(yield* readPreferredCloudRuntimeState).port, 3774);
+      assert.equal(
+        Option.getOrThrow(yield* readPreferredCloudRuntimeStateWith(async () => true)).port,
+        3774,
+      );
+      assert.equal(
+        Option.getOrThrow(yield* readPreferredCloudRuntimeStateWith(async () => false)).port,
+        3773,
+      );
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), baseDir).pipe(Layer.provideMerge(NodeServices.layer)),

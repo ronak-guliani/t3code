@@ -145,6 +145,11 @@ const errorCode = (cause: unknown): string | undefined =>
     ? cause.code
     : undefined;
 
+export const filesystemErrorIsAbsence = (cause: unknown): boolean => {
+  const code = errorCode(cause);
+  return code === "ENOENT" || code === "ENOTDIR";
+};
+
 const parseRuntimePid = (contents: string): number | undefined => {
   try {
     const parsed: unknown = JSON.parse(contents);
@@ -213,10 +218,27 @@ const processStartIdentity = async (pid: number): Promise<string | undefined> =>
   return result.code === 0 && !result.timedOut && identity.length > 0 ? identity : undefined;
 };
 
+export const lockOwnerRemainsActive = (input: {
+  readonly pidAlive: boolean;
+  readonly recordedProcessStart?: string;
+  readonly currentProcessStart?: string;
+}): boolean =>
+  input.pidAlive &&
+  (input.recordedProcessStart === undefined ||
+    input.currentProcessStart === undefined ||
+    input.currentProcessStart === input.recordedProcessStart);
+
 const lockOwnerIsAlive = async (owner: LockOwner): Promise<boolean> => {
-  if (!processIsAlive(owner.pid)) return false;
-  if (owner.processStart === undefined) return true;
-  return (await processStartIdentity(owner.pid)) === owner.processStart;
+  const pidAlive = processIsAlive(owner.pid);
+  const currentProcessStart =
+    pidAlive && owner.processStart !== undefined
+      ? await processStartIdentity(owner.pid)
+      : undefined;
+  return lockOwnerRemainsActive({
+    pidAlive,
+    ...(owner.processStart === undefined ? {} : { recordedProcessStart: owner.processStart }),
+    ...(currentProcessStart === undefined ? {} : { currentProcessStart }),
+  });
 };
 
 const canonicalizeWithMissingSuffix = async (input: string): Promise<string> => {
@@ -239,11 +261,15 @@ const canonicalizeWithMissingSuffix = async (input: string): Promise<string> => 
 
 export const liveServiceHost: ServiceHost = {
   canonicalize: canonicalizeWithMissingSuffix,
-  exists: async (path) =>
-    access(path, constants.F_OK).then(
-      () => true,
-      () => false,
-    ),
+  exists: async (path) => {
+    try {
+      await access(path, constants.F_OK);
+      return true;
+    } catch (cause) {
+      if (filesystemErrorIsAbsence(cause)) return false;
+      throw cause;
+    }
+  },
   read: (path) => readFile(path, "utf8"),
   writeAtomic: async (path, contents, mode) => {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
