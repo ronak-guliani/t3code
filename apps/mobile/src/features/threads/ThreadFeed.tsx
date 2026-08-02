@@ -709,7 +709,7 @@ function renderFeedEntry(
         <Text
           className={cn(
             "font-t3-medium tabular-nums text-foreground-muted",
-            entry.label.startsWith("Worked for") ? "text-[10.5px]" : "text-sm",
+            entry.foldKind === "worked" ? "text-[10.5px]" : "text-sm",
           )}
         >
           {entry.label}
