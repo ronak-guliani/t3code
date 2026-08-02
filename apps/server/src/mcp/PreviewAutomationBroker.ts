@@ -81,7 +81,6 @@ interface HostAssignment {
   readonly clientId: ClientConnection["clientId"];
   readonly connectionId: ClientConnection["connectionId"];
   readonly queue: ClientConnection["queue"];
-  readonly expiresAt: number;
   readonly tabId?: PreviewTabId;
   readonly tabSequence?: number;
 }
@@ -456,7 +455,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           Array.from(current.assignments).filter(([, assignment]) => {
             const connection = current.clients.get(assignment.clientId);
             return (
-              assignment.expiresAt > now &&
               connection?.connectionId === assignment.connectionId &&
               connection.queue === assignment.queue
             );
@@ -516,7 +514,6 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           clientId: connection.clientId,
           connectionId: connection.connectionId,
           queue: connection.queue,
-          expiresAt: input.scope.expiresAt,
           ...(canReuseAssignedTab && assigned.tabId !== undefined ? { tabId: assigned.tabId } : {}),
           ...(canReuseAssignedTab && assigned.tabSequence !== undefined
             ? { tabSequence: assigned.tabSequence }

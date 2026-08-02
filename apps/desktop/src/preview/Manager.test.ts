@@ -1,4 +1,5 @@
 import { it as effectIt } from "@effect/vitest";
+import type { DesktopPreviewRecordingFrame } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -29,7 +30,7 @@ const {
   writeImage,
 } = vi.hoisted(() => ({
   createFromPath: vi.fn((): { readonly isEmpty: () => boolean } => ({ isEmpty: () => false })),
-  fromId: vi.fn(() => null),
+  fromId: vi.fn((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
   showItemInFolder: vi.fn(),
@@ -112,6 +113,40 @@ const withManager = <A>(
     const manager = yield* PreviewManager.PreviewManager;
     return yield* use(manager);
   }).pipe(Effect.provide(layer), Effect.scoped);
+
+interface TestCapturedPreviewImage {
+  readonly toJPEG: () => Buffer;
+  readonly getSize: () => { readonly width: number; readonly height: number };
+}
+
+const makeTestPreviewWebContents = (
+  capturePage: () => Promise<TestCapturedPreviewImage>,
+  id: number,
+) =>
+  ({
+    id,
+    isDestroyed: () => false,
+    getType: () => "webview",
+    getURL: () => `https://example.com/${id}`,
+    getTitle: () => `Example ${id}`,
+    isLoading: () => false,
+    getZoomFactor: () => 1,
+    setZoomFactor: vi.fn(),
+    on: vi.fn(),
+    off: vi.fn(),
+    ipc: { on: vi.fn(), off: vi.fn() },
+    send: webviewSend,
+    navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+    setWindowOpenHandler: vi.fn(),
+    debugger: {
+      isAttached: () => false,
+      attach: vi.fn(),
+      sendCommand: vi.fn(async () => undefined),
+      on: vi.fn(),
+      off: vi.fn(),
+    },
+    capturePage,
+  }) as never;
 
 describe("PreviewManager", () => {
   beforeEach(() => {
@@ -603,6 +638,69 @@ describe("PreviewManager", () => {
           tabId: "tab_1",
           webContentsId: 42,
           cause: captureCause,
+        });
+      }),
+    ),
+  );
+
+  effectIt.effect("captures hidden recordings independently for concurrent tabs", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const firstJpeg = Buffer.from("first-recording-frame");
+        const secondJpeg = Buffer.from("second-recording-frame");
+        const firstCapturePage = vi.fn(async () => ({
+          toJPEG: () => firstJpeg,
+          getSize: () => ({ width: 800, height: 600 }),
+        }));
+        const secondCapturePage = vi.fn(async () => ({
+          toJPEG: () => secondJpeg,
+          getSize: () => ({ width: 390, height: 844 }),
+        }));
+        const webContentsById = new Map([
+          [41, makeTestPreviewWebContents(firstCapturePage, 41)],
+          [42, makeTestPreviewWebContents(secondCapturePage, 42)],
+        ]);
+        fromId.mockImplementation((id) =>
+          id === undefined ? null : (webContentsById.get(id) ?? null),
+        );
+        const frames: DesktopPreviewRecordingFrame[] = [];
+
+        yield* manager.subscribeRecordingFrames((frame) =>
+          Effect.sync(() => {
+            frames.push(frame);
+          }),
+        );
+        yield* manager.createTab("tab_1");
+        yield* manager.createTab("tab_2");
+        yield* manager.registerWebview("tab_1", 41);
+        yield* manager.registerWebview("tab_2", 42);
+        yield* Effect.all([manager.startRecording("tab_1"), manager.startRecording("tab_2")], {
+          concurrency: 2,
+          discard: true,
+        });
+
+        expect(firstCapturePage).toHaveBeenCalledOnce();
+        expect(secondCapturePage).toHaveBeenCalledOnce();
+        expect(frames).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              tabId: "tab_1",
+              data: firstJpeg.toString("base64"),
+              width: 800,
+              height: 600,
+            }),
+            expect.objectContaining({
+              tabId: "tab_2",
+              data: secondJpeg.toString("base64"),
+              width: 390,
+              height: 844,
+            }),
+          ]),
+        );
+
+        yield* Effect.all([manager.stopRecording("tab_1"), manager.stopRecording("tab_2")], {
+          concurrency: 2,
+          discard: true,
         });
       }),
     ),
