@@ -126,6 +126,7 @@ describe("create_nested_thread MCP tool", () => {
             cliCommand: cliPath,
             cliArgsPrefix: ["server.mjs"],
             cliBaseDir: "/tmp/t3-dev",
+            runtimeMode: "approval-required",
           },
           {
             project: "project-1",
@@ -152,7 +153,7 @@ describe("create_nested_thread MCP tool", () => {
         "--reasoning",
         "high",
         "--runtime-mode",
-        "full-access",
+        "approval-required",
         "--title",
         "Investigate nesting",
         "Find the root cause.",

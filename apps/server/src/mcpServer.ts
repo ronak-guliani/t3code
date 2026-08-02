@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { Effect } from "effect";
+import type { RuntimeMode } from "@t3tools/contracts";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
 
@@ -35,6 +36,7 @@ export interface McpServeOptions {
   readonly cliCommand: string;
   readonly cliArgsPrefix?: ReadonlyArray<string>;
   readonly cliBaseDir?: string;
+  readonly runtimeMode?: RuntimeMode;
 }
 
 export interface McpHttpServer {
@@ -644,7 +646,9 @@ async function createNestedThreadTool(
   if (!model) throw new Error("create_nested_thread requires a non-empty model");
   if (!reasoning) throw new Error("create_nested_thread requires a non-empty reasoning level");
 
-  const runtimeMode = asString(args.runtimeMode)?.trim() || "full-access";
+  if (!options.runtimeMode) {
+    throw new Error("create_nested_thread requires an authenticated parent runtime mode");
+  }
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
     "chat",
@@ -660,7 +664,7 @@ async function createNestedThreadTool(
     "--reasoning",
     reasoning,
     "--runtime-mode",
-    runtimeMode,
+    options.runtimeMode,
     "--title",
     title,
     prompt,
@@ -811,10 +815,6 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
         prompt: { type: "string" },
         model: { type: "string", enum: ["gpt-5.6-sol", "gpt-5.6-terra"] },
         reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
-        runtimeMode: {
-          type: "string",
-          enum: ["full-access", "approval-required", "auto-accept-edits"],
-        },
       },
       required: ["project", "title", "prompt", "model", "reasoning"],
     },

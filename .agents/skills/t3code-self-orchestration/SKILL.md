@@ -31,10 +31,10 @@ correct flavor-scoped CLI.
 
 ## Model selection
 
-- Always use the GitHub Copilot provider with `--provider copilot`; never use the Codex provider for helper threads.
+- `create_nested_thread` always uses the GitHub Copilot provider; never use a terminal CLI fallback.
 - Choose between `gpt-5.6-sol` and `gpt-5.6-terra` by assessing the task rather than using a fixed default.
 - Choose `low`, `medium`, `high`, or `xhigh` reasoning based on the task's complexity, ambiguity, and risk.
-- Pass the selected model and reasoning explicitly to every `t3 chat new` invocation.
+- Pass the selected model and reasoning explicitly to every `create_nested_thread` call.
 
 ## Prompting helper threads
 
