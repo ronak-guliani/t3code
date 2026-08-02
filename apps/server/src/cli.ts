@@ -274,6 +274,7 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  backgroundService: Config.boolean("T3CODE_BACKGROUND_SERVICE").pipe(Config.withDefault(false)),
 });
 
 interface CliServerFlags {
@@ -395,7 +396,9 @@ export const resolveServerConfig = (
     );
     const serverTracePath = env.traceFile ?? derivedPaths.serverTracePath;
     yield* fs.makeDirectory(path.dirname(serverTracePath), { recursive: true });
-    const startupPresentation = options?.startupPresentation ?? "browser";
+    const startupPresentation = env.backgroundService
+      ? "service"
+      : (options?.startupPresentation ?? "browser");
     const isHeadlessStartup = startupPresentation === "headless";
     const noBrowser = Option.getOrElse(
       resolveOptionPrecedence(

@@ -9,50 +9,64 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  cp,
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { runProcess, type ProcessRunResult } from "../processRunner.ts";
 import packageJson from "../../package.json" with { type: "json" };
+import { runProcess, type ProcessRunResult } from "../processRunner.ts";
 
-export const SERVICE_LABEL = "com.t3tools.t3code.server";
-export const SYSTEMD_UNIT = "t3code.service";
-const SERVICE_ENV_KEYS = [
-  "PATH",
-  "T3CODE_RELAY_URL",
-  "T3CODE_CLERK_PUBLISHABLE_KEY",
-  "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID",
-  "T3CODE_LOG_LEVEL",
-] as const;
+const LABEL_PREFIX = "com.t3tools.t3code.server";
+const COMMAND_TIMEOUT_MS = 15_000;
+const HEALTH_TIMEOUT_MS = 20_000;
 
 export interface ServiceInvocation {
-  readonly baseDir: string;
   readonly cwd: string;
   readonly host?: string;
   readonly port?: number;
-  readonly environment: Readonly<Record<string, string>>;
 }
 
-export interface ServicePlan {
-  readonly platform: "darwin" | "linux";
+export interface ServicePaths {
+  readonly instanceId: string;
+  readonly label: string;
+  readonly target: string;
   readonly definitionPath: string;
+  readonly instanceDir: string;
+  readonly runtimesDir: string;
+  readonly versionPath: string;
   readonly logPath: string;
+  readonly runtimeStatePath: string;
+}
+
+export interface ServicePlan extends ServicePaths {
+  readonly baseDir: string;
   readonly runtimePath: string;
   readonly arguments: ReadonlyArray<string>;
   readonly environment: Readonly<Record<string, string>>;
 }
 
-export interface ServiceStatus {
+export interface ServiceStatus extends ServicePaths {
   readonly supported: boolean;
   readonly platform: NodeJS.Platform;
   readonly installed: boolean;
   readonly enabled: boolean;
-  readonly running: boolean;
+  readonly loaded: boolean;
+  readonly processAlive: boolean;
+  readonly responsive: boolean;
+  readonly pid?: number;
   readonly current: boolean;
-  readonly definitionPath: string;
-  readonly logPath: string;
 }
 
 export class BootServiceUnsupportedError extends Schema.TaggedErrorClass<BootServiceUnsupportedError>()(
@@ -60,7 +74,7 @@ export class BootServiceUnsupportedError extends Schema.TaggedErrorClass<BootSer
   { platform: Schema.String },
 ) {
   override get message(): string {
-    return `Background services support macOS launchd and Linux systemd; '${this.platform}' is unsupported.`;
+    return `Background services currently support macOS launchd; '${this.platform}' is unsupported.`;
   }
 }
 
@@ -73,23 +87,39 @@ export class BootServiceError extends Schema.TaggedErrorClass<BootServiceError>(
   }
 }
 
+export interface SupervisorState {
+  readonly loaded: boolean;
+  readonly processAlive: boolean;
+  readonly pid?: number;
+}
+
 export interface ServiceHost {
+  readonly canonicalize: (path: string) => Promise<string>;
   readonly exists: (path: string) => Promise<boolean>;
   readonly read: (path: string) => Promise<string>;
   readonly writeAtomic: (path: string, contents: string, mode: number) => Promise<void>;
-  readonly copyRuntimeAtomic: (
-    sourceDirectory: string,
-    destinationDirectory: string,
-  ) => Promise<void>;
-  readonly remove: (path: string) => Promise<void>;
+  readonly makeDirectory: (path: string, mode: number) => Promise<void>;
+  readonly listDirectory: (path: string) => Promise<ReadonlyArray<string>>;
+  readonly copyDirectory: (source: string, destination: string) => Promise<void>;
+  readonly rename: (source: string, destination: string) => Promise<void>;
+  readonly remove: (path: string, recursive?: boolean) => Promise<void>;
+  readonly chmod: (path: string, mode: number) => Promise<void>;
   readonly run: (
     command: string,
     args: ReadonlyArray<string>,
     timeoutMs?: number,
   ) => Promise<ProcessRunResult>;
+  readonly probeRuntime: (runtimeStatePath: string, timeoutMs: number) => Promise<boolean>;
 }
 
+const sleep = (milliseconds: number) =>
+  new Promise<void>((resolvePromise) => setTimeout(resolvePromise, milliseconds));
+
 export const liveServiceHost: ServiceHost = {
+  canonicalize: async (path) => {
+    const absolute = resolve(path);
+    return realpath(absolute).catch(() => absolute);
+  },
   exists: async (path) =>
     access(path, constants.F_OK).then(
       () => true,
@@ -97,28 +127,77 @@ export const liveServiceHost: ServiceHost = {
     ),
   read: (path) => readFile(path, "utf8"),
   writeAtomic: async (path, contents, mode) => {
-    await mkdir(dirname(path), { recursive: true });
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
     await writeFile(temporary, contents, { mode });
     await rename(temporary, path);
+    await chmod(path, mode);
   },
-  copyRuntimeAtomic: async (sourceDirectory, destinationDirectory) => {
-    await mkdir(dirname(destinationDirectory), { recursive: true });
-    const temporary = `${destinationDirectory}.${process.pid}.tmp`;
-    await rm(temporary, { force: true, recursive: true });
-    await cp(sourceDirectory, temporary, { recursive: true, force: true });
-    await rm(destinationDirectory, { force: true, recursive: true });
-    await rename(temporary, destinationDirectory);
+  makeDirectory: async (path, mode) => {
+    await mkdir(path, { recursive: true, mode });
+    await chmod(path, mode);
   },
-  remove: (path) => rm(path, { force: true }),
+  listDirectory: async (path) => {
+    const { readdir } = await import("node:fs/promises");
+    return readdir(path);
+  },
+  copyDirectory: async (source, destination) => {
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+  },
+  rename,
+  remove: (path, recursive = false) => rm(path, { force: true, recursive }),
+  chmod,
   run: (command, args, timeoutMs) =>
     runProcess(command, args, {
       allowNonZeroExit: true,
-      timeoutMs: timeoutMs ?? 15_000,
+      timeoutMs: timeoutMs ?? COMMAND_TIMEOUT_MS,
       outputMode: "truncate",
       maxBufferBytes: 256 * 1024,
     }),
+  probeRuntime: async (runtimeStatePath, timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const state = JSON.parse(await readFile(runtimeStatePath, "utf8")) as {
+          readonly origin?: unknown;
+        };
+        if (typeof state.origin === "string") {
+          const response = await fetch(state.origin, { signal: AbortSignal.timeout(1_000) });
+          if (response.ok) return true;
+        }
+      } catch {
+        // Startup races are expected; retry until the bounded deadline.
+      }
+      await sleep(100);
+    }
+    return false;
+  },
 };
+
+export const serviceInstanceId = (canonicalBaseDir: string): string =>
+  createHash("sha256").update(canonicalBaseDir).digest("hex").slice(0, 12);
+
+export function servicePaths(input: {
+  readonly homeDir: string;
+  readonly canonicalBaseDir: string;
+  readonly userId: number;
+}): ServicePaths {
+  const instanceId = serviceInstanceId(input.canonicalBaseDir);
+  const label = `${LABEL_PREFIX}.${instanceId}`;
+  const instanceDir = join(input.homeDir, ".t3", "services", instanceId);
+  return {
+    instanceId,
+    label,
+    target: `gui/${input.userId}/${label}`,
+    definitionPath: join(input.homeDir, "Library", "LaunchAgents", `${label}.plist`),
+    instanceDir,
+    runtimesDir: join(instanceDir, "runtimes"),
+    versionPath: join(instanceDir, "version"),
+    logPath: join(instanceDir, "service.log"),
+    runtimeStatePath: join(input.canonicalBaseDir, "userdata", "server-runtime.json"),
+  };
+}
 
 const xml = (value: string) =>
   value
@@ -128,13 +207,11 @@ const xml = (value: string) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&apos;");
 
-const systemdQuote = (value: string) =>
-  `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
-
 export function renderLaunchAgent(plan: ServicePlan): string {
-  const strings = (values: ReadonlyArray<string>) =>
-    values.map((value) => `    <string>${xml(value)}</string>`).join("\n");
-  const environment = Object.entries(plan.environment)
+  const argumentsXml = plan.arguments
+    .map((value) => `    <string>${xml(value)}</string>`)
+    .join("\n");
+  const environmentXml = Object.entries(plan.environment)
     .flatMap(([key, value]) => [`    <key>${xml(key)}</key>`, `    <string>${xml(value)}</string>`])
     .join("\n");
   return [
@@ -143,14 +220,14 @@ export function renderLaunchAgent(plan: ServicePlan): string {
     '<plist version="1.0">',
     "<dict>",
     "  <key>Label</key>",
-    `  <string>${SERVICE_LABEL}</string>`,
+    `  <string>${plan.label}</string>`,
     "  <key>ProgramArguments</key>",
     "  <array>",
-    strings(plan.arguments),
+    argumentsXml,
     "  </array>",
     "  <key>EnvironmentVariables</key>",
     "  <dict>",
-    environment,
+    environmentXml,
     "  </dict>",
     "  <key>WorkingDirectory</key>",
     `  <string>${xml(plan.environment.T3CODE_SERVICE_CWD ?? homedir())}</string>`,
@@ -160,6 +237,8 @@ export function renderLaunchAgent(plan: ServicePlan): string {
     "  <true/>",
     "  <key>ThrottleInterval</key>",
     "  <integer>5</integer>",
+    "  <key>Umask</key>",
+    "  <integer>63</integer>",
     "  <key>StandardOutPath</key>",
     `  <string>${xml(plan.logPath)}</string>`,
     "  <key>StandardErrorPath</key>",
@@ -170,31 +249,42 @@ export function renderLaunchAgent(plan: ServicePlan): string {
   ].join("\n");
 }
 
-export function renderSystemdUnit(plan: ServicePlan): string {
-  return [
-    "[Unit]",
-    "Description=T3 Code server",
-    "StartLimitIntervalSec=300",
-    "StartLimitBurst=5",
-    "",
-    "[Service]",
-    "Type=simple",
-    `WorkingDirectory=${systemdQuote(plan.environment.T3CODE_SERVICE_CWD ?? homedir())}`,
-    ...Object.entries(plan.environment).map(
-      ([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`,
-    ),
-    `ExecStart=${plan.arguments.map(systemdQuote).join(" ")}`,
-    "KillMode=control-group",
-    "Restart=always",
-    "RestartSec=5",
-    `StandardOutput=append:${plan.logPath.replaceAll("%", "%%")}`,
-    `StandardError=append:${plan.logPath.replaceAll("%", "%%")}`,
-    "",
-    "[Install]",
-    "WantedBy=default.target",
-    "",
-  ].join("\n");
+export function parseLaunchctlState(output: string): SupervisorState {
+  const pidMatch = /^\s*pid\s*=\s*(\d+)\s*$/m.exec(output);
+  const pid = pidMatch === null ? undefined : Number(pidMatch[1]);
+  const stateMatch = /^\s*state\s*=\s*(\S+)\s*$/m.exec(output);
+  return {
+    loaded: true,
+    processAlive: pid !== undefined && stateMatch?.[1] === "running",
+    ...(pid === undefined ? {} : { pid }),
+  };
 }
+
+const attempt = <A>(operation: string, run: () => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (cause) => new BootServiceError({ operation, cause }),
+  });
+
+export const resolvePackagedDist = (entryPath: string, host: ServiceHost) =>
+  attempt("resolving the packaged CLI", async () => {
+    const resolvedEntry = await host.canonicalize(entryPath);
+    if (resolvedEntry.includes("/_npx/") || resolvedEntry.includes("/.bun/install/cache/")) {
+      throw new Error("Transient package-manager cache entrypoints cannot own a durable service.");
+    }
+    if (!resolvedEntry.endsWith("/dist/bin.mjs")) {
+      throw new Error(`Expected a packaged dist/bin.mjs entrypoint, received ${resolvedEntry}.`);
+    }
+    const distDir = dirname(resolvedEntry);
+    const entries = await Promise.all([
+      host.exists(resolvedEntry),
+      host.exists(join(distDir, "client", "index.html")),
+    ]);
+    if (!entries.every(Boolean)) {
+      throw new Error("The packaged CLI is missing dist/bin.mjs or dist/client/index.html.");
+    }
+    return { entryPath: resolvedEntry, distDir };
+  });
 
 export class BootService extends Context.Service<
   BootService,
@@ -212,13 +302,8 @@ export class BootService extends Context.Service<
   }
 >()("t3/cloud/BootService") {}
 
-const attempt = <A>(operation: string, run: () => Promise<A>) =>
-  Effect.tryPromise({
-    try: run,
-    catch: (cause) => new BootServiceError({ operation, cause }),
-  });
-
-export const make = Effect.fn("cloud.bootService.make")(function* (input?: {
+export const make = Effect.fn("cloud.bootService.make")(function* (input: {
+  readonly baseDir: string;
   readonly host?: ServiceHost;
   readonly platform?: NodeJS.Platform;
   readonly homeDir?: string;
@@ -227,310 +312,268 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input?: {
   readonly cliEntryPath?: string;
   readonly processEnvironment?: NodeJS.ProcessEnv;
 }) {
-  const host = input?.host ?? liveServiceHost;
-  const platform = input?.platform ?? (yield* HostProcessPlatform);
-  const executablePath = input?.executablePath ?? (yield* HostProcessExecutablePath);
+  const host = input.host ?? liveServiceHost;
+  const platform = input.platform ?? (yield* HostProcessPlatform);
+  const executablePath = input.executablePath ?? (yield* HostProcessExecutablePath);
   const processArguments = yield* HostProcessArguments;
-  const cliEntryPath = resolve(input?.cliEntryPath ?? processArguments[1] ?? "");
-  const processEnvironment = input?.processEnvironment ?? (yield* HostProcessEnvironment);
-  const userId = input?.userId ?? (yield* HostProcessUserId);
-  const homeDir = input?.homeDir ?? homedir();
-  const baseRuntimeDir = join(homeDir, ".t3", "runtime", "background-service");
-  const runtimeDirectory = join(baseRuntimeDir, "dist");
-  const runtimePath = join(runtimeDirectory, "bin.mjs");
-  const versionPath = join(baseRuntimeDir, "version");
-  const launchDefinition = join(homeDir, "Library", "LaunchAgents", `${SERVICE_LABEL}.plist`);
-  const systemdDefinition = join(homeDir, ".config", "systemd", "user", SYSTEMD_UNIT);
-  const definitionPath = platform === "darwin" ? launchDefinition : systemdDefinition;
-  const logPath = join(baseRuntimeDir, "service.log");
-  const launchTarget = userId === null ? null : `gui/${userId}/${SERVICE_LABEL}`;
+  const cliEntryPath = input.cliEntryPath ?? processArguments[1] ?? "";
+  const processEnvironment = input.processEnvironment ?? (yield* HostProcessEnvironment);
+  const userId = input.userId ?? (yield* HostProcessUserId);
+  const homeDir = input.homeDir ?? homedir();
+  const canonicalBaseDir = yield* attempt("canonicalizing the base directory", () =>
+    host.canonicalize(input.baseDir),
+  );
+  const paths = userId === null ? null : servicePaths({ homeDir, canonicalBaseDir, userId });
 
   const requireSupported = Effect.gen(function* () {
-    if (
-      (platform !== "darwin" && platform !== "linux") ||
-      (platform === "darwin" && launchTarget === null)
-    ) {
+    if (platform !== "darwin" || paths === null) {
       return yield* new BootServiceUnsupportedError({ platform });
     }
   });
-  const runChecked = (operation: string, command: string, args: ReadonlyArray<string>) =>
-    attempt(operation, () => host.run(command, args)).pipe(
+  const runChecked = (
+    operation: string,
+    args: ReadonlyArray<string>,
+    acceptableCodes: ReadonlyArray<number> = [0],
+  ) =>
+    attempt(operation, () => host.run("/bin/launchctl", args, COMMAND_TIMEOUT_MS)).pipe(
       Effect.flatMap((result) =>
-        result.code === 0
+        result.code !== null && acceptableCodes.includes(result.code)
           ? Effect.succeed(result)
           : Effect.fail(new BootServiceError({ operation, cause: result.stderr || result.stdout })),
       ),
     );
-  const isRunning = attempt("checking service state", async () => {
-    if (platform === "darwin") {
-      if (launchTarget === null) return false;
-      return (await host.run("/bin/launchctl", ["print", launchTarget])).code === 0;
-    }
-    if (platform === "linux") {
-      return (
-        (await host.run("systemctl", ["--user", "is-active", "--quiet", SYSTEMD_UNIT])).code === 0
-      );
-    }
-    return false;
+  const supervisorState = Effect.gen(function* () {
+    if (paths === null) return { loaded: false, processAlive: false } satisfies SupervisorState;
+    const result = yield* attempt("checking launchd state", () =>
+      host.run("/bin/launchctl", ["print", paths.target], COMMAND_TIMEOUT_MS),
+    );
+    return result.code === 0
+      ? parseLaunchctlState(result.stdout)
+      : ({ loaded: false, processAlive: false } satisfies SupervisorState);
   });
-  const isEnabled = attempt("checking service enablement", async () => {
-    if (platform === "darwin") {
-      if (userId === null) return false;
-      const disabled = await host.run("/bin/launchctl", ["print-disabled", `gui/${userId}`]);
-      return (
-        disabled.code === 0 &&
-        !disabled.stdout
-          .split("\n")
-          .some((line) => line.includes(SERVICE_LABEL) && line.includes("=> true"))
-      );
-    }
-    if (platform === "linux") {
-      return (
-        (await host.run("systemctl", ["--user", "is-enabled", "--quiet", SYSTEMD_UNIT])).code === 0
-      );
-    }
-    return false;
+  const enabled = Effect.gen(function* () {
+    if (paths === null || userId === null) return false;
+    const result = yield* attempt("checking launchd enablement", () =>
+      host.run("/bin/launchctl", ["print-disabled", `gui/${userId}`], COMMAND_TIMEOUT_MS),
+    );
+    return (
+      result.code === 0 &&
+      !result.stdout
+        .split("\n")
+        .some((line) => line.includes(paths.label) && line.includes("=> true"))
+    );
   });
-  const control = (action: "start" | "restart" | "stop") =>
-    Effect.gen(function* () {
-      yield* requireSupported;
-      if (platform === "darwin") {
-        if (launchTarget === null) return;
-        if (action === "stop") {
-          if (yield* isRunning) {
-            yield* runChecked("stopping launchd service", "/bin/launchctl", [
-              "bootout",
-              launchTarget,
-            ]);
-          }
-          return;
-        }
-        if (!(yield* isRunning)) {
-          yield* runChecked("loading launchd service", "/bin/launchctl", [
-            "bootstrap",
-            `gui/${userId}`,
-            definitionPath,
-          ]);
-        }
-        yield* runChecked(`${action}ing launchd service`, "/bin/launchctl", [
-          "kickstart",
-          ...(action === "restart" ? ["-k"] : []),
-          launchTarget,
-        ]);
-        return;
-      }
-      yield* runChecked(`${action}ing systemd service`, "systemctl", [
-        "--user",
-        action,
-        SYSTEMD_UNIT,
+  const stopLoaded = Effect.gen(function* () {
+    if (paths === null) return;
+    yield* runChecked("stopping launchd service", ["bootout", paths.target], [0, 3, 113]);
+  });
+  const startAndProbe = Effect.gen(function* () {
+    if (paths === null || userId === null) return;
+    yield* attempt("clearing stale runtime state", () => host.remove(paths.runtimeStatePath));
+    const current = yield* supervisorState;
+    if (!current.loaded) {
+      yield* runChecked("loading launchd service", [
+        "bootstrap",
+        `gui/${userId}`,
+        paths.definitionPath,
       ]);
-    });
+    }
+    yield* runChecked("starting launchd service", ["kickstart", "-k", paths.target]);
+    const responsive = yield* attempt("waiting for the server health probe", () =>
+      host.probeRuntime(paths.runtimeStatePath, HEALTH_TIMEOUT_MS),
+    );
+    if (!responsive) {
+      const state = yield* supervisorState;
+      return yield* new BootServiceError({
+        operation: "waiting for the background server to become responsive",
+        cause: state.processAlive
+          ? "The process is alive but its HTTP endpoint did not become responsive."
+          : "launchd loaded the job but no server process remained alive.",
+      });
+    }
+  });
 
   const status = Effect.gen(function* () {
-    const supported = platform === "darwin" ? launchTarget !== null : platform === "linux";
+    const fallbackPaths = paths ?? servicePaths({ homeDir, canonicalBaseDir, userId: userId ?? 0 });
     const installed = yield* attempt("checking service definition", () =>
-      host.exists(definitionPath),
+      host.exists(fallbackPaths.definitionPath),
     );
-    const [running, enabled] =
-      supported && installed
-        ? yield* Effect.all([isRunning, isEnabled])
-        : ([false, false] as const);
-    if (!installed) {
-      return {
-        supported,
-        platform,
-        installed,
-        enabled,
-        running,
-        current: false,
-        definitionPath,
-        logPath,
-      };
-    }
-    const definition = yield* attempt("reading service definition", () =>
-      host.read(definitionPath),
+    const state =
+      platform === "darwin" && paths !== null
+        ? yield* supervisorState
+        : ({ loaded: false, processAlive: false } satisfies SupervisorState);
+    const responsive =
+      state.processAlive &&
+      (yield* attempt("probing the background server", () =>
+        host.probeRuntime(fallbackPaths.runtimeStatePath, 1_000),
+      ));
+    const versionExists = yield* attempt("checking service version", () =>
+      host.exists(fallbackPaths.versionPath),
     );
-    const [runtimeExists, installedVersion] = yield* Effect.all([
-      attempt("checking service runtime", () => host.exists(runtimePath)),
-      attempt("checking service version", async () =>
-        (await host.exists(versionPath)) ? await host.read(versionPath) : "",
-      ),
-    ]);
+    const installedVersion = versionExists
+      ? yield* attempt("reading service version", () => host.read(fallbackPaths.versionPath))
+      : "";
+    const definition = installed
+      ? yield* attempt("reading service definition", () => host.read(fallbackPaths.definitionPath))
+      : "";
     return {
-      supported,
+      ...fallbackPaths,
+      supported: platform === "darwin" && paths !== null,
       platform,
       installed,
-      enabled,
-      running,
+      enabled: platform === "darwin" && paths !== null ? yield* enabled : false,
+      loaded: state.loaded,
+      processAlive: state.processAlive,
+      responsive,
+      ...(state.pid === undefined ? {} : { pid: state.pid }),
       current:
-        runtimeExists &&
         installedVersion.trim() === packageJson.version &&
-        definition.includes(runtimePath),
-      definitionPath,
-      logPath,
-    };
+        definition.includes(fallbackPaths.instanceId),
+    } satisfies ServiceStatus;
   });
 
   return BootService.of({
     install: (invocation) =>
       Effect.gen(function* () {
         yield* requireSupported;
-        const environment = Object.fromEntries(
-          SERVICE_ENV_KEYS.flatMap((key) => {
-            const value = processEnvironment[key];
-            return value === undefined ? [] : [[key, value]];
-          }),
+        const activePaths = paths!;
+        const packaged = yield* resolvePackagedDist(cliEntryPath, host);
+        const candidateDir = join(
+          activePaths.runtimesDir,
+          `${packageJson.version}-${Date.now().toString(36)}`,
         );
-        const arguments_ = [
-          executablePath,
-          runtimePath,
-          "serve",
-          "--base-dir",
-          invocation.baseDir,
-          ...(invocation.host === undefined ? [] : ["--host", invocation.host]),
-          ...(invocation.port === undefined ? [] : ["--port", String(invocation.port)]),
-          invocation.cwd,
-        ];
-        const plan: ServicePlan = {
-          platform: platform === "darwin" ? "darwin" : "linux",
-          definitionPath,
-          logPath,
-          runtimePath,
-          arguments: arguments_,
-          environment: {
-            ...environment,
-            ...invocation.environment,
-            T3CODE_HOME: invocation.baseDir,
-            T3CODE_NO_BROWSER: "true",
-            T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
-            T3CODE_SERVICE_CWD: invocation.cwd,
-          },
-        };
-        yield* attempt("copying the packaged CLI", () =>
-          host.copyRuntimeAtomic(dirname(cliEntryPath), runtimeDirectory),
+        const candidateRuntime = join(candidateDir, "bin.mjs");
+        const previousDefinitionExists = yield* attempt(
+          "checking previous service definition",
+          () => host.exists(activePaths.definitionPath),
         );
-        yield* attempt("recording the packaged CLI version", () =>
-          host.writeAtomic(versionPath, `${packageJson.version}\n`, 0o600),
-        );
-        yield* attempt("writing service definition", () =>
-          host.writeAtomic(
-            definitionPath,
-            platform === "darwin" ? renderLaunchAgent(plan) : renderSystemdUnit(plan),
-            0o600,
-          ),
-        );
-        if (platform === "darwin") {
-          if (yield* isRunning) {
-            yield* runChecked("unloading the previous launchd service", "/bin/launchctl", [
-              "bootout",
-              launchTarget!,
-            ]);
-          }
-          yield* runChecked("enabling launchd service", "/bin/launchctl", [
-            "enable",
-            launchTarget!,
-          ]);
-          yield* runChecked("loading launchd service", "/bin/launchctl", [
-            "bootstrap",
-            `gui/${userId}`,
-            definitionPath,
-          ]);
-          yield* runChecked("starting launchd service", "/bin/launchctl", [
-            "kickstart",
-            "-k",
-            launchTarget!,
-          ]);
-        } else {
-          yield* runChecked("reloading systemd units", "systemctl", ["--user", "daemon-reload"]);
-          yield* runChecked("enabling systemd service", "systemctl", [
-            "--user",
-            "enable",
-            SYSTEMD_UNIT,
-          ]);
-          yield* runChecked("enabling user lingering", "loginctl", ["enable-linger"]);
-          yield* runChecked("starting systemd service", "systemctl", [
-            "--user",
-            "restart",
-            SYSTEMD_UNIT,
-          ]);
+        const previousDefinition = previousDefinitionExists
+          ? yield* attempt("reading previous service definition", () =>
+              host.read(activePaths.definitionPath),
+            )
+          : undefined;
+        const previousState = yield* supervisorState;
+        const previouslyEnabled = yield* enabled;
+        yield* attempt("creating private service directories", async () => {
+          await host.makeDirectory(activePaths.instanceDir, 0o700);
+          await host.makeDirectory(activePaths.runtimesDir, 0o700);
+        });
+        const copied = yield* attempt("copying the packaged runtime", () =>
+          host.copyDirectory(packaged.distDir, candidateDir),
+        ).pipe(Effect.exit);
+        if (copied._tag === "Failure") {
+          yield* attempt("removing partial runtime candidate", () =>
+            host.remove(candidateDir, true),
+          ).pipe(Effect.ignore);
+          return yield* Effect.failCause(copied.cause);
         }
+        yield* attempt("securing the packaged runtime", () => host.chmod(candidateDir, 0o700));
+        const environment = {
+          PATH: processEnvironment.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+          T3CODE_HOME: canonicalBaseDir,
+          T3CODE_NO_BROWSER: "true",
+          T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
+          T3CODE_BACKGROUND_SERVICE: "true",
+          T3CODE_SERVICE_CWD: resolve(invocation.cwd),
+        };
+        const plan: ServicePlan = {
+          ...activePaths,
+          baseDir: canonicalBaseDir,
+          runtimePath: candidateRuntime,
+          arguments: [
+            executablePath,
+            candidateRuntime,
+            "serve",
+            "--base-dir",
+            canonicalBaseDir,
+            ...(invocation.host === undefined ? [] : ["--host", invocation.host]),
+            ...(invocation.port === undefined ? [] : ["--port", String(invocation.port)]),
+            resolve(invocation.cwd),
+          ],
+          environment,
+        };
+        const definition = renderLaunchAgent(plan);
+        const commit = Effect.gen(function* () {
+          yield* attempt("writing the launchd definition", () =>
+            host.writeAtomic(activePaths.definitionPath, definition, 0o600),
+          );
+          yield* runChecked("enabling launchd service", ["enable", activePaths.target]);
+          yield* stopLoaded;
+          yield* startAndProbe;
+          yield* attempt("recording the active service version", () =>
+            host.writeAtomic(activePaths.versionPath, `${packageJson.version}\n`, 0o600),
+          );
+          yield* attempt("securing the service log", async () => {
+            if (await host.exists(activePaths.logPath))
+              await host.chmod(activePaths.logPath, 0o600);
+          });
+        });
+        const committed = yield* commit.pipe(Effect.exit);
+        if (committed._tag === "Failure") {
+          yield* stopLoaded.pipe(Effect.ignore);
+          yield* attempt("removing failed runtime candidate", () =>
+            host.remove(candidateDir, true),
+          ).pipe(Effect.ignore);
+          if (previousDefinition === undefined) {
+            yield* attempt("removing failed service definition", () =>
+              host.remove(activePaths.definitionPath),
+            ).pipe(Effect.ignore);
+          } else {
+            yield* attempt("restoring the previous service definition", () =>
+              host.writeAtomic(activePaths.definitionPath, previousDefinition, 0o600),
+            ).pipe(Effect.ignore);
+            yield* runChecked(
+              "restoring launchd enablement",
+              [previouslyEnabled ? "enable" : "disable", activePaths.target],
+              [0, 3, 113],
+            ).pipe(Effect.ignore);
+            if (previousState.loaded) {
+              yield* startAndProbe.pipe(Effect.ignore);
+            }
+          }
+          return yield* Effect.failCause(committed.cause);
+        }
+        yield* attempt("pruning inactive service runtimes", async () => {
+          const entries = await host.listDirectory(activePaths.runtimesDir);
+          await Promise.all(
+            entries
+              .filter((entry) => join(activePaths.runtimesDir, entry) !== candidateDir)
+              .map((entry) => host.remove(join(activePaths.runtimesDir, entry), true)),
+          );
+        });
         return plan;
       }),
     status,
-    start: control("start"),
-    restart: control("restart"),
-    stop: control("stop"),
-    enable: Effect.gen(function* () {
-      yield* requireSupported;
-      if (platform === "darwin") {
-        yield* runChecked("enabling launchd service", "/bin/launchctl", [
-          "enable",
-          `gui/${userId}/${SERVICE_LABEL}`,
-        ]);
-        yield* control("start");
-      } else {
-        yield* runChecked("enabling systemd service", "systemctl", [
-          "--user",
-          "enable",
-          "--now",
-          SYSTEMD_UNIT,
-        ]);
-      }
-    }),
-    disable: Effect.gen(function* () {
-      yield* requireSupported;
-      if (platform === "darwin") {
-        if (yield* isRunning) {
-          yield* runChecked("stopping launchd service", "/bin/launchctl", [
-            "bootout",
-            launchTarget!,
-          ]);
-        }
-        yield* runChecked("disabling launchd service", "/bin/launchctl", [
-          "disable",
-          launchTarget!,
-        ]);
-      } else {
-        yield* runChecked("disabling systemd service", "systemctl", [
-          "--user",
-          "disable",
-          "--now",
-          SYSTEMD_UNIT,
-        ]);
-      }
-    }),
+    start: requireSupported.pipe(Effect.andThen(startAndProbe)),
+    restart: requireSupported.pipe(Effect.andThen(stopLoaded), Effect.andThen(startAndProbe)),
+    stop: requireSupported.pipe(Effect.andThen(stopLoaded)),
+    enable: requireSupported.pipe(
+      Effect.andThen(runChecked("enabling launchd service", ["enable", paths!.target])),
+      Effect.andThen(startAndProbe),
+    ),
+    disable: requireSupported.pipe(
+      Effect.andThen(stopLoaded),
+      Effect.andThen(runChecked("disabling launchd service", ["disable", paths!.target])),
+    ),
     uninstall: Effect.gen(function* () {
       yield* requireSupported;
-      const installed = yield* attempt("checking service definition", () =>
-        host.exists(definitionPath),
+      const activePaths = paths!;
+      const owned = yield* Effect.all([
+        attempt("checking launchd definition", () => host.exists(activePaths.definitionPath)),
+        attempt("checking service artifacts", () => host.exists(activePaths.instanceDir)),
+      ]);
+      yield* stopLoaded;
+      yield* runChecked("disabling launchd service", ["disable", activePaths.target], [0, 3, 113]);
+      yield* attempt("removing launchd definition", () => host.remove(activePaths.definitionPath));
+      yield* attempt("removing service artifacts", () =>
+        host.remove(activePaths.instanceDir, true),
       );
-      if (!installed) return false;
-      if (platform === "darwin") {
-        if (yield* isRunning) {
-          yield* runChecked("stopping launchd service", "/bin/launchctl", [
-            "bootout",
-            launchTarget!,
-          ]);
-        }
-        yield* runChecked("clearing launchd disabled state", "/bin/launchctl", [
-          "enable",
-          launchTarget!,
-        ]);
-      } else {
-        yield* runChecked("disabling systemd service", "systemctl", [
-          "--user",
-          "disable",
-          "--now",
-          SYSTEMD_UNIT,
-        ]);
-      }
-      yield* attempt("removing service definition", () => host.remove(definitionPath));
-      if (platform === "linux") {
-        yield* runChecked("reloading systemd units", "systemctl", ["--user", "daemon-reload"]);
-      }
-      return true;
+      yield* attempt("removing stale runtime state", () =>
+        host.remove(activePaths.runtimeStatePath),
+      );
+      return owned.some(Boolean);
     }),
   });
 });
 
-export const layer = Layer.effect(BootService, make());
+export const layer = (baseDir: string) => Layer.effect(BootService, make({ baseDir }));

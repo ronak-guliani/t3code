@@ -792,10 +792,15 @@ const connectSetupCommand = Command.make("connect", {
         const identity = yield* authorizeCli(flags);
         yield* CliState.setCliDesiredCloudLink(true);
         yield* Console.log(`Connected${identity ? ` as ${identity}` : ""}.`);
+        const config = yield* ServerConfig.ServerConfig;
         const background = yield* recoverServiceOnboardingOffer(
           offerServiceDuringOnboarding({
-            baseDir: Option.getOrUndefined(flags.baseDir),
-          }).pipe(Effect.provide(Layer.effect(BootService.BootService, BootService.make()))),
+            baseDir: config.baseDir,
+          }).pipe(
+            Effect.provide(
+              Layer.effect(BootService.BootService, BootService.make({ baseDir: config.baseDir })),
+            ),
+          ),
         );
         if (!background) {
           yield* Console.log("Start T3 to provision this environment.");

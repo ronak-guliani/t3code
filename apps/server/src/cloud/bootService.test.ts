@@ -3,9 +3,10 @@ import * as Effect from "effect/Effect";
 
 import {
   make,
+  parseLaunchctlState,
   renderLaunchAgent,
-  renderSystemdUnit,
-  SERVICE_LABEL,
+  resolvePackagedDist,
+  servicePaths,
   type ServiceHost,
   type ServicePlan,
 } from "./bootService.ts";
@@ -21,163 +22,292 @@ const result = (code = 0, stdout = "", stderr = ""): ProcessRunResult => ({
 
 const makeHost = () => {
   const files = new Map<string, string>();
+  const directories = new Set<string>();
+  const canonical = new Map<string, string>();
+  const modes = new Map<string, number>();
   const commands: Array<{ command: string; args: ReadonlyArray<string> }> = [];
   let loaded = false;
   let disabled = false;
+  let pid = 0;
+  let probe = true;
+  let failCopy = false;
   const host: ServiceHost = {
-    exists: async (path) => files.has(path),
+    canonicalize: async (path) => canonical.get(path) ?? path,
+    exists: async (path) => files.has(path) || directories.has(path),
     read: async (path) => {
       const value = files.get(path);
       if (value === undefined) throw new Error(`missing ${path}`);
       return value;
     },
-    writeAtomic: async (path, contents) => {
+    writeAtomic: async (path, contents, mode) => {
       files.set(path, contents);
+      modes.set(path, mode);
     },
-    copyRuntimeAtomic: async (_source, destination) => {
+    makeDirectory: async (path, mode) => {
+      directories.add(path);
+      modes.set(path, mode);
+    },
+    listDirectory: async (path) =>
+      [...directories]
+        .filter((entry) => entry.startsWith(`${path}/`))
+        .map((entry) => entry.slice(path.length + 1).split("/")[0]!)
+        .filter((entry, index, entries) => entries.indexOf(entry) === index),
+    copyDirectory: async (_source, destination) => {
+      if (failCopy) throw new Error("copy failed");
+      directories.add(destination);
       files.set(`${destination}/bin.mjs`, "bundle");
+      files.set(`${destination}/client/index.html`, "client");
     },
-    remove: async (path) => {
+    rename: async (source, destination) => {
+      const value = files.get(source);
+      if (value !== undefined) files.set(destination, value);
+      files.delete(source);
+    },
+    remove: async (path, recursive) => {
       files.delete(path);
+      directories.delete(path);
+      if (recursive) {
+        for (const key of files.keys()) if (key.startsWith(`${path}/`)) files.delete(key);
+        for (const key of directories) if (key.startsWith(`${path}/`)) directories.delete(key);
+      }
+    },
+    chmod: async (path, mode) => {
+      modes.set(path, mode);
+      directories.add(path);
     },
     run: async (command, args) => {
       commands.push({ command, args });
-      if (command === "/bin/launchctl" && args[0] === "print") return result(loaded ? 0 : 113);
-      if (command === "/bin/launchctl" && args[0] === "print-disabled") {
-        return result(0, disabled ? `"${SERVICE_LABEL}" => true\n` : "");
+      if (args[0] === "print") {
+        return loaded
+          ? result(0, `state = ${pid > 0 ? "running" : "waiting"}\npid = ${pid}\n`)
+          : result(113);
       }
-      if (command === "/bin/launchctl" && args[0] === "bootstrap") loaded = true;
-      if (command === "/bin/launchctl" && args[0] === "bootout") loaded = false;
-      if (command === "/bin/launchctl" && args[0] === "disable") disabled = true;
-      if (command === "/bin/launchctl" && args[0] === "enable") disabled = false;
-      if (command === "systemctl" && args[1] === "is-active") return result(loaded ? 0 : 3);
-      if (command === "systemctl" && args[1] === "is-enabled") return result(disabled ? 1 : 0);
-      if (command === "systemctl" && ["restart", "start"].includes(args[1] ?? "")) loaded = true;
-      if (command === "systemctl" && args.includes("disable")) {
+      if (args[0] === "print-disabled") {
+        return result(0, disabled ? `"${args[1]}" => true\n` : "");
+      }
+      if (args[0] === "bootstrap") loaded = true;
+      if (args[0] === "bootout") {
         loaded = false;
-        disabled = true;
+        pid = 0;
       }
-      if (command === "systemctl" && args.includes("enable")) disabled = false;
-      if (command === "systemctl" && args[1] === "stop") loaded = false;
+      if (args[0] === "kickstart") {
+        loaded = true;
+        pid = 4321;
+      }
+      if (args[0] === "disable") disabled = true;
+      if (args[0] === "enable") disabled = false;
       return result();
     },
+    probeRuntime: async () => probe,
   };
-  return { host, files, commands };
+  return {
+    host,
+    files,
+    directories,
+    canonical,
+    modes,
+    commands,
+    setProbe: (value: boolean) => {
+      probe = value;
+    },
+    setFailCopy: (value: boolean) => {
+      failCopy = value;
+    },
+  };
 };
 
-const plan: ServicePlan = {
-  platform: "darwin",
-  definitionPath: "/Users/me/Library/LaunchAgents/test.plist",
-  logPath: "/Users/me/.t3/runtime/background-service/service.log",
-  runtimePath: "/Users/me/.t3/runtime/background-service/dist/bin.mjs",
-  arguments: ["/usr/bin/node", "/Users/me/.t3/runtime/background-service/dist/bin.mjs", "serve"],
-  environment: {
-    T3CODE_HOME: "/Users/me/.t3",
-    T3CODE_SERVICE_CWD: "/Users/me/code",
-  },
+const seedPackage = (fake: ReturnType<typeof makeHost>, realEntry: string) => {
+  fake.files.set(realEntry, "bundle");
+  fake.files.set(`${realEntry.slice(0, -"/bin.mjs".length)}/client/index.html`, "client");
 };
 
-it("renders restartable launchd and systemd definitions without shell evaluation", () => {
-  const plist = renderLaunchAgent(plan);
-  assert.include(plist, `<string>${SERVICE_LABEL}</string>`);
-  assert.include(plist, "<key>KeepAlive</key>\n  <true/>");
-  assert.include(plist, "<string>/Users/me/.t3</string>");
-
-  const unit = renderSystemdUnit({ ...plan, platform: "linux" });
-  assert.include(unit, "KillMode=control-group");
-  assert.include(unit, "Restart=always");
-  assert.include(unit, 'Environment="T3CODE_HOME=/Users/me/.t3"');
+it("resolves symlinked npm and Bun bin entrypoints to packaged dist assets", async () => {
+  for (const link of ["/Users/me/.npm/bin/t3", "/Users/me/.bun/bin/t3"]) {
+    const fake = makeHost();
+    const realEntry = "/opt/t3/node_modules/t3/dist/bin.mjs";
+    fake.canonical.set(link, realEntry);
+    seedPackage(fake, realEntry);
+    assert.deepEqual(await Effect.runPromise(resolvePackagedDist(link, fake.host)), {
+      entryPath: realEntry,
+      distDir: "/opt/t3/node_modules/t3/dist",
+    });
+  }
 });
 
-it.effect("installs, repairs, reports actual launchd state, and uninstalls idempotently", () =>
+it.effect("rejects transient and incomplete runtime layouts", () =>
   Effect.gen(function* () {
     const fake = makeHost();
-    const service = yield* make({
+    const transient = "/Users/me/.bun/install/cache/t3/dist/bin.mjs";
+    fake.files.set(transient, "bundle");
+    assert.equal(
+      (yield* resolvePackagedDist(transient, fake.host).pipe(Effect.flip))._tag,
+      "BootServiceError",
+    );
+    assert.equal(
+      (yield* resolvePackagedDist("/repo/apps/server/src/bin.ts", fake.host).pipe(Effect.flip))
+        ._tag,
+      "BootServiceError",
+    );
+  }),
+);
+
+it("derives isolated launchd targets and paths from canonical base directories", () => {
+  const first = servicePaths({ homeDir: "/Users/me", canonicalBaseDir: "/data/one", userId: 501 });
+  const second = servicePaths({ homeDir: "/Users/me", canonicalBaseDir: "/data/two", userId: 501 });
+  assert.notEqual(first.instanceId, second.instanceId);
+  assert.notEqual(first.target, second.target);
+  assert.notEqual(first.definitionPath, second.definitionPath);
+  assert.notEqual(first.instanceDir, second.instanceDir);
+});
+
+it("renders escaped private LaunchAgents with service-only startup", () => {
+  const paths = servicePaths({
+    homeDir: "/Users/me",
+    canonicalBaseDir: "/Users/me/T3 & Data",
+    userId: 501,
+  });
+  const plan: ServicePlan = {
+    ...paths,
+    baseDir: "/Users/me/T3 & Data",
+    runtimePath: `${paths.runtimesDir}/1/dist/bin.mjs`,
+    arguments: ["/usr/bin/node", `${paths.runtimesDir}/1/dist/bin.mjs`, "serve"],
+    environment: {
+      T3CODE_HOME: "/Users/me/T3 & Data",
+      T3CODE_BACKGROUND_SERVICE: "true",
+      T3CODE_SERVICE_CWD: "/Users/me/code",
+    },
+  };
+  const plist = renderLaunchAgent(plan);
+  assert.include(plist, "/Users/me/T3 &amp; Data");
+  assert.include(plist, "<key>Umask</key>\n  <integer>63</integer>");
+  assert.include(plist, "<key>T3CODE_BACKGROUND_SERVICE</key>");
+});
+
+it("distinguishes a loaded job from a live process", () => {
+  assert.deepEqual(parseLaunchctlState("state = waiting\n"), {
+    loaded: true,
+    processAlive: false,
+  });
+  assert.deepEqual(parseLaunchctlState("state = running\npid = 123\n"), {
+    loaded: true,
+    processAlive: true,
+    pid: 123,
+  });
+});
+
+it.effect("installs, health-checks, isolates, and completely uninstalls instances", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    const realEntry = "/Applications/T3/dist/bin.mjs";
+    seedPackage(fake, realEntry);
+    const first = yield* make({
+      baseDir: "/data/one",
       host: fake.host,
       platform: "darwin",
       homeDir: "/Users/me",
       userId: 501,
       executablePath: "/usr/bin/node",
-      cliEntryPath: "/Applications/T3/dist/bin.mjs",
-      processEnvironment: { PATH: "/opt/homebrew/bin:/usr/bin:/bin" },
+      cliEntryPath: realEntry,
+      processEnvironment: { PATH: "/usr/bin:/bin" },
     });
-    const invocation = {
-      baseDir: "/Users/me/.t3",
-      cwd: "/Users/me/code",
-      host: "127.0.0.1",
-      port: 13_773,
-      environment: {},
-    } as const;
+    const second = yield* make({
+      baseDir: "/data/two",
+      host: fake.host,
+      platform: "darwin",
+      homeDir: "/Users/me",
+      userId: 501,
+      executablePath: "/usr/bin/node",
+      cliEntryPath: realEntry,
+      processEnvironment: {},
+    });
 
-    yield* service.install(invocation);
-    const status = yield* service.status;
-    assert.isTrue(status.installed);
-    assert.isTrue(status.current);
-    assert.isTrue(status.running);
-    const definition = fake.files.get(status.definitionPath) ?? "";
-    assert.include(definition, "<string>--host</string>");
-    assert.include(definition, "<string>127.0.0.1</string>");
-    assert.include(definition, "<string>13773</string>");
+    yield* first.install({ cwd: "/Users/me/code", host: "127.0.0.1", port: 13_773 });
+    yield* second.install({ cwd: "/Users/me/other", port: 13_774 });
+    const firstStatus = yield* first.status;
+    const secondStatus = yield* second.status;
+    assert.isTrue(firstStatus.responsive);
+    assert.notEqual(firstStatus.target, secondStatus.target);
+    assert.equal(fake.modes.get(firstStatus.definitionPath), 0o600);
+    assert.equal(fake.modes.get(firstStatus.instanceDir), 0o700);
 
-    yield* service.stop;
-    assert.isFalse((yield* service.status).running);
-    yield* service.start;
-    assert.isTrue((yield* service.status).running);
-    yield* service.restart;
-    assert.isTrue((yield* service.status).running);
-    yield* service.disable;
-    assert.isFalse((yield* service.status).enabled);
-    yield* service.enable;
-    assert.isTrue((yield* service.status).enabled);
-    assert.isTrue(yield* service.uninstall);
-    assert.isFalse((yield* service.status).installed);
-    assert.isFalse(yield* service.uninstall);
+    fake.files.delete(firstStatus.definitionPath);
+    assert.isTrue(yield* first.uninstall);
+    assert.isFalse(fake.directories.has(firstStatus.instanceDir));
+    assert.isTrue(fake.files.has(secondStatus.definitionPath));
+    assert.isFalse(yield* first.uninstall);
   }),
 );
 
-it.effect("installs systemd with linger and reports Windows as unsupported", () =>
+it.effect("fails install when launchd has no live responsive process and rolls back", () =>
   Effect.gen(function* () {
-    const linux = makeHost();
+    const fake = makeHost();
+    const realEntry = "/Applications/T3/dist/bin.mjs";
+    seedPackage(fake, realEntry);
     const service = yield* make({
-      host: linux.host,
-      platform: "linux",
-      homeDir: "/home/me",
-      userId: 1000,
+      baseDir: "/data/one",
+      host: fake.host,
+      platform: "darwin",
+      homeDir: "/Users/me",
+      userId: 501,
       executablePath: "/usr/bin/node",
-      cliEntryPath: "/opt/t3/dist/bin.mjs",
+      cliEntryPath: realEntry,
       processEnvironment: {},
     });
-    yield* service.install({
-      baseDir: "/home/me/.t3",
-      cwd: "/home/me/code",
-      environment: {},
-    });
-    assert.isTrue(
-      linux.commands.some(
-        ({ command, args }) => command === "loginctl" && args.join(" ") === "enable-linger",
-      ),
-    );
-    assert.isTrue((yield* service.status).running);
-
-    const windows = yield* make({
-      host: makeHost().host,
-      platform: "win32",
-      homeDir: "C:\\Users\\me",
-      userId: null,
-      executablePath: "node.exe",
-      cliEntryPath: "C:\\t3\\dist\\bin.mjs",
-      processEnvironment: {},
-    });
-    assert.isFalse((yield* windows.status).supported);
+    yield* service.install({ cwd: "/Users/me/code", port: 13_773 });
+    const previous = yield* service.status;
+    const previousDefinition = fake.files.get(previous.definitionPath);
+    fake.setProbe(false);
     assert.equal(
-      (yield* windows
-        .install({
-          baseDir: "C:\\Users\\me\\.t3",
-          cwd: "C:\\code",
-          environment: {},
-        })
-        .pipe(Effect.flip))._tag,
-      "BootServiceUnsupportedError",
+      (yield* service.install({ cwd: "/Users/me/code", port: 13_773 }).pipe(Effect.flip))._tag,
+      "BootServiceError",
     );
+    assert.equal(fake.files.get(previous.definitionPath), previousDefinition);
+  }),
+);
+
+it.effect("preserves the active service when candidate copying fails", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    const realEntry = "/Applications/T3/dist/bin.mjs";
+    seedPackage(fake, realEntry);
+    const service = yield* make({
+      baseDir: "/data/one",
+      host: fake.host,
+      platform: "darwin",
+      homeDir: "/Users/me",
+      userId: 501,
+      executablePath: "/usr/bin/node",
+      cliEntryPath: realEntry,
+      processEnvironment: {},
+    });
+    yield* service.install({ cwd: "/Users/me/code" });
+    const before = yield* service.status;
+    const definition = fake.files.get(before.definitionPath);
+    fake.setFailCopy(true);
+    yield* service.install({ cwd: "/Users/me/code" }).pipe(Effect.flip);
+    assert.equal(fake.files.get(before.definitionPath), definition);
+    assert.isTrue((yield* service.status).processAlive);
+  }),
+);
+
+it.effect("explicitly defers Linux and Windows", () =>
+  Effect.gen(function* () {
+    for (const platform of ["linux", "win32"] as const) {
+      const service = yield* make({
+        baseDir: "/data/one",
+        host: makeHost().host,
+        platform,
+        homeDir: "/home/me",
+        userId: 1000,
+        executablePath: "/usr/bin/node",
+        cliEntryPath: "/opt/t3/dist/bin.mjs",
+        processEnvironment: {},
+      });
+      assert.isFalse((yield* service.status).supported);
+      assert.equal(
+        (yield* service.install({ cwd: "/data" }).pipe(Effect.flip))._tag,
+        "BootServiceUnsupportedError",
+      );
+    }
   }),
 );

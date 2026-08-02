@@ -20,6 +20,7 @@ import {
   relayUnlinkResultFromStatus,
   reportCloudDisconnectResults,
 } from "./connect.ts";
+import { recoverServiceOnboardingOffer } from "./service.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
 
 it("distinguishes durable Connect status states without treating stale link metadata as online", () => {
@@ -91,6 +92,15 @@ it("permits credential-only login without a relay URL", () => {
     "T3 Connect is not configured. Set T3CODE_RELAY_URL, T3CODE_CLERK_PUBLISHABLE_KEY, and T3CODE_CLERK_CLI_OAUTH_CLIENT_ID.",
   );
 });
+
+it.effect("keeps successful Connect setup successful when background setup validation fails", () =>
+  Effect.gen(function* () {
+    const result = yield* recoverServiceOnboardingOffer(
+      Effect.fail(new Error("invalid T3CODE_PORT")),
+    );
+    assert.isFalse(result);
+  }),
+);
 
 it("keeps status and disconnect commands usable when Connect is not configured", () => {
   const unconfigured = {
