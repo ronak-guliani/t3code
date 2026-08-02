@@ -73,6 +73,7 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["worktree_handoff", "create_isolated_workspace"],
   ["switch_workspace", "switch_workspace"],
   ["use_existing_worktree", "switch_workspace"],
+  ["create_nested_thread", "create_nested_thread"],
 ] as const);
 
 function writeJsonResponse(response: ServerResponse, status: number, payload: unknown): void {
@@ -625,6 +626,49 @@ async function switchWorkspaceTool(
   });
 }
 
+async function createNestedThreadTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId) {
+    throw new Error("create_nested_thread is only available from a T3 provider session");
+  }
+  const project = asString(args.project)?.trim();
+  const title = asString(args.title)?.trim();
+  const prompt = asString(args.prompt)?.trim();
+  const model = asString(args.model)?.trim();
+  const reasoning = asString(args.reasoning)?.trim();
+  if (!project) throw new Error("create_nested_thread requires a non-empty project");
+  if (!title) throw new Error("create_nested_thread requires a non-empty title");
+  if (!prompt) throw new Error("create_nested_thread requires a non-empty prompt");
+  if (!model) throw new Error("create_nested_thread requires a non-empty model");
+  if (!reasoning) throw new Error("create_nested_thread requires a non-empty reasoning level");
+
+  const runtimeMode = asString(args.runtimeMode)?.trim() || "full-access";
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "new",
+    "--project",
+    project,
+    "--parent",
+    options.threadId,
+    "--provider",
+    "copilot",
+    "--model",
+    model,
+    "--reasoning",
+    reasoning,
+    "--runtime-mode",
+    runtimeMode,
+    "--title",
+    title,
+    prompt,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "read_file",
@@ -755,6 +799,26 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
       required: ["path"],
     },
   },
+  {
+    name: "create_nested_thread",
+    description:
+      "Create and start a helper thread nested under the current T3 thread. Uses the authenticated current thread identity and flavor-scoped CLI automatically; do not use terminal-based `t3 chat new` for delegation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Project id, title, or workspace root." },
+        title: { type: "string" },
+        prompt: { type: "string" },
+        model: { type: "string", enum: ["gpt-5.6-sol", "gpt-5.6-terra"] },
+        reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+        runtimeMode: {
+          type: "string",
+          enum: ["full-access", "approval-required", "auto-accept-edits"],
+        },
+      },
+      required: ["project", "title", "prompt", "model", "reasoning"],
+    },
+  },
 ];
 
 function availableTools(toolsets: ReadonlySet<string>): ReadonlyArray<McpTool> {
@@ -791,6 +855,8 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await createIsolatedWorkspaceTool(options, args);
     case "switch_workspace":
       return await switchWorkspaceTool(options, args);
+    case "create_nested_thread":
+      return await createNestedThreadTool(options, args);
     default:
       throw new Error(`Unsupported MCP tool: ${name}`);
   }
@@ -887,5 +953,6 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
 export const __testing = {
   availableTools,
   createIsolatedWorkspaceTool,
+  createNestedThreadTool,
   switchWorkspaceTool,
 };

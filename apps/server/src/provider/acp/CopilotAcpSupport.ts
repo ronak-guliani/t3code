@@ -187,6 +187,7 @@ export function buildCopilotMcpServerOptions(
   );
   toolsetNames.add("create_isolated_workspace");
   toolsetNames.add("switch_workspace");
+  toolsetNames.add("create_nested_thread");
   return {
     cwd,
     toolsets: toolsetNames,

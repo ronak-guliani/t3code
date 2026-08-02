@@ -113,7 +113,11 @@ describe("buildCopilotAcpSpawnInput", () => {
         ),
       ).toEqual({
         cwd: "/tmp/project",
-        toolsets: new Set(["create_isolated_workspace", "switch_workspace"]),
+        toolsets: new Set([
+          "create_isolated_workspace",
+          "switch_workspace",
+          "create_nested_thread",
+        ]),
         threadId: "thread-1",
         cliCommand: "/usr/bin/node",
         cliArgsPrefix: ["/app/bin.mjs"],
@@ -152,6 +156,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "search_files",
           "create_isolated_workspace",
           "switch_workspace",
+          "create_nested_thread",
         ]),
         threadId: "thread-1",
         cliCommand: "t3-dev",
