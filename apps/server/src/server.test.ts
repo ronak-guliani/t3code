@@ -36,19 +36,20 @@ import { preparePairingRegistration } from "../../../packages/client-runtime/src
 import { ClientPresentation } from "../../../packages/client-runtime/src/platform/capabilities.ts";
 import { remoteHttpClientLayer } from "../../../packages/client-runtime/src/rpc/http.ts";
 import { resolveRemoteWebSocketConnectionUrl as resolveClientRuntimeWebSocketUrl } from "../../../packages/client-runtime/src/remote.ts";
+import { WsTransport } from "../../../packages/client-runtime/src/wsTransport.ts";
 import {
   bootstrapRemoteBearerSession as bootstrapBrowserRemoteBearerSession,
   resolveRemoteWebSocketConnectionUrl as resolveBrowserRemoteWebSocketUrl,
 } from "../../web/src/environments/remote/api.ts";
+import { makeOrchestrationIntegrationHarness } from "../integration/OrchestrationEngineHarness.integration.ts";
 import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
-import { assert, it } from "@effect/vitest";
+import { assert, it as rootIt } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
   Deferred,
   Duration,
   Effect,
   FileSystem,
-  Fiber,
   Layer,
   ManagedRuntime,
   Option,
@@ -970,7 +971,7 @@ const readNodeWebSocketJson = (socket: NodeWsSocket) =>
 
 const decodeMobileServerMessage = Schema.decodeUnknownSync(MobileServerMessage);
 
-it.layer(NodeServices.layer)("server router seam", (it) => {
+rootIt.layer(NodeServices.layer)("server router seam", (it) => {
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1717,65 +1718,25 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("smokes direct-paired browser and shared client runtime reconnect end to end", () =>
+  rootIt.live("smokes direct-paired browser and shared client runtime reconnect end to end", () =>
     Effect.gen(function* () {
-      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      let snapshotSequence = 5;
-      let dispatchCount = 0;
-      const shellSnapshot = () => ({
-        snapshotSequence,
-        projects: [
-          {
-            id: defaultProjectId,
-            title: "Direct Connect Project",
-            workspaceRoot: "/tmp/direct-connect-project",
-            defaultModelSelection,
-            scripts: [],
-            createdAt: "2026-08-01T00:00:00.000Z",
-            updatedAt: "2026-08-01T00:00:00.000Z",
-            deletedAt: null,
-          },
-        ],
-        threads: [makeDefaultOrchestrationThreadShell()],
-        updatedAt: "2026-08-01T00:00:00.000Z",
-      });
+      const harness = yield* makeOrchestrationIntegrationHarness().pipe(
+        Effect.provide(NodeServices.layer),
+      );
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            streamDomainEvents: Stream.fromPubSub(liveEvents),
-            dispatch: (command) =>
-              Effect.gen(function* () {
-                dispatchCount += 1;
-                snapshotSequence += 1;
-                yield* PubSub.publish(liveEvents, {
-                  sequence: snapshotSequence,
-                  eventId: EventId.make(`event-direct-connect-${snapshotSequence}`),
-                  aggregateKind: "thread",
-                  aggregateId: defaultThreadId,
-                  occurredAt: "2026-08-01T00:00:01.000Z",
-                  commandId: command.commandId,
-                  causationEventId: null,
-                  correlationId: command.commandId,
-                  metadata: {},
-                  type: "thread.message-sent",
-                  payload: {
-                    threadId: defaultThreadId,
-                    messageId: MessageId.make("message-direct-connect-smoke"),
-                    role: "user",
-                    text: "Direct connect smoke mutation",
-                    turnId: null,
-                    streaming: false,
-                    createdAt: "2026-08-01T00:00:01.000Z",
-                    updatedAt: "2026-08-01T00:00:01.000Z",
-                  },
-                } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>);
-                return { sequence: snapshotSequence };
-              }),
+            getReadModel: harness.engine.getReadModel,
+            readEvents: harness.engine.readEvents,
+            dispatch: harness.engine.dispatch,
+            streamDomainEvents: harness.engine.streamDomainEvents,
           },
           projectionSnapshotQuery: {
-            getShellSnapshot: () => Effect.succeed(shellSnapshot()),
-            getThreadShellById: () =>
-              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell())),
+            getSnapshot: harness.snapshotQuery.getSnapshot,
+            getShellSnapshot: harness.snapshotQuery.getShellSnapshot,
+            getSnapshotSequence: harness.snapshotQuery.getSnapshotSequence,
+            getThreadDetailById: harness.snapshotQuery.getThreadDetailById,
+            getThreadShellById: harness.snapshotQuery.getThreadShellById,
           },
         },
       });
@@ -1844,65 +1805,101 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         token: Option.some(registration.credential.token),
         baseDir: Option.none(),
       });
-      assert.equal(httpSnapshot.snapshotSequence, 5);
-      assert.equal(httpSnapshot.projects[0]?.title, "Direct Connect Project");
+      assert.equal(httpSnapshot.snapshotSequence, 0);
+      assert.equal(httpSnapshot.projects.length, 0);
+      const unauthorizedSnapshot = yield* HttpClient.get("/api/orchestration/shell-snapshot");
+      assert.equal(unauthorizedSnapshot.status, 401);
+      const pairedSessionResponse = yield* HttpClient.get("/api/auth/session", {
+        headers: { authorization: `Bearer ${registration.credential.token}` },
+      });
+      const pairedSessionState = (yield* pairedSessionResponse.json) as {
+        readonly authenticated: boolean;
+      };
+      assert.equal(pairedSessionResponse.status, 200);
+      assert.equal(pairedSessionState.authenticated, true);
+      const pairedPairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { authorization: `Bearer ${registration.credential.token}` },
+      });
+      assert.equal(pairedPairingResponse.status, 403);
 
-      const firstClientWsUrl = yield* resolveClientRuntimeWebSocketUrl({
-        httpBaseUrl: registration.profile.httpBaseUrl,
-        wsBaseUrl: registration.profile.wsBaseUrl,
-        bearerToken: registration.credential.token,
-      }).pipe(Effect.provide(remoteHttpClientLayer(globalThis.fetch)));
+      let wsTokenIssueCount = 0;
+      let reconnectCount = 0;
+      const transport = new WsTransport(
+        async () => {
+          wsTokenIssueCount += 1;
+          return await Effect.runPromise(
+            resolveClientRuntimeWebSocketUrl({
+              httpBaseUrl: registration.profile.httpBaseUrl,
+              wsBaseUrl: registration.profile.wsBaseUrl,
+              bearerToken: registration.credential.token,
+            }).pipe(Effect.provide(remoteHttpClientLayer(globalThis.fetch))),
+          );
+        },
+        undefined,
+        {
+          onBeforeReconnect: () => {
+            reconnectCount += 1;
+          },
+        },
+      );
       const initialSnapshot = yield* Deferred.make<void>();
-      const firstConnectionItems = yield* Effect.scoped(
-        withWsRpcClient(firstClientWsUrl, (client) =>
-          Effect.gen(function* () {
-            const streamFiber = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
-              Stream.tap((item) =>
-                item.kind === "snapshot"
-                  ? Deferred.succeed(initialSnapshot, undefined)
-                  : Effect.void,
-              ),
-              Stream.take(2),
-              Stream.runCollect,
-              Effect.forkScoped,
-            );
-            yield* Deferred.await(initialSnapshot).pipe(Effect.timeout("2 seconds"));
-            yield* Effect.sleep("50 millis");
-            const dispatchResult = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-              type: "thread.session.stop",
-              commandId: CommandId.make("cmd-direct-connect-smoke"),
-              threadId: defaultThreadId,
-              createdAt: "2026-08-01T00:00:01.000Z",
-            });
-            assert.equal(dispatchResult.sequence, 6);
-            return yield* Fiber.join(streamFiber);
+      const receivedItems: Array<{ readonly kind: string; readonly sequence: number }> = [];
+      const unsubscribe = transport.subscribe(
+        (client) => client[ORCHESTRATION_WS_METHODS.subscribeShell]({}),
+        (item) => {
+          receivedItems.push({
+            kind: item.kind,
+            sequence: item.kind === "snapshot" ? item.snapshot.snapshotSequence : item.sequence,
+          });
+          if (item.kind === "snapshot") {
+            Effect.runFork(Deferred.succeed(initialSnapshot, undefined));
+          }
+        },
+        { tag: ORCHESTRATION_WS_METHODS.subscribeShell },
+      );
+      yield* Deferred.await(initialSnapshot).pipe(Effect.timeout("5 seconds"));
+
+      const createdAt = "2026-08-01T00:00:01.000Z";
+      const dispatchResult = yield* Effect.promise(() =>
+        transport.request((client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "project.create",
+            commandId: CommandId.make("cmd-direct-connect-project-create"),
+            projectId: defaultProjectId,
+            title: "Direct Connect Project",
+            workspaceRoot: harness.workspaceDir,
+            defaultModelSelection,
+            createdAt,
           }),
         ),
       ).pipe(Effect.timeout("5 seconds"));
-      assert.equal(firstConnectionItems[0]?.kind, "snapshot");
-      assert.equal(firstConnectionItems[1]?.kind, "thread-upserted");
+      assert.equal(dispatchResult.sequence, 1);
+      yield* Effect.sleep("100 millis");
 
-      const reconnectWsUrl = yield* resolveClientRuntimeWebSocketUrl({
-        httpBaseUrl: registration.profile.httpBaseUrl,
-        wsBaseUrl: registration.profile.wsBaseUrl,
-        bearerToken: registration.credential.token,
-      }).pipe(Effect.provide(remoteHttpClientLayer(globalThis.fetch)));
-      const reconnectItems = yield* Effect.scoped(
-        withWsRpcClient(reconnectWsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
-            Stream.take(1),
-            Stream.runCollect,
-          ),
-        ),
+      const persistedSnapshot = yield* harness.snapshotQuery.getShellSnapshot();
+      assert.equal(persistedSnapshot.snapshotSequence, 1);
+      assert.equal(persistedSnapshot.projects[0]?.title, "Direct Connect Project");
+      yield* Effect.promise(() => transport.reconnect());
+      yield* Effect.promise(() => transport.reconnect());
+      yield* Effect.sleep("300 millis");
+      const reconciledSnapshot = yield* Effect.promise(() =>
+        transport.request((client) => client[ORCHESTRATION_WS_METHODS.getShellSnapshot]({})),
       ).pipe(Effect.timeout("5 seconds"));
-      assert.equal(reconnectItems[0]?.kind, "snapshot");
-      assert.equal(
-        reconnectItems[0]?.kind === "snapshot" ? reconnectItems[0].snapshot.snapshotSequence : null,
-        6,
-      );
-
-      assert.equal(dispatchCount, 1);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest), Effect.scoped, TestClock.withLive),
+      assert.equal(reconciledSnapshot.snapshotSequence, 1);
+      assert.equal(reconciledSnapshot.projects[0]?.title, "Direct Connect Project");
+      unsubscribe();
+      yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("5 seconds"));
+      yield* harness.dispose;
+      assert.equal(wsTokenIssueCount, 2);
+      assert.equal(reconnectCount, 2);
+      assert.deepEqual(receivedItems, [
+        { kind: "snapshot", sequence: 0 },
+        { kind: "snapshot", sequence: 1 },
+      ]);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer)),
+      Effect.scoped,
+    ),
   );
 
   it.effect("loads a large CLI shell snapshot without reading the full projection", () =>

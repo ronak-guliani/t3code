@@ -71,7 +71,7 @@ and mobile pairing; the clients derive `wss://` from that origin.
 
    ```bash
    pnpm --filter t3 build
-   tailscale serve --bg --https=443 http://127.0.0.1:3773
+   tailscale serve --bg --https=443 127.0.0.1:3773
    pnpm start -- --host 127.0.0.1 --port 3773 --no-browser
    ```
 
@@ -96,8 +96,26 @@ pnpm test:direct-connect-smoke
 ```
 
 It starts the real server routes and verifies one-time browser and shared mobile-runtime pairing,
-authenticated HTTP shell bootstrap, authenticated WebSocket snapshots/events, a client mutation,
-fresh-ticket reconnect, and resnapshot. It does not replace the physical-device network check above.
+authenticated HTTP shell bootstrap, authenticated WebSocket snapshots, a production orchestration
+mutation persisted to SQLite, fresh-ticket reconnect through the shared `WsTransport`, and
+duplicate-free resnapshot. Browser-mode coverage also exercises the production `/pair` surface,
+credential exchange, cookie-enabled request, and removal of the one-time token from browser history.
+It does not replace the physical-device network check above.
+
+After acceptance, stop the server with `Ctrl-C`, remove the persistent Serve mapping, and revoke the
+acceptance session so its bearer credential cannot be reused:
+
+```bash
+tailscale serve status
+tailscale serve off --https=443
+pnpm --filter t3 start -- auth session list
+pnpm --filter t3 start -- auth session revoke <session-id>
+pnpm --filter t3 start -- auth pairing list
+```
+
+Revoke any still-active pairing credential shown by the final command with
+`pnpm --filter t3 start -- auth pairing revoke <pairing-id>`. Do not store the printed pairing URL
+or bearer token in shell history, screenshots, logs, or source control.
 
 ## EAS Builds
 
