@@ -20,6 +20,7 @@ import * as PreviewEnvironment from "./PreviewEnvironment.ts";
 import * as PreviewManager from "./Manager.ts";
 
 const {
+  browserWindowConstructor,
   createFromPath,
   fromId,
   getFocusedWebContents,
@@ -29,6 +30,7 @@ const {
   writeFile,
   writeImage,
 } = vi.hoisted(() => ({
+  browserWindowConstructor: vi.fn(),
   createFromPath: vi.fn((): { readonly isEmpty: () => boolean } => ({ isEmpty: () => false })),
   fromId: vi.fn((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
@@ -40,6 +42,7 @@ const {
 }));
 
 vi.mock("electron", () => ({
+  BrowserWindow: browserWindowConstructor,
   clipboard: {
     writeImage,
   },
@@ -165,6 +168,7 @@ const makeTestCapturedPreviewImage = (
 
 describe("PreviewManager", () => {
   beforeEach(() => {
+    browserWindowConstructor.mockReset();
     fromId.mockClear();
     getFocusedWebContents.mockReset();
     getFocusedWebContents.mockReturnValue(null);
@@ -175,6 +179,45 @@ describe("PreviewManager", () => {
     createFromPath.mockClear();
     webviewSend.mockClear();
   });
+
+  effectIt.effect("shares one capture session between recording and picture-in-picture", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const capturePage = vi.fn(async () =>
+          makeTestCapturedPreviewImage(Buffer.from("frame"), 1280, 720),
+        );
+        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage, 42));
+        const closed = vi.fn();
+        (
+          browserWindowConstructor as unknown as {
+            mockImplementation: (implementation: (...args: unknown[]) => unknown) => void;
+          }
+        ).mockImplementation(function () {
+          return {
+            isDestroyed: () => false,
+            once: vi.fn((event: string, listener: () => void) => {
+              if (event === "closed") closed.mockImplementation(listener);
+            }),
+            setVisibleOnAllWorkspaces: vi.fn(),
+            loadURL: vi.fn(async () => undefined),
+            showInactive: vi.fn(),
+            close: vi.fn(() => closed()),
+            webContents: { send: vi.fn() },
+          };
+        });
+
+        yield* manager.createTab("tab-pip");
+        yield* manager.registerWebview("tab-pip", 42);
+        yield* manager.startRecording("tab-pip");
+        yield* manager.openPictureInPicture("tab-pip");
+        yield* manager.stopRecording("tab-pip");
+        yield* manager.closePictureInPicture("tab-pip");
+
+        expect(browserWindowConstructor).toHaveBeenCalledOnce();
+        expect(capturePage).toHaveBeenCalledOnce();
+      }),
+    ),
+  );
 
   effectIt.effect("reports an unregistered webview as temporarily unavailable", () =>
     withManager((manager) =>
