@@ -185,7 +185,7 @@ export function servicePaths(input: {
 }): ServicePaths {
   const instanceId = serviceInstanceId(input.canonicalBaseDir);
   const label = `${LABEL_PREFIX}.${instanceId}`;
-  const instanceDir = join(input.homeDir, ".t3", "services", instanceId);
+  const instanceDir = join(input.canonicalBaseDir, "runtime", "background-service", instanceId);
   return {
     instanceId,
     label,
@@ -318,7 +318,8 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
   const processArguments = yield* HostProcessArguments;
   const cliEntryPath = input.cliEntryPath ?? processArguments[1] ?? "";
   const processEnvironment = input.processEnvironment ?? (yield* HostProcessEnvironment);
-  const userId = input.userId ?? (yield* HostProcessUserId);
+  const hostUserId = yield* HostProcessUserId;
+  const userId = input.userId === undefined ? hostUserId : input.userId;
   const homeDir = input.homeDir ?? homedir();
   const canonicalBaseDir = yield* attempt("canonicalizing the base directory", () =>
     host.canonicalize(input.baseDir),
@@ -395,8 +396,12 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
 
   const status = Effect.gen(function* () {
     const fallbackPaths = paths ?? servicePaths({ homeDir, canonicalBaseDir, userId: userId ?? 0 });
-    const installed = yield* attempt("checking service definition", () =>
-      host.exists(fallbackPaths.definitionPath),
+    const [installed, versionExists] = yield* Effect.all(
+      [
+        attempt("checking service definition", () => host.exists(fallbackPaths.definitionPath)),
+        attempt("checking service version", () => host.exists(fallbackPaths.versionPath)),
+      ],
+      { concurrency: "unbounded" },
     );
     const state =
       platform === "darwin" && paths !== null
@@ -407,15 +412,17 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
       (yield* attempt("probing the background server", () =>
         host.probeRuntime(fallbackPaths.runtimeStatePath, 1_000),
       ));
-    const versionExists = yield* attempt("checking service version", () =>
-      host.exists(fallbackPaths.versionPath),
+    const [installedVersion, definition] = yield* Effect.all(
+      [
+        versionExists
+          ? attempt("reading service version", () => host.read(fallbackPaths.versionPath))
+          : Effect.succeed(""),
+        installed
+          ? attempt("reading service definition", () => host.read(fallbackPaths.definitionPath))
+          : Effect.succeed(""),
+      ],
+      { concurrency: "unbounded" },
     );
-    const installedVersion = versionExists
-      ? yield* attempt("reading service version", () => host.read(fallbackPaths.versionPath))
-      : "";
-    const definition = installed
-      ? yield* attempt("reading service definition", () => host.read(fallbackPaths.definitionPath))
-      : "";
     return {
       ...fallbackPaths,
       supported: platform === "darwin" && paths !== null,
@@ -457,6 +464,11 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
         yield* attempt("creating private service directories", async () => {
           await host.makeDirectory(activePaths.instanceDir, 0o700);
           await host.makeDirectory(activePaths.runtimesDir, 0o700);
+          if (!(await host.exists(activePaths.logPath))) {
+            await host.writeAtomic(activePaths.logPath, "", 0o600);
+          } else {
+            await host.chmod(activePaths.logPath, 0o600);
+          }
         });
         const copied = yield* attempt("copying the packaged runtime", () =>
           host.copyDirectory(packaged.distDir, candidateDir),
@@ -547,14 +559,16 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
     start: requireSupported.pipe(Effect.andThen(startAndProbe)),
     restart: requireSupported.pipe(Effect.andThen(stopLoaded), Effect.andThen(startAndProbe)),
     stop: requireSupported.pipe(Effect.andThen(stopLoaded)),
-    enable: requireSupported.pipe(
-      Effect.andThen(runChecked("enabling launchd service", ["enable", paths!.target])),
-      Effect.andThen(startAndProbe),
-    ),
-    disable: requireSupported.pipe(
-      Effect.andThen(stopLoaded),
-      Effect.andThen(runChecked("disabling launchd service", ["disable", paths!.target])),
-    ),
+    enable: Effect.gen(function* () {
+      yield* requireSupported;
+      yield* runChecked("enabling launchd service", ["enable", paths!.target]);
+      yield* startAndProbe;
+    }),
+    disable: Effect.gen(function* () {
+      yield* requireSupported;
+      yield* stopLoaded;
+      yield* runChecked("disabling launchd service", ["disable", paths!.target]);
+    }),
     uninstall: Effect.gen(function* () {
       yield* requireSupported;
       const activePaths = paths!;

@@ -158,6 +158,8 @@ it("derives isolated launchd targets and paths from canonical base directories",
   assert.notEqual(first.target, second.target);
   assert.notEqual(first.definitionPath, second.definitionPath);
   assert.notEqual(first.instanceDir, second.instanceDir);
+  assert.isTrue(first.instanceDir.startsWith("/data/one/runtime/background-service/"));
+  assert.isTrue(second.instanceDir.startsWith("/data/two/runtime/background-service/"));
 });
 
 it("renders escaped private LaunchAgents with service-only startup", () => {
@@ -229,6 +231,7 @@ it.effect("installs, health-checks, isolates, and completely uninstalls instance
     assert.notEqual(firstStatus.target, secondStatus.target);
     assert.equal(fake.modes.get(firstStatus.definitionPath), 0o600);
     assert.equal(fake.modes.get(firstStatus.instanceDir), 0o700);
+    assert.equal(fake.modes.get(firstStatus.logPath), 0o600);
 
     fake.files.delete(firstStatus.definitionPath);
     assert.isTrue(yield* first.uninstall);
@@ -309,5 +312,21 @@ it.effect("explicitly defers Linux and Windows", () =>
         "BootServiceUnsupportedError",
       );
     }
+  }),
+);
+
+it.effect("respects an explicitly unavailable macOS user id", () =>
+  Effect.gen(function* () {
+    const service = yield* make({
+      baseDir: "/data/one",
+      host: makeHost().host,
+      platform: "darwin",
+      homeDir: "/Users/me",
+      userId: null,
+      executablePath: "/usr/bin/node",
+      cliEntryPath: "/Applications/T3/dist/bin.mjs",
+      processEnvironment: {},
+    });
+    assert.isFalse((yield* service.status).supported);
   }),
 );
