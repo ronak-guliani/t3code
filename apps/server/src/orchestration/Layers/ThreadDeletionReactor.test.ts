@@ -7,11 +7,13 @@ import {
 import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { ProviderValidationError } from "../../provider/Errors.ts";
 import {
   findCanonicalActiveWorktreeOwner,
   logCleanupCauseUnlessInterrupted,
   processAfterWorktreeReservation,
   runAfterThreadRuntimeTeardown,
+  stopProviderSessionForDeletedThread,
 } from "./ThreadDeletionReactor.ts";
 
 function makeReadModel(threads: OrchestrationReadModel["threads"]): OrchestrationReadModel {
@@ -71,6 +73,45 @@ describe("logCleanupCauseUnlessInterrupted", () => {
     );
 
     expect(Exit.isSuccess(exit)).toBe(true);
+  });
+
+  describe("stopProviderSessionForDeletedThread", () => {
+    it("stops persisted inactive sessions", async () => {
+      let stopped = false;
+
+      await Effect.runPromise(
+        stopProviderSessionForDeletedThread(
+          {
+            stopSession: () =>
+              Effect.sync(() => {
+                stopped = true;
+              }),
+          },
+          threadId,
+        ),
+      );
+
+      expect(stopped).toBe(true);
+    });
+
+    it("ignores the absence of a persisted binding", async () => {
+      await expect(
+        Effect.runPromise(
+          stopProviderSessionForDeletedThread(
+            {
+              stopSession: () =>
+                Effect.fail(
+                  new ProviderValidationError({
+                    operation: "ProviderService.stopSession",
+                    issue: `Cannot route thread '${threadId}' because no persisted provider binding exists.`,
+                  }),
+                ),
+            },
+            threadId,
+          ),
+        ),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe("processAfterWorktreeReservation", () => {

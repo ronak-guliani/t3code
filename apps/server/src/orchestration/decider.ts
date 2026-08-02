@@ -77,19 +77,31 @@ type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
 
-function findActiveWorktreeOwner(
+const findCanonicalActiveWorktreeOwner = Effect.fn("findCanonicalActiveWorktreeOwner")(function* (
   readModel: OrchestrationReadModel,
   threadId: ThreadId,
   worktreePath: string,
 ) {
-  return readModel.threads.find(
-    (thread) =>
-      thread.id !== threadId &&
-      thread.deletedAt === null &&
-      thread.archivedAt === null &&
-      thread.worktreePath === worktreePath,
+  const canonicalWorktreePath = yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
+  const activeThreads = readModel.threads.flatMap((thread) =>
+    thread.id !== threadId &&
+    thread.deletedAt === null &&
+    thread.archivedAt === null &&
+    thread.worktreePath !== null
+      ? [thread]
+      : [],
   );
-}
+  const matches = yield* Effect.forEach(
+    activeThreads,
+    (thread) =>
+      Effect.promise(() => canonicalizeWorktreePath(thread.worktreePath!)).pipe(
+        Effect.map((canonicalActivePath) => canonicalActivePath === canonicalWorktreePath),
+      ),
+    { concurrency: 4 },
+  );
+  const ownerIndex = matches.findIndex(Boolean);
+  return ownerIndex === -1 ? undefined : activeThreads[ownerIndex];
+});
 
 const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwner")(function* (
   readModel: OrchestrationReadModel,
@@ -841,7 +853,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
 
-      const worktreeOwner = findActiveWorktreeOwner(
+      const worktreeOwner = yield* findCanonicalActiveWorktreeOwner(
         readModel,
         command.threadId,
         command.worktreePath,
