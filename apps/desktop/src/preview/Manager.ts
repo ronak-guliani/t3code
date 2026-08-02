@@ -103,6 +103,8 @@ const MAX_INTERACTIVE_ELEMENTS = 200;
 const MAX_SCREENSHOT_WIDTH = 1280;
 const RECORDING_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
 const RECORDING_JPEG_QUALITY = 80;
+const RECORDING_MAX_FRAME_WIDTH = 1600;
+const RECORDING_MAX_FRAME_HEIGHT = 1200;
 const DIAGNOSTIC_BUFFER_LIMIT = 200;
 const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
@@ -1869,20 +1871,37 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ) {
       return;
     }
-    const data = yield* attempt(
+    const frameScale = Math.min(
+      1,
+      RECORDING_MAX_FRAME_WIDTH / size.width,
+      RECORDING_MAX_FRAME_HEIGHT / size.height,
+    );
+    const { frameSize, data } = yield* attempt(
       {
         operation: "frameCapture.encodeFrame",
         tabId,
         webContentsId: wc.id,
       },
-      () => image.toJPEG(RECORDING_JPEG_QUALITY).toString("base64"),
+      () => {
+        const frameImage =
+          frameScale < 1
+            ? image.resize({
+                width: Math.max(1, Math.round(size.width * frameScale)),
+                height: Math.max(1, Math.round(size.height * frameScale)),
+              })
+            : image;
+        return {
+          frameSize: frameImage.getSize(),
+          data: frameImage.toJPEG(RECORDING_JPEG_QUALITY).toString("base64"),
+        };
+      },
     );
     const receivedAt = yield* currentIso;
     const frame: DesktopPreviewRecordingFrame = {
       tabId,
       data,
-      width: size.width,
-      height: size.height,
+      width: frameSize.width,
+      height: frameSize.height,
       receivedAt,
     };
     const listeners = yield* Ref.get(recordingFrameListenersRef);

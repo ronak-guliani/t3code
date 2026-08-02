@@ -117,6 +117,10 @@ const withManager = <A>(
 interface TestCapturedPreviewImage {
   readonly toJPEG: () => Buffer;
   readonly getSize: () => { readonly width: number; readonly height: number };
+  readonly resize: (size: {
+    readonly width: number;
+    readonly height: number;
+  }) => TestCapturedPreviewImage;
 }
 
 const makeTestPreviewWebContents = (
@@ -147,6 +151,17 @@ const makeTestPreviewWebContents = (
     },
     capturePage,
   }) as never;
+
+const makeTestCapturedPreviewImage = (
+  data: Buffer,
+  width: number,
+  height: number,
+): TestCapturedPreviewImage => ({
+  toJPEG: () => data,
+  getSize: () => ({ width, height }),
+  resize: ({ width: resizedWidth, height: resizedHeight }) =>
+    makeTestCapturedPreviewImage(data, resizedWidth, resizedHeight),
+});
 
 describe("PreviewManager", () => {
   beforeEach(() => {
@@ -648,14 +663,12 @@ describe("PreviewManager", () => {
       Effect.gen(function* () {
         const firstJpeg = Buffer.from("first-recording-frame");
         const secondJpeg = Buffer.from("second-recording-frame");
-        const firstCapturePage = vi.fn(async () => ({
-          toJPEG: () => firstJpeg,
-          getSize: () => ({ width: 800, height: 600 }),
-        }));
-        const secondCapturePage = vi.fn(async () => ({
-          toJPEG: () => secondJpeg,
-          getSize: () => ({ width: 390, height: 844 }),
-        }));
+        const firstCapturePage = vi.fn(async () =>
+          makeTestCapturedPreviewImage(firstJpeg, 800, 600),
+        );
+        const secondCapturePage = vi.fn(async () =>
+          makeTestCapturedPreviewImage(secondJpeg, 390, 844),
+        );
         const webContentsById = new Map([
           [41, makeTestPreviewWebContents(firstCapturePage, 41)],
           [42, makeTestPreviewWebContents(secondCapturePage, 42)],
@@ -702,6 +715,42 @@ describe("PreviewManager", () => {
           concurrency: 2,
           discard: true,
         });
+      }),
+    ),
+  );
+
+  effectIt.effect("bounds high-resolution recording frames before delivery", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const jpeg = Buffer.from("bounded-recording-frame");
+        const sourceImage = makeTestCapturedPreviewImage(jpeg, 3840, 2160);
+        const resize = vi.spyOn(sourceImage, "resize");
+        fromId.mockReturnValue(
+          makeTestPreviewWebContents(
+            vi.fn(async () => sourceImage),
+            42,
+          ),
+        );
+        const frames: DesktopPreviewRecordingFrame[] = [];
+        yield* manager.subscribeRecordingFrames((frame) =>
+          Effect.sync(() => {
+            frames.push(frame);
+          }),
+        );
+        yield* manager.createTab("tab_high_dpi");
+        yield* manager.registerWebview("tab_high_dpi", 42);
+
+        yield* manager.startRecording("tab_high_dpi");
+
+        expect(resize).toHaveBeenCalledWith({ width: 1600, height: 900 });
+        expect(frames).toEqual([
+          expect.objectContaining({
+            tabId: "tab_high_dpi",
+            width: 1600,
+            height: 900,
+          }),
+        ]);
+        yield* manager.stopRecording("tab_high_dpi");
       }),
     ),
   );

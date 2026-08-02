@@ -144,6 +144,24 @@ it.effect("keeps credentials alive across turns without MCP traffic", () =>
   }),
 );
 
+it.effect("revives the matching credential when a trusted turn arrives after the window", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* makeRegistry(() => timestamp, { livenessWindowMs: 100 });
+    const threadId = ThreadId.make("thread-late-turn");
+    const providerInstanceId = ProviderInstanceId.make("copilot");
+    const issued = yield* registry.issue({ threadId, providerInstanceId });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+
+    timestamp += 101;
+    yield* registry.touch(threadId, providerInstanceId);
+
+    expect((yield* registry.resolve(token))?.providerSessionId).toBe(
+      issued.config.providerSessionId,
+    );
+  }),
+);
+
 it.effect("does not refresh credentials for unrelated threads", () =>
   Effect.gen(function* () {
     let timestamp = 1_000;

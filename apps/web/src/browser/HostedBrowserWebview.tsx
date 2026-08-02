@@ -72,7 +72,11 @@ export function HostedBrowserWebview(props: {
     tabLeaseRef.current = lease;
     return () => {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
-      void stopBrowserRecording(runtimeTabId).finally(lease.release);
+      void stopBrowserRecording(runtimeTabId)
+        .catch((error) => {
+          console.error("Failed to stop browser recording during webview cleanup.", error);
+        })
+        .finally(lease.release);
     };
   }, [runtimeTabId]);
 
