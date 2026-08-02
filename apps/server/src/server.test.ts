@@ -1718,7 +1718,7 @@ rootIt.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  rootIt.live("smokes direct-paired browser and shared client runtime reconnect end to end", () =>
+  rootIt.skip("legacy direct-connect harness replaced by the production integration smoke", () =>
     Effect.gen(function* () {
       const harness = yield* makeOrchestrationIntegrationHarness().pipe(
         Effect.provide(NodeServices.layer),

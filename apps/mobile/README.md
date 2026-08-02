@@ -95,12 +95,14 @@ Automated protocol coverage is available from the repository root:
 pnpm test:direct-connect-smoke
 ```
 
-It starts the real server routes and verifies one-time browser and shared mobile-runtime pairing,
-authenticated HTTP shell bootstrap, authenticated WebSocket snapshots, a production orchestration
-mutation persisted to SQLite, fresh-ticket reconnect through the shared `WsTransport`, and
-duplicate-free resnapshot. Browser-mode coverage also exercises the production `/pair` surface,
-credential exchange, cookie-enabled request, and removal of the one-time token from browser history.
-It does not replace the physical-device network check above.
+It builds the production browser app, starts the production server runtime, and verifies one-time
+browser and shared mobile-runtime pairing, client-scoped HTTP orchestration, authenticated WebSocket
+snapshots, a production orchestration mutation persisted to SQLite, involuntary transport loss,
+fresh-ticket reconnect through the shared `WsTransport`, and duplicate-free resnapshot. Chromium
+navigates the production router to `/pair`, exchanges a real credential, persists the session
+cookie across reload, removes the token from browser history, starts the authenticated environment
+runtime, and renders the WebSocket projection. It does not replace the physical-device network
+check above.
 
 After acceptance, stop the server with `Ctrl-C`, remove the persistent Serve mapping, and revoke the
 acceptance session so its bearer credential cannot be reused:
