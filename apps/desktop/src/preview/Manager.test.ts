@@ -186,7 +186,11 @@ describe("PreviewManager", () => {
         const capturePage = vi.fn(async () =>
           makeTestCapturedPreviewImage(Buffer.from("frame"), 1280, 720),
         );
-        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage, 42));
+        const firstWebContents = makeTestPreviewWebContents(capturePage, 42);
+        const replacementWebContents = makeTestPreviewWebContents(capturePage, 43);
+        fromId.mockImplementation((id) =>
+          id === 43 ? replacementWebContents : id === 42 ? firstWebContents : null,
+        );
         const closed = vi.fn();
         (
           browserWindowConstructor as unknown as {
@@ -211,10 +215,11 @@ describe("PreviewManager", () => {
         yield* manager.startRecording("tab-pip");
         yield* manager.openPictureInPicture("tab-pip");
         yield* manager.stopRecording("tab-pip");
-        yield* manager.closePictureInPicture("tab-pip");
+        yield* manager.registerWebview("tab-pip", 43);
 
         expect(browserWindowConstructor).toHaveBeenCalledOnce();
         expect(capturePage).toHaveBeenCalledOnce();
+        expect(closed).toHaveBeenCalledOnce();
       }),
     ),
   );

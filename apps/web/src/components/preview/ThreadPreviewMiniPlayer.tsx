@@ -159,6 +159,7 @@ export function ThreadPreviewMiniPlayer(props: {
           variant="ghost"
           size="icon-xs"
           aria-label="Open preview in panel"
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={() => {
             usePreviewMiniPlayerStore.getState().close(threadRef);
             useRightPanelStore.getState().openBrowser(threadRef, tabId);
@@ -190,6 +191,9 @@ export function ThreadPreviewMiniPlayer(props: {
         <BrowserSurfaceSlot
           tabId={runtimeTabId}
           visible={overlay !== null}
+          layoutVersion={
+            position ? `${position.x}:${position.y}:${size.width}:${size.height}` : "initial"
+          }
           className="absolute inset-0"
         />
         {overlay === null ? (

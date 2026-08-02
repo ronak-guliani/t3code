@@ -6,7 +6,6 @@ import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 
 import { PreviewPanelShell, type PreviewPanelMode } from "./PreviewPanelShell";
 import { PreviewView } from "./PreviewView";
-import { ThreadPreviewMiniPlayer } from "./ThreadPreviewMiniPlayer";
 
 interface Props {
   mode: PreviewPanelMode;
@@ -48,7 +47,6 @@ export function PreviewPanel({
         visible={visible}
         onClose={onClose}
       />
-      <ThreadPreviewMiniPlayer threadRef={threadRef} {...(tabId === undefined ? {} : { tabId })} />
     </PreviewPanelShell>
   );
 }

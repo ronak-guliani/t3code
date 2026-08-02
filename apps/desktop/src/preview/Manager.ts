@@ -1452,11 +1452,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (replacedWebContentsId !== null) {
       yield* Effect.all(
         [
+          closePictureInPicture(tabId),
           detachControlSession(replacedWebContentsId),
           detachListeners(replacedWebContentsId),
           cancelPickElement(tabId),
         ],
-        { concurrency: 3, discard: true },
+        { concurrency: 4, discard: true },
       );
     }
     const zoomFactor =
@@ -2134,30 +2135,30 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             }),
         );
         const session: PictureInPictureSession = { window, webContentsId: wc.id };
-        yield* attempt(
-          { operation: "pictureInPicture.configure", tabId, webContentsId: wc.id },
-          () => {
-            window.once("closed", () => {
-              runFork(
-                pictureInPictureMutationSemaphore.withPermit(
-                  releasePictureInPicture(tabId, session, false),
-                ),
-              );
-            });
-            if (hostPlatform === "darwin") {
-              window.setVisibleOnAllWorkspaces(true, {
-                visibleOnFullScreen: true,
-                skipTransformProcessType: true,
-              });
-            }
-          },
-        );
-        yield* SynchronizedRef.update(pictureInPictureSessionsRef, (sessions) =>
-          replaceMap(sessions, (copy) => {
-            copy.set(tabId, session);
-          }),
-        );
         yield* Effect.gen(function* () {
+          yield* attempt(
+            { operation: "pictureInPicture.configure", tabId, webContentsId: wc.id },
+            () => {
+              window.once("closed", () => {
+                runFork(
+                  pictureInPictureMutationSemaphore.withPermit(
+                    releasePictureInPicture(tabId, session, false),
+                  ),
+                );
+              });
+              if (hostPlatform === "darwin") {
+                window.setVisibleOnAllWorkspaces(true, {
+                  visibleOnFullScreen: true,
+                  skipTransformProcessType: true,
+                });
+              }
+            },
+          );
+          yield* SynchronizedRef.update(pictureInPictureSessionsRef, (sessions) =>
+            replaceMap(sessions, (copy) => {
+              copy.set(tabId, session);
+            }),
+          );
           yield* attemptPromise(
             { operation: "pictureInPicture.load", tabId, webContentsId: wc.id },
             () => window.loadURL(buildPreviewPictureInPictureDataUrl()),
@@ -2176,7 +2177,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             window.showInactive(),
           );
           yield* update(tabId, { pictureInPicture: true });
-        }).pipe(Effect.onError(() => releasePictureInPicture(tabId, session, true)));
+        }).pipe(
+          Effect.onError(() =>
+            releasePictureInPicture(tabId, session, true).pipe(
+              Effect.andThen(
+                attempt({ operation: "pictureInPicture.close", tabId }, () => {
+                  if (!window.isDestroyed()) window.close();
+                }).pipe(Effect.ignore),
+              ),
+            ),
+          ),
+        );
       }),
     );
   });
