@@ -546,6 +546,7 @@ const buildAppUnderTest = (options?: {
           getProjectShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
@@ -1761,8 +1762,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getShellSnapshot: () => Effect.die("Thread detail must not load the shell snapshot"),
-            getSnapshotSequence: () => Effect.succeed(42),
-            getThreadDetailById: () => Effect.succeed(Option.some(detail)),
+            getThreadDetailSnapshotById: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 42,
+                  thread: detail,
+                }),
+              ),
           },
         },
       });
@@ -1786,7 +1792,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("filters snapshotted thread events and continues live delivery", () =>
+  it.effect("does not replay thread events already materialized in the snapshot", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0];
       if (!thread) {
@@ -1794,7 +1800,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }
 
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
-      let snapshotSequenceLoaded = false;
       const includedEvent = {
         sequence: 1,
         eventId: EventId.make("event-included"),
@@ -1861,37 +1866,38 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getShellSnapshot: () =>
               Effect.die("Thread subscription must not load the shell snapshot"),
-            getThreadDetailById: () =>
+            getThreadDetailSnapshotById: () =>
               Effect.gen(function* () {
-                assert.equal(
-                  snapshotSequenceLoaded,
-                  true,
-                  "Snapshot sequence must be captured before thread detail",
-                );
                 yield* Effect.sleep("25 millis");
                 yield* PubSub.publish(liveEvents, includedEvent);
                 yield* PubSub.publish(liveEvents, messageEvent);
                 return Option.some({
-                  ...thread,
-                  messages: [
-                    ...thread.messages,
-                    {
-                      id: includedEvent.payload.messageId,
-                      role: includedEvent.payload.role,
-                      text: includedEvent.payload.text,
-                      turnId: includedEvent.payload.turnId,
-                      streaming: includedEvent.payload.streaming,
-                      createdAt: includedEvent.payload.createdAt,
-                      updatedAt: includedEvent.payload.updatedAt,
-                    },
-                  ],
+                  snapshotSequence: 2,
+                  thread: {
+                    ...thread,
+                    messages: [
+                      ...thread.messages,
+                      {
+                        id: includedEvent.payload.messageId,
+                        role: includedEvent.payload.role,
+                        text: includedEvent.payload.text,
+                        turnId: includedEvent.payload.turnId,
+                        streaming: includedEvent.payload.streaming,
+                        createdAt: includedEvent.payload.createdAt,
+                        updatedAt: includedEvent.payload.updatedAt,
+                      },
+                      {
+                        id: messageEvent.payload.messageId,
+                        role: messageEvent.payload.role,
+                        text: messageEvent.payload.text,
+                        turnId: messageEvent.payload.turnId,
+                        streaming: messageEvent.payload.streaming,
+                        createdAt: messageEvent.payload.createdAt,
+                        updatedAt: messageEvent.payload.updatedAt,
+                      },
+                    ],
+                  },
                 });
-              }),
-            getSnapshotSequence: () =>
-              Effect.gen(function* () {
-                yield* Effect.sleep("10 millis");
-                snapshotSequenceLoaded = true;
-                return 1;
               }),
           },
         },
@@ -1906,7 +1912,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             Stream.tap((item) =>
               item.kind === "snapshot" ? PubSub.publish(liveEvents, completionEvent) : Effect.void,
             ),
-            Stream.take(3),
+            Stream.take(2),
             Stream.runCollect,
           ),
         ),
@@ -1914,9 +1920,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
-      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
-      assert.equal(items[2]?.kind, "event");
-      assert.equal(items[2]?.kind === "event" ? items[2].event.sequence : null, 3);
+      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 3);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
