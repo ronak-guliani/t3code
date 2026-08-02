@@ -1331,35 +1331,51 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
 
   const closeTab = Effect.fn("PreviewManager.closeTab")(function* (tabId: string) {
-    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
-    if (!tab) return;
-    yield* Effect.all([cancelPickElement(tabId), stopFrameCapture(tabId)], {
-      concurrency: 2,
-      discard: true,
-    });
+    const closing = yield* SynchronizedRef.modifyEffect(frameCaptureSessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+        if (!tab) return [Option.none(), sessions] as const;
+        const updatedAt = yield* currentIso;
+        const closed: PreviewTabState = {
+          ...tab,
+          webContentsId: null,
+          navStatus: { kind: "Idle" },
+          canGoBack: false,
+          canGoForward: false,
+          zoomFactor: DEFAULT_ZOOM_FACTOR,
+          colorScheme: "system",
+          controller: "none",
+          updatedAt,
+        };
+        yield* SynchronizedRef.update(tabsRef, (tabs) =>
+          replaceMap(tabs, (copy) => {
+            copy.delete(tabId);
+          }),
+        );
+        const captureScope = sessions.get(tabId)?.scope;
+        return [
+          Option.some({ tab, closed, captureScope }),
+          replaceMap(sessions, (copy) => {
+            copy.delete(tabId);
+          }),
+        ] as const;
+      }),
+    );
+    if (Option.isNone(closing)) return;
+    const { tab, closed, captureScope } = closing.value;
+    yield* Effect.all(
+      [
+        cancelPickElement(tabId),
+        captureScope ? Scope.close(captureScope, Exit.void).pipe(Effect.ignore) : Effect.void,
+      ],
+      { concurrency: 2, discard: true },
+    );
     if (tab.webContentsId != null) {
       yield* Effect.all(
         [detachControlSession(tab.webContentsId), detachListeners(tab.webContentsId)],
         { concurrency: 2, discard: true },
       );
     }
-    const updatedAt = yield* currentIso;
-    const closed: PreviewTabState = {
-      ...tab,
-      webContentsId: null,
-      navStatus: { kind: "Idle" },
-      canGoBack: false,
-      canGoForward: false,
-      zoomFactor: DEFAULT_ZOOM_FACTOR,
-      colorScheme: "system",
-      controller: "none",
-      updatedAt,
-    };
-    yield* SynchronizedRef.update(tabsRef, (tabs) =>
-      replaceMap(tabs, (copy) => {
-        copy.delete(tabId);
-      }),
-    );
     yield* emit(tabId, closed);
   });
 
@@ -1913,7 +1929,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
 
   const startRecording = Effect.fn("PreviewManager.startRecording")(function* (tabId: string) {
-    yield* requireWebContents(tabId);
     const captureNextFrame = Effect.sleep(RECORDING_FRAME_INTERVAL_MS).pipe(
       Effect.andThen(capturePreviewFrame(tabId)),
       Effect.catch((error) =>
@@ -1924,8 +1939,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       ),
     );
     const created = yield* SynchronizedRef.modifyEffect(frameCaptureSessionsRef, (sessions) => {
-      if (sessions.has(tabId)) return Effect.succeed([false, sessions] as const);
       return Effect.gen(function* () {
+        yield* requireWebContents(tabId);
+        if (sessions.has(tabId)) return [false, sessions] as const;
         const scope = yield* Scope.fork(parentScope, "sequential");
         yield* Effect.forkIn(Effect.forever(captureNextFrame), scope);
         return [
