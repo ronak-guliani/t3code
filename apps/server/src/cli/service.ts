@@ -124,6 +124,27 @@ export function formatServiceStatus(status: BootService.ServiceStatus): string {
   ].join("\n");
 }
 
+export const restartHealthyCurrentService = (
+  service: {
+    readonly restart: Effect.Effect<
+      void,
+      BootService.BootServiceError | BootService.BootServiceUnsupportedError
+    >;
+  },
+  status: BootService.ServiceStatus,
+) => {
+  if (
+    status.installed &&
+    status.enabled &&
+    status.current &&
+    status.processAlive &&
+    status.responsive
+  ) {
+    return service.restart.pipe(Effect.as(true));
+  }
+  return Effect.succeed(false);
+};
+
 const status = Command.make("status", { baseDir }).pipe(
   Command.withDescription("Show installed, enabled, process, health, and version state."),
   Command.withHandler((flags) =>
@@ -168,14 +189,7 @@ export const offerServiceDuringOnboarding = (input?: {
     const service = yield* BootService.BootService;
     const status = yield* service.status;
     if (!status.supported) return false;
-    if (
-      status.installed &&
-      status.enabled &&
-      status.current &&
-      status.processAlive &&
-      status.responsive
-    )
-      return true;
+    if (yield* restartHealthyCurrentService(service, status)) return true;
     const accepted = yield* Prompt.run(
       Prompt.confirm({
         message: "Keep T3 reachable in the background after this terminal closes?",

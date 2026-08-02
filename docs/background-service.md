@@ -17,7 +17,7 @@ On macOS this creates a per-base-directory LaunchAgent. It starts when that user
 
 Linux and Windows are currently reported as unsupported and no supervisor state is changed. Linux support is intentionally deferred until systemd user-manager and linger behavior can be production-tested across supported distributions.
 
-Logs and the instance-specific definition path are shown by `t3 service status`. Status reports launchd loaded state, process state/PID, and HTTP responsiveness rather than treating a definition file as proof of availability. Uninstall stops and disables that base-directory instance and removes its copied runtimes, version marker, and log.
+The instance-specific definition path and rotating server log are shown by `t3 service status`. The log is the normal bounded `userdata/logs/server.log`; launchd stdout and stderr are discarded instead of appending a second unbounded log. Each service instance writes health discovery state inside its private runtime directory, so a foreground server using the same base directory cannot satisfy or lose the service health record. Status reports launchd loaded state, process state/PID, and HTTP responsiveness rather than treating a definition file as proof of availability. Uninstall stops and disables that base-directory instance and removes only that instance's definition and runtime artifacts.
 
 ## T3 Connect and direct Tailscale HTTPS
 

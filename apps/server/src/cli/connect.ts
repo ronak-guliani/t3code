@@ -27,8 +27,10 @@ import {
   HttpClientResponse,
 } from "effect/unstable/http";
 import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
+import { homedir } from "node:os";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { AuthControlPlaneRuntimeLive } from "../auth/Layers/AuthControlPlane.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CliState from "../cloud/CliState.ts";
 import * as CliTokenManager from "../cloud/CliTokenManager.ts";
@@ -311,9 +313,42 @@ type LiveCloudActionResult =
   | { readonly status: "succeeded" }
   | { readonly status: "failed"; readonly cause: Cause.Cause<unknown> };
 
-const runLiveCloudUnlink = Effect.fn("cloud.cli.run_live_unlink")(function* () {
+const runtimeProcessIsAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return !(
+      typeof cause === "object" &&
+      cause !== null &&
+      "code" in cause &&
+      cause.code === "ESRCH"
+    );
+  }
+};
+
+export const readPreferredCloudRuntimeState = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
-  const runtimeState = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+  if (process.platform === "darwin" && typeof process.getuid === "function") {
+    const canonicalBaseDir = yield* Effect.tryPromise(() =>
+      BootService.liveServiceHost.canonicalize(config.baseDir),
+    );
+    const serviceState = yield* readPersistedServerRuntimeState(
+      BootService.servicePaths({
+        homeDir: homedir(),
+        canonicalBaseDir,
+        userId: process.getuid(),
+      }).runtimeStatePath,
+    );
+    if (Option.isSome(serviceState) && runtimeProcessIsAlive(serviceState.value.pid)) {
+      return serviceState;
+    }
+  }
+  return yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+});
+
+const runLiveCloudUnlink = Effect.fn("cloud.cli.run_live_unlink")(function* () {
+  const runtimeState = yield* readPreferredCloudRuntimeState;
   if (Option.isNone(runtimeState)) {
     return { status: "not-running" } satisfies LiveCloudActionResult;
   }
@@ -342,8 +377,7 @@ type LiveCloudLinkStateResult =
   | { readonly status: "unavailable"; readonly cause: Cause.Cause<unknown> };
 
 const runLiveCloudLinkState = Effect.fn("cloud.cli.run_live_link_state")(function* () {
-  const config = yield* ServerConfig.ServerConfig;
-  const runtimeState = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+  const runtimeState = yield* readPreferredCloudRuntimeState;
   if (Option.isNone(runtimeState)) {
     return { status: "not-running" } satisfies LiveCloudLinkStateResult;
   }
@@ -624,7 +658,7 @@ const runCloudCommand = <A, E>(
       ServerSecretStore.layer,
       CliTokenManager.layer.pipe(Layer.provide(ServerSecretStore.layer)),
       RelayClient.layerCloudflared({ baseDir: config.baseDir }),
-      EnvironmentAuth.runtimeLayer,
+      EnvironmentAuth.runtimeLayer.pipe(Layer.provide(AuthControlPlaneRuntimeLive)),
       ServerEnvironment.layer,
       headlessRelayClientTracingLayer,
     ).pipe(
