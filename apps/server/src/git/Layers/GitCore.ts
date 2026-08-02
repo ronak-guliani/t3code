@@ -34,6 +34,10 @@ import {
 } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
 import {
+  makeReviewContextPrewarmCache,
+  reviewContextPrewarmKey,
+} from "../ReviewContextPrewarmCache.ts";
+import {
   parseRemoteNames,
   parseRemoteNamesInGitOrder,
   parseRemoteRefWithRemoteNames,
@@ -1560,8 +1564,8 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     };
   });
 
-  const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = Effect.fn(
-    "resolveReviewChangesContext",
+  const captureReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = Effect.fn(
+    "captureReviewChangesContext",
   )(function* (input) {
     const details = yield* readReviewRepoContext(input.cwd);
     if (!details.isRepo) {
@@ -1757,6 +1761,14 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
       }),
     };
   });
+
+  const reviewContextPrewarmCache = makeReviewContextPrewarmCache();
+
+  const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = (input) =>
+    reviewContextPrewarmCache.resolve(
+      reviewContextPrewarmKey(input),
+      captureReviewChangesContext(input),
+    );
 
   const prepareCommitContext: GitCoreShape["prepareCommitContext"] = Effect.fn(
     "prepareCommitContext",

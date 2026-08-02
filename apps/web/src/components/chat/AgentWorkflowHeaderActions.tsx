@@ -11,7 +11,7 @@ import {
   GitPullRequestIcon,
   LoaderIcon,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "../ui/button";
 import { Group, GroupSeparator } from "../ui/group";
@@ -31,6 +31,13 @@ const REVIEW_SCOPE_LABELS = {
   "against-base": "Review against base branch",
   "pull-request": "Review pull request",
 } as const satisfies Record<ReviewChangesScope, string>;
+
+/**
+ * Long enough that sweeping the pointer down the pull-request list does not
+ * fire a `gh` pair per entry, short enough to still cover the pause before a
+ * deliberate click.
+ */
+const PULL_REQUEST_PREWARM_HOVER_DELAY_MS = 120;
 
 export type AgentWorkflowHeaderAction =
   | {
@@ -69,11 +76,13 @@ function AgentWorkflowActionButton({
   onRun,
   onListOpenPullRequests,
   onPrewarmProviderSession,
+  onPrewarmReviewPullRequest,
 }: {
   readonly action: AgentWorkflowHeaderAction;
   readonly onRun: (request: AgentWorkflowRunRequest) => void;
   readonly onListOpenPullRequests: () => Promise<ReadonlyArray<GitResolvedPullRequest>>;
   readonly onPrewarmProviderSession: () => void;
+  readonly onPrewarmReviewPullRequest: (pullRequestNumber: number) => void;
 }) {
   const [pullRequests, setPullRequests] = useState<ReadonlyArray<GitResolvedPullRequest> | null>(
     null,
@@ -105,6 +114,24 @@ function AgentWorkflowActionButton({
       .catch(() => setPullRequestError(true))
       .finally(() => setIsLoadingPullRequests(false));
   }, [isLoadingPullRequests, onListOpenPullRequests, pullRequests]);
+
+  const prewarmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (prewarmTimeoutRef.current !== null) clearTimeout(prewarmTimeoutRef.current);
+    },
+    [],
+  );
+  const schedulePullRequestPrewarm = useCallback(
+    (pullRequestNumber: number) => {
+      if (prewarmTimeoutRef.current !== null) clearTimeout(prewarmTimeoutRef.current);
+      prewarmTimeoutRef.current = setTimeout(() => {
+        prewarmTimeoutRef.current = null;
+        onPrewarmReviewPullRequest(pullRequestNumber);
+      }, PULL_REQUEST_PREWARM_HOVER_DELAY_MS);
+    },
+    [onPrewarmReviewPullRequest],
+  );
 
   if (action.kind === "review-code") {
     const runReview = (scope: ReviewChangesScope) =>
@@ -192,6 +219,8 @@ function AgentWorkflowActionButton({
                         pullRequests.map((pullRequest) => (
                           <MenuItem
                             key={pullRequest.number}
+                            onPointerEnter={() => schedulePullRequestPrewarm(pullRequest.number)}
+                            onFocus={() => schedulePullRequestPrewarm(pullRequest.number)}
                             onClick={() =>
                               onRun({
                                 workflowId: action.id,
@@ -261,11 +290,13 @@ export function AgentWorkflowHeaderActions({
   onRun,
   onListOpenPullRequests,
   onPrewarmProviderSession,
+  onPrewarmReviewPullRequest,
 }: {
   readonly actions: ReadonlyArray<AgentWorkflowHeaderAction>;
   readonly onRun: (request: AgentWorkflowRunRequest) => void;
   readonly onListOpenPullRequests: () => Promise<ReadonlyArray<GitResolvedPullRequest>>;
   readonly onPrewarmProviderSession: () => void;
+  readonly onPrewarmReviewPullRequest: (pullRequestNumber: number) => void;
 }) {
   return actions.map((action) => (
     <AgentWorkflowActionButton
@@ -274,6 +305,7 @@ export function AgentWorkflowHeaderActions({
       onRun={onRun}
       onListOpenPullRequests={onListOpenPullRequests}
       onPrewarmProviderSession={onPrewarmProviderSession}
+      onPrewarmReviewPullRequest={onPrewarmReviewPullRequest}
     />
   ));
 }
