@@ -1,4 +1,4 @@
-import type { OrchestrationEvent, ThreadId } from "@t3tools/contracts";
+import type { OrchestrationEvent } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream } from "effect";
 
@@ -11,13 +11,13 @@ import {
   WorktreeCleanupJobRepository,
 } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import type { ProviderServiceShape } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ThreadDeletionReactor,
   type ThreadDeletionReactorShape,
 } from "../Services/ThreadDeletionReactor.ts";
+import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
 
 type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 
@@ -38,37 +38,6 @@ export const processAfterWorktreeReservation = <A, E1, R1, E2, R2>(
       }),
     ),
   );
-
-export const findCanonicalActiveWorktreeOwner = Effect.fn("findCanonicalActiveWorktreeOwner")(
-  function* (
-    readModel: {
-      readonly threads: ReadonlyArray<{
-        readonly id: ThreadId;
-        readonly deletedAt: string | null;
-        readonly worktreePath: string | null;
-      }>;
-    },
-    deletedThreadId: ThreadId,
-    canonicalWorktreePath: string,
-  ) {
-    const activeThreads = readModel.threads.flatMap((thread) =>
-      thread.id !== deletedThreadId && thread.deletedAt === null && thread.worktreePath !== null
-        ? [{ id: thread.id, worktreePath: thread.worktreePath }]
-        : [],
-    );
-    const matches = yield* Effect.forEach(
-      activeThreads,
-      (thread) =>
-        Effect.promise(() => canonicalizeWorktreePath(thread.worktreePath)).pipe(
-          Effect.map((activePath) => activePath === canonicalWorktreePath),
-        ),
-      { concurrency: 4 },
-    );
-    const ownerIndex = matches.findIndex(Boolean);
-    const owner = ownerIndex === -1 ? undefined : activeThreads[ownerIndex];
-    return owner === undefined ? Option.none<ThreadId>() : Option.some(owner.id);
-  },
-);
 
 export const logCleanupCauseUnlessInterrupted = <R, E>({
   effect,
@@ -110,22 +79,6 @@ export const runAfterThreadRuntimeTeardown = <A, E1, R1, E2, R2, E3, R3>(
     return yield* effect;
   });
 
-export const stopProviderSessionForDeletedThread = (
-  providerService: Pick<ProviderServiceShape, "stopSession">,
-  threadId: ThreadDeletedEvent["payload"]["threadId"],
-) =>
-  providerService
-    .stopSession({ threadId })
-    .pipe(
-      Effect.catchTag("ProviderValidationError", (error) =>
-        error.operation === "ProviderService.stopSession" &&
-        error.issue ===
-          `Cannot route thread '${threadId}' because no persisted provider binding exists.`
-          ? Effect.void
-          : Effect.fail(error),
-      ),
-    );
-
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
@@ -138,7 +91,7 @@ const make = Effect.gen(function* () {
   const stopActiveProviderSession = Effect.fn("stopActiveProviderSession")(function* (
     threadId: ThreadDeletedEvent["payload"]["threadId"],
   ) {
-    yield* stopProviderSessionForDeletedThread(providerService, threadId);
+    yield* providerService.stopSession({ threadId });
   });
 
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
