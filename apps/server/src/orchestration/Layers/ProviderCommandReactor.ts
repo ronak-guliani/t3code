@@ -1103,6 +1103,7 @@ const make = Effect.gen(function* () {
       messageId: event.payload.messageId,
       providerSendDispatched: false,
       cancellationRequested: false,
+      cancellationRequestedAt: null,
       providerTurnObserved: false,
       requiresPostAcknowledgementInterrupt: false,
     };
@@ -1123,7 +1124,7 @@ const make = Effect.gen(function* () {
               threadId: event.payload.threadId,
               providerTurnId: turn.turnId,
               activityTurnId: turn.turnId,
-              createdAt: event.payload.createdAt,
+              createdAt: pendingTurnStart.cancellationRequestedAt ?? event.payload.createdAt,
             });
           }),
         ),
@@ -1147,6 +1148,7 @@ const make = Effect.gen(function* () {
     const pendingTurnStart = pendingTurnStarts.get(event.payload.threadId);
     if (pendingTurnStart) {
       pendingTurnStart.cancellationRequested = true;
+      pendingTurnStart.cancellationRequestedAt = event.payload.createdAt;
       if (!pendingTurnStart.providerSendDispatched) {
         const detail = "Turn cancelled before the provider turn began.";
         yield* settleInterruptedThreadSession({
@@ -1413,7 +1415,7 @@ const make = Effect.gen(function* () {
             yield* interruptProviderTurn({
               threadId: event.payload.threadId,
               activityTurnId: event.payload.session.activeTurnId,
-              createdAt: event.occurredAt,
+              createdAt: pendingTurnStart.cancellationRequestedAt ?? event.occurredAt,
             });
           }
         }
