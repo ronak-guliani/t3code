@@ -66,20 +66,21 @@ export function useThreadActions() {
         throw new Error("Cannot archive a running thread.");
       }
 
-      const currentRouteThreadRef = getCurrentRouteThreadRef();
-      const currentRouteIsInArchivedSubtree =
-        currentRouteThreadRef?.environmentId === threadRef.environmentId &&
-        isThreadInSubtree(
-          selectThreadsForEnvironment(useStore.getState(), threadRef.environmentId),
-          threadRef.threadId,
-          currentRouteThreadRef.threadId,
-        );
+      const threadsBeforeArchive = selectThreadsForEnvironment(
+        useStore.getState(),
+        threadRef.environmentId,
+      );
 
       await api.orchestration.dispatchCommand({
         type: "thread.archive",
         commandId: newCommandId(),
         threadId: threadRef.threadId,
       });
+
+      const currentRouteThreadRef = getCurrentRouteThreadRef();
+      const currentRouteIsInArchivedSubtree =
+        currentRouteThreadRef?.environmentId === threadRef.environmentId &&
+        isThreadInSubtree(threadsBeforeArchive, threadRef.threadId, currentRouteThreadRef.threadId);
 
       if (currentRouteIsInArchivedSubtree) {
         await handleNewThreadRef.current(scopeProjectRef(thread.environmentId, thread.projectId));
