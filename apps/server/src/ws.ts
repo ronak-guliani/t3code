@@ -467,14 +467,20 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         Effect.gen(function* () {
           const runId = WorkflowRunId.make(input.idempotencyKey);
           const createdAt = new Date().toISOString();
+          const settings = yield* serverSettings.getSettings;
+          const customWorkflow = settings.agentWorkflows.customWorkflows.find(
+            (candidate) => candidate.id === input.workflowId,
+          );
 
           if (
             input.workflowId !== REVIEW_CHANGES_WORKFLOW_ID &&
-            input.workflowId !== FIX_REVIEW_ISSUES_WORKFLOW_ID
+            input.workflowId !== FIX_REVIEW_ISSUES_WORKFLOW_ID &&
+            customWorkflow === undefined
           ) {
             return workflowSkipped(input, "workflow-not-found", "Workflow not found.");
           }
           if (
+            customWorkflow === undefined &&
             input.destinationMode !== undefined &&
             input.destinationMode !== "child-chat" &&
             !(
@@ -488,21 +494,25 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             });
           }
 
-          const settings = yield* serverSettings.getSettings;
           const reviewSettings = settings.agentWorkflows.reviewChanges;
           const fixSettings = settings.agentWorkflows.fixReviewIssues;
           const override = settings.agentWorkflows.builtInOverrides[input.workflowId];
-          const workflowSettings =
-            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
-          const enabled = override?.enabled ?? workflowSettings.enabled;
-          if (!enabled) {
-            return workflowSkipped(
-              input,
-              "workflow-disabled",
-              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
-                ? "Fix Review Issues workflow is disabled."
-                : "Review Code workflow is disabled.",
-            );
+          if (customWorkflow !== undefined && !customWorkflow.enabled) {
+            return workflowSkipped(input, "workflow-disabled", "Workflow is disabled.");
+          }
+          if (customWorkflow === undefined) {
+            const workflowSettings =
+              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
+            const enabled = override?.enabled ?? workflowSettings.enabled;
+            if (!enabled) {
+              return workflowSkipped(
+                input,
+                "workflow-disabled",
+                input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
+                  ? "Fix Review Issues workflow is disabled."
+                  : "Review Code workflow is disabled.",
+              );
+            }
           }
 
           const threadOption = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
@@ -639,6 +649,72 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           }
           const project = projectOption.value;
           const cwd = input.cwd ?? thread.worktreePath ?? project.workspaceRoot;
+
+          if (customWorkflow !== undefined) {
+            const prompt = customWorkflow.promptTemplate.trim();
+            if (prompt.length === 0) {
+              return yield* new WorkflowRunError({
+                message: "Custom workflow prompt cannot be empty.",
+              });
+            }
+            const destinationMode = input.destinationMode ?? customWorkflow.destinationMode;
+            const threadId =
+              destinationMode === "same-chat"
+                ? input.threadId
+                : ThreadId.make(`workflow:${runId}:target`);
+            const commandId = CommandId.make(`workflow:${runId}:request`);
+            const messageId = MessageId.make(`workflow:${runId}:input`);
+            const modelSelection =
+              customWorkflow.modelSelection ??
+              input.modelSelection ??
+              project.defaultModelSelection ??
+              thread.modelSelection;
+            const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
+            const interactionMode = input.interactionMode ?? thread.interactionMode;
+            const normalizedCommand = yield* normalizeDispatchCommand({
+              type: "thread.turn.start",
+              commandId,
+              threadId,
+              message: {
+                messageId,
+                role: "user",
+                text: prompt,
+                attachments: [],
+              },
+              modelSelection,
+              titleSeed: input.title ?? customWorkflow.name,
+              runtimeMode,
+              interactionMode,
+              ...(destinationMode === "same-chat"
+                ? {}
+                : {
+                    bootstrap: {
+                      createThread: {
+                        projectId: project.id,
+                        parentThreadId: destinationMode === "child-chat" ? input.threadId : null,
+                        title: input.title ?? customWorkflow.name,
+                        modelSelection,
+                        runtimeMode,
+                        interactionMode,
+                        branch: thread.branch,
+                        worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                        createdAt,
+                      },
+                    },
+                  }),
+              createdAt,
+            });
+            const dispatchResult = yield* dispatchNormalizedCommand(normalizedCommand);
+            return {
+              status: "started" as const,
+              runId,
+              threadId,
+              commandId,
+              messageId,
+              sequence: dispatchResult.sequence,
+              createdAt,
+            } satisfies WorkflowRunResult;
+          }
 
           if (input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID) {
             const issues = typeof input.input?.issues === "string" ? input.input.issues.trim() : "";

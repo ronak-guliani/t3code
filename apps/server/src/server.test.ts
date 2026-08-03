@@ -3510,6 +3510,141 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("dispatches configured custom workflows", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: OrchestrationCommand[] = [];
+      const readModel = makeDefaultOrchestrationReadModel();
+      const project = readModel.projects[0]!;
+      const thread = makeDefaultOrchestrationThreadShell({ branch: "feature/custom-workflow" });
+      const workflowModelSelection = {
+        instanceId: ProviderInstanceId.make("copilot"),
+        model: "gpt-5.6-sol",
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              agentWorkflows: {
+                ...DEFAULT_SERVER_SETTINGS.agentWorkflows,
+                customWorkflows: [
+                  {
+                    id: "custom-release-check",
+                    enabled: true,
+                    name: "Release check",
+                    buttonLabel: "Check release",
+                    promptTemplate: "Verify the release is ready.",
+                    modelSelection: workflowModelSelection,
+                    showInHeader: true,
+                    destinationMode: "child-chat",
+                    automation: {
+                      afterAssistantTurnCompletes: false,
+                      cooldownMs: 300_000,
+                      maxRunsPerThread: 1,
+                    },
+                  },
+                ],
+              },
+            }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const runWorkflow = (
+        idempotencyKey: string,
+        destinationMode?: "same-chat" | "new-chat" | "child-chat",
+      ) =>
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.workflowRun]({
+              workflowId: "custom-release-check",
+              threadId: defaultThreadId,
+              ...(destinationMode === undefined ? {} : { destinationMode }),
+              trigger: "manual",
+              idempotencyKey,
+            }),
+          ),
+        );
+
+      const childResult = yield* runWorkflow("custom-release-check-child");
+      const newResult = yield* runWorkflow("custom-release-check-new", "new-chat");
+      const sameResult = yield* runWorkflow("custom-release-check-same", "same-chat");
+
+      assert.equal(childResult.status, "started");
+      assert.equal(newResult.status, "started");
+      assert.equal(sameResult.status, "started");
+      if (
+        childResult.status !== "started" ||
+        newResult.status !== "started" ||
+        sameResult.status !== "started"
+      ) {
+        return;
+      }
+
+      assert.notEqual(childResult.threadId, defaultThreadId);
+      assert.notEqual(newResult.threadId, defaultThreadId);
+      assert.equal(sameResult.threadId, defaultThreadId);
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        [
+          "thread.create",
+          "thread.turn.start",
+          "thread.create",
+          "thread.turn.start",
+          "thread.turn.start",
+        ],
+      );
+
+      const childCreate = dispatchedCommands[0];
+      const childTurn = dispatchedCommands[1];
+      const newCreate = dispatchedCommands[2];
+      const newTurn = dispatchedCommands[3];
+      const sameTurn = dispatchedCommands[4];
+      assertTrue(childCreate?.type === "thread.create");
+      assertTrue(childTurn?.type === "thread.turn.start");
+      assertTrue(newCreate?.type === "thread.create");
+      assertTrue(newTurn?.type === "thread.turn.start");
+      assertTrue(sameTurn?.type === "thread.turn.start");
+      if (
+        childCreate?.type !== "thread.create" ||
+        childTurn?.type !== "thread.turn.start" ||
+        newCreate?.type !== "thread.create" ||
+        newTurn?.type !== "thread.turn.start" ||
+        sameTurn?.type !== "thread.turn.start"
+      ) {
+        return;
+      }
+
+      assert.equal(childCreate.parentThreadId, defaultThreadId);
+      assert.equal(childCreate.threadId, childResult.threadId);
+      assert.equal(newCreate.parentThreadId, null);
+      assert.equal(newCreate.threadId, newResult.threadId);
+      assert.equal(sameTurn.threadId, defaultThreadId);
+      for (const command of [childCreate, childTurn, newCreate, newTurn, sameTurn]) {
+        assert.deepEqual(command.modelSelection, workflowModelSelection);
+        assert.equal(command.runtimeMode, "full-access");
+        assert.equal(command.interactionMode, "default");
+      }
+      for (const command of [childTurn, newTurn, sameTurn]) {
+        assert.equal(command.message.text, "Verify the release is ready.");
+        assert.equal(command.titleSeed, "Release check");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc git methods", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest({
