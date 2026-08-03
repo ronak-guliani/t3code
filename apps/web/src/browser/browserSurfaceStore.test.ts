@@ -123,4 +123,23 @@ describe("browserSurfaceStore", () => {
     expect(staleLease.present({ x: 0, y: 0, width: 300, height: 200 }, true)).toBe(false);
     expect(liveLease.present({ x: 10, y: 20, width: 320, height: 240 }, true)).toBe(true);
   });
+
+  it("allows a reclaimed lease to present after displacement", () => {
+    const tabId = "reclaimed-browser-surface";
+    const first = acquireBrowserSurface(tabId, true);
+    expect(first.present({ x: 0, y: 0, width: 320, height: 200 }, true, 12)).toBe(true);
+
+    const second = acquireBrowserSurface(tabId);
+    expect(first.present({ x: 0, y: 0, width: 320, height: 200 }, true, 12)).toBe(false);
+    expect(second.present({ x: 10, y: 20, width: 400, height: 300 }, false)).toBe(true);
+
+    first.release();
+    const reclaimed = acquireBrowserSurface(tabId, true);
+    expect(reclaimed.present({ x: 5, y: 5, width: 300, height: 180 }, true, 12)).toBe(true);
+    expect(useBrowserSurfaceStore.getState().byTabId[tabId]).toMatchObject({
+      visible: true,
+      fitSourceContent: true,
+      cornerRadius: 12,
+    });
+  });
 });

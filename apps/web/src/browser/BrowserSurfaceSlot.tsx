@@ -2,7 +2,7 @@
 
 import { useLayoutEffect, useRef } from "react";
 
-import { acquireBrowserSurface } from "./browserSurfaceStore";
+import { acquireBrowserSurface, useBrowserSurfaceStore } from "./browserSurfaceStore";
 
 export function BrowserSurfaceSlot(props: {
   readonly tabId: string;
@@ -25,11 +25,13 @@ export function BrowserSurfaceSlot(props: {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const presentationRef = useRef({ visible, cornerRadius });
   const updateRef = useRef<(() => void) | null>(null);
+  const ownerRef = useRef<symbol | null>(null);
 
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!element) return;
     let lease = acquireBrowserSurface(tabId, fitSourceContent);
+    ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
     const update = () => {
       const rect = element.getBoundingClientRect();
       const presentation = presentationRef.current;
@@ -46,6 +48,7 @@ export function BrowserSurfaceSlot(props: {
       if (presentation.visible && !presented) {
         lease.release();
         lease = acquireBrowserSurface(tabId, fitSourceContent);
+        ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
         lease.present(
           {
             x: Math.round(rect.x),
@@ -56,6 +59,8 @@ export function BrowserSurfaceSlot(props: {
           rect.width > 0 && rect.height > 0,
           presentation.cornerRadius,
         );
+      } else {
+        ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
       }
     };
     updateRef.current = update;
@@ -64,11 +69,20 @@ export function BrowserSurfaceSlot(props: {
     observer.observe(element);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
+    const unsubscribe = useBrowserSurfaceStore.subscribe((state) => {
+      const currentOwner = state.byTabId[tabId]?.owner ?? null;
+      if (currentOwner === ownerRef.current) return;
+      // Another slot claimed this tab. Reclaim immediately when this slot is visible.
+      if (presentationRef.current.visible) update();
+      else ownerRef.current = currentOwner;
+    });
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
+      unsubscribe();
       if (updateRef.current === update) updateRef.current = null;
+      ownerRef.current = null;
       lease.release();
     };
   }, [fitSourceContent, tabId]);

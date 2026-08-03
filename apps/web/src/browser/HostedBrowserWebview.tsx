@@ -63,7 +63,6 @@ export function HostedBrowserWebview(props: {
     useShallow((state) => {
       const current = state.byTabId[runtimeTabId];
       return {
-        content: current?.content ?? null,
         cornerRadius: current?.cornerRadius ?? 0,
         fitSourceContent: current?.fitSourceContent ?? false,
         fittedSourceContent: current?.fittedSourceContent ?? null,

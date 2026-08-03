@@ -8,6 +8,7 @@ import { useLayoutEffect, useRef } from "react";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { Button } from "~/components/ui/button";
+import { toastManager } from "~/components/ui/toast";
 import { useThreadPreviewState } from "~/previewStateStore";
 import {
   selectThreadPreviewMiniPlayer,
@@ -47,14 +48,20 @@ export function ThreadPreviewMiniPlayer(props: {
   );
   const previewState = useThreadPreviewState(threadRef);
   const tabId = props.tabId ?? miniPlayer?.tabId ?? previewState.activeTabId;
-  if (!tabId) return null;
-  const overlay = previewState.desktopByTabId[tabId] ?? null;
-  const runtimeTabId = previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId);
-  if (miniPlayer?.tabId !== tabId || !previewState.sessions[tabId]) return null;
+  const overlay = tabId ? (previewState.desktopByTabId[tabId] ?? null) : null;
+  const runtimeTabId = tabId
+    ? previewRuntimeTabId(threadRef, previewState.serverEpoch, tabId)
+    : null;
+  const size = miniPlayer?.size ?? PREVIEW_MINI_PLAYER_DEFAULT_SIZE;
+  const position = miniPlayer?.tabId === tabId ? (miniPlayer.position ?? null) : null;
+  const isOpen =
+    tabId != null &&
+    runtimeTabId != null &&
+    miniPlayer?.tabId === tabId &&
+    previewState.sessions[tabId] != null;
 
-  const size = miniPlayer.size ?? PREVIEW_MINI_PLAYER_DEFAULT_SIZE;
-  const position = miniPlayer.position;
   useLayoutEffect(() => {
+    if (!isOpen || !tabId) return;
     const clampAndMove = () => {
       const root = rootRef.current;
       const parent = root?.offsetParent;
@@ -87,7 +94,8 @@ export function ThreadPreviewMiniPlayer(props: {
     observer.observe(root);
     observer.observe(parent);
     return () => observer.disconnect();
-  }, [bottomInset, position, tabId, threadRef]);
+  }, [bottomInset, isOpen, position, tabId, threadRef]);
+
   const withContainer = (
     event: ReactPointerEvent<HTMLElement>,
     callback: (container: PreviewMiniPlayerSize, root: HTMLElement) => void,
@@ -120,7 +128,7 @@ export function ThreadPreviewMiniPlayer(props: {
     });
   const moveDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag || drag.pointerId !== event.pointerId || !tabId) return;
     withContainer(event, (container) => {
       usePreviewMiniPlayerStore.getState().move(
         threadRef,
@@ -151,7 +159,7 @@ export function ThreadPreviewMiniPlayer(props: {
     });
   const moveResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
     const resize = resizeRef.current;
-    if (!resize || resize.pointerId !== event.pointerId) return;
+    if (!resize || resize.pointerId !== event.pointerId || !tabId) return;
     withContainer(event, (container) => {
       const next = clampPreviewMiniPlayerSize(
         {
@@ -172,17 +180,26 @@ export function ThreadPreviewMiniPlayer(props: {
     });
   };
   const toggleNativePictureInPicture = () => {
-    if (!previewBridge) return;
+    if (!previewBridge || !runtimeTabId) return;
     const action = overlay?.pictureInPicture
       ? previewBridge.pictureInPicture.close
       : previewBridge.pictureInPicture.open;
-    void action(runtimeTabId).catch(() => undefined);
+    void action(runtimeTabId).catch((error) => {
+      toastManager.add({
+        type: "error",
+        title: "Unable to update popped-out preview",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    });
   };
+
+  if (!isOpen || !tabId || !runtimeTabId) return null;
 
   return (
     <section
       ref={rootRef}
       aria-label="Floating browser preview"
+      data-preview-mini-player={tabId}
       className="pointer-events-none absolute select-none"
       style={
         position
@@ -212,7 +229,12 @@ export function ThreadPreviewMiniPlayer(props: {
         <Button
           variant={overlay?.pictureInPicture ? "secondary" : "ghost"}
           size="icon-xs"
-          aria-label="Pop preview into separate window"
+          aria-label={
+            overlay?.pictureInPicture
+              ? "Close popped-out preview"
+              : "Pop preview into separate window"
+          }
+          title={overlay?.pictureInPicture ? "Close separate window" : "Pop into separate window"}
           disabled={overlay === null}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={toggleNativePictureInPicture}
