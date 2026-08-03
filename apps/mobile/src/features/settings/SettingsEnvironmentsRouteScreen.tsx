@@ -170,7 +170,7 @@ function ConfiguredCloudEnvironmentRows(props: {
   return (
     <View collapsable={false} className="mt-5 gap-3">
       <View className="flex-row items-center justify-between px-1">
-        <Text className="text-sm font-t3-bold uppercase text-foreground-muted">T3 Cloud</Text>
+        <Text className="text-sm font-t3-bold uppercase text-foreground-muted">T3 Connect</Text>
         <Pressable
           accessibilityRole="button"
           disabled={controller.relayDiscovery.isRefreshing}
@@ -215,13 +215,13 @@ function ConfiguredCloudEnvironmentRows(props: {
         <View collapsable={false} className="items-center gap-3 rounded-[24px] bg-card p-6">
           <ActivityIndicator color={iconColor} />
           <Text className="text-center text-sm leading-normal text-foreground-muted">
-            Loading linked cloud environments.
+            Loading linked T3 Connect environments.
           </Text>
         </View>
       ) : controller.relayDiscovery.error ? (
         <View collapsable={false} className="gap-3 rounded-[24px] bg-card p-5">
           <Text className="text-base font-t3-bold text-foreground">
-            Could not load T3 Cloud environments
+            Could not load T3 Connect environments
           </Text>
           <Text className="text-sm text-foreground-muted">{controller.relayDiscovery.error}</Text>
           {controller.relayDiscovery.errorTraceId ? (
@@ -231,7 +231,7 @@ function ConfiguredCloudEnvironmentRows(props: {
       ) : (
         <View collapsable={false} className="rounded-[24px] bg-card p-5">
           <Text className="text-sm leading-normal text-foreground-muted">
-            No additional linked cloud environments.
+            No additional linked T3 Connect environments.
           </Text>
         </View>
       )}

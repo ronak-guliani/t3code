@@ -78,7 +78,7 @@ import {
   vcsListRefsInputToGit,
 } from "./git/VcsBridge.ts";
 import { clamp } from "effect/Number";
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
@@ -2173,9 +2173,34 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             makeWsRpcLayer(session.sessionId).pipe(Layer.provideMerge(RpcSerialization.layerJson)),
           ),
         );
+        const waitUntilSessionInactive = Effect.raceFirst(
+          sessions.streamChanges.pipe(
+            Stream.filter(
+              (change) => change.type === "clientRemoved" && change.sessionId === session.sessionId,
+            ),
+            Stream.runHead,
+            Effect.asVoid,
+          ),
+          Effect.gen(function* () {
+            while (true) {
+              const activeSessions = yield* sessions.listActive();
+              if (
+                !activeSessions.some(
+                  (activeSession) => activeSession.sessionId === session.sessionId,
+                )
+              ) {
+                return;
+              }
+              yield* Effect.sleep(Duration.seconds(1));
+            }
+          }),
+        ).pipe(Effect.as(HttpServerResponse.empty({ status: 401 })));
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect.pipe(withLogContext({ sessionId: session.sessionId })),
+          () =>
+            Effect.raceFirst(rpcWebSocketHttpEffect, waitUntilSessionInactive).pipe(
+              withLogContext({ sessionId: session.sessionId }),
+            ),
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),

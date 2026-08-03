@@ -203,6 +203,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         const opened = yield* Deferred.make<void>();
         const disconnected = yield* Deferred.make<void>();
+        const revoked = yield* Deferred.make<void>();
         const reconnected = yield* Deferred.make<void>();
         const ready = yield* Deferred.make<void>();
         const initialSnapshot = yield* Deferred.make<void>();
@@ -232,6 +233,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         let wsTokenIssueCount = 0;
         let openCount = 0;
+        let involuntaryCloseCount = 0;
         const snapshots: number[] = [];
         const liveProjectSequences: number[] = [];
         const transport = yield* Effect.acquireRelease(
@@ -257,7 +259,13 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
                   },
                   onClose: (_details, context) => {
                     if (!context.intentional) {
-                      Effect.runFork(Deferred.succeed(disconnected, undefined));
+                      involuntaryCloseCount += 1;
+                      Effect.runFork(
+                        Deferred.succeed(
+                          involuntaryCloseCount === 1 ? disconnected : revoked,
+                          undefined,
+                        ),
+                      );
                     }
                   },
                 },
@@ -395,6 +403,40 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         unsubscribeShell();
         unsubscribeLifecycle();
+
+        const clients = yield* fetchJson<
+          ReadonlyArray<{
+            readonly sessionId: string;
+            readonly method: string;
+            readonly role?: string;
+            readonly current: boolean;
+          }>
+        >(`${origin}/api/auth/clients`, {
+          headers: { authorization: ["Bearer", ownerToken].join(" ") },
+        });
+        const mobileSession = clients.body.find(
+          (session) =>
+            session.method === "bearer-session-token" &&
+            session.role === "client" &&
+            !session.current,
+        );
+        expect(mobileSession).toBeDefined();
+        yield* fetchJson<{ readonly revoked: boolean }>(`${origin}/api/auth/clients/revoke`, {
+          method: "POST",
+          headers: {
+            authorization: ["Bearer", ownerToken].join(" "),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ sessionId: mobileSession?.sessionId }),
+        });
+        yield* Deferred.await(revoked).pipe(Effect.timeout("10 seconds"));
+        const revokedSnapshot = yield* Effect.promise(() =>
+          fetch(`${origin}/api/orchestration/shell-snapshot`, {
+            headers: { authorization: ["Bearer", registration.credential.token].join(" ") },
+          }),
+        );
+        expect(revokedSnapshot.status).toBe(401);
+
         yield* Effect.promise(() => transport.dispose()).pipe(Effect.timeout("10 seconds"));
         yield* Effect.promise(() => context.close());
         yield* Effect.promise(() => browser.close());

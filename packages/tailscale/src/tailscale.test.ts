@@ -13,8 +13,10 @@ import {
   buildTailscaleHttpsBaseUrl,
   disableTailscaleServe,
   ensureTailscaleServe,
+  isTailscaleServePortConfigured,
   isTailscaleIpv4Address,
   parseTailscaleMagicDnsName,
+  parseTailscaleServePortConfigured,
   parseTailscaleStatus,
   readTailscaleStatus,
   TAILSCALE_STATUS_TIMEOUT,
@@ -130,6 +132,21 @@ describe("tailscale", () => {
     }),
   );
 
+  it.effect("detects configured Serve ports from TCP and Web status", () =>
+    Effect.gen(function* () {
+      assert.isTrue(
+        yield* parseTailscaleServePortConfigured('{"TCP":{"443":{"HTTPS":true}},"Web":{}}', 443),
+      );
+      assert.isTrue(
+        yield* parseTailscaleServePortConfigured(
+          '{"TCP":{},"Web":{"desktop.tail.ts.net:8443":{"Handlers":{}}}}',
+          8443,
+        ),
+      );
+      assert.isFalse(yield* parseTailscaleServePortConfigured('{"TCP":{},"Web":{}}', 443));
+    }),
+  );
+
   it.effect("reads tailscale status through the process spawner service", () => {
     const layer = mockSpawnerLayer((command, args) => {
       assert.equal(command, "tailscale");
@@ -230,6 +247,18 @@ describe("tailscale", () => {
     });
 
     return ensureTailscaleServe({ localPort: 13773, servePort: 8443 }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("reads tailscale serve port occupancy through the process spawner service", () => {
+    const layer = mockSpawnerLayer((command, args) => {
+      assert.equal(command, "tailscale");
+      assert.deepEqual(args, ["serve", "status", "--json"]);
+      return { stdout: '{"TCP":{"8443":{"HTTPS":true}}}' };
+    });
+
+    return Effect.gen(function* () {
+      assert.isTrue(yield* isTailscaleServePortConfigured(8443).pipe(Effect.provide(layer)));
+    });
   });
 
   it.effect("retains tailscale serve exit diagnostics", () => {
