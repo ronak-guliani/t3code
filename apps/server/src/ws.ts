@@ -468,15 +468,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           const runId = WorkflowRunId.make(input.idempotencyKey);
           const createdAt = new Date().toISOString();
           const settings = yield* serverSettings.getSettings;
-          const customWorkflow = settings.agentWorkflows.customWorkflows.find(
-            (candidate) => candidate.id === input.workflowId,
-          );
+          const isBuiltInWorkflow =
+            input.workflowId === REVIEW_CHANGES_WORKFLOW_ID ||
+            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID;
+          const customWorkflow = isBuiltInWorkflow
+            ? undefined
+            : settings.agentWorkflows.customWorkflows.find(
+                (candidate) => candidate.id === input.workflowId,
+              );
 
-          if (
-            input.workflowId !== REVIEW_CHANGES_WORKFLOW_ID &&
-            input.workflowId !== FIX_REVIEW_ISSUES_WORKFLOW_ID &&
-            customWorkflow === undefined
-          ) {
+          if (!isBuiltInWorkflow && customWorkflow === undefined) {
             return workflowSkipped(input, "workflow-not-found", "Workflow not found.");
           }
           if (
@@ -671,7 +672,23 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               thread.modelSelection;
             const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
             const interactionMode = input.interactionMode ?? thread.interactionMode;
-            const normalizedCommand = yield* normalizeDispatchCommand({
+            if (destinationMode !== "same-chat") {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.create",
+                commandId: CommandId.make(`workflow:${runId}:create-target`),
+                threadId,
+                projectId: project.id,
+                parentThreadId: destinationMode === "child-chat" ? input.threadId : null,
+                title: input.title ?? customWorkflow.name,
+                modelSelection,
+                runtimeMode,
+                interactionMode,
+                branch: thread.branch,
+                worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                createdAt,
+              });
+            }
+            const dispatchResult = yield* orchestrationEngine.dispatch({
               type: "thread.turn.start",
               commandId,
               threadId,
@@ -685,26 +702,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               titleSeed: input.title ?? customWorkflow.name,
               runtimeMode,
               interactionMode,
-              ...(destinationMode === "same-chat"
-                ? {}
-                : {
-                    bootstrap: {
-                      createThread: {
-                        projectId: project.id,
-                        parentThreadId: destinationMode === "child-chat" ? input.threadId : null,
-                        title: input.title ?? customWorkflow.name,
-                        modelSelection,
-                        runtimeMode,
-                        interactionMode,
-                        branch: thread.branch,
-                        worktreePath: cwd === project.workspaceRoot ? null : cwd,
-                        createdAt,
-                      },
-                    },
-                  }),
               createdAt,
             });
-            const dispatchResult = yield* dispatchNormalizedCommand(normalizedCommand);
             return {
               status: "started" as const,
               runId,
