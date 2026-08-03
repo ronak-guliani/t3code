@@ -598,6 +598,29 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
+  it("renders purely informational states as a bare dot", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          virtualAgentRun: {
+            parentThreadId: ThreadId.make("parent-thread"),
+            taskId: "agent-1",
+            status: "running",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Working", dotOnly: true });
+  });
+
+  it("keeps a label on states that ask the user to act", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, hasPendingApprovals: true },
+      }),
+    ).toMatchObject({ label: "Pending Approval", dotOnly: false });
+  });
+
   it("shows pending approval before all other statuses", () => {
     expect(
       resolveThreadStatusPill({
@@ -781,18 +804,21 @@ describe("resolveProjectStatusIndicator", () => {
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
+          dotOnly: true,
         },
         {
           label: "Pending Approval",
           colorClass: "text-amber-600",
           dotClass: "bg-amber-500",
           pulse: false,
+          dotOnly: false,
         },
         {
           label: "Working",
           colorClass: "text-sky-600",
           dotClass: "bg-sky-500",
           pulse: true,
+          dotOnly: true,
         },
       ]),
     ).toMatchObject({ label: "Pending Approval", dotClass: "bg-amber-500" });
@@ -806,12 +832,14 @@ describe("resolveProjectStatusIndicator", () => {
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
+          dotOnly: true,
         },
         {
           label: "Plan Ready",
           colorClass: "text-violet-600",
           dotClass: "bg-violet-500",
           pulse: false,
+          dotOnly: false,
         },
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
