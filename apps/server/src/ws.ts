@@ -322,6 +322,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 threadId: event.payload.threadId,
               }),
             );
+          case "thread.archived":
+            // Archived threads are excluded from active shell lookups, so
+            // emit their removal directly instead of silently dropping this event.
+            return Effect.succeed(
+              Option.some({
+                kind: "thread-removed" as const,
+                sequence: event.sequence,
+                threadId: event.payload.threadId,
+              }),
+            );
           default:
             if (event.aggregateKind === "workflow") {
               return Effect.succeed(
