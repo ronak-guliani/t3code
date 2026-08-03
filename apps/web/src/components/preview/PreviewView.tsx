@@ -55,6 +55,7 @@ import {
   useActiveBrowserRecordingTabIds,
 } from "~/browser/browserRecording";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -82,6 +83,9 @@ export function PreviewView({
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
+  const miniPlayerTabId = usePreviewMiniPlayerStore(
+    (state) => state.byThreadKey[scopedThreadKey(threadRef)]?.tabId ?? null,
+  );
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
@@ -244,6 +248,16 @@ export function PreviewView({
     if (!localApi) return;
     void localApi.shell.openExternal(url).catch(() => undefined);
   }, [url]);
+
+  const handleToggleFloatingPreview = useCallback(() => {
+    if (!tabId) return;
+    if (miniPlayerTabId === tabId) {
+      usePreviewMiniPlayerStore.getState().close(threadRef);
+      return;
+    }
+    usePreviewMiniPlayerStore.getState().open(threadRef, tabId);
+    onClose?.();
+  }, [miniPlayerTabId, onClose, tabId, threadRef]);
 
   const handleCapture = useCallback(
     (record: boolean) => {
@@ -592,6 +606,9 @@ export function PreviewView({
         onCapture={previewBridge && tabId ? handleCapture : undefined}
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={runtimeTabId !== null && activeRecordingTabIds.has(runtimeTabId)}
+        onPictureInPicture={previewBridge && tabId ? handleToggleFloatingPreview : undefined}
+        pictureInPicture={miniPlayerTabId === tabId}
+        pictureInPictureDisabled={!desktopOverlay || isUnreachable}
         onPickElement={previewBridge && tabId ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
@@ -633,7 +650,7 @@ export function PreviewView({
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
-            visible={visible && !isUnreachable}
+            visible={visible && miniPlayerTabId !== tabId && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}

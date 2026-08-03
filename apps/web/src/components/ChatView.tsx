@@ -125,6 +125,7 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { PreviewPanel } from "./preview/PreviewPanel";
+import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { useBrowserPanelState, useRightPanelStore } from "~/rightPanelStore";
@@ -4345,6 +4346,17 @@ function ChatViewBody(
                 },
               });
             }
+          } catch (error) {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Workflow started but could not be opened",
+                description:
+                  error instanceof Error
+                    ? error.message
+                    : "Open the workflow thread from the sidebar to continue.",
+              }),
+            );
           } finally {
             // The mounted route holds its own retain by now, so this only drops
             // the temporary one. Released subscriptions stay warm rather than
@@ -4578,7 +4590,7 @@ function ChatViewBody(
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-chat-background">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-chat-background">
       {/* Top bar */}
       <header
         className={cn(
@@ -5055,6 +5067,7 @@ function ChatViewBody(
       {expandedImage && (
         <ExpandedImageDialog preview={expandedImage} onClose={closeExpandedImage} />
       )}
+      {activeThreadRef ? <ThreadPreviewMiniPlayer threadRef={activeThreadRef} /> : null}
     </div>
   );
 }

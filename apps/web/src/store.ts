@@ -560,6 +560,32 @@ function backgroundAgentRunsEqual(
   });
 }
 
+function reconcileSidebarActivitySummary(
+  state: EnvironmentState,
+  thread: Pick<Thread, "id" | "latestTurn" | "session">,
+): EnvironmentState {
+  const summary = state.sidebarThreadSummaryById[thread.id];
+  if (
+    summary === undefined ||
+    (threadSessionsEqual(summary.session, thread.session) &&
+      latestTurnsEqual(summary.latestTurn, thread.latestTurn))
+  ) {
+    return state;
+  }
+
+  return {
+    ...state,
+    sidebarThreadSummaryById: {
+      ...state.sidebarThreadSummaryById,
+      [thread.id]: {
+        ...summary,
+        session: thread.session,
+        latestTurn: thread.latestTurn,
+      },
+    },
+  };
+}
+
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
   return (
     left !== undefined &&
@@ -751,7 +777,9 @@ function ensureThreadRegistered(
  * the active thread has up-to-date state even if the shell stream event
  * hasn't arrived yet (both streams use structural equality checks to avoid
  * unnecessary re-renders when delivering equivalent data).
- * Does NOT write sidebarThreadSummaryById — that is shell-stream-only.
+ * Reconciles only the sidebar's session/turn activity fields so a retained
+ * detail subscription cannot show working state in chat while its row stays
+ * idle. Other sidebar summary fields remain shell-stream-owned.
  */
 function writeThreadState(
   state: EnvironmentState,
@@ -920,7 +948,7 @@ function writeThreadState(
     };
   }
 
-  return nextState;
+  return reconcileSidebarActivitySummary(nextState, nextThread);
 }
 
 /**
@@ -1430,7 +1458,7 @@ function updateThreadMessageState(
       ? buildLatestTurn({
           previous: currentLatestTurn,
           turnId: event.payload.turnId,
-          state: currentLatestTurn?.state ?? "running",
+          state: currentLatestTurn?.state ?? (event.payload.streaming ? "running" : "completed"),
           requestedAt:
             currentLatestTurn?.turnId === event.payload.turnId
               ? currentLatestTurn.requestedAt
@@ -1443,7 +1471,9 @@ function updateThreadMessageState(
           completedAt:
             currentLatestTurn?.turnId === event.payload.turnId
               ? (currentLatestTurn.completedAt ?? null)
-              : null,
+              : event.payload.streaming
+                ? null
+                : event.payload.updatedAt,
           assistantMessageId: event.payload.messageId,
         })
       : currentLatestTurn;
@@ -1475,7 +1505,7 @@ function updateThreadMessageState(
     }
   }
 
-  return {
+  const nextState: EnvironmentState = {
     ...state,
     ...(shell.updatedAt === event.occurredAt
       ? {}
@@ -1511,6 +1541,12 @@ function updateThreadMessageState(
       ? {}
       : { turnDiffSummaryByThreadId }),
   };
+
+  return reconcileSidebarActivitySummary(nextState, {
+    id: threadId,
+    session: state.threadSessionById[threadId] ?? null,
+    latestTurn,
+  });
 }
 
 function buildProjectState(

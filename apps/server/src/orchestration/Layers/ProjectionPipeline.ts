@@ -860,6 +860,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const latestTurn =
+            existingRow.value.latestTurnId === null
+              ? Option.none()
+              : yield* projectionTurnRepository.getByTurnId({
+                  threadId: event.payload.threadId,
+                  turnId: existingRow.value.latestTurnId,
+                });
+          if (
+            Option.isSome(latestTurn) &&
+            latestTurn.value.state === "running" &&
+            event.payload.session.status !== "running"
+          ) {
+            yield* projectionTurnRepository.upsertByTurnId({
+              ...latestTurn.value,
+              state: event.payload.session.status === "error" ? "error" : "interrupted",
+              completedAt: event.payload.session.updatedAt,
+            });
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
@@ -1362,10 +1380,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             sourceProposedPlanThreadId: null,
             sourceProposedPlanId: null,
             assistantMessageId: event.payload.messageId,
-            state: "running",
+            state: event.payload.streaming ? "running" : "completed",
             requestedAt: event.payload.createdAt,
             startedAt: event.payload.createdAt,
-            completedAt: null,
+            completedAt: event.payload.streaming ? null : event.payload.updatedAt,
             checkpointTurnCount: null,
             checkpointRef: null,
             checkpointStatus: null,

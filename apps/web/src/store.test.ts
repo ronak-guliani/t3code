@@ -679,6 +679,103 @@ describe("setThreadBranch", () => {
 });
 
 describe("incremental orchestration updates", () => {
+  it("keeps sidebar activity aligned with a live assistant message", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const environmentState = selectEnvironmentState(state, localEnvironmentId);
+    const stateWithSidebarSummary = withActiveEnvironmentState({
+      ...environmentState,
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+    const turnId = TurnId.make("turn-1");
+
+    const next = applyOrchestrationEvent(
+      stateWithSidebarSummary,
+      makeEvent("thread.message-sent", {
+        threadId: thread.id,
+        messageId: MessageId.make("assistant-1"),
+        role: "assistant",
+        text: "Working",
+        turnId,
+        streaming: true,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(selectThreadByRef(next, scopeThreadRef(localEnvironmentId, thread.id))).toMatchObject({
+      latestTurn: { turnId, state: "running", completedAt: null },
+    });
+    expect(selectSidebarThreadsAcrossEnvironments(next)[0]).toMatchObject({
+      latestTurn: { turnId, state: "running", completedAt: null },
+    });
+  });
+
+  it("keeps sidebar activity aligned with detail-stream session updates", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const environmentState = selectEnvironmentState(state, localEnvironmentId);
+    const stateWithSidebarSummary = withActiveEnvironmentState({
+      ...environmentState,
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+    const turnId = TurnId.make("turn-1");
+
+    const working = applyOrchestrationEvent(
+      stateWithSidebarSummary,
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "running",
+          providerName: "copilot",
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:02.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    expect(selectThreadByRef(working, scopeThreadRef(localEnvironmentId, thread.id))).toMatchObject(
+      {
+        session: { orchestrationStatus: "running", activeTurnId: turnId },
+        latestTurn: { turnId, state: "running", completedAt: null },
+      },
+    );
+    expect(selectSidebarThreadsAcrossEnvironments(working)[0]).toMatchObject({
+      session: { orchestrationStatus: "running", activeTurnId: turnId },
+      latestTurn: { turnId, state: "running", completedAt: null },
+    });
+
+    const stopped = applyOrchestrationEvent(
+      working,
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "idle",
+          providerName: "copilot",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:03.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+    expect(selectSidebarThreadsAcrossEnvironments(stopped)[0]).toMatchObject({
+      session: { orchestrationStatus: "idle", activeTurnId: undefined },
+      latestTurn: { turnId, state: "interrupted", completedAt: "2026-02-27T00:00:03.000Z" },
+    });
+  });
+
   it("preserves detail-only metadata from thread snapshots", () => {
     const threadId = ThreadId.make("thread-1");
     const resumeCursor = {
@@ -1425,6 +1522,31 @@ describe("incremental orchestration updates", () => {
       assistantMessageId: MessageId.make("assistant-1"),
     });
     expect(threadsOf(next)[0]?.messages).toHaveLength(1);
+  });
+
+  it("infers a completed turn from a standalone non-streaming assistant message", () => {
+    const thread = makeThread({ latestTurn: null });
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.message-sent", {
+        threadId: thread.id,
+        messageId: MessageId.make("assistant-copied"),
+        role: "assistant",
+        text: "Copied fork history",
+        turnId: TurnId.make("turn-copied"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:03.000Z",
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.latestTurn).toMatchObject({
+      turnId: TurnId.make("turn-copied"),
+      state: "completed",
+      completedAt: "2026-02-27T00:00:04.000Z",
+      assistantMessageId: MessageId.make("assistant-copied"),
+    });
   });
 
   it("settles an unfinished latest turn when a session-set event leaves running", () => {
