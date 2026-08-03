@@ -2,8 +2,8 @@ import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/
 import { Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { toShellStreamEvent } from "./mobileProtocol.ts";
-import type { ProjectionSnapshotQueryShape } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import type { ProjectionSnapshotQueryShape } from "./Services/ProjectionSnapshotQuery.ts";
+import { toShellStreamEvent } from "./shellStream.ts";
 
 describe("toShellStreamEvent", () => {
   it("removes every archived nested thread without reading the active shell", async () => {

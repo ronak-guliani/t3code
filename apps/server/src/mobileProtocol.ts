@@ -32,7 +32,6 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
-  ThreadId,
 } from "@t3tools/contracts";
 import { Data, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -45,10 +44,8 @@ import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { dispatchThroughStartupGate } from "./orchestration/gatedDispatch.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
-import {
-  ProjectionSnapshotQuery,
-  type ProjectionSnapshotQueryShape,
-} from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { filterActiveShellSnapshot, toShellStreamEvent } from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 
@@ -219,67 +216,6 @@ const encodeMobileServerMessage = Schema.encodeUnknownSync(MobileServerMessage);
 
 function encodeServerMessage(message: MobileServerMessage): string {
   return JSON.stringify(encodeMobileServerMessage(message));
-}
-
-export function toShellStreamEvent(
-  projectionSnapshotQuery: Pick<
-    ProjectionSnapshotQueryShape,
-    "getProjectShellById" | "getThreadShellById"
-  >,
-  event: OrchestrationEvent,
-): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never> {
-  switch (event.type) {
-    case "project.created":
-    case "project.meta-updated":
-      return projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
-        Effect.map((project) =>
-          Option.map(project, (nextProject) => ({
-            kind: "project-upserted" as const,
-            sequence: event.sequence,
-            project: nextProject,
-          })),
-        ),
-        Effect.catch(() => Effect.succeed(Option.none())),
-      );
-    case "project.deleted":
-      return Effect.succeed(
-        Option.some({
-          kind: "project-removed" as const,
-          sequence: event.sequence,
-          projectId: event.payload.projectId,
-        }),
-      );
-    case "thread.deleted":
-      return Effect.succeed(
-        Option.some({
-          kind: "thread-removed" as const,
-          sequence: event.sequence,
-          threadId: event.payload.threadId,
-        }),
-      );
-    case "thread.archived":
-      return Effect.succeed(
-        Option.some({
-          kind: "thread-removed" as const,
-          sequence: event.sequence,
-          threadId: event.payload.threadId,
-        }),
-      );
-    default:
-      if (event.aggregateKind !== "thread") {
-        return Effect.succeed(Option.none());
-      }
-      return projectionSnapshotQuery.getThreadShellById(ThreadId.make(event.aggregateId)).pipe(
-        Effect.map((thread) =>
-          Option.map(thread, (nextThread) => ({
-            kind: "thread-upserted" as const,
-            sequence: event.sequence,
-            thread: nextThread,
-          })),
-        ),
-        Effect.catch(() => Effect.succeed(Option.none())),
-      );
-  }
 }
 
 export const mobileDescriptorRouteLayer = HttpRouter.add(
@@ -516,10 +452,7 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   liveStream.pipe(Stream.runForEach((event) => Queue.offer(liveBuffer, event))),
                 );
                 const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
-                  Effect.map((snapshot) => ({
-                    ...snapshot,
-                    threads: snapshot.threads.filter((thread) => thread.archivedAt === null),
-                  })),
+                  Effect.map(filterActiveShellSnapshot),
                   Effect.mapError(
                     (cause) =>
                       new OrchestrationGetSnapshotError({
