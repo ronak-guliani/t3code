@@ -31,7 +31,14 @@ export const DEFAULT_CHAT_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_STATUS_LINE_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_TOOL_FONT_SIZE: FontSize = 12 as FontSize;
 export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 12 as FontSize;
+/** Sidebar metadata (project, branch, PR, timestamps) sits a deliberate step
+    below the thread title so the title stays the row's anchor. */
+export const DEFAULT_SIDEBAR_META_FONT_SIZE: FontSize = 10 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
+
+export const SidebarRowSpacing = Schema.Literals(["compact", "default", "relaxed"]);
+export type SidebarRowSpacing = typeof SidebarRowSpacing.Type;
+export const DEFAULT_SIDEBAR_ROW_SPACING: SidebarRowSpacing = "default";
 
 export const UiDensity = Schema.Literals(["compact", "default", "comfortable", "spacious"]);
 export type UiDensity = typeof UiDensity.Type;
@@ -79,6 +86,12 @@ export const ClientSettingsSchema = Schema.Struct({
   inputFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INPUT_FONT_SIZE))),
   sidebarFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_FONT_SIZE)),
+  ),
+  sidebarMetaFontSize: FontSize.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_META_FONT_SIZE)),
+  ),
+  sidebarRowSpacing: SidebarRowSpacing.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_ROW_SPACING)),
   ),
   sidebarTranslucency: SidebarTranslucency.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_TRANSLUCENCY)),
@@ -436,6 +449,8 @@ export const ClientSettingsPatch = Schema.Struct({
   codeFontSize: Schema.optionalKey(FontSize),
   inputFontSize: Schema.optionalKey(FontSize),
   sidebarFontSize: Schema.optionalKey(FontSize),
+  sidebarMetaFontSize: Schema.optionalKey(FontSize),
+  sidebarRowSpacing: Schema.optionalKey(SidebarRowSpacing),
   sidebarTranslucency: Schema.optionalKey(SidebarTranslucency),
   toolFontSize: Schema.optionalKey(FontSize),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),

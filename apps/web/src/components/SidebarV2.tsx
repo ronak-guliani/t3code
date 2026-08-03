@@ -54,15 +54,22 @@ import {
 import type { Project, SidebarThreadSummary } from "../types";
 import { buildProviderEntriesByEnvironment, scopedProviderInstanceKey } from "../providerInstances";
 import { useServerKeybindings, useServerProviders } from "../rpc/serverState";
-import { agentRunDismissKey, deriveSidebarThreadsWithAgentRuns } from "../sidebarThreadTree";
-import { useUiStateStore } from "../uiStateStore";
+import {
+  agentRunDismissKey,
+  deriveSidebarThreadsWithAgentRuns,
+  sidebarThreadKey,
+} from "../sidebarThreadTree";
+import { createThreadExpandedOverridesSelector, useUiStateStore } from "../uiStateStore";
 import {
   classifySidebarV2Shelves,
   resolveThreadLifecycleSupport,
   resolveSidebarV2ThreadRouteTarget,
   selectSnoozeShelfBulkTargets,
   shouldReserveMacSidebarChrome,
+  type SidebarV2ThreadGroup,
+  type SidebarV2ThreadRow,
 } from "./SidebarV2.logic";
+import { SidebarV2NestedRow } from "./SidebarV2NestedRow";
 import { SidebarV2Row, type SidebarV2RowProps } from "./SidebarV2Row";
 import { SidebarHoverThreadPrewarmer } from "./SidebarThreadPrewarmer";
 import { Button } from "./ui/button";
@@ -73,22 +80,21 @@ import { SidebarTopActions } from "./SidebarTopActions";
 const SETTLED_PAGE_SIZE = 25;
 const EMPTY_THREAD_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
 
-function SortablePinnedThreadRow({
-  thread,
-  renderThread,
+function SortablePinnedThreadGroup({
+  group,
+  renderGroup,
 }: {
-  readonly thread: SidebarThreadSummary;
-  readonly renderThread: (
-    thread: SidebarThreadSummary,
+  readonly group: SidebarV2ThreadGroup;
+  readonly renderGroup: (
+    group: SidebarV2ThreadGroup,
     sortable: NonNullable<SidebarV2RowProps["sortable"]>,
   ) => ReactNode;
 }) {
-  const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
-    id: threadKey,
+    id: group.rootKey,
   });
 
-  return renderThread(thread, {
+  return renderGroup(group, {
     attributes,
     isDragging,
     listeners,
@@ -102,14 +108,14 @@ function SortablePinnedThreadRow({
 
 function PinnedThreadRows({
   projectKey,
-  threads,
-  renderThread,
+  groups,
+  renderGroup,
   reorderPinnedThreads,
 }: {
   readonly projectKey: string;
-  readonly threads: readonly SidebarThreadSummary[];
-  readonly renderThread: (
-    thread: SidebarThreadSummary,
+  readonly groups: readonly SidebarV2ThreadGroup[];
+  readonly renderGroup: (
+    group: SidebarV2ThreadGroup,
     sortable: NonNullable<SidebarV2RowProps["sortable"]>,
   ) => ReactNode;
   readonly reorderPinnedThreads: (
@@ -126,10 +132,9 @@ function PinnedThreadRows({
       coordinateGetter: sortableKeyboardCoordinates,
     }),
   );
-  const threadKeys = useMemo(
-    () => threads.map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-    [threads],
-  );
+  // Only roots take part in the drag order: a nested chat rides along with its
+  // parent group rather than being reorderable on its own.
+  const threadKeys = useMemo(() => groups.map((group) => group.rootKey), [groups]);
   const handleDragEnd = useCallback(
     ({ active, over }: DragEndEvent) => {
       if (!over || active.id === over.id) {
@@ -148,12 +153,8 @@ function PinnedThreadRows({
       sensors={sensors}
     >
       <SortableContext items={threadKeys} strategy={verticalListSortingStrategy}>
-        {threads.map((thread) => (
-          <SortablePinnedThreadRow
-            key={scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))}
-            renderThread={renderThread}
-            thread={thread}
-          />
+        {groups.map((group) => (
+          <SortablePinnedThreadGroup group={group} key={group.rootKey} renderGroup={renderGroup} />
         ))}
       </SortableContext>
     </DndContext>
@@ -229,7 +230,8 @@ export default function SidebarV2() {
   const [now, setNow] = useState(nowIso);
   const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_PAGE_SIZE);
   const { defaultProjectRef, handleNewThread } = useHandleNewThread();
-  const { settleThread, snoozeThread, unsettleThread, unsnoozeThread } = useThreadActions();
+  const { archiveThread, settleThread, snoozeThread, unsettleThread, unsnoozeThread } =
+    useThreadActions();
   const router = useRouter();
   const params = useParams({ strict: false });
   const activeThreadRef = resolveThreadRouteRef(params);
@@ -262,6 +264,7 @@ export default function SidebarV2() {
     (state) => state.pinnedThreadKeysByProjectId,
   );
   const setThreadPinned = useUiStateStore((state) => state.setThreadPinned);
+  const setThreadExpanded = useUiStateStore((state) => state.setThreadExpanded);
   const reorderPinnedThreads = useUiStateStore((state) => state.reorderPinnedThreads);
   const threadsWithAgentRuns = useMemo(
     () =>
@@ -271,6 +274,14 @@ export default function SidebarV2() {
         dismissedAgentRunKeys,
       }),
     [dismissedAgentRunKeys, threadActivities, threads],
+  );
+  // Explicit expand/collapse choices are shared with sidebar v1 and persisted,
+  // so a nested chat stays where the user last left it across reloads.
+  const expandedOverrideByThreadKey = useUiStateStore(
+    useMemo(
+      () => createThreadExpandedOverridesSelector(threadsWithAgentRuns.map(sidebarThreadKey)),
+      [threadsWithAgentRuns],
+    ),
   );
   const primaryDescriptor = usePrimaryEnvironmentDescriptor();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -355,24 +366,34 @@ export default function SidebarV2() {
       threads: threadsWithAgentRuns,
       now,
       pinnedThreadKeysByProjectKey,
+      expandedOverrideByThreadKey,
+      ...(activeThreadKey === null ? {} : { activeThreadKey }),
     });
-  }, [now, pinnedThreadKeysByProjectKey, threadsWithAgentRuns]);
+  }, [
+    activeThreadKey,
+    expandedOverrideByThreadKey,
+    now,
+    pinnedThreadKeysByProjectKey,
+    threadsWithAgentRuns,
+  ]);
 
   // Snoozed rows the shelf's bulk buttons may actually target.
   const bulkSnoozeTargets = useMemo(
-    () => selectSnoozeShelfBulkTargets({ snoozed: shelves.snoozed, lifecycleSupport, now }),
+    () =>
+      selectSnoozeShelfBulkTargets({
+        snoozed: shelves.snoozed.map((group) => group.root),
+        lifecycleSupport,
+        now,
+      }),
     [lifecycleSupport, now, shelves.snoozed],
   );
 
   const openedSettled = useMemo(() => {
     const included = shelves.settled.slice(0, settledVisibleCount);
-    if (
-      activeThreadKey !== null &&
-      !included.some((thread) => `${thread.environmentId}:${thread.id}` === activeThreadKey)
-    ) {
-      const routed = shelves.settled.find(
-        (thread) => `${thread.environmentId}:${thread.id}` === activeThreadKey,
-      );
+    const containsActive = (group: SidebarV2ThreadGroup) =>
+      group.rows.some((row) => row.threadKey === activeThreadKey);
+    if (activeThreadKey !== null && !included.some(containsActive)) {
+      const routed = shelves.settled.find(containsActive);
       if (routed) return [...included, routed];
     }
     return included;
@@ -498,54 +519,92 @@ export default function SidebarV2() {
     },
     [runAction, unsnoozeThread],
   );
+  const handleArchive = useCallback(
+    (thread: SidebarThreadSummary) => {
+      runAction(
+        () => archiveThread(scopeThreadRef(thread.environmentId, thread.id)),
+        "archive thread",
+      );
+    },
+    [archiveThread, runAction],
+  );
+  const handleToggleExpanded = useCallback(
+    (thread: SidebarThreadSummary, isExpanded: boolean) => {
+      setThreadExpanded(sidebarThreadKey(thread), !isExpanded);
+    },
+    [setThreadExpanded],
+  );
   // `now` is deliberately kept OUT of row props: it ticks on every wake timer,
   // and a ticking string would invalidate every memoized row. Time-dependent
   // decisions are collapsed here into booleans that only change when the
   // answer actually changes.
-  const renderThread = useCallback(
+  const renderRow = useCallback(
     (
-      thread: SidebarThreadSummary,
+      row: SidebarV2ThreadRow,
       variant: "card" | "slim",
       sortable?: NonNullable<SidebarV2RowProps["sortable"]>,
     ) => {
-      const threadKey = `${thread.environmentId}:${thread.id}`;
+      const thread = row.thread;
       const routeTarget = resolveSidebarV2ThreadRouteTarget(thread);
       const isVirtualAgentRun = thread.virtualAgentRun !== undefined;
-      const project = projectsByKey.get(
-        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
-      );
+      const projectKey = scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId));
+      const project = projectsByKey.get(projectKey);
       const settled = thread.settledOverride === "settled";
       const instanceId = thread.session?.providerInstanceId ?? null;
+      const active =
+        `${thread.environmentId}:${routeTarget.threadId}` === activeThreadKey &&
+        (routeTarget.agentTaskId === null
+          ? activeAgentTaskId === null
+          : routeTarget.agentTaskId === activeAgentTaskId);
+      const providerEntry =
+        instanceId === null
+          ? null
+          : (providerEntryByKey.get(scopedProviderInstanceKey(thread.environmentId, instanceId)) ??
+            null);
+
+      // Nested chats share their parent's project, worktree and lifecycle, so
+      // their row carries the title alone; everything else would be repetition.
+      if (row.depth > 0) {
+        return (
+          <SidebarV2NestedRow
+            active={active}
+            childCount={row.childCount}
+            depth={row.depth}
+            hasChildren={row.hasChildren}
+            isExpanded={row.isExpanded}
+            key={row.threadKey}
+            onArchive={handleArchive}
+            onDismissAgentRun={handleDismissAgentRun}
+            onOpen={openThread}
+            onToggleExpanded={handleToggleExpanded}
+            projectCwd={project?.cwd ?? null}
+            projectName={project?.name ?? "Unknown project"}
+            providerEntry={providerEntry}
+            thread={thread}
+          />
+        );
+      }
+
       return (
         <SidebarV2Row
-          key={threadKey}
-          active={
-            `${thread.environmentId}:${routeTarget.threadId}` === activeThreadKey &&
-            (routeTarget.agentTaskId === null
-              ? activeAgentTaskId === null
-              : routeTarget.agentTaskId === activeAgentTaskId)
-          }
-          pinned={(
-            pinnedThreadKeysByProjectKey[
-              scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId))
-            ] ?? []
-          ).includes(threadKey)}
+          key={row.threadKey}
+          active={active}
+          childCount={row.childCount}
+          displayStatus={row.displayStatus}
+          hasChildren={row.hasChildren}
+          isExpanded={row.isExpanded}
+          pinned={(pinnedThreadKeysByProjectKey[projectKey] ?? []).includes(row.threadKey)}
           onDismissAgentRun={handleDismissAgentRun}
           onOpen={openThread}
           onSetPinned={handleSetPinned}
           onSettle={handleSettle}
           onSnooze={handleSnooze}
+          onToggleExpanded={handleToggleExpanded}
           onUnsettle={handleUnsettle}
           onUnsnooze={handleUnsnooze}
           projectCwd={project?.cwd ?? null}
           projectName={project?.name ?? "Unknown project"}
-          providerEntry={
-            instanceId === null
-              ? null
-              : (providerEntryByKey.get(
-                  scopedProviderInstanceKey(thread.environmentId, instanceId),
-                ) ?? null)
-          }
+          providerEntry={providerEntry}
           settled={settled}
           // Reopening is always allowed; only the settle direction has
           // preconditions.
@@ -567,10 +626,12 @@ export default function SidebarV2() {
     [
       activeThreadKey,
       activeAgentTaskId,
+      handleArchive,
       handleDismissAgentRun,
       handleSetPinned,
       handleSettle,
       handleSnooze,
+      handleToggleExpanded,
       handleUnsettle,
       handleUnsnooze,
       lifecycleSupport,
@@ -581,18 +642,26 @@ export default function SidebarV2() {
       pinnedThreadKeysByProjectKey,
     ],
   );
-  const renderCardThread = useCallback(
-    (thread: SidebarThreadSummary) => renderThread(thread, "card"),
-    [renderThread],
+  const renderGroup = useCallback(
+    (
+      group: SidebarV2ThreadGroup,
+      variant: "card" | "slim",
+      sortable?: NonNullable<SidebarV2RowProps["sortable"]>,
+    ) => group.rows.map((row) => renderRow(row, variant, row.depth === 0 ? sortable : undefined)),
+    [renderRow],
   );
-  const renderSlimThread = useCallback(
-    (thread: SidebarThreadSummary) => renderThread(thread, "slim"),
-    [renderThread],
+  const renderCardGroup = useCallback(
+    (group: SidebarV2ThreadGroup) => renderGroup(group, "card"),
+    [renderGroup],
   );
-  const renderPinnedThread = useCallback(
-    (thread: SidebarThreadSummary, sortable: NonNullable<SidebarV2RowProps["sortable"]>) =>
-      renderThread(thread, "card", sortable),
-    [renderThread],
+  const renderSlimGroup = useCallback(
+    (group: SidebarV2ThreadGroup) => renderGroup(group, "slim"),
+    [renderGroup],
+  );
+  const renderPinnedGroup = useCallback(
+    (group: SidebarV2ThreadGroup, sortable: NonNullable<SidebarV2RowProps["sortable"]>) =>
+      renderGroup(group, "card", sortable),
+    [renderGroup],
   );
   const handleNewThreadClick = useCallback(() => {
     if (defaultProjectRef) void handleNewThread(defaultProjectRef);
@@ -618,21 +687,23 @@ export default function SidebarV2() {
             icon={<PinIcon className="size-3.5" />}
             title="Pinned"
           >
-            <SidebarMenu>
-              {[...shelves.pinnedByProjectKey.entries()].map(([projectKey, pinnedThreads]) => (
+            <SidebarMenu className="gap-[var(--app-sidebar-row-gap)]">
+              {[...shelves.pinnedByProjectKey.entries()].map(([projectKey, pinnedGroups]) => (
                 <PinnedThreadRows
+                  groups={pinnedGroups}
                   key={projectKey}
                   projectKey={projectKey}
-                  renderThread={renderPinnedThread}
+                  renderGroup={renderPinnedGroup}
                   reorderPinnedThreads={reorderPinnedThreads}
-                  threads={pinnedThreads}
                 />
               ))}
             </SidebarMenu>
           </Shelf>
         ) : null}
         <SidebarGroup className="px-1 py-0">
-          <SidebarMenu>{shelves.active.map(renderCardThread)}</SidebarMenu>
+          <SidebarMenu className="gap-[var(--app-sidebar-row-gap)]">
+            {shelves.active.map(renderCardGroup)}
+          </SidebarMenu>
         </SidebarGroup>
         <Shelf
           count={shelves.snoozed.length}
@@ -640,7 +711,7 @@ export default function SidebarV2() {
           icon={<BellOffIcon className="size-3.5" />}
           title="Snoozed"
         >
-          <SidebarMenu>{shelves.snoozed.map(renderSlimThread)}</SidebarMenu>
+          <SidebarMenu>{shelves.snoozed.map(renderSlimGroup)}</SidebarMenu>
           {bulkSnoozeTargets.wakeable.length > 0 ? (
             <div className="flex gap-1 px-2 py-1">
               <Button
@@ -684,7 +755,7 @@ export default function SidebarV2() {
           icon={<ArchiveIcon className="size-3.5" />}
           title="Settled"
         >
-          <SidebarMenu>{openedSettled.map(renderSlimThread)}</SidebarMenu>
+          <SidebarMenu>{openedSettled.map(renderSlimGroup)}</SidebarMenu>
           {shelves.settled.length > openedSettled.length ? (
             <Button
               className="mx-2 mt-1"
