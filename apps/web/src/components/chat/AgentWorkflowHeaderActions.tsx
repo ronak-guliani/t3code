@@ -116,21 +116,39 @@ function AgentWorkflowActionButton({
   }, [isLoadingPullRequests, onListOpenPullRequests, pullRequests]);
 
   const prewarmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (prewarmTimeoutRef.current !== null) clearTimeout(prewarmTimeoutRef.current);
-    },
-    [],
-  );
+  const cancelPendingPullRequestPrewarm = useCallback(() => {
+    if (prewarmTimeoutRef.current === null) return;
+    clearTimeout(prewarmTimeoutRef.current);
+    prewarmTimeoutRef.current = null;
+  }, []);
+  useEffect(() => () => cancelPendingPullRequestPrewarm(), [cancelPendingPullRequestPrewarm]);
   const schedulePullRequestPrewarm = useCallback(
     (pullRequestNumber: number) => {
-      if (prewarmTimeoutRef.current !== null) clearTimeout(prewarmTimeoutRef.current);
+      cancelPendingPullRequestPrewarm();
       prewarmTimeoutRef.current = setTimeout(() => {
         prewarmTimeoutRef.current = null;
         onPrewarmReviewPullRequest(pullRequestNumber);
       }, PULL_REQUEST_PREWARM_HOVER_DELAY_MS);
     },
-    [onPrewarmReviewPullRequest],
+    [cancelPendingPullRequestPrewarm, onPrewarmReviewPullRequest],
+  );
+  const runPullRequestReview = useCallback(
+    (pullRequestNumber: number) => {
+      // A click inside the hover debounce must not leave the timer armed: it
+      // would start a second `gh` pair after claim already ran, and park a
+      // single-use capture for a later review. Flush now so claim can join.
+      cancelPendingPullRequestPrewarm();
+      onPrewarmReviewPullRequest(pullRequestNumber);
+      onRun({
+        workflowId: action.id,
+        input: {
+          scope: "pull-request",
+          pullRequestNumber,
+        },
+        destinationMode: "child-chat",
+      });
+    },
+    [action.id, cancelPendingPullRequestPrewarm, onPrewarmReviewPullRequest, onRun],
   );
 
   if (action.kind === "review-code") {
@@ -177,7 +195,9 @@ function AgentWorkflowActionButton({
                   if (open) {
                     loadPullRequests();
                     onPrewarmProviderSession();
+                    return;
                   }
+                  cancelPendingPullRequestPrewarm();
                 }}
               >
                 <MenuTrigger
@@ -202,7 +222,17 @@ function AgentWorkflowActionButton({
                     <GitCompareArrowsIcon className="size-4" />
                     Review against base branch
                   </MenuItem>
-                  <MenuSub onOpenChange={(open) => open && loadPullRequests()}>
+                  <MenuSub
+                    onOpenChange={(open) => {
+                      if (open) {
+                        loadPullRequests();
+                        return;
+                      }
+                      // Leaving the submenu without clicking must not fire a
+                      // capture the user never asked for.
+                      cancelPendingPullRequestPrewarm();
+                    }}
+                  >
                     <MenuSubTrigger>
                       <GitPullRequestIcon className="size-4" />
                       Open pull requests
@@ -221,16 +251,9 @@ function AgentWorkflowActionButton({
                             key={pullRequest.number}
                             onPointerEnter={() => schedulePullRequestPrewarm(pullRequest.number)}
                             onFocus={() => schedulePullRequestPrewarm(pullRequest.number)}
-                            onClick={() =>
-                              onRun({
-                                workflowId: action.id,
-                                input: {
-                                  scope: "pull-request",
-                                  pullRequestNumber: pullRequest.number,
-                                },
-                                destinationMode: "child-chat",
-                              })
-                            }
+                            onPointerLeave={cancelPendingPullRequestPrewarm}
+                            onBlur={cancelPendingPullRequestPrewarm}
+                            onClick={() => runPullRequestReview(pullRequest.number)}
                           >
                             <GitPullRequestIcon className="size-4" />#{pullRequest.number}{" "}
                             {pullRequest.title}
