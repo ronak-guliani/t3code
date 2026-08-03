@@ -101,6 +101,10 @@ import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispat
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
+import {
+  filterActiveShellSnapshot,
+  toShellStreamEvent as projectShellStreamEvent,
+} from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
@@ -293,61 +297,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const toShellStreamEvent = (
         event: OrchestrationEvent,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
-        switch (event.type) {
-          case "project.created":
-          case "project.meta-updated":
-            return projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
-              Effect.map((project) =>
-                Option.map(project, (nextProject) => ({
-                  kind: "project-upserted" as const,
-                  sequence: event.sequence,
-                  project: nextProject,
-                })),
-              ),
-              Effect.catch(() => Effect.succeed(Option.none())),
-            );
-          case "project.deleted":
-            return Effect.succeed(
-              Option.some({
-                kind: "project-removed" as const,
-                sequence: event.sequence,
-                projectId: event.payload.projectId,
-              }),
-            );
-          case "thread.deleted":
-            return Effect.succeed(
-              Option.some({
-                kind: "thread-removed" as const,
-                sequence: event.sequence,
-                threadId: event.payload.threadId,
-              }),
-            );
-          default:
-            if (event.aggregateKind === "workflow") {
-              return Effect.succeed(
-                Option.some({
-                  kind: "workflow-event" as const,
-                  sequence: event.sequence,
-                  event,
-                }),
-              );
-            }
-            if (event.aggregateKind !== "thread") {
-              return Effect.succeed(Option.none());
-            }
-            return projectionSnapshotQuery
-              .getThreadShellById(ThreadId.make(event.aggregateId))
-              .pipe(
-                Effect.map((thread) =>
-                  Option.map(thread, (nextThread) => ({
-                    kind: "thread-upserted" as const,
-                    sequence: event.sequence,
-                    thread: nextThread,
-                  })),
-                ),
-                Effect.catch(() => Effect.succeed(Option.none())),
-              );
+        if (event.aggregateKind === "workflow") {
+          return Effect.succeed(
+            Option.some({
+              kind: "workflow-event" as const,
+              sequence: event.sequence,
+              event,
+            }),
+          );
         }
+        return projectShellStreamEvent(projectionSnapshotQuery, event);
       };
 
       const loadServerConfig = Effect.gen(function* () {
@@ -467,14 +426,21 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         Effect.gen(function* () {
           const runId = WorkflowRunId.make(input.idempotencyKey);
           const createdAt = new Date().toISOString();
+          const settings = yield* serverSettings.getSettings;
+          const isBuiltInWorkflow =
+            input.workflowId === REVIEW_CHANGES_WORKFLOW_ID ||
+            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID;
+          const customWorkflow = isBuiltInWorkflow
+            ? undefined
+            : settings.agentWorkflows.customWorkflows.find(
+                (candidate) => candidate.id === input.workflowId,
+              );
 
-          if (
-            input.workflowId !== REVIEW_CHANGES_WORKFLOW_ID &&
-            input.workflowId !== FIX_REVIEW_ISSUES_WORKFLOW_ID
-          ) {
+          if (!isBuiltInWorkflow && customWorkflow === undefined) {
             return workflowSkipped(input, "workflow-not-found", "Workflow not found.");
           }
           if (
+            customWorkflow === undefined &&
             input.destinationMode !== undefined &&
             input.destinationMode !== "child-chat" &&
             !(
@@ -488,21 +454,25 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             });
           }
 
-          const settings = yield* serverSettings.getSettings;
           const reviewSettings = settings.agentWorkflows.reviewChanges;
           const fixSettings = settings.agentWorkflows.fixReviewIssues;
           const override = settings.agentWorkflows.builtInOverrides[input.workflowId];
-          const workflowSettings =
-            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
-          const enabled = override?.enabled ?? workflowSettings.enabled;
-          if (!enabled) {
-            return workflowSkipped(
-              input,
-              "workflow-disabled",
-              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
-                ? "Fix Review Issues workflow is disabled."
-                : "Review Code workflow is disabled.",
-            );
+          if (customWorkflow !== undefined && !customWorkflow.enabled) {
+            return workflowSkipped(input, "workflow-disabled", "Workflow is disabled.");
+          }
+          if (customWorkflow === undefined) {
+            const workflowSettings =
+              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
+            const enabled = override?.enabled ?? workflowSettings.enabled;
+            if (!enabled) {
+              return workflowSkipped(
+                input,
+                "workflow-disabled",
+                input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
+                  ? "Fix Review Issues workflow is disabled."
+                  : "Review Code workflow is disabled.",
+              );
+            }
           }
 
           const threadOption = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
@@ -639,6 +609,70 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           }
           const project = projectOption.value;
           const cwd = input.cwd ?? thread.worktreePath ?? project.workspaceRoot;
+
+          if (customWorkflow !== undefined) {
+            const prompt = customWorkflow.promptTemplate.trim();
+            if (prompt.length === 0) {
+              return yield* new WorkflowRunError({
+                message: "Custom workflow prompt cannot be empty.",
+              });
+            }
+            const destinationMode = input.destinationMode ?? customWorkflow.destinationMode;
+            const threadId =
+              destinationMode === "same-chat"
+                ? input.threadId
+                : ThreadId.make(`workflow:${runId}:target`);
+            const commandId = CommandId.make(`workflow:${runId}:request`);
+            const messageId = MessageId.make(`workflow:${runId}:input`);
+            const modelSelection =
+              customWorkflow.modelSelection ??
+              input.modelSelection ??
+              project.defaultModelSelection ??
+              thread.modelSelection;
+            const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
+            const interactionMode = input.interactionMode ?? thread.interactionMode;
+            if (destinationMode !== "same-chat") {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.create",
+                commandId: CommandId.make(`workflow:${runId}:create-target`),
+                threadId,
+                projectId: project.id,
+                parentThreadId: destinationMode === "child-chat" ? input.threadId : null,
+                title: input.title ?? customWorkflow.name,
+                modelSelection,
+                runtimeMode,
+                interactionMode,
+                branch: thread.branch,
+                worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                createdAt,
+              });
+            }
+            const dispatchResult = yield* orchestrationEngine.dispatch({
+              type: "thread.turn.start",
+              commandId,
+              threadId,
+              message: {
+                messageId,
+                role: "user",
+                text: prompt,
+                attachments: [],
+              },
+              modelSelection,
+              titleSeed: input.title ?? customWorkflow.name,
+              runtimeMode,
+              interactionMode,
+              createdAt,
+            });
+            return {
+              status: "started" as const,
+              runId,
+              threadId,
+              commandId,
+              messageId,
+              sequence: dispatchResult.sequence,
+              createdAt,
+            } satisfies WorkflowRunResult;
+          }
 
           if (input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID) {
             const issues = typeof input.input?.issues === "string" ? input.input.issues.trim() : "";
@@ -1053,6 +1087,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               );
 
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                Effect.map(filterActiveShellSnapshot),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationGetSnapshotError({

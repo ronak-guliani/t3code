@@ -4,6 +4,7 @@
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle are fragile paths; optimize for predictable restart/reconnect behavior over quick local fixes.
+- Terminal session reconciliation must settle the matching projected turn as well as clear `session.activeTurnId`; otherwise restart recovery leaves the UI permanently in flight.
 - Bounded provider event channels must preserve teardown event order during normal stops; suppress new events only after adapter-layer shutdown begins instead of detaching terminal offers.
 - A pre-acknowledgement `provider.turn.start.failed` activity terminally settles its user message; preserve the activity's `messageId` so reconnects cannot leave the thread permanently in flight.
 - SQLite migration IDs are globally append-only; choose an ID above every historical ledger entry, including migrations from divergent branches no longer present in the current source tree.
@@ -52,4 +53,7 @@
 - WebSocket session revocation cannot rely only on process-local events or per-socket full scans; use one bounded durable poll for connected session IDs plus subscribe-before-lookup waiters.
 - Persistent Tailscale Serve setup is a per-port cross-process transaction: lock inspect through output, verify the live proxy target and environment, and never automatically roll back with compare-then-disable CLI calls because another actor can replace the mapping between those operations.
 - Environment removal must clear durable mobile-owned outbox/draft data before deleting the connection registry entry; cleanup failures stay typed and retryable.
+- Subscribed shell snapshots exclude archived threads, so web and mobile archive stream events must emit explicit removals rather than re-querying the active shell.
 - Live `thread.message-sent` events that create or change `latestTurn` must reconcile the sidebar activity summary; a slow shell stream otherwise leaves the active row stale.
+- Custom workflow settings and chat actions must stay wired through `workflow.run`; built-in-only server guards make every configured prompt workflow fail as `workflow-not-found`. Built-in IDs remain reserved, and custom child/new-chat retries must reuse deterministic create/turn IDs instead of bootstrap-generated UUIDs.
+- A user interrupt can arrive after `thread.turn.start` is accepted but before its provider turn is acknowledged; keep cancellation intent until the provider returns its turn ID, suppress an unsent call, then interrupt an unacknowledged or active turn without aborting adapter lifecycle cleanup.
