@@ -1063,6 +1063,10 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               );
 
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                Effect.map((snapshot) => ({
+                  ...snapshot,
+                  threads: snapshot.threads.filter((thread) => thread.archivedAt === null),
+                })),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationGetSnapshotError({

@@ -2034,7 +2034,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 return {
                   snapshotSequence: 1,
                   projects: [],
-                  threads: [],
+                  threads: [
+                    makeDefaultOrchestrationThreadShell({
+                      id: parentThreadId,
+                      archivedAt,
+                    }),
+                    makeDefaultOrchestrationThreadShell({
+                      id: childThreadId,
+                      archivedAt,
+                    }),
+                  ],
                   updatedAt: "2026-01-01T00:00:00.000Z",
                 };
               }),
@@ -2055,6 +2064,9 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
+      if (items[0]?.kind === "snapshot") {
+        assert.deepEqual(items[0].snapshot.threads, []);
+      }
       assert.deepEqual(
         items.slice(1).map((item) => (item.kind === "thread-removed" ? item.threadId : null)),
         [parentThreadId, childThreadId],

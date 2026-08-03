@@ -34,7 +34,7 @@ import {
   OrchestrationGetTurnDiffError,
   ThreadId,
 } from "@t3tools/contracts";
-import { Data, Effect, Layer, Option, Ref, Schema, Stream } from "effect";
+import { Data, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
@@ -221,8 +221,11 @@ function encodeServerMessage(message: MobileServerMessage): string {
   return JSON.stringify(encodeMobileServerMessage(message));
 }
 
-function toShellStreamEvent(
-  projectionSnapshotQuery: ProjectionSnapshotQueryShape,
+export function toShellStreamEvent(
+  projectionSnapshotQuery: Pick<
+    ProjectionSnapshotQueryShape,
+    "getProjectShellById" | "getThreadShellById"
+  >,
   event: OrchestrationEvent,
 ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never> {
   switch (event.type) {
@@ -247,6 +250,14 @@ function toShellStreamEvent(
         }),
       );
     case "thread.deleted":
+      return Effect.succeed(
+        Option.some({
+          kind: "thread-removed" as const,
+          sequence: event.sequence,
+          threadId: event.payload.threadId,
+        }),
+      );
+    case "thread.archived":
       return Effect.succeed(
         Option.some({
           kind: "thread-removed" as const,
@@ -494,7 +505,21 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
 
             switch (message.method) {
               case "orchestration.subscribeShell": {
+                const liveStream = orchestrationEngine.streamDomainEvents.pipe(
+                  Stream.mapEffect((event) => toShellStreamEvent(projectionSnapshotQuery, event)),
+                  Stream.flatMap((event) =>
+                    Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                  ),
+                );
+                const liveBuffer = yield* Queue.unbounded<OrchestrationShellStreamEvent>();
+                yield* Effect.forkScoped(
+                  liveStream.pipe(Stream.runForEach((event) => Queue.offer(liveBuffer, event))),
+                );
                 const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                  Effect.map((snapshot) => ({
+                    ...snapshot,
+                    threads: snapshot.threads.filter((thread) => thread.archivedAt === null),
+                  })),
                   Effect.mapError(
                     (cause) =>
                       new OrchestrationGetSnapshotError({
@@ -510,14 +535,12 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   }),
                 );
 
-                yield* orchestrationEngine.streamDomainEvents.pipe(
-                  Stream.mapEffect((event) => toShellStreamEvent(projectionSnapshotQuery, event)),
-                  Stream.flatMap((event) =>
-                    Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                yield* Effect.forkScoped(
+                  Stream.fromQueue(liveBuffer).pipe(
+                    Stream.filter((event) => event.sequence > snapshot.snapshotSequence),
+                    Stream.runForEach((event) => send(mobileStream(message.id, event))),
+                    Effect.ignoreCause,
                   ),
-                  Stream.runForEach((event) => send(mobileStream(message.id, event))),
-                  Effect.ignoreCause,
-                  Effect.forkScoped,
                 );
                 return;
               }
