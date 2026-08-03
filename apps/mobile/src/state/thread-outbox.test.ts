@@ -23,6 +23,7 @@ import {
   threadOutboxRetryDelayMs,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
+import { startThreadOutboxLoadRetry } from "./thread-outbox-load-retry";
 import { createThreadOutboxManager, ThreadOutboxManagerError } from "./thread-outbox-manager";
 import { createThreadOutboxDrainWorker } from "./thread-outbox-drain-worker";
 import type { ThreadOutboxStorage } from "./thread-outbox-storage";
@@ -232,7 +233,7 @@ describe("thread outbox", () => {
       warn: (message, error) => warnings.push({ message, error }),
     });
 
-    await manager.load();
+    expect(await manager.load()).toBe(false);
     expect(warnings).toEqual([
       {
         message: "[thread-outbox] failed to load persisted messages",
@@ -246,9 +247,37 @@ describe("thread outbox", () => {
       },
     ]);
 
-    await manager.load();
+    expect(await manager.load()).toBe(true);
     expect(loadCalls).toBe(2);
     registry.dispose();
+  });
+
+  it("retries persisted bootstrap with backoff after an initial load failure", async () => {
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    let loadCalls = 0;
+    const stop = startThreadOutboxLoadRetry({
+      load: async () => {
+        loadCalls += 1;
+        return loadCalls > 1;
+      },
+      retryDelayMs: (attempt) => attempt * 100,
+      schedule: (callback, delayMs) => {
+        scheduled.push({ callback, delayMs });
+        return 1 as ReturnType<typeof setTimeout>;
+      },
+      cancel: () => undefined,
+    });
+
+    await Promise.resolve();
+    expect(loadCalls).toBe(1);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]?.delayMs).toBe(100);
+
+    scheduled[0]?.callback();
+    await Promise.resolve();
+    expect(loadCalls).toBe(2);
+    expect(scheduled).toHaveLength(1);
+    stop();
   });
 
   it("keeps atom state aligned with durable writes and removals", async () => {

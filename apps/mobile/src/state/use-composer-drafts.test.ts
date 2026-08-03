@@ -3,6 +3,7 @@ import { EnvironmentId, ProviderInstanceId } from "@t3tools/contracts";
 
 import { appAtomRegistry } from "./atom-registry";
 import {
+  clearComposerDraftsEnvironmentState,
   clearComposerDraftContentState,
   composerDraftsAtom,
   decodePersistedComposerDrafts,
@@ -149,5 +150,48 @@ describe("mobile composer drafts", () => {
       [`${retainedEnvironmentId}:thread-local`]: DRAFT,
       [`new-task:${retainedEnvironmentId}:project-local`]: DRAFT,
     });
+  });
+
+  it("fails closed when persisted drafts cannot be loaded for destructive cleanup", async () => {
+    const loadError = new Error("draft file unavailable");
+    let writes = 0;
+
+    await expect(
+      clearComposerDraftsEnvironmentState({
+        environmentId: EnvironmentId.make("environment-cloud"),
+        current: () => ({}),
+        load: async () => {
+          throw loadError;
+        },
+        write: async () => {
+          writes += 1;
+        },
+      }),
+    ).rejects.toBe(loadError);
+    expect(writes).toBe(0);
+  });
+
+  it("preserves persisted drafts from other environments during cleanup", async () => {
+    const environmentId = EnvironmentId.make("environment-cloud");
+    const retainedEnvironmentId = EnvironmentId.make("environment-local");
+    let written: Record<string, ComposerDraft> | null = null;
+
+    const next = await clearComposerDraftsEnvironmentState({
+      environmentId,
+      current: () => ({
+        [`${environmentId}:thread-cloud`]: DRAFT,
+      }),
+      load: async () => ({
+        [`${retainedEnvironmentId}:thread-local`]: DRAFT,
+      }),
+      write: async (drafts) => {
+        written = drafts;
+      },
+    });
+
+    expect(next).toEqual({
+      [`${retainedEnvironmentId}:thread-local`]: DRAFT,
+    });
+    expect(written).toEqual(next);
   });
 });

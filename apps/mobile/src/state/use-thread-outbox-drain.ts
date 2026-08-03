@@ -9,6 +9,7 @@ import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useThreadShells } from "./entities";
 import { ensureThreadOutboxLoaded, removeThreadOutboxMessage } from "./thread-outbox";
 import { createThreadOutboxDrainWorker } from "./thread-outbox-drain-worker";
+import { startThreadOutboxLoadRetry } from "./thread-outbox-load-retry";
 import { threadOutboxRetryDelayMs } from "./thread-outbox-model";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
@@ -55,6 +56,11 @@ export function useThreadOutboxDrain(): void {
   const retryAttemptRef = useRef(new Map<MessageId, number>());
   const retryNotBeforeRef = useRef(new Map<MessageId, number>());
   const retryTimersRef = useRef(new Map<MessageId, ReturnType<typeof setTimeout>>());
+  const connectedEnvironmentKey = connectedEnvironments
+    .filter((environment) => environment.connectionState === "connected")
+    .map((environment) => environment.environmentId)
+    .sort()
+    .join("\n");
   const worker = useMemo(
     () =>
       createThreadOutboxDrainWorker({
@@ -69,7 +75,13 @@ export function useThreadOutboxDrain(): void {
   );
 
   useEffect(() => {
-    ensureThreadOutboxLoaded();
+    return startThreadOutboxLoadRetry({
+      load: ensureThreadOutboxLoaded,
+      retryDelayMs: threadOutboxRetryDelayMs,
+    });
+  }, [connectedEnvironmentKey]);
+
+  useEffect(() => {
     return () => {
       for (const timer of retryTimersRef.current.values()) {
         clearTimeout(timer);

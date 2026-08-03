@@ -50,6 +50,6 @@
 - Archiving a parent thread also archives its nested chats; when the active route is any member of that subtree, navigate to a new draft instead of leaving the user on an archived chat.
 - Pairing QR payloads must use the shared canonical `/pair#token=...` URL; desktop-only deep-link shapes can silently parse as tokenless hosts in the RN client.
 - WebSocket session revocation cannot rely only on process-local events or per-socket full scans; use one bounded durable poll for connected session IDs plus subscribe-before-lookup waiters.
-- Persistent Tailscale Serve setup is a per-port cross-process transaction: lock inspect through output, verify the live proxy target and environment before rollback, and never disable a mapping whose ownership is uncertain.
+- Persistent Tailscale Serve setup is a per-port cross-process transaction: lock inspect through output, verify the live proxy target and environment, and never automatically roll back with compare-then-disable CLI calls because another actor can replace the mapping between those operations.
 - Environment removal must clear durable mobile-owned outbox/draft data before deleting the connection registry entry; cleanup failures stay typed and retryable.
 - Live `thread.message-sent` events that create or change `latestTurn` must reconcile the sidebar activity summary; a slow shell stream otherwise leaves the active row stale.

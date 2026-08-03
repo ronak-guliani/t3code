@@ -46,7 +46,7 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
     ((message: string, error: unknown) => {
       console.warn(message, error);
     });
-  let loadPromise: Promise<void> | null = null;
+  let loadPromise: Promise<boolean> | null = null;
   let mutationQueue: Promise<void> = Promise.resolve();
 
   const serialize = <A>(mutation: () => Promise<A>): Promise<A> => {
@@ -65,13 +65,14 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
     options.registry.set(queuedMessagesByThreadKeyAtom, groupQueuedThreadMessages(messages));
   };
 
-  const load = (): Promise<void> => {
+  const load = (): Promise<boolean> => {
     if (loadPromise !== null) {
       return loadPromise;
     }
     loadPromise = serialize(async () => {
       const persistedMessages = await options.storage.load();
       setMessages([...persistedMessages, ...currentMessages()]);
+      return true;
     }).catch((cause) => {
       loadPromise = null;
       warn(
@@ -84,6 +85,7 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
           cause,
         }),
       );
+      return false;
     });
     return loadPromise;
   };

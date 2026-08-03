@@ -6,17 +6,13 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
-import { disableTailscaleServe } from "@t3tools/tailscale";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Sink from "effect/Sink";
-import * as Stream from "effect/Stream";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
-import { ChildProcessSpawner } from "effect/unstable/process";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { cli } from "../cli.ts";
@@ -26,7 +22,6 @@ import {
 } from "../serverRuntimeState.ts";
 import {
   confirmNewTailscaleMapping,
-  cleanupCreatedTailscaleMapping,
   decideTailscaleMapping,
   DevServerNotProxiableError,
   discoverPairTargetFromCandidates,
@@ -43,7 +38,6 @@ import {
   ServesOtherEnvironmentError,
   TailscaleEndpointVerificationError,
   TailscaleServeLockError,
-  TailscaleServeOwnershipLostError,
   tailscaleServeLockPath,
   useResolvedPairingBase,
   withTailscaleServePortLock,
@@ -132,36 +126,6 @@ const writeRuntimeState = (input: {
     });
     return statePath;
   });
-
-const encoder = new TextEncoder();
-const makeProcessSpawnerLayer = (
-  handler: (args: ReadonlyArray<string>) => {
-    readonly code?: number;
-    readonly stderr?: string;
-  },
-) =>
-  Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const child = command as unknown as { readonly args: ReadonlyArray<string> };
-      const result = handler(child.args);
-      return Effect.succeed(
-        ChildProcessSpawner.makeHandle({
-          pid: ChildProcessSpawner.ProcessId(1),
-          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(result.code ?? 0)),
-          isRunning: Effect.succeed(false),
-          kill: () => Effect.void,
-          unref: Effect.succeed(Effect.void),
-          stdin: Sink.drain,
-          stdout: Stream.empty,
-          stderr: Stream.make(encoder.encode(result.stderr ?? "")),
-          all: Stream.empty,
-          getInputFd: () => Sink.drain,
-          getOutputFd: () => Stream.empty,
-        }),
-      );
-    }),
-  );
 
 describe("pair target resolution", () => {
   it.effect("prefers service state before foreground state", () =>
@@ -506,12 +470,7 @@ describe("t3 pair", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("rolls back only newly created Serve mappings on downstream failures", () => {
-    const commands: ReadonlyArray<string>[] = [];
-    const spawner = makeProcessSpawnerLayer((args) => {
-      commands.push(args);
-      return {};
-    });
+  it.effect("retains newly created Serve mappings on downstream failures", () => {
     const created = {
       baseUrl: "https://desktop.tail.ts.net/",
       notes: [],
@@ -532,28 +491,22 @@ describe("t3 pair", () => {
         new Error("credential mint failed"),
         new Error("output failed"),
       ]) {
-        yield* useResolvedPairingBase(created, Effect.fail(failure), (mapping) =>
-          disableTailscaleServe({ servePort: mapping.servePort }),
-        ).pipe(Effect.flip);
+        const error = yield* useResolvedPairingBase(created, Effect.fail(failure)).pipe(
+          Effect.flip,
+        );
+        expect(error).toBeInstanceOf(PairingCleanupFailedError);
+        expect(String(error)).toContain("tailscale serve --https=8443 off");
       }
-      yield* useResolvedPairingBase(
+      const reusedError = yield* useResolvedPairingBase(
         { baseUrl: created.baseUrl, notes: [] },
         Effect.fail(new Error("reused mapping failure")),
-        (mapping) => disableTailscaleServe({ servePort: mapping.servePort }),
       ).pipe(Effect.flip);
-
-      expect(commands).toEqual([
-        ["serve", "--https=8443", "off"],
-        ["serve", "--https=8443", "off"],
-        ["serve", "--https=8443", "off"],
-        ["serve", "--https=8443", "off"],
-        ["serve", "--https=8443", "off"],
-      ]);
-    }).pipe(Effect.provide(spawner));
+      expect(reusedError).toBeInstanceOf(Error);
+      expect(reusedError).not.toBeInstanceOf(PairingCleanupFailedError);
+    });
   });
 
-  it.effect("rejects and rolls back mismatched, non-T3, and unreachable confirmations", () => {
-    const cleanupPorts: number[] = [];
+  it.effect("rejects invalid confirmations with retained-mapping guidance", () => {
     const resolved = {
       baseUrl: "https://desktop.tail.ts.net/",
       notes: [],
@@ -576,21 +529,18 @@ describe("t3 pair", () => {
         { _tag: "not-a-t3-server" } as const,
         { _tag: "unreachable" } as const,
       ]) {
-        yield* confirmNewTailscaleMapping({
+        const error = yield* confirmNewTailscaleMapping({
           resolved,
           environmentId: "pair-test-environment",
           probe: () => Effect.succeed(outcome),
-          cleanup: (mapping) =>
-            Effect.sync(() => {
-              cleanupPorts.push(mapping.servePort);
-            }),
         }).pipe(Effect.flip);
+        expect(error).toBeInstanceOf(PairingCleanupFailedError);
+        expect(String(error)).toContain("tailscale serve --https=8443 off");
       }
-      expect(cleanupPorts).toEqual([8443, 8443, 8443]);
     }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)));
   });
 
-  it.effect("surfaces exact cleanup guidance when Serve rollback fails", () => {
+  it.effect("surfaces exact reconciliation guidance after confirmation failure", () => {
     return Effect.gen(function* () {
       const error = yield* confirmNewTailscaleMapping({
         resolved: {
@@ -604,52 +554,12 @@ describe("t3 pair", () => {
         },
         environmentId: "pair-test-environment",
         probe: () => Effect.succeed({ _tag: "not-a-t3-server" }),
-        cleanup: () => Effect.fail(new Error("cleanup failed")),
       }).pipe(Effect.flip);
 
       expect(error).toBeInstanceOf(PairingCleanupFailedError);
       expect(String(error)).toContain("tailscale serve --https=9443 off");
     }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)));
   });
-
-  it.effect("does not remove a Serve mapping replaced by another actor", () =>
-    Effect.gen(function* () {
-      let disableCalls = 0;
-      let targetReads = 0;
-      const error = yield* cleanupCreatedTailscaleMapping({
-        mapping: {
-          servePort: 8443,
-          localTarget: "http://127.0.0.1:13773",
-          environmentId: "pair-test-environment",
-        },
-        readTarget: () =>
-          Effect.sync(() => {
-            targetReads += 1;
-            return targetReads === 1 ? "http://127.0.0.1:13773" : "http://127.0.0.1:14773";
-          }),
-        probe: () =>
-          Effect.succeed({
-            _tag: "descriptor",
-            descriptor: {
-              environmentId: EnvironmentId.make("pair-test-environment"),
-              label: "Pair test",
-              platform: { os: "darwin", arch: "arm64" },
-              serverVersion: "0.0.0",
-              capabilities: { repositoryIdentity: true },
-            },
-          }),
-        disable: () =>
-          Effect.sync(() => {
-            disableCalls += 1;
-          }),
-      }).pipe(Effect.flip);
-
-      expect(error).toBeInstanceOf(TailscaleServeOwnershipLostError);
-      expect(targetReads).toBe(2);
-      expect(disableCalls).toBe(0);
-      expect(String(error)).toContain("tailscale serve status");
-    }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer))),
-  );
 
   it.effect("serializes concurrent transactions on one Serve port", () =>
     Effect.gen(function* () {
@@ -741,7 +651,6 @@ describe("t3 pair", () => {
             cleanupCause: new Error("credential revoke failed"),
           }),
         ),
-        () => Effect.fail(new Error("Serve rollback failed")),
       ).pipe(Effect.flip);
 
       expect(error).toBeInstanceOf(PairingCleanupFailedError);

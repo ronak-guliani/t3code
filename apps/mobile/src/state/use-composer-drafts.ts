@@ -138,7 +138,7 @@ async function getComposerDraftsFile() {
   return new File(directory, COMPOSER_DRAFTS_FILE);
 }
 
-async function loadPersistedComposerDrafts(): Promise<Record<string, ComposerDraft>> {
+async function loadPersistedComposerDraftsStrict(): Promise<Record<string, ComposerDraft>> {
   let operation: ComposerDraftPersistenceError["operation"] = "open";
   try {
     const file = await getComposerDraftsFile();
@@ -150,15 +150,20 @@ async function loadPersistedComposerDrafts(): Promise<Record<string, ComposerDra
     operation = "decode";
     return decodePersistedComposerDrafts(JSON.parse(raw) as unknown);
   } catch (cause) {
-    console.warn(
-      "[composer-drafts] ignored persisted draft failure",
-      new ComposerDraftPersistenceError({
-        operation,
-        directory: COMPOSER_DRAFTS_DIRECTORY,
-        fileName: COMPOSER_DRAFTS_FILE,
-        cause,
-      }),
-    );
+    throw new ComposerDraftPersistenceError({
+      operation,
+      directory: COMPOSER_DRAFTS_DIRECTORY,
+      fileName: COMPOSER_DRAFTS_FILE,
+      cause,
+    });
+  }
+}
+
+async function loadPersistedComposerDrafts(): Promise<Record<string, ComposerDraft>> {
+  try {
+    return await loadPersistedComposerDraftsStrict();
+  } catch (cause) {
+    console.warn("[composer-drafts] ignored persisted draft failure", cause);
     return {};
   }
 }
@@ -411,23 +416,45 @@ export function removeComposerDraftsForEnvironment(
   );
 }
 
+export async function clearComposerDraftsEnvironmentState(input: {
+  readonly environmentId: EnvironmentId;
+  readonly current: () => Record<string, ComposerDraft>;
+  readonly load: () => Promise<Record<string, ComposerDraft>>;
+  readonly write: (drafts: Record<string, ComposerDraft>) => Promise<void>;
+  readonly beforeWrite?: () => void;
+}): Promise<Record<string, ComposerDraft>> {
+  const persisted = await input.load();
+  input.beforeWrite?.();
+  const next = removeComposerDraftsForEnvironment(
+    { ...persisted, ...input.current() },
+    input.environmentId,
+  );
+  await input.write(next);
+  return next;
+}
+
 export async function clearComposerDraftsEnvironment(environmentId: EnvironmentId): Promise<void> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
     await loadPromise;
   }
-
-  const next = removeComposerDraftsForEnvironment(
-    appAtomRegistry.get(composerDraftsAtom),
-    environmentId,
-  );
-
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
+  const next = await clearComposerDraftsEnvironmentState({
+    environmentId,
+    current: () => appAtomRegistry.get(composerDraftsAtom),
+    load: loadPersistedComposerDraftsStrict,
+    write: writePersistedComposerDrafts,
+    beforeWrite: () => {
+      if (persistTimer !== null) {
+        clearTimeout(persistTimer);
+        persistTimer = null;
+      }
+    },
+  });
   appAtomRegistry.set(composerDraftsAtom, next);
-  await writePersistedComposerDrafts(next);
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {
