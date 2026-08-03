@@ -40,6 +40,7 @@ import {
   TailscaleServeLockError,
   tailscaleServeLockPath,
   useResolvedPairingBase,
+  validateReusableTailscaleTarget,
   withTailscaleServePortLock,
 } from "./pair.ts";
 
@@ -237,6 +238,18 @@ describe("pair target resolution", () => {
         servePortConfigured: false,
       }),
     ).toBe("configure");
+  });
+
+  it("reuses a Serve mapping only when its local target matches the discovered runtime", () => {
+    expect(
+      validateReusableTailscaleTarget("http://127.0.0.1:13773/", "http://127.0.0.1:13773", 8443),
+    ).toBe(true);
+    expect(
+      validateReusableTailscaleTarget("http://127.0.0.1:14773", "http://127.0.0.1:13773", 8443),
+    ).toBeInstanceOf(ServesOtherEnvironmentError);
+    expect(validateReusableTailscaleTarget(null, "http://127.0.0.1:13773", 8443)).toBeInstanceOf(
+      ServesOtherEnvironmentError,
+    );
   });
 });
 

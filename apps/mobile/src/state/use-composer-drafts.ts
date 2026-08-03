@@ -93,6 +93,16 @@ export const composerDraftsAtom = Atom.make<Record<string, ComposerDraft>>({}).p
 
 let loadPromise: Promise<void> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let persistenceQueue: Promise<void> = Promise.resolve();
+
+function serializeComposerDraftPersistence<A>(operation: () => Promise<A>): Promise<A> {
+  const result = persistenceQueue.then(operation, operation);
+  persistenceQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
 
 function normalizeDraft(draft: ComposerDraft | undefined): ComposerDraft {
   if (!draft) {
@@ -196,22 +206,24 @@ async function writePersistedComposerDrafts(drafts: Record<string, ComposerDraft
   }
 }
 
-async function savePersistedComposerDrafts(drafts: Record<string, ComposerDraft>): Promise<void> {
+async function savePersistedComposerDrafts(): Promise<void> {
   try {
-    await writePersistedComposerDrafts(drafts);
+    await serializeComposerDraftPersistence(() =>
+      writePersistedComposerDrafts(appAtomRegistry.get(composerDraftsAtom)),
+    );
   } catch (error) {
     console.warn("[composer-drafts] failed to persist drafts", error);
     // Draft persistence is best-effort; in-memory drafts still keep working.
   }
 }
 
-function schedulePersistComposerDrafts(drafts: Record<string, ComposerDraft>): void {
+function schedulePersistComposerDrafts(): void {
   if (persistTimer !== null) {
     clearTimeout(persistTimer);
   }
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    void savePersistedComposerDrafts(drafts);
+    void savePersistedComposerDrafts();
   }, PERSIST_DEBOUNCE_MS);
 }
 
@@ -249,7 +261,7 @@ function updateComposerDrafts(
 ): void {
   const next = update(appAtomRegistry.get(composerDraftsAtom));
   appAtomRegistry.set(composerDraftsAtom, next);
-  schedulePersistComposerDrafts(next);
+  schedulePersistComposerDrafts();
 }
 
 export function setComposerDraftText(draftKey: string, value: string): void {
@@ -421,16 +433,20 @@ export async function clearComposerDraftsEnvironmentState(input: {
   readonly current: () => Record<string, ComposerDraft>;
   readonly load: () => Promise<Record<string, ComposerDraft>>;
   readonly write: (drafts: Record<string, ComposerDraft>) => Promise<void>;
+  readonly commit: (drafts: Record<string, ComposerDraft>) => void;
   readonly beforeWrite?: () => void;
 }): Promise<Record<string, ComposerDraft>> {
-  const persisted = await input.load();
-  input.beforeWrite?.();
-  const next = removeComposerDraftsForEnvironment(
-    { ...persisted, ...input.current() },
-    input.environmentId,
-  );
-  await input.write(next);
-  return next;
+  return serializeComposerDraftPersistence(async () => {
+    const persisted = await input.load();
+    input.beforeWrite?.();
+    const next = removeComposerDraftsForEnvironment(
+      { ...persisted, ...input.current() },
+      input.environmentId,
+    );
+    await input.write(next);
+    input.commit(next);
+    return next;
+  });
 }
 
 export async function clearComposerDraftsEnvironment(environmentId: EnvironmentId): Promise<void> {
@@ -442,11 +458,12 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
     clearTimeout(persistTimer);
     persistTimer = null;
   }
-  const next = await clearComposerDraftsEnvironmentState({
+  await clearComposerDraftsEnvironmentState({
     environmentId,
     current: () => appAtomRegistry.get(composerDraftsAtom),
     load: loadPersistedComposerDraftsStrict,
     write: writePersistedComposerDrafts,
+    commit: (drafts) => appAtomRegistry.set(composerDraftsAtom, drafts),
     beforeWrite: () => {
       if (persistTimer !== null) {
         clearTimeout(persistTimer);
@@ -454,7 +471,6 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
       }
     },
   });
-  appAtomRegistry.set(composerDraftsAtom, next);
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {

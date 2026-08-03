@@ -5,6 +5,7 @@ import {
   DEFAULT_TAILSCALE_SERVE_PORT,
   ensureTailscaleServe,
   isTailscaleServePortConfigured,
+  readTailscaleServePortTarget,
   readTailscaleStatus,
 } from "@t3tools/tailscale";
 import * as Cause from "effect/Cause";
@@ -376,6 +377,22 @@ export const resolveTailscaleLocalTarget = (
   return { localPort: state.port };
 };
 
+const normalizeTailscaleLocalTarget = (target: string): string => {
+  const url = new URL(target);
+  url.pathname = url.pathname.replace(/\/+$/u, "") || "/";
+  return url.toString();
+};
+
+export const validateReusableTailscaleTarget = (
+  configuredTarget: string | null,
+  expectedTarget: string,
+  servePort: number,
+): true | ServesOtherEnvironmentError =>
+  configuredTarget !== null &&
+  normalizeTailscaleLocalTarget(configuredTarget) === normalizeTailscaleLocalTarget(expectedTarget)
+    ? true
+    : new ServesOtherEnvironmentError({ servePort });
+
 const resolveServiceStatePath = (baseDir: string) =>
   Effect.gen(function* () {
     if (process.platform !== "darwin" || typeof process.getuid !== "function") return undefined;
@@ -678,11 +695,23 @@ const resolveTailscalePairingBase = Effect.fn(function* (input: {
     servePortConfigured,
   });
   if (decision !== "configure" && decision !== "reuse") return yield* decision;
-  if (decision === "reuse") return { baseUrl, notes } satisfies ResolvedPairingBase;
 
   const localTarget = resolveTailscaleLocalTarget(input.target.state);
   if (isDevServerNotProxiableError(localTarget)) return yield* localTarget;
   const localTargetUrl = `http://${formatHostForUrl(localTarget.localHost ?? "127.0.0.1")}:${String(localTarget.localPort)}`;
+  if (decision === "reuse") {
+    const configuredTarget = yield* readTailscaleServePortTarget(input.servePort).pipe(
+      Effect.mapError((cause) => new TailscaleUnavailableError({ cause })),
+    );
+    const validation = validateReusableTailscaleTarget(
+      configuredTarget,
+      localTargetUrl,
+      input.servePort,
+    );
+    if (validation !== true) return yield* validation;
+    return { baseUrl, notes } satisfies ResolvedPairingBase;
+  }
+
   yield* ensureTailscaleServe({
     localPort: localTarget.localPort,
     servePort: input.servePort,

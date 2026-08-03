@@ -166,6 +166,7 @@ describe("mobile composer drafts", () => {
         write: async () => {
           writes += 1;
         },
+        commit: () => undefined,
       }),
     ).rejects.toBe(loadError);
     expect(writes).toBe(0);
@@ -187,11 +188,42 @@ describe("mobile composer drafts", () => {
       write: async (drafts) => {
         written = drafts;
       },
+      commit: () => undefined,
     });
 
     expect(next).toEqual({
       [`${retainedEnvironmentId}:thread-local`]: DRAFT,
     });
     expect(written).toEqual(next);
+  });
+
+  it("serializes concurrent environment cleanup transactions", async () => {
+    const firstEnvironmentId = EnvironmentId.make("environment-first");
+    const secondEnvironmentId = EnvironmentId.make("environment-second");
+    const retainedEnvironmentId = EnvironmentId.make("environment-retained");
+    let drafts = {
+      [`${firstEnvironmentId}:thread-first`]: DRAFT,
+      [`${secondEnvironmentId}:thread-second`]: DRAFT,
+      [`${retainedEnvironmentId}:thread-retained`]: DRAFT,
+    };
+    const cleanup = (environmentId: EnvironmentId) =>
+      clearComposerDraftsEnvironmentState({
+        environmentId,
+        current: () => drafts,
+        load: async () => drafts,
+        write: async (next) => {
+          await Promise.resolve();
+          drafts = next;
+        },
+        commit: (next) => {
+          drafts = next;
+        },
+      });
+
+    await Promise.all([cleanup(firstEnvironmentId), cleanup(secondEnvironmentId)]);
+
+    expect(drafts).toEqual({
+      [`${retainedEnvironmentId}:thread-retained`]: DRAFT,
+    });
   });
 });
