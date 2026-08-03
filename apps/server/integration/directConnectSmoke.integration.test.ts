@@ -157,6 +157,32 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           },
         );
         const ownerToken = ownerBootstrap.body.sessionToken;
+        const securePublicOrigin = "https://direct-connect.test";
+        const nativeFetch = globalThis.fetch;
+        const secureFetch = ((
+          input: Parameters<typeof globalThis.fetch>[0],
+          init?: RequestInit,
+        ) => {
+          const requestedUrl = new URL(input instanceof Request ? input.url : String(input));
+          if (requestedUrl.origin !== securePublicOrigin) return nativeFetch(input, init);
+          const targetUrl = new URL(
+            `${requestedUrl.pathname}${requestedUrl.search}${requestedUrl.hash}`,
+            origin,
+          ).toString();
+          return nativeFetch(
+            input instanceof Request ? new Request(targetUrl, input) : targetUrl,
+            init,
+          );
+        }) as typeof globalThis.fetch;
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            globalThis.fetch = secureFetch;
+          }),
+          () =>
+            Effect.sync(() => {
+              globalThis.fetch = nativeFetch;
+            }),
+        );
         const createPairingCredential = Effect.gen(function* () {
           const result = yield* fetchJson<{ readonly credential: string }>(
             `${origin}/api/auth/pairing-token`,
@@ -170,11 +196,11 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
 
         const mobileCredential = yield* createPairingCredential;
         const registration = yield* preparePairingRegistration({
-          pairingUrl: `${origin}/pair#token=${encodeURIComponent(mobileCredential)}`,
+          pairingUrl: `${securePublicOrigin}/pair#token=${encodeURIComponent(mobileCredential)}`,
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              remoteHttpClientLayer(globalThis.fetch),
+              remoteHttpClientLayer(secureFetch),
               Layer.succeed(
                 ClientPresentation,
                 ClientPresentation.of({
@@ -189,6 +215,8 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
             ),
           ),
         );
+        expect(registration.profile.httpBaseUrl).toBe(`${securePublicOrigin}/`);
+        expect(registration.profile.wsBaseUrl).toBe("wss://direct-connect.test/");
         const unauthorizedSnapshot = yield* Effect.promise(() =>
           fetch(`${origin}/api/orchestration/shell-snapshot`),
         );
@@ -216,7 +244,13 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
             Object.defineProperty(globalThis, "WebSocket", {
               configurable: true,
               value: function WebSocket(socketUrl: string | URL, protocols?: string | string[]) {
-                const socket = new NodeSocket.NodeWS.WebSocket(socketUrl, protocols);
+                const requestedUrl = new URL(socketUrl);
+                if (requestedUrl.origin === "wss://direct-connect.test") {
+                  const localOrigin = new URL(origin);
+                  requestedUrl.protocol = localOrigin.protocol === "https:" ? "wss:" : "ws:";
+                  requestedUrl.host = localOrigin.host;
+                }
+                const socket = new NodeSocket.NodeWS.WebSocket(requestedUrl, protocols);
                 sockets.push(socket);
                 return socket;
               },
@@ -247,7 +281,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
                       httpBaseUrl: registration.profile.httpBaseUrl,
                       wsBaseUrl: registration.profile.wsBaseUrl,
                       bearerToken: registration.credential.token,
-                    }).pipe(Effect.provide(remoteHttpClientLayer(globalThis.fetch))),
+                    }).pipe(Effect.provide(remoteHttpClientLayer(secureFetch))),
                   );
                 },
                 {

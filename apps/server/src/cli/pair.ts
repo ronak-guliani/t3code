@@ -3,6 +3,7 @@ import { resolveWorktreeT3Home } from "@t3tools/shared/devHome";
 import {
   buildTailscaleHttpsBaseUrl,
   DEFAULT_TAILSCALE_SERVE_PORT,
+  disableTailscaleServe,
   ensureTailscaleServe,
   isTailscaleServePortConfigured,
   readTailscaleStatus,
@@ -16,8 +17,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 import { Command, Flag, GlobalFlag } from "effect/unstable/cli";
 import {
   FetchHttpClient,
@@ -25,7 +24,7 @@ import {
   HttpClientRequest,
   HttpClientResponse,
 } from "effect/unstable/http";
-import { homedir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { readFile } from "node:fs/promises";
 
 import { AuthControlPlaneRuntimeLive } from "../auth/Layers/AuthControlPlane.ts";
@@ -33,6 +32,7 @@ import { AuthControlPlane } from "../auth/Services/AuthControlPlane.ts";
 import * as BootService from "../cloud/bootService.ts";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
+import { DurationFromString } from "./duration.ts";
 import {
   type PersistedServerRuntimeState,
   readPersistedServerRuntimeState,
@@ -64,6 +64,57 @@ export class NoRunningServerError extends Schema.TaggedErrorClass<NoRunningServe
       ...this.checkedStatePaths.map((statePath) => `  checked ${statePath}`),
       "Start one with `npx t3 serve`, or install the background service with `npx t3 service install`.",
     ].join("\n");
+  }
+}
+
+export class PairingEndpointUnavailableError extends Schema.TaggedErrorClass<PairingEndpointUnavailableError>()(
+  "PairingEndpointUnavailableError",
+  { attemptedUrls: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    return [
+      "No reachable pairing URL served the selected T3 Code environment.",
+      ...this.attemptedUrls.map((url) => `  checked ${url}`),
+      "Bind the server to a reachable interface, pass --tailscale, or pair locally from this machine.",
+    ].join("\n");
+  }
+}
+
+export class TailscaleEndpointVerificationError extends Schema.TaggedErrorClass<TailscaleEndpointVerificationError>()(
+  "TailscaleEndpointVerificationError",
+  { servePort: Schema.Finite, outcome: Schema.Literals(["unreachable", "not-a-t3-server"]) },
+) {
+  override get message(): string {
+    return this.outcome === "unreachable"
+      ? `Tailscale Serve on HTTPS port ${String(this.servePort)} did not become reachable before the provisioning timeout.`
+      : `Tailscale Serve on HTTPS port ${String(this.servePort)} responded, but not as T3 Code.`;
+  }
+}
+
+export class PairingCleanupFailedError extends Schema.TaggedErrorClass<PairingCleanupFailedError>()(
+  "PairingCleanupFailedError",
+  {
+    servePort: Schema.Finite,
+    primaryCause: Schema.Defect(),
+    cleanupCause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Pairing failed and the newly created Tailscale Serve mapping could not be removed. Run \`tailscale serve --https=${String(this.servePort)} off\` to remove only this mapping.`;
+  }
+}
+
+export class PairingCredentialCleanupFailedError extends Schema.TaggedErrorClass<PairingCredentialCleanupFailedError>()(
+  "PairingCredentialCleanupFailedError",
+  {
+    pairingLinkId: Schema.String,
+    baseDir: Schema.String,
+    primaryCause: Schema.Defect(),
+    cleanupCause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return `Pairing output failed and pairing credential ${this.pairingLinkId} could not be revoked. Run \`npx t3 auth pairing revoke ${this.pairingLinkId} --base-dir ${JSON.stringify(this.baseDir)}\`.`;
   }
 }
 
@@ -132,14 +183,14 @@ export class DevServerNotProxiableError extends Schema.TaggedErrorClass<DevServe
 
 const isDevServerNotProxiableError = Schema.is(DevServerNotProxiableError);
 
-interface PairRuntimeStateCandidate {
+export interface PairRuntimeStateCandidate {
   readonly baseDir: string;
   readonly variant: PairStateVariant;
   readonly statePath: string;
   readonly source: "service" | "foreground";
 }
 
-interface DiscoveredPairTarget extends PairRuntimeStateCandidate {
+export interface DiscoveredPairTarget extends PairRuntimeStateCandidate {
   readonly state: PersistedServerRuntimeState;
   readonly descriptor: ExecutionEnvironmentDescriptor;
 }
@@ -172,7 +223,7 @@ export const decideTailscaleMapping = (input: {
   if (input.existing.descriptor.environmentId !== input.environmentId) {
     return new ServesOtherEnvironmentError({ servePort: input.servePort });
   }
-  return input.devServer ? "configure" : "reuse";
+  return "reuse";
 };
 
 const processIsOwnedAndAlive = (pid: number): boolean => {
@@ -207,6 +258,69 @@ const probeEnvironmentDescriptor = (
 
 export const resolveDirectPairingBaseUrl = (state: PersistedServerRuntimeState): string =>
   state.devUrl ?? resolveHeadlessConnectionString(state.host, state.port);
+
+const isPairableInterface = (
+  name: string,
+  entry: { readonly address: string; readonly internal: boolean },
+): boolean => {
+  if (entry.internal) return false;
+  const normalizedName = name.toLowerCase();
+  if (
+    /^(?:awdl|br-|bridge|docker|llw|ppp|tap|tun|utun|vboxnet|virbr|vmnet|wg|zt)/u.test(
+      normalizedName,
+    ) ||
+    normalizedName.includes("tailscale")
+  ) {
+    return false;
+  }
+  return !entry.address.startsWith("169.254.") && !entry.address.toLowerCase().startsWith("fe80:");
+};
+
+export const resolveDirectPairingBaseUrlCandidates = (
+  state: PersistedServerRuntimeState,
+  interfaces = networkInterfaces(),
+): ReadonlyArray<string> => {
+  if (state.devUrl !== undefined || !isWildcardHost(state.host)) {
+    return [resolveDirectPairingBaseUrl(state)];
+  }
+  const hosts = Object.entries(interfaces)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([name, entries]) => {
+      const pairable = (entries ?? [])
+        .filter((entry) => isPairableInterface(name, entry))
+        .sort((left, right) => {
+          const leftIpv4 = left.family === "IPv4";
+          const rightIpv4 = right.family === "IPv4";
+          return leftIpv4 === rightIpv4
+            ? left.address.localeCompare(right.address)
+            : leftIpv4
+              ? -1
+              : 1;
+        });
+      return pairable.length === 0 ? [] : [pairable[0]!.address];
+    });
+  return [
+    ...[...new Set(hosts)].map((host) => `http://${formatHostForUrl(host)}:${String(state.port)}`),
+    `http://localhost:${String(state.port)}`,
+  ];
+};
+
+export const resolveVerifiedDirectPairingBase = Effect.fn(function* (input: {
+  readonly target: DiscoveredPairTarget;
+  readonly candidates?: ReadonlyArray<string>;
+}) {
+  const candidates = input.candidates ?? resolveDirectPairingBaseUrlCandidates(input.target.state);
+  for (const candidate of candidates) {
+    const result = yield* probeEnvironmentDescriptor(candidate);
+    if (
+      result._tag === "descriptor" &&
+      result.descriptor.environmentId === input.target.descriptor.environmentId
+    ) {
+      return candidate;
+    }
+  }
+  return yield* new PairingEndpointUnavailableError({ attemptedUrls: [...candidates] });
+});
 
 export const resolveTailscaleLocalTarget = (
   state: PersistedServerRuntimeState,
@@ -275,24 +389,9 @@ export const resolveCandidatesForBaseDir = Effect.fn(function* (
   ];
 });
 
-const discoverPairTarget = Effect.fn("pair.discover")(function* (
-  explicitBaseDir: string | undefined,
+export const discoverPairTargetFromCandidates = Effect.fn("pair.discoverCandidates")(function* (
+  candidates: ReadonlyArray<PairRuntimeStateCandidate>,
 ) {
-  const baseDirs: string[] = [];
-  if (explicitBaseDir?.trim()) {
-    baseDirs.push(yield* resolveBaseDir(explicitBaseDir));
-  } else {
-    const worktreeHome = yield* resolveWorktreeT3Home(process.cwd());
-    if (worktreeHome) baseDirs.push(worktreeHome);
-    const configuredHome = yield* Config.string("T3CODE_HOME").pipe(Config.option);
-    baseDirs.push(yield* resolveBaseDir(Option.getOrUndefined(configuredHome)));
-  }
-
-  const candidates = [];
-  for (const baseDir of new Set(baseDirs)) {
-    candidates.push(...(yield* resolveCandidatesForBaseDir(baseDir)));
-  }
-
   for (const candidate of candidates) {
     const state = yield* readPersistedServerRuntimeState(candidate.statePath);
     if (Option.isNone(state) || !processIsOwnedAndAlive(state.value.pid)) continue;
@@ -320,6 +419,26 @@ const discoverPairTarget = Effect.fn("pair.discover")(function* (
   return yield* new NoRunningServerError({
     checkedStatePaths: candidates.map((candidate) => candidate.statePath),
   });
+});
+
+const discoverPairTarget = Effect.fn("pair.discover")(function* (
+  explicitBaseDir: string | undefined,
+) {
+  const baseDirs: string[] = [];
+  if (explicitBaseDir?.trim()) {
+    baseDirs.push(yield* resolveBaseDir(explicitBaseDir));
+  } else {
+    const worktreeHome = yield* resolveWorktreeT3Home(process.cwd());
+    if (worktreeHome) baseDirs.push(worktreeHome);
+    const configuredHome = yield* Config.string("T3CODE_HOME").pipe(Config.option);
+    baseDirs.push(yield* resolveBaseDir(Option.getOrUndefined(configuredHome)));
+  }
+
+  const candidates = [];
+  for (const baseDir of new Set(baseDirs)) {
+    candidates.push(...(yield* resolveCandidatesForBaseDir(baseDir)));
+  }
+  return yield* discoverPairTargetFromCandidates(candidates);
 });
 
 const makePairServerConfig = Effect.fn(function* (input: {
@@ -368,6 +487,77 @@ const awaitEnvironmentDescriptor = Effect.fn(function* (baseUrl: string) {
   return last;
 });
 
+export interface ResolvedPairingBase {
+  readonly baseUrl: string;
+  readonly notes: ReadonlyArray<string>;
+  readonly createdServePort?: number;
+}
+
+export function useResolvedPairingBase<A, E, R, E2, R2>(
+  resolved: ResolvedPairingBase,
+  use: Effect.Effect<A, E, R>,
+  cleanup: (servePort: number) => Effect.Effect<void, E2, R2>,
+): Effect.Effect<A, E | PairingCleanupFailedError, R | R2>;
+export function useResolvedPairingBase<A, E, R, E2, R2>(
+  resolved: ResolvedPairingBase,
+  use: Effect.Effect<A, E, R>,
+  cleanup: (servePort: number) => Effect.Effect<void, E2, R2>,
+) {
+  return use.pipe(
+    Effect.catchCause((primaryCause) =>
+      resolved.createdServePort === undefined
+        ? Effect.failCause(primaryCause)
+        : cleanup(resolved.createdServePort).pipe(
+            Effect.matchCauseEffect({
+              onFailure: (cleanupCause) =>
+                Effect.fail(
+                  new PairingCleanupFailedError({
+                    servePort: resolved.createdServePort!,
+                    primaryCause,
+                    cleanupCause,
+                  }),
+                ),
+              onSuccess: () => Effect.failCause(primaryCause),
+            }),
+          ),
+    ),
+  );
+}
+
+export const confirmNewTailscaleMapping = Effect.fn(function* (input: {
+  readonly resolved: ResolvedPairingBase & { readonly createdServePort: number };
+  readonly environmentId: string;
+  readonly probe?: (baseUrl: string) => Effect.Effect<EnvironmentProbeResult, never>;
+  readonly cleanup?: (servePort: number) => Effect.Effect<void, unknown>;
+}) {
+  const confirm = Effect.gen(function* () {
+    const confirmed = yield* (
+      input.probe ?? ((baseUrl: string) => awaitEnvironmentDescriptor(baseUrl))
+    )(input.resolved.baseUrl);
+    if (
+      confirmed._tag === "descriptor" &&
+      confirmed.descriptor.environmentId !== input.environmentId
+    ) {
+      return yield* new ServesOtherEnvironmentError({
+        servePort: input.resolved.createdServePort,
+      });
+    }
+    if (confirmed._tag !== "descriptor") {
+      return yield* new TailscaleEndpointVerificationError({
+        servePort: input.resolved.createdServePort,
+        outcome: confirmed._tag,
+      });
+    }
+    return input.resolved;
+  });
+  if (input.cleanup) {
+    return yield* useResolvedPairingBase(input.resolved, confirm, input.cleanup);
+  }
+  return yield* useResolvedPairingBase(input.resolved, confirm, (servePort) =>
+    disableTailscaleServe({ servePort }),
+  );
+});
+
 const resolveTailscalePairingBase = Effect.fn(function* (input: {
   readonly target: DiscoveredPairTarget;
   readonly servePort: number;
@@ -397,7 +587,7 @@ const resolveTailscalePairingBase = Effect.fn(function* (input: {
     servePortConfigured,
   });
   if (decision !== "configure" && decision !== "reuse") return yield* decision;
-  if (decision === "reuse") return { baseUrl, notes };
+  if (decision === "reuse") return { baseUrl, notes } satisfies ResolvedPairingBase;
 
   const localTarget = resolveTailscaleLocalTarget(input.target.state);
   if (isDevServerNotProxiableError(localTarget)) return yield* localTarget;
@@ -410,23 +600,19 @@ const resolveTailscalePairingBase = Effect.fn(function* (input: {
       (cause) => new TailscaleServeFailedError({ servePort: input.servePort, cause }),
     ),
   );
+  const created = {
+    baseUrl,
+    notes,
+    createdServePort: input.servePort,
+  } satisfies ResolvedPairingBase;
+  const confirmed = yield* confirmNewTailscaleMapping({
+    resolved: created,
+    environmentId: input.target.descriptor.environmentId,
+  });
   notes.push(
     `Tailscale Serve maps ${baseUrl} to this server and persists across restarts. Remove only this mapping with \`tailscale serve --https=${String(input.servePort)} off\`.`,
   );
-
-  const confirmed = yield* awaitEnvironmentDescriptor(baseUrl);
-  if (
-    confirmed._tag === "descriptor" &&
-    confirmed.descriptor.environmentId !== input.target.descriptor.environmentId
-  ) {
-    return yield* new ServesOtherEnvironmentError({ servePort: input.servePort });
-  }
-  if (confirmed._tag !== "descriptor") {
-    notes.push(
-      "The HTTPS endpoint is not reachable yet; initial Tailscale certificate provisioning can take a moment.",
-    );
-  }
-  return { baseUrl, notes };
+  return confirmed;
 });
 
 export const formatPairOutput = (input: {
@@ -449,43 +635,6 @@ export const formatPairOutput = (input: {
     ...input.notes.flatMap((note) => ["", `Note: ${note}`]),
     "",
   ].join("\n");
-
-const parseDurationInput = (value: string): Duration.Duration | null => {
-  const shorthand = /^(?<value>\d+)(?<unit>ms|s|m|h|d|w)$/i.exec(value.trim());
-  const normalized = shorthand?.groups
-    ? `${shorthand.groups.value} ${
-        {
-          ms: "millis",
-          s: "seconds",
-          m: "minutes",
-          h: "hours",
-          d: "days",
-          w: "weeks",
-        }[shorthand.groups.unit?.toLowerCase() ?? ""]
-      }`
-    : value.trim();
-  const decoded = Duration.fromInput(normalized as Duration.Input);
-  return Option.getOrNull(decoded);
-};
-
-const DurationFromString = Schema.String.pipe(
-  Schema.decodeTo(
-    Schema.Duration,
-    SchemaTransformation.transformOrFail({
-      decode: (value) => {
-        const duration = parseDurationInput(value);
-        return duration
-          ? Effect.succeed(duration)
-          : Effect.fail(
-              new SchemaIssue.InvalidValue(Option.some(value), {
-                message: "Invalid duration. Use values like 5m, 1h, or 15 minutes.",
-              }),
-            );
-      },
-      encode: (duration) => Effect.succeed(Duration.format(duration)),
-    }),
-  ),
-);
 
 const baseDirFlag = Flag.string("base-dir").pipe(
   Flag.withDescription(
@@ -528,51 +677,79 @@ export const pairCommand = Command.make("pair", {
       const logLevel = Option.getOrElse(cliLogLevel, () => "Warn" as const);
       const target = yield* discoverPairTarget(Option.getOrUndefined(flags.baseDir));
       const notes: string[] = [];
-      const pairingBaseUrl = flags.tailscale
+      const resolvedPairingBase = flags.tailscale
         ? yield* resolveTailscalePairingBase({
             target,
             servePort: flags.tailscaleServePort,
           }).pipe(
             Effect.map((resolved) => {
               notes.push(...resolved.notes);
-              return resolved.baseUrl;
+              return resolved;
             }),
           )
-        : resolveDirectPairingBaseUrl(target.state);
+        : {
+            baseUrl: yield* resolveVerifiedDirectPairingBase({ target }),
+            notes,
+          };
+      const pairingBaseUrl = resolvedPairingBase.baseUrl;
       if (!flags.tailscale && isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
         notes.push(
           "This URL is reachable only from this machine. Re-run with --tailscale or bind the server to a reachable host.",
         );
       }
 
-      const config = yield* makePairServerConfig({ target, logLevel });
-      const issued = yield* Effect.gen(function* () {
-        const authControlPlane = yield* AuthControlPlane;
-        return yield* authControlPlane.createPairingLink({
-          role: "client",
-          subject: "one-time-token",
-          label: Option.getOrElse(flags.label, () => "t3 pair"),
-          ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
-        });
-      }).pipe(
-        Effect.provide(
-          AuthControlPlaneRuntimeLive.pipe(
-            Layer.provide(Layer.succeed(ServerConfig, config)),
-            Layer.provide(Layer.succeed(References.MinimumLogLevel, logLevel)),
-          ),
-        ),
-      );
-      const pairingUrl = buildPairingUrl(pairingBaseUrl, issued.credential);
-      yield* Console.log(
-        formatPairOutput({
-          serverLabel: target.descriptor.label,
-          origin: target.state.origin,
-          pairingUrl,
-          token: issued.credential,
-          expiresAt: issued.expiresAt,
-          source: target.source,
-          notes,
+      yield* useResolvedPairingBase(
+        resolvedPairingBase,
+        Effect.gen(function* () {
+          const config = yield* makePairServerConfig({ target, logLevel });
+          const issued = yield* Effect.gen(function* () {
+            const authControlPlane = yield* AuthControlPlane;
+            const created = yield* authControlPlane.createPairingLink({
+              role: "client",
+              subject: "one-time-token",
+              label: Option.getOrElse(flags.label, () => "t3 pair"),
+              ...(Option.isSome(flags.ttl) ? { ttl: flags.ttl.value } : {}),
+            });
+            const pairingUrl = buildPairingUrl(pairingBaseUrl, created.credential);
+            yield* Console.log(
+              formatPairOutput({
+                serverLabel: target.descriptor.label,
+                origin: target.state.origin,
+                pairingUrl,
+                token: created.credential,
+                expiresAt: created.expiresAt,
+                source: target.source,
+                notes,
+              }),
+            ).pipe(
+              Effect.catchCause((primaryCause) =>
+                authControlPlane.revokePairingLink(created.id).pipe(
+                  Effect.matchCauseEffect({
+                    onFailure: (cleanupCause) =>
+                      Effect.fail(
+                        new PairingCredentialCleanupFailedError({
+                          pairingLinkId: created.id,
+                          baseDir: target.baseDir,
+                          primaryCause,
+                          cleanupCause,
+                        }),
+                      ),
+                    onSuccess: () => Effect.failCause(primaryCause),
+                  }),
+                ),
+              ),
+            );
+          }).pipe(
+            Effect.provide(
+              AuthControlPlaneRuntimeLive.pipe(
+                Layer.provide(Layer.succeed(ServerConfig, config)),
+                Layer.provide(Layer.succeed(References.MinimumLogLevel, logLevel)),
+              ),
+            ),
+          );
+          return issued;
         }),
+        (servePort) => disableTailscaleServe({ servePort }),
       );
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   ),

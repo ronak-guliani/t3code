@@ -97,9 +97,10 @@ It builds the production browser app, starts the production server runtime, and 
 browser and shared mobile-runtime pairing, persisted bearer sessions, client-scoped HTTP snapshots
 and mutations, involuntary socket loss, fresh-ticket reconnect through the shared `WsTransport`,
 duplicate-free resnapshot, browser cookie persistence, and owner-side client-session revocation.
-Focused client-runtime/mobile tests cover wakeup probe-versus-replacement behavior, reconnect
-subscriptions, environment removal cleanup, and outbox drain. CI uses loopback substitutes and
-does not require external credentials or an active tailnet.
+The Connect release smoke enforces wakeup probe-versus-replacement behavior, reconnect
+subscriptions, environment removal cleanup, and outbox drain. Production acceptance rewrites a
+deterministic HTTPS/WSS public shape onto the loopback server, so CI does not require external
+credentials, trusted certificates, or an active tailnet.
 
 ### Physical-device checklist
 

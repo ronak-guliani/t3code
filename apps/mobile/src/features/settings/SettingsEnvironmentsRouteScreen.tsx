@@ -34,6 +34,7 @@ import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { useThemeColor } from "../../lib/useThemeColor";
 import type { ConnectedEnvironmentSummary } from "../../state/remote-runtime-types";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
+import { environmentDiscoveryPresentation } from "./environmentDiscoveryPresentation";
 
 export function SettingsEnvironmentsRouteScreen() {
   const {
@@ -139,6 +140,11 @@ function ConfiguredCloudEnvironmentRows(props: {
   const hasRequestedDiscovery = useRef(false);
   const hasCloudRows =
     props.connectedCloudEnvironments.length > 0 || availableCloudEnvironments.length > 0;
+  const discoveryPresentation = environmentDiscoveryPresentation({
+    hasRows: hasCloudRows,
+    isRefreshing: controller.relayDiscovery.isRefreshing,
+    error: controller.relayDiscovery.error,
+  });
 
   useEffect(() => {
     if (!isSignedIn) {
@@ -187,7 +193,7 @@ function ConfiguredCloudEnvironmentRows(props: {
         </Pressable>
       </View>
 
-      {hasCloudRows ? (
+      {discoveryPresentation.showRows ? (
         <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">
           {props.connectedCloudEnvironments.map((environment, index) => (
             <ConnectedCloudEnvironmentRow
@@ -211,14 +217,22 @@ function ConfiguredCloudEnvironmentRows(props: {
             />
           ))}
         </View>
-      ) : controller.relayDiscovery.isRefreshing ? (
+      ) : discoveryPresentation.showLoading ? (
         <View collapsable={false} className="items-center gap-3 rounded-[24px] bg-card p-6">
           <ActivityIndicator color={iconColor} />
           <Text className="text-center text-sm leading-normal text-foreground-muted">
             Loading linked T3 Connect environments.
           </Text>
         </View>
-      ) : controller.relayDiscovery.error ? (
+      ) : discoveryPresentation.showEmpty ? (
+        <View collapsable={false} className="rounded-[24px] bg-card p-5">
+          <Text className="text-sm leading-normal text-foreground-muted">
+            No additional linked T3 Connect environments.
+          </Text>
+        </View>
+      ) : null}
+
+      {discoveryPresentation.showError ? (
         <View collapsable={false} className="gap-3 rounded-[24px] bg-card p-5">
           <Text className="text-base font-t3-bold text-foreground">
             Could not load T3 Connect environments
@@ -228,13 +242,7 @@ function ConfiguredCloudEnvironmentRows(props: {
             <CopyTraceIdButton traceId={controller.relayDiscovery.errorTraceId} />
           ) : null}
         </View>
-      ) : (
-        <View collapsable={false} className="rounded-[24px] bg-card p-5">
-          <Text className="text-sm leading-normal text-foreground-muted">
-            No additional linked T3 Connect environments.
-          </Text>
-        </View>
-      )}
+      ) : null}
     </View>
   );
 }

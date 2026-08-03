@@ -205,6 +205,8 @@ describe("thread outbox", () => {
 
     releaseInitialLoad();
     await Promise.all([loading, clearing]);
+    expect(removeCalls).toBe(1);
+    expect(stored.size).toBe(0);
     expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({});
     registry.dispose();
   });
