@@ -3,7 +3,7 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { PanelRight, PictureInPicture2, X } from "lucide-react";
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
@@ -35,8 +35,10 @@ interface PointerState {
 export function ThreadPreviewMiniPlayer(props: {
   readonly threadRef: ScopedThreadRef;
   readonly tabId?: string | null;
+  readonly bottomInset?: number | undefined;
 }) {
   const { threadRef } = props;
+  const bottomInset = props.bottomInset ?? 0;
   const rootRef = useRef<HTMLElement | null>(null);
   const dragRef = useRef<PointerState | null>(null);
   const resizeRef = useRef<PointerState | null>(null);
@@ -52,6 +54,40 @@ export function ThreadPreviewMiniPlayer(props: {
 
   const size = miniPlayer.size ?? PREVIEW_MINI_PLAYER_DEFAULT_SIZE;
   const position = miniPlayer.position;
+  useLayoutEffect(() => {
+    const clampAndMove = () => {
+      const root = rootRef.current;
+      const parent = root?.offsetParent;
+      if (!root || !(parent instanceof HTMLElement)) return;
+      const container = { width: parent.clientWidth, height: parent.clientHeight };
+      const nextSize = clampPreviewMiniPlayerSize(
+        { width: root.offsetWidth, height: root.offsetHeight },
+        container,
+        bottomInset,
+      );
+      usePreviewMiniPlayerStore.getState().resize(threadRef, tabId, nextSize);
+      usePreviewMiniPlayerStore
+        .getState()
+        .move(
+          threadRef,
+          tabId,
+          clampPreviewMiniPlayerPosition(
+            position ?? { x: root.offsetLeft, y: root.offsetTop },
+            container,
+            nextSize,
+            bottomInset,
+          ),
+        );
+    };
+    clampAndMove();
+    const root = rootRef.current;
+    const parent = root?.offsetParent;
+    if (!root || !(parent instanceof HTMLElement) || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(clampAndMove);
+    observer.observe(root);
+    observer.observe(parent);
+    return () => observer.disconnect();
+  }, [bottomInset, position, tabId, threadRef]);
   const withContainer = (
     event: ReactPointerEvent<HTMLElement>,
     callback: (container: PreviewMiniPlayerSize, root: HTMLElement) => void,
@@ -96,6 +132,7 @@ export function ThreadPreviewMiniPlayer(props: {
           },
           container,
           drag.size,
+          bottomInset,
         ),
       );
     });
@@ -122,11 +159,16 @@ export function ThreadPreviewMiniPlayer(props: {
           height: resize.size.height + event.clientY - resize.pointerY,
         },
         container,
+        bottomInset,
       );
       usePreviewMiniPlayerStore.getState().resize(threadRef, tabId, next);
       usePreviewMiniPlayerStore
         .getState()
-        .move(threadRef, tabId, clampPreviewMiniPlayerPosition(resize.position, container, next));
+        .move(
+          threadRef,
+          tabId,
+          clampPreviewMiniPlayerPosition(resize.position, container, next, bottomInset),
+        );
     });
   };
   const toggleNativePictureInPicture = () => {
@@ -141,7 +183,7 @@ export function ThreadPreviewMiniPlayer(props: {
     <section
       ref={rootRef}
       aria-label="Floating browser preview"
-      className="pointer-events-none absolute z-50 select-none"
+      className="pointer-events-none absolute select-none"
       style={
         position
           ? { left: position.x, top: position.y, width: size.width, height: size.height }
@@ -149,7 +191,7 @@ export function ThreadPreviewMiniPlayer(props: {
       }
     >
       <div
-        className="pointer-events-auto absolute right-2 top-2 z-10 flex cursor-grab gap-0.5 rounded-lg border bg-popover/95 p-0.5 shadow-lg active:cursor-grabbing"
+        className="pointer-events-auto absolute right-2 top-2 z-[34] flex cursor-grab gap-0.5 rounded-lg border bg-popover/95 p-0.5 shadow-lg active:cursor-grabbing"
         onPointerDown={startDrag}
         onPointerMove={moveDrag}
         onPointerUp={(event) => endPointer(event, dragRef)}
@@ -187,24 +229,30 @@ export function ThreadPreviewMiniPlayer(props: {
           <X />
         </Button>
       </div>
-      <div className="pointer-events-auto relative h-full overflow-hidden rounded-xl bg-muted shadow-2xl ring-1 ring-border">
+      <div className="relative h-full min-h-0">
+        <div className="absolute inset-0 z-[29] rounded-xl bg-muted shadow-2xl" />
         <BrowserSurfaceSlot
           tabId={runtimeTabId}
           visible={overlay !== null}
+          cornerRadius={12}
+          fitSourceContent
           layoutVersion={
-            position ? `${position.x}:${position.y}:${size.width}:${size.height}` : "initial"
+            position
+              ? `${position.x}:${position.y}:${size.width}:${size.height}`
+              : `initial:${bottomInset}`
           }
           className="absolute inset-0"
         />
+        <div className="pointer-events-none absolute inset-0 z-[31] rounded-xl ring-1 ring-inset ring-border" />
         {overlay === null ? (
-          <div className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">
+          <div className="pointer-events-none absolute inset-0 z-[32] grid place-items-center rounded-xl bg-muted text-xs text-muted-foreground">
             Reconnecting preview...
           </div>
         ) : null}
         <button
           type="button"
           aria-label="Resize floating preview"
-          className="absolute bottom-0 right-0 size-5 cursor-nwse-resize"
+          className="pointer-events-auto absolute bottom-0 right-0 z-[33] size-5 cursor-nwse-resize rounded-br-xl"
           onPointerDown={startResize}
           onPointerMove={moveResize}
           onPointerUp={(event) => endPointer(event, resizeRef)}
