@@ -93,6 +93,7 @@ interface PendingTurnStart {
   readonly messageId: MessageId;
   providerSendDispatched: boolean;
   cancellationRequested: boolean;
+  cancellationRequestedAt: string | null;
   providerTurnObserved: boolean;
   requiresPostAcknowledgementInterrupt: boolean;
 }
