@@ -2159,6 +2159,9 @@ function applyEnvironmentOrchestrationEvent(
         ).slice(-MAX_THREAD_PROPOSED_PLANS);
         const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
         const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
+        // The sticky live-eviction flag described the discarded turn. Clear it
+        // for the restored latestTurn; a later snapshot can re-offer history.
+        const hasMoreCurrentTurnActivities = false;
 
         return {
           ...thread,
@@ -2167,6 +2170,7 @@ function applyEnvironmentOrchestrationEvent(
           proposedPlans,
           activities,
           pendingSourceProposedPlan: undefined,
+          hasMoreCurrentTurnActivities,
           latestTurn:
             latestCheckpoint === null
               ? null

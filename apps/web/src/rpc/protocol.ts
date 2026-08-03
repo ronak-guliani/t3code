@@ -16,7 +16,7 @@ import {
   recordWsConnectionOpened,
   WS_RECONNECT_MAX_RETRIES,
 } from "./wsConnectionState";
-import { recordWsDiagnostic } from "./wsDiagnostics";
+import { recordWsDiagnostic, sanitizeWsSocketUrl } from "./wsDiagnostics";
 
 export interface WsProtocolLifecycleHandlers {
   readonly isActive?: () => boolean;
@@ -62,8 +62,9 @@ function defaultLifecycleHandlers(): Required<WsProtocolLifecycleHandlers> {
   return {
     isActive: () => true,
     onAttempt: (socketUrl) => {
-      recordWsDiagnostic("socket-attempt", { socketUrl });
-      recordWsConnectionAttempt(socketUrl);
+      const safeSocketUrl = sanitizeWsSocketUrl(socketUrl);
+      recordWsDiagnostic("socket-attempt", { socketUrl: safeSocketUrl });
+      recordWsConnectionAttempt(safeSocketUrl);
     },
     onOpen: () => {
       recordWsDiagnostic("socket-open");

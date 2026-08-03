@@ -236,6 +236,10 @@ export class WsTransport {
       clearAllTrackedRpcRequests();
       const previousSession = this.session;
       this.session = this.createSession();
+      // New sessions start at connectCount 0, so onProtocolConnected will not
+      // restart on their first open. Wake parked loops and tear down streams
+      // still attached to the previous session before it closes.
+      this.restartStreamSubscriptions();
       await this.closeSession(previousSession);
     });
 

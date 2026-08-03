@@ -1237,6 +1237,7 @@ function ChatViewBody(
   const activeThreadActivityHistoryKey = getActivityHistoryKey(
     activeThreadActivityRequestKey,
     liveThreadActivities,
+    activeLatestTurn?.turnId,
   );
   const activeThreadActivityHistoryKeyRef = useRef(activeThreadActivityHistoryKey);
   activeThreadActivityHistoryKeyRef.current = activeThreadActivityHistoryKey;

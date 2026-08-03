@@ -1889,6 +1889,48 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(olderPage.activities.at(-1)?.summary, "activity-240");
       assert.equal(olderPage.hasMore, false);
 
+      // Latest-turn rows can sit past a boundary owned by another turn when
+      // activities interleave by created_at.
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* Effect.forEach(
+        Array.from({ length: 100 }, (_unused, index) => index + 1),
+        (sequence) =>
+          sql`
+            INSERT INTO projection_thread_activities (
+              activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+              sequence, created_at
+            ) VALUES (
+              ${`history-${String(sequence).padStart(4, "0")}`},
+              'thread-history', 'turn-history', 'info', 'runtime.note',
+              ${`history-${sequence}`}, '{}', ${sequence}, '2026-04-05T00:00:00.000Z'
+            )
+          `,
+        { discard: true },
+      );
+      yield* Effect.forEach(
+        Array.from({ length: 201 }, (_unused, index) => index + 1),
+        (sequence) =>
+          sql`
+            INSERT INTO projection_thread_activities (
+              activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+              sequence, created_at
+            ) VALUES (
+              ${`other-${String(sequence).padStart(4, "0")}`},
+              'thread-history', 'turn-other', 'info', 'runtime.note',
+              ${`other-${sequence}`}, '{}', ${sequence + 100}, '2026-04-05T00:01:00.000Z'
+            )
+          `,
+        { discard: true },
+      );
+      const interleavedDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-history"),
+      );
+      assert.equal(interleavedDetail._tag, "Some");
+      if (interleavedDetail._tag === "Some") {
+        assert.equal(interleavedDetail.value.hasMoreActivities, true);
+        assert.equal(interleavedDetail.value.hasMoreCurrentTurnActivities, true);
+      }
+
       yield* sql`DELETE FROM projection_thread_activities`;
       yield* Effect.forEach(
         Array.from({ length: 240 }, (_unused, index) => index + 1),

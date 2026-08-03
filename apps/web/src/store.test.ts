@@ -1991,6 +1991,74 @@ describe("activity pagination state", () => {
 
     expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
   });
+
+  it("clears sticky current-turn history after revert replaces the latest turn", () => {
+    const state = makeState(
+      makeThread({
+        hasMoreCurrentTurnActivities: true,
+        latestTurn: {
+          turnId: TurnId.make("turn-2"),
+          state: "completed",
+          requestedAt: "2026-02-27T00:00:02.000Z",
+          startedAt: "2026-02-27T00:00:02.000Z",
+          completedAt: "2026-02-27T00:00:03.000Z",
+          assistantMessageId: MessageId.make("assistant-2"),
+        },
+        activities: [
+          {
+            id: EventId.make("activity-1"),
+            tone: "info",
+            kind: "step",
+            summary: "step",
+            payload: {},
+            turnId: TurnId.make("turn-1"),
+            sequence: 1,
+            createdAt: "2026-02-27T00:00:01.000Z",
+          },
+          {
+            id: EventId.make("activity-2"),
+            tone: "info",
+            kind: "step",
+            summary: "step",
+            payload: {},
+            turnId: TurnId.make("turn-2"),
+            sequence: 2,
+            createdAt: "2026-02-27T00:00:02.000Z",
+          },
+        ],
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:01.000Z",
+            status: "ready",
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-1"),
+            files: [],
+          },
+          {
+            turnId: TurnId.make("turn-2"),
+            completedAt: "2026-02-27T00:00:03.000Z",
+            status: "ready",
+            checkpointTurnCount: 2,
+            checkpointRef: CheckpointRef.make("ref-2"),
+            files: [],
+          },
+        ],
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.reverted", {
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.latestTurn?.turnId).toBe(TurnId.make("turn-1"));
+    expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(false);
+  });
 });
 
 describe("insights lifecycle retention", () => {

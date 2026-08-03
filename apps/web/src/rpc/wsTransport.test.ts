@@ -1190,6 +1190,51 @@ describe("WsTransport", () => {
     await transport.dispose();
   }, 20_000);
 
+  it("resumes parked stream subscriptions after an explicit transport reconnect", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let attempts = 0;
+
+    const unsubscribe = transport.subscribe(
+      () =>
+        Stream.suspend(() => {
+          attempts += 1;
+          return Stream.fail(new Error("Git command failed in GitCore.statusDetails"));
+        }),
+      vi.fn(),
+      { retryDelay: 10 },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(attempts).toBe(1);
+    });
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith("[ws] stream-parked", {
+        error: "Git command failed in GitCore.statusDetails",
+      });
+    });
+
+    await transport.reconnect();
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(attempts).toBe(2);
+    }, 5_000);
+
+    unsubscribe();
+    await transport.dispose();
+  }, 20_000);
+
   it("re-subscribes live streams after a silent ping-timeout reconnect", async () => {
     const transport = createTransport("ws://localhost:3020");
     const listener = vi.fn();

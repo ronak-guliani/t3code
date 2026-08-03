@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearWsDiagnosticsForTests, getWsDiagnostics, recordWsDiagnostic } from "./wsDiagnostics";
+import {
+  clearWsDiagnosticsForTests,
+  getWsDiagnostics,
+  recordWsDiagnostic,
+  sanitizeWsSocketUrl,
+} from "./wsDiagnostics";
 
 describe("wsDiagnostics", () => {
   beforeEach(() => {
@@ -12,6 +17,13 @@ describe("wsDiagnostics", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     clearWsDiagnosticsForTests();
+  });
+
+  it("strips query parameters and userinfo from socket URLs", () => {
+    expect(
+      sanitizeWsSocketUrl("wss://user:secret@example.com:8443/ws?wsToken=short-lived&x=1#frag"),
+    ).toBe("wss://example.com:8443/ws");
+    expect(sanitizeWsSocketUrl("not a url?wsToken=leak")).toBe("not a url");
   });
 
   it("keeps a readable reconnect timeline", () => {

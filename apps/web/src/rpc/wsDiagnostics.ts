@@ -35,6 +35,25 @@ const FAULT_EVENTS = new Set<WsDiagnosticEvent>([
 
 const entries: WsDiagnosticEntry[] = [];
 
+/**
+ * Strip credentials and short-lived auth material before a socket URL is
+ * written to diagnostics, console output, or connection status. Remote
+ * environments put `wsToken` in the query string.
+ */
+export function sanitizeWsSocketUrl(socketUrl: string): string {
+  try {
+    const url = new URL(socketUrl);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    const withoutHash = socketUrl.split("#")[0] ?? socketUrl;
+    return withoutHash.split("?")[0] ?? withoutHash;
+  }
+}
+
 export function recordWsDiagnostic(
   event: WsDiagnosticEvent,
   detail?: Readonly<Record<string, unknown>>,
