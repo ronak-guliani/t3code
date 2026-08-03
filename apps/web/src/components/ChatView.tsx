@@ -1264,7 +1264,7 @@ function ChatViewBody(
   );
   const hasMoreOlderActivities = activeOlderActivityState.loaded
     ? activeOlderActivityState.hasMore
-    : (activeThread?.hasMoreActivities ?? false);
+    : (activeThread?.hasMoreCurrentTurnActivities ?? false);
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
     const oldestActivity = threadActivities[0];
@@ -1274,6 +1274,7 @@ function ChatViewBody(
     const api = readEnvironmentApi(activeThread.environmentId);
     if (!api) return;
     const requestKey = activeThreadActivityHistoryKey;
+    const activeTurnId = activeLatestTurn?.turnId;
     inFlightOlderActivitiesKeyRef.current = requestKey;
     setOlderActivityState((previous) => ({
       historyKey: requestKey,
@@ -1285,6 +1286,7 @@ function ChatViewBody(
     void api.orchestration
       .getThreadActivities({
         threadId: activeThread.id,
+        ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
         beforeCreatedAt: oldestActivity.createdAt,
         beforeActivityId: oldestActivity.id,
       })
@@ -1328,7 +1330,13 @@ function ChatViewBody(
           );
         }
       });
-  }, [activeThread, activeThreadActivityHistoryKey, hasMoreOlderActivities, threadActivities]);
+  }, [
+    activeLatestTurn?.turnId,
+    activeThread,
+    activeThreadActivityHistoryKey,
+    hasMoreOlderActivities,
+    threadActivities,
+  ]);
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],

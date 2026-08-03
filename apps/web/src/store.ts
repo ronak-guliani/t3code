@@ -85,6 +85,7 @@ export interface EnvironmentState {
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
   activityContextByThreadId: Record<ThreadId, readonly OrchestrationThreadActivity[]>;
   hasMoreActivitiesByThreadId?: Record<ThreadId, boolean>;
+  hasMoreCurrentTurnActivitiesByThreadId?: Record<ThreadId, boolean>;
   // Insights lifecycle records retained independently of `activityByThreadId`
   // so thread-wide timing stays complete after the capped activity window
   // evicts older turns. Bounded by distinct turns, not raw activity count.
@@ -128,6 +129,7 @@ const initialEnvironmentState: EnvironmentState = {
   activityByThreadId: {},
   activityContextByThreadId: {},
   hasMoreActivitiesByThreadId: {},
+  hasMoreCurrentTurnActivitiesByThreadId: {},
   insightActivitiesByThreadId: {},
   proposedPlanIdsByThreadId: {},
   proposedPlanByThreadId: {},
@@ -337,6 +339,7 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     activities: thread.activities.map((activity) => ({ ...activity })),
     activityContext: thread.activityContext?.map((activity) => ({ ...activity })) ?? [],
     hasMoreActivities: thread.hasMoreActivities ?? false,
+    hasMoreCurrentTurnActivities: thread.hasMoreCurrentTurnActivities ?? false,
   };
 }
 
@@ -560,6 +563,32 @@ function backgroundAgentRunsEqual(
   });
 }
 
+function reconcileSidebarActivitySummary(
+  state: EnvironmentState,
+  thread: Pick<Thread, "id" | "latestTurn" | "session">,
+): EnvironmentState {
+  const summary = state.sidebarThreadSummaryById[thread.id];
+  if (
+    summary === undefined ||
+    (threadSessionsEqual(summary.session, thread.session) &&
+      latestTurnsEqual(summary.latestTurn, thread.latestTurn))
+  ) {
+    return state;
+  }
+
+  return {
+    ...state,
+    sidebarThreadSummaryById: {
+      ...state.sidebarThreadSummaryById,
+      [thread.id]: {
+        ...summary,
+        session: thread.session,
+        latestTurn: thread.latestTurn,
+      },
+    },
+  };
+}
+
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
   return (
     left !== undefined &&
@@ -751,7 +780,9 @@ function ensureThreadRegistered(
  * the active thread has up-to-date state even if the shell stream event
  * hasn't arrived yet (both streams use structural equality checks to avoid
  * unnecessary re-renders when delivering equivalent data).
- * Does NOT write sidebarThreadSummaryById — that is shell-stream-only.
+ * Reconciles only the sidebar's session/turn activity fields so a retained
+ * detail subscription cannot show working state in chat while its row stays
+ * idle. Other sidebar summary fields remain shell-stream-owned.
  */
 function writeThreadState(
   state: EnvironmentState,
@@ -864,6 +895,16 @@ function writeThreadState(
     };
   }
 
+  if (previousThread?.hasMoreCurrentTurnActivities !== nextThread.hasMoreCurrentTurnActivities) {
+    nextState = {
+      ...nextState,
+      hasMoreCurrentTurnActivitiesByThreadId: {
+        ...nextState.hasMoreCurrentTurnActivitiesByThreadId,
+        [nextThread.id]: nextThread.hasMoreCurrentTurnActivities ?? false,
+      },
+    };
+  }
+
   if (previousThread?.proposedPlans !== nextThread.proposedPlans) {
     const nextProposedPlanSlice = buildProposedPlanSlice(nextThread);
     nextState = {
@@ -920,7 +961,7 @@ function writeThreadState(
     };
   }
 
-  return nextState;
+  return reconcileSidebarActivitySummary(nextState, nextThread);
 }
 
 /**
@@ -1046,6 +1087,10 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.activityContextByThreadId;
   const { [threadId]: _removedHasMoreActivities, ...hasMoreActivitiesByThreadId } =
     state.hasMoreActivitiesByThreadId ?? {};
+  const {
+    [threadId]: _removedHasMoreCurrentTurnActivities,
+    ...hasMoreCurrentTurnActivitiesByThreadId
+  } = state.hasMoreCurrentTurnActivitiesByThreadId ?? {};
   const { [threadId]: _removedInsightActivities, ...insightActivitiesByThreadId } =
     state.insightActivitiesByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
@@ -1073,6 +1118,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     activityByThreadId,
     activityContextByThreadId,
     hasMoreActivitiesByThreadId,
+    hasMoreCurrentTurnActivitiesByThreadId,
     insightActivitiesByThreadId,
     proposedPlanIdsByThreadId,
     proposedPlanByThreadId,
@@ -1617,6 +1663,14 @@ function syncEnvironmentShellSnapshot(
           ),
         }
       : {}),
+    ...(state.hasMoreCurrentTurnActivitiesByThreadId
+      ? {
+          hasMoreCurrentTurnActivitiesByThreadId: retainThreadScopedRecord(
+            state.hasMoreCurrentTurnActivitiesByThreadId,
+            nextThreadIds,
+          ),
+        }
+      : {}),
     insightActivitiesByThreadId: retainThreadScopedRecord(
       state.insightActivitiesByThreadId,
       nextThreadIds,
@@ -1919,6 +1973,7 @@ function applyEnvironmentOrchestrationEvent(
         runtimeMode: event.payload.runtimeMode,
         interactionMode: event.payload.interactionMode,
         pendingSourceProposedPlan: event.payload.sourceProposedPlan,
+        hasMoreCurrentTurnActivities: false,
         updatedAt: event.occurredAt,
       }));
 
@@ -2139,11 +2194,20 @@ function applyEnvironmentOrchestrationEvent(
           ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
           { ...event.payload.activity },
         ].toSorted(compareActivities);
+        const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
+        const activeTurnId = thread.latestTurn?.turnId;
+        const evictedCurrentTurnActivity =
+          activeTurnId !== undefined &&
+          allActivities
+            .slice(0, retainedActivityStart)
+            .some((activity) => activity.turnId === activeTurnId);
         return {
           ...thread,
-          activities: allActivities.slice(-MAX_THREAD_ACTIVITIES),
+          activities: allActivities.slice(retainedActivityStart),
           hasMoreActivities:
             (thread.hasMoreActivities ?? false) || allActivities.length > MAX_THREAD_ACTIVITIES,
+          hasMoreCurrentTurnActivities:
+            (thread.hasMoreCurrentTurnActivities ?? false) || evictedCurrentTurnActivity,
           updatedAt: event.occurredAt,
         };
       });
