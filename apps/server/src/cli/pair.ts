@@ -7,7 +7,9 @@ import {
   ensureTailscaleServe,
   isTailscaleServePortConfigured,
   readTailscaleStatus,
+  readTailscaleServePortTarget,
 } from "@t3tools/tailscale";
+import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
@@ -26,6 +28,8 @@ import {
 } from "effect/unstable/http";
 import { homedir, networkInterfaces } from "node:os";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { AuthControlPlaneRuntimeLive } from "../auth/Layers/AuthControlPlane.ts";
 import { AuthControlPlane } from "../auth/Services/AuthControlPlane.ts";
@@ -50,6 +54,9 @@ const WELL_KNOWN_ENVIRONMENT_PATH = "/.well-known/t3/environment";
 const PAIR_PROBE_TIMEOUT = Duration.millis(2_500);
 const TAILSCALE_PROBE_ATTEMPTS = 5;
 const TAILSCALE_PROBE_RETRY_DELAY = Duration.seconds(1);
+const TAILSCALE_LOCK_TIMEOUT_MS = 15_000;
+const TAILSCALE_LOCK_POLL_INTERVAL_MS = 100;
+const TAILSCALE_LOCK_INCOMPLETE_OWNER_STALE_MS = 5_000;
 const DEV_VARIANT_PLACEHOLDER_URL = new URL("http://localhost");
 
 type PairStateVariant = "userdata" | "dev";
@@ -91,16 +98,25 @@ export class TailscaleEndpointVerificationError extends Schema.TaggedErrorClass<
   }
 }
 
+const PairingCleanupIssue = Schema.Struct({
+  kind: Schema.Literals(["pairing-credential", "tailscale-serve"]),
+  instructions: Schema.String,
+});
+type PairingCleanupIssue = typeof PairingCleanupIssue.Type;
+
 export class PairingCleanupFailedError extends Schema.TaggedErrorClass<PairingCleanupFailedError>()(
   "PairingCleanupFailedError",
   {
-    servePort: Schema.Finite,
     primaryCause: Schema.Defect(),
     cleanupCause: Schema.Defect(),
+    issues: Schema.Array(PairingCleanupIssue),
   },
 ) {
   override get message(): string {
-    return `Pairing failed and the newly created Tailscale Serve mapping could not be removed. Run \`tailscale serve --https=${String(this.servePort)} off\` to remove only this mapping.`;
+    return [
+      "Pairing failed and one or more cleanup operations need manual reconciliation.",
+      ...this.issues.map((issue) => `- ${issue.instructions}`),
+    ].join("\n");
   }
 }
 
@@ -114,9 +130,44 @@ export class PairingCredentialCleanupFailedError extends Schema.TaggedErrorClass
   },
 ) {
   override get message(): string {
-    return `Pairing output failed and pairing credential ${this.pairingLinkId} could not be revoked. Run \`npx t3 auth pairing revoke ${this.pairingLinkId} --base-dir ${JSON.stringify(this.baseDir)}\`.`;
+    return `Pairing output failed and pairing credential ${this.pairingLinkId} could not be revoked. ${pairingCredentialCleanupInstructions(this.pairingLinkId, this.baseDir)}`;
   }
 }
+const isPairingCredentialCleanupFailedError = Schema.is(PairingCredentialCleanupFailedError);
+
+export class TailscaleServeLockError extends Schema.TaggedErrorClass<TailscaleServeLockError>()(
+  "TailscaleServeLockError",
+  {
+    servePort: Schema.Finite,
+    operation: Schema.Literals(["acquire", "release"]),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return this.operation === "acquire"
+      ? `Timed out waiting for another T3 pairing transaction on Tailscale Serve HTTPS port ${String(this.servePort)}. Retry after it finishes.`
+      : `Could not release the Tailscale Serve HTTPS port ${String(this.servePort)} transaction lock.`;
+  }
+}
+
+export class TailscaleServeOwnershipLostError extends Schema.TaggedErrorClass<TailscaleServeOwnershipLostError>()(
+  "TailscaleServeOwnershipLostError",
+  {
+    servePort: Schema.Finite,
+    expectedLocalTarget: Schema.String,
+    actualLocalTarget: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return tailscaleReconciliationInstructions(this.servePort);
+  }
+}
+
+const pairingCredentialCleanupInstructions = (pairingLinkId: string, baseDir: string) =>
+  `Run \`npx t3 auth pairing revoke ${pairingLinkId} --base-dir ${JSON.stringify(baseDir)}\`.`;
+
+const tailscaleReconciliationInstructions = (servePort: number) =>
+  `Inspect \`tailscale serve status\` and reconcile HTTPS port ${String(servePort)} manually; only run \`tailscale serve --https=${String(servePort)} off\` if it still points to this T3 environment.`;
 
 export class TailscaleUnavailableError extends Schema.TaggedErrorClass<TailscaleUnavailableError>()(
   "TailscaleUnavailableError",
@@ -490,31 +541,65 @@ const awaitEnvironmentDescriptor = Effect.fn(function* (baseUrl: string) {
 export interface ResolvedPairingBase {
   readonly baseUrl: string;
   readonly notes: ReadonlyArray<string>;
-  readonly createdServePort?: number;
+  readonly createdMapping?: {
+    readonly servePort: number;
+    readonly localTarget: string;
+    readonly environmentId: string;
+  };
 }
+
+const cleanupIssuesFromCause = (
+  cause: Cause.Cause<unknown>,
+): ReadonlyArray<PairingCleanupIssue> => {
+  const failure = Cause.findErrorOption(cause);
+  if (Option.isSome(failure) && isPairingCredentialCleanupFailedError(failure.value)) {
+    return [
+      {
+        kind: "pairing-credential",
+        instructions: pairingCredentialCleanupInstructions(
+          failure.value.pairingLinkId,
+          failure.value.baseDir,
+        ),
+      },
+    ];
+  }
+  return [];
+};
 
 export function useResolvedPairingBase<A, E, R, E2, R2>(
   resolved: ResolvedPairingBase,
   use: Effect.Effect<A, E, R>,
-  cleanup: (servePort: number) => Effect.Effect<void, E2, R2>,
+  cleanup: (
+    mapping: NonNullable<ResolvedPairingBase["createdMapping"]>,
+  ) => Effect.Effect<void, E2, R2>,
 ): Effect.Effect<A, E | PairingCleanupFailedError, R | R2>;
 export function useResolvedPairingBase<A, E, R, E2, R2>(
   resolved: ResolvedPairingBase,
   use: Effect.Effect<A, E, R>,
-  cleanup: (servePort: number) => Effect.Effect<void, E2, R2>,
+  cleanup: (
+    mapping: NonNullable<ResolvedPairingBase["createdMapping"]>,
+  ) => Effect.Effect<void, E2, R2>,
 ) {
   return use.pipe(
     Effect.catchCause((primaryCause) =>
-      resolved.createdServePort === undefined
+      resolved.createdMapping === undefined
         ? Effect.failCause(primaryCause)
-        : cleanup(resolved.createdServePort).pipe(
+        : cleanup(resolved.createdMapping).pipe(
             Effect.matchCauseEffect({
               onFailure: (cleanupCause) =>
                 Effect.fail(
                   new PairingCleanupFailedError({
-                    servePort: resolved.createdServePort!,
                     primaryCause,
                     cleanupCause,
+                    issues: [
+                      ...cleanupIssuesFromCause(primaryCause),
+                      {
+                        kind: "tailscale-serve",
+                        instructions: tailscaleReconciliationInstructions(
+                          resolved.createdMapping!.servePort,
+                        ),
+                      },
+                    ],
                   }),
                 ),
               onSuccess: () => Effect.failCause(primaryCause),
@@ -524,11 +609,61 @@ export function useResolvedPairingBase<A, E, R, E2, R2>(
   );
 }
 
+const normalizeLocalTarget = (target: string): string => {
+  const url = new URL(target);
+  url.pathname = url.pathname.replace(/\/+$/u, "") || "/";
+  return url.toString();
+};
+
+export const cleanupCreatedTailscaleMapping = Effect.fn(function* (input: {
+  readonly mapping: NonNullable<ResolvedPairingBase["createdMapping"]>;
+  readonly readTarget?: (servePort: number) => Effect.Effect<string | null, unknown>;
+  readonly probe?: (baseUrl: string) => Effect.Effect<EnvironmentProbeResult, never>;
+  readonly disable?: (servePort: number) => Effect.Effect<void, unknown>;
+}) {
+  const actualTarget = yield* (input.readTarget ?? readTailscaleServePortTarget)(
+    input.mapping.servePort,
+  );
+  const environment = yield* (input.probe ?? probeEnvironmentDescriptor)(input.mapping.localTarget);
+  if (
+    actualTarget === null ||
+    normalizeLocalTarget(actualTarget) !== normalizeLocalTarget(input.mapping.localTarget) ||
+    environment._tag !== "descriptor" ||
+    environment.descriptor.environmentId !== input.mapping.environmentId
+  ) {
+    return yield* new TailscaleServeOwnershipLostError({
+      servePort: input.mapping.servePort,
+      expectedLocalTarget: input.mapping.localTarget,
+      actualLocalTarget: actualTarget,
+    });
+  }
+  const finalTarget = yield* (input.readTarget ?? readTailscaleServePortTarget)(
+    input.mapping.servePort,
+  );
+  if (
+    finalTarget === null ||
+    normalizeLocalTarget(finalTarget) !== normalizeLocalTarget(input.mapping.localTarget)
+  ) {
+    return yield* new TailscaleServeOwnershipLostError({
+      servePort: input.mapping.servePort,
+      expectedLocalTarget: input.mapping.localTarget,
+      actualLocalTarget: finalTarget,
+    });
+  }
+  yield* (input.disable ?? ((servePort) => disableTailscaleServe({ servePort })))(
+    input.mapping.servePort,
+  );
+});
+
 export const confirmNewTailscaleMapping = Effect.fn(function* (input: {
-  readonly resolved: ResolvedPairingBase & { readonly createdServePort: number };
+  readonly resolved: ResolvedPairingBase & {
+    readonly createdMapping: NonNullable<ResolvedPairingBase["createdMapping"]>;
+  };
   readonly environmentId: string;
   readonly probe?: (baseUrl: string) => Effect.Effect<EnvironmentProbeResult, never>;
-  readonly cleanup?: (servePort: number) => Effect.Effect<void, unknown>;
+  readonly cleanup?: (
+    mapping: NonNullable<ResolvedPairingBase["createdMapping"]>,
+  ) => Effect.Effect<void, unknown>;
 }) {
   const confirm = Effect.gen(function* () {
     const confirmed = yield* (
@@ -539,12 +674,12 @@ export const confirmNewTailscaleMapping = Effect.fn(function* (input: {
       confirmed.descriptor.environmentId !== input.environmentId
     ) {
       return yield* new ServesOtherEnvironmentError({
-        servePort: input.resolved.createdServePort,
+        servePort: input.resolved.createdMapping.servePort,
       });
     }
     if (confirmed._tag !== "descriptor") {
       return yield* new TailscaleEndpointVerificationError({
-        servePort: input.resolved.createdServePort,
+        servePort: input.resolved.createdMapping.servePort,
         outcome: confirmed._tag,
       });
     }
@@ -553,10 +688,51 @@ export const confirmNewTailscaleMapping = Effect.fn(function* (input: {
   if (input.cleanup) {
     return yield* useResolvedPairingBase(input.resolved, confirm, input.cleanup);
   }
-  return yield* useResolvedPairingBase(input.resolved, confirm, (servePort) =>
-    disableTailscaleServe({ servePort }),
+  return yield* useResolvedPairingBase(input.resolved, confirm, (mapping) =>
+    cleanupCreatedTailscaleMapping({
+      mapping,
+    }),
   );
 });
+
+export const tailscaleServeLockPath = (
+  servePort: number,
+  temporaryDirectory = tmpdir(),
+  userId = typeof process.getuid === "function" ? String(process.getuid()) : homedir(),
+): string =>
+  join(
+    temporaryDirectory,
+    `t3code-tailscale-serve-${Buffer.from(userId).toString("hex")}`,
+    `https-${String(servePort)}.lock`,
+  );
+
+export const withTailscaleServePortLock = <A, E, R>(
+  servePort: number,
+  effect: Effect.Effect<A, E, R>,
+  acquire: (
+    lockPath: string,
+    options: BootService.ServiceLockOptions,
+  ) => Promise<BootService.ServiceLock> = (lockPath, options) =>
+    BootService.liveServiceHost.acquireLock(lockPath, options),
+  lockPath = tailscaleServeLockPath(servePort),
+): Effect.Effect<A, E | TailscaleServeLockError, R> =>
+  Effect.acquireUseRelease(
+    Effect.tryPromise({
+      try: () =>
+        acquire(lockPath, {
+          timeoutMs: TAILSCALE_LOCK_TIMEOUT_MS,
+          pollIntervalMs: TAILSCALE_LOCK_POLL_INTERVAL_MS,
+          incompleteOwnerStaleMs: TAILSCALE_LOCK_INCOMPLETE_OWNER_STALE_MS,
+        }),
+      catch: (cause) => new TailscaleServeLockError({ servePort, operation: "acquire", cause }),
+    }),
+    () => effect,
+    (lock) =>
+      Effect.tryPromise({
+        try: () => lock.release(),
+        catch: (cause) => new TailscaleServeLockError({ servePort, operation: "release", cause }),
+      }),
+  );
 
 const resolveTailscalePairingBase = Effect.fn(function* (input: {
   readonly target: DiscoveredPairTarget;
@@ -591,6 +767,7 @@ const resolveTailscalePairingBase = Effect.fn(function* (input: {
 
   const localTarget = resolveTailscaleLocalTarget(input.target.state);
   if (isDevServerNotProxiableError(localTarget)) return yield* localTarget;
+  const localTargetUrl = `http://${formatHostForUrl(localTarget.localHost ?? "127.0.0.1")}:${String(localTarget.localPort)}`;
   yield* ensureTailscaleServe({
     localPort: localTarget.localPort,
     servePort: input.servePort,
@@ -603,7 +780,11 @@ const resolveTailscalePairingBase = Effect.fn(function* (input: {
   const created = {
     baseUrl,
     notes,
-    createdServePort: input.servePort,
+    createdMapping: {
+      servePort: input.servePort,
+      localTarget: localTargetUrl,
+      environmentId: input.target.descriptor.environmentId,
+    },
   } satisfies ResolvedPairingBase;
   const confirmed = yield* confirmNewTailscaleMapping({
     resolved: created,
@@ -677,30 +858,15 @@ export const pairCommand = Command.make("pair", {
       const logLevel = Option.getOrElse(cliLogLevel, () => "Warn" as const);
       const target = yield* discoverPairTarget(Option.getOrUndefined(flags.baseDir));
       const notes: string[] = [];
-      const resolvedPairingBase = flags.tailscale
-        ? yield* resolveTailscalePairingBase({
-            target,
-            servePort: flags.tailscaleServePort,
-          }).pipe(
-            Effect.map((resolved) => {
-              notes.push(...resolved.notes);
-              return resolved;
-            }),
-          )
-        : {
-            baseUrl: yield* resolveVerifiedDirectPairingBase({ target }),
-            notes,
-          };
-      const pairingBaseUrl = resolvedPairingBase.baseUrl;
-      if (!flags.tailscale && isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
-        notes.push(
-          "This URL is reachable only from this machine. Re-run with --tailscale or bind the server to a reachable host.",
-        );
-      }
-
-      yield* useResolvedPairingBase(
-        resolvedPairingBase,
+      const issuePairingCredential = (resolvedPairingBase: ResolvedPairingBase) =>
         Effect.gen(function* () {
+          notes.push(...resolvedPairingBase.notes);
+          const pairingBaseUrl = resolvedPairingBase.baseUrl;
+          if (!flags.tailscale && isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
+            notes.push(
+              "This URL is reachable only from this machine. Re-run with --tailscale or bind the server to a reachable host.",
+            );
+          }
           const config = yield* makePairServerConfig({ target, logLevel });
           const issued = yield* Effect.gen(function* () {
             const authControlPlane = yield* AuthControlPlane;
@@ -748,9 +914,31 @@ export const pairCommand = Command.make("pair", {
             ),
           );
           return issued;
-        }),
-        (servePort) => disableTailscaleServe({ servePort }),
-      );
+        });
+      const runWithResolvedPairingBase = (resolvedPairingBase: ResolvedPairingBase) =>
+        useResolvedPairingBase(
+          resolvedPairingBase,
+          issuePairingCredential(resolvedPairingBase),
+          (mapping) =>
+            cleanupCreatedTailscaleMapping({
+              mapping,
+            }),
+        );
+
+      if (flags.tailscale) {
+        yield* withTailscaleServePortLock(
+          flags.tailscaleServePort,
+          resolveTailscalePairingBase({
+            target,
+            servePort: flags.tailscaleServePort,
+          }).pipe(Effect.flatMap(runWithResolvedPairingBase)),
+        );
+      } else {
+        yield* runWithResolvedPairingBase({
+          baseUrl: yield* resolveVerifiedDirectPairingBase({ target }),
+          notes,
+        });
+      }
     }).pipe(Effect.provide(FetchHttpClient.layer)),
   ),
 );

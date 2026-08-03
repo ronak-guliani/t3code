@@ -7,6 +7,7 @@ import {
   settlePromise,
 } from "@t3tools/client-runtime/state/runtime";
 import * as Effect from "effect/Effect";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { type ReactNode, useEffect, useRef } from "react";
 
 import { environmentCatalog } from "../../connection/catalog";
@@ -94,8 +95,15 @@ function CloudAuthBridge(props: { readonly children: ReactNode }) {
             : []),
         ];
         const results = await Promise.all(cleanup);
+        let cleanupFailed = false;
         for (const result of results) {
           reportAtomCommandResult(result, { label: "cloud account cleanup" });
+          cleanupFailed ||= AsyncResult.isFailure(result);
+        }
+        if (cleanupFailed) {
+          throw new Error(
+            "Cloud account cleanup failed; refusing to activate a different relay account.",
+          );
         }
       });
       return accountTransitionRef.current;

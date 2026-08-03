@@ -17,6 +17,7 @@ import {
   isTailscaleIpv4Address,
   parseTailscaleMagicDnsName,
   parseTailscaleServePortConfigured,
+  parseTailscaleServePortTarget,
   parseTailscaleStatus,
   readTailscaleStatus,
   TAILSCALE_STATUS_TIMEOUT,
@@ -137,6 +138,7 @@ describe("tailscale", () => {
       assert.isTrue(
         yield* parseTailscaleServePortConfigured('{"TCP":{"443":{"HTTPS":true}},"Web":{}}', 443),
       );
+
       assert.isTrue(
         yield* parseTailscaleServePortConfigured(
           '{"TCP":{},"Web":{"desktop.tail.ts.net:8443":{"Handlers":{}}}}',
@@ -144,6 +146,25 @@ describe("tailscale", () => {
         ),
       );
       assert.isFalse(yield* parseTailscaleServePortConfigured('{"TCP":{},"Web":{}}', 443));
+    }),
+  );
+
+  it.effect("reads the exact proxy target for one Serve HTTPS port", () =>
+    Effect.gen(function* () {
+      const status = JSON.stringify({
+        TCP: { "8443": { HTTPS: true } },
+        Web: {
+          "desktop.tail.ts.net:8443": {
+            Handlers: { "/": { Proxy: "http://127.0.0.1:13773" } },
+          },
+          "desktop.tail.ts.net:9443": {
+            Handlers: { "/": { Proxy: "http://127.0.0.1:14773" } },
+          },
+        },
+      });
+
+      assert.equal(yield* parseTailscaleServePortTarget(status, 8443), "http://127.0.0.1:13773");
+      assert.isNull(yield* parseTailscaleServePortTarget(status, 7443));
     }),
   );
 

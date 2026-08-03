@@ -9,6 +9,8 @@ import { NetService } from "@t3tools/shared/Net";
 import { disableTailscaleServe } from "@t3tools/tailscale";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -24,6 +26,7 @@ import {
 } from "../serverRuntimeState.ts";
 import {
   confirmNewTailscaleMapping,
+  cleanupCreatedTailscaleMapping,
   decideTailscaleMapping,
   DevServerNotProxiableError,
   discoverPairTargetFromCandidates,
@@ -39,7 +42,11 @@ import {
   ServePortUnreachableError,
   ServesOtherEnvironmentError,
   TailscaleEndpointVerificationError,
+  TailscaleServeLockError,
+  TailscaleServeOwnershipLostError,
+  tailscaleServeLockPath,
   useResolvedPairingBase,
+  withTailscaleServePortLock,
 } from "./pair.ts";
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
@@ -382,7 +389,10 @@ describe("t3 pair", () => {
             const failure = yield* resolveVerifiedDirectPairingBase({
               target,
               candidates: ["http://127.0.0.1:1", wrongOrigin],
-            }).pipe(Effect.flip);
+            }).pipe(
+              Effect.flip,
+              Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)),
+            );
             expect(failure).toBeInstanceOf(PairingEndpointUnavailableError);
           }),
         ),
@@ -505,7 +515,11 @@ describe("t3 pair", () => {
     const created = {
       baseUrl: "https://desktop.tail.ts.net/",
       notes: [],
-      createdServePort: 8443,
+      createdMapping: {
+        servePort: 8443,
+        localTarget: "http://127.0.0.1:13773",
+        environmentId: "pair-test-environment",
+      },
     };
     return Effect.gen(function* () {
       for (const failure of [
@@ -518,14 +532,14 @@ describe("t3 pair", () => {
         new Error("credential mint failed"),
         new Error("output failed"),
       ]) {
-        yield* useResolvedPairingBase(created, Effect.fail(failure), (servePort) =>
-          disableTailscaleServe({ servePort }),
+        yield* useResolvedPairingBase(created, Effect.fail(failure), (mapping) =>
+          disableTailscaleServe({ servePort: mapping.servePort }),
         ).pipe(Effect.flip);
       }
       yield* useResolvedPairingBase(
         { baseUrl: created.baseUrl, notes: [] },
         Effect.fail(new Error("reused mapping failure")),
-        (servePort) => disableTailscaleServe({ servePort }),
+        (mapping) => disableTailscaleServe({ servePort: mapping.servePort }),
       ).pipe(Effect.flip);
 
       expect(commands).toEqual([
@@ -543,7 +557,11 @@ describe("t3 pair", () => {
     const resolved = {
       baseUrl: "https://desktop.tail.ts.net/",
       notes: [],
-      createdServePort: 8443,
+      createdMapping: {
+        servePort: 8443,
+        localTarget: "http://127.0.0.1:13773",
+        environmentId: "pair-test-environment",
+      },
     } as const;
     const descriptor = {
       environmentId: EnvironmentId.make("other-environment"),
@@ -562,9 +580,9 @@ describe("t3 pair", () => {
           resolved,
           environmentId: "pair-test-environment",
           probe: () => Effect.succeed(outcome),
-          cleanup: (servePort) =>
+          cleanup: (mapping) =>
             Effect.sync(() => {
-              cleanupPorts.push(servePort);
+              cleanupPorts.push(mapping.servePort);
             }),
         }).pipe(Effect.flip);
       }
@@ -578,7 +596,11 @@ describe("t3 pair", () => {
         resolved: {
           baseUrl: "https://desktop.tail.ts.net/",
           notes: [],
-          createdServePort: 9443,
+          createdMapping: {
+            servePort: 9443,
+            localTarget: "http://127.0.0.1:13773",
+            environmentId: "pair-test-environment",
+          },
         },
         environmentId: "pair-test-environment",
         probe: () => Effect.succeed({ _tag: "not-a-t3-server" }),
@@ -589,6 +611,147 @@ describe("t3 pair", () => {
       expect(String(error)).toContain("tailscale serve --https=9443 off");
     }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)));
   });
+
+  it.effect("does not remove a Serve mapping replaced by another actor", () =>
+    Effect.gen(function* () {
+      let disableCalls = 0;
+      let targetReads = 0;
+      const error = yield* cleanupCreatedTailscaleMapping({
+        mapping: {
+          servePort: 8443,
+          localTarget: "http://127.0.0.1:13773",
+          environmentId: "pair-test-environment",
+        },
+        readTarget: () =>
+          Effect.sync(() => {
+            targetReads += 1;
+            return targetReads === 1 ? "http://127.0.0.1:13773" : "http://127.0.0.1:14773";
+          }),
+        probe: () =>
+          Effect.succeed({
+            _tag: "descriptor",
+            descriptor: {
+              environmentId: EnvironmentId.make("pair-test-environment"),
+              label: "Pair test",
+              platform: { os: "darwin", arch: "arm64" },
+              serverVersion: "0.0.0",
+              capabilities: { repositoryIdentity: true },
+            },
+          }),
+        disable: () =>
+          Effect.sync(() => {
+            disableCalls += 1;
+          }),
+      }).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(TailscaleServeOwnershipLostError);
+      expect(targetReads).toBe(2);
+      expect(disableCalls).toBe(0);
+      expect(String(error)).toContain("tailscale serve status");
+    }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer))),
+  );
+
+  it.effect("serializes concurrent transactions on one Serve port", () =>
+    Effect.gen(function* () {
+      const firstStarted = yield* Deferred.make<void>();
+      const releaseFirst = yield* Deferred.make<void>();
+      const order: string[] = [];
+      const first = yield* withTailscaleServePortLock(
+        61_111,
+        Effect.sync(() => order.push("first:start")).pipe(
+          Effect.andThen(Deferred.succeed(firstStarted, undefined)),
+          Effect.andThen(Deferred.await(releaseFirst)),
+          Effect.andThen(Effect.sync(() => order.push("first:end"))),
+        ),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(firstStarted);
+      const second = yield* withTailscaleServePortLock(
+        61_111,
+        Effect.sync(() => order.push("second")),
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      expect(order).toEqual(["first:start"]);
+      yield* Deferred.succeed(releaseFirst, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      expect(order).toEqual(["first:start", "first:end", "second"]);
+    }),
+  );
+
+  it.effect("surfaces bounded lock acquisition and release failures", () =>
+    Effect.gen(function* () {
+      const acquireError = yield* withTailscaleServePortLock(8443, Effect.void, async () => {
+        throw new Error("lock timeout");
+      }).pipe(Effect.flip);
+      expect(acquireError).toBeInstanceOf(TailscaleServeLockError);
+      expect(acquireError.operation).toBe("acquire");
+
+      const releaseError = yield* withTailscaleServePortLock(8443, Effect.void, async () => ({
+        release: async () => {
+          throw new Error("release failed");
+        },
+      })).pipe(Effect.flip);
+      expect(releaseError).toBeInstanceOf(TailscaleServeLockError);
+      expect(releaseError.operation).toBe("release");
+    }),
+  );
+
+  it.effect("reclaims a stale per-port lock", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-lock-"));
+      const lockPath = NodePath.join(root, "https-8443.lock");
+      NodeFS.mkdirSync(lockPath);
+      NodeFS.writeFileSync(
+        NodePath.join(lockPath, "owner.json"),
+        `${JSON.stringify({ pid: 999_999, token: "dead-owner" })}\n`,
+      );
+
+      yield* withTailscaleServePortLock(8443, Effect.void, undefined, lockPath);
+      expect(NodeFS.existsSync(lockPath)).toBe(false);
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }),
+  );
+
+  it("uses one stable lock path across processes without getuid", () => {
+    expect(tailscaleServeLockPath(8443, "/tmp", "/Users/example")).toBe(
+      tailscaleServeLockPath(8443, "/tmp", "/Users/example"),
+    );
+    expect(tailscaleServeLockPath(8443, "/tmp", "/Users/example")).not.toContain(
+      String(process.pid),
+    );
+  });
+
+  it.effect("preserves credential and Serve guidance in compound cleanup failures", () =>
+    Effect.gen(function* () {
+      const error = yield* useResolvedPairingBase(
+        {
+          baseUrl: "https://desktop.tail.ts.net/",
+          notes: [],
+          createdMapping: {
+            servePort: 9443,
+            localTarget: "http://127.0.0.1:13773",
+            environmentId: "pair-test-environment",
+          },
+        },
+        Effect.fail(
+          new PairingCredentialCleanupFailedError({
+            pairingLinkId: "pairing-link-id",
+            baseDir: "/tmp/base dir",
+            primaryCause: new Error("output failed"),
+            cleanupCause: new Error("credential revoke failed"),
+          }),
+        ),
+        () => Effect.fail(new Error("Serve rollback failed")),
+      ).pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PairingCleanupFailedError);
+      expect(error.message).toContain(
+        'npx t3 auth pairing revoke pairing-link-id --base-dir "/tmp/base dir"',
+      );
+      expect(error.message).toContain("tailscale serve --https=9443 off");
+      expect(error.message).not.toContain("one-time-secret");
+    }),
+  );
 
   it("does not expose credential secrets in cleanup failure guidance", () => {
     const error = new PairingCredentialCleanupFailedError({

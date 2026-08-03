@@ -193,10 +193,10 @@ const environmentOwnedDataCleanupLayer = Layer.succeed(
   EnvironmentOwnedDataCleanup.of({
     clear: (environmentId) =>
       clearMobileEnvironmentOwnedData(environmentId).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not clear mobile environment-owned data.", {
+        Effect.tapError((error) =>
+          Effect.logError("Could not clear mobile environment-owned data.", {
             environmentId,
-            cause,
+            error,
           }),
         ),
       ),

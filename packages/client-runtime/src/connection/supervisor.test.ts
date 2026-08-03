@@ -831,6 +831,55 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("interrupts an in-flight relay probe when credentials change", () =>
+    Effect.gen(function* () {
+      const probeStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: (attempt) =>
+          attempt === 1
+            ? Deferred.succeed(probeStarted, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active");
+      yield* Deferred.await(probeStarted);
+      yield* harness.wake("credentials-changed");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }),
+  );
+
+  it.effect("keeps a non-relay session during an in-flight probe when credentials change", () =>
+    Effect.gen(function* () {
+      const probeStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: () => Deferred.succeed(probeStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+      yield* harness.wake("application-active");
+      yield* Deferred.await(probeStarted);
+      yield* harness.wake("credentials-changed");
+      yield* Effect.yieldNow;
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+    }),
+  );
+
   it.effect("interrupts relay setup when credentials change", () =>
     Effect.gen(function* () {
       const firstAttemptStarted = yield* Deferred.make<void>();
