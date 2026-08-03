@@ -20,7 +20,21 @@ const failure = new GitCommandError({
   detail: "boom",
 });
 
-it("does not cache scopes whose diff can change between hover and click", () => {
+/** Counts captures so a test can tell a claimed capture from a fresh one. */
+const countingCapture = () => {
+  let calls = 0;
+  return {
+    get calls() {
+      return calls;
+    },
+    capture: Effect.sync(() => {
+      calls += 1;
+      return result(`capture-${calls}`);
+    }),
+  };
+};
+
+it("does not park scopes whose diff can change between hover and click", () => {
   expect(reviewContextPrewarmKey({ cwd: "/repo", scope: "uncommitted" })).toBeNull();
   expect(reviewContextPrewarmKey({ cwd: "/repo", scope: "against-base" })).toBeNull();
   expect(
@@ -43,97 +57,111 @@ it("keys pull requests by repository and number", () => {
   );
 });
 
-it.effect("always recaptures when there is no key", () =>
+it.effect("always captures fresh when there is no key", () =>
   Effect.gen(function* () {
     const cache = makeReviewContextPrewarmCache();
-    let calls = 0;
-    const compute = Effect.sync(() => {
-      calls += 1;
-      return result("a");
-    });
+    const { capture } = countingCapture();
 
-    yield* cache.resolve(null, compute);
-    yield* cache.resolve(null, compute);
+    yield* cache.claim(null, capture);
+    const second = yield* cache.claim(null, capture);
 
-    expect(calls).toBe(2);
+    expect(second).toStrictEqual(result("capture-2"));
   }),
 );
 
-it.effect("reuses a captured pull request within the TTL", () =>
+it.effect("a click claims the capture its hover parked", () =>
   Effect.gen(function* () {
     const cache = makeReviewContextPrewarmCache();
-    let calls = 0;
-    const compute = Effect.sync(() => {
-      calls += 1;
-      return result("a");
-    });
+    const capturer = countingCapture();
 
-    const first = yield* cache.resolve("pr", compute);
-    const second = yield* cache.resolve("pr", compute);
+    yield* cache.prewarm("pr", capturer.capture);
+    const claimed = yield* cache.claim("pr", capturer.capture);
 
-    expect(calls).toBe(1);
-    expect(second).toBe(first);
+    expect(capturer.calls).toBe(1);
+    expect(claimed).toStrictEqual(result("capture-1"));
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
-it.effect("recaptures once the TTL has elapsed", () =>
+it.effect("a parked capture answers one claim only", () =>
   Effect.gen(function* () {
     const cache = makeReviewContextPrewarmCache();
-    let calls = 0;
-    const compute = Effect.sync(() => {
-      calls += 1;
-      return result(`a${calls}`);
-    });
+    const capturer = countingCapture();
 
-    yield* cache.resolve("pr", compute);
+    yield* cache.prewarm("pr", capturer.capture);
+    yield* cache.claim("pr", capturer.capture);
+    // A pull request's head can move, so the capture must not be reused for a
+    // second review.
+    const second = yield* cache.claim("pr", capturer.capture);
+
+    expect(capturer.calls).toBe(2);
+    expect(second).toStrictEqual(result("capture-2"));
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("does not claim a capture that has stood past its TTL", () =>
+  Effect.gen(function* () {
+    const cache = makeReviewContextPrewarmCache();
+    const capturer = countingCapture();
+
+    yield* cache.prewarm("pr", capturer.capture);
     yield* TestClock.adjust(Duration.millis(REVIEW_CONTEXT_PREWARM_TTL_MS));
-    const second = yield* cache.resolve("pr", compute);
+    const claimed = yield* cache.claim("pr", capturer.capture);
 
-    expect(calls).toBe(2);
-    expect(second).toStrictEqual(result("a2"));
+    expect(capturer.calls).toBe(2);
+    expect(claimed).toStrictEqual(result("capture-2"));
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
-it.effect("a click joins a prewarm that is still running", () =>
+it.effect("repeated hovers do not stack captures", () =>
+  Effect.gen(function* () {
+    const cache = makeReviewContextPrewarmCache();
+    const capturer = countingCapture();
+
+    yield* cache.prewarm("pr", capturer.capture);
+    yield* cache.prewarm("pr", capturer.capture);
+
+    expect(capturer.calls).toBe(1);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("a click waits for a capture that is still running", () =>
   Effect.gen(function* () {
     const cache = makeReviewContextPrewarmCache();
     const release = yield* Latch.make(false);
     let calls = 0;
-    const compute = Effect.gen(function* () {
+    const capture = Effect.gen(function* () {
       calls += 1;
       yield* Latch.await(release);
-      return result("a");
+      return result("parked");
     });
 
-    const prewarm = yield* Effect.forkChild(cache.resolve("pr", compute));
-    // Let the prewarm claim the entry before the click arrives.
+    const prewarm = yield* Effect.forkChild(cache.prewarm("pr", capture));
+    // Let the prewarm park its entry before the click arrives.
     yield* Effect.yieldNow;
-    const click = yield* Effect.forkChild(cache.resolve("pr", compute));
+    const click = yield* Effect.forkChild(cache.claim("pr", capture));
 
     yield* Latch.open(release);
-    const prewarmed = yield* Fiber.join(prewarm);
-    const clicked = yield* Fiber.join(click);
+    yield* Fiber.join(prewarm);
 
+    expect(yield* Fiber.join(click)).toStrictEqual(result("parked"));
     expect(calls).toBe(1);
-    expect(clicked).toBe(prewarmed);
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
-it.effect("does not cache a failed capture", () =>
+it.effect("does not leave a failed capture to be claimed", () =>
   Effect.gen(function* () {
     const cache = makeReviewContextPrewarmCache();
     let calls = 0;
-    const compute = Effect.suspend(() => {
+    const capture = Effect.suspend(() => {
       calls += 1;
-      return calls === 1 ? Effect.fail(failure) : Effect.succeed(result("a"));
+      return calls === 1 ? Effect.fail(failure) : Effect.succeed(result("fresh"));
     });
 
-    const first = yield* cache.resolve("pr", compute).pipe(Effect.exit);
-    expect(Exit.isFailure(first)).toBe(true);
+    const prewarm = yield* cache.prewarm("pr", capture).pipe(Effect.exit);
+    expect(Exit.isFailure(prewarm)).toBe(true);
 
-    const second = yield* cache.resolve("pr", compute);
+    expect(yield* cache.claim("pr", capture)).toStrictEqual(result("fresh"));
     expect(calls).toBe(2);
-    expect(second).toStrictEqual(result("a"));
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
@@ -142,46 +170,68 @@ it.effect("an interrupted prewarm does not interrupt or stall the click", () =>
     const cache = makeReviewContextPrewarmCache();
     const started = yield* Latch.make(false);
     let calls = 0;
-    const compute = Effect.gen(function* () {
+    const capture = Effect.gen(function* () {
       calls += 1;
       if (calls === 1) {
         yield* Latch.open(started);
         return yield* Effect.never;
       }
-      return result("a");
+      return result("fresh");
     });
 
-    const prewarm = yield* Effect.forkChild(cache.resolve("pr", compute));
+    const prewarm = yield* Effect.forkChild(cache.prewarm("pr", capture));
     yield* Latch.await(started);
-    const click = yield* Effect.forkChild(cache.resolve("pr", compute));
-    // The click must already be waiting on the prewarm's entry, so that
-    // interrupting the prewarm exercises the joiner's recovery path.
+    const click = yield* Effect.forkChild(cache.claim("pr", capture));
+    // The click must already be waiting on the parked entry, so that
+    // interrupting the prewarm exercises the claim's recovery path.
     yield* Effect.yieldNow;
     yield* Fiber.interrupt(prewarm);
 
-    expect(yield* Fiber.join(click)).toStrictEqual(result("a"));
+    expect(yield* Fiber.join(click)).toStrictEqual(result("fresh"));
     expect(calls).toBe(2);
   }).pipe(Effect.provide(TestClock.layer())),
 );
 
-it.effect("bounds how many captured patches are retained", () =>
+it.effect("an interrupted click does not disturb a healthy capture", () =>
   Effect.gen(function* () {
     const cache = makeReviewContextPrewarmCache();
+    const release = yield* Latch.make(false);
     let calls = 0;
-    const compute = Effect.sync(() => {
+    const capture = Effect.gen(function* () {
       calls += 1;
-      return result(`a${calls}`);
+      yield* Latch.await(release);
+      return result(`capture-${calls}`);
     });
 
-    for (let index = 0; index <= REVIEW_CONTEXT_PREWARM_MAX_ENTRIES; index += 1) {
-      yield* cache.resolve(`pr-${index}`, compute);
-    }
-    const captured = calls;
+    const prewarm = yield* Effect.forkChild(cache.prewarm("pr", capture));
+    yield* Effect.yieldNow;
+    const click = yield* Effect.forkChild(cache.claim("pr", capture));
+    yield* Effect.yieldNow;
 
-    // The oldest entry was evicted to stay within the bound; the newest is warm.
-    yield* cache.resolve("pr-0", compute);
-    expect(calls).toBe(captured + 1);
-    yield* cache.resolve(`pr-${REVIEW_CONTEXT_PREWARM_MAX_ENTRIES}`, compute);
-    expect(calls).toBe(captured + 1);
+    // Cancelling a waiter must stay that waiter's business: it must not be read
+    // as the capture failing, and must not start a duplicate capture.
+    yield* Fiber.interrupt(click);
+    yield* Latch.open(release);
+    yield* Fiber.join(prewarm);
+
+    expect(calls).toBe(1);
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("bounds how many captures are parked at once", () =>
+  Effect.gen(function* () {
+    const cache = makeReviewContextPrewarmCache();
+    const capturer = countingCapture();
+
+    for (let index = 0; index <= REVIEW_CONTEXT_PREWARM_MAX_ENTRIES; index += 1) {
+      yield* cache.prewarm(`pr-${index}`, capturer.capture);
+    }
+    const parked = capturer.calls;
+
+    // The oldest was dropped to stay within the bound; the newest is claimable.
+    yield* cache.claim("pr-0", capturer.capture);
+    expect(capturer.calls).toBe(parked + 1);
+    yield* cache.claim(`pr-${REVIEW_CONTEXT_PREWARM_MAX_ENTRIES}`, capturer.capture);
+    expect(capturer.calls).toBe(parked + 1);
   }).pipe(Effect.provide(TestClock.layer())),
 );

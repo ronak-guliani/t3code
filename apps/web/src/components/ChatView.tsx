@@ -4405,7 +4405,9 @@ function ChatViewBody(
 
   // A pull-request capture spends ~700ms in `gh pr view` + `gh pr diff` before
   // the review thread can even be created. Firing it on hover lets the server
-  // cache absorb that cost so the click that follows joins a warm capture.
+  // park that work so the click that follows claims it. The RPC acknowledges
+  // only: the captured diff can be megabytes, and shipping it to a browser that
+  // would discard it costs more socket time than the click saves.
   const prewarmReviewPullRequest = useCallback(
     (pullRequestNumber: number) => {
       const api = readEnvironmentApi(environmentId);
@@ -4413,7 +4415,7 @@ function ChatViewBody(
         return;
       }
       void api.git
-        .resolveReviewChangesContext({
+        .prewarmReviewChangesContext({
           cwd: gitCwd,
           scope: "pull-request",
           pullRequestNumber,

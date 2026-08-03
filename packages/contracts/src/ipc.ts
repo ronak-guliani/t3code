@@ -940,6 +940,7 @@ export interface EnvironmentApi {
     resolveReviewChangesContext: (
       input: GitResolveReviewChangesContextInput,
     ) => Promise<GitResolveReviewChangesContextResult>;
+    prewarmReviewChangesContext: (input: GitResolveReviewChangesContextInput) => Promise<void>;
     pull: (input: GitPullInput) => Promise<GitPullResult>;
     refreshStatus: (input: GitStatusInput) => Promise<GitStatusResult>;
     onStatus: (

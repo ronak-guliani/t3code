@@ -1764,8 +1764,21 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
 
   const reviewContextPrewarmCache = makeReviewContextPrewarmCache();
 
-  const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = (input) =>
-    reviewContextPrewarmCache.resolve(
+  // Callers that need the diff as it is right now — the verifier that anchors a
+  // finished review, and every client request — must never see a parked
+  // capture, so only the prewarm/claim pair below consults the cache.
+  const resolveReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] =
+    captureReviewChangesContext;
+
+  const prewarmReviewChangesContext: GitCoreShape["prewarmReviewChangesContext"] = (input) => {
+    const key = reviewContextPrewarmKey(input);
+    return key === null
+      ? Effect.void
+      : reviewContextPrewarmCache.prewarm(key, captureReviewChangesContext(input));
+  };
+
+  const claimReviewChangesContext: GitCoreShape["claimReviewChangesContext"] = (input) =>
+    reviewContextPrewarmCache.claim(
       reviewContextPrewarmKey(input),
       captureReviewChangesContext(input),
     );
@@ -2615,6 +2628,8 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     initRepo,
     listLocalBranchNames,
     resolveReviewChangesContext,
+    prewarmReviewChangesContext,
+    claimReviewChangesContext,
   } satisfies GitCoreShape;
 });
 
