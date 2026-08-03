@@ -735,33 +735,52 @@ describe("resolveThreadStatusPill", () => {
 });
 
 describe("resolveFilteredSidebarProjects", () => {
-  const web = { cwd: "/code/web", memberProjects: [{ cwd: "/code/web" }] };
+  const web = { memberProjects: [{ physicalProjectKey: "local:/code/web" }] };
   const api = {
-    cwd: "/code/api",
-    memberProjects: [{ cwd: "/code/api" }, { cwd: "/remote/api" }],
+    memberProjects: [
+      { physicalProjectKey: "local:/code/api" },
+      { physicalProjectKey: "remote:/code/api" },
+    ],
   };
   const projects = [web, api];
 
   it("shows every project when no filter is set", () => {
-    const result = resolveFilteredSidebarProjects({ projects, filterCwd: null });
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: null });
     expect(result.projects).toEqual(projects);
     expect(result.activeProject).toBeNull();
   });
 
   it("narrows to the filtered project", () => {
-    const result = resolveFilteredSidebarProjects({ projects, filterCwd: "/code/api" });
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: "local:/code/api" });
     expect(result.projects).toEqual([api]);
     expect(result.activeProject).toBe(api);
   });
 
-  it("matches a grouped project through its members", () => {
-    const result = resolveFilteredSidebarProjects({ projects, filterCwd: "/remote/api" });
+  it("matches a grouped project through its remote member", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: "remote:/code/api" });
     expect(result.projects).toEqual([api]);
     expect(result.activeProject).toBe(api);
+  });
+
+  it("keeps same-path projects in different environments separately selectable", () => {
+    // Regression: keying the filter on cwd alone made the second of two
+    // `separate`-mode checkouts sharing a path impossible to select.
+    const localRepo = { memberProjects: [{ physicalProjectKey: "local:/repo" }] };
+    const remoteRepo = { memberProjects: [{ physicalProjectKey: "remote:/repo" }] };
+    const sameCwdProjects = [localRepo, remoteRepo];
+
+    expect(
+      resolveFilteredSidebarProjects({ projects: sameCwdProjects, filterKey: "remote:/repo" })
+        .activeProject,
+    ).toBe(remoteRepo);
+    expect(
+      resolveFilteredSidebarProjects({ projects: sameCwdProjects, filterKey: "local:/repo" })
+        .activeProject,
+    ).toBe(localRepo);
   });
 
   it("falls back to all projects when the filtered project is gone", () => {
-    const result = resolveFilteredSidebarProjects({ projects, filterCwd: "/code/removed" });
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: "local:/code/removed" });
     expect(result.projects).toEqual(projects);
     expect(result.activeProject).toBeNull();
   });

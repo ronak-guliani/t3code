@@ -515,25 +515,29 @@ export function getProjectSortTimestamp(
 /**
  * Which projects the sidebar renders under the current project filter.
  *
- * A filter that matches nothing (its project was removed or renamed away)
- * falls back to every project rather than an empty sidebar, so a stale
- * persisted filter can never strand the user with no visible threads.
+ * Matching is by physical project key (`environmentId:cwd`) rather than cwd
+ * alone: in `separate` grouping mode a local and a remote checkout can share a
+ * path, and a bare cwd would make the second one unselectable. The physical key
+ * is also stable across grouping-mode changes, unlike the logical project key.
+ *
+ * A filter that matches nothing (its project was removed) falls back to every
+ * project rather than an empty sidebar, so a stale persisted filter can never
+ * strand the user with no visible threads.
  */
 export function resolveFilteredSidebarProjects<
-  TProject extends { cwd: string; memberProjects: readonly { cwd: string }[] },
+  TProject extends { memberProjects: readonly { physicalProjectKey: string }[] },
 >(input: {
   projects: readonly TProject[];
-  filterCwd: string | null;
+  filterKey: string | null;
 }): { projects: readonly TProject[]; activeProject: TProject | null } {
-  const { filterCwd, projects } = input;
-  if (filterCwd === null) {
+  const { filterKey, projects } = input;
+  if (filterKey === null) {
     return { projects, activeProject: null };
   }
 
   const activeProject =
-    projects.find(
-      (project) =>
-        project.cwd === filterCwd || project.memberProjects.some((m) => m.cwd === filterCwd),
+    projects.find((project) =>
+      project.memberProjects.some((member) => member.physicalProjectKey === filterKey),
     ) ?? null;
 
   return activeProject

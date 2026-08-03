@@ -2767,7 +2767,7 @@ type SortableProjectHandleProps = Pick<
 >;
 
 const ALL_PROJECTS_FILTER_LABEL = "All projects";
-// Radio values are project cwds; a leading NUL cannot collide with a real path.
+// Radio values are physical project keys; a leading NUL cannot collide with one.
 const ALL_PROJECTS_FILTER_VALUE = "\u0000all-projects";
 
 const ProjectFilterMenu = memo(function ProjectFilterMenu({
@@ -2777,7 +2777,7 @@ const ProjectFilterMenu = memo(function ProjectFilterMenu({
 }: {
   projects: readonly SidebarProjectSnapshot[];
   activeProject: SidebarProjectSnapshot | null;
-  onFilterChange: (projectCwd: string | null) => void;
+  onFilterChange: (physicalProjectKey: string | null) => void;
 }) {
   return (
     <Menu>
@@ -2794,7 +2794,9 @@ const ProjectFilterMenu = memo(function ProjectFilterMenu({
       </MenuTrigger>
       <MenuPopup align="start" side="bottom" className="min-w-56">
         <MenuRadioGroup
-          value={activeProject?.cwd ?? ALL_PROJECTS_FILTER_VALUE}
+          value={
+            activeProject ? derivePhysicalProjectKey(activeProject) : ALL_PROJECTS_FILTER_VALUE
+          }
           onValueChange={(value) => {
             onFilterChange(value === ALL_PROJECTS_FILTER_VALUE ? null : (value as string));
           }}
@@ -2812,7 +2814,7 @@ const ProjectFilterMenu = memo(function ProjectFilterMenu({
             <MenuRadioItem
               className="min-h-7 py-1 text-[length:var(--app-sidebar-font-size)]"
               key={project.projectKey}
-              value={project.cwd}
+              value={derivePhysicalProjectKey(project)}
             >
               <span className="flex min-w-0 items-center gap-1.5">
                 <ProjectFavicon
@@ -3106,7 +3108,7 @@ interface SidebarProjectsContentProps {
   sortedProjects: readonly SidebarProjectSnapshot[];
   allProjects: readonly SidebarProjectSnapshot[];
   activeFilterProject: SidebarProjectSnapshot | null;
-  setProjectFilter: (projectCwd: string | null) => void;
+  setProjectFilter: (physicalProjectKey: string | null) => void;
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
   routeThreadKey: string | null;
@@ -3340,7 +3342,7 @@ export default function Sidebar() {
   const pinnedThreadKeysByProjectId = useUiStateStore((store) => store.pinnedThreadKeysByProjectId);
   const threadExpandedById = useUiStateStore((store) => store.threadExpandedById);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
-  const sidebarProjectFilterCwd = useUiStateStore((store) => store.sidebarProjectFilterCwd);
+  const sidebarProjectFilterKey = useUiStateStore((store) => store.sidebarProjectFilterKey);
   const setSidebarProjectFilter = useUiStateStore((store) => store.setSidebarProjectFilter);
   const selectedParentThreadKeyRef = useRef<string | null>(null);
   const navigate = useNavigate();
@@ -3637,9 +3639,9 @@ export default function Sidebar() {
     () =>
       resolveFilteredSidebarProjects({
         projects: sortedProjects,
-        filterCwd: sidebarProjectFilterCwd,
+        filterKey: sidebarProjectFilterKey,
       }),
-    [sidebarProjectFilterCwd, sortedProjects],
+    [sidebarProjectFilterKey, sortedProjects],
   );
   const isManualProjectSorting = sidebarProjectSortOrder === "manual";
   const threadExpandedOverrideMap = useMemo(
