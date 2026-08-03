@@ -36,12 +36,19 @@ export interface PersistedUiState {
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
   changedFilesDiffScope?: TurnDiffScope;
   dismissedAgentRunKeys?: string[];
+  sidebarProjectFilterCwd?: string | null;
 }
 
 export interface UiProjectState {
   projectExpandedById: Record<string, boolean>;
   projectOrder: string[];
   pinnedThreadKeysByProjectId: Record<string, string[]>;
+  /**
+   * Project the sidebar is scoped to, or `null` for all projects. Persisted by
+   * cwd rather than project key because logical project keys change with the
+   * grouping mode, which would silently drop the filter on a settings change.
+   */
+  sidebarProjectFilterCwd: string | null;
 }
 
 export interface UiThreadState {
@@ -111,6 +118,7 @@ const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
   pinnedThreadKeysByProjectId: {},
+  sidebarProjectFilterCwd: null,
   threadLastVisitedAtById: {},
   threadExpandedById: {},
   threadChangedFilesExpandedById: {},
@@ -161,6 +169,10 @@ function readPersistedState(): UiState {
       ),
       changedFilesDiffScope: sanitizePersistedDiffScope(parsed.changedFilesDiffScope),
       dismissedAgentRunKeys: sanitizePersistedDismissedAgentRunKeys(parsed.dismissedAgentRunKeys),
+      sidebarProjectFilterCwd:
+        typeof parsed.sidebarProjectFilterCwd === "string" && parsed.sidebarProjectFilterCwd
+          ? parsed.sidebarProjectFilterCwd
+          : null,
     };
   } catch {
     return initialState;
@@ -320,6 +332,7 @@ export function persistState(state: UiState): void {
         threadChangedFilesExpandedById,
         changedFilesDiffScope: state.changedFilesDiffScope,
         dismissedAgentRunKeys: Object.keys(state.dismissedAgentRunKeys),
+        sidebarProjectFilterCwd: state.sidebarProjectFilterCwd,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -965,6 +978,7 @@ interface UiStateStore extends UiState {
   ) => void;
   applySidebarStateSnapshot: (snapshot: SidebarStateSnapshot) => void;
   setAgentRunDismissed: (agentRunKey: string, dismissed: boolean) => void;
+  setSidebarProjectFilter: (projectCwd: string | null) => void;
 }
 
 export const useUiStateStore = create<UiStateStore>((set, get) => ({
@@ -1004,6 +1018,12 @@ export const useUiStateStore = create<UiStateStore>((set, get) => ({
   },
   applySidebarStateSnapshot: (snapshot) =>
     set((state) => applySidebarStateSnapshot(state, snapshot)),
+  setSidebarProjectFilter: (projectCwd) =>
+    set((state) =>
+      state.sidebarProjectFilterCwd === projectCwd
+        ? state
+        : { ...state, sidebarProjectFilterCwd: projectCwd },
+    ),
   setAgentRunDismissed: (agentRunKey, dismissed) => {
     set((state) => setAgentRunDismissed(state, agentRunKey, dismissed));
     // Archiving an agent run is a deliberate, low-frequency action the user

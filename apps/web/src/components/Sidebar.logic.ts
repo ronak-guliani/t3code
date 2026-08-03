@@ -331,7 +331,9 @@ export function resolveThreadRowClassName(input: {
 }): string {
   const baseClassName =
     "w-full translate-x-0 cursor-pointer justify-start text-left select-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring" +
-    " h-7 px-2";
+    // Height is padding-driven so the row tracks the sidebar font-size setting
+    // instead of clipping the project and worktree metadata lines.
+    " h-auto min-h-7 px-2 py-1";
 
   if (input.isSelected && input.isActive) {
     return cn(
@@ -496,6 +498,35 @@ export function getProjectSortTimestamp(
     return toSortableTimestamp(project.createdAt) ?? Number.NEGATIVE_INFINITY;
   }
   return toSortableTimestamp(project.updatedAt ?? project.createdAt) ?? Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Which projects the sidebar renders under the current project filter.
+ *
+ * A filter that matches nothing (its project was removed or renamed away)
+ * falls back to every project rather than an empty sidebar, so a stale
+ * persisted filter can never strand the user with no visible threads.
+ */
+export function resolveFilteredSidebarProjects<
+  TProject extends { cwd: string; memberProjects: readonly { cwd: string }[] },
+>(input: {
+  projects: readonly TProject[];
+  filterCwd: string | null;
+}): { projects: readonly TProject[]; activeProject: TProject | null } {
+  const { filterCwd, projects } = input;
+  if (filterCwd === null) {
+    return { projects, activeProject: null };
+  }
+
+  const activeProject =
+    projects.find(
+      (project) =>
+        project.cwd === filterCwd || project.memberProjects.some((m) => m.cwd === filterCwd),
+    ) ?? null;
+
+  return activeProject
+    ? { projects: [activeProject], activeProject }
+    : { projects, activeProject: null };
 }
 
 export function sortProjectsForSidebar<

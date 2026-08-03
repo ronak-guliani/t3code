@@ -15,6 +15,7 @@ import {
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarThreadGitCwd,
+  resolveFilteredSidebarProjects,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
@@ -707,6 +708,39 @@ describe("resolveThreadStatusPill", () => {
         },
       }),
     ).toMatchObject({ label: "Completed", pulse: false });
+  });
+});
+
+describe("resolveFilteredSidebarProjects", () => {
+  const web = { cwd: "/code/web", memberProjects: [{ cwd: "/code/web" }] };
+  const api = {
+    cwd: "/code/api",
+    memberProjects: [{ cwd: "/code/api" }, { cwd: "/remote/api" }],
+  };
+  const projects = [web, api];
+
+  it("shows every project when no filter is set", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterCwd: null });
+    expect(result.projects).toEqual(projects);
+    expect(result.activeProject).toBeNull();
+  });
+
+  it("narrows to the filtered project", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterCwd: "/code/api" });
+    expect(result.projects).toEqual([api]);
+    expect(result.activeProject).toBe(api);
+  });
+
+  it("matches a grouped project through its members", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterCwd: "/remote/api" });
+    expect(result.projects).toEqual([api]);
+    expect(result.activeProject).toBe(api);
+  });
+
+  it("falls back to all projects when the filtered project is gone", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterCwd: "/code/removed" });
+    expect(result.projects).toEqual(projects);
+    expect(result.activeProject).toBeNull();
   });
 });
 
