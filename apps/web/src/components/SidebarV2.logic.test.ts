@@ -10,6 +10,7 @@ import {
   classifySidebarV2Shelves,
   compactSidebarTimeLabel,
   formatWorkingDurationLabel,
+  isSidebarV2ArchiveBlockedThread,
   resolveSidebarV2Status,
   resolveSidebarV2StatusLabel,
   resolveSidebarV2ThreadRouteTarget,
@@ -307,6 +308,59 @@ describe("classifySidebarV2Shelves", () => {
     });
 
     expect(rowTitles(collapsed.active)).toEqual(["Parent", "  Agent"]);
+  });
+
+  it("blocks archive on a quiet parent when a descendant turn is running", () => {
+    const parent = thread({ id: ThreadId.make("parent"), title: "Parent" });
+    const idleChild = thread({
+      id: ThreadId.make("idle-child"),
+      parentThreadId: parent.id,
+      title: "Idle child",
+    });
+    const runningGrandchild = thread({
+      id: ThreadId.make("running-grandchild"),
+      parentThreadId: idleChild.id,
+      title: "Running grandchild",
+      session: session({
+        status: "running",
+        activeTurnId: "turn-1" as never,
+        orchestrationStatus: "running",
+      }),
+    });
+    const runningAgent = thread({
+      id: ThreadId.make("agent-run:idle-child:agent-1"),
+      parentThreadId: idleChild.id,
+      title: "Agent",
+      virtualAgentRun: {
+        parentThreadId: idleChild.id,
+        taskId: "agent-1",
+        status: "running",
+      },
+    });
+
+    expect(isSidebarV2ArchiveBlockedThread(parent)).toBe(false);
+    expect(isSidebarV2ArchiveBlockedThread(runningGrandchild)).toBe(true);
+    expect(isSidebarV2ArchiveBlockedThread(runningAgent)).toBe(true);
+
+    const shelves = classifySidebarV2Shelves({
+      threads: [parent, idleChild, runningGrandchild, runningAgent],
+      now,
+      expandedOverrideByThreadKey: new Map([
+        [`${capableEnvironmentId}:${parent.id}`, true],
+        [`${capableEnvironmentId}:${idleChild.id}`, true],
+      ]),
+    });
+    const blockedByTitle = new Map(
+      (shelves.active[0]?.rows ?? []).map((row) => [row.thread.title, row.archiveBlocked]),
+    );
+    expect(blockedByTitle).toEqual(
+      new Map([
+        ["Parent", true],
+        ["Idle child", true],
+        ["Running grandchild", true],
+        ["Agent", true],
+      ]),
+    );
   });
 
   it("honors a working root's snooze unless a descendant still needs attention", () => {

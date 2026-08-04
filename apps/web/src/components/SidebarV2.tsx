@@ -603,6 +603,7 @@ export default function SidebarV2() {
         return (
           <SidebarV2NestedRow
             active={active}
+            archiveBlocked={row.archiveBlocked}
             childCount={row.childCount}
             depth={row.depth}
             hasChildren={row.hasChildren}

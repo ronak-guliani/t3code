@@ -27,6 +27,8 @@ export interface SidebarV2NestedRowProps {
   readonly hasChildren: boolean;
   readonly isExpanded: boolean;
   readonly childCount: number;
+  /** Self or any active descendant is mid-turn; archive would hide that work. */
+  readonly archiveBlocked: boolean;
   readonly onOpen: (thread: SidebarThreadSummary) => void;
   readonly onToggleExpanded: (thread: SidebarThreadSummary, isExpanded: boolean) => void;
   readonly onArchive: (thread: SidebarThreadSummary) => void;
@@ -50,6 +52,7 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
   hasChildren,
   isExpanded,
   childCount,
+  archiveBlocked,
   onOpen,
   onToggleExpanded,
   onArchive,
@@ -63,12 +66,6 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
   );
 
   const agentRun = thread.virtualAgentRun;
-  const isRunningAgentRun = agentRun?.status === "running";
-  // Archiving a thread mid-turn is rejected server-side, so the affordance is
-  // disabled rather than left to fail on click.
-  const archiveBlocked =
-    isRunningAgentRun ||
-    (thread.session?.status === "running" && thread.session.activeTurnId != null);
 
   const handleOpen = useCallback(() => onOpen(thread), [onOpen, thread]);
   const handleArchive = useCallback(
@@ -168,7 +165,11 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
           disabled={archiveBlocked}
           onClick={handleArchive}
           size="icon-xs"
-          title={archiveBlocked ? "Cannot archive a running thread" : "Archive"}
+          title={
+            archiveBlocked
+              ? "Cannot archive while this chat or a nested chat is running"
+              : "Archive"
+          }
           variant="ghost"
         >
           <ArchiveIcon />

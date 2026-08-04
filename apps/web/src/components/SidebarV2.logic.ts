@@ -104,6 +104,12 @@ export interface SidebarV2ThreadRow {
   /** Total descendants, used for the expand affordance's label. */
   readonly childCount: number;
   readonly displayStatus: SidebarV2Status;
+  /**
+   * True when this thread or any active descendant is mid-turn. Archive walks
+   * the whole subtree server-side, so a quiet parent with a running child must
+   * still disable the control.
+   */
+  readonly archiveBlocked: boolean;
 }
 
 /** A root thread plus its visible descendants. `rows[0]` is always the root. */
@@ -120,6 +126,17 @@ interface SidebarV2ThreadNode {
   readonly status: SidebarV2Status;
   rolledUpStatus: SidebarV2Status;
   descendantCount: number;
+  archiveBlocked: boolean;
+}
+
+/** Matches the client archive guard: a live agent run or an in-flight session turn. */
+export function isSidebarV2ArchiveBlockedThread(
+  thread: Pick<SidebarThreadSummary, "session" | "virtualAgentRun">,
+): boolean {
+  if (thread.virtualAgentRun?.status === "running") {
+    return true;
+  }
+  return thread.session?.status === "running" && thread.session.activeTurnId != null;
 }
 
 // Highest urgency first. A collapsed parent adopts the most urgent status in
@@ -162,6 +179,7 @@ function buildThreadNodes(threads: readonly SidebarThreadSummary[]): SidebarV2Th
           status: resolveSidebarV2Status(thread),
           rolledUpStatus: "ready",
           descendantCount: 0,
+          archiveBlocked: false,
         },
       ];
     }),
@@ -196,6 +214,9 @@ function resolveNodeRollups(nodes: readonly SidebarV2ThreadNode[]): void {
       node.status,
       ...node.children.map((child) => child.rolledUpStatus),
     ]);
+    node.archiveBlocked =
+      isSidebarV2ArchiveBlockedThread(node.thread) ||
+      node.children.some((child) => child.archiveBlocked);
   }
 }
 
@@ -240,6 +261,7 @@ function flattenGroupRows(input: {
       isExpanded,
       childCount: node.descendantCount,
       displayStatus: node.rolledUpStatus,
+      archiveBlocked: node.archiveBlocked,
     });
     if (isExpanded) {
       input.output.push(...childRows);
