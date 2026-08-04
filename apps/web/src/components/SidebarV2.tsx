@@ -35,10 +35,12 @@ import { type OrchestrationThreadActivity } from "@t3tools/contracts";
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useSettings } from "../hooks/useSettings";
 import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import { useSavedEnvironmentRuntimeStore } from "../environments/runtime";
 import { isElectron } from "../env";
 import { shortcutLabelForCommand } from "../keybindings";
+import { readLocalApi } from "../localApi";
 import {
   selectProjectsAcrossEnvironments,
   selectSidebarThreadsAcrossEnvironments,
@@ -94,16 +96,26 @@ function SortablePinnedThreadGroup({
     id: group.rootKey,
   });
 
-  return renderGroup(group, {
-    attributes,
-    isDragging,
-    listeners,
-    setNodeRef,
-    style: {
-      transform: CSS.Transform.toString(transform),
-      transition,
-    },
-  });
+  // Transform the whole visible group so expanded descendants ride with the
+  // root during drag instead of staying behind and overlapping neighbors.
+  return (
+    <div
+      className={isDragging ? "relative z-20 opacity-80" : undefined}
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+      }}
+    >
+      {renderGroup(group, {
+        attributes,
+        isDragging,
+        listeners,
+        // Node ref + transform live on the group wrapper above.
+        setNodeRef: () => {},
+      })}
+    </div>
+  );
 }
 
 function PinnedThreadRows({
@@ -239,6 +251,15 @@ export default function SidebarV2() {
     ? `${activeThreadRef.environmentId}:${activeThreadRef.threadId}`
     : null;
   const activeAgentTaskId = parseAgentRunRouteSearch(params).agent ?? null;
+  // Classification expands by matching visible row keys. Agent-run routes keep
+  // the parent thread id in the path while the selected row uses the synthetic
+  // `environment:agent-run:parent:task` key, so pass that key when an agent is
+  // selected or a completed run can be collapsed out of view.
+  const activeClassificationThreadKey =
+    activeThreadRef !== null && activeAgentTaskId !== null
+      ? `${activeThreadRef.environmentId}:agent-run:${activeThreadRef.threadId}:${activeAgentTaskId}`
+      : activeThreadKey;
+  const confirmThreadArchive = useSettings((settings) => settings.confirmThreadArchive);
   const { projects, threads } = useStore(
     useShallow((state) => ({
       projects: selectProjectsAcrossEnvironments(state),
@@ -367,10 +388,12 @@ export default function SidebarV2() {
       now,
       pinnedThreadKeysByProjectKey,
       expandedOverrideByThreadKey,
-      ...(activeThreadKey === null ? {} : { activeThreadKey }),
+      ...(activeClassificationThreadKey === null
+        ? {}
+        : { activeThreadKey: activeClassificationThreadKey }),
     });
   }, [
-    activeThreadKey,
+    activeClassificationThreadKey,
     expandedOverrideByThreadKey,
     now,
     pinnedThreadKeysByProjectKey,
@@ -391,13 +414,13 @@ export default function SidebarV2() {
   const openedSettled = useMemo(() => {
     const included = shelves.settled.slice(0, settledVisibleCount);
     const containsActive = (group: SidebarV2ThreadGroup) =>
-      group.rows.some((row) => row.threadKey === activeThreadKey);
-    if (activeThreadKey !== null && !included.some(containsActive)) {
+      group.rows.some((row) => row.threadKey === activeClassificationThreadKey);
+    if (activeClassificationThreadKey !== null && !included.some(containsActive)) {
       const routed = shelves.settled.find(containsActive);
       if (routed) return [...included, routed];
     }
     return included;
-  }, [activeThreadKey, settledVisibleCount, shelves.settled]);
+  }, [activeClassificationThreadKey, settledVisibleCount, shelves.settled]);
 
   const openThread = useCallback(
     (thread: SidebarThreadSummary) => {
@@ -521,12 +544,24 @@ export default function SidebarV2() {
   );
   const handleArchive = useCallback(
     (thread: SidebarThreadSummary) => {
-      runAction(
-        () => archiveThread(scopeThreadRef(thread.environmentId, thread.id)),
-        "archive thread",
-      );
+      void (async () => {
+        if (confirmThreadArchive) {
+          const localApi = readLocalApi();
+          const confirmed =
+            localApi === undefined
+              ? window.confirm(`Archive thread "${thread.title}"?`)
+              : await localApi.dialogs.confirm(`Archive thread "${thread.title}"?`);
+          if (!confirmed) {
+            return;
+          }
+        }
+        runAction(
+          () => archiveThread(scopeThreadRef(thread.environmentId, thread.id)),
+          "archive thread",
+        );
+      })();
     },
-    [archiveThread, runAction],
+    [archiveThread, confirmThreadArchive, runAction],
   );
   const handleToggleExpanded = useCallback(
     (thread: SidebarThreadSummary, isExpanded: boolean) => {
@@ -647,7 +682,10 @@ export default function SidebarV2() {
       group: SidebarV2ThreadGroup,
       variant: "card" | "slim",
       sortable?: NonNullable<SidebarV2RowProps["sortable"]>,
-    ) => group.rows.map((row) => renderRow(row, variant, row.depth === 0 ? sortable : undefined)),
+    ) =>
+      // Only the root accepts drag listeners; the group wrapper owns the
+      // transform so nested rows still travel with it.
+      group.rows.map((row) => renderRow(row, variant, row.depth === 0 ? sortable : undefined)),
     [renderRow],
   );
   const renderCardGroup = useCallback(
@@ -711,7 +749,9 @@ export default function SidebarV2() {
           icon={<BellOffIcon className="size-3.5" />}
           title="Snoozed"
         >
-          <SidebarMenu>{shelves.snoozed.map(renderSlimGroup)}</SidebarMenu>
+          <SidebarMenu className="gap-[var(--app-sidebar-row-gap)]">
+            {shelves.snoozed.map(renderSlimGroup)}
+          </SidebarMenu>
           {bulkSnoozeTargets.wakeable.length > 0 ? (
             <div className="flex gap-1 px-2 py-1">
               <Button
@@ -755,7 +795,9 @@ export default function SidebarV2() {
           icon={<ArchiveIcon className="size-3.5" />}
           title="Settled"
         >
-          <SidebarMenu>{openedSettled.map(renderSlimGroup)}</SidebarMenu>
+          <SidebarMenu className="gap-[var(--app-sidebar-row-gap)]">
+            {openedSettled.map(renderSlimGroup)}
+          </SidebarMenu>
           {shelves.settled.length > openedSettled.length ? (
             <Button
               className="mx-2 mt-1"

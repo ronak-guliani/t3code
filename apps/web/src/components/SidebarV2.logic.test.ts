@@ -285,6 +285,70 @@ describe("classifySidebarV2Shelves", () => {
     expect(rowTitles(routed.active)).toEqual(["Parent", "  Child"]);
   });
 
+  it("keeps a selected completed agent-run row visible under an explicit collapse", () => {
+    const parent = thread({ id: ThreadId.make("parent-thread"), title: "Parent" });
+    const agentRun = thread({
+      id: ThreadId.make("agent-run:parent-thread:agent-1"),
+      parentThreadId: parent.id,
+      title: "Agent",
+      virtualAgentRun: {
+        parentThreadId: parent.id,
+        taskId: "agent-1",
+        status: "completed",
+      },
+    });
+
+    const collapsed = classifySidebarV2Shelves({
+      threads: [parent, agentRun],
+      now,
+      expandedOverrideByThreadKey: new Map([[`${capableEnvironmentId}:${parent.id}`, false]]),
+      // Parent path key alone would leave the completed agent row hidden.
+      activeThreadKey: `${capableEnvironmentId}:agent-run:parent-thread:agent-1`,
+    });
+
+    expect(rowTitles(collapsed.active)).toEqual(["Parent", "  Agent"]);
+  });
+
+  it("honors a working root's snooze unless a descendant still needs attention", () => {
+    const workingRoot = thread({
+      id: ThreadId.make("working-root"),
+      title: "Working root",
+      snoozedUntil: "2026-01-02T00:00:00.000Z",
+      latestTurn: {
+        turnId: "turn-1",
+        state: "running",
+        requestedAt: "2026-01-01T11:00:00.000Z",
+        startedAt: "2026-01-01T11:00:01.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      } as SidebarThreadSummary["latestTurn"],
+    });
+    const quietChild = thread({
+      id: ThreadId.make("quiet-child"),
+      parentThreadId: workingRoot.id,
+      title: "Quiet child",
+    });
+
+    const snoozedShelves = classifySidebarV2Shelves({
+      threads: [workingRoot, quietChild],
+      now,
+    });
+    expect(resolveSidebarV2Status(workingRoot)).toBe("working");
+    expect(rootsOf(snoozedShelves.snoozed)).toEqual([workingRoot]);
+    expect(snoozedShelves.active).toEqual([]);
+
+    const blockedChild = {
+      ...quietChild,
+      hasPendingApprovals: true,
+    };
+    const promotedShelves = classifySidebarV2Shelves({
+      threads: [workingRoot, blockedChild],
+      now,
+    });
+    expect(rootsOf(promotedShelves.active)).toEqual([workingRoot]);
+    expect(promotedShelves.snoozed).toEqual([]);
+  });
+
   it("drops cyclic and self parent references back to roots", () => {
     const left = thread({ id: ThreadId.make("left"), title: "Left" });
     const right = thread({ id: ThreadId.make("right"), title: "Right" });

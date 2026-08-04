@@ -84,12 +84,16 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
     [agentRun, archiveBlocked, onArchive, onDismissAgentRun, thread],
   );
   const handleToggleExpanded = useCallback(
-    (event: React.MouseEvent) => {
+    (event: React.SyntheticEvent) => {
+      event.preventDefault();
       event.stopPropagation();
       onToggleExpanded(thread, isExpanded);
     },
     [isExpanded, onToggleExpanded, thread],
   );
+  const handleToggleExpandedPointerDown = useCallback((event: React.PointerEvent) => {
+    event.stopPropagation();
+  }, []);
   // The row surface is a role="button" div rather than a native <button> so the
   // chevron can live inside it as its own control; that costs native keyboard
   // activation, which is restored here for the row's own key events only.
@@ -124,16 +128,16 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
           }
         >
           {hasChildren ? (
-            <span
+            <button
               aria-expanded={isExpanded}
               aria-label={`${isExpanded ? "Collapse" : "Expand"} ${thread.title}`}
-              className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
+              className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
               onClick={handleToggleExpanded}
-              role="button"
-              tabIndex={-1}
+              onPointerDown={handleToggleExpandedPointerDown}
               title={`${isExpanded ? "Collapse" : "Expand"} ${childCount} nested chat${
                 childCount === 1 ? "" : "s"
               }`}
+              type="button"
             >
               <ChevronRightIcon
                 className={cn(
@@ -141,7 +145,7 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
                   isExpanded && "rotate-90",
                 )}
               />
-            </span>
+            </button>
           ) : (
             <span aria-hidden="true" className="inline-block size-4 shrink-0" />
           )}

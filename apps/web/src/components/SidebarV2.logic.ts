@@ -326,12 +326,19 @@ export function classifySidebarV2Shelves(input: {
     }
     const group = toThreadGroup(node, flattenInput);
     // The whole subtree lands wherever its root does, so a nested chat never
-    // detaches from its parent. A descendant with live work still pulls the
-    // group back into the inbox: shelving it would hide that work entirely.
-    if (isSidebarV2ActiveStatus(node.rolledUpStatus)) {
+    // detaches from its parent. Promote only for live *descendants* first: the
+    // root's own working status must not defeat an intentional snooze (canSnooze
+    // allows active work). After that, honor the root's snooze/settled state
+    // before falling back to its own status.
+    const hasActiveDescendant = node.children.some((child) =>
+      isSidebarV2ActiveStatus(child.rolledUpStatus),
+    );
+    if (hasActiveDescendant) {
       active.push(group);
     } else if (effectiveSnoozed(node.thread, { now: input.now })) {
       snoozed.push(group);
+    } else if (isSidebarV2ActiveStatus(node.status)) {
+      active.push(group);
     } else if (effectiveSettled(node.thread, { now: input.now })) {
       settled.push(group);
     } else {

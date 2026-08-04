@@ -102,7 +102,8 @@ export interface SidebarV2RowProps {
     readonly isDragging: boolean;
     readonly listeners: ReturnType<typeof useSortable>["listeners"];
     readonly setNodeRef: ReturnType<typeof useSortable>["setNodeRef"];
-    readonly style: CSSProperties;
+    /** Omitted when a parent group surface owns the drag transform. */
+    readonly style?: CSSProperties;
   };
 }
 
@@ -191,12 +192,16 @@ export const SidebarV2Row = memo(function SidebarV2Row({
 
   const handleOpen = useCallback(() => onOpen(thread), [onOpen, thread]);
   const handleToggleExpanded = useCallback(
-    (event: React.MouseEvent) => {
+    (event: React.SyntheticEvent) => {
+      event.preventDefault();
       event.stopPropagation();
       onToggleExpanded(thread, isExpanded);
     },
     [isExpanded, onToggleExpanded, thread],
   );
+  const handleToggleExpandedPointerDown = useCallback((event: React.PointerEvent) => {
+    event.stopPropagation();
+  }, []);
   const agentRun = thread.virtualAgentRun;
   const isVirtualAgentRun = agentRun !== undefined;
   const dismissibleAgentRun = agentRun !== undefined && agentRun.status !== "running";
@@ -365,25 +370,25 @@ export const SidebarV2Row = memo(function SidebarV2Row({
     />
   );
 
-  // A role="button" span rather than a <button>: the card surface is itself a
-  // role="button" div, and a nested <button> inside the slim variant's real
-  // <button> would be invalid markup.
+  // Native button so keyboard users can expand/collapse without opening the
+  // thread. The card surface is a role="button" div (not a <button>) specifically
+  // so this control and the PR badge can be independent focus targets.
   const expandToggle = hasChildren ? (
-    <span
+    <button
       aria-expanded={isExpanded}
       aria-label={`${isExpanded ? "Collapse" : "Expand"} ${thread.title}`}
-      className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
+      className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-muted-foreground/60 hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
       onClick={handleToggleExpanded}
-      role="button"
-      tabIndex={-1}
+      onPointerDown={handleToggleExpandedPointerDown}
       title={`${isExpanded ? "Collapse" : "Expand"} ${childCount} nested chat${
         childCount === 1 ? "" : "s"
       }`}
+      type="button"
     >
       <ChevronRightIcon
         className={cn("size-3 transition-transform duration-150", isExpanded && "rotate-90")}
       />
-    </span>
+    </button>
   ) : null;
 
   if (variant === "slim") {
@@ -452,7 +457,9 @@ export const SidebarV2Row = memo(function SidebarV2Row({
       className={cn(
         "group/thread [contain-intrinsic-size:auto_4rem] [content-visibility:auto]",
         active && ACTIVE_ROW_ELEVATION,
-        sortable?.isDragging && "z-20 opacity-80",
+        // Group-level drag surfaces already dim the wrapper; keep row-level
+        // opacity only when this item owns the transform.
+        sortable?.style !== undefined && sortable.isDragging && "z-20 opacity-80",
       )}
       data-thread-prewarm-key={prewarmThreadKey}
     >
