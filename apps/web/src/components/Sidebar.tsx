@@ -3280,26 +3280,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
             projects={allProjects}
           />
           <div className="flex shrink-0 items-center gap-1">
-            {activeFilterProject ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      aria-label={`Create new thread in ${activeFilterProject.displayName}`}
-                      data-testid="sidebar-filtered-new-thread-button"
-                      className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                      onClick={handleFilteredCreateThreadClick}
-                    />
-                  }
-                >
-                  <SquarePenIcon className="size-3.5" />
-                </TooltipTrigger>
-                <TooltipPopup side="right">
-                  {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
-                </TooltipPopup>
-              </Tooltip>
-            ) : null}
             <ProjectSortMenu
               projectSortOrder={projectSortOrder}
               threadSortOrder={threadSortOrder}
@@ -3324,6 +3304,26 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
+            {activeFilterProject ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={`Create new thread in ${activeFilterProject.displayName}`}
+                      data-testid="sidebar-filtered-new-thread-button"
+                      className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                      onClick={handleFilteredCreateThreadClick}
+                    />
+                  }
+                >
+                  <SquarePenIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipPopup side="right">
+                  {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
           </div>
         </div>
 
