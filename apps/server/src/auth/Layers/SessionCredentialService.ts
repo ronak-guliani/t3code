@@ -5,7 +5,10 @@ import { Option } from "effect";
 
 import { ServerConfig } from "../../config.ts";
 import { AuthSessionRepositoryLive } from "../../persistence/Layers/AuthSessions.ts";
-import { AuthSessionRepository } from "../../persistence/Services/AuthSessions.ts";
+import {
+  AuthSessionRepository,
+  type AuthSessionRepositoryShape,
+} from "../../persistence/Services/AuthSessions.ts";
 import { ServerSecretStore } from "../Services/ServerSecretStore.ts";
 import {
   SessionCredentialError,
@@ -28,6 +31,7 @@ const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
 const CONNECTED_SESSION_POLL_INTERVAL = Duration.seconds(1);
 const SESSION_LOOKUP_RETRY_INTERVAL = Duration.millis(250);
+const CONNECTED_SESSION_POLL_BATCH_SIZE = 900;
 
 const SessionClaims = Schema.Struct({
   v: Schema.Literal(1),
@@ -49,6 +53,26 @@ const WebSocketClaims = Schema.Struct({
   exp: Schema.Number,
 });
 type WebSocketClaims = typeof WebSocketClaims.Type;
+
+export const listInactiveSessionIdsInBatches = Effect.fn(
+  "SessionCredentialService.listInactiveSessionIdsInBatches",
+)(function* (input: {
+  readonly sessionIds: ReadonlyArray<AuthSessionId>;
+  readonly now: DateTime.Utc;
+  readonly listInactiveIds: AuthSessionRepositoryShape["listInactiveIds"];
+}) {
+  const inactiveSessionIds: AuthSessionId[] = [];
+  for (let start = 0; start < input.sessionIds.length; start += CONNECTED_SESSION_POLL_BATCH_SIZE) {
+    const batch = input.sessionIds.slice(start, start + CONNECTED_SESSION_POLL_BATCH_SIZE);
+    inactiveSessionIds.push(
+      ...(yield* input.listInactiveIds({
+        sessionIds: batch,
+        now: input.now,
+      })),
+    );
+  }
+  return inactiveSessionIds;
+});
 
 const decodeSessionClaims = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionClaims));
 const decodeWebSocketClaims = Schema.decodeUnknownEffect(Schema.fromJsonString(WebSocketClaims));
@@ -519,7 +543,11 @@ export const makeSessionCredentialService = Effect.gen(function* () {
     const sessionIds = Array.from(connectedSessions.keys(), AuthSessionId.make);
     if (sessionIds.length === 0) return;
     const now = yield* DateTime.now;
-    const inactiveSessionIds = yield* authSessions.listInactiveIds({ sessionIds, now });
+    const inactiveSessionIds = yield* listInactiveSessionIdsInBatches({
+      sessionIds,
+      now,
+      listInactiveIds: authSessions.listInactiveIds,
+    });
     if (inactiveSessionIds.length === 0) return;
     yield* Ref.update(connectedSessionsRef, (current) => {
       const next = new Map(current);

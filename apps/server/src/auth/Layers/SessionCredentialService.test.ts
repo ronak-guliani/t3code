@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { AuthSessionId } from "@t3tools/contracts";
 import { DateTime, Duration, Effect, Fiber, Layer, Stream } from "effect";
 import { TestClock } from "effect/testing";
 
@@ -12,6 +13,7 @@ import { AuthSessionRepository } from "../../persistence/Services/AuthSessions.t
 import { SessionCredentialService } from "../Services/SessionCredentialService.ts";
 import { ServerSecretStoreLive } from "./ServerSecretStore.ts";
 import {
+  listInactiveSessionIdsInBatches,
   SessionCredentialServiceBase,
   SessionCredentialServiceLive,
 } from "./SessionCredentialService.ts";
@@ -92,6 +94,33 @@ const makeObservedSessionCredentialLayer = (input: {
 };
 
 it.layer(NodeServices.layer)("SessionCredentialServiceLive", (it) => {
+  it.effect("chunks durable inactive-session lookups below SQLite bind limits", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const sessionIds = Array.from({ length: 2_001 }, (_, index) =>
+        AuthSessionId.make(`session-${String(index)}`),
+      );
+      const observedBatchSizes: number[] = [];
+
+      const inactiveSessionIds = yield* listInactiveSessionIdsInBatches({
+        sessionIds,
+        now,
+        listInactiveIds: ({ sessionIds: batch }) =>
+          Effect.sync(() => {
+            observedBatchSizes.push(batch.length);
+            return batch.slice(0, 1);
+          }),
+      });
+
+      expect(observedBatchSizes).toEqual([900, 900, 201]);
+      expect(inactiveSessionIds).toEqual([
+        AuthSessionId.make("session-0"),
+        AuthSessionId.make("session-900"),
+        AuthSessionId.make("session-1800"),
+      ]);
+    }),
+  );
+
   it.effect("issues and verifies signed browser session tokens", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionCredentialService;
