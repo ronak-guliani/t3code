@@ -2,7 +2,19 @@
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import { DateTime, Duration, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
+import {
+  Cause,
+  DateTime,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Queue,
+  Ref,
+  Schema,
+  Stream,
+} from "effect";
 import {
   type AuthAccessStreamEvent,
   AssetWorkspaceContextNotFoundError,
@@ -117,6 +129,7 @@ import {
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import { withLogContext } from "./observability/LogContext.ts";
+import { outcomeFromExit } from "./observability/Attributes.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { listCopilotPreconnectionCommands } from "./provider/copilotPreconnectionCommands.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
@@ -498,7 +511,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 parseReviewChangesScope(override?.defaultInput?.scope) ??
                 reviewSettings.defaultScope ??
                 DEFAULT_REVIEW_CHANGES_SCOPE;
-              const reviewContext = yield* git.resolveReviewChangesContext({
+              const reviewContext = yield* git.claimReviewChangesContext({
                 cwd,
                 scope: requestedScope,
                 ...(requestedScope === "pull-request" &&
@@ -737,7 +750,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             parseReviewChangesScope(override?.defaultInput?.scope) ??
             reviewSettings.defaultScope ??
             DEFAULT_REVIEW_CHANGES_SCOPE;
-          const reviewContext = yield* git.resolveReviewChangesContext({
+          const reviewContext = yield* git.claimReviewChangesContext({
             cwd,
             scope: requestedScope,
             ...(requestedScope === "pull-request" &&
@@ -1695,6 +1708,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             git.resolveReviewChangesContext(input),
             { "rpc.aggregate": "git" },
           ),
+        [WS_METHODS.gitPrewarmReviewChangesContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitPrewarmReviewChangesContext,
+            git.prewarmReviewChangesContext(input),
+            { "rpc.aggregate": "git" },
+          ),
         [WS_METHODS.gitListOpenPullRequests]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitListOpenPullRequests,
@@ -2211,11 +2230,26 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const waitUntilSessionInactive = sessions
           .waitUntilInactive(session.sessionId)
           .pipe(Effect.as(HttpServerResponse.empty({ status: 401 })));
+        // A silently replaced socket leaves every subscription on the old
+        // connection dead, so connection open/close is the anchor every stream
+        // log below correlates against.
+        const connectionId = crypto.randomUUID();
+        const connectedAt = Date.now();
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
           () =>
-            Effect.raceFirst(rpcWebSocketHttpEffect, waitUntilSessionInactive).pipe(
-              withLogContext({ sessionId: session.sessionId }),
+            Effect.logInfo("websocket connected", {
+              userAgent: request.headers["user-agent"],
+            }).pipe(
+              Effect.andThen(Effect.raceFirst(rpcWebSocketHttpEffect, waitUntilSessionInactive)),
+              Effect.onExit((exit) =>
+                Effect.logInfo("websocket disconnected", {
+                  durationMs: Date.now() - connectedAt,
+                  outcome: outcomeFromExit(exit),
+                  ...(Exit.isFailure(exit) ? { cause: Cause.pretty(exit.cause) } : {}),
+                }),
+              ),
+              withLogContext({ sessionId: session.sessionId, connectionId }),
             ),
           () => sessions.markDisconnected(session.sessionId),
         );
