@@ -1701,7 +1701,7 @@ export function GeneralSettingsPanel() {
         />
         <SettingsRow
           title="Sidebar metadata font size"
-          description="Font size for the project, branch, pull request, and timestamp lines in sidebar rows."
+          description="Font size for the project name, worktree, branch, pull request, and timestamps on sidebar rows."
           resetAction={
             settings.sidebarMetaFontSize !== DEFAULT_SIDEBAR_META_FONT_SIZE ? (
               <SettingResetButton

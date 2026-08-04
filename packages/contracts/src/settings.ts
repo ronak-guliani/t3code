@@ -31,9 +31,9 @@ export const DEFAULT_CHAT_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_STATUS_LINE_FONT_SIZE: FontSize = 14 as FontSize;
 export const DEFAULT_TOOL_FONT_SIZE: FontSize = 12 as FontSize;
 export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 12 as FontSize;
-/** Sidebar metadata (project, branch, PR, timestamps) sits a deliberate step
+/** Sidebar metadata (project, worktree, branch, PR, timestamps) sits a deliberate step
     below the thread title so the title stays the row's anchor. */
-export const DEFAULT_SIDEBAR_META_FONT_SIZE: FontSize = 10 as FontSize;
+export const DEFAULT_SIDEBAR_META_FONT_SIZE: FontSize = 11 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
 
 export const SidebarRowSpacing = Schema.Literals(["compact", "default", "relaxed"]);

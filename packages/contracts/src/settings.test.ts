@@ -102,9 +102,10 @@ describe("ClientSettings.sidebarFontSize", () => {
   });
 
   describe("ClientSettings.sidebarMetaFontSize", () => {
-    it("defaults to the sidebar metadata font size", () => {
+    it("defaults below the sidebar title font size so metadata stays secondary", () => {
       expect(DEFAULT_CLIENT_SETTINGS.sidebarMetaFontSize).toBe(DEFAULT_SIDEBAR_META_FONT_SIZE);
       expect(decodeClientSettings({}).sidebarMetaFontSize).toBe(DEFAULT_SIDEBAR_META_FONT_SIZE);
+      expect(DEFAULT_SIDEBAR_META_FONT_SIZE).toBeLessThan(DEFAULT_SIDEBAR_FONT_SIZE);
     });
 
     it("accepts valid sidebar metadata font size patches", () => {
