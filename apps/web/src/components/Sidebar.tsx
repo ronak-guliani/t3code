@@ -3736,7 +3736,12 @@ export default function Sidebar() {
   const visibleSidebarThreadKeys = useMemo(
     () =>
       visibleProjects.flatMap((project) => {
-        const projectExpanded = projectExpandedById[project.projectKey] ?? true;
+        // Match SidebarProjectItem: a filtered single-project list has no header
+        // disclosure, so force expansion for jump labels and prev/next too.
+        const projectExpanded = resolveProjectExpanded({
+          storedExpanded: projectExpandedById[project.projectKey] ?? true,
+          hasHeader: activeFilterProject === null,
+        });
         const activeThreadKey = routeThreadKey ?? undefined;
         const projectThreads = selectVisibleSidebarThreads(
           threadsByProjectKey.get(project.projectKey) ?? [],
@@ -3769,6 +3774,7 @@ export default function Sidebar() {
         return rows.map((row) => row.threadKey);
       }),
     [
+      activeFilterProject,
       threadExpandedOverrideMap,
       expandedThreadListsByProject,
       pinnedThreadKeysByProjectId,

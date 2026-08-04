@@ -743,8 +743,10 @@ describe("resolveProjectExpanded", () => {
 
   it("forces expansion when the header is hidden", () => {
     // The header holds the only disclosure control, so a collapsed project
-    // would otherwise filter down to an empty, unrecoverable list.
+    // would otherwise filter down to an empty, unrecoverable list. The same
+    // effective value must drive keyboard jump targets and prev/next.
     expect(resolveProjectExpanded({ storedExpanded: false, hasHeader: false })).toBe(true);
+    expect(resolveProjectExpanded({ storedExpanded: true, hasHeader: false })).toBe(true);
   });
 });
 
