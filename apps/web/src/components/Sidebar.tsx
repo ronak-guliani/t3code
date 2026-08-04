@@ -1401,6 +1401,113 @@ const PinnedThreadDragContext = memo(function PinnedThreadDragContext({
   );
 });
 
+/**
+ * Creates a thread in a project, seeded from the active thread's branch and
+ * worktree. Grouped projects prompt for which member to use.
+ *
+ * Shared by the per-project header and the filtered sidebar's compose button so
+ * the two entry points cannot drift apart.
+ */
+function useProjectThreadCreator(
+  handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"],
+): (project: SidebarProjectSnapshot, event: React.MouseEvent<HTMLButtonElement>) => void {
+  const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
+    (settings) => settings.defaultThreadEnvMode,
+  );
+  const router = useRouter();
+  const { isMobile, setOpenMobile } = useSidebar();
+
+  const createThreadForProjectMember = useCallback(
+    (member: SidebarProjectGroupMember) => {
+      const currentRouteParams =
+        router.state.matches[router.state.matches.length - 1]?.params ?? {};
+      const currentRouteTarget = resolveThreadRouteTarget(currentRouteParams);
+      const currentActiveThread =
+        currentRouteTarget?.kind === "server"
+          ? (selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef) ?? null)
+          : null;
+      const draftStore = useComposerDraftStore.getState();
+      const currentActiveDraftThread =
+        currentRouteTarget?.kind === "server"
+          ? (draftStore.getDraftThread(currentRouteTarget.threadRef) ?? null)
+          : currentRouteTarget?.kind === "draft"
+            ? (draftStore.getDraftSession(currentRouteTarget.draftId) ?? null)
+            : null;
+      const seedContext = resolveSidebarNewThreadSeedContext({
+        projectId: member.id,
+        defaultEnvMode: resolveSidebarNewThreadEnvMode({
+          defaultEnvMode: defaultThreadEnvMode,
+        }),
+        activeThread:
+          currentActiveThread && currentActiveThread.projectId === member.id
+            ? {
+                projectId: currentActiveThread.projectId,
+                branch: currentActiveThread.branch,
+                worktreePath: currentActiveThread.worktreePath,
+              }
+            : null,
+        activeDraftThread:
+          currentActiveDraftThread && currentActiveDraftThread.projectId === member.id
+            ? {
+                projectId: currentActiveDraftThread.projectId,
+                branch: currentActiveDraftThread.branch,
+                worktreePath: currentActiveDraftThread.worktreePath,
+                envMode: currentActiveDraftThread.envMode,
+              }
+            : null,
+      });
+      if (isMobile) {
+        setOpenMobile(false);
+      }
+      void handleNewThread(scopeProjectRef(member.environmentId, member.id), {
+        ...(seedContext.branch !== undefined ? { branch: seedContext.branch } : {}),
+        ...(seedContext.worktreePath !== undefined
+          ? { worktreePath: seedContext.worktreePath }
+          : {}),
+        envMode: seedContext.envMode,
+      });
+    },
+    [defaultThreadEnvMode, handleNewThread, isMobile, router, setOpenMobile],
+  );
+
+  return useCallback(
+    (project: SidebarProjectSnapshot, event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (project.memberProjects.length === 1) {
+        createThreadForProjectMember(project.memberProjects[0]!);
+        return;
+      }
+
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) {
+          return;
+        }
+        const clicked = await api.contextMenu.show(
+          project.memberProjects.map((member) => ({
+            id: member.physicalProjectKey,
+            label: formatProjectMemberActionLabel(member, project.groupedProjectCount),
+          })),
+          resolveContextMenuPosition(event),
+        );
+        if (!clicked) {
+          return;
+        }
+        const targetMember = project.memberProjects.find(
+          (member) => member.physicalProjectKey === clicked,
+        );
+        if (!targetMember) {
+          return;
+        }
+        createThreadForProjectMember(targetMember);
+      })();
+    },
+    [createThreadForProjectMember],
+  );
+}
+
 interface SidebarProjectItemProps {
   project: SidebarProjectSnapshot;
   primaryEnvironmentId: SidebarThreadSummary["environmentId"] | null;
@@ -1458,9 +1565,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   );
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
-  );
-  const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
-    (settings) => settings.defaultThreadEnvMode,
   );
   const projectGroupingSettings = useSettings((settings) => ({
     sidebarProjectGroupingMode: settings.sidebarProjectGroupingMode,
@@ -2214,94 +2318,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     ],
   );
 
-  const createThreadForProjectMember = useCallback(
-    (member: SidebarProjectGroupMember) => {
-      const currentRouteParams =
-        router.state.matches[router.state.matches.length - 1]?.params ?? {};
-      const currentRouteTarget = resolveThreadRouteTarget(currentRouteParams);
-      const currentActiveThread =
-        currentRouteTarget?.kind === "server"
-          ? (selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef) ?? null)
-          : null;
-      const draftStore = useComposerDraftStore.getState();
-      const currentActiveDraftThread =
-        currentRouteTarget?.kind === "server"
-          ? (draftStore.getDraftThread(currentRouteTarget.threadRef) ?? null)
-          : currentRouteTarget?.kind === "draft"
-            ? (draftStore.getDraftSession(currentRouteTarget.draftId) ?? null)
-            : null;
-      const seedContext = resolveSidebarNewThreadSeedContext({
-        projectId: member.id,
-        defaultEnvMode: resolveSidebarNewThreadEnvMode({
-          defaultEnvMode: defaultThreadEnvMode,
-        }),
-        activeThread:
-          currentActiveThread && currentActiveThread.projectId === member.id
-            ? {
-                projectId: currentActiveThread.projectId,
-                branch: currentActiveThread.branch,
-                worktreePath: currentActiveThread.worktreePath,
-              }
-            : null,
-        activeDraftThread:
-          currentActiveDraftThread && currentActiveDraftThread.projectId === member.id
-            ? {
-                projectId: currentActiveDraftThread.projectId,
-                branch: currentActiveDraftThread.branch,
-                worktreePath: currentActiveDraftThread.worktreePath,
-                envMode: currentActiveDraftThread.envMode,
-              }
-            : null,
-      });
-      if (isMobile) {
-        setOpenMobile(false);
-      }
-      void handleNewThread(scopeProjectRef(member.environmentId, member.id), {
-        ...(seedContext.branch !== undefined ? { branch: seedContext.branch } : {}),
-        ...(seedContext.worktreePath !== undefined
-          ? { worktreePath: seedContext.worktreePath }
-          : {}),
-        envMode: seedContext.envMode,
-      });
-    },
-    [defaultThreadEnvMode, handleNewThread, isMobile, router, setOpenMobile],
-  );
-
+  const createThreadForProject = useProjectThreadCreator(handleNewThread);
   const handleCreateThreadClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-
-      if (project.memberProjects.length === 1) {
-        createThreadForProjectMember(project.memberProjects[0]!);
-        return;
-      }
-
-      void (async () => {
-        const api = readLocalApi();
-        if (!api) {
-          return;
-        }
-        const clicked = await api.contextMenu.show(
-          project.memberProjects.map((member) => ({
-            id: member.physicalProjectKey,
-            label: formatProjectMemberActionLabel(member, project.groupedProjectCount),
-          })),
-          resolveContextMenuPosition(event),
-        );
-        if (!clicked) {
-          return;
-        }
-        const targetMember = project.memberProjects.find(
-          (member) => member.physicalProjectKey === clicked,
-        );
-        if (!targetMember) {
-          return;
-        }
-        createThreadForProjectMember(targetMember);
-      })();
+      createThreadForProject(project, event);
     },
-    [createThreadForProjectMember, project.groupedProjectCount, project.memberProjects],
+    [createThreadForProject, project],
   );
 
   const attemptArchiveThread = useCallback(
@@ -3212,6 +3234,18 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
   // Filtering to one project already names it in the filter menu, so its own
   // header row would be redundant.
   const hideProjectHeader = activeFilterProject !== null;
+  // That hidden header also carried the project's compose button, so the filter
+  // row hosts it while a filter is active.
+  const createThreadForProject = useProjectThreadCreator(handleNewThread);
+  const handleFilteredCreateThreadClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (!activeFilterProject) {
+        return;
+      }
+      createThreadForProject(activeFilterProject, event);
+    },
+    [activeFilterProject, createThreadForProject],
+  );
   return (
     <SidebarContent className="gap-0">
       <SidebarTopActions commandPaletteShortcutLabel={commandPaletteShortcutLabel} />
@@ -3246,6 +3280,26 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
             projects={allProjects}
           />
           <div className="flex shrink-0 items-center gap-1">
+            {activeFilterProject ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={`Create new thread in ${activeFilterProject.displayName}`}
+                      data-testid="sidebar-filtered-new-thread-button"
+                      className="inline-flex size-5 cursor-pointer items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
+                      onClick={handleFilteredCreateThreadClick}
+                    />
+                  }
+                >
+                  <SquarePenIcon className="size-3.5" />
+                </TooltipTrigger>
+                <TooltipPopup side="right">
+                  {newThreadShortcutLabel ? `New thread (${newThreadShortcutLabel})` : "New thread"}
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
             <ProjectSortMenu
               projectSortOrder={projectSortOrder}
               threadSortOrder={threadSortOrder}
