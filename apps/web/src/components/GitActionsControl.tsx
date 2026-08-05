@@ -315,16 +315,90 @@ export default function GitActionsControl({
     ],
   );
 
-  const syncThreadBranchAfterGitAction = useCallback(
+  const persistThreadPullRequestAssociation = useCallback(
     (result: GitRunStackedActionResult) => {
-      const branchUpdate = resolveThreadBranchUpdate(result);
-      if (!branchUpdate) {
+      if (result.pr.status !== "created" && result.pr.status !== "opened_existing") {
+        return;
+      }
+      if (
+        result.pr.number === undefined ||
+        result.pr.url === undefined ||
+        result.pr.url.trim().length === 0
+      ) {
+        return;
+      }
+      if (!activeThreadRef) {
         return;
       }
 
-      persistThreadBranchSync(branchUpdate.branch);
+      const headBranch =
+        result.pr.headBranch ??
+        result.push.branch ??
+        result.branch.name ??
+        activeServerThread?.branch ??
+        activeDraftThread?.branch ??
+        null;
+      if (headBranch === null) {
+        return;
+      }
+
+      const pullRequest = {
+        number: result.pr.number,
+        url: result.pr.url,
+        title: result.pr.title ?? `Pull request #${result.pr.number}`,
+        baseBranch: result.pr.baseBranch ?? "main",
+        headBranch,
+        state: "open" as const,
+      };
+
+      if (activeServerThread) {
+        const api = readEnvironmentApi(activeThreadRef.environmentId);
+        if (api) {
+          void api.orchestration
+            .dispatchCommand({
+              type: "thread.meta.update",
+              commandId: newCommandId(),
+              threadId: activeThreadRef.threadId,
+              pullRequest,
+            })
+            .catch(() => undefined);
+        }
+        setThreadBranch(
+          activeThreadRef,
+          activeServerThread.branch,
+          activeServerThread.worktreePath,
+          pullRequest,
+        );
+        return;
+      }
+
+      if (activeDraftThread) {
+        setDraftThreadContext(draftId ?? activeThreadRef, {
+          branch: activeDraftThread.branch,
+          worktreePath: activeDraftThread.worktreePath,
+          pullRequest,
+        });
+      }
     },
-    [persistThreadBranchSync],
+    [
+      activeDraftThread,
+      activeServerThread,
+      activeThreadRef,
+      draftId,
+      setDraftThreadContext,
+      setThreadBranch,
+    ],
+  );
+
+  const syncThreadBranchAfterGitAction = useCallback(
+    (result: GitRunStackedActionResult) => {
+      const branchUpdate = resolveThreadBranchUpdate(result);
+      if (branchUpdate) {
+        persistThreadBranchSync(branchUpdate.branch);
+      }
+      persistThreadPullRequestAssociation(result);
+    },
+    [persistThreadBranchSync, persistThreadPullRequestAssociation],
   );
 
   const { data: gitStatus = null, error: gitStatusError } = useGitStatus({

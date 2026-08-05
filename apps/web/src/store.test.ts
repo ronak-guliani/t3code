@@ -118,6 +118,7 @@ function makeSidebarThreadSummary(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    pullRequest: thread.pullRequest ?? null,
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
@@ -169,6 +170,7 @@ function makeState(thread: Thread): AppState {
         updatedAt: thread.updatedAt,
         branch: thread.branch,
         worktreePath: thread.worktreePath,
+        pullRequest: thread.pullRequest ?? null,
       },
     },
     threadSessionById: {
@@ -2155,5 +2157,73 @@ describe("insights lifecycle retention", () => {
     expect(turnOne).toBeDefined();
     expect(turnOne?.status).toBe("completed");
     expect(turnOne?.durationMs).toBe(1_000);
+  });
+
+  it("keeps durable pullRequest association per thread and ignores peer branch equality", () => {
+    const pullRequest = {
+      number: 99,
+      title: "Only one thread owns this",
+      url: "https://example.test/pr/99",
+      baseBranch: "main",
+      headBranch: "feature/shared",
+      state: "open" as const,
+    };
+    const associatedId = ThreadId.make("thread-associated");
+    const peerId = ThreadId.make("thread-peer");
+    const base = makeState(
+      makeThread({
+        id: associatedId,
+        branch: "feature/shared",
+        pullRequest,
+      }),
+    );
+    const state = applyOrchestrationEvent(
+      base,
+      makeEvent("thread.created", {
+        threadId: peerId,
+        projectId: ProjectId.make("project-1"),
+        title: "Peer",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: "feature/shared",
+        worktreePath: null,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.meta-updated", {
+        threadId: associatedId,
+        branch: "feature/retargeted",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const associated = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, associatedId));
+    const peer = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, peerId));
+    expect(associated?.branch).toBe("feature/retargeted");
+    expect(associated?.pullRequest).toEqual(pullRequest);
+    expect(peer?.pullRequest ?? null).toBeNull();
+
+    const withCreatedPr = applyOrchestrationEvent(
+      next,
+      makeEvent("thread.meta-updated", {
+        threadId: peerId,
+        pullRequest,
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(
+      selectThreadByRef(withCreatedPr, scopeThreadRef(localEnvironmentId, peerId))?.pullRequest,
+    ).toEqual(pullRequest);
   });
 });
