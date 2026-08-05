@@ -185,7 +185,7 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
   thread,
 }: {
   readonly status: ThreadStatusPill;
-  readonly thread: Pick<SidebarThreadSummary, "latestTurn" | "session">;
+  readonly thread: Pick<SidebarThreadSummary, "latestTurn" | "session" | "createdAt">;
 }) {
   if (status.presentation !== "corner-badge") {
     return null;
@@ -197,7 +197,9 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
   return (
     <span
       role="status"
+      aria-label={status.label}
       title={status.label}
+      data-status-corner-badge=""
       // Paint-contain the animated node so native vibrancy rows don't ghost
       // neighboring pixels when opacity pulses (see scars.md).
       className={cn(
@@ -208,14 +210,11 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
       )}
       style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
     >
-      {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
-      <span>{label}</span>
-      {isWorking ? (
-        <span aria-hidden="true">
-          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-        </span>
-      ) : null}
-      <span className="sr-only">{status.label}</span>
+      <span aria-hidden="true" className="inline-flex items-center gap-1">
+        {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
+        <span>{label}</span>
+        {isWorking ? <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} /> : null}
+      </span>
     </span>
   );
 });

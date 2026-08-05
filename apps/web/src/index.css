@@ -308,6 +308,15 @@ html[data-native-vibrancy="true"]
   animation-duration: 0ms !important;
 }
 
+/* Working corner badge intentionally pulses under native vibrancy; the row
+   isolation above already contains the opacity animation. Restore duration
+   after the blanket 0ms kill-switch. */
+html[data-native-vibrancy="true"]
+  [data-thread-item]
+  [data-status-corner-badge].animate-status-badge-pulse {
+  animation-duration: 3s !important;
+}
+
 html[data-native-vibrancy="true"] [data-thread-item] [data-slot="sidebar-menu-sub-button"] {
   contain: paint;
   isolation: isolate;
