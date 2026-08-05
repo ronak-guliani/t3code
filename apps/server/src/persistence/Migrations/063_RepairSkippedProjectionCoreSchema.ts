@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import ProjectionThreadSessionResumeCursor from "./026_ProjectionThreadSessionResumeCursor.ts";
 import ProjectionThreadsPendingRuntimeMode from "./027_ProjectionThreadsPendingRuntimeMode.ts";
 import ProjectionTurnScopedFiles from "./028_ProjectionTurnScopedFiles.ts";
 import EnsureProviderInstanceIdColumns from "./032_EnsureProviderInstanceIdColumns.ts";
@@ -20,18 +20,9 @@ import ProjectionThreadParentThreadId from "./034_ProjectionThreadParentThreadId
  * Re-apply those steps idempotently so CLI/server startup can project again.
  */
 export default Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-
-  const sessionColumns = yield* sql<{ readonly name: string }>`
-    PRAGMA table_info(projection_thread_sessions)
-  `;
-  if (!sessionColumns.some((column) => column.name === "resume_cursor_json")) {
-    yield* sql`
-      ALTER TABLE projection_thread_sessions
-      ADD COLUMN resume_cursor_json TEXT
-    `;
-  }
-
+  // Reuse the canonical migrations (same pattern as 059) so repair cannot drift
+  // from the guarded steps and replay exercises those guards.
+  yield* ProjectionThreadSessionResumeCursor;
   // 032 also ensures pending_runtime_mode; keep the dedicated step first so a
   // partial 032 failure cannot leave threads without it.
   yield* ProjectionThreadsPendingRuntimeMode;

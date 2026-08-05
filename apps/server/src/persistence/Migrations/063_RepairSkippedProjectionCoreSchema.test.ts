@@ -14,11 +14,38 @@ const hasColumn = Effect.fn("hasColumn")(function* (table: string, column: strin
   return columns.some((entry) => entry.name === column);
 });
 
+/**
+ * Current tree migrations 005/027/028 already add turn-file and provider
+ * instance columns. Strip them after the divergent ledger is seeded so 063's
+ * 028/032 repair paths are the only way those columns return.
+ */
+const stripLegacyCoreColumns = Effect.fn("stripLegacyCoreColumns")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DROP INDEX IF EXISTS idx_provider_session_runtime_instance`;
+  yield* sql`DROP INDEX IF EXISTS idx_projection_thread_sessions_instance`;
+  yield* sql`
+    ALTER TABLE projection_turns
+    DROP COLUMN checkpoint_agent_touched_paths_json
+  `;
+  yield* sql`
+    ALTER TABLE projection_turns
+    DROP COLUMN checkpoint_turn_files_json
+  `;
+  yield* sql`
+    ALTER TABLE projection_thread_sessions
+    DROP COLUMN provider_instance_id
+  `;
+  yield* sql`
+    ALTER TABLE provider_session_runtime
+    DROP COLUMN provider_instance_id
+  `;
+});
+
 const seedDivergentLedgerPastCoreSchema = Effect.fn("seedDivergentLedgerPastCoreSchema")(
   function* () {
     const sql = yield* SqlClient.SqlClient;
     // Canonical schema through session instance id, before resume cursor /
-    // pending runtime mode / turn files / parent thread id.
+    // pending runtime mode / parent thread id.
     yield* runMigrations({ toMigrationInclusive: 28 });
     const now = new Date().toISOString();
     // Official/desktop ledgers from a divergent branch reused 29-35 for
@@ -37,6 +64,7 @@ const seedDivergentLedgerPastCoreSchema = Effect.fn("seedDivergentLedgerPastCore
         VALUES (${migrationId}, ${now}, ${name})
       `;
     }
+    yield* stripLegacyCoreColumns();
   },
 );
 
@@ -48,14 +76,16 @@ skippedCoreSchemaLayer("063_RepairSkippedProjectionCoreSchema skipped core schem
       assert.isFalse(yield* hasColumn("projection_thread_sessions", "resume_cursor_json"));
       assert.isFalse(yield* hasColumn("projection_threads", "pending_runtime_mode"));
       assert.isFalse(yield* hasColumn("projection_threads", "parent_thread_id"));
+      assert.isFalse(yield* hasColumn("projection_turns", "checkpoint_agent_touched_paths_json"));
+      assert.isFalse(yield* hasColumn("projection_turns", "checkpoint_turn_files_json"));
+      assert.isFalse(yield* hasColumn("projection_thread_sessions", "provider_instance_id"));
+      assert.isFalse(yield* hasColumn("provider_session_runtime", "provider_instance_id"));
 
       yield* runMigrations({ toMigrationInclusive: 63 });
 
       assert.isTrue(yield* hasColumn("projection_thread_sessions", "resume_cursor_json"));
       assert.isTrue(yield* hasColumn("projection_threads", "pending_runtime_mode"));
       assert.isTrue(yield* hasColumn("projection_threads", "parent_thread_id"));
-      // Turn-file columns ship in 005 today; the repair still re-runs the
-      // idempotent 028 ensure step for older installs that predate them.
       assert.isTrue(yield* hasColumn("projection_turns", "checkpoint_agent_touched_paths_json"));
       assert.isTrue(yield* hasColumn("projection_turns", "checkpoint_turn_files_json"));
       assert.isTrue(yield* hasColumn("projection_thread_sessions", "provider_instance_id"));
@@ -85,6 +115,8 @@ skippedCoreSchemaLayer("063_RepairSkippedProjectionCoreSchema skipped core schem
       assert.isTrue(yield* hasColumn("projection_threads", "pending_runtime_mode"));
       assert.isTrue(yield* hasColumn("projection_threads", "parent_thread_id"));
       assert.isTrue(yield* hasColumn("projection_turns", "checkpoint_turn_files_json"));
+      assert.isTrue(yield* hasColumn("projection_thread_sessions", "provider_instance_id"));
+      assert.isTrue(yield* hasColumn("provider_session_runtime", "provider_instance_id"));
     }),
   );
 });
@@ -96,6 +128,8 @@ healthyLedgerLayer("063_RepairSkippedProjectionCoreSchema healthy ledger", (it) 
       assert.isTrue(yield* hasColumn("projection_thread_sessions", "resume_cursor_json"));
       assert.isTrue(yield* hasColumn("projection_threads", "pending_runtime_mode"));
       assert.isTrue(yield* hasColumn("projection_threads", "parent_thread_id"));
+      assert.isTrue(yield* hasColumn("projection_turns", "checkpoint_turn_files_json"));
+      assert.isTrue(yield* hasColumn("projection_thread_sessions", "provider_instance_id"));
 
       yield* runMigrations({ toMigrationInclusive: 63 });
 
@@ -103,6 +137,8 @@ healthyLedgerLayer("063_RepairSkippedProjectionCoreSchema healthy ledger", (it) 
       assert.isTrue(yield* hasColumn("projection_threads", "pending_runtime_mode"));
       assert.isTrue(yield* hasColumn("projection_threads", "parent_thread_id"));
       assert.isTrue(yield* hasColumn("projection_turns", "checkpoint_turn_files_json"));
+      assert.isTrue(yield* hasColumn("projection_thread_sessions", "provider_instance_id"));
+      assert.isTrue(yield* hasColumn("provider_session_runtime", "provider_instance_id"));
     }),
   );
 });
