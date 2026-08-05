@@ -1,4 +1,6 @@
 import {
+  AuthAccessReadScope,
+  AuthAccessWriteScope,
   type AuthAccessTokenResult,
   AuthTokenExchangeRequest,
   type AuthBearerBootstrapResult,
@@ -331,6 +333,7 @@ export const authPairingCredentialRouteLayer = HttpRouter.add(
         status: 403,
       });
     }
+    yield* requireSessionScope(session.role, AuthAccessWriteScope, session.scopes);
     const headers = yield* HttpServerRequest.schemaHeaders(PairingCredentialRequestHeaders).pipe(
       Effect.mapError(
         (cause) =>
@@ -358,24 +361,26 @@ export const authPairingCredentialRouteLayer = HttpRouter.add(
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
 );
 
-const authenticateOwnerSession = Effect.gen(function* () {
-  const request = yield* HttpServerRequest.HttpServerRequest;
-  const serverAuth = yield* ServerAuth;
-  const session = yield* serverAuth.authenticateHttpRequest(request);
-  if (session.role !== "owner") {
-    return yield* new AuthError({
-      message: "Only owner sessions can manage network access.",
-      status: 403,
-    });
-  }
-  return { serverAuth, session } as const;
-});
+const authenticateOwnerSession = (requiredScope: AuthEnvironmentScope) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const serverAuth = yield* ServerAuth;
+    const session = yield* serverAuth.authenticateHttpRequest(request);
+    if (session.role !== "owner") {
+      return yield* new AuthError({
+        message: "Only owner sessions can manage network access.",
+        status: 403,
+      });
+    }
+    yield* requireSessionScope(session.role, requiredScope, session.scopes);
+    return { serverAuth, session } as const;
+  });
 
 export const authPairingLinksRouteLayer = HttpRouter.add(
   "GET",
   "/api/auth/pairing-links",
   Effect.gen(function* () {
-    const { serverAuth } = yield* authenticateOwnerSession;
+    const { serverAuth } = yield* authenticateOwnerSession(AuthAccessReadScope);
     const pairingLinks = yield* serverAuth.listPairingLinks();
     return HttpServerResponse.jsonUnsafe(pairingLinks, { status: 200 });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
@@ -385,7 +390,7 @@ export const authPairingLinksRevokeRouteLayer = HttpRouter.add(
   "POST",
   "/api/auth/pairing-links/revoke",
   Effect.gen(function* () {
-    const { serverAuth } = yield* authenticateOwnerSession;
+    const { serverAuth } = yield* authenticateOwnerSession(AuthAccessWriteScope);
     const payload = yield* HttpServerRequest.schemaBodyJson(AuthRevokePairingLinkInput).pipe(
       Effect.mapError(
         (cause) =>
@@ -405,7 +410,7 @@ export const authClientsRouteLayer = HttpRouter.add(
   "GET",
   "/api/auth/clients",
   Effect.gen(function* () {
-    const { serverAuth, session } = yield* authenticateOwnerSession;
+    const { serverAuth, session } = yield* authenticateOwnerSession(AuthAccessReadScope);
     const clients = yield* serverAuth.listClientSessions(session.sessionId);
     return HttpServerResponse.jsonUnsafe(clients, { status: 200 });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
@@ -415,7 +420,7 @@ export const authClientsRevokeRouteLayer = HttpRouter.add(
   "POST",
   "/api/auth/clients/revoke",
   Effect.gen(function* () {
-    const { serverAuth, session } = yield* authenticateOwnerSession;
+    const { serverAuth, session } = yield* authenticateOwnerSession(AuthAccessWriteScope);
     const payload = yield* HttpServerRequest.schemaBodyJson(AuthRevokeClientSessionInput).pipe(
       Effect.mapError(
         (cause) =>
@@ -435,7 +440,7 @@ export const authClientsRevokeOthersRouteLayer = HttpRouter.add(
   "POST",
   "/api/auth/clients/revoke-others",
   Effect.gen(function* () {
-    const { serverAuth, session } = yield* authenticateOwnerSession;
+    const { serverAuth, session } = yield* authenticateOwnerSession(AuthAccessWriteScope);
     const revokedCount = yield* serverAuth.revokeOtherClientSessions(session.sessionId);
     return HttpServerResponse.jsonUnsafe({ revokedCount }, { status: 200 });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),

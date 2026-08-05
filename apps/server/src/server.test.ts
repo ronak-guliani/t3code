@@ -38,6 +38,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Exit,
   FileSystem,
   Layer,
   ManagedRuntime,
@@ -841,6 +842,36 @@ const getAuthenticatedBearerSessionToken = (credential = defaultDesktopBootstrap
     return body.sessionToken;
   });
 
+const exchangeAccessToken = (
+  scopes: ReadonlyArray<string>,
+  credential = defaultDesktopBootstrapToken,
+) =>
+  Effect.gen(function* () {
+    const tokenUrl = yield* getHttpServerUrl("/oauth/token");
+    const response = yield* Effect.promise(() =>
+      fetch(tokenUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+          subject_token: credential,
+          subject_token_type: "urn:t3:params:oauth:token-type:environment-bootstrap",
+          requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          scope: scopes.join(" "),
+        }),
+      }),
+    );
+    const body = (yield* Effect.promise(() => response.json())) as {
+      readonly access_token?: string;
+    };
+    if (!response.ok || body.access_token === undefined) {
+      return yield* Effect.fail(new Error(`OAuth exchange failed with status ${response.status}.`));
+    }
+    return body.access_token;
+  });
+
 const bootstrapMobileBearerSession = (credential = defaultDesktopBootstrapToken) =>
   Effect.gen(function* () {
     const bootstrapUrl = yield* getHttpServerUrl("/mobile/v1/auth/bootstrap/bearer");
@@ -1351,6 +1382,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const response = yield* HttpClient.post("/api/auth/pairing-token");
       assert.equal(response.status, 401);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("enforces narrowed owner access-token scopes on access management routes", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const authorization = `Bearer ${accessToken}`;
+
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { authorization },
+      });
+      const linksResponse = yield* HttpClient.get("/api/auth/pairing-links", {
+        headers: { authorization },
+      });
+      const clientsResponse = yield* HttpClient.get("/api/auth/clients", {
+        headers: { authorization },
+      });
+
+      assert.equal(pairingResponse.status, 403);
+      assert.equal(linksResponse.status, 403);
+      assert.equal(clientsResponse.status, 403);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2493,6 +2546,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.equal(limitedReplay.error.code, "invalid-message");
         }),
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects scoped read-only tickets on the legacy mobile websocket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/mobile/v1/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+      const connected = yield* Effect.scoped(connectNodeWebSocket(wsUrl)).pipe(
+        Effect.exit,
+        Effect.map(Exit.isSuccess),
+      );
+
+      assert.equal(ticketResponse.status, 200);
+      assert.isFalse(connected);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

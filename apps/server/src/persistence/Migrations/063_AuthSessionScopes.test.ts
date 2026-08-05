@@ -40,4 +40,22 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))("063_AuthSessionScopes"
       assert.deepStrictEqual(rows, [{ sessionId: "legacy-session", scopes: null }]);
     }),
   );
+
+  it.effect("recreates auth sessions when an earlier create was skipped", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 62 });
+      yield* sql`DROP TABLE auth_sessions`;
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 63`;
+      yield* runMigrations({ toMigrationInclusive: 63 });
+
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_info(auth_sessions)
+      `;
+      assert.isTrue(columns.some((column) => column.name === "role"));
+      assert.isTrue(columns.some((column) => column.name === "client_device_type"));
+      assert.isTrue(columns.some((column) => column.name === "scopes"));
+    }),
+  );
 });

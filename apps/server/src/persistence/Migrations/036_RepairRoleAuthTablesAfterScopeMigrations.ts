@@ -4,6 +4,32 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 const hasColumn = (columns: ReadonlyArray<{ readonly name: string }>, name: string) =>
   columns.some((column) => column.name === name);
 
+export const ensureRoleAuthSessionsTable = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      session_id TEXT PRIMARY KEY,
+      subject TEXT NOT NULL,
+      role TEXT NOT NULL,
+      method TEXT NOT NULL,
+      client_label TEXT,
+      client_ip_address TEXT,
+      client_user_agent TEXT,
+      client_device_type TEXT NOT NULL DEFAULT 'unknown',
+      client_os TEXT,
+      client_browser TEXT,
+      issued_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      last_connected_at TEXT,
+      revoked_at TEXT
+    )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_active
+    ON auth_sessions(revoked_at, expires_at, issued_at)
+  `;
+});
+
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -49,26 +75,5 @@ export default Effect.gen(function* () {
     ON auth_pairing_links(revoked_at, consumed_at, expires_at)
   `;
 
-  yield* sql`
-    CREATE TABLE auth_sessions (
-      session_id TEXT PRIMARY KEY,
-      subject TEXT NOT NULL,
-      role TEXT NOT NULL,
-      method TEXT NOT NULL,
-      client_label TEXT,
-      client_ip_address TEXT,
-      client_user_agent TEXT,
-      client_device_type TEXT NOT NULL DEFAULT 'unknown',
-      client_os TEXT,
-      client_browser TEXT,
-      issued_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      last_connected_at TEXT,
-      revoked_at TEXT
-    )
-  `;
-  yield* sql`
-    CREATE INDEX idx_auth_sessions_active
-    ON auth_sessions(revoked_at, expires_at, issued_at)
-  `;
+  yield* ensureRoleAuthSessionsTable;
 });
