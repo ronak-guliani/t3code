@@ -144,6 +144,13 @@ function SidebarProvider({
         _setOpen(openState);
       }
 
+      // Only uncontrolled providers own the shared open-state key. Controlled
+      // nested providers (e.g. the inline diff panel) must not overwrite the
+      // primary app sidebar's persisted expanded/collapsed preference.
+      if (openProp !== undefined) {
+        return;
+      }
+
       // Persist across reloads. localStorage is the source of truth; cookie stays
       // for compatibility with the original shadcn sidebar cookie contract.
       try {
@@ -161,7 +168,7 @@ function SidebarProvider({
         });
       }
     },
-    [setOpenProp, open],
+    [setOpenProp, open, openProp],
   );
 
   // Helper to toggle the sidebar.

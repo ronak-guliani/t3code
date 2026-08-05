@@ -1,3 +1,4 @@
+import * as React from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { render } from "vitest-browser-react";
 import { page } from "vitest/browser";
@@ -77,6 +78,36 @@ describe("sidebar open-state persistence", () => {
       await expect.element(expand).toHaveAttribute("aria-expanded", "false");
 
       expect(getLocalStorageItem(SIDEBAR_OPEN_STORAGE_KEY, Schema.Boolean)).toBe(false);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("does not persist open state for controlled providers", async () => {
+    setLocalStorageItem(SIDEBAR_OPEN_STORAGE_KEY, true, Schema.Boolean);
+    await page.viewport(1280, 800);
+
+    function ControlledSidebar() {
+      const [open, setOpen] = React.useState(true);
+      return (
+        <SidebarProvider open={open} onOpenChange={setOpen}>
+          <SidebarTrigger />
+        </SidebarProvider>
+      );
+    }
+
+    const screen = await render(<ControlledSidebar />);
+    try {
+      const collapse = page.getByRole("button", { name: "Collapse sidebar" });
+      await expect.element(collapse).toBeInTheDocument();
+      await collapse.click();
+
+      const expand = page.getByRole("button", { name: "Expand sidebar" });
+      await expect.element(expand).toBeInTheDocument();
+      await expect.element(expand).toHaveAttribute("aria-expanded", "false");
+
+      // Nested controlled sidebars (diff panel) must not clobber app sidebar state.
+      expect(getLocalStorageItem(SIDEBAR_OPEN_STORAGE_KEY, Schema.Boolean)).toBe(true);
     } finally {
       await screen.unmount();
     }
