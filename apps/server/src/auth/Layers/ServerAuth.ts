@@ -139,7 +139,7 @@ export const makeServerAuth = Effect.gen(function* () {
       bootstrapCredentials.consume(credential).pipe(
         Effect.mapError(toBootstrapExchangeAuthError),
         Effect.flatMap((grant) => {
-          const allowedScopes = defaultSessionScopes(grant.role);
+          const allowedScopes = grant.scopes;
           const scopes = requestedScopes ?? allowedScopes;
           if (scopes.length === 0 || scopes.some((scope) => !allowedScopes.includes(scope))) {
             return Effect.fail(
@@ -271,30 +271,42 @@ export const makeServerAuth = Effect.gen(function* () {
       );
 
   const issuePairingCredential: ServerAuthShape["issuePairingCredential"] = (input) =>
-    authControlPlane
-      .createPairingLink({
-        role: input?.role ?? "client",
-        subject: input?.role === "owner" ? "owner-bootstrap" : "one-time-token",
+    Effect.gen(function* () {
+      const role = input?.role ?? "client";
+      const allowedScopes = defaultSessionScopes(role);
+      const scopes = input?.scopes ?? allowedScopes;
+      if (scopes.length === 0 || scopes.some((scope) => !allowedScopes.includes(scope))) {
+        return yield* new AuthError({
+          message: "Requested pairing scopes are not granted for this role.",
+          status: 400,
+          environmentReason: "scope_not_granted",
+        });
+      }
+      return yield* authControlPlane.createPairingLink({
+        role,
+        scopes,
+        subject: role === "owner" ? "owner-bootstrap" : "one-time-token",
         ...(input?.label ? { label: input.label } : {}),
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new AuthError({
+      });
+    }).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof AuthError
+          ? cause
+          : new AuthError({
               message: "Failed to issue pairing credential.",
               cause,
             }),
-        ),
-        Effect.map(
-          (issued) =>
-            ({
-              id: issued.id,
-              credential: issued.credential,
-              ...(issued.label ? { label: issued.label } : {}),
-              expiresAt: issued.expiresAt,
-            }) satisfies AuthPairingCredentialResult,
-        ),
-      );
+      ),
+      Effect.map(
+        (issued) =>
+          ({
+            id: issued.id,
+            credential: issued.credential,
+            ...(issued.label ? { label: issued.label } : {}),
+            expiresAt: issued.expiresAt,
+          }) satisfies AuthPairingCredentialResult,
+      ),
+    );
 
   const listPairingLinks: ServerAuthShape["listPairingLinks"] = () =>
     authControlPlane

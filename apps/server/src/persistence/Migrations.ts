@@ -65,6 +65,7 @@ import Migration0060 from "./Migrations/060_ProjectionThreadActivityChronologyIn
 import Migration0061 from "./Migrations/061_ProjectionThreadsSettledSnoozed.ts";
 import Migration0062 from "./Migrations/062_WorktreeCleanupJobs.ts";
 import Migration0063 from "./Migrations/063_AuthSessionScopes.ts";
+import Migration0064 from "./Migrations/064_AuthPairingLinkScopes.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -129,6 +130,7 @@ export const migrationEntries = [
   [61, "ProjectionThreadsSettledSnoozed", Migration0061],
   [62, "WorktreeCleanupJobs", Migration0062],
   [63, "AuthSessionScopes", Migration0063],
+  [64, "AuthPairingLinkScopes", Migration0064],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

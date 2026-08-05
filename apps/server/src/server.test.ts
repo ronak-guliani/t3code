@@ -1143,11 +1143,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(body.authenticated, false);
       assert.equal(body.auth.policy, "desktop-managed-local");
       assert.deepEqual(body.auth.bootstrapMethods, ["desktop-bootstrap"]);
-      assert.deepEqual(body.auth.sessionMethods, [
-        "browser-session-cookie",
-        "bearer-session-token",
-        "bearer-access-token",
-      ]);
+      assert.deepEqual(body.auth.sessionMethods, ["browser-session-cookie", "bearer-access-token"]);
       assert.isTrue(body.auth.sessionCookieName.startsWith("t3_session_"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -3220,6 +3216,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isAtLeast(response.entries.length, 1);
       assert.isTrue(response.entries.some((entry) => entry.path === "needle-file.ts"));
       assert.equal(response.truncated, false);
+
+      const directResponse = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsSearchEntries]({
+            cwd: workspaceDir,
+            query: "",
+            limit: 10,
+            kind: "file",
+          }),
+        ),
+      );
+      assert.isTrue(directResponse.entries.some((entry) => entry.path === "needle-file.ts"));
+      assert.isTrue(directResponse.entries.every((entry) => entry.kind === "file"));
+
+      const readResponse = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsReadFile]({
+            cwd: workspaceDir,
+            relativePath: "needle-file.ts",
+          }),
+        ),
+      );
+      assert.equal(readResponse.contents, "export const needle = 1;");
+      assert.equal(readResponse.byteLength, 24);
+      assert.equal(readResponse.truncated, false);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -4562,6 +4583,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getSnapshot: () => Effect.succeed(snapshot),
+            getThreadDetailById: () => Effect.succeed(Option.some(snapshot.threads[0]!)),
+            searchTranscript: () =>
+              Effect.succeed({
+                matches: [
+                  {
+                    threadId: ThreadId.make("thread-1"),
+                    title: "Thread A",
+                    projectTitle: "Project A",
+                    branch: null,
+                    role: "user",
+                    excerpt: "official search result",
+                    updatedAt: now,
+                  },
+                ],
+              }),
           },
           orchestrationEngine: {
             dispatch: () => Effect.succeed({ sequence: 7 }),
@@ -4629,6 +4665,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.deepEqual(replayResult, []);
+
+      const searchResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.searchThreads]({
+            query: "official",
+            limit: 10,
+          }),
+        ),
+      );
+      assert.deepStrictEqual(searchResult.matches, [
+        {
+          threadId: ThreadId.make("thread-1"),
+          projectId: ProjectId.make("project-a"),
+          source: "user",
+          snippet: "official search result",
+          messageCreatedAt: now,
+        },
+      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

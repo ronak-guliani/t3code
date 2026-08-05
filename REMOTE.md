@@ -17,6 +17,10 @@ OAuth sessions persist their granted scopes and enforce them for HTTP and RPC
 operations. Legacy sessions retain their role-derived scopes so existing paired
 clients continue to work.
 
+The official `orchestration.searchThreads` RPC and direct workspace payloads
+for `projects.searchEntries` and `projects.readFile` are supported alongside
+the fork's existing transcript-search and thread/project-scoped payloads.
+
 Use this when you want to connect to a T3 Code server from another device such as a phone, tablet, or separate desktop app.
 
 ## Recommended Setup
