@@ -150,6 +150,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       yield* setThread(item.snapshot.thread);
       return;
     }
+    if (item.kind === "synchronized") {
+      return;
+    }
 
     const sequence = yield* SubscriptionRef.get(lastSequence);
     if (item.event.sequence <= sequence) {

@@ -124,6 +124,15 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   const applyItem = Effect.fn("EnvironmentShellState.applyItem")(function* (
     item: OrchestrationShellStreamItem,
   ) {
+    if (item.kind === "synchronized") {
+      yield* SubscriptionRef.update(state, (current) => ({
+        ...current,
+        status: Option.isSome(current.snapshot) ? ("live" as const) : current.status,
+        error: Option.none(),
+      }));
+      return;
+    }
+
     const current = yield* SubscriptionRef.get(state);
     const nextSnapshot =
       item.kind === "snapshot"
