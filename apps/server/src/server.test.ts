@@ -1115,6 +1115,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(body.auth.sessionMethods, [
         "browser-session-cookie",
         "bearer-session-token",
+        "bearer-access-token",
       ]);
       assert.isTrue(body.auth.sessionCookieName.startsWith("t3_session_"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

@@ -3,7 +3,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { OpenError, OpenInEditorInput, RevealInFileManagerInput } from "./editor.ts";
-import { AuthAccessStreamEvent } from "./auth.ts";
+import { AuthAccessStreamEvent, EnvironmentRpcAuthorization } from "./auth.ts";
 import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
@@ -1003,4 +1003,4 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
-);
+).middleware(EnvironmentRpcAuthorization);

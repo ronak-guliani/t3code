@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
+import * as RpcMiddleware from "effect/unstable/rpc/RpcMiddleware";
 
 import { AuthSessionId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
@@ -252,6 +253,21 @@ export const AuthClientPresentationMetadata = Schema.Struct({
   os: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type AuthClientPresentationMetadata = typeof AuthClientPresentationMetadata.Type;
+
+export class EnvironmentAuthorizationError extends Schema.TaggedErrorClass<EnvironmentAuthorizationError>()(
+  "EnvironmentAuthorizationError",
+  {
+    message: Schema.String,
+    requiredScope: AuthEnvironmentScope,
+  },
+) {}
+
+export class EnvironmentRpcAuthorization extends RpcMiddleware.Service<EnvironmentRpcAuthorization>()(
+  "@t3tools/contracts/EnvironmentRpcAuthorization",
+  {
+    error: EnvironmentAuthorizationError,
+  },
+) {}
 
 export const AuthClientSession = Schema.Struct({
   sessionId: AuthSessionId,

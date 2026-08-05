@@ -1,19 +1,22 @@
 import {
-  AuthAdministrativeScopes,
+  type AuthAccessTokenResult,
+  AuthTokenExchangeRequest,
   type AuthBearerBootstrapResult,
   AuthBootstrapInput,
   AuthCreatePairingCredentialInput,
   type AuthEnvironmentScope,
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
-  AuthStandardClientScopes,
-  EnvironmentAuthenticatedAuth,
-  EnvironmentAuthenticatedPrincipal,
   EnvironmentAuthInvalidError,
   EnvironmentInternalError,
+  EnvironmentRequestInvalidError,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentAuthenticatedPrincipal,
   EnvironmentScopeRequiredError,
   type AuthWebSocketTokenResult,
+  type AuthWebSocketTicketResult,
 } from "@t3tools/contracts";
+import { parseAllowedOAuthScope } from "@t3tools/shared/oauthScope";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
@@ -21,17 +24,16 @@ import { AuthError, ServerAuth } from "./Services/ServerAuth.ts";
 import { SessionCredentialService } from "./Services/SessionCredentialService.ts";
 import { deriveAuthClientMetadata } from "./utils.ts";
 import { browserApiCorsHeaders } from "../httpCors.ts";
+import { ALL_AUTH_ENVIRONMENT_SCOPES, sessionScopeSet } from "./scopes.ts";
 
 const makeTraceId = () => crypto.randomUUID().replaceAll("-", "");
-
-const sessionScopes = (role: string): ReadonlySet<AuthEnvironmentScope> =>
-  new Set(role === "owner" ? AuthAdministrativeScopes : AuthStandardClientScopes);
 
 export const requireSessionScope = (
   role: string,
   requiredScope: AuthEnvironmentScope,
+  scopes?: ReadonlyArray<AuthEnvironmentScope>,
 ): Effect.Effect<void, AuthError> =>
-  sessionScopes(role).has(requiredScope)
+  sessionScopeSet(role === "owner" ? "owner" : "client", scopes).has(requiredScope)
     ? Effect.void
     : Effect.fail(
         new AuthError({
@@ -67,7 +69,7 @@ export const environmentAuthenticatedAuthLayer = Layer.effect(
           sessionId: session.sessionId,
           subject: session.subject,
           method: session.method,
-          scopes: sessionScopes(session.role),
+          scopes: new Set(session.scopes),
           ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
         });
         return yield* handler.pipe(
@@ -189,6 +191,7 @@ export const authBearerBootstrapRouteLayer = HttpRouter.add(
           }),
       ),
     );
+
     const result = yield* serverAuth.exchangeBootstrapCredentialForBearerSession(
       payload.credential,
       deriveAuthClientMetadata({ request }),
@@ -198,6 +201,106 @@ export const authBearerBootstrapRouteLayer = HttpRouter.add(
       headers: browserApiCorsHeaders,
     });
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),
+);
+
+const credentialResponseHeaders = {
+  ...browserApiCorsHeaders,
+  "cache-control": "no-store",
+  pragma: "no-cache",
+};
+
+const respondToEnvironmentAuthError = (error: AuthError) =>
+  Effect.succeed(
+    error.status === 400
+      ? HttpServerResponse.jsonUnsafe(
+          new EnvironmentRequestInvalidError({
+            code: "invalid_request",
+            reason: error.environmentReason ?? "invalid_scope",
+            traceId: makeTraceId(),
+          }),
+          { status: 400, headers: credentialResponseHeaders },
+        )
+      : error.status === 401
+        ? HttpServerResponse.jsonUnsafe(
+            new EnvironmentAuthInvalidError({
+              code: "auth_invalid",
+              reason: "invalid_credential",
+              traceId: makeTraceId(),
+            }),
+            { status: 401, headers: credentialResponseHeaders },
+          )
+        : HttpServerResponse.jsonUnsafe(
+            new EnvironmentInternalError({
+              code: "internal_error",
+              reason: "internal_error",
+              traceId: makeTraceId(),
+            }),
+            { status: 500, headers: credentialResponseHeaders },
+          ),
+  );
+
+export const authAccessTokenRouteLayer = HttpRouter.add(
+  "POST",
+  "/oauth/token",
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const serverAuth = yield* ServerAuth;
+    const payload = yield* HttpServerRequest.schemaBodyUrlParams(AuthTokenExchangeRequest).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AuthError({
+            message: "Invalid OAuth token exchange payload.",
+            status: 400,
+            cause,
+          }),
+      ),
+    );
+    const requestedScopes =
+      payload.scope === undefined
+        ? undefined
+        : parseAllowedOAuthScope({
+            value: payload.scope,
+            allowedScopes: ALL_AUTH_ENVIRONMENT_SCOPES,
+          });
+    if (requestedScopes === null) {
+      return yield* new AuthError({
+        message: "Invalid OAuth scope.",
+        status: 400,
+        environmentReason: "invalid_scope",
+      });
+    }
+    const result = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+      payload.subject_token,
+      requestedScopes,
+      deriveAuthClientMetadata({
+        request,
+        presented: {
+          ...(payload.client_label ? { label: payload.client_label } : {}),
+          ...(payload.client_device_type ? { deviceType: payload.client_device_type } : {}),
+          ...(payload.client_os ? { os: payload.client_os } : {}),
+        },
+      }),
+    );
+    return HttpServerResponse.jsonUnsafe(result satisfies AuthAccessTokenResult, {
+      status: 200,
+      headers: credentialResponseHeaders,
+    });
+  }).pipe(Effect.catchTag("AuthError", respondToEnvironmentAuthError)),
+);
+
+export const authWebSocketTicketRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/auth/websocket-ticket",
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const serverAuth = yield* ServerAuth;
+    const session = yield* serverAuth.authenticateHttpRequest(request);
+    const result = yield* serverAuth.issueWebSocketTicket(session);
+    return HttpServerResponse.jsonUnsafe(result satisfies AuthWebSocketTicketResult, {
+      status: 200,
+      headers: credentialResponseHeaders,
+    });
+  }).pipe(Effect.catchTag("AuthError", respondToEnvironmentAuthError)),
 );
 
 export const authWebSocketTokenRouteLayer = HttpRouter.add(

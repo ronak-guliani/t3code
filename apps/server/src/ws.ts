@@ -144,7 +144,8 @@ import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePat
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
-import { ServerAuth } from "./auth/Services/ServerAuth.ts";
+import { ServerAuth, type AuthenticatedSession } from "./auth/Services/ServerAuth.ts";
+import { rpcAuthorizationLayer } from "./auth/RpcAuthorization.ts";
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
@@ -225,9 +226,10 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
+const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
+      const currentSessionId = currentSession.sessionId;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -2224,7 +2226,11 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           },
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session.sessionId).pipe(Layer.provideMerge(RpcSerialization.layerJson)),
+            Layer.mergeAll(
+              makeWsRpcLayer(session),
+              RpcSerialization.layerJson,
+              rpcAuthorizationLayer(new Set(session.scopes)),
+            ),
           ),
         );
         const waitUntilSessionInactive = sessions
