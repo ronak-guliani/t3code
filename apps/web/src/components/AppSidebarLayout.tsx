@@ -24,7 +24,7 @@ function SidebarKeyboardShortcuts() {
 
   useEffect(() => {
     const onWindowKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
+      if (event.defaultPrevented || event.repeat) return;
       if (useCommandPaletteStore.getState().open) return;
 
       const command = resolveShortcutCommand(event, keybindings, {
