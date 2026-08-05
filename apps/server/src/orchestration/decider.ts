@@ -466,9 +466,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: sourceThread.interactionMode,
           branch: sourceThread.branch,
           worktreePath: sourceThread.worktreePath,
-          ...(sourceThread.pullRequest !== undefined
-            ? { pullRequest: sourceThread.pullRequest }
-            : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },

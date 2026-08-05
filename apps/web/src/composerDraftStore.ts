@@ -182,6 +182,32 @@ const PersistedDraftPullRequest = Schema.Struct({
   headBranch: Schema.String,
   state: Schema.Literals(["open", "closed", "merged"]),
 });
+const isPersistedDraftPullRequest = Schema.is(PersistedDraftPullRequest);
+
+type DraftPullRequestValue = {
+  number: number;
+  title: string;
+  url: string;
+  baseBranch: string;
+  headBranch: string;
+  state: "open" | "closed" | "merged";
+} | null;
+
+function draftPullRequestsEqual(
+  left: DraftPullRequestValue | undefined,
+  right: DraftPullRequestValue | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return left == null && right == null;
+  return (
+    left.number === right.number &&
+    left.title === right.title &&
+    left.url === right.url &&
+    left.baseBranch === right.baseBranch &&
+    left.headBranch === right.headBranch &&
+    left.state === right.state
+  );
+}
 
 const PersistedDraftThreadState = Schema.Struct({
   threadId: ThreadId,
@@ -1305,9 +1331,7 @@ function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThrea
     left.interactionMode === right.interactionMode &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
-    left.pullRequest?.number === right.pullRequest?.number &&
-    left.pullRequest?.url === right.pullRequest?.url &&
-    left.pullRequest?.state === right.pullRequest?.state &&
+    draftPullRequestsEqual(left.pullRequest, right.pullRequest) &&
     left.envMode === right.envMode &&
     scopedThreadRefsEqual(left.promotedTo, right.promotedTo)
   );
@@ -1449,7 +1473,12 @@ function normalizePersistedDraftThreads(
             : DEFAULT_INTERACTION_MODE,
         branch: typeof branch === "string" ? branch : null,
         worktreePath: normalizedWorktreePath,
-        pullRequest: null,
+        pullRequest:
+          candidateDraftThread.pullRequest === null
+            ? null
+            : isPersistedDraftPullRequest(candidateDraftThread.pullRequest)
+              ? candidateDraftThread.pullRequest
+              : null,
         envMode: normalizeDraftThreadEnvMode(candidateDraftThread.envMode, normalizedWorktreePath),
         promotedTo,
       };

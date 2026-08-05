@@ -316,7 +316,7 @@ export default function GitActionsControl({
   );
 
   const persistThreadPullRequestAssociation = useCallback(
-    (result: GitRunStackedActionResult) => {
+    async (result: GitRunStackedActionResult) => {
       if (result.pr.status !== "created" && result.pr.status !== "opened_existing") {
         return;
       }
@@ -353,15 +353,20 @@ export default function GitActionsControl({
 
       if (activeServerThread) {
         const api = readEnvironmentApi(activeThreadRef.environmentId);
-        if (api) {
-          void api.orchestration
-            .dispatchCommand({
-              type: "thread.meta.update",
-              commandId: newCommandId(),
-              threadId: activeThreadRef.threadId,
-              pullRequest,
-            })
-            .catch(() => undefined);
+        if (!api) {
+          return;
+        }
+        try {
+          await api.orchestration.dispatchCommand({
+            type: "thread.meta.update",
+            commandId: newCommandId(),
+            threadId: activeThreadRef.threadId,
+            pullRequest,
+          });
+        } catch {
+          // Keep local association unset when durable write fails so reload
+          // cannot disagree with optimistic UI.
+          return;
         }
         setThreadBranch(
           activeThreadRef,
@@ -391,12 +396,12 @@ export default function GitActionsControl({
   );
 
   const syncThreadBranchAfterGitAction = useCallback(
-    (result: GitRunStackedActionResult) => {
+    async (result: GitRunStackedActionResult) => {
       const branchUpdate = resolveThreadBranchUpdate(result);
       if (branchUpdate) {
         persistThreadBranchSync(branchUpdate.branch);
       }
-      persistThreadPullRequestAssociation(result);
+      await persistThreadPullRequestAssociation(result);
     },
     [persistThreadBranchSync, persistThreadPullRequestAssociation],
   );
@@ -722,7 +727,7 @@ export default function GitActionsControl({
     try {
       const result = await promise;
       activeGitActionProgressRef.current = null;
-      syncThreadBranchAfterGitAction(result);
+      await syncThreadBranchAfterGitAction(result);
       const closeResultToast = () => {
         toastManager.close(resolvedProgressToastId);
       };

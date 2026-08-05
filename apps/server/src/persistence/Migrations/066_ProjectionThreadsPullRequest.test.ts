@@ -5,16 +5,34 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
-it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
-  "066_ProjectionThreadsPullRequest",
-  (it) => {
-    it.effect("adds pull_request_json defaulting legacy rows to null without backfill", () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
+const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const divergentLedgerLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
-        yield* runMigrations({ toMigrationInclusive: 65 });
+const hasPullRequestColumn = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_threads)`;
+  return columns.some((column) => column.name === "pull_request_json");
+});
 
-        yield* sql`
+const tableExists = Effect.fn("tableExists")(function* (table: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ readonly count: number }>`
+    SELECT count(*) AS count
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = ${table}
+  `;
+  return (rows[0]?.count ?? 0) > 0;
+});
+
+layer("066_ProjectionThreadsPullRequest", (it) => {
+  it.effect("adds pull_request_json defaulting legacy rows to null without backfill", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 65 });
+
+      yield* sql`
         INSERT INTO projection_threads (
           thread_id,
           project_id,
@@ -54,20 +72,45 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
         )
       `;
 
-        yield* runMigrations({ toMigrationInclusive: 66 });
+      yield* runMigrations({ toMigrationInclusive: 66 });
 
-        const columns = yield* sql<{ readonly name: string }>`
-        PRAGMA table_info(projection_threads)
-      `;
-        assert.isTrue(columns.some((column) => column.name === "pull_request_json"));
+      assert.isTrue(yield* hasPullRequestColumn);
 
-        const rows = yield* sql<{ readonly pullRequestJson: string }>`
+      const rows = yield* sql<{ readonly pullRequestJson: string }>`
         SELECT pull_request_json AS "pullRequestJson"
         FROM projection_threads
         WHERE thread_id = 'thread-legacy'
       `;
-        assert.deepStrictEqual(rows, [{ pullRequestJson: "null" }]);
-      }),
-    );
-  },
-);
+      assert.deepStrictEqual(rows, [{ pullRequestJson: "null" }]);
+    }),
+  );
+
+  it.effect("is safe to replay when the column already exists", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({ toMigrationInclusive: 66 });
+      const migration = yield* Effect.promise(
+        () => import("./066_ProjectionThreadsPullRequest.ts"),
+      );
+      yield* migration.default;
+      assert.isTrue(yield* hasPullRequestColumn);
+    }),
+  );
+});
+
+divergentLedgerLayer("066_ProjectionThreadsPullRequest divergent ledger", (it) => {
+  it.effect("recreates projection_threads when a divergent ledger skipped migration 005", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      // Advance past 005 so the ledger claims projection core exists.
+      yield* runMigrations({ toMigrationInclusive: 65 });
+      yield* sql`DROP TABLE IF EXISTS projection_threads`;
+      assert.isFalse(yield* tableExists("projection_threads"));
+
+      yield* runMigrations({ toMigrationInclusive: 66 });
+
+      assert.isTrue(yield* tableExists("projection_threads"));
+      assert.isTrue(yield* hasPullRequestColumn);
+    }),
+  );
+});
