@@ -5,12 +5,12 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
-it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))("063_AuthSessionScopes", (it) => {
+it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))("064_AuthSessionScopes", (it) => {
   it.effect("adds nullable scopes without invalidating legacy sessions", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 62 });
+      yield* runMigrations({ toMigrationInclusive: 63 });
       yield* sql`
         INSERT INTO auth_sessions (
           session_id,
@@ -31,7 +31,7 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))("063_AuthSessionScopes"
         )
       `;
 
-      yield* runMigrations({ toMigrationInclusive: 63 });
+      yield* runMigrations({ toMigrationInclusive: 64 });
 
       const rows = yield* sql<{ readonly sessionId: string; readonly scopes: string | null }>`
         SELECT session_id AS "sessionId", scopes
@@ -45,10 +45,10 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))("063_AuthSessionScopes"
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      yield* runMigrations({ toMigrationInclusive: 62 });
-      yield* sql`DROP TABLE auth_sessions`;
-      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 63`;
       yield* runMigrations({ toMigrationInclusive: 63 });
+      yield* sql`DROP TABLE auth_sessions`;
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 64`;
+      yield* runMigrations({ toMigrationInclusive: 64 });
 
       const columns = yield* sql<{ readonly name: string }>`
         PRAGMA table_info(auth_sessions)
