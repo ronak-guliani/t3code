@@ -204,6 +204,7 @@ export const makeServerAuth = Effect.gen(function* () {
             method: "browser-session-cookie",
             subject: grant.subject,
             role: grant.role,
+            scopes: grant.scopes,
             client: {
               ...requestMetadata,
               ...(grant.label ? { label: grant.label } : {}),
@@ -243,6 +244,7 @@ export const makeServerAuth = Effect.gen(function* () {
               method: "bearer-session-token",
               subject: grant.subject,
               role: grant.role,
+              scopes: grant.scopes,
               client: {
                 ...requestMetadata,
                 ...(grant.label ? { label: grant.label } : {}),

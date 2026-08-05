@@ -165,6 +165,36 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
     }).pipe(Effect.provide(makeServerAuthLayer())),
   );
 
+  it.effect("preserves restricted scopes through legacy pairing exchanges", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const browserCredential = yield* serverAuth.issuePairingCredential({
+        scopes: [AuthOrchestrationReadScope],
+      });
+      const browserExchange = yield* serverAuth.exchangeBootstrapCredential(
+        browserCredential.credential,
+        requestMetadata,
+      );
+      const browserSession = yield* serverAuth.authenticateHttpRequest(
+        makeCookieRequest(browserExchange.sessionToken),
+      );
+
+      const bearerCredential = yield* serverAuth.issuePairingCredential({
+        scopes: [AuthOrchestrationReadScope],
+      });
+      const bearerExchange = yield* serverAuth.exchangeBootstrapCredentialForBearerSession(
+        bearerCredential.credential,
+        requestMetadata,
+      );
+      const bearerSession = yield* serverAuth.authenticateHttpRequest(
+        makeCookieRequest(bearerExchange.sessionToken),
+      );
+
+      expect(browserSession.scopes).toEqual([AuthOrchestrationReadScope]);
+      expect(bearerSession.scopes).toEqual([AuthOrchestrationReadScope]);
+    }).pipe(Effect.provide(makeServerAuthLayer())),
+  );
+
   it.effect("issues startup pairing URLs that bootstrap owner sessions", () =>
     Effect.gen(function* () {
       const serverAuth = yield* ServerAuth;
