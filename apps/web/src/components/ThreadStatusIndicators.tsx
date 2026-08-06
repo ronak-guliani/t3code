@@ -17,22 +17,17 @@ import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic"
 import type { SidebarThreadSummary } from "../types";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-/** Static glyph nodes — avoid re-allocating Lucide elements on every row render. */
+/** Static glyph nodes — avoid re-allocating Lucide elements on every row render.
+ *  Circle matches text cap-height; play is optically nudged right inside the disc. */
 const WORKING_BADGE_ICON = (
-  <span
-    aria-hidden="true"
-    className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-white dark:bg-sky-400"
-  >
-    <PlayIcon className="size-2 fill-current" />
+  <span className="inline-flex size-3 shrink-0 items-center justify-center rounded-full bg-sky-500 text-white dark:bg-sky-400">
+    <PlayIcon className="size-[0.45rem] translate-x-px fill-current" strokeWidth={0} />
   </span>
 );
 
 const DONE_BADGE_ICON = (
-  <span
-    aria-hidden="true"
-    className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white dark:bg-emerald-400"
-  >
-    <CheckIcon className="size-2.5 stroke-[3]" />
+  <span className="inline-flex size-3 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white dark:bg-emerald-400">
+    <CheckIcon className="size-2 stroke-[2.75]" />
   </span>
 );
 
@@ -51,7 +46,7 @@ const WorkingDuration = memo(function WorkingDuration({
   }, [startedMs]);
   if (Number.isNaN(startedMs)) return null;
   return (
-    <span className="font-mono tabular-nums">
+    <span className="tabular-nums tracking-tight">
       {formatWorkingDurationLabel(Date.now() - startedMs)}
     </span>
   );
@@ -179,13 +174,18 @@ export function ThreadStatusLabel({
  * Top-right Working/Done badge for sidebar v1 rows. Opacity-only CSS pulse on
  * Working (3s); Done stays static. Duration ticks in an isolated child so the
  * parent row does not re-render every second.
+ *
+ * Layout: [icon][label][duration] with tight icon→label gap and a slightly
+ * wider label→duration gap so the elapsed value reads as a separate token.
  */
 export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
   status,
   thread,
+  className,
 }: {
   readonly status: ThreadStatusPill;
   readonly thread: Pick<SidebarThreadSummary, "latestTurn" | "session" | "createdAt">;
+  readonly className?: string;
 }) {
   if (status.presentation !== "corner-badge") {
     return null;
@@ -193,6 +193,9 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
 
   const isWorking = status.label === "Working";
   const label = isWorking ? "Working" : "Done";
+  const toneClass = isWorking
+    ? "text-sky-500 dark:text-sky-400"
+    : "text-emerald-500 dark:text-emerald-400";
 
   return (
     <span
@@ -203,17 +206,20 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
       // Paint-contain the animated node so native vibrancy rows don't ghost
       // neighboring pixels when opacity pulses (see scars.md).
       className={cn(
-        "pointer-events-none absolute top-1 right-1 z-[1] inline-flex items-center gap-1 font-medium",
+        "pointer-events-none inline-flex shrink-0 items-center leading-none",
         "[contain:paint] [transform:translateZ(0)]",
-        status.colorClass,
+        toneClass,
         isWorking && "animate-status-badge-pulse motion-reduce:animate-none",
+        className,
       )}
       style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
     >
-      <span aria-hidden="true" className="inline-flex items-center gap-1">
+      <span aria-hidden="true" className="inline-flex items-center gap-1.5">
         {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
-        <span>{label}</span>
-        {isWorking ? <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} /> : null}
+        <span className="inline-flex items-baseline gap-1 font-medium tracking-tight">
+          <span>{label}</span>
+          {isWorking ? <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} /> : null}
+        </span>
       </span>
     </span>
   );
