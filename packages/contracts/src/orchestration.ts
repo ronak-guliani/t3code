@@ -14,10 +14,12 @@ import {
   QueuedTurnId,
   ThreadId,
   TrimmedNonEmptyString,
+  TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ReviewResult, ReviewSnapshot } from "./review.ts";
+import { GitResolvedPullRequest } from "./git.ts";
 import {
   WorkflowArtifact,
   WorkflowDefinition,
@@ -39,6 +41,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
+  searchThreads: "orchestration.searchThreads",
   searchTranscript: "orchestration.searchTranscript",
 } as const;
 
@@ -419,6 +422,11 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * Durable PR association for this thread. Never inferred from checkout/branch
+   * equality — only set by explicit PR checkout/create/open flows.
+   */
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitResolvedPullRequest)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -492,6 +500,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitResolvedPullRequest)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -579,6 +588,7 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitResolvedPullRequest)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
 });
@@ -643,6 +653,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  pullRequest: Schema.optional(Schema.NullOr(GitResolvedPullRequest)),
 });
 
 const ThreadWorkspaceHandoffCommand = Schema.Struct({
@@ -697,6 +708,7 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitResolvedPullRequest)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
 });
@@ -1162,6 +1174,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitResolvedPullRequest)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -1225,6 +1238,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  pullRequest: Schema.optional(Schema.NullOr(GitResolvedPullRequest)),
   updatedAt: IsoDateTime,
 });
 
@@ -1919,6 +1933,26 @@ export const OrchestrationSearchTranscriptResult = Schema.Struct({
 });
 export type OrchestrationSearchTranscriptResult = typeof OrchestrationSearchTranscriptResult.Type;
 
+export const OrchestrationSearchThreadsInput = Schema.Struct({
+  query: TrimmedString.check(Schema.isMinLength(2), Schema.isMaxLength(200)),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+});
+export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
+
+export const OrchestrationThreadSearchMatch = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  source: Schema.Literals(["user", "assistant"]),
+  snippet: Schema.String.check(Schema.isMaxLength(240)),
+  messageCreatedAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
+
+export const OrchestrationSearchThreadsResult = Schema.Struct({
+  matches: Schema.Array(OrchestrationThreadSearchMatch),
+});
+export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
+
 export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
   Struct.assign({
     threadId: ThreadId,
@@ -2022,6 +2056,10 @@ export const OrchestrationRpcSchemas = {
   searchTranscript: {
     input: OrchestrationSearchTranscriptInput,
     output: OrchestrationSearchTranscriptResult,
+  },
+  searchThreads: {
+    input: OrchestrationSearchThreadsInput,
+    output: OrchestrationSearchThreadsResult,
   },
   replayEvents: {
     input: OrchestrationReplayEventsInput,

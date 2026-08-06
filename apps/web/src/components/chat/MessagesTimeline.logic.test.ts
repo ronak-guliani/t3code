@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { MessageId, TurnId } from "@t3tools/contracts";
 import {
+  collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
   computeMessageDurationStart,
   deriveMessagesTimelineRows,
+  EMPTY_REVIEW_OUTPUT_MESSAGE_IDS,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupExpanded,
+  stabilizeReadonlyStringSet,
+  type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
 describe("computeMessageDurationStart", () => {
@@ -785,6 +790,180 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(repeated).toBe(initial);
     expect(repeated.result[0]).toBe(initial.result[0]);
   });
+
+  it("reuses equivalent reasoning rows when nested row arrays are recreated", () => {
+    const userMessage = {
+      id: "user-1" as never,
+      role: "user" as const,
+      text: "Investigate",
+      turnId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      streaming: false,
+    };
+    const assistantMessage = {
+      id: "assistant-1" as never,
+      role: "assistant" as const,
+      text: "Done",
+      turnId: "turn-1" as never,
+      createdAt: "2026-01-01T00:00:20Z",
+      completedAt: "2026-01-01T00:00:21Z",
+      streaming: false,
+    };
+    const workEntry = {
+      id: "work-1",
+      createdAt: "2026-01-01T00:00:05Z",
+      label: "Read files",
+      tone: "tool" as const,
+      isComplete: true,
+    };
+
+    const buildRows = () =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          {
+            id: "entry-user-1",
+            kind: "message",
+            createdAt: userMessage.createdAt,
+            message: userMessage,
+          },
+          {
+            id: "work-entry-1",
+            kind: "work",
+            createdAt: workEntry.createdAt,
+            entry: { ...workEntry },
+          },
+          {
+            id: "entry-assistant-1",
+            kind: "message",
+            createdAt: assistantMessage.createdAt,
+            message: assistantMessage,
+          },
+        ],
+        completionDividerBeforeEntryId: null,
+        isWorking: false,
+        activeTurnId: null,
+        activeTurnStartedAt: null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    const firstRows = buildRows();
+    const secondRows = buildRows();
+    const reasoningA = firstRows.find((row) => row.kind === "reasoning");
+    const reasoningB = secondRows.find((row) => row.kind === "reasoning");
+    expect(reasoningA).toBeDefined();
+    expect(reasoningB).toBeDefined();
+    // Fresh collapse always allocates a new nested array even when content matches.
+    expect(reasoningA?.rows).not.toBe(reasoningB?.rows);
+
+    const initial = computeStableMessagesTimelineRows(firstRows, {
+      byId: new Map(),
+      result: [],
+    });
+    const repeated = computeStableMessagesTimelineRows(secondRows, initial);
+    const stableReasoning = repeated.result.find((row) => row.kind === "reasoning");
+    const initialReasoning = initial.result.find((row) => row.kind === "reasoning");
+
+    expect(repeated).toBe(initial);
+    expect(stableReasoning).toBe(initialReasoning);
+  });
+
+  it("keeps prior reasoning rows stable when a later streaming message changes", () => {
+    const userMessage = {
+      id: "user-1" as never,
+      role: "user" as const,
+      text: "First",
+      turnId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+      streaming: false,
+    };
+    const completedAssistant = {
+      id: "assistant-1" as never,
+      role: "assistant" as const,
+      text: "First answer",
+      turnId: "turn-1" as never,
+      createdAt: "2026-01-01T00:00:10Z",
+      completedAt: "2026-01-01T00:00:11Z",
+      streaming: false,
+    };
+    const secondUser = {
+      id: "user-2" as never,
+      role: "user" as const,
+      text: "Continue",
+      turnId: null,
+      createdAt: "2026-01-01T00:00:20Z",
+      streaming: false,
+    };
+    const streamingAssistant = {
+      id: "assistant-2" as never,
+      role: "assistant" as const,
+      text: "Streaming",
+      turnId: "turn-2" as never,
+      createdAt: "2026-01-01T00:00:30Z",
+      streaming: true,
+    };
+    const workEntry = {
+      id: "work-1",
+      createdAt: "2026-01-01T00:00:05Z",
+      label: "Read files",
+      tone: "tool" as const,
+      isComplete: true,
+    };
+
+    const buildRows = (assistantText: string) =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          {
+            id: "entry-user-1",
+            kind: "message",
+            createdAt: userMessage.createdAt,
+            message: userMessage,
+          },
+          {
+            id: "work-entry-1",
+            kind: "work",
+            createdAt: workEntry.createdAt,
+            entry: { ...workEntry },
+          },
+          {
+            id: "entry-assistant-1",
+            kind: "message",
+            createdAt: completedAssistant.createdAt,
+            message: completedAssistant,
+          },
+          {
+            id: "entry-user-2",
+            kind: "message",
+            createdAt: secondUser.createdAt,
+            message: secondUser,
+          },
+          {
+            id: "entry-assistant-2",
+            kind: "message",
+            createdAt: streamingAssistant.createdAt,
+            message: { ...streamingAssistant, text: assistantText },
+          },
+        ],
+        completionDividerBeforeEntryId: null,
+        isWorking: true,
+        activeTurnId: "turn-2" as never,
+        activeTurnStartedAt: streamingAssistant.createdAt,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    const initial = computeStableMessagesTimelineRows(buildRows("Streaming"), {
+      byId: new Map(),
+      result: [],
+    });
+    const next = computeStableMessagesTimelineRows(buildRows("Streaming more"), initial);
+    const initialReasoning = initial.result.find((row) => row.kind === "reasoning");
+    const nextReasoning = next.result.find((row) => row.kind === "reasoning");
+
+    expect(initialReasoning).toBeDefined();
+    expect(nextReasoning).toBe(initialReasoning);
+    expect(next).not.toBe(initial);
+  });
 });
 
 describe("workspace handoff rows", () => {
@@ -1011,5 +1190,82 @@ describe("workspace handoff rows", () => {
     const repeated = computeStableMessagesTimelineRows(deriveHandoffRows(), initial);
 
     expect(findMarker(repeated)).toBe(findMarker(initial));
+  });
+});
+
+describe("collectReviewOutputMessageIds", () => {
+  const assistantRow = (id: string, text: string): MessagesTimelineRow => ({
+    kind: "message",
+    id,
+    createdAt: "2026-01-01T00:00:00Z",
+    message: {
+      id: MessageId.make(id),
+      role: "assistant",
+      text,
+      createdAt: "2026-01-01T00:00:00Z",
+      streaming: false,
+      turnId: TurnId.make("turn-1"),
+    },
+    durationStart: "2026-01-01T00:00:00Z",
+    showCompletionDivider: false,
+    showAssistantCopyButton: true,
+    showAssistantTerminalMetadata: true,
+  });
+
+  it("returns the shared empty set when review results are inactive", () => {
+    const rows = [assistantRow("a1", "ordinary reply")];
+    const first = collectReviewOutputMessageIds(rows, false);
+    const second = collectReviewOutputMessageIds(
+      [assistantRow("a1", "ordinary reply that grew while streaming")],
+      false,
+    );
+
+    expect(first).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+    expect(second).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+    expect(first).toBe(second);
+  });
+
+  it("returns the shared empty set when no review output rows are present", () => {
+    const ids = collectReviewOutputMessageIds([assistantRow("a1", "no findings here")], true);
+    expect(ids).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+  });
+
+  it("collects assistant rows whose body is structured review output", () => {
+    const reviewText = JSON.stringify({
+      findings: [],
+      overall_correctness: "patch is correct",
+      overall_explanation: "No issues.",
+      overall_confidence_score: 0.9,
+    });
+    const ids = collectReviewOutputMessageIds(
+      [assistantRow("review-json", reviewText), assistantRow("follow-up", "Looks good otherwise.")],
+      true,
+    );
+
+    expect(ids).not.toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
+    expect([...ids]).toEqual(["review-json"]);
+  });
+});
+
+describe("stabilizeReadonlyStringSet", () => {
+  it("reuses the previous set when membership is unchanged", () => {
+    const previous = new Set(["a", "b"]);
+    const next = new Set(["b", "a"]);
+
+    expect(stabilizeReadonlyStringSet(next, previous)).toBe(previous);
+  });
+
+  it("returns the next set when membership changes", () => {
+    const previous = new Set(["a"]);
+    const next = new Set(["a", "b"]);
+
+    expect(stabilizeReadonlyStringSet(next, previous)).toBe(next);
+  });
+
+  it("keeps the shared empty set stable across repeated empty collections", () => {
+    const first = stabilizeReadonlyStringSet(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS, undefined);
+    const second = stabilizeReadonlyStringSet(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS, first);
+    expect(second).toBe(first);
+    expect(second).toBe(EMPTY_REVIEW_OUTPUT_MESSAGE_IDS);
   });
 });

@@ -1,16 +1,22 @@
-import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import type { GitStatusResult } from "@t3tools/contracts";
-import { CheckIcon, CloudIcon, GitPullRequestIcon, PlayIcon, TerminalIcon } from "lucide-react";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import type { GitResolvedPullRequest, ThreadId } from "@t3tools/contracts";
+import {
+  AppWindowIcon,
+  CheckIcon,
+  CloudIcon,
+  GitPullRequestIcon,
+  PlayIcon,
+  TerminalIcon,
+} from "lucide-react";
 import { memo, type ReactNode, useEffect, useMemo, useState } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { useGitStatus } from "../lib/gitStatusState";
 import { cn } from "../lib/utils";
-import { type AppState, selectProjectByRef, useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useThreadBrowserOpen } from "../rightPanelStore";
 import { useUiStateStore } from "../uiStateStore";
 import { formatWorkingDurationLabel, resolveWorkingStartedAt } from "./SidebarV2.logic";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
@@ -71,7 +77,20 @@ export interface TerminalStatusIndicator {
   pulse: boolean;
 }
 
-export type ThreadPr = GitStatusResult["pr"];
+export interface BrowserStatusIndicator {
+  label: "Browser open";
+  colorClass: string;
+}
+
+export function browserStatusIndicator(isOpen: boolean): BrowserStatusIndicator | null {
+  if (!isOpen) return null;
+  return {
+    label: "Browser open",
+    colorClass: "text-sky-600 dark:text-sky-300/90",
+  };
+}
+
+export type ThreadPr = GitResolvedPullRequest | null | undefined;
 
 export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   if (!pr) return null;
@@ -104,17 +123,6 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
     };
   }
   return null;
-}
-
-export function resolveThreadPr(
-  threadBranch: string | null,
-  gitStatus: GitStatusResult | null,
-): ThreadPr | null {
-  if (threadBranch === null || gitStatus === null || gitStatus.branch !== threadBranch) {
-    return null;
-  }
-
-  return gitStatus.pr ?? null;
 }
 
 export function terminalStatusFromRunningIds(
@@ -270,21 +278,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   const lastVisitedAt = useUiStateStore(
     (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
   );
-  const threadProjectCwd = useStore(
-    useMemo(
-      () => (state: AppState) =>
-        selectProjectByRef(state, scopeProjectRef(thread.environmentId, thread.projectId))?.cwd ??
-        null,
-      [thread.environmentId, thread.projectId],
-    ),
-  );
-  const gitCwd = thread.worktreePath ?? threadProjectCwd;
-  const gitStatus = useGitStatus({
-    environmentId: thread.environmentId,
-    cwd: thread.branch != null ? gitCwd : null,
-  });
-  const pr = resolveThreadPr(thread.branch, gitStatus.data);
-  const prStatus = prStatusIndicator(pr);
+  const prStatus = prStatusIndicator(thread.pullRequest);
   const threadStatus = resolveThreadStatusPill({
     thread: {
       ...thread,
@@ -323,12 +317,52 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
  * like the command palette. Shows a terminal-running indicator and a remote
  * environment indicator, matching the sidebar's trailing indicators.
  */
+/**
+ * Browser-open marker shown after a sidebar thread title. Uses the thread's own
+ * right-panel state (not the terminal parent override) so nested chats keep an
+ * independent browser indicator.
+ */
+export function ThreadBrowserOpenStatus({
+  environmentId,
+  threadId,
+}: {
+  environmentId: SidebarThreadSummary["environmentId"];
+  threadId: ThreadId;
+}) {
+  const threadRef = useMemo(
+    () => scopeThreadRef(environmentId, threadId),
+    [environmentId, threadId],
+  );
+  const browserOpen = useThreadBrowserOpen(threadRef);
+  const browserStatus = browserStatusIndicator(browserOpen);
+
+  if (!browserStatus) {
+    return null;
+  }
+
+  return (
+    <span
+      role="img"
+      aria-label={browserStatus.label}
+      title={browserStatus.label}
+      className={`inline-flex shrink-0 items-center justify-center ${browserStatus.colorClass}`}
+    >
+      <AppWindowIcon className="size-3" />
+    </span>
+  );
+}
+
 export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSummary }) {
   const threadRef = resolveTerminalThreadRef(thread);
+  const browserThreadRef = useMemo(
+    () => scopeThreadRef(thread.environmentId, thread.id),
+    [thread.environmentId, thread.id],
+  );
   const runningTerminalIds = useTerminalStateStore(
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
+  const browserOpen = useThreadBrowserOpen(browserThreadRef);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isRemoteThread =
     primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
@@ -342,13 +376,24 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
     ? (remoteEnvLabel ?? remoteEnvSavedLabel ?? "Remote")
     : null;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const browserStatus = browserStatusIndicator(browserOpen);
 
-  if (!terminalStatus && !isRemoteThread) {
+  if (!terminalStatus && !browserStatus && !isRemoteThread) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
+      {browserStatus ? (
+        <span
+          role="img"
+          aria-label={browserStatus.label}
+          title={browserStatus.label}
+          className={`inline-flex items-center justify-center ${browserStatus.colorClass}`}
+        >
+          <AppWindowIcon className="size-3" />
+        </span>
+      ) : null}
       {terminalStatus ? (
         <span
           role="img"
