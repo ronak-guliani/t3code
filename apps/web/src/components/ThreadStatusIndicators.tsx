@@ -217,7 +217,7 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
         isWorking && "animate-status-badge-pulse motion-reduce:animate-none",
         className,
       )}
-      style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
+      style={{ fontSize: "var(--app-sidebar-font-size)" }}
     >
       <span aria-hidden="true" className="inline-flex items-center gap-1.5">
         {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
