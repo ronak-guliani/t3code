@@ -1,7 +1,7 @@
 import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import type { GitStatusResult } from "@t3tools/contracts";
 import { CheckIcon, CloudIcon, GitPullRequestIcon, PlayIcon, TerminalIcon } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, type ReactNode, useEffect, useMemo, useState } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
@@ -176,6 +176,37 @@ export function ThreadStatusLabel({
 }
 
 /**
+ * Badge treatment per status label. Declared as a total record so adding a new
+ * `ThreadStatusPill["label"]` is a compile error until its badge (or explicit
+ * `null` opt-out) is decided here, instead of silently inheriting one.
+ */
+interface CornerBadgeSpec {
+  readonly text: string;
+  readonly icon: ReactNode;
+  readonly toneClass: string;
+  readonly showElapsed: boolean;
+}
+
+const CORNER_BADGE_SPECS: Record<ThreadStatusPill["label"], CornerBadgeSpec | null> = {
+  Working: {
+    text: "Working",
+    icon: WORKING_BADGE_ICON,
+    toneClass: "text-sky-500 dark:text-sky-400",
+    showElapsed: true,
+  },
+  Completed: {
+    text: "Done",
+    icon: DONE_BADGE_ICON,
+    toneClass: "text-emerald-500 dark:text-emerald-400",
+    showElapsed: false,
+  },
+  Connecting: null,
+  "Pending Approval": null,
+  "Awaiting Input": null,
+  "Plan Ready": null,
+};
+
+/**
  * Top-right Working/Done badge for sidebar v1 rows. Opacity-only CSS pulse on
  * Working (3s); Done stays static. Duration ticks in an isolated child so the
  * parent row does not re-render every second.
@@ -192,42 +223,36 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
   readonly thread: Pick<SidebarThreadSummary, "latestTurn" | "session" | "createdAt">;
   readonly className?: string;
 }) {
-  if (status.presentation !== "corner-badge") {
+  const spec = status.presentation === "corner-badge" ? CORNER_BADGE_SPECS[status.label] : null;
+  if (spec === null) {
     return null;
   }
 
-  const isWorking = status.label === "Working";
-  const label = isWorking ? "Working" : "Done";
-  const toneClass = isWorking
-    ? "text-sky-500 dark:text-sky-400"
-    : "text-emerald-500 dark:text-emerald-400";
-
   return (
     <span
-      role="status"
-      aria-label={status.label}
-      title={status.label}
+      // `img`, not `status`: a per-row live region would re-announce on every
+      // row mount, and the elapsed value ticks every second.
+      role="img"
+      aria-label={spec.text}
+      title={spec.text}
       data-status-corner-badge=""
       // Paint-contain the animated node so native vibrancy rows don't ghost
       // neighboring pixels when opacity pulses (see scars.md).
       className={cn(
         "pointer-events-none inline-flex shrink-0 items-center leading-none",
         "[contain:paint] [transform:translateZ(0)]",
-        toneClass,
-        isWorking && "animate-status-badge-pulse motion-reduce:animate-none",
+        spec.toneClass,
+        spec.showElapsed && "animate-status-badge-pulse motion-reduce:animate-none",
         className,
       )}
       style={{ fontSize: "var(--app-sidebar-font-size)" }}
     >
       <span aria-hidden="true" className="inline-flex items-center gap-1.5">
-        {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
+        {spec.icon}
         <span className="inline-flex items-baseline gap-1 font-medium tracking-tight">
-          <span>{label}</span>
-          {isWorking ? (
-            <WorkingDuration
-              startedAt={resolveWorkingStartedAt(thread)}
-              className="tracking-tight"
-            />
+          <span>{spec.text}</span>
+          {spec.showElapsed ? (
+            <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
           ) : null}
         </span>
       </span>

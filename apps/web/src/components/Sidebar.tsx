@@ -887,8 +887,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             threadId={virtualAgentRun?.parentThreadId ?? thread.id}
           />
           <div
-            className={`relative flex justify-end ${
-              isRemoteThread ? "min-w-12 max-sm:min-w-24" : "min-w-12 max-sm:min-w-20"
+            className={`flex min-w-12 justify-end ${
+              isRemoteThread ? "max-sm:min-w-24" : "max-sm:min-w-20"
             }`}
           >
             {virtualAgentRun && virtualAgentRun.status !== "running" ? (
