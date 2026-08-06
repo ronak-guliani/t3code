@@ -51,19 +51,6 @@ fi
 
 log() { printf '\n[install-t3-dev] %s\n' "$*"; }
 
-log "Quitting any running ${APP_NAME} instance..."
-osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
-for _ in {1..20}; do
-  if ! pgrep -f "${APP_BUNDLE}/Contents/MacOS/" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.05
-done
-if pgrep -f "${APP_BUNDLE}/Contents/MacOS/" >/dev/null 2>&1; then
-  echo "${APP_NAME} did not quit; close it and retry." >&2
-  exit 1
-fi
-
 if [[ "$DO_BUILD" -eq 1 ]]; then
   if [[ "$USE_DMG" -eq 1 ]]; then
     log "Building ${APP_FLAVOR} arm64 DMG..."
@@ -113,6 +100,19 @@ fi
 if [[ ! -d "$SRC_APP" ]]; then
   echo "Source app not found at ${SRC_APP}." >&2
   ls -la "$MOUNT_POINT" >&2
+  exit 1
+fi
+
+log "Quitting any running ${APP_NAME} instance..."
+osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
+for _ in {1..50}; do
+  if ! pgrep -f "${APP_BUNDLE}/Contents/MacOS/" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+if pgrep -f "${APP_BUNDLE}/Contents/MacOS/" >/dev/null 2>&1; then
+  echo "${APP_NAME} did not quit; close it and retry." >&2
   exit 1
 fi
 
