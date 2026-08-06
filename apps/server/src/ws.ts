@@ -585,6 +585,9 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 interactionMode: input.interactionMode,
                 branch: reviewContext.branch,
                 worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                ...(reviewContext.scope === "pull-request"
+                  ? { pullRequest: reviewContext.pullRequest }
+                  : {}),
                 reviewSnapshot: reviewContext.snapshot,
                 createdAt,
               });
@@ -742,6 +745,9 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 interactionMode: input.interactionMode ?? thread.interactionMode,
                 branch: workerWorkspace.branch,
                 worktreePath: workerWorkspace.worktreePath,
+                ...("pullRequest" in workerWorkspace
+                  ? { pullRequest: workerWorkspace.pullRequest }
+                  : {}),
               },
               createdAt,
             });
@@ -829,6 +835,9 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               interactionMode,
               branch: reviewContext.branch,
               worktreePath: cwd === project.workspaceRoot ? null : cwd,
+              ...(reviewContext.scope === "pull-request"
+                ? { pullRequest: reviewContext.pullRequest }
+                : {}),
               reviewSnapshot: reviewContext.snapshot,
             },
             createdAt,

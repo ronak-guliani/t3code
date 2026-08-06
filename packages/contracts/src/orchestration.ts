@@ -879,6 +879,7 @@ export const WorkflowWorkerConfig = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitResolvedPullRequest)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
 });
 export type WorkflowWorkerConfig = typeof WorkflowWorkerConfig.Type;
