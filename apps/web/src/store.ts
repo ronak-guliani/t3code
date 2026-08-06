@@ -586,35 +586,17 @@ function backgroundAgentRunsEqual(
 
 function reconcileSidebarActivitySummary(
   state: EnvironmentState,
-  thread: Pick<
-    Thread,
-    | "id"
-    | "latestTurn"
-    | "session"
-    | "branch"
-    | "worktreePath"
-    | "pullRequest"
-    | "title"
-    | "updatedAt"
-  >,
+  thread: Pick<Thread, "id" | "latestTurn" | "session">,
 ): EnvironmentState {
   const summary = state.sidebarThreadSummaryById[thread.id];
-  if (summary === undefined) {
-    return state;
-  }
-
-  const nextSummary: SidebarThreadSummary = {
-    ...summary,
-    session: thread.session,
-    latestTurn: thread.latestTurn,
-    branch: thread.branch,
-    worktreePath: thread.worktreePath,
-    pullRequest: thread.pullRequest ?? null,
-    title: thread.title,
-    ...(thread.updatedAt !== undefined ? { updatedAt: thread.updatedAt } : {}),
-  };
-
-  if (sidebarThreadSummariesEqual(summary, nextSummary)) {
+  // Shell stream owns title/branch/worktreePath/pullRequest/updatedAt.
+  // Detail/orchestration paths may only advance activity fields so a lagging
+  // detail Thread cannot clobber fresher shell-authoritative metadata.
+  if (
+    summary === undefined ||
+    (threadSessionsEqual(summary.session, thread.session) &&
+      latestTurnsEqual(summary.latestTurn, thread.latestTurn))
+  ) {
     return state;
   }
 
@@ -622,7 +604,11 @@ function reconcileSidebarActivitySummary(
     ...state,
     sidebarThreadSummaryById: {
       ...state.sidebarThreadSummaryById,
-      [thread.id]: nextSummary,
+      [thread.id]: {
+        ...summary,
+        session: thread.session,
+        latestTurn: thread.latestTurn,
+      },
     },
   };
 }
@@ -1603,11 +1589,6 @@ function updateThreadMessageState(
     id: threadId,
     session: state.threadSessionById[threadId] ?? null,
     latestTurn,
-    title: shell.title,
-    branch: shell.branch,
-    worktreePath: shell.worktreePath,
-    pullRequest: shell.pullRequest ?? null,
-    updatedAt: event.occurredAt,
   });
 }
 
@@ -2741,29 +2722,51 @@ export function setThreadBranch(
   worktreePath: string | null,
   pullRequest?: Thread["pullRequest"],
 ): AppState {
-  const nextEnvironmentState = updateThreadState(
-    getStoredEnvironmentState(state, threadRef.environmentId),
-    threadRef.threadId,
-    (thread) => {
-      const nextPullRequest =
-        pullRequest === undefined ? (thread.pullRequest ?? null) : pullRequest;
-      if (
-        thread.branch === branch &&
-        thread.worktreePath === worktreePath &&
-        pullRequestsEqual(thread.pullRequest, nextPullRequest)
-      ) {
-        return thread;
-      }
-      const cwdChanged = thread.worktreePath !== worktreePath;
-      return {
-        ...thread,
-        branch,
-        worktreePath,
-        pullRequest: nextPullRequest,
-        ...(cwdChanged ? { session: null } : {}),
+  const environmentState = getStoredEnvironmentState(state, threadRef.environmentId);
+  let nextEnvironmentState = updateThreadState(environmentState, threadRef.threadId, (thread) => {
+    const nextPullRequest = pullRequest === undefined ? (thread.pullRequest ?? null) : pullRequest;
+    if (
+      thread.branch === branch &&
+      thread.worktreePath === worktreePath &&
+      pullRequestsEqual(thread.pullRequest, nextPullRequest)
+    ) {
+      return thread;
+    }
+    const cwdChanged = thread.worktreePath !== worktreePath;
+    return {
+      ...thread,
+      branch,
+      worktreePath,
+      pullRequest: nextPullRequest,
+      ...(cwdChanged ? { session: null } : {}),
+    };
+  });
+
+  // Optimistic local branch/PR updates are intentional UI commits, not detail
+  // stream lag. Patch shell-owned summary fields here only; activity reconcile
+  // must not copy them from retained detail subscriptions.
+  const summary = nextEnvironmentState.sidebarThreadSummaryById[threadRef.threadId];
+  const shell = nextEnvironmentState.threadShellById[threadRef.threadId];
+  if (summary !== undefined && shell !== undefined) {
+    const nextSession = nextEnvironmentState.threadSessionById[threadRef.threadId] ?? null;
+    const nextSummary: SidebarThreadSummary = {
+      ...summary,
+      branch: shell.branch,
+      worktreePath: shell.worktreePath,
+      pullRequest: shell.pullRequest ?? null,
+      session: nextSession,
+    };
+    if (!sidebarThreadSummariesEqual(summary, nextSummary)) {
+      nextEnvironmentState = {
+        ...nextEnvironmentState,
+        sidebarThreadSummaryById: {
+          ...nextEnvironmentState.sidebarThreadSummaryById,
+          [threadRef.threadId]: nextSummary,
+        },
       };
-    },
-  );
+    }
+  }
+
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 

@@ -681,6 +681,38 @@ describe("setThreadBranch", () => {
       environmentStateOf(next, remoteEnvironmentId).threadShellById[sharedThreadId]?.worktreePath,
     ).toBe("/tmp/remote-worktree");
   });
+
+  it("optimistically patches sidebar summary branch and pullRequest", () => {
+    const pullRequest = {
+      number: 150,
+      title: "Durable PR",
+      url: "https://example.test/pr/150",
+      baseBranch: "main",
+      headBranch: "feature/pr",
+      state: "open" as const,
+    };
+    const thread = makeThread({ branch: "old-branch", pullRequest: null });
+    const environmentState = selectEnvironmentState(makeState(thread), localEnvironmentId);
+    const state = withActiveEnvironmentState({
+      ...environmentState,
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+
+    const next = setThreadBranch(
+      state,
+      scopeThreadRef(localEnvironmentId, thread.id),
+      "feature/pr",
+      null,
+      pullRequest,
+    );
+
+    expect(selectSidebarThreadsAcrossEnvironments(next)[0]).toMatchObject({
+      branch: "feature/pr",
+      pullRequest,
+    });
+  });
 });
 
 describe("incremental orchestration updates", () => {
@@ -716,6 +748,95 @@ describe("incremental orchestration updates", () => {
     });
     expect(selectSidebarThreadsAcrossEnvironments(next)[0]).toMatchObject({
       latestTurn: { turnId, state: "running", completedAt: null },
+    });
+  });
+
+  it("does not let lagging detail activity overwrite shell-authoritative sidebar metadata", () => {
+    const pullRequest = {
+      number: 150,
+      title: "Shell owns this PR",
+      url: "https://example.test/pr/150",
+      baseBranch: "main",
+      headBranch: "feature/shell",
+      state: "open" as const,
+    };
+    const thread = makeThread({
+      title: "Old title",
+      branch: "old-branch",
+      pullRequest: null,
+      updatedAt: "2026-02-27T00:00:00.000Z",
+    });
+    let state = withActiveEnvironmentState({
+      ...selectEnvironmentState(makeState(thread), localEnvironmentId),
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+
+    state = applyShellEvent(
+      state,
+      {
+        kind: "thread-upserted",
+        sequence: 10,
+        thread: {
+          id: thread.id,
+          projectId: thread.projectId,
+          parentThreadId: null,
+          title: "Fresh shell title",
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          pendingRuntimeMode: null,
+          interactionMode: thread.interactionMode,
+          branch: "feature/shell",
+          worktreePath: null,
+          pullRequest,
+          latestTurn: null,
+          createdAt: thread.createdAt,
+          updatedAt: "2026-02-27T00:00:10.000Z",
+          archivedAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        },
+      },
+      localEnvironmentId,
+    );
+
+    expect(selectSidebarThreadsAcrossEnvironments(state)[0]).toMatchObject({
+      title: "Fresh shell title",
+      branch: "feature/shell",
+      pullRequest,
+      updatedAt: "2026-02-27T00:00:10.000Z",
+    });
+
+    // Detail stream still has the pre-meta thread when an activity event arrives.
+    const afterActivity = applyOrchestrationEvent(
+      state,
+      makeEvent(
+        "thread.message-sent",
+        {
+          threadId: thread.id,
+          messageId: MessageId.make("assistant-lag"),
+          role: "assistant",
+          text: "still streaming",
+          turnId: TurnId.make("turn-lag"),
+          streaming: true,
+          createdAt: "2026-02-27T00:00:11.000Z",
+          updatedAt: "2026-02-27T00:00:11.000Z",
+        },
+        { sequence: 11 },
+      ),
+      localEnvironmentId,
+    );
+
+    expect(selectSidebarThreadsAcrossEnvironments(afterActivity)[0]).toMatchObject({
+      title: "Fresh shell title",
+      branch: "feature/shell",
+      pullRequest,
+      updatedAt: "2026-02-27T00:00:10.000Z",
+      latestTurn: { turnId: TurnId.make("turn-lag"), state: "running" },
     });
   });
 
