@@ -53,6 +53,32 @@ case "$HOST_ARCH" in
     ;;
 esac
 ARTIFACT_GLOB="T3-Code-Dev-*-${BUILD_ARCH}.dmg"
+LOCK_PATH="${T3CODE_DEV_REBUILD_LOCK_PATH:-${HOME}/Library/Caches/t3code-dev/rebuild.lock}"
+MOUNT_POINT=""
+
+cleanup() {
+  if [[ -n "$MOUNT_POINT" && -d "$MOUNT_POINT" ]]; then
+    hdiutil detach "$MOUNT_POINT" -quiet || hdiutil detach "$MOUNT_POINT" -force -quiet || true
+  fi
+  if [[ -L "$LOCK_PATH" && "$(readlink "$LOCK_PATH" 2>/dev/null || true)" == "$$" ]]; then
+    rm -f "$LOCK_PATH"
+  fi
+}
+trap cleanup EXIT
+
+mkdir -p "$(dirname "$LOCK_PATH")"
+while ! ln -s "$$" "$LOCK_PATH" 2>/dev/null; do
+  LOCK_PID="$(readlink "$LOCK_PATH" 2>/dev/null || true)"
+  if [[ "$LOCK_PID" =~ ^[0-9]+$ ]] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo "Another T3 Code Dev rebuild is already running (PID ${LOCK_PID})." >&2
+    exit 1
+  fi
+
+  STALE_LOCK_PATH="${LOCK_PATH}.stale.$$.$RANDOM"
+  if mv "$LOCK_PATH" "$STALE_LOCK_PATH" 2>/dev/null; then
+    rm -f "$STALE_LOCK_PATH"
+  fi
+done
 
 if [[ -n "${T3CODE_DEV_REBUILD_LOG_PATH:-}" ]]; then
   mkdir -p "$(dirname "$T3CODE_DEV_REBUILD_LOG_PATH")"
@@ -88,14 +114,6 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
     ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
   fi
 fi
-
-MOUNT_POINT=""
-cleanup() {
-  if [[ -n "$MOUNT_POINT" && -d "$MOUNT_POINT" ]]; then
-    hdiutil detach "$MOUNT_POINT" -quiet || hdiutil detach "$MOUNT_POINT" -force -quiet || true
-  fi
-}
-trap cleanup EXIT
 
 if [[ "$USE_DMG" -eq 1 ]]; then
   DMG_PATH="$(ls -t "${RELEASE_DIR}"/${ARTIFACT_GLOB} 2>/dev/null | head -n 1 || true)"
