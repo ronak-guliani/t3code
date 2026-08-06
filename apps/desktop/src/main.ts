@@ -1987,9 +1987,17 @@ function registerIpcHandlers(): void {
         message: "A local rebuild is already in progress.",
       } satisfies DesktopLocalRebuildResult;
     }
-    const result = launchLocalDevRebuild(getLocalDevRebuildState(), LOG_DIR);
-    if (result.accepted) {
-      localRebuildStarted = true;
+    localRebuildStarted = true;
+    const result = await launchLocalDevRebuild(
+      getLocalDevRebuildState(),
+      LOG_DIR,
+      undefined,
+      () => {
+        localRebuildStarted = false;
+      },
+    );
+    if (!result.accepted) {
+      localRebuildStarted = false;
     }
     return result satisfies DesktopLocalRebuildResult;
   });

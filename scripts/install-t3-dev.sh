@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build the arm64 macOS Dev app directly and install it into /Applications,
+# Build the host-native macOS Dev app directly and install it into /Applications,
 # replacing any previous Dev installation. The default fast path skips DMG/ZIP
 # creation; pass --dmg when validating the release artifact path.
 #
@@ -15,7 +15,6 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_FLAVOR="dev"
 APP_NAME="T3 Code (Dev)"
-ARTIFACT_GLOB="T3-Code-Dev-*-arm64.dmg"
 APP_BUNDLE="${APP_NAME}.app"
 INSTALL_DEST="/Applications/${APP_BUNDLE}"
 RELEASE_DIR="${REPO_ROOT}/release"
@@ -45,24 +44,48 @@ if [[ "$(uname)" != "Darwin" ]]; then
 fi
 
 HOST_ARCH="$(uname -m)"
-if [[ "$HOST_ARCH" != "arm64" ]]; then
-  echo "Warning: host arch is ${HOST_ARCH}; this script builds an arm64 DMG." >&2
+case "$HOST_ARCH" in
+  arm64) BUILD_ARCH="arm64" ;;
+  x86_64) BUILD_ARCH="x64" ;;
+  *)
+    echo "Unsupported macOS architecture: ${HOST_ARCH}" >&2
+    exit 1
+    ;;
+esac
+ARTIFACT_GLOB="T3-Code-Dev-*-${BUILD_ARCH}.dmg"
+
+if [[ -n "${T3CODE_DEV_REBUILD_LOG_PATH:-}" ]]; then
+  mkdir -p "$(dirname "$T3CODE_DEV_REBUILD_LOG_PATH")"
+  : > "$T3CODE_DEV_REBUILD_LOG_PATH"
+  exec > >(/usr/bin/awk -v path="$T3CODE_DEV_REBUILD_LOG_PATH" -v max_bytes=10485760 '
+    BEGIN { written = 0; truncated = 0 }
+    {
+      line = $0 ORS
+      if (written + length(line) <= max_bytes) {
+        printf "%s", line >> path
+        written += length(line)
+      } else if (!truncated) {
+        printf "\n[install-t3-dev] Log truncated after %d bytes.\n", max_bytes >> path
+        truncated = 1
+      }
+    }
+  ') 2>&1
 fi
 
 log() { printf '\n[install-t3-dev] %s\n' "$*"; }
 
 if [[ "$DO_BUILD" -eq 1 ]]; then
   if [[ "$USE_DMG" -eq 1 ]]; then
-    log "Building ${APP_FLAVOR} arm64 DMG..."
-    rm -f "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.dmg \
-          "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.dmg.blockmap \
-          "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.zip \
-          "${RELEASE_DIR}"/T3-Code-Dev-*-arm64.zip.blockmap
-    ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 --flavor "$APP_FLAVOR" )
+    log "Building ${APP_FLAVOR} ${BUILD_ARCH} DMG..."
+    rm -f "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".dmg \
+      "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".dmg.blockmap \
+      "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".zip \
+      "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".zip.blockmap
+    ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
   else
-    log "Building unpacked ${APP_FLAVOR} arm64 app..."
+    log "Building unpacked ${APP_FLAVOR} ${BUILD_ARCH} app..."
     rm -rf "${RELEASE_DIR}/${APP_BUNDLE}"
-    ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch arm64 --flavor "$APP_FLAVOR" )
+    ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
   fi
 fi
 
@@ -77,7 +100,7 @@ trap cleanup EXIT
 if [[ "$USE_DMG" -eq 1 ]]; then
   DMG_PATH="$(ls -t "${RELEASE_DIR}"/${ARTIFACT_GLOB} 2>/dev/null | head -n 1 || true)"
   if [[ -z "$DMG_PATH" || ! -f "$DMG_PATH" ]]; then
-    echo "No arm64 DMG found in ${RELEASE_DIR}." >&2
+    echo "No ${BUILD_ARCH} DMG found in ${RELEASE_DIR}." >&2
     echo "Re-run without --no-build to produce one." >&2
     exit 1
   fi

@@ -1,4 +1,4 @@
-import { Effect, Schema, SchemaTransformation } from "effect";
+import { Schema, SchemaTransformation } from "effect";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ReviewChangesScope } from "./agentWorkflows.ts";
 import { ReviewSnapshot } from "./reviewSchemas.ts";

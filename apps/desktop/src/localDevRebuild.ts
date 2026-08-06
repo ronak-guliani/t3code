@@ -60,31 +60,48 @@ export function launchLocalDevRebuild(
   state: DesktopLocalRebuildState,
   logDirectory: string,
   spawn: typeof ChildProcess.spawn = ChildProcess.spawn,
-): DesktopLocalRebuildResult {
+  onExit: () => void = () => {},
+): Promise<DesktopLocalRebuildResult> {
   if (!state.enabled || !state.sourceRoot) {
-    return { accepted: false, logPath: null, message: state.reason };
+    return Promise.resolve({ accepted: false, logPath: null, message: state.reason });
   }
 
   const logPath = Path.join(logDirectory, "dev-rebuild.log");
-  let logFd: number | null = null;
   try {
     FS.mkdirSync(logDirectory, { recursive: true });
-    logFd = FS.openSync(logPath, "w");
-    FS.writeSync(logFd, `[${new Date().toISOString()}] Local rebuild requested.\n`);
+    FS.writeFileSync(logPath, `[${new Date().toISOString()}] Local rebuild requested.\n`);
     const child = spawn("/bin/bash", [Path.join(state.sourceRoot, INSTALL_SCRIPT_RELATIVE_PATH)], {
       cwd: state.sourceRoot,
       detached: true,
-      env: process.env,
-      stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, T3CODE_DEV_REBUILD_LOG_PATH: logPath },
+      stdio: "ignore",
     });
-    child.unref();
-    return { accepted: true, logPath, message: null };
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let exited = false;
+      const notifyExit = (): void => {
+        if (exited) return;
+        exited = true;
+        onExit();
+      };
+      child.once("error", (error) => {
+        FS.appendFileSync(logPath, `[desktop] Failed to launch local rebuild: ${error.message}\n`);
+        if (!settled) {
+          settled = true;
+          resolve({ accepted: false, logPath, message: error.message });
+        }
+        notifyExit();
+      });
+      child.once("exit", notifyExit);
+      child.once("spawn", () => {
+        settled = true;
+        child.unref();
+        resolve({ accepted: true, logPath, message: null });
+      });
+    });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    return { accepted: false, logPath, message };
-  } finally {
-    if (logFd !== null) {
-      FS.closeSync(logFd);
-    }
+    return Promise.resolve({ accepted: false, logPath, message });
   }
 }

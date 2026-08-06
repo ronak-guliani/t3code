@@ -1,6 +1,7 @@
 import * as FS from "node:fs";
 import * as OS from "node:os";
 import * as Path from "node:path";
+import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -54,28 +55,45 @@ describe("local Dev rebuild", () => {
     ).toBe(false);
   });
 
-  it("launches the fixed installer as a detached process", () => {
+  it("launches the fixed installer as a detached process after spawn succeeds", async () => {
     const sourceRoot = makeCheckout();
     const logDirectory = FS.mkdtempSync(Path.join(OS.tmpdir(), "t3code-rebuild-log-"));
     const unref = vi.fn();
-    const spawn = vi.fn(() => ({ unref }));
+    const child = Object.assign(new EventEmitter(), { unref });
+    const spawn = vi.fn(() => child);
 
-    const result = launchLocalDevRebuild(
+    const resultPromise = launchLocalDevRebuild(
       { enabled: true, sourceRoot, reason: null },
       logDirectory,
       spawn as unknown as typeof import("node:child_process").spawn,
     );
+    let settled = false;
+    void resultPromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit("spawn");
+    const result = await resultPromise;
 
     expect(result.accepted).toBe(true);
     expect(spawn).toHaveBeenCalledWith(
       "/bin/bash",
       [Path.join(sourceRoot, "scripts", "install-t3-dev.sh")],
-      expect.objectContaining({ cwd: sourceRoot, detached: true }),
+      expect.objectContaining({
+        cwd: sourceRoot,
+        detached: true,
+        env: expect.objectContaining({
+          T3CODE_DEV_REBUILD_LOG_PATH: Path.join(logDirectory, "dev-rebuild.log"),
+        }),
+        stdio: "ignore",
+      }),
     );
     expect(unref).toHaveBeenCalledOnce();
   });
 
-  it("rejects a missing checkout and reports synchronous launch failures", () => {
+  it("rejects a missing checkout and reports synchronous launch failures", async () => {
     expect(
       resolveLocalDevRebuildState({
         isPackaged: true,
@@ -87,7 +105,7 @@ describe("local Dev rebuild", () => {
 
     const sourceRoot = makeCheckout();
     const logDirectory = FS.mkdtempSync(Path.join(OS.tmpdir(), "t3code-rebuild-log-"));
-    const result = launchLocalDevRebuild(
+    const result = await launchLocalDevRebuild(
       { enabled: true, sourceRoot, reason: null },
       logDirectory,
       vi.fn(() => {
@@ -100,5 +118,28 @@ describe("local Dev rebuild", () => {
       logPath: Path.join(logDirectory, "dev-rebuild.log"),
       message: "spawn failed",
     });
+  });
+
+  it("reports asynchronous launch failures and notifies when the child exits", async () => {
+    const sourceRoot = makeCheckout();
+    const logDirectory = FS.mkdtempSync(Path.join(OS.tmpdir(), "t3code-rebuild-log-"));
+    const child = Object.assign(new EventEmitter(), { unref: vi.fn() });
+    const onExit = vi.fn();
+    const resultPromise = launchLocalDevRebuild(
+      { enabled: true, sourceRoot, reason: null },
+      logDirectory,
+      vi.fn(() => child) as unknown as typeof import("node:child_process").spawn,
+      onExit,
+    );
+
+    child.emit("error", new Error("async spawn failed"));
+
+    await expect(resultPromise).resolves.toEqual({
+      accepted: false,
+      logPath: Path.join(logDirectory, "dev-rebuild.log"),
+      message: "async spawn failed",
+    });
+    child.emit("exit", 1, null);
+    expect(onExit).toHaveBeenCalledOnce();
   });
 });
