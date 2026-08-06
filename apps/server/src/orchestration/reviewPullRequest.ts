@@ -1,4 +1,4 @@
-import type { GitResolvedPullRequest, ReviewSnapshot } from "@t3tools/contracts";
+import type { GitPullRequestAssociation, ReviewSnapshot } from "@t3tools/contracts";
 
 /**
  * Legacy PR-review events predate the durable thread association field, but
@@ -6,7 +6,7 @@ import type { GitResolvedPullRequest, ReviewSnapshot } from "@t3tools/contracts"
  */
 export function pullRequestFromReviewSnapshot(
   snapshot: ReviewSnapshot | null | undefined,
-): GitResolvedPullRequest | undefined {
+): GitPullRequestAssociation | undefined {
   if (snapshot?.scope.kind !== "pull-request") {
     return undefined;
   }
@@ -16,8 +16,6 @@ export function pullRequestFromReviewSnapshot(
     url: snapshot.scope.url,
     baseBranch: snapshot.scope.baseBranch,
     headBranch: snapshot.scope.headBranch,
-    // Review snapshots did not historically store state. The PR was available
-    // when captured, so open is the only safe last-known value for replay.
-    state: "open",
+    state: null,
   };
 }

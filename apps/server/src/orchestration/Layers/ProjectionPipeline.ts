@@ -605,9 +605,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
             pullRequest:
-              event.payload.pullRequest ??
-              pullRequestFromReviewSnapshot(event.payload.reviewSnapshot) ??
-              null,
+              event.payload.pullRequest !== undefined
+                ? event.payload.pullRequest
+                : (pullRequestFromReviewSnapshot(event.payload.reviewSnapshot) ?? null),
             reviewSnapshot: event.payload.reviewSnapshot ?? null,
             reviewResult: null,
             latestTurnId: null,

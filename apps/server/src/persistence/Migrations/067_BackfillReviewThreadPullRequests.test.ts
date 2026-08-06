@@ -105,7 +105,7 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
               url: "https://github.com/acme/repo/pull/146",
               baseBranch: "main",
               headBranch: "feature/pr-146",
-              state: "open",
+              state: null,
             }),
           },
         ]);

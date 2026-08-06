@@ -22,7 +22,7 @@ export default Effect.gen(function* () {
       'url', json_extract(review_snapshot_json, '$.scope.url'),
       'baseBranch', json_extract(review_snapshot_json, '$.scope.baseBranch'),
       'headBranch', json_extract(review_snapshot_json, '$.scope.headBranch'),
-      'state', 'open'
+      'state', NULL
     )
     WHERE pull_request_json = 'null'
       AND json_extract(review_snapshot_json, '$.scope.kind') = 'pull-request'
