@@ -129,7 +129,11 @@ import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
-import { useBrowserPanelState, useRightPanelStore } from "~/rightPanelStore";
+import {
+  setThreadPlanSidebarOpen,
+  useBrowserPanelState,
+  useRightPanelStore,
+} from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
@@ -822,11 +826,9 @@ function ChatViewBody(
   const insightsOpen = activeRightPanel === "insights";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
-      if (open) {
-        useRightPanelStore.getState().open(routeThreadRef, "plan");
-      } else {
-        useRightPanelStore.getState().close(routeThreadRef);
-      }
+      // Close only the plan surface so thread switches / plan dismiss do not
+      // collapse an open browser (or other) right-panel surface for this thread.
+      setThreadPlanSidebarOpen(routeThreadRef, open);
     },
     [routeThreadRef],
   );
@@ -1081,7 +1083,12 @@ function ChatViewBody(
   }, []);
 
   const openOrReuseProjectDraftThread = useCallback(
-    async (input: { branch: string; worktreePath: string | null; envMode: DraftThreadEnvMode }) => {
+    async (input: {
+      branch: string;
+      worktreePath: string | null;
+      envMode: DraftThreadEnvMode;
+      pullRequest?: import("@t3tools/contracts").GitResolvedPullRequest | null;
+    }) => {
       if (!activeProject) {
         throw new Error("No active project is available for this pull request.");
       }
@@ -1158,11 +1165,16 @@ function ChatViewBody(
   );
 
   const handlePreparedPullRequestThread = useCallback(
-    async (input: { branch: string; worktreePath: string | null }) => {
+    async (input: {
+      branch: string;
+      worktreePath: string | null;
+      pullRequest: import("@t3tools/contracts").GitResolvedPullRequest;
+    }) => {
       await openOrReuseProjectDraftThread({
         branch: input.branch,
         worktreePath: input.worktreePath,
         envMode: input.worktreePath ? "worktree" : "local",
+        pullRequest: input.pullRequest,
       });
     },
     [openOrReuseProjectDraftThread],
@@ -3482,6 +3494,11 @@ function ChatViewBody(
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftThread?.pullRequest
+                        ? { pullRequest: draftThread.pullRequest }
+                        : activeThread && "pullRequest" in activeThread && activeThread.pullRequest
+                          ? { pullRequest: activeThread.pullRequest }
+                          : {}),
                       createdAt: activeThread.createdAt,
                     },
                   }

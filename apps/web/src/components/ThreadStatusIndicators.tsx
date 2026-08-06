@@ -1,19 +1,67 @@
-import { scopeProjectRef, scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import type { GitStatusResult } from "@t3tools/contracts";
-import { CloudIcon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
-import { useMemo } from "react";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import type { GitResolvedPullRequest, ThreadId } from "@t3tools/contracts";
+import {
+  AppWindowIcon,
+  CheckIcon,
+  CloudIcon,
+  GitPullRequestIcon,
+  PlayIcon,
+  TerminalIcon,
+} from "lucide-react";
+import { memo, type ReactNode, useEffect, useMemo, useState } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
-import { useGitStatus } from "../lib/gitStatusState";
-import { type AppState, selectProjectByRef, useStore } from "../store";
+import { cn } from "../lib/utils";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useThreadBrowserOpen } from "../rightPanelStore";
 import { useUiStateStore } from "../uiStateStore";
+import { formatWorkingDurationLabel, resolveWorkingStartedAt } from "./SidebarV2.logic";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import type { SidebarThreadSummary } from "../types";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+
+/** Static glyph nodes — avoid re-allocating Lucide elements on every row render.
+ *  Circle matches text cap-height; play is optically nudged right inside the disc. */
+const WORKING_BADGE_ICON = (
+  <span className="inline-flex size-3 shrink-0 items-center justify-center rounded-full bg-sky-500 text-white dark:bg-sky-400">
+    <PlayIcon className="size-[0.45rem] translate-x-px fill-current" strokeWidth={0} />
+  </span>
+);
+
+const DONE_BADGE_ICON = (
+  <span className="inline-flex size-3 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white dark:bg-emerald-400">
+    <CheckIcon className="size-2 stroke-[2.75]" />
+  </span>
+);
+
+/**
+ * Self-ticking elapsed label shared by sidebar v1 badges and v2 status rows.
+ * Only this span re-renders each second — not the parent row.
+ */
+export const WorkingDuration = memo(function WorkingDuration({
+  startedAt,
+  className,
+}: {
+  readonly startedAt: string | null;
+  readonly className?: string;
+}) {
+  const startedMs = startedAt !== null ? Date.parse(startedAt) : Number.NaN;
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (Number.isNaN(startedMs)) return undefined;
+    const timer = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedMs]);
+  if (Number.isNaN(startedMs)) return null;
+  return (
+    <span className={cn("tabular-nums", className)}>
+      {formatWorkingDurationLabel(Date.now() - startedMs)}
+    </span>
+  );
+});
 
 export interface PrStatusIndicator {
   label: "PR open" | "PR closed" | "PR merged";
@@ -29,7 +77,20 @@ export interface TerminalStatusIndicator {
   pulse: boolean;
 }
 
-export type ThreadPr = GitStatusResult["pr"];
+export interface BrowserStatusIndicator {
+  label: "Browser open";
+  colorClass: string;
+}
+
+export function browserStatusIndicator(isOpen: boolean): BrowserStatusIndicator | null {
+  if (!isOpen) return null;
+  return {
+    label: "Browser open",
+    colorClass: "text-sky-600 dark:text-sky-300/90",
+  };
+}
+
+export type ThreadPr = GitResolvedPullRequest | null | undefined;
 
 export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   if (!pr) return null;
@@ -64,17 +125,6 @@ export function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
   return null;
 }
 
-export function resolveThreadPr(
-  threadBranch: string | null,
-  gitStatus: GitStatusResult | null,
-): ThreadPr | null {
-  if (threadBranch === null || gitStatus === null || gitStatus.branch !== threadBranch) {
-    return null;
-  }
-
-  return gitStatus.pr ?? null;
-}
-
 export function terminalStatusFromRunningIds(
   runningTerminalIds: string[],
 ): TerminalStatusIndicator | null {
@@ -99,7 +149,9 @@ export function ThreadStatusLabel({
   status: ThreadStatusPill;
   compact?: boolean;
 }) {
-  if (compact || status.dotOnly) {
+  // Corner badges own the full row treatment; compact contexts still need a
+  // quiet marker so rolled-up "show more" / palette rows stay scannable.
+  if (compact || status.presentation === "dot" || status.presentation === "corner-badge") {
     return (
       <span
         title={status.label}
@@ -132,6 +184,91 @@ export function ThreadStatusLabel({
 }
 
 /**
+ * Badge treatment per status label. Declared as a total record so adding a new
+ * `ThreadStatusPill["label"]` is a compile error until its badge (or explicit
+ * `null` opt-out) is decided here, instead of silently inheriting one.
+ */
+interface CornerBadgeSpec {
+  readonly text: string;
+  readonly icon: ReactNode;
+  readonly toneClass: string;
+  readonly showElapsed: boolean;
+}
+
+const CORNER_BADGE_SPECS: Record<ThreadStatusPill["label"], CornerBadgeSpec | null> = {
+  Working: {
+    text: "Working",
+    icon: WORKING_BADGE_ICON,
+    toneClass: "text-sky-500 dark:text-sky-400",
+    showElapsed: true,
+  },
+  Completed: {
+    text: "Done",
+    icon: DONE_BADGE_ICON,
+    toneClass: "text-emerald-500 dark:text-emerald-400",
+    showElapsed: false,
+  },
+  Connecting: null,
+  "Pending Approval": null,
+  "Awaiting Input": null,
+  "Plan Ready": null,
+};
+
+/**
+ * Top-right Working/Done badge for sidebar v1 rows. Opacity-only CSS pulse on
+ * Working (3s); Done stays static. Duration ticks in an isolated child so the
+ * parent row does not re-render every second.
+ *
+ * Layout: [icon][label][duration] with tight icon→label gap and a slightly
+ * wider label→duration gap so the elapsed value reads as a separate token.
+ */
+export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
+  status,
+  thread,
+  className,
+}: {
+  readonly status: ThreadStatusPill;
+  readonly thread: Pick<SidebarThreadSummary, "latestTurn" | "session" | "createdAt">;
+  readonly className?: string;
+}) {
+  const spec = status.presentation === "corner-badge" ? CORNER_BADGE_SPECS[status.label] : null;
+  if (spec === null) {
+    return null;
+  }
+
+  return (
+    <span
+      // `img`, not `status`: a per-row live region would re-announce on every
+      // row mount, and the elapsed value ticks every second.
+      role="img"
+      aria-label={spec.text}
+      title={spec.text}
+      data-status-corner-badge=""
+      // Paint-contain the animated node so native vibrancy rows don't ghost
+      // neighboring pixels when opacity pulses (see scars.md).
+      className={cn(
+        "pointer-events-none inline-flex shrink-0 items-center leading-none",
+        "[contain:paint] [transform:translateZ(0)]",
+        spec.toneClass,
+        spec.showElapsed && "animate-status-badge-pulse motion-reduce:animate-none",
+        className,
+      )}
+      style={{ fontSize: "var(--app-sidebar-font-size)" }}
+    >
+      <span aria-hidden="true" className="inline-flex items-center gap-1.5">
+        {spec.icon}
+        <span className="inline-flex items-baseline gap-1 font-medium tracking-tight">
+          <span>{spec.text}</span>
+          {spec.showElapsed ? (
+            <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+          ) : null}
+        </span>
+      </span>
+    </span>
+  );
+});
+
+/**
  * Non-interactive leading status icons for a thread row in compact contexts
  * like the command palette. Shows the PR state icon (if present) and the
  * thread status dot, matching the sidebar's leading indicators.
@@ -141,21 +278,7 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   const lastVisitedAt = useUiStateStore(
     (state) => state.threadLastVisitedAtById[scopedThreadKey(threadRef)],
   );
-  const threadProjectCwd = useStore(
-    useMemo(
-      () => (state: AppState) =>
-        selectProjectByRef(state, scopeProjectRef(thread.environmentId, thread.projectId))?.cwd ??
-        null,
-      [thread.environmentId, thread.projectId],
-    ),
-  );
-  const gitCwd = thread.worktreePath ?? threadProjectCwd;
-  const gitStatus = useGitStatus({
-    environmentId: thread.environmentId,
-    cwd: thread.branch != null ? gitCwd : null,
-  });
-  const pr = resolveThreadPr(thread.branch, gitStatus.data);
-  const prStatus = prStatusIndicator(pr);
+  const prStatus = prStatusIndicator(thread.pullRequest);
   const threadStatus = resolveThreadStatusPill({
     thread: {
       ...thread,
@@ -194,12 +317,52 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
  * like the command palette. Shows a terminal-running indicator and a remote
  * environment indicator, matching the sidebar's trailing indicators.
  */
+/**
+ * Browser-open marker shown after a sidebar thread title. Uses the thread's own
+ * right-panel state (not the terminal parent override) so nested chats keep an
+ * independent browser indicator.
+ */
+export function ThreadBrowserOpenStatus({
+  environmentId,
+  threadId,
+}: {
+  environmentId: SidebarThreadSummary["environmentId"];
+  threadId: ThreadId;
+}) {
+  const threadRef = useMemo(
+    () => scopeThreadRef(environmentId, threadId),
+    [environmentId, threadId],
+  );
+  const browserOpen = useThreadBrowserOpen(threadRef);
+  const browserStatus = browserStatusIndicator(browserOpen);
+
+  if (!browserStatus) {
+    return null;
+  }
+
+  return (
+    <span
+      role="img"
+      aria-label={browserStatus.label}
+      title={browserStatus.label}
+      className={`inline-flex shrink-0 items-center justify-center ${browserStatus.colorClass}`}
+    >
+      <AppWindowIcon className="size-3" />
+    </span>
+  );
+}
+
 export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSummary }) {
   const threadRef = resolveTerminalThreadRef(thread);
+  const browserThreadRef = useMemo(
+    () => scopeThreadRef(thread.environmentId, thread.id),
+    [thread.environmentId, thread.id],
+  );
   const runningTerminalIds = useTerminalStateStore(
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
+  const browserOpen = useThreadBrowserOpen(browserThreadRef);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isRemoteThread =
     primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
@@ -213,13 +376,24 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
     ? (remoteEnvLabel ?? remoteEnvSavedLabel ?? "Remote")
     : null;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const browserStatus = browserStatusIndicator(browserOpen);
 
-  if (!terminalStatus && !isRemoteThread) {
+  if (!terminalStatus && !browserStatus && !isRemoteThread) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
+      {browserStatus ? (
+        <span
+          role="img"
+          aria-label={browserStatus.label}
+          title={browserStatus.label}
+          className={`inline-flex items-center justify-center ${browserStatus.colorClass}`}
+        >
+          <AppWindowIcon className="size-3" />
+        </span>
+      ) : null}
       {terminalStatus ? (
         <span
           role="img"

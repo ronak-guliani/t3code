@@ -9,12 +9,11 @@ import {
   ServerIcon,
   TerminalIcon,
 } from "lucide-react";
-import { type CSSProperties, memo, useCallback, useEffect, useState } from "react";
+import { type CSSProperties, memo, useCallback } from "react";
 import type { useSortable } from "@dnd-kit/sortable";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import { threadRaisedHandWhileSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 
-import { useGitStatus } from "../lib/gitStatusState";
 import { openPullRequestLink } from "../lib/openPullRequestLink";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -25,7 +24,6 @@ import { cn } from "~/lib/utils";
 import { hasUnseenCompletion, resolveThreadStatusPill } from "./Sidebar.logic";
 import {
   compactSidebarTimeLabel,
-  formatWorkingDurationLabel,
   resolveSidebarV2StatusLabel,
   resolveWorkingStartedAt,
   type SidebarV2Status,
@@ -38,10 +36,11 @@ import {
   useThreadEnvironmentLabel,
 } from "./SidebarV2ThreadTooltip";
 import {
+  ThreadBrowserOpenStatus,
   ThreadStatusLabel,
+  WorkingDuration,
   prStatusIndicator,
   resolveTerminalThreadRef,
-  resolveThreadPr,
   terminalStatusFromRunningIds,
 } from "./ThreadStatusIndicators";
 import { Button } from "./ui/button";
@@ -111,23 +110,6 @@ function fourHoursFromNow(): string {
   return new Date(Date.now() + 4 * 60 * 60 * 1_000).toISOString();
 }
 
-// Self-ticking so only this span re-renders each second, not the whole row.
-function WorkingDuration({ startedAt }: { readonly startedAt: string | null }) {
-  const startedMs = startedAt !== null ? Date.parse(startedAt) : Number.NaN;
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (Number.isNaN(startedMs)) return undefined;
-    const timer = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
-    return () => window.clearInterval(timer);
-  }, [startedMs]);
-  if (Number.isNaN(startedMs)) return null;
-  return (
-    <span className="font-mono tabular-nums">
-      {formatWorkingDurationLabel(Date.now() - startedMs)}
-    </span>
-  );
-}
-
 export const SidebarV2Row = memo(function SidebarV2Row({
   thread,
   projectName,
@@ -173,16 +155,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   );
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
 
-  const gitCwd = thread.worktreePath ?? projectCwd;
-  // Gated on the branch, not the worktree: resolveThreadPr yields null without
-  // one, so a branchless worktree row would pay for a status query it can
-  // never render.
-  const gitStatus = useGitStatus({
-    environmentId: thread.environmentId,
-    cwd: thread.branch !== null ? gitCwd : null,
-  });
-  const pr = resolveThreadPr(thread.branch, gitStatus.data);
-  const prStatus = prStatusIndicator(pr);
+  const prStatus = prStatusIndicator(thread.pullRequest);
 
   const statusLabel = resolveSidebarV2StatusLabel({
     status: displayStatus,
@@ -419,9 +392,13 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                 ) : (
                   <InboxIcon className="size-3.5 shrink-0" />
                 )}
-                <span className="truncate text-[length:var(--app-sidebar-title-font-size)] font-medium text-foreground">
+                <span className="min-w-0 flex-1 truncate text-[length:var(--app-sidebar-title-font-size)] font-medium text-foreground">
                   {thread.title}
                 </span>
+                <ThreadBrowserOpenStatus
+                  environmentId={thread.environmentId}
+                  threadId={thread.id}
+                />
               </span>
               <span className="flex min-w-0 items-center gap-1.5 text-[length:var(--app-sidebar-meta-font-size)] font-normal text-muted-foreground">
                 <span className="truncate">{projectName}</span>
@@ -507,7 +484,10 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                     <span role="status">{statusLabel.label}</span>
                     {statusLabel.showElapsed ? (
                       <span aria-hidden="true">
-                        <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                        <WorkingDuration
+                          startedAt={resolveWorkingStartedAt(thread)}
+                          className="font-mono"
+                        />
                       </span>
                     ) : null}
                   </span>
@@ -525,6 +505,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
               <span className="min-w-0 flex-1 truncate text-[length:var(--app-sidebar-title-font-size)] font-medium text-foreground">
                 {thread.title}
               </span>
+              <ThreadBrowserOpenStatus environmentId={thread.environmentId} threadId={thread.id} />
             </span>
             {/* The metadata line earns its row only when it has something to
                 say: a branchless thread with no PR or terminal would otherwise
@@ -537,7 +518,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                   <span className="flex-1" />
                 )}
                 {terminalIcon}
-                {prStatus && pr ? (
+                {prStatus ? (
                   <button
                     aria-label={prStatus.tooltip}
                     className={cn(
@@ -547,7 +528,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
                     onClick={handlePrClick}
                     type="button"
                   >
-                    #{pr.number}
+                    #{prStatus.number}
                   </button>
                 ) : null}
                 {isRemote ? (

@@ -15,8 +15,9 @@ import {
 } from "lucide-react";
 import {
   prStatusIndicator,
-  resolveThreadPr,
   terminalStatusFromRunningIds,
+  ThreadBrowserOpenStatus,
+  ThreadStatusCornerBadge,
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -96,7 +97,6 @@ import {
 } from "../keybindings";
 import { useModelPickerOpen } from "../modelPickerOpenState";
 import { useShortcutModifierState } from "../shortcutModifierState";
-import { useGitStatus } from "../lib/gitStatusState";
 import { openPullRequestLink } from "../lib/openPullRequestLink";
 import { readLocalApi } from "../localApi";
 import { type DraftThreadEnvMode, useComposerDraftStore } from "../composerDraftStore";
@@ -161,7 +161,6 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
-  resolveSidebarThreadGitCwd,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   orderItemsByPreferredIds,
@@ -335,23 +334,17 @@ interface SidebarThreadRowProps {
 }
 
 const SidebarThreadPrStatus = memo(function SidebarThreadPrStatus(props: {
-  environmentId: SidebarThreadSummary["environmentId"];
-  branch: string | null;
-  gitCwd: string | null;
+  pullRequest: SidebarThreadSummary["pullRequest"];
   openPrLink: (event: React.MouseEvent<HTMLElement>, prUrl: string) => void;
 }) {
-  const gitStatus = useGitStatus({
-    environmentId: props.environmentId,
-    cwd: props.branch !== null ? props.gitCwd : null,
-  });
-  const prStatus = prStatusIndicator(resolveThreadPr(props.branch, gitStatus.data));
+  const prStatus = prStatusIndicator(props.pullRequest);
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
       if (prStatus) {
         props.openPrLink(event, prStatus.url);
       }
     },
-    [prStatus, props.openPrLink],
+    [prStatus, props],
   );
 
   if (!prStatus) {
@@ -478,11 +471,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     threadId: virtualAgentRun?.parentThreadId ?? thread.id,
   });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
-  const gitCwd = resolveSidebarThreadGitCwd({
-    worktreePath: thread.worktreePath,
-    threadProjectCwd,
-    projectCwd: props.projectCwd,
-  });
   const isHighlighted = isActive || isSelected;
   const projectName =
     threadProjectName ?? (props.projectCwd ? formatWorktreePathForDisplay(props.projectCwd) : null);
@@ -790,7 +778,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
           ) : null}
           <div className="flex min-w-0 items-center gap-1.5">
-            {threadStatus && <ThreadStatusLabel status={threadStatus} />}
+            {threadStatus && threadStatus.presentation !== "corner-badge" ? (
+              <ThreadStatusLabel status={threadStatus} />
+            ) : null}
             {renamingThreadKey === threadKey ? (
               <input
                 ref={handleRenameInputRef}
@@ -820,6 +810,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 </TooltipPopup>
               </Tooltip>
             )}
+            <ThreadBrowserOpenStatus environmentId={thread.environmentId} threadId={thread.id} />
             {props.hasChildren ? (
               <button
                 type="button"
@@ -850,12 +841,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 {worktreeLabel}
               </span>
             ) : null}
-            <SidebarThreadPrStatus
-              environmentId={thread.environmentId}
-              branch={thread.branch}
-              gitCwd={gitCwd}
-              openPrLink={openPrLink}
-            />
+            <SidebarThreadPrStatus pullRequest={thread.pullRequest} openPrLink={openPrLink} />
           </div>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
@@ -1020,6 +1006,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   isRemoteThread={isRemoteThread}
                   label={threadEnvironmentLabel}
                 />
+                {/* One right-aligned slot: a keyboard jump hint wins, then the
+                      Working/Done badge, then the relative timestamp. */}
                 {jumpLabel ? (
                   <span
                     className="inline-flex h-5 items-center rounded-full border border-border/80 bg-background/90 px-1.5 font-mono text-[length:var(--app-sidebar-font-size)] font-medium tracking-tight text-foreground shadow-sm"
@@ -1027,6 +1015,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   >
                     {jumpLabel}
                   </span>
+                ) : threadStatus?.presentation === "corner-badge" ? (
+                  <ThreadStatusCornerBadge status={threadStatus} thread={thread} />
                 ) : (
                   <span
                     className={`${
@@ -3061,7 +3051,7 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   const canGoForward = historyIndex < router.history.length - 1;
   const wordmark = (
     <div className="flex w-full items-center gap-2">
-      {/* Mobile sheet open/close; desktop collapse lives in SidebarTopActions + content headers. */}
+      {/* Mobile sheet open/close; desktop collapse uses content-header SidebarTrigger icons. */}
       <SidebarTrigger className="no-drag shrink-0 md:hidden" />
       <div
         aria-label="Chat navigation history"
@@ -3162,7 +3152,6 @@ interface SidebarProjectsContentProps {
   routeThreadKey: string | null;
   newThreadShortcutLabel: string | null;
   commandPaletteShortcutLabel: string | null;
-  sidebarToggleShortcutLabel: string | null;
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   expandThreadListForProject: (projectKey: string) => void;
   collapseThreadListForProject: (projectKey: string) => void;
@@ -3208,7 +3197,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     routeThreadKey,
     newThreadShortcutLabel,
     commandPaletteShortcutLabel,
-    sidebarToggleShortcutLabel,
     threadJumpLabelByKey,
     expandThreadListForProject,
     collapseThreadListForProject,
@@ -3253,10 +3241,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
   );
   return (
     <SidebarContent className="gap-0">
-      <SidebarTopActions
-        commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-        sidebarToggleShortcutLabel={sidebarToggleShortcutLabel}
-      />
+      <SidebarTopActions commandPaletteShortcutLabel={commandPaletteShortcutLabel} />
       {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
         <SidebarGroup className="px-2 pt-2 pb-0">
           <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
@@ -3974,11 +3959,6 @@ export default function Sidebar() {
     "commandPalette.toggle",
     newThreadShortcutLabelOptions,
   );
-  const sidebarToggleShortcutLabel = shortcutLabelForCommand(
-    keybindings,
-    "sidebar.toggle",
-    newThreadShortcutLabelOptions,
-  );
   const handleDesktopUpdateButtonClick = useCallback(() => {
     const bridge = window.desktopBridge;
     if (!bridge || !desktopUpdateState) return;
@@ -4108,7 +4088,6 @@ export default function Sidebar() {
             routeThreadKey={routeThreadKey}
             newThreadShortcutLabel={newThreadShortcutLabel}
             commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-            sidebarToggleShortcutLabel={sidebarToggleShortcutLabel}
             threadJumpLabelByKey={visibleThreadJumpLabelByKey}
             expandThreadListForProject={expandThreadListForProject}
             collapseThreadListForProject={collapseThreadListForProject}

@@ -151,6 +151,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       return;
     }
     if (item.kind === "synchronized") {
+      if (item.sequence !== undefined) {
+        yield* SubscriptionRef.update(lastSequence, (sequence) =>
+          Math.max(sequence, item.sequence ?? sequence),
+        );
+      }
       return;
     }
 

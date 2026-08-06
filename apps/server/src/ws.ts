@@ -1184,7 +1184,13 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                   return Stream.concat(
                     catchUpStream,
                     input.requestCompletionMarker === true
-                      ? Stream.concat(Stream.make({ kind: "synchronized" as const }), liveAfterHead)
+                      ? Stream.concat(
+                          Stream.make({
+                            kind: "synchronized" as const,
+                            sequence: headSequence,
+                          }),
+                          liveAfterHead,
+                        )
                       : liveAfterHead,
                   );
                 }
@@ -1274,7 +1280,13 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                   return Stream.concat(
                     catchUpStream,
                     input.requestCompletionMarker === true
-                      ? Stream.concat(Stream.make({ kind: "synchronized" as const }), liveAfterHead)
+                      ? Stream.concat(
+                          Stream.make({
+                            kind: "synchronized" as const,
+                            sequence: headSequence,
+                          }),
+                          liveAfterHead,
+                        )
                       : liveAfterHead,
                   );
                 }

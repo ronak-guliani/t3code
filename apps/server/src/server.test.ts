@@ -1955,7 +1955,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           updatedAt: "2026-01-01T00:00:02.000Z",
         },
       } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
-
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
@@ -2047,6 +2046,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           updatedAt: "2026-01-01T00:00:01.000Z",
         },
       } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+      const liveMessageEvent = {
+        ...messageEvent,
+        sequence: 3,
+        eventId: EventId.make("event-thread-live"),
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        payload: {
+          ...messageEvent.payload,
+          messageId: MessageId.make("message-thread-live"),
+          text: "Live",
+          createdAt: "2026-01-01T00:00:02.000Z",
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
 
       yield* buildAppUnderTest({
         layers: {
@@ -2072,13 +2084,74 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             threadId: defaultThreadId,
             afterSequence: 1,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "synchronized"
+                ? PubSub.publish(liveEvents, liveMessageEvent)
+                : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+          ),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "event");
       assert.equal(items[0]?.kind === "event" ? items[0].event.sequence : null, 2);
       assert.equal(items[1]?.kind, "synchronized");
+      assert.equal(items[1]?.kind === "synchronized" ? items[1].sequence : null, 2);
+      assert.equal(items[2]?.kind, "event");
+      assert.equal(items[2]?.kind === "event" ? items[2].event.sequence : null, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("advances a thread cursor past unrelated replay events", () =>
+    Effect.gen(function* () {
+      const otherThreadId = ThreadId.make("thread-other");
+      const unrelatedEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-unrelated-thread"),
+        aggregateKind: "thread",
+        aggregateId: otherThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.deleted",
+        payload: {
+          threadId: otherThreadId,
+          deletedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.deleted" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            getReadModel: () =>
+              Effect.succeed({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
+            readEvents: () => Stream.make(unrelatedEvent),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshotById: () =>
+              Effect.die("A valid resume cursor must not reload the thread snapshot"),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const item = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      ).pipe(Effect.timeout("2 seconds"), Effect.map(Option.getOrThrow));
+
+      assert.equal(item.kind, "synchronized");
+      assert.equal(item.kind === "synchronized" ? item.sequence : null, 2);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2112,6 +2185,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           updatedAt: thread.updatedAt,
         },
       } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>;
+      const liveCreatedEvent = {
+        ...createdEvent,
+        sequence: 3,
+        eventId: EventId.make("event-shell-live"),
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        payload: {
+          ...createdEvent.payload,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>;
 
       yield* buildAppUnderTest({
         layers: {
@@ -2137,13 +2220,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           client[ORCHESTRATION_WS_METHODS.subscribeShell]({
             afterSequence: 1,
             requestCompletionMarker: true,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "synchronized"
+                ? PubSub.publish(liveEvents, liveCreatedEvent)
+                : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+          ),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "thread-upserted");
       assert.equal(items[0]?.kind === "thread-upserted" ? items[0].sequence : null, 2);
       assert.equal(items[1]?.kind, "synchronized");
+      assert.equal(items[1]?.kind === "synchronized" ? items[1].sequence : null, 2);
+      assert.equal(items[2]?.kind, "thread-upserted");
+      assert.equal(items[2]?.kind === "thread-upserted" ? items[2].sequence : null, 3);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
