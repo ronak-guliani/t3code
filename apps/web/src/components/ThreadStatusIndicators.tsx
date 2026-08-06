@@ -1,16 +1,67 @@
-import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
-import type { GitResolvedPullRequest } from "@t3tools/contracts";
-import { CloudIcon, GitPullRequestIcon, TerminalIcon } from "lucide-react";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
+import type { GitResolvedPullRequest, ThreadId } from "@t3tools/contracts";
+import {
+  AppWindowIcon,
+  CheckIcon,
+  CloudIcon,
+  GitPullRequestIcon,
+  PlayIcon,
+  TerminalIcon,
+} from "lucide-react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
+import { cn } from "../lib/utils";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
+import { useThreadBrowserOpen } from "../rightPanelStore";
 import { useUiStateStore } from "../uiStateStore";
+import { formatWorkingDurationLabel, resolveWorkingStartedAt } from "./SidebarV2.logic";
 import { resolveThreadStatusPill, type ThreadStatusPill } from "./Sidebar.logic";
 import type { SidebarThreadSummary } from "../types";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+
+/** Static glyph nodes — avoid re-allocating Lucide elements on every row render. */
+const WORKING_BADGE_ICON = (
+  <span
+    aria-hidden="true"
+    className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-full bg-sky-500 text-white dark:bg-sky-400"
+  >
+    <PlayIcon className="size-2 fill-current" />
+  </span>
+);
+
+const DONE_BADGE_ICON = (
+  <span
+    aria-hidden="true"
+    className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white dark:bg-emerald-400"
+  >
+    <CheckIcon className="size-2.5 stroke-[3]" />
+  </span>
+);
+
+// Self-ticking so only this span re-renders each second, not the whole row.
+const WorkingDuration = memo(function WorkingDuration({
+  startedAt,
+}: {
+  readonly startedAt: string | null;
+}) {
+  const startedMs = startedAt !== null ? Date.parse(startedAt) : Number.NaN;
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (Number.isNaN(startedMs)) return undefined;
+    const timer = window.setInterval(() => setTick((tick) => tick + 1), 1_000);
+    return () => window.clearInterval(timer);
+  }, [startedMs]);
+  if (Number.isNaN(startedMs)) return null;
+  return (
+    <span className="font-mono tabular-nums">
+      {formatWorkingDurationLabel(Date.now() - startedMs)}
+    </span>
+  );
+});
 
 export interface PrStatusIndicator {
   label: "PR open" | "PR closed" | "PR merged";
@@ -24,6 +75,19 @@ export interface TerminalStatusIndicator {
   label: "Terminal process running";
   colorClass: string;
   pulse: boolean;
+}
+
+export interface BrowserStatusIndicator {
+  label: "Browser open";
+  colorClass: string;
+}
+
+export function browserStatusIndicator(isOpen: boolean): BrowserStatusIndicator | null {
+  if (!isOpen) return null;
+  return {
+    label: "Browser open",
+    colorClass: "text-sky-600 dark:text-sky-300/90",
+  };
 }
 
 export type ThreadPr = GitResolvedPullRequest | null | undefined;
@@ -85,7 +149,9 @@ export function ThreadStatusLabel({
   status: ThreadStatusPill;
   compact?: boolean;
 }) {
-  if (compact || status.dotOnly) {
+  // Corner badges own the full row treatment; compact contexts still need a
+  // quiet marker so rolled-up "show more" / palette rows stay scannable.
+  if (compact || status.presentation === "dot" || status.presentation === "corner-badge") {
     return (
       <span
         title={status.label}
@@ -116,6 +182,50 @@ export function ThreadStatusLabel({
     </span>
   );
 }
+
+/**
+ * Top-right Working/Done badge for sidebar v1 rows. Opacity-only CSS pulse on
+ * Working (3s); Done stays static. Duration ticks in an isolated child so the
+ * parent row does not re-render every second.
+ */
+export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
+  status,
+  thread,
+}: {
+  readonly status: ThreadStatusPill;
+  readonly thread: Pick<SidebarThreadSummary, "latestTurn" | "session" | "createdAt">;
+}) {
+  if (status.presentation !== "corner-badge") {
+    return null;
+  }
+
+  const isWorking = status.label === "Working";
+  const label = isWorking ? "Working" : "Done";
+
+  return (
+    <span
+      role="status"
+      aria-label={status.label}
+      title={status.label}
+      data-status-corner-badge=""
+      // Paint-contain the animated node so native vibrancy rows don't ghost
+      // neighboring pixels when opacity pulses (see scars.md).
+      className={cn(
+        "pointer-events-none absolute top-1 right-1 z-[1] inline-flex items-center gap-1 font-medium",
+        "[contain:paint] [transform:translateZ(0)]",
+        status.colorClass,
+        isWorking && "animate-status-badge-pulse motion-reduce:animate-none",
+      )}
+      style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
+    >
+      <span aria-hidden="true" className="inline-flex items-center gap-1">
+        {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
+        <span>{label}</span>
+        {isWorking ? <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} /> : null}
+      </span>
+    </span>
+  );
+});
 
 /**
  * Non-interactive leading status icons for a thread row in compact contexts
@@ -166,12 +276,52 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
  * like the command palette. Shows a terminal-running indicator and a remote
  * environment indicator, matching the sidebar's trailing indicators.
  */
+/**
+ * Browser-open marker shown after a sidebar thread title. Uses the thread's own
+ * right-panel state (not the terminal parent override) so nested chats keep an
+ * independent browser indicator.
+ */
+export function ThreadBrowserOpenStatus({
+  environmentId,
+  threadId,
+}: {
+  environmentId: SidebarThreadSummary["environmentId"];
+  threadId: ThreadId;
+}) {
+  const threadRef = useMemo(
+    () => scopeThreadRef(environmentId, threadId),
+    [environmentId, threadId],
+  );
+  const browserOpen = useThreadBrowserOpen(threadRef);
+  const browserStatus = browserStatusIndicator(browserOpen);
+
+  if (!browserStatus) {
+    return null;
+  }
+
+  return (
+    <span
+      role="img"
+      aria-label={browserStatus.label}
+      title={browserStatus.label}
+      className={`inline-flex shrink-0 items-center justify-center ${browserStatus.colorClass}`}
+    >
+      <AppWindowIcon className="size-3" />
+    </span>
+  );
+}
+
 export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSummary }) {
   const threadRef = resolveTerminalThreadRef(thread);
+  const browserThreadRef = useMemo(
+    () => scopeThreadRef(thread.environmentId, thread.id),
+    [thread.environmentId, thread.id],
+  );
   const runningTerminalIds = useTerminalStateStore(
     (state) =>
       selectThreadTerminalState(state.terminalStateByThreadKey, threadRef).runningTerminalIds,
   );
+  const browserOpen = useThreadBrowserOpen(browserThreadRef);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isRemoteThread =
     primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId;
@@ -185,13 +335,24 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
     ? (remoteEnvLabel ?? remoteEnvSavedLabel ?? "Remote")
     : null;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
+  const browserStatus = browserStatusIndicator(browserOpen);
 
-  if (!terminalStatus && !isRemoteThread) {
+  if (!terminalStatus && !browserStatus && !isRemoteThread) {
     return null;
   }
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5">
+      {browserStatus ? (
+        <span
+          role="img"
+          aria-label={browserStatus.label}
+          title={browserStatus.label}
+          className={`inline-flex items-center justify-center ${browserStatus.colorClass}`}
+        >
+          <AppWindowIcon className="size-3" />
+        </span>
+      ) : null}
       {terminalStatus ? (
         <span
           role="img"
