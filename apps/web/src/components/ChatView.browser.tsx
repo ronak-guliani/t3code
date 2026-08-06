@@ -4177,7 +4177,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides the archive action when the pointer leaves a thread row", async () => {
+  it("hides the thread actions menu when the pointer leaves a thread row", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -4190,22 +4190,22 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
 
       await expect.element(threadRow).toBeInTheDocument();
-      const archiveButton = await waitForElement(
+      const actionsTrigger = await waitForElement(
         () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find archive button.",
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-actions-${THREAD_ID}"]`),
+        "Unable to find thread actions trigger.",
       );
-      const archiveAction = archiveButton.parentElement;
+      const hoverCluster = actionsTrigger.parentElement;
       expect(
-        archiveAction,
-        "Archive button should render inside a visibility wrapper.",
+        hoverCluster,
+        "Thread actions trigger should render inside a hover cluster.",
       ).not.toBeNull();
-      expect(getComputedStyle(archiveAction!).opacity).toBe("0");
+      expect(getComputedStyle(hoverCluster!).opacity).toBe("0");
 
       await threadRow.hover();
       await vi.waitFor(
         () => {
-          expect(getComputedStyle(archiveAction!).opacity).toBe("1");
+          expect(getComputedStyle(hoverCluster!).opacity).toBe("1");
         },
         { timeout: 4_000, interval: 16 },
       );
@@ -4213,7 +4213,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await page.getByTestId("composer-editor").hover();
       await vi.waitFor(
         () => {
-          expect(getComputedStyle(archiveAction!).opacity).toBe("0");
+          expect(getComputedStyle(hoverCluster!).opacity).toBe("0");
         },
         { timeout: 4_000, interval: 16 },
       );
@@ -4273,9 +4273,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect.element(threadRow).toBeInTheDocument();
       await threadRow.hover();
 
-      const archiveButton = page.getByTestId(`thread-archive-${THREAD_ID}`);
-      await expect.element(archiveButton).toBeInTheDocument();
-      await archiveButton.click();
+      // The overflow menu renders in a portal, so drive it through the DOM the
+      // same way the rest of this file drives portaled surfaces.
+      const actionsTrigger = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-actions-${THREAD_ID}"]`),
+        "Unable to find thread actions trigger.",
+      );
+      actionsTrigger.click();
+
+      const archiveItem = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
+        "Unable to find the archive menu item.",
+      );
+      archiveItem.click();
 
       const confirmButton = page.getByTestId(`thread-archive-confirm-${THREAD_ID}`);
       await expect.element(confirmButton).toBeInTheDocument();
