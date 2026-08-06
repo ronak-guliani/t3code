@@ -31,11 +31,16 @@ const DONE_BADGE_ICON = (
   </span>
 );
 
-// Self-ticking so only this span re-renders each second, not the whole row.
-const WorkingDuration = memo(function WorkingDuration({
+/**
+ * Self-ticking elapsed label shared by sidebar v1 badges and v2 status rows.
+ * Only this span re-renders each second — not the parent row.
+ */
+export const WorkingDuration = memo(function WorkingDuration({
   startedAt,
+  className,
 }: {
   readonly startedAt: string | null;
+  readonly className?: string;
 }) {
   const startedMs = startedAt !== null ? Date.parse(startedAt) : Number.NaN;
   const [, setTick] = useState(0);
@@ -46,7 +51,7 @@ const WorkingDuration = memo(function WorkingDuration({
   }, [startedMs]);
   if (Number.isNaN(startedMs)) return null;
   return (
-    <span className="tabular-nums tracking-tight">
+    <span className={cn("tabular-nums", className)}>
       {formatWorkingDurationLabel(Date.now() - startedMs)}
     </span>
   );
@@ -218,7 +223,12 @@ export const ThreadStatusCornerBadge = memo(function ThreadStatusCornerBadge({
         {isWorking ? WORKING_BADGE_ICON : DONE_BADGE_ICON}
         <span className="inline-flex items-baseline gap-1 font-medium tracking-tight">
           <span>{label}</span>
-          {isWorking ? <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} /> : null}
+          {isWorking ? (
+            <WorkingDuration
+              startedAt={resolveWorkingStartedAt(thread)}
+              className="tracking-tight"
+            />
+          ) : null}
         </span>
       </span>
     </span>
