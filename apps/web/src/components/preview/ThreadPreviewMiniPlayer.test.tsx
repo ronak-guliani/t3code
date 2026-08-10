@@ -55,5 +55,6 @@ describe("ThreadPreviewMiniPlayer", () => {
     expect(markup).toContain("Open preview in panel");
     expect(markup).toContain("Resize floating preview");
     expect(markup).toContain("backdrop-blur-md");
+    expect(markup).toContain("pointer-coarse:w-[84px]");
   });
 });

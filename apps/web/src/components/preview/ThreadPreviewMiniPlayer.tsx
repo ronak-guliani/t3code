@@ -225,7 +225,7 @@ export function ThreadPreviewMiniPlayer(props: {
             aria-hidden
             className="size-3 text-muted-foreground/70 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0"
           />
-          <div className="flex w-0 overflow-hidden opacity-0 transition-[width,opacity] group-hover:w-[84px] group-hover:opacity-100 group-focus-within:w-[84px] group-focus-within:opacity-100">
+          <div className="flex w-0 overflow-hidden opacity-0 transition-[width,opacity] group-hover:w-[84px] group-hover:opacity-100 group-focus-within:w-[84px] group-focus-within:opacity-100 pointer-coarse:w-[84px] pointer-coarse:opacity-100">
             <Button
               variant="ghost"
               size="icon-xs"

@@ -2163,17 +2163,16 @@ function ChatViewBody(
     }
     if (
       browserPanel.isOpen &&
-      browserPanel.surfaces.some(
-        (surface) => surface.kind === "preview" && surface.resourceId === floatingTabId,
-      )
+      activeBrowserSurface?.kind === "preview" &&
+      activeBrowserSurface.resourceId === floatingTabId
     ) {
       usePreviewMiniPlayerStore.getState().close(activeThreadRef);
     }
   }, [
     activePreviewMiniPlayer,
     activeThreadRef,
+    activeBrowserSurface,
     browserPanel.isOpen,
-    browserPanel.surfaces,
     previewState.sessions,
   ]);
   const activateRightPanelSurface = useCallback(
