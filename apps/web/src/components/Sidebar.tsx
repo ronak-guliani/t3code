@@ -199,8 +199,10 @@ import {
   deriveSidebarThreadsWithAgentRuns,
   buildSidebarThreadRows,
   selectVisibleSidebarThreads,
+  selectVisibleThreadRows,
   type SidebarThreadRowView,
 } from "../sidebarThreadTree";
+import { compactSidebarTimeLabel } from "./SidebarV2.logic";
 import { SidebarHoverThreadPrewarmer } from "./SidebarThreadPrewarmer";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
@@ -216,6 +218,47 @@ const SIDEBAR_LIST_ANIMATION_OPTIONS = {
   easing: "ease-out",
 } as const;
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
+
+/** Root threads mounted per project before the tail sentinel grows the window. */
+const SIDEBAR_THREAD_WINDOW_SIZE = 30;
+
+/**
+ * Zero-height tail marker that grows the thread window once it scrolls near the
+ * viewport. Remounted on every growth so a sentinel that is still visible keeps
+ * filling the list.
+ */
+const SidebarThreadWindowSentinel = memo(function SidebarThreadWindowSentinel({
+  onReveal,
+}: {
+  onReveal: () => void;
+}) {
+  const [sentinel, setSentinel] = useState<HTMLLIElement | null>(null);
+
+  useEffect(() => {
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          onReveal();
+        }
+      },
+      { rootMargin: "240px" },
+    );
+    observer.observe(sentinel);
+    return () => {
+      observer.disconnect();
+    };
+  }, [onReveal, sentinel]);
+
+  return (
+    <SidebarMenuSubItem
+      ref={setSentinel}
+      aria-hidden
+      className="h-2 w-full"
+      data-thread-selection-safe
+    />
+  );
+});
 const EMPTY_THREAD_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
 type ContextMenuPosition = { x: number; y: number };
 
@@ -479,6 +522,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const handleRowKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      // The row surface hosts its own controls (actions menu, expand chevron,
+      // port button); only activate the row when it is the keyboard target.
+      if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       if (virtualAgentRun) {
@@ -643,9 +689,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const threadIndent = props.depth > 0 ? props.depth * 18 : 0;
   const canArchive = virtualAgentRun ? virtualAgentRun.status !== "running" : !isThreadRunning;
 
+  // A running agent run can neither be pinned, opened as a PR, nor archived, so
+  // its trigger would open an empty popup.
+  const hasOverflowActions = !virtualAgentRun || prStatus !== null || canArchive;
+
   // One overflow control replaces the per-row pin/archive icon cluster; the
   // right-click menu still carries the long tail (rename, copy, delete).
-  const overflowMenu = (
+  const overflowMenu = !hasOverflowActions ? null : (
     <Menu>
       <MenuTrigger
         aria-label={`Actions for ${thread.title}`}
@@ -807,10 +857,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </button>
           ) : null}
         </span>
-        {/* One right-hand slot, two states stacked in the same box: the row is
-            quiet at rest and only reveals time plus actions under the pointer,
-            so nothing reflows on hover. */}
-        <span className="relative ml-auto flex h-5 min-w-14 shrink-0 items-center justify-end">
+        {/* One right-hand slot, two states stacked in the same grid cell: the
+            row is quiet at rest and only reveals time plus actions under the
+            pointer. Stacking (rather than a fixed width) lets the slot size to
+            its widest state, so nothing reflows on hover and the parent's
+            `truncate` on the last child cannot clip the time label. */}
+        <span className="ml-auto grid h-5 shrink-0 items-center justify-items-end">
           {isConfirmingArchive ? (
             <button
               ref={handleConfirmArchiveRef}
@@ -826,9 +878,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </button>
           ) : (
             <>
-              <span
-                className={`absolute inset-y-0 right-0 flex items-center ${threadMetaClassName}`}
-              >
+              <span className={`col-start-1 row-start-1 flex items-center ${threadMetaClassName}`}>
                 {jumpLabel ? (
                   <span
                     className="inline-flex h-5 items-center rounded-full border border-border/80 bg-background/90 px-1.5 font-mono text-[length:var(--app-sidebar-font-size)] font-medium tracking-tight text-foreground shadow-sm"
@@ -840,7 +890,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   <PinIcon className="size-3 fill-current text-primary" />
                 ) : null}
               </span>
-              <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/menu-sub-item:pointer-events-auto group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:pointer-events-auto group-focus-within/menu-sub-item:opacity-100 max-sm:pointer-events-auto max-sm:opacity-100">
+              <span className="pointer-events-none col-start-1 row-start-1 flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover/menu-sub-item:pointer-events-auto group-hover/menu-sub-item:opacity-100 group-focus-within/menu-sub-item:pointer-events-auto group-focus-within/menu-sub-item:opacity-100 max-sm:pointer-events-auto max-sm:opacity-100">
                 <span
                   className={
                     isHighlighted
@@ -849,8 +899,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   }
                   style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
                 >
-                  {formatRelativeTimeLabel(
-                    thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                  {compactSidebarTimeLabel(
+                    formatRelativeTimeLabel(
+                      thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+                    ),
                   )}
                 </span>
                 {overflowMenu}
@@ -976,13 +1028,30 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
     },
   });
   const pinnedThreadKeySet = useMemo(() => new Set(pinnedThreadKeys), [pinnedThreadKeys]);
+  // `content-visibility` defers paint but not element creation, hooks, or store
+  // subscriptions, so long projects still mount their whole history. Grow the
+  // window as the tail scrolls into view instead: no extra click tier, but the
+  // mounted row count stays proportional to what the user has actually reached.
+  const [rootLimit, setRootLimit] = useState(SIDEBAR_THREAD_WINDOW_SIZE);
+  const revealMoreThreadRows = useCallback(() => {
+    setRootLimit((limit) => limit + SIDEBAR_THREAD_WINDOW_SIZE);
+  }, []);
+  const { rows: windowedThreadRows, hasOverflow: hasWindowedThreadOverflow } = useMemo(
+    () =>
+      selectVisibleThreadRows({
+        rowViews: renderedThreadRows,
+        rootLimit,
+        requiredThreadKey: activeRouteThreadKey,
+      }),
+    [activeRouteThreadKey, renderedThreadRows, rootLimit],
+  );
   const sortablePinnedThreadKeys = useMemo(
     () =>
-      renderedThreadRows
+      windowedThreadRows
         .filter((row) => row.depth === 0)
         .map((row) => row.threadKey)
         .filter((threadKey) => pinnedThreadKeySet.has(threadKey)),
-    [pinnedThreadKeySet, renderedThreadRows],
+    [pinnedThreadKeySet, windowedThreadRows],
   );
 
   const renderThreadRow = useCallback(
@@ -1100,7 +1169,13 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
           </div>
         </SidebarMenuSubItem>
       ) : null}
-      {renderedThreadRows.map(renderThreadRow)}
+      {windowedThreadRows.map(renderThreadRow)}
+      {hasWindowedThreadOverflow ? (
+        <SidebarThreadWindowSentinel
+          key={windowedThreadRows.length}
+          onReveal={revealMoreThreadRows}
+        />
+      ) : null}
     </SidebarMenuSub>
   );
 
