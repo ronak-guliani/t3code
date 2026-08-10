@@ -170,6 +170,18 @@ export interface DesktopUpdateCheckResult {
   state: DesktopUpdateState;
 }
 
+export interface DesktopLocalRebuildState {
+  enabled: boolean;
+  sourceRoot: string | null;
+  reason: string | null;
+}
+
+export interface DesktopLocalRebuildResult {
+  accepted: boolean;
+  logPath: string | null;
+  message: string | null;
+}
+
 export interface DesktopEnvironmentBootstrap {
   label: string;
   httpBaseUrl: string | null;
@@ -776,7 +788,7 @@ export interface DesktopPreviewBridge {
 
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
-  getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
+  getLocalEnvironmentBootstrap?: () => DesktopEnvironmentBootstrap | null;
   preview?: DesktopPreviewBridge;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
@@ -805,6 +817,8 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  getLocalRebuildState?: () => Promise<DesktopLocalRebuildState>;
+  rebuildAndRestart?: () => Promise<DesktopLocalRebuildResult>;
   showNotification: (request: DesktopNotificationRequest) => Promise<boolean>;
   onNotificationClick: (listener: (click: DesktopNotificationClick) => void) => () => void;
 }

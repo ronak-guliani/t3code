@@ -389,9 +389,11 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
 
 /**
  * Re-exposes the collapse control in content chrome only while the sidebar's
- * own trigger is hidden, so the two never render at once. The sidebar hosts a
- * trigger only in the desktop app's title-bar header; on web the sidebar header
- * is hidden at `md` and up, so the content header keeps ownership there.
+ * own trigger is hidden, so the two never render at once. Both sidebars host a
+ * trigger in the desktop app's title-bar header on every Electron platform; on
+ * web that header is hidden at `md` and up, so the content header keeps
+ * ownership there. Adding a third sidebar means giving it a title-bar trigger
+ * too, or this yields to one that does not exist.
  */
 function SidebarCollapsedTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
   const { open, isMobile } = useSidebar();
