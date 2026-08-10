@@ -23,6 +23,7 @@ import {
   threadHasSettlementOverride,
   threadIsSnoozed,
 } from "./commandInvariants.ts";
+import { canonicalizeWorktreePath } from "../git/worktreePaths.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
@@ -548,30 +549,38 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       const occurredAt = nowIso();
       const threadsToArchive = collectActiveThreadSubtree(readModel, command.threadId);
       const archiveThreadIds = new Set(threadsToArchive.map((thread) => thread.id));
-      // One cleanup reservation per worktree path for this archive batch.
+      // One cleanup reservation per canonical worktree path for this archive batch.
       const cleanupPathOwners = new Set<string>();
       const archivedEvents: PlannedOrchestrationEvent[] = [];
 
       for (const thread of threadsToArchive) {
         const project = readModel.projects.find((entry) => entry.id === thread.projectId);
         const worktreePath = thread.worktreePath;
+        const canonicalWorktreePath =
+          worktreePath === null
+            ? null
+            : yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
         const shouldCheckWorktreeOwnership =
           threadHasMergedPullRequest(thread) &&
-          worktreePath !== null &&
+          canonicalWorktreePath !== null &&
           project !== undefined &&
-          !cleanupPathOwners.has(worktreePath);
+          !cleanupPathOwners.has(canonicalWorktreePath);
         const hasActiveWorktreeOwner =
-          shouldCheckWorktreeOwnership && worktreePath !== null
-            ? yield* hasCanonicalActiveWorktreeOwner(readModel, archiveThreadIds, worktreePath)
+          shouldCheckWorktreeOwnership && canonicalWorktreePath !== null
+            ? yield* hasCanonicalActiveWorktreeOwner(
+                readModel,
+                archiveThreadIds,
+                canonicalWorktreePath,
+              )
             : true;
         const worktreeCleanup =
           shouldCheckWorktreeOwnership &&
           !hasActiveWorktreeOwner &&
           project !== undefined &&
-          worktreePath !== null
+          canonicalWorktreePath !== null
             ? {
                 cwd: project.workspaceRoot,
-                path: worktreePath,
+                path: canonicalWorktreePath,
               }
             : undefined;
         if (worktreeCleanup !== undefined) {

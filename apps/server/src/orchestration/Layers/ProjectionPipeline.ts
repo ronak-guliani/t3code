@@ -32,6 +32,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionWorkflowRepository } from "../../persistence/Services/ProjectionWorkflows.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { pullRequestFromReviewSnapshot } from "../reviewPullRequest.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
@@ -656,9 +657,38 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+
+          // Archive can schedule destructive cleanup. Cancel any pending job for
+          // this thread (or its path aliases) so unarchive cannot race a remove
+          // that treats the restored thread as non-owning.
+          yield* worktreeCleanupJobRepository.cancelByThreadId(event.payload.threadId);
+          const worktreePath = existingRow.value.worktreePath;
+          let clearedMissingWorktree = false;
+          if (worktreePath !== null) {
+            const canonicalPath = yield* Effect.promise(() =>
+              canonicalizeWorktreePath(worktreePath),
+            );
+            const pendingJobs = yield* worktreeCleanupJobRepository.list();
+            yield* Effect.forEach(
+              pendingJobs,
+              (job) =>
+                Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
+                  Effect.flatMap((pendingPath) =>
+                    pendingPath === canonicalPath
+                      ? worktreeCleanupJobRepository.cancelByThreadId(job.threadId)
+                      : Effect.void,
+                  ),
+                ),
+              { concurrency: 4, discard: true },
+            );
+            const stillExists = yield* fileSystem.exists(canonicalPath);
+            clearedMissingWorktree = !stillExists;
+          }
+
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: null,
+            ...(clearedMissingWorktree ? { worktreePath: null } : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

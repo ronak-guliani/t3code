@@ -124,6 +124,7 @@ const make = Effect.gen(function* () {
           return Option.none<{
             readonly cleanup: WorktreeCleanupJob;
             readonly canonicalPath: string;
+            readonly siblingThreadIds: ReadonlyArray<WorktreeCleanupJob["threadId"]>;
           }>();
         }
 
@@ -132,6 +133,22 @@ const make = Effect.gen(function* () {
           canonicalizeWorktreePath(cleanup.worktreePath),
         );
         const readModel = yield* orchestrationEngine.getReadModel();
+        const cleanupThread = readModel.threads.find((thread) => thread.id === cleanup.threadId);
+        // Archive cleanup can race unarchive: the job still names this thread, but
+        // ownership checks exclude it. If the owner is active again, abort removal.
+        const cleanupOwnerIsActive =
+          cleanupThread !== undefined &&
+          cleanupThread.deletedAt === null &&
+          cleanupThread.archivedAt === null;
+        if (cleanupOwnerIsActive) {
+          yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
+          yield* Effect.logInfo("cancelled worktree cleanup after owner became active again", {
+            threadId: cleanup.threadId,
+            worktreePath: canonicalPath,
+          });
+          return Option.none();
+        }
+
         const activeOwner = yield* findCanonicalActiveWorktreeOwner(
           readModel,
           cleanup.threadId,
@@ -148,10 +165,42 @@ const make = Effect.gen(function* () {
           return Option.none();
         }
 
-        return Option.some({ cleanup, canonicalPath });
+        // Archive batches reserve cleanup on one thread only. Tear down every
+        // inactive sibling that still points at this path before removal so a
+        // shared checkout cannot be deleted under live providers/terminals.
+        const siblingThreadIds = yield* Effect.forEach(
+          readModel.threads.filter(
+            (thread) =>
+              thread.id !== cleanup.threadId &&
+              thread.worktreePath !== null &&
+              (thread.archivedAt !== null || thread.deletedAt !== null),
+          ),
+          (thread) =>
+            Effect.promise(() => canonicalizeWorktreePath(thread.worktreePath!)).pipe(
+              Effect.map((path) => (path === canonicalPath ? thread.id : null)),
+            ),
+          { concurrency: 4 },
+        ).pipe(Effect.map((ids) => ids.filter((id): id is typeof cleanup.threadId => id !== null)));
+
+        return Option.some({ cleanup, canonicalPath, siblingThreadIds });
       }),
-      ({ cleanup, canonicalPath }) =>
+      ({ cleanup, canonicalPath, siblingThreadIds }) =>
         Effect.gen(function* () {
+          if (siblingThreadIds.length > 0) {
+            yield* Effect.forEach(
+              siblingThreadIds,
+              (siblingThreadId) =>
+                Effect.all(
+                  [
+                    stopActiveProviderSession(siblingThreadId),
+                    closeThreadTerminalsEffect(siblingThreadId),
+                  ] as const,
+                  { concurrency: "unbounded", discard: true },
+                ),
+              { concurrency: 4, discard: true },
+            );
+          }
+
           const exists = yield* fileSystem.exists(canonicalPath);
           const outcome = !exists
             ? yield* git.pruneWorktrees(cleanup.cwd).pipe(Effect.as("removed" as const))
@@ -268,16 +317,20 @@ const make = Effect.gen(function* () {
   ) {
     const { threadId } = event.payload;
     if (event.payload.worktreeCleanup !== undefined) {
+      // Cleanup worker tears down this thread, then any inactive path siblings,
+      // before removing the checkout.
       yield* enqueueWorktreeCleanup(threadId);
       return;
     }
-    if (event.type !== "thread.deleted") {
-      return;
+    // Always tear down archived threads, even without a cleanup reservation.
+    // Otherwise a sibling that reserved cleanup can delete a shared checkout
+    // while this thread's provider/terminals are still attached.
+    if (event.type === "thread.archived" || event.type === "thread.deleted") {
+      yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
+        concurrency: "unbounded",
+        discard: true,
+      });
     }
-    yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
-      concurrency: "unbounded",
-      discard: true,
-    });
   });
 
   const processThreadLifecycleEventSafely = (event: ThreadCleanupLifecycleEvent) =>

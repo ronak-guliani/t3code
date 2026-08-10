@@ -422,4 +422,51 @@ describe("decider archive cascade", () => {
       });
     }
   });
+
+  it("dedupes cleanup across canonical path aliases in one archive batch", async () => {
+    const canonicalWorktreePath = "/tmp/project-archive-alias-worktree";
+    const aliasWorktreePath = "/tmp/parent/../project-archive-alias-worktree";
+    const baseReadModel = await seedReadModel();
+    const mergedPr = {
+      number: 46,
+      title: "Merged aliases",
+      url: "https://github.com/example/repo/pull/46",
+      baseBranch: "main",
+      headBranch: "feature-alias",
+      state: "merged" as const,
+    };
+    const readModel: OrchestrationReadModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) => {
+        if (thread.id === asThreadId("parent")) {
+          return { ...thread, worktreePath: canonicalWorktreePath, pullRequest: mergedPr };
+        }
+        if (thread.id === asThreadId("child")) {
+          return { ...thread, worktreePath: aliasWorktreePath, pullRequest: mergedPr };
+        }
+        return thread;
+      }),
+    };
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("cmd-archive-alias-cleanup"),
+          threadId: asThreadId("parent"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    const cleanupEvents = events.filter(
+      (event) => event.type === "thread.archived" && event.payload.worktreeCleanup !== undefined,
+    );
+    expect(cleanupEvents).toHaveLength(1);
+    const cleanupEvent = cleanupEvents[0];
+    if (cleanupEvent?.type === "thread.archived") {
+      expect(cleanupEvent.payload.worktreeCleanup?.path).toBe(canonicalWorktreePath);
+      expect(cleanupEvent.payload.worktreeCleanup?.cwd).toBe("/tmp/project-archive");
+    }
+  });
 });
