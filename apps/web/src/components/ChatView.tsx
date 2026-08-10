@@ -2768,7 +2768,13 @@ function ChatViewBody(
       }
       revokeUserMessagePreviewUrls(removedMessage);
     }
-  }, [activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages, routeThreadRef]);
+  }, [
+    activeThread?.id,
+    activeThread?.messages,
+    handoffAttachmentPreviews,
+    optimisticUserMessages,
+    routeThreadRef,
+  ]);
 
   useEffect(() => {
     setExpandedImage(null);
@@ -3935,14 +3941,17 @@ function ChatViewBody(
       activeThread,
       activeProposedPlan,
       beginLocalDispatch,
+      composerRef,
       isConnecting,
       isSendBusy,
       phase,
       isServerThread,
       persistThreadSettingsForNextTurn,
       resetLocalDispatch,
+      routeThreadRef,
       runtimeMode,
       setComposerDraftInteractionMode,
+      setPlanSidebarOpen,
       setThreadError,
       autoOpenPlanSidebar,
       environmentId,
