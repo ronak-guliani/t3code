@@ -47,6 +47,8 @@ import { Button } from "./ui/button";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { SidebarContent, SidebarGroup, SidebarHeader, SidebarMenu } from "./ui/sidebar";
 import { SidebarTopActions } from "./SidebarTopActions";
+import { TITLEBAR_ROW_CLASS } from "../lib/titlebar";
+import { cn } from "../lib/utils";
 
 const SETTLED_PAGE_SIZE = 25;
 const EMPTY_THREAD_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
@@ -455,10 +457,7 @@ export default function SidebarV2() {
   return (
     <>
       {hasMacSidebarChrome ? (
-        <SidebarHeader
-          aria-hidden
-          className="drag-region h-titlebar shrink-0 p-0 wco:h-[env(titlebar-area-height)]"
-        />
+        <SidebarHeader aria-hidden className={cn("drag-region shrink-0 p-0", TITLEBAR_ROW_CLASS)} />
       ) : null}
       <SidebarHoverThreadPrewarmer />
       <SidebarContent className="gap-1 pt-1">
