@@ -543,6 +543,7 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink({
     (event: ReactMouseEvent<HTMLAnchorElement>) => {
       if (
         !threadRef ||
+        !/^https?:\/\//i.test(href) ||
         !isPreviewSupportedInRuntime() ||
         event.button !== 0 ||
         event.metaKey ||
