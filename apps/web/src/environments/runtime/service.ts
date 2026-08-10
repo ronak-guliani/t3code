@@ -59,6 +59,7 @@ import {
   selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
+import { isPendingTurnActive, usePendingTurnStore } from "~/pendingTurnStore";
 import {
   markLegacySidebarPinsMigrated,
   readLegacyPinnedThreadsForEnvironment,
@@ -656,6 +657,27 @@ function applyRecoveredEventBatch(
   }
 
   useStore.getState().applyOrchestrationEvents(uiEvents, environmentId);
+  const pendingTurnStore = usePendingTurnStore.getState();
+  const affectedThreadIds = new Set(
+    events.flatMap((event) =>
+      event.aggregateKind === "thread" ? [ThreadId.make(event.aggregateId)] : [],
+    ),
+  );
+  for (const threadId of affectedThreadIds) {
+    const threadRef = scopeThreadRef(environmentId, threadId);
+    const threadKey = scopedThreadKey(threadRef);
+    const pendingTurn = pendingTurnStore.pendingByThreadKey[threadKey];
+    if (!pendingTurn) {
+      continue;
+    }
+    const thread = selectThreadByRef(useStore.getState(), threadRef);
+    const deleted = events.some(
+      (event) => event.type === "thread.deleted" && event.payload.threadId === threadId,
+    );
+    if (deleted || !isPendingTurnActive(pendingTurn, thread)) {
+      pendingTurnStore.clearPendingTurn(threadRef);
+    }
+  }
   if (needsProjectUiSync) {
     const projects = selectProjectsAcrossEnvironments(useStore.getState());
     const clientSettings = getClientSettings();

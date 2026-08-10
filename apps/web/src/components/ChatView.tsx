@@ -99,6 +99,7 @@ import {
 } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
+import { hasServerAcknowledgedPendingTurn, usePendingTurnStore } from "../pendingTurnStore";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -203,16 +204,13 @@ import {
   buildLocalDraftThread,
   canStartThreadTurn,
   collectUserMessageBlobPreviewUrls,
-  createLocalDispatchSnapshot,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
   getActivityHistoryKey,
-  hasServerAcknowledgedLocalDispatch,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
   mergeActivityWindows,
   mergeInsightActivityWindows,
-  type LocalDispatchSnapshot,
   PullRequestDialogState,
   cloneComposerImageForRetry,
   deriveLockedProvider,
@@ -438,31 +436,31 @@ function useLocalDispatchState(input: {
   activePendingUserInput: ApprovalRequestId | null;
   threadError: string | null | undefined;
 }) {
-  const [localDispatch, setLocalDispatch] = useState<LocalDispatchSnapshot | null>(null);
+  const threadRef = input.activeThread
+    ? scopeThreadRef(input.activeThread.environmentId, input.activeThread.id)
+    : null;
+  const threadKey = threadRef ? scopedThreadKey(threadRef) : null;
+  const localDispatch = usePendingTurnStore((state) =>
+    threadKey ? (state.pendingByThreadKey[threadKey] ?? null) : null,
+  );
 
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
-      const preparingWorktree = Boolean(options?.preparingWorktree);
-      setLocalDispatch((current) => {
-        if (current) {
-          return current.preparingWorktree === preparingWorktree
-            ? current
-            : { ...current, preparingWorktree };
-        }
-        return createLocalDispatchSnapshot(input.activeThread, options);
-      });
+      if (!threadRef) return;
+      usePendingTurnStore.getState().beginPendingTurn(threadRef, input.activeThread, options);
     },
-    [input.activeThread],
+    [input.activeThread, threadRef],
   );
 
   const resetLocalDispatch = useCallback(() => {
-    setLocalDispatch(null);
-  }, []);
+    if (!threadRef) return;
+    usePendingTurnStore.getState().clearPendingTurn(threadRef);
+  }, [threadRef]);
 
   const serverAcknowledgedLocalDispatch = useMemo(
     () =>
-      hasServerAcknowledgedLocalDispatch({
-        localDispatch,
+      hasServerAcknowledgedPendingTurn({
+        pendingTurn: localDispatch,
         phase: input.phase,
         latestTurn: input.activeLatestTurn,
         session: input.activeThread?.session ?? null,
@@ -2777,9 +2775,8 @@ function ChatViewBody(
       }
       return [];
     });
-    resetLocalDispatch();
     setExpandedImage(null);
-  }, [draftId, resetLocalDispatch, routeThreadKey]);
+  }, [draftId, routeThreadKey]);
 
   const closeExpandedImage = useCallback(() => {
     setExpandedImage(null);
@@ -4521,6 +4518,36 @@ function ChatViewBody(
     activeThread?.modelSelection,
   ]);
 
+  const prewarmComposerProviderSession = useCallback(() => {
+    const api = readEnvironmentApi(environmentId);
+    if (!api || !gitCwd || (sendEnvMode === "worktree" && activeThread?.worktreePath === null)) {
+      return;
+    }
+    const sendCtx = composerRef.current?.getSendContext();
+    const instanceId = (
+      sendCtx?.selectedModelSelection ??
+      activeProject?.defaultModelSelection ??
+      activeThread?.modelSelection
+    )?.instanceId;
+    if (!instanceId) {
+      return;
+    }
+    void api.server
+      .prewarmProviderSession({
+        instanceId,
+        cwd: gitCwd,
+        runtimeMode,
+      })
+      .catch(() => undefined);
+  }, [
+    activeProject?.defaultModelSelection,
+    activeThread?.modelSelection,
+    environmentId,
+    gitCwd,
+    runtimeMode,
+    sendEnvMode,
+  ]);
+
   const workflowHeaderActions = useMemo((): AgentWorkflowHeaderAction[] => {
     const projectUnavailableReason =
       activeProject === undefined
@@ -4849,6 +4876,7 @@ function ChatViewBody(
               shouldAutoScrollRef={isAtEndRef}
               scheduleStickToBottom={scrollToEnd}
               onSend={onSend}
+              onComposerIntent={prewarmComposerProviderSession}
               onInterrupt={onInterrupt}
               onImplementPlanInNewThread={onImplementPlanInNewThread}
               onRespondToApproval={onRespondToApproval}
