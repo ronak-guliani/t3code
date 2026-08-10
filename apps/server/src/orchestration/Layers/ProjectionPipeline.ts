@@ -627,6 +627,14 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
 
         case "thread.archived": {
+          if (event.payload.worktreeCleanup !== undefined) {
+            yield* worktreeCleanupJobRepository.upsert({
+              threadId: event.payload.threadId,
+              cwd: event.payload.worktreeCleanup.cwd,
+              worktreePath: event.payload.worktreeCleanup.path,
+              requestedAt: event.payload.archivedAt,
+            });
+          }
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });

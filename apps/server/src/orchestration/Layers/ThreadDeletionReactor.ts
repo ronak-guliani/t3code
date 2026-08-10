@@ -20,6 +20,8 @@ import {
 import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
 
 type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }>;
+type ThreadArchivedEvent = Extract<OrchestrationEvent, { type: "thread.archived" }>;
+type ThreadCleanupLifecycleEvent = ThreadDeletedEvent | ThreadArchivedEvent;
 
 const MAX_WORKTREE_CLEANUP_ATTEMPTS = 5;
 
@@ -261,12 +263,15 @@ const make = Effect.gen(function* () {
       Effect.uninterruptible,
     );
 
-  const processThreadDeleted = Effect.fn("processThreadDeleted")(function* (
-    event: ThreadDeletedEvent,
+  const processThreadLifecycleEvent = Effect.fn("processThreadLifecycleEvent")(function* (
+    event: ThreadCleanupLifecycleEvent,
   ) {
     const { threadId } = event.payload;
     if (event.payload.worktreeCleanup !== undefined) {
       yield* enqueueWorktreeCleanup(threadId);
+      return;
+    }
+    if (event.type !== "thread.deleted") {
       return;
     }
     yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
@@ -275,8 +280,8 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const processThreadDeletedSafely = (event: ThreadDeletedEvent) =>
-    processThreadDeleted(event).pipe(
+  const processThreadLifecycleEventSafely = (event: ThreadCleanupLifecycleEvent) =>
+    processThreadLifecycleEvent(event).pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.failCause(cause);
@@ -289,7 +294,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processThreadDeletedSafely);
+  const worker = yield* makeDrainableWorker(processThreadLifecycleEventSafely);
 
   const enqueuePendingWorktreeCleanups = worktreeCleanupJobs.list().pipe(
     Effect.flatMap((jobs) =>
@@ -334,7 +339,7 @@ const make = Effect.gen(function* () {
     );
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-        if (event.type !== "thread.deleted") {
+        if (event.type !== "thread.deleted" && event.type !== "thread.archived") {
           return Effect.void;
         }
         return worker.enqueue(event);

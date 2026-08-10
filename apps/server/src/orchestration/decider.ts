@@ -79,11 +79,19 @@ type DecideOrchestrationCommandResult =
 
 const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwner")(function* (
   readModel: OrchestrationReadModel,
-  threadId: ThreadId,
+  excludedThreadIds: ThreadId | Iterable<ThreadId>,
   worktreePath: string,
 ) {
-  return Option.isSome(yield* findCanonicalActiveWorktreeOwner(readModel, threadId, worktreePath));
+  return Option.isSome(
+    yield* findCanonicalActiveWorktreeOwner(readModel, excludedThreadIds, worktreePath),
+  );
 });
+
+function threadHasMergedPullRequest(thread: {
+  readonly pullRequest?: { readonly state: "open" | "closed" | "merged" | null } | null;
+}): boolean {
+  return thread.pullRequest?.state === "merged";
+}
 
 function forkedTitle(title: string): string {
   return title.startsWith(FORK_TITLE_PREFIX) ? title : `${FORK_TITLE_PREFIX}${title}`;
@@ -539,8 +547,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       const occurredAt = nowIso();
       const threadsToArchive = collectActiveThreadSubtree(readModel, command.threadId);
-      return threadsToArchive.map(
-        (thread): PlannedOrchestrationEvent => ({
+      const archiveThreadIds = new Set(threadsToArchive.map((thread) => thread.id));
+      // One cleanup reservation per worktree path for this archive batch.
+      const cleanupPathOwners = new Set<string>();
+      const archivedEvents: PlannedOrchestrationEvent[] = [];
+
+      for (const thread of threadsToArchive) {
+        const project = readModel.projects.find((entry) => entry.id === thread.projectId);
+        const worktreePath = thread.worktreePath;
+        const shouldCheckWorktreeOwnership =
+          threadHasMergedPullRequest(thread) &&
+          worktreePath !== null &&
+          project !== undefined &&
+          !cleanupPathOwners.has(worktreePath);
+        const hasActiveWorktreeOwner =
+          shouldCheckWorktreeOwnership && worktreePath !== null
+            ? yield* hasCanonicalActiveWorktreeOwner(readModel, archiveThreadIds, worktreePath)
+            : true;
+        const worktreeCleanup =
+          shouldCheckWorktreeOwnership &&
+          !hasActiveWorktreeOwner &&
+          project !== undefined &&
+          worktreePath !== null
+            ? {
+                cwd: project.workspaceRoot,
+                path: worktreePath,
+              }
+            : undefined;
+        if (worktreeCleanup !== undefined) {
+          cleanupPathOwners.add(worktreeCleanup.path);
+        }
+        archivedEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
             aggregateId: thread.id,
@@ -552,9 +589,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             threadId: thread.id,
             archivedAt: occurredAt,
             updatedAt: occurredAt,
+            ...(worktreeCleanup !== undefined ? { worktreeCleanup } : {}),
           },
-        }),
-      );
+        });
+      }
+
+      return archivedEvents;
     }
 
     case "thread.unarchive": {

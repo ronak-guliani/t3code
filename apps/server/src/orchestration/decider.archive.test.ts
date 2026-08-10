@@ -245,4 +245,181 @@ describe("decider archive cascade", () => {
 
     expect(events.map((event) => event.payload.threadId)).toEqual([asThreadId("grandchild")]);
   });
+
+  it("requests worktree cleanup when archiving a merged-PR sole owner", async () => {
+    const worktreePath = "/tmp/project-archive-merged-worktree";
+    const baseReadModel = await seedReadModel();
+    const readModel: OrchestrationReadModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) =>
+        thread.id === asThreadId("grandchild")
+          ? {
+              ...thread,
+              worktreePath,
+              pullRequest: {
+                number: 42,
+                title: "Merged feature",
+                url: "https://github.com/example/repo/pull/42",
+                baseBranch: "main",
+                headBranch: "feature",
+                state: "merged",
+              },
+            }
+          : thread,
+      ),
+    };
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("cmd-archive-merged-cleanup"),
+          threadId: asThreadId("grandchild"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    expect(events).toHaveLength(1);
+    const event = events[0];
+    expect(event?.type).toBe("thread.archived");
+    if (event?.type === "thread.archived") {
+      expect(event.payload.worktreeCleanup).toEqual({
+        cwd: "/tmp/project-archive",
+        path: worktreePath,
+      });
+    }
+  });
+
+  it("does not request cleanup when archived PR is still open", async () => {
+    const worktreePath = "/tmp/project-archive-open-worktree";
+    const baseReadModel = await seedReadModel();
+    const readModel: OrchestrationReadModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) =>
+        thread.id === asThreadId("grandchild")
+          ? {
+              ...thread,
+              worktreePath,
+              pullRequest: {
+                number: 43,
+                title: "Open feature",
+                url: "https://github.com/example/repo/pull/43",
+                baseBranch: "main",
+                headBranch: "feature-open",
+                state: "open",
+              },
+            }
+          : thread,
+      ),
+    };
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("cmd-archive-open-no-cleanup"),
+          threadId: asThreadId("grandchild"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    const event = events[0];
+    expect(event?.type).toBe("thread.archived");
+    if (event?.type === "thread.archived") {
+      expect(event.payload.worktreeCleanup).toBeUndefined();
+    }
+  });
+
+  it("does not request cleanup while another active thread still owns the worktree", async () => {
+    const worktreePath = "/tmp/project-archive-shared-worktree";
+    const baseReadModel = await seedReadModel();
+    const readModel: OrchestrationReadModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) => {
+        if (thread.id === asThreadId("grandchild")) {
+          return {
+            ...thread,
+            worktreePath,
+            pullRequest: {
+              number: 44,
+              title: "Merged shared",
+              url: "https://github.com/example/repo/pull/44",
+              baseBranch: "main",
+              headBranch: "feature-shared",
+              state: "merged",
+            },
+          };
+        }
+        if (thread.id === asThreadId("unrelated")) {
+          return { ...thread, worktreePath };
+        }
+        return thread;
+      }),
+    };
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("cmd-archive-shared-no-cleanup"),
+          threadId: asThreadId("grandchild"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    const event = events[0];
+    expect(event?.type).toBe("thread.archived");
+    if (event?.type === "thread.archived") {
+      expect(event.payload.worktreeCleanup).toBeUndefined();
+    }
+  });
+
+  it("dedupes cleanup to one thread when an archive batch shares a merged worktree", async () => {
+    const worktreePath = "/tmp/project-archive-batch-worktree";
+    const baseReadModel = await seedReadModel();
+    const mergedPr = {
+      number: 45,
+      title: "Merged batch",
+      url: "https://github.com/example/repo/pull/45",
+      baseBranch: "main",
+      headBranch: "feature-batch",
+      state: "merged" as const,
+    };
+    const readModel: OrchestrationReadModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) =>
+        thread.id === asThreadId("parent") ||
+        thread.id === asThreadId("child") ||
+        thread.id === asThreadId("grandchild")
+          ? { ...thread, worktreePath, pullRequest: mergedPr }
+          : thread,
+      ),
+    };
+
+    const decided = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.archive",
+          commandId: asCommandId("cmd-archive-batch-cleanup"),
+          threadId: asThreadId("parent"),
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+    const events = Array.isArray(decided) ? decided : [decided];
+    const cleanupEvents = events.filter(
+      (event) => event.type === "thread.archived" && event.payload.worktreeCleanup !== undefined,
+    );
+    expect(cleanupEvents).toHaveLength(1);
+    const cleanupEvent = cleanupEvents[0];
+    if (cleanupEvent?.type === "thread.archived") {
+      expect(cleanupEvent.payload.worktreeCleanup).toEqual({
+        cwd: "/tmp/project-archive",
+        path: worktreePath,
+      });
+    }
+  });
 });
