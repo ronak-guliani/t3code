@@ -128,6 +128,26 @@ export function selectVisibleSidebarThreads(
   return threads.filter(isVisible);
 }
 
+export function isThreadInSubtree(
+  threads: readonly Pick<SidebarThreadSummary, "id" | "parentThreadId">[],
+  rootThreadId: SidebarThreadSummary["id"],
+  threadId: SidebarThreadSummary["id"],
+): boolean {
+  const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
+  const visited = new Set<SidebarThreadSummary["id"]>();
+  let candidateId: SidebarThreadSummary["id"] | null = threadId;
+
+  while (candidateId !== null && !visited.has(candidateId)) {
+    if (candidateId === rootThreadId) {
+      return true;
+    }
+    visited.add(candidateId);
+    candidateId = threadById.get(candidateId)?.parentThreadId ?? null;
+  }
+
+  return false;
+}
+
 export interface SidebarThreadRowView {
   thread: SidebarThreadSummary;
   threadKey: string;
@@ -170,43 +190,53 @@ export interface BuildSidebarThreadRowsInput {
   resolveThreadStatus: (thread: SidebarThreadSummary) => ThreadStatusPill | null;
 }
 
-function getThreadKey(thread: SidebarThreadSummary): string {
+export function sidebarThreadKey(
+  thread: Pick<SidebarThreadSummary, "environmentId" | "id">,
+): string {
   return scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
 }
 
+const getThreadKey = sidebarThreadKey;
+
 /**
- * Maps each thread to its effective parent, dropping references that would
- * escape the visible set (missing/self parents) or form a cycle so every
- * thread resolves to exactly one root.
+ * Maps each thread key to its effective parent key, dropping references that
+ * would escape the visible set (missing/self parents) or form a cycle so every
+ * thread resolves to exactly one root. Keys are environment-scoped so a thread
+ * never adopts a same-id parent from another environment.
  */
-function normalizeParentById(
+export function normalizeParentThreadKeys(
   threads: readonly SidebarThreadSummary[],
-): Map<SidebarThreadSummary["id"], SidebarThreadSummary["id"]> {
-  const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
-  const parentById = new Map<SidebarThreadSummary["id"], SidebarThreadSummary["id"]>();
+): Map<string, string> {
+  const threadKeys = new Set(threads.map(getThreadKey));
+  const parentByKey = new Map<string, string>();
 
   for (const thread of threads) {
-    const parentId = thread.parentThreadId ?? null;
-    if (parentId === null || parentId === thread.id || !threadById.has(parentId)) {
+    const threadKey = getThreadKey(thread);
+    if (thread.parentThreadId === null) {
       continue;
     }
-    parentById.set(thread.id, parentId);
+    const parentKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId));
+    if (parentKey === threadKey || !threadKeys.has(parentKey)) {
+      continue;
+    }
+    parentByKey.set(threadKey, parentKey);
   }
 
-  for (const thread of threads) {
-    const seen = new Set<SidebarThreadSummary["id"]>([thread.id]);
-    let currentParentId = parentById.get(thread.id);
-    while (currentParentId) {
-      if (seen.has(currentParentId)) {
-        parentById.delete(thread.id);
+  // Deleting only the key currently being visited is safe while iterating.
+  for (const threadKey of parentByKey.keys()) {
+    const seen = new Set<string>([threadKey]);
+    let currentParentKey = parentByKey.get(threadKey);
+    while (currentParentKey) {
+      if (seen.has(currentParentKey)) {
+        parentByKey.delete(threadKey);
         break;
       }
-      seen.add(currentParentId);
-      currentParentId = parentById.get(currentParentId);
+      seen.add(currentParentKey);
+      currentParentKey = parentByKey.get(currentParentKey);
     }
   }
 
-  return parentById;
+  return parentByKey;
 }
 
 /** Reorders already-sorted roots so pinned threads lead, preserving pin order. */
@@ -235,15 +265,15 @@ function applyPinnedFirst(
 
 function buildTree(input: BuildSidebarThreadRowsInput): {
   roots: ThreadTreeNode[];
-  nodeById: Map<SidebarThreadSummary["id"], ThreadTreeNode>;
+  nodesByKey: Map<string, ThreadTreeNode>;
 } {
-  const parentById = normalizeParentById(input.threads);
+  const parentByKey = normalizeParentThreadKeys(input.threads);
   // Sort once up front so children and roots land in sorted order as they are
   // appended, avoiding a second recursive sort pass.
   const sortedThreads = sortThreads(input.threads, input.sortOrder);
-  const nodeById = new Map(
+  const nodesByKey = new Map(
     sortedThreads.map((thread) => [
-      thread.id,
+      getThreadKey(thread),
       {
         thread,
         threadKey: getThreadKey(thread),
@@ -257,12 +287,13 @@ function buildTree(input: BuildSidebarThreadRowsInput): {
 
   const roots: ThreadTreeNode[] = [];
   for (const thread of sortedThreads) {
-    const node = nodeById.get(thread.id);
+    const threadKey = getThreadKey(thread);
+    const node = nodesByKey.get(threadKey);
     if (!node) {
       continue;
     }
-    const parentId = parentById.get(thread.id);
-    const parent = parentId ? nodeById.get(parentId) : undefined;
+    const parentKey = parentByKey.get(threadKey);
+    const parent = parentKey ? nodesByKey.get(parentKey) : undefined;
     if (parent) {
       parent.children.push(node);
     } else {
@@ -270,7 +301,7 @@ function buildTree(input: BuildSidebarThreadRowsInput): {
     }
   }
 
-  return { roots: applyPinnedFirst(roots, input.pinnedThreadKeys), nodeById };
+  return { roots: applyPinnedFirst(roots, input.pinnedThreadKeys), nodesByKey };
 }
 
 function resolveRollups(nodes: readonly ThreadTreeNode[]): void {
@@ -336,7 +367,7 @@ function flattenRows(input: {
 export function buildSidebarThreadRows(
   input: BuildSidebarThreadRowsInput,
 ): SidebarThreadRowsResult {
-  const { roots, nodeById } = buildTree(input);
+  const { roots, nodesByKey } = buildTree(input);
   resolveRollups(roots);
 
   const rowViews: SidebarThreadRowView[] = [];
@@ -348,7 +379,7 @@ export function buildSidebarThreadRows(
   });
 
   const statusByThreadKey = new Map<string, ThreadStatusPill | null>();
-  for (const node of nodeById.values()) {
+  for (const node of nodesByKey.values()) {
     statusByThreadKey.set(node.threadKey, node.status);
   }
 
@@ -361,18 +392,30 @@ export function buildSidebarThreadRows(
 }
 
 /**
- * Trims flattened rows to the preview window, counting only root threads
+ * Trims flattened rows to a root-thread window, counting only root threads
  * against the limit so expanded children of visible roots stay attached.
+ * `requiredThreadKey` widens the window so the active thread always renders,
+ * even when it sits below the window.
  */
 export function selectVisibleThreadRows(input: {
   rowViews: readonly SidebarThreadRowView[];
-  isThreadListExpanded: boolean;
-  previewLimit: number;
-}): { rows: SidebarThreadRowView[]; hasOverflow: boolean } {
-  const rootCount = input.rowViews.reduce((count, row) => (row.depth === 0 ? count + 1 : count), 0);
-  const hasOverflow = rootCount > input.previewLimit;
-  if (input.isThreadListExpanded || !hasOverflow) {
-    return { rows: [...input.rowViews], hasOverflow };
+  rootLimit: number;
+  requiredThreadKey?: string | null;
+}): { rows: readonly SidebarThreadRowView[]; hasOverflow: boolean } {
+  let rootCount = 0;
+  let requiredRootCount = 0;
+  for (const row of input.rowViews) {
+    if (row.depth === 0) {
+      rootCount += 1;
+    }
+    if (input.requiredThreadKey != null && row.threadKey === input.requiredThreadKey) {
+      requiredRootCount = rootCount;
+    }
+  }
+
+  const rootLimit = Math.max(input.rootLimit, requiredRootCount);
+  if (rootCount <= rootLimit) {
+    return { rows: input.rowViews, hasOverflow: false };
   }
 
   const rows: SidebarThreadRowView[] = [];
@@ -380,11 +423,11 @@ export function selectVisibleThreadRows(input: {
   for (const row of input.rowViews) {
     if (row.depth === 0) {
       visibleRootCount += 1;
-    }
-    if (visibleRootCount > input.previewLimit) {
-      break;
+      if (visibleRootCount > rootLimit) {
+        break;
+      }
     }
     rows.push(row);
   }
-  return { rows, hasOverflow };
+  return { rows, hasOverflow: true };
 }

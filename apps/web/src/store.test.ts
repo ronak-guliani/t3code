@@ -118,6 +118,7 @@ function makeSidebarThreadSummary(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    pullRequest: thread.pullRequest ?? null,
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
@@ -169,6 +170,7 @@ function makeState(thread: Thread): AppState {
         updatedAt: thread.updatedAt,
         branch: thread.branch,
         worktreePath: thread.worktreePath,
+        pullRequest: thread.pullRequest ?? null,
       },
     },
     threadSessionById: {
@@ -203,6 +205,9 @@ function makeState(thread: Thread): AppState {
     },
     hasMoreActivitiesByThreadId: {
       [thread.id]: thread.hasMoreActivities ?? false,
+    },
+    hasMoreCurrentTurnActivitiesByThreadId: {
+      [thread.id]: thread.hasMoreCurrentTurnActivities ?? false,
     },
     insightActivitiesByThreadId: {
       [thread.id]: thread.activities.filter(isInsightActivity),
@@ -676,9 +681,240 @@ describe("setThreadBranch", () => {
       environmentStateOf(next, remoteEnvironmentId).threadShellById[sharedThreadId]?.worktreePath,
     ).toBe("/tmp/remote-worktree");
   });
+
+  it("optimistically patches sidebar summary branch and pullRequest", () => {
+    const pullRequest = {
+      number: 150,
+      title: "Durable PR",
+      url: "https://example.test/pr/150",
+      baseBranch: "main",
+      headBranch: "feature/pr",
+      state: "open" as const,
+    };
+    const thread = makeThread({ branch: "old-branch", pullRequest: null });
+    const environmentState = selectEnvironmentState(makeState(thread), localEnvironmentId);
+    const state = withActiveEnvironmentState({
+      ...environmentState,
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+
+    const next = setThreadBranch(
+      state,
+      scopeThreadRef(localEnvironmentId, thread.id),
+      "feature/pr",
+      null,
+      pullRequest,
+    );
+
+    expect(selectSidebarThreadsAcrossEnvironments(next)[0]).toMatchObject({
+      branch: "feature/pr",
+      pullRequest,
+    });
+  });
 });
 
 describe("incremental orchestration updates", () => {
+  it("keeps sidebar activity aligned with a live assistant message", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const environmentState = selectEnvironmentState(state, localEnvironmentId);
+    const stateWithSidebarSummary = withActiveEnvironmentState({
+      ...environmentState,
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+    const turnId = TurnId.make("turn-1");
+
+    const next = applyOrchestrationEvent(
+      stateWithSidebarSummary,
+      makeEvent("thread.message-sent", {
+        threadId: thread.id,
+        messageId: MessageId.make("assistant-1"),
+        role: "assistant",
+        text: "Working",
+        turnId,
+        streaming: true,
+        createdAt: "2026-02-27T00:00:02.000Z",
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(selectThreadByRef(next, scopeThreadRef(localEnvironmentId, thread.id))).toMatchObject({
+      latestTurn: { turnId, state: "running", completedAt: null },
+    });
+    expect(selectSidebarThreadsAcrossEnvironments(next)[0]).toMatchObject({
+      latestTurn: { turnId, state: "running", completedAt: null },
+    });
+  });
+
+  it("does not let lagging detail activity overwrite shell-authoritative sidebar metadata", () => {
+    const pullRequest = {
+      number: 150,
+      title: "Shell owns this PR",
+      url: "https://example.test/pr/150",
+      baseBranch: "main",
+      headBranch: "feature/shell",
+      state: "open" as const,
+    };
+    const thread = makeThread({
+      title: "Old title",
+      branch: "old-branch",
+      pullRequest: null,
+      updatedAt: "2026-02-27T00:00:00.000Z",
+    });
+    let state = withActiveEnvironmentState({
+      ...selectEnvironmentState(makeState(thread), localEnvironmentId),
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+
+    state = applyShellEvent(
+      state,
+      {
+        kind: "thread-upserted",
+        sequence: 10,
+        thread: {
+          id: thread.id,
+          projectId: thread.projectId,
+          parentThreadId: null,
+          title: "Fresh shell title",
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          pendingRuntimeMode: null,
+          interactionMode: thread.interactionMode,
+          branch: "feature/shell",
+          worktreePath: null,
+          pullRequest,
+          latestTurn: null,
+          createdAt: thread.createdAt,
+          updatedAt: "2026-02-27T00:00:10.000Z",
+          archivedAt: null,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        },
+      },
+      localEnvironmentId,
+    );
+
+    expect(selectSidebarThreadsAcrossEnvironments(state)[0]).toMatchObject({
+      title: "Fresh shell title",
+      branch: "feature/shell",
+      pullRequest,
+      updatedAt: "2026-02-27T00:00:10.000Z",
+    });
+
+    // Detail stream still has the pre-meta thread when an activity event arrives.
+    const afterActivity = applyOrchestrationEvent(
+      state,
+      makeEvent(
+        "thread.message-sent",
+        {
+          threadId: thread.id,
+          messageId: MessageId.make("assistant-lag"),
+          role: "assistant",
+          text: "still streaming",
+          turnId: TurnId.make("turn-lag"),
+          streaming: true,
+          createdAt: "2026-02-27T00:00:11.000Z",
+          updatedAt: "2026-02-27T00:00:11.000Z",
+        },
+        { sequence: 11 },
+      ),
+      localEnvironmentId,
+    );
+
+    expect(selectSidebarThreadsAcrossEnvironments(afterActivity)[0]).toMatchObject({
+      title: "Fresh shell title",
+      branch: "feature/shell",
+      pullRequest,
+      updatedAt: "2026-02-27T00:00:10.000Z",
+      latestTurn: { turnId: TurnId.make("turn-lag"), state: "running" },
+    });
+  });
+
+  it("keeps sidebar activity aligned with detail-stream session updates", () => {
+    const thread = makeThread();
+    const state = makeState(thread);
+    const environmentState = selectEnvironmentState(state, localEnvironmentId);
+    const stateWithSidebarSummary = withActiveEnvironmentState({
+      ...environmentState,
+      sidebarThreadSummaryById: {
+        [thread.id]: makeSidebarThreadSummary(thread),
+      },
+    });
+    const turnId = TurnId.make("turn-1");
+
+    const working = applyOrchestrationEvent(
+      stateWithSidebarSummary,
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "running",
+          providerName: "copilot",
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:02.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    expect(selectThreadByRef(working, scopeThreadRef(localEnvironmentId, thread.id))).toMatchObject(
+      {
+        session: { orchestrationStatus: "running", activeTurnId: turnId },
+        latestTurn: { turnId, state: "running", completedAt: null },
+      },
+    );
+    const workingSidebarThreads = selectSidebarThreadsAcrossEnvironments(working);
+    expect(workingSidebarThreads[0]).toMatchObject({
+      session: { orchestrationStatus: "running", activeTurnId: turnId },
+      latestTurn: { turnId, state: "running", completedAt: null },
+    });
+
+    const afterActivity = applyOrchestrationEvent(
+      working,
+      activityAppendedEvent({
+        sequence: 2,
+        id: "activity-1",
+        kind: "step",
+        turnId,
+      }),
+      localEnvironmentId,
+    );
+    expect(selectSidebarThreadsAcrossEnvironments(afterActivity)).toBe(workingSidebarThreads);
+
+    const stopped = applyOrchestrationEvent(
+      afterActivity,
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "idle",
+          providerName: "copilot",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:00:03.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+    expect(selectSidebarThreadsAcrossEnvironments(stopped)[0]).toMatchObject({
+      session: { orchestrationStatus: "idle", activeTurnId: undefined },
+      latestTurn: { turnId, state: "interrupted", completedAt: "2026-02-27T00:00:03.000Z" },
+    });
+  });
+
   it("preserves detail-only metadata from thread snapshots", () => {
     const threadId = ThreadId.make("thread-1");
     const resumeCursor = {
@@ -711,6 +947,7 @@ describe("incremental orchestration updates", () => {
         proposedPlans: [],
         activities: [],
         hasMoreActivities: true,
+        hasMoreCurrentTurnActivities: true,
         checkpoints: [],
         session: {
           threadId,
@@ -729,6 +966,7 @@ describe("incremental orchestration updates", () => {
 
     expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
     expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
+    expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
   });
 
   it("does not mark bootstrap complete for incremental events", () => {
@@ -1366,7 +1604,7 @@ describe("incremental orchestration updates", () => {
     );
   });
 
-  it("applies replay batches in sequence and updates session state", () => {
+  it("keeps the turn running when an assistant segment completes", () => {
     const thread = makeThread({
       latestTurn: {
         turnId: TurnId.make("turn-1"),
@@ -1418,8 +1656,38 @@ describe("incremental orchestration updates", () => {
     );
 
     expect(threadsOf(next)[0]?.session?.status).toBe("running");
-    expect(threadsOf(next)[0]?.latestTurn?.state).toBe("completed");
+    expect(threadsOf(next)[0]?.latestTurn).toMatchObject({
+      turnId: TurnId.make("turn-1"),
+      state: "running",
+      completedAt: null,
+      assistantMessageId: MessageId.make("assistant-1"),
+    });
     expect(threadsOf(next)[0]?.messages).toHaveLength(1);
+  });
+
+  it("infers a completed turn from a standalone non-streaming assistant message", () => {
+    const thread = makeThread({ latestTurn: null });
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.message-sent", {
+        threadId: thread.id,
+        messageId: MessageId.make("assistant-copied"),
+        role: "assistant",
+        text: "Copied fork history",
+        turnId: TurnId.make("turn-copied"),
+        streaming: false,
+        createdAt: "2026-02-27T00:00:03.000Z",
+        updatedAt: "2026-02-27T00:00:04.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.latestTurn).toMatchObject({
+      turnId: TurnId.make("turn-copied"),
+      state: "completed",
+      completedAt: "2026-02-27T00:00:04.000Z",
+      assistantMessageId: MessageId.make("assistant-copied"),
+    });
   });
 
   it("settles an unfinished latest turn when a session-set event leaves running", () => {
@@ -1775,34 +2043,185 @@ describe("incremental orchestration updates", () => {
   });
 });
 
-describe("insights lifecycle retention", () => {
-  function activityAppendedEvent(input: {
-    sequence: number;
-    id: string;
-    kind: string;
-    turnId: string;
-    payload?: Record<string, unknown>;
-  }): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> {
-    const occurredAt = new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
-    return makeEvent(
-      "thread.activity-appended",
-      {
-        threadId: ThreadId.make("thread-1"),
-        activity: {
-          id: EventId.make(input.id),
-          tone: "info",
-          kind: input.kind,
-          summary: input.kind,
-          payload: input.payload ?? {},
-          turnId: TurnId.make(input.turnId),
-          sequence: input.sequence,
-          createdAt: occurredAt,
-        },
+function activityAppendedEvent(input: {
+  sequence: number;
+  id: string;
+  kind: string;
+  turnId: string;
+  payload?: Record<string, unknown>;
+}): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> {
+  const occurredAt = new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
+  return makeEvent(
+    "thread.activity-appended",
+    {
+      threadId: ThreadId.make("thread-1"),
+      activity: {
+        id: EventId.make(input.id),
+        tone: "info",
+        kind: input.kind,
+        summary: input.kind,
+        payload: input.payload ?? {},
+        turnId: TurnId.make(input.turnId),
+        sequence: input.sequence,
+        createdAt: occurredAt,
       },
-      { sequence: input.sequence, eventId: EventId.make(`event-${input.sequence}`) },
-    );
-  }
+    },
+    { sequence: input.sequence, eventId: EventId.make(`event-${input.sequence}`) },
+  );
+}
 
+describe("activity pagination state", () => {
+  it("does not offer older current-turn history when live updates only evict prior turns", () => {
+    const olderActivities = Array.from(
+      { length: 500 },
+      (_unused, index) =>
+        activityAppendedEvent({
+          sequence: index + 1,
+          id: `activity-turn-1-${index}`,
+          kind: "step",
+          turnId: "turn-1",
+        }).payload.activity,
+    );
+    const state = makeState(
+      makeThread({
+        activities: olderActivities,
+        hasMoreActivities: true,
+        hasMoreCurrentTurnActivities: false,
+        latestTurn: {
+          turnId: TurnId.make("turn-2"),
+          state: "running",
+          requestedAt: "2026-02-27T00:00:00.000Z",
+          startedAt: "2026-02-27T00:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      activityAppendedEvent({
+        sequence: 501,
+        id: "activity-turn-2-1",
+        kind: "step",
+        turnId: "turn-2",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(false);
+  });
+
+  it("offers older current-turn history once a live update evicts the current turn", () => {
+    const currentTurnActivities = Array.from(
+      { length: 500 },
+      (_unused, index) =>
+        activityAppendedEvent({
+          sequence: index + 1,
+          id: `activity-turn-2-${index}`,
+          kind: "step",
+          turnId: "turn-2",
+        }).payload.activity,
+    );
+    const state = makeState(
+      makeThread({
+        activities: currentTurnActivities,
+        hasMoreCurrentTurnActivities: false,
+        latestTurn: {
+          turnId: TurnId.make("turn-2"),
+          state: "running",
+          requestedAt: "2026-02-27T00:00:00.000Z",
+          startedAt: "2026-02-27T00:00:00.000Z",
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      activityAppendedEvent({
+        sequence: 501,
+        id: "activity-turn-2-500",
+        kind: "step",
+        turnId: "turn-2",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
+  });
+
+  it("clears sticky current-turn history after revert replaces the latest turn", () => {
+    const state = makeState(
+      makeThread({
+        hasMoreCurrentTurnActivities: true,
+        latestTurn: {
+          turnId: TurnId.make("turn-2"),
+          state: "completed",
+          requestedAt: "2026-02-27T00:00:02.000Z",
+          startedAt: "2026-02-27T00:00:02.000Z",
+          completedAt: "2026-02-27T00:00:03.000Z",
+          assistantMessageId: MessageId.make("assistant-2"),
+        },
+        activities: [
+          {
+            id: EventId.make("activity-1"),
+            tone: "info",
+            kind: "step",
+            summary: "step",
+            payload: {},
+            turnId: TurnId.make("turn-1"),
+            sequence: 1,
+            createdAt: "2026-02-27T00:00:01.000Z",
+          },
+          {
+            id: EventId.make("activity-2"),
+            tone: "info",
+            kind: "step",
+            summary: "step",
+            payload: {},
+            turnId: TurnId.make("turn-2"),
+            sequence: 2,
+            createdAt: "2026-02-27T00:00:02.000Z",
+          },
+        ],
+        turnDiffSummaries: [
+          {
+            turnId: TurnId.make("turn-1"),
+            completedAt: "2026-02-27T00:00:01.000Z",
+            status: "ready",
+            checkpointTurnCount: 1,
+            checkpointRef: CheckpointRef.make("ref-1"),
+            files: [],
+          },
+          {
+            turnId: TurnId.make("turn-2"),
+            completedAt: "2026-02-27T00:00:03.000Z",
+            status: "ready",
+            checkpointTurnCount: 2,
+            checkpointRef: CheckpointRef.make("ref-2"),
+            files: [],
+          },
+        ],
+      }),
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.reverted", {
+        threadId: ThreadId.make("thread-1"),
+        turnCount: 1,
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.latestTurn?.turnId).toBe(TurnId.make("turn-1"));
+    expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(false);
+  });
+});
+
+describe("insights lifecycle retention", () => {
   it("retains completed turn timing after older activities exceed the capped window", () => {
     const events: Extract<OrchestrationEvent, { type: "thread.activity-appended" }>[] = [
       activityAppendedEvent({
@@ -1859,5 +2278,73 @@ describe("insights lifecycle retention", () => {
     expect(turnOne).toBeDefined();
     expect(turnOne?.status).toBe("completed");
     expect(turnOne?.durationMs).toBe(1_000);
+  });
+
+  it("keeps durable pullRequest association per thread and ignores peer branch equality", () => {
+    const pullRequest = {
+      number: 99,
+      title: "Only one thread owns this",
+      url: "https://example.test/pr/99",
+      baseBranch: "main",
+      headBranch: "feature/shared",
+      state: "open" as const,
+    };
+    const associatedId = ThreadId.make("thread-associated");
+    const peerId = ThreadId.make("thread-peer");
+    const base = makeState(
+      makeThread({
+        id: associatedId,
+        branch: "feature/shared",
+        pullRequest,
+      }),
+    );
+    const state = applyOrchestrationEvent(
+      base,
+      makeEvent("thread.created", {
+        threadId: peerId,
+        projectId: ProjectId.make("project-1"),
+        title: "Peer",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        branch: "feature/shared",
+        worktreePath: null,
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const next = applyOrchestrationEvent(
+      state,
+      makeEvent("thread.meta-updated", {
+        threadId: associatedId,
+        branch: "feature/retargeted",
+        updatedAt: "2026-02-27T00:00:01.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    const associated = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, associatedId));
+    const peer = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, peerId));
+    expect(associated?.branch).toBe("feature/retargeted");
+    expect(associated?.pullRequest).toEqual(pullRequest);
+    expect(peer?.pullRequest ?? null).toBeNull();
+
+    const withCreatedPr = applyOrchestrationEvent(
+      next,
+      makeEvent("thread.meta-updated", {
+        threadId: peerId,
+        pullRequest,
+        updatedAt: "2026-02-27T00:00:02.000Z",
+      }),
+      localEnvironmentId,
+    );
+    expect(
+      selectThreadByRef(withCreatedPr, scopeThreadRef(localEnvironmentId, peerId))?.pullRequest,
+    ).toEqual(pullRequest);
   });
 });

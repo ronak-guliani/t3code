@@ -52,9 +52,10 @@ import { AgentBrowserCursor } from "./AgentBrowserCursor";
 import {
   startBrowserRecording,
   stopBrowserRecording,
-  useActiveBrowserRecordingTabId,
+  useActiveBrowserRecordingTabIds,
 } from "~/browser/browserRecording";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -78,10 +79,13 @@ export function PreviewView({
 }: Props) {
   const [focusUrlNonce, setFocusUrlNonce] = useState<number | undefined>(undefined);
   const [pickActive, setPickActive] = useState(false);
-  const activeRecordingTabId = useActiveBrowserRecordingTabId();
+  const activeRecordingTabIds = useActiveBrowserRecordingTabIds();
   const pickActiveRef = useRef(false);
   const isMountedRef = useRef(true);
   const previewState = useThreadPreviewState(threadRef);
+  const miniPlayerTabId = usePreviewMiniPlayerStore(
+    (state) => state.byThreadKey[scopedThreadKey(threadRef)]?.tabId ?? null,
+  );
   const addPreviewAnnotation = useComposerDraftStore((store) => store.addPreviewAnnotation);
   const addImage = useComposerDraftStore((store) => store.addImage);
   const environment = useEnvironment(threadRef.environmentId);
@@ -245,11 +249,21 @@ export function PreviewView({
     void localApi.shell.openExternal(url).catch(() => undefined);
   }, [url]);
 
+  const handleToggleFloatingPreview = useCallback(() => {
+    if (!tabId) return;
+    if (miniPlayerTabId === tabId) {
+      usePreviewMiniPlayerStore.getState().close(threadRef);
+      return;
+    }
+    usePreviewMiniPlayerStore.getState().open(threadRef, tabId);
+    onClose?.();
+  }, [miniPlayerTabId, onClose, tabId, threadRef]);
+
   const handleCapture = useCallback(
     (record: boolean) => {
       if (!previewBridge || !runtimeTabId || !tabId) return;
       const bridge = previewBridge;
-      const recordingThisTab = activeRecordingTabId === runtimeTabId;
+      const recordingThisTab = activeRecordingTabIds.has(runtimeTabId);
       if (recordingThisTab) {
         void stopBrowserRecording(runtimeTabId).then(
           (artifact) => {
@@ -336,15 +350,7 @@ export function PreviewView({
         return;
       }
       if (record) {
-        if (activeRecordingTabId !== null) {
-          toastManager.add({
-            type: "warning",
-            title: "Another preview is recording",
-            description: "Stop the active recording before starting a new one.",
-          });
-          return;
-        }
-        void startBrowserRecording(runtimeTabId, tabId).catch((error) => {
+        void startBrowserRecording(runtimeTabId, threadRef, tabId).catch((error) => {
           toastManager.add({
             type: "error",
             title: "Unable to start recording",
@@ -477,7 +483,7 @@ export function PreviewView({
         },
       );
     },
-    [activeRecordingTabId, runtimeTabId, tabId],
+    [activeRecordingTabIds, runtimeTabId, tabId, threadRef],
   );
 
   const handlePickElement = useCallback(() => {
@@ -599,7 +605,10 @@ export function PreviewView({
         onOpenInBrowser={tabId ? handleOpenInBrowser : undefined}
         onCapture={previewBridge && tabId ? handleCapture : undefined}
         captureDisabled={!desktopOverlay || isUnreachable}
-        recording={runtimeTabId !== null && activeRecordingTabId === runtimeTabId}
+        recording={runtimeTabId !== null && activeRecordingTabIds.has(runtimeTabId)}
+        onPictureInPicture={previewBridge && tabId ? handleToggleFloatingPreview : undefined}
+        pictureInPicture={miniPlayerTabId === tabId}
+        pictureInPictureDisabled={!desktopOverlay || isUnreachable}
         onPickElement={previewBridge && tabId ? handlePickElement : undefined}
         pickActive={pickActive}
         // Disable when there's no tab (nothing to pick on) OR the page
@@ -641,7 +650,7 @@ export function PreviewView({
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
-            visible={visible && !isUnreachable}
+            visible={visible && miniPlayerTabId !== tabId && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}

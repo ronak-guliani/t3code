@@ -111,10 +111,16 @@ describe("connection onboarding", () => {
         tokenRequest?.init.body instanceof Uint8Array
           ? new TextDecoder().decode(tokenRequest.init.body)
           : String(tokenRequest?.init.body);
-      const tokenParams = new URLSearchParams(tokenBody);
-      expect(tokenParams.get("subject_token")).toBe("pairing-token");
-      expect(tokenParams.get("scope")).toBe(AuthStandardClientScopes.join(" "));
-      expect(tokenParams.get("client_label")).toBe("T3 Code Test");
+      expect(Object.fromEntries(new URLSearchParams(tokenBody))).toEqual({
+        grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+        subject_token: "pairing-token",
+        subject_token_type: "urn:t3:params:oauth:token-type:environment-bootstrap",
+        requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        scope: AuthStandardClientScopes.join(" "),
+        client_label: "T3 Code Test",
+        client_device_type: "desktop",
+        client_os: "Test OS",
+      });
     }),
   );
 

@@ -19,6 +19,7 @@ export interface EnvironmentConnection {
   readonly knownEnvironment: KnownEnvironment;
   readonly client: WsRpcClient;
   readonly ensureBootstrapped: () => Promise<void>;
+  readonly refreshShellSnapshot: () => Promise<void>;
   readonly reconnect: () => Promise<void>;
   readonly dispose: () => Promise<void>;
 }
@@ -94,6 +95,7 @@ export function createEnvironmentConnection(
   let disposed = false;
   let clientDisposed = false;
   let fatalError: Error | null = null;
+  let latestShellStreamSequence: number | null = null;
   const bootstrapGate = createBootstrapGate();
   const unsubscribers: Array<() => void> = [];
   if (input.kind === "primary") {
@@ -187,10 +189,25 @@ export function createEnvironmentConnection(
   const unsubShell = input.client.orchestration.subscribeShell(
     (item: Parameters<Parameters<WsRpcClient["orchestration"]["subscribeShell"]>[0]>[0]) => {
       if (item.kind === "snapshot") {
+        latestShellStreamSequence = item.snapshot.snapshotSequence;
         input.syncShellSnapshot(item.snapshot, environmentId);
         bootstrapGate.resolve();
         return;
       }
+      if (item.kind === "synchronized") {
+        if (item.sequence !== undefined) {
+          latestShellStreamSequence =
+            latestShellStreamSequence === null
+              ? item.sequence
+              : Math.max(latestShellStreamSequence, item.sequence);
+        }
+        bootstrapGate.resolve();
+        return;
+      }
+      latestShellStreamSequence =
+        latestShellStreamSequence === null
+          ? item.sequence
+          : Math.max(latestShellStreamSequence, item.sequence);
       input.applyShellEvent(item, environmentId);
     },
     {
@@ -217,6 +234,22 @@ export function createEnvironmentConnection(
     knownEnvironment: input.knownEnvironment,
     client: input.client,
     ensureBootstrapped: () => (fatalError ? Promise.reject(fatalError) : bootstrapGate.wait()),
+    refreshShellSnapshot: async () => {
+      if (fatalError) {
+        throw fatalError;
+      }
+      if (disposed) {
+        throw new Error(`Environment connection ${environmentId} is disposed.`);
+      }
+      const snapshot = await input.client.orchestration.getShellSnapshot();
+      if (
+        latestShellStreamSequence !== null &&
+        snapshot.snapshotSequence < latestShellStreamSequence
+      ) {
+        return;
+      }
+      input.syncShellSnapshot(snapshot, environmentId);
+    },
     reconnect: async () => {
       if (fatalError) {
         throw fatalError;

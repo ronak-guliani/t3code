@@ -5,7 +5,10 @@ import { Option } from "effect";
 
 import { ServerConfig } from "../../config.ts";
 import { AuthSessionRepositoryLive } from "../../persistence/Layers/AuthSessions.ts";
-import { AuthSessionRepository } from "../../persistence/Services/AuthSessions.ts";
+import {
+  AuthSessionRepository,
+  type AuthSessionRepositoryShape,
+} from "../../persistence/Services/AuthSessions.ts";
 import { ServerSecretStore } from "../Services/ServerSecretStore.ts";
 import {
   SessionCredentialError,
@@ -22,10 +25,14 @@ import {
   signPayload,
   timingSafeEqualBase64Url,
 } from "../utils.ts";
+import { defaultSessionScopes } from "../scopes.ts";
 
 const SIGNING_SECRET_NAME = "server-signing-key";
 const DEFAULT_SESSION_TTL = Duration.days(30);
 const DEFAULT_WEBSOCKET_TOKEN_TTL = Duration.minutes(5);
+const CONNECTED_SESSION_POLL_INTERVAL = Duration.seconds(1);
+const SESSION_LOOKUP_RETRY_INTERVAL = Duration.millis(250);
+const CONNECTED_SESSION_POLL_BATCH_SIZE = 900;
 
 const SessionClaims = Schema.Struct({
   v: Schema.Literal(1),
@@ -33,7 +40,11 @@ const SessionClaims = Schema.Struct({
   sid: AuthSessionId,
   sub: Schema.String,
   role: Schema.Literals(["owner", "client"]),
-  method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
+  method: Schema.Literals([
+    "browser-session-cookie",
+    "bearer-session-token",
+    "bearer-access-token",
+  ]),
   iat: Schema.Number,
   exp: Schema.Number,
 });
@@ -47,6 +58,26 @@ const WebSocketClaims = Schema.Struct({
   exp: Schema.Number,
 });
 type WebSocketClaims = typeof WebSocketClaims.Type;
+
+export const listInactiveSessionIdsInBatches = Effect.fn(
+  "SessionCredentialService.listInactiveSessionIdsInBatches",
+)(function* (input: {
+  readonly sessionIds: ReadonlyArray<AuthSessionId>;
+  readonly now: DateTime.Utc;
+  readonly listInactiveIds: AuthSessionRepositoryShape["listInactiveIds"];
+}) {
+  const inactiveSessionIds: AuthSessionId[] = [];
+  for (let start = 0; start < input.sessionIds.length; start += CONNECTED_SESSION_POLL_BATCH_SIZE) {
+    const batch = input.sessionIds.slice(start, start + CONNECTED_SESSION_POLL_BATCH_SIZE);
+    inactiveSessionIds.push(
+      ...(yield* input.listInactiveIds({
+        sessionIds: batch,
+        now: input.now,
+      })),
+    );
+  }
+  return inactiveSessionIds;
+});
 
 const decodeSessionClaims = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionClaims));
 const decodeWebSocketClaims = Schema.decodeUnknownEffect(Schema.fromJsonString(WebSocketClaims));
@@ -112,6 +143,39 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       sessionId,
     }).pipe(Effect.asVoid);
 
+  const isSessionActive = (sessionId: AuthSessionId) =>
+    Effect.gen(function* () {
+      const row = yield* authSessions.getById({ sessionId });
+      if (Option.isNone(row) || row.value.revokedAt !== null) return false;
+      const now = yield* Clock.currentTimeMillis;
+      return row.value.expiresAt.epochMilliseconds > now;
+    });
+
+  const waitForSuccessfulSessionLookup = (sessionId: AuthSessionId) =>
+    isSessionActive(sessionId).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("Failed to verify connected auth session state; retrying.").pipe(
+          Effect.annotateLogs({ sessionId, cause }),
+          Effect.andThen(Effect.sleep(SESSION_LOOKUP_RETRY_INTERVAL)),
+          Effect.andThen(waitForSuccessfulSessionLookup(sessionId)),
+        ),
+      ),
+    );
+
+  const waitUntilInactive: SessionCredentialServiceShape["waitUntilInactive"] = (sessionId) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const changes = yield* PubSub.subscribe(changesPubSub);
+        if (!(yield* waitForSuccessfulSessionLookup(sessionId))) return;
+        while (true) {
+          const change = yield* PubSub.take(changes);
+          if (change.type === "clientRemoved" && change.sessionId === sessionId) return;
+        }
+      }),
+    ).pipe(
+      Effect.mapError(toSessionCredentialError("Failed to monitor session credential state.")),
+    );
+
   const loadActiveSession = (sessionId: AuthSessionId) =>
     Effect.gen(function* () {
       const row = yield* authSessions.getById({ sessionId });
@@ -125,6 +189,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
           sessionId: row.value.sessionId,
           subject: row.value.subject,
           role: row.value.role,
+          scopes: row.value.scopes ?? defaultSessionScopes(row.value.role),
           method: row.value.method,
           client: toClientMetadata(row.value.client),
           issuedAt: row.value.issuedAt,
@@ -213,10 +278,12 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       const encodedPayload = base64UrlEncode(JSON.stringify(claims));
       const signature = signPayload(encodedPayload, signingSecret);
       const client = input?.client ?? createDefaultClientMetadata();
+      const scopes = input?.scopes ?? defaultSessionScopes(claims.role);
       yield* authSessions.create({
         sessionId,
         subject: claims.sub,
         role: claims.role,
+        scopes: input?.scopes ?? null,
         method: claims.method,
         client: {
           label: client.label ?? null,
@@ -234,6 +301,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
           sessionId,
           subject: claims.sub,
           role: claims.role,
+          scopes,
           method: claims.method,
           client,
           issuedAt,
@@ -250,6 +318,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         client,
         expiresAt: expiresAt,
         role: claims.role,
+        scopes,
       } satisfies IssuedSession;
     }).pipe(Effect.mapError(toSessionCredentialError("Failed to issue session credential.")));
 
@@ -306,6 +375,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         expiresAt: DateTime.makeUnsafe(claims.exp),
         subject: claims.sub,
         role: claims.role,
+        scopes: row.value.scopes ?? defaultSessionScopes(row.value.role),
       } satisfies VerifiedSession;
     }).pipe(
       Effect.mapError((cause) =>
@@ -400,6 +470,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         expiresAt: row.value.expiresAt,
         subject: row.value.subject,
         role: row.value.role,
+        scopes: row.value.scopes ?? defaultSessionScopes(row.value.role),
       } satisfies VerifiedSession;
     }).pipe(
       Effect.mapError((cause) =>
@@ -423,6 +494,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
           sessionId: row.sessionId,
           subject: row.subject,
           role: row.role,
+          scopes: row.scopes ?? defaultSessionScopes(row.role),
           method: row.method,
           client: toClientMetadata(row.client),
           issuedAt: row.issuedAt,
@@ -478,6 +550,41 @@ export const makeSessionCredentialService = Effect.gen(function* () {
       return revokedSessionIds.length;
     }).pipe(Effect.mapError(toSessionCredentialError("Failed to revoke other sessions.")));
 
+  const pollConnectedSessions = Effect.gen(function* () {
+    yield* Effect.sleep(CONNECTED_SESSION_POLL_INTERVAL);
+    const connectedSessions = yield* Ref.get(connectedSessionsRef);
+    const sessionIds = Array.from(connectedSessions.keys(), AuthSessionId.make);
+    if (sessionIds.length === 0) return;
+    const now = yield* DateTime.now;
+    const inactiveSessionIds = yield* listInactiveSessionIdsInBatches({
+      sessionIds,
+      now,
+      listInactiveIds: authSessions.listInactiveIds,
+    });
+    if (inactiveSessionIds.length === 0) return;
+    yield* Ref.update(connectedSessionsRef, (current) => {
+      const next = new Map(current);
+      for (const inactiveSessionId of inactiveSessionIds) next.delete(inactiveSessionId);
+      return next;
+    });
+    yield* Effect.forEach(inactiveSessionIds, emitRemoved, {
+      concurrency: "unbounded",
+      discard: true,
+    });
+  });
+
+  yield* Effect.gen(function* () {
+    while (true) {
+      yield* pollConnectedSessions.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("Failed to poll connected auth session state; retrying.").pipe(
+            Effect.annotateLogs({ cause }),
+          ),
+        ),
+      );
+    }
+  }).pipe(Effect.forkScoped);
+
   return {
     cookieName,
     issue,
@@ -488,6 +595,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },
+    waitUntilInactive,
     revoke,
     revokeAllExcept,
     markConnected,
@@ -495,7 +603,11 @@ export const makeSessionCredentialService = Effect.gen(function* () {
   } satisfies SessionCredentialServiceShape;
 });
 
-export const SessionCredentialServiceLive = Layer.effect(
+export const SessionCredentialServiceBase = Layer.effect(
   SessionCredentialService,
   makeSessionCredentialService,
-).pipe(Layer.provideMerge(AuthSessionRepositoryLive));
+);
+
+export const SessionCredentialServiceLive = SessionCredentialServiceBase.pipe(
+  Layer.provideMerge(AuthSessionRepositoryLive),
+);

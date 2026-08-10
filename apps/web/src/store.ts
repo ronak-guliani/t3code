@@ -85,6 +85,7 @@ export interface EnvironmentState {
   activityByThreadId: Record<ThreadId, Record<string, OrchestrationThreadActivity>>;
   activityContextByThreadId: Record<ThreadId, readonly OrchestrationThreadActivity[]>;
   hasMoreActivitiesByThreadId?: Record<ThreadId, boolean>;
+  hasMoreCurrentTurnActivitiesByThreadId?: Record<ThreadId, boolean>;
   // Insights lifecycle records retained independently of `activityByThreadId`
   // so thread-wide timing stays complete after the capped activity window
   // evicts older turns. Bounded by distinct turns, not raw activity count.
@@ -128,6 +129,7 @@ const initialEnvironmentState: EnvironmentState = {
   activityByThreadId: {},
   activityContextByThreadId: {},
   hasMoreActivitiesByThreadId: {},
+  hasMoreCurrentTurnActivitiesByThreadId: {},
   insightActivitiesByThreadId: {},
   proposedPlanIdsByThreadId: {},
   proposedPlanByThreadId: {},
@@ -331,12 +333,14 @@ function mapThread(thread: OrchestrationThread, environmentId: EnvironmentId): T
     pendingSourceProposedPlan: thread.latestTurn?.sourceProposedPlan,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    pullRequest: thread.pullRequest ?? null,
     ...(thread.reviewSnapshot !== undefined ? { reviewSnapshot: thread.reviewSnapshot } : {}),
     ...(thread.reviewResult !== undefined ? { reviewResult: thread.reviewResult } : {}),
     turnDiffSummaries: thread.checkpoints.map(mapTurnDiffSummary),
     activities: thread.activities.map((activity) => ({ ...activity })),
     activityContext: thread.activityContext?.map((activity) => ({ ...activity })) ?? [],
     hasMoreActivities: thread.hasMoreActivities ?? false,
+    hasMoreCurrentTurnActivities: thread.hasMoreCurrentTurnActivities ?? false,
   };
 }
 
@@ -370,6 +374,7 @@ function mapThreadShell(
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    pullRequest: thread.pullRequest ?? null,
   };
   const session = thread.session ? mapSession(thread.session) : null;
   const turnState: ThreadTurnState = {
@@ -394,6 +399,7 @@ function mapThreadShell(
     latestTurn: thread.latestTurn,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    pullRequest: thread.pullRequest ?? null,
     latestUserMessageAt: thread.latestUserMessageAt,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
@@ -430,6 +436,7 @@ function toThreadShell(thread: Thread): ThreadShell {
     updatedAt: thread.updatedAt,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    pullRequest: thread.pullRequest ?? null,
   };
 }
 
@@ -533,11 +540,28 @@ function sidebarThreadSummariesEqual(
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
     left.branch === right.branch &&
     left.worktreePath === right.worktreePath &&
+    pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
     backgroundAgentRunsEqual(left.backgroundAgentRuns, right.backgroundAgentRuns)
+  );
+}
+
+function pullRequestsEqual(
+  left: SidebarThreadSummary["pullRequest"],
+  right: SidebarThreadSummary["pullRequest"],
+): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return left == null && right == null;
+  return (
+    left.number === right.number &&
+    left.title === right.title &&
+    left.url === right.url &&
+    left.baseBranch === right.baseBranch &&
+    left.headBranch === right.headBranch &&
+    left.state === right.state
   );
 }
 
@@ -558,6 +582,35 @@ function backgroundAgentRunsEqual(
       run.completedAt === candidate.completedAt
     );
   });
+}
+
+function reconcileSidebarActivitySummary(
+  state: EnvironmentState,
+  thread: Pick<Thread, "id" | "latestTurn" | "session">,
+): EnvironmentState {
+  const summary = state.sidebarThreadSummaryById[thread.id];
+  // Shell stream owns title/branch/worktreePath/pullRequest/updatedAt.
+  // Detail/orchestration paths may only advance activity fields so a lagging
+  // detail Thread cannot clobber fresher shell-authoritative metadata.
+  if (
+    summary === undefined ||
+    (threadSessionsEqual(summary.session, thread.session) &&
+      latestTurnsEqual(summary.latestTurn, thread.latestTurn))
+  ) {
+    return state;
+  }
+
+  return {
+    ...state,
+    sidebarThreadSummaryById: {
+      ...state.sidebarThreadSummaryById,
+      [thread.id]: {
+        ...summary,
+        session: thread.session,
+        latestTurn: thread.latestTurn,
+      },
+    },
+  };
 }
 
 function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): boolean {
@@ -582,7 +635,8 @@ function threadShellsEqual(left: ThreadShell | undefined, right: ThreadShell): b
     left.snoozedAt === right.snoozedAt &&
     left.updatedAt === right.updatedAt &&
     left.branch === right.branch &&
-    left.worktreePath === right.worktreePath
+    left.worktreePath === right.worktreePath &&
+    pullRequestsEqual(left.pullRequest, right.pullRequest)
   );
 }
 
@@ -751,7 +805,9 @@ function ensureThreadRegistered(
  * the active thread has up-to-date state even if the shell stream event
  * hasn't arrived yet (both streams use structural equality checks to avoid
  * unnecessary re-renders when delivering equivalent data).
- * Does NOT write sidebarThreadSummaryById — that is shell-stream-only.
+ * Reconciles only the sidebar's session/turn activity fields so a retained
+ * detail subscription cannot show working state in chat while its row stays
+ * idle. Other sidebar summary fields remain shell-stream-owned.
  */
 function writeThreadState(
   state: EnvironmentState,
@@ -864,6 +920,16 @@ function writeThreadState(
     };
   }
 
+  if (previousThread?.hasMoreCurrentTurnActivities !== nextThread.hasMoreCurrentTurnActivities) {
+    nextState = {
+      ...nextState,
+      hasMoreCurrentTurnActivitiesByThreadId: {
+        ...nextState.hasMoreCurrentTurnActivitiesByThreadId,
+        [nextThread.id]: nextThread.hasMoreCurrentTurnActivities ?? false,
+      },
+    };
+  }
+
   if (previousThread?.proposedPlans !== nextThread.proposedPlans) {
     const nextProposedPlanSlice = buildProposedPlanSlice(nextThread);
     nextState = {
@@ -920,7 +986,7 @@ function writeThreadState(
     };
   }
 
-  return nextState;
+  return reconcileSidebarActivitySummary(nextState, nextThread);
 }
 
 /**
@@ -1046,6 +1112,10 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     state.activityContextByThreadId;
   const { [threadId]: _removedHasMoreActivities, ...hasMoreActivitiesByThreadId } =
     state.hasMoreActivitiesByThreadId ?? {};
+  const {
+    [threadId]: _removedHasMoreCurrentTurnActivities,
+    ...hasMoreCurrentTurnActivitiesByThreadId
+  } = state.hasMoreCurrentTurnActivitiesByThreadId ?? {};
   const { [threadId]: _removedInsightActivities, ...insightActivitiesByThreadId } =
     state.insightActivitiesByThreadId;
   const { [threadId]: _removedPlanIds, ...proposedPlanIdsByThreadId } =
@@ -1073,6 +1143,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     activityByThreadId,
     activityContextByThreadId,
     hasMoreActivitiesByThreadId,
+    hasMoreCurrentTurnActivitiesByThreadId,
     insightActivitiesByThreadId,
     proposedPlanIdsByThreadId,
     proposedPlanByThreadId,
@@ -1430,13 +1501,7 @@ function updateThreadMessageState(
       ? buildLatestTurn({
           previous: currentLatestTurn,
           turnId: event.payload.turnId,
-          state: event.payload.streaming
-            ? "running"
-            : currentLatestTurn?.state === "interrupted"
-              ? "interrupted"
-              : currentLatestTurn?.state === "error"
-                ? "error"
-                : "completed",
+          state: currentLatestTurn?.state ?? (event.payload.streaming ? "running" : "completed"),
           requestedAt:
             currentLatestTurn?.turnId === event.payload.turnId
               ? currentLatestTurn.requestedAt
@@ -1446,11 +1511,12 @@ function updateThreadMessageState(
               ? (currentLatestTurn.startedAt ?? event.payload.createdAt)
               : event.payload.createdAt,
           sourceProposedPlan: currentTurnState?.pendingSourceProposedPlan,
-          completedAt: event.payload.streaming
-            ? currentLatestTurn?.turnId === event.payload.turnId
+          completedAt:
+            currentLatestTurn?.turnId === event.payload.turnId
               ? (currentLatestTurn.completedAt ?? null)
-              : null
-            : event.payload.updatedAt,
+              : event.payload.streaming
+                ? null
+                : event.payload.updatedAt,
           assistantMessageId: event.payload.messageId,
         })
       : currentLatestTurn;
@@ -1482,7 +1548,7 @@ function updateThreadMessageState(
     }
   }
 
-  return {
+  const nextState: EnvironmentState = {
     ...state,
     ...(shell.updatedAt === event.occurredAt
       ? {}
@@ -1518,6 +1584,12 @@ function updateThreadMessageState(
       ? {}
       : { turnDiffSummaryByThreadId }),
   };
+
+  return reconcileSidebarActivitySummary(nextState, {
+    id: threadId,
+    session: state.threadSessionById[threadId] ?? null,
+    latestTurn,
+  });
 }
 
 function buildProjectState(
@@ -1618,6 +1690,14 @@ function syncEnvironmentShellSnapshot(
       ? {
           hasMoreActivitiesByThreadId: retainThreadScopedRecord(
             state.hasMoreActivitiesByThreadId,
+            nextThreadIds,
+          ),
+        }
+      : {}),
+    ...(state.hasMoreCurrentTurnActivitiesByThreadId
+      ? {
+          hasMoreCurrentTurnActivitiesByThreadId: retainThreadScopedRecord(
+            state.hasMoreCurrentTurnActivitiesByThreadId,
             nextThreadIds,
           ),
         }
@@ -1804,6 +1884,9 @@ function applyEnvironmentOrchestrationEvent(
           interactionMode: event.payload.interactionMode,
           branch: event.payload.branch,
           worktreePath: event.payload.worktreePath,
+          ...(event.payload.pullRequest !== undefined
+            ? { pullRequest: event.payload.pullRequest }
+            : {}),
           ...(event.payload.reviewSnapshot !== undefined
             ? { reviewSnapshot: event.payload.reviewSnapshot }
             : {}),
@@ -1890,6 +1973,9 @@ function applyEnvironmentOrchestrationEvent(
         ...(event.payload.worktreePath !== undefined
           ? { worktreePath: event.payload.worktreePath }
           : {}),
+        ...(event.payload.pullRequest !== undefined
+          ? { pullRequest: event.payload.pullRequest }
+          : {}),
         updatedAt: event.payload.updatedAt,
       }));
 
@@ -1924,6 +2010,7 @@ function applyEnvironmentOrchestrationEvent(
         runtimeMode: event.payload.runtimeMode,
         interactionMode: event.payload.interactionMode,
         pendingSourceProposedPlan: event.payload.sourceProposedPlan,
+        hasMoreCurrentTurnActivities: false,
         updatedAt: event.occurredAt,
       }));
 
@@ -2109,6 +2196,9 @@ function applyEnvironmentOrchestrationEvent(
         ).slice(-MAX_THREAD_PROPOSED_PLANS);
         const activities = retainThreadActivitiesAfterRevert(thread.activities, retainedTurnIds);
         const latestCheckpoint = turnDiffSummaries.at(-1) ?? null;
+        // The sticky live-eviction flag described the discarded turn. Clear it
+        // for the restored latestTurn; a later snapshot can re-offer history.
+        const hasMoreCurrentTurnActivities = false;
 
         return {
           ...thread,
@@ -2117,6 +2207,7 @@ function applyEnvironmentOrchestrationEvent(
           proposedPlans,
           activities,
           pendingSourceProposedPlan: undefined,
+          hasMoreCurrentTurnActivities,
           latestTurn:
             latestCheckpoint === null
               ? null
@@ -2144,11 +2235,20 @@ function applyEnvironmentOrchestrationEvent(
           ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
           { ...event.payload.activity },
         ].toSorted(compareActivities);
+        const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
+        const activeTurnId = thread.latestTurn?.turnId;
+        const evictedCurrentTurnActivity =
+          activeTurnId !== undefined &&
+          allActivities
+            .slice(0, retainedActivityStart)
+            .some((activity) => activity.turnId === activeTurnId);
         return {
           ...thread,
-          activities: allActivities.slice(-MAX_THREAD_ACTIVITIES),
+          activities: allActivities.slice(retainedActivityStart),
           hasMoreActivities:
             (thread.hasMoreActivities ?? false) || allActivities.length > MAX_THREAD_ACTIVITIES,
+          hasMoreCurrentTurnActivities:
+            (thread.hasMoreCurrentTurnActivities ?? false) || evictedCurrentTurnActivity,
           updatedAt: event.occurredAt,
         };
       });
@@ -2620,21 +2720,53 @@ export function setThreadBranch(
   threadRef: ScopedThreadRef,
   branch: string | null,
   worktreePath: string | null,
+  pullRequest?: Thread["pullRequest"],
 ): AppState {
-  const nextEnvironmentState = updateThreadState(
-    getStoredEnvironmentState(state, threadRef.environmentId),
-    threadRef.threadId,
-    (thread) => {
-      if (thread.branch === branch && thread.worktreePath === worktreePath) return thread;
-      const cwdChanged = thread.worktreePath !== worktreePath;
-      return {
-        ...thread,
-        branch,
-        worktreePath,
-        ...(cwdChanged ? { session: null } : {}),
+  const environmentState = getStoredEnvironmentState(state, threadRef.environmentId);
+  let nextEnvironmentState = updateThreadState(environmentState, threadRef.threadId, (thread) => {
+    const nextPullRequest = pullRequest === undefined ? (thread.pullRequest ?? null) : pullRequest;
+    if (
+      thread.branch === branch &&
+      thread.worktreePath === worktreePath &&
+      pullRequestsEqual(thread.pullRequest, nextPullRequest)
+    ) {
+      return thread;
+    }
+    const cwdChanged = thread.worktreePath !== worktreePath;
+    return {
+      ...thread,
+      branch,
+      worktreePath,
+      pullRequest: nextPullRequest,
+      ...(cwdChanged ? { session: null } : {}),
+    };
+  });
+
+  // Optimistic local branch/PR updates are intentional UI commits, not detail
+  // stream lag. Patch shell-owned summary fields here only; activity reconcile
+  // must not copy them from retained detail subscriptions.
+  const summary = nextEnvironmentState.sidebarThreadSummaryById[threadRef.threadId];
+  const shell = nextEnvironmentState.threadShellById[threadRef.threadId];
+  if (summary !== undefined && shell !== undefined) {
+    const nextSession = nextEnvironmentState.threadSessionById[threadRef.threadId] ?? null;
+    const nextSummary: SidebarThreadSummary = {
+      ...summary,
+      branch: shell.branch,
+      worktreePath: shell.worktreePath,
+      pullRequest: shell.pullRequest ?? null,
+      session: nextSession,
+    };
+    if (!sidebarThreadSummariesEqual(summary, nextSummary)) {
+      nextEnvironmentState = {
+        ...nextEnvironmentState,
+        sidebarThreadSummaryById: {
+          ...nextEnvironmentState.sidebarThreadSummaryById,
+          [threadRef.threadId]: nextSummary,
+        },
       };
-    },
-  );
+    }
+  }
+
   return commitEnvironmentState(state, threadRef.environmentId, nextEnvironmentState);
 }
 
@@ -2656,6 +2788,7 @@ interface AppStore extends AppState {
     threadRef: ScopedThreadRef,
     branch: string | null,
     worktreePath: string | null,
+    pullRequest?: Thread["pullRequest"],
   ) => void;
 }
 
@@ -2674,6 +2807,6 @@ export const useStore = create<AppStore>((set) => ({
   applyShellEvent: (event, environmentId) =>
     set((state) => applyShellEvent(state, event, environmentId)),
   setError: (threadId, error) => set((state) => setError(state, threadId, error)),
-  setThreadBranch: (threadRef, branch, worktreePath) =>
-    set((state) => setThreadBranch(state, threadRef, branch, worktreePath)),
+  setThreadBranch: (threadRef, branch, worktreePath, pullRequest) =>
+    set((state) => setThreadBranch(state, threadRef, branch, worktreePath, pullRequest)),
 }));

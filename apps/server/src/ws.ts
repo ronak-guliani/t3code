@@ -2,7 +2,19 @@
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import { DateTime, Duration, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
+import {
+  Cause,
+  DateTime,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Queue,
+  Ref,
+  Schema,
+  Stream,
+} from "effect";
 import {
   type AuthAccessStreamEvent,
   AssetWorkspaceContextNotFoundError,
@@ -18,6 +30,7 @@ import {
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
+  type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffStateError,
@@ -77,7 +90,7 @@ import {
   vcsListRefsInputToGit,
 } from "./git/VcsBridge.ts";
 import { clamp } from "effect/Number";
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
@@ -100,6 +113,11 @@ import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispat
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
+import {
+  filterArchivedShellSnapshot,
+  filterActiveShellSnapshot,
+  toShellStreamEvent as projectShellStreamEvent,
+} from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { collectActiveThreadSubtree } from "./orchestration/threadHierarchy.ts";
 import {
@@ -112,6 +130,7 @@ import {
   observeRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import { withLogContext } from "./observability/LogContext.ts";
+import { outcomeFromExit } from "./observability/Attributes.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { listCopilotPreconnectionCommands } from "./provider/copilotPreconnectionCommands.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
@@ -126,7 +145,8 @@ import { WorkspacePathOutsideRootError } from "./workspace/Services/WorkspacePat
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
 import { RepositoryIdentityResolver } from "./project/Services/RepositoryIdentityResolver.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
-import { ServerAuth } from "./auth/Services/ServerAuth.ts";
+import { ServerAuth, type AuthenticatedSession } from "./auth/Services/ServerAuth.ts";
+import { rpcAuthorizationLayer } from "./auth/RpcAuthorization.ts";
 import { PreviewManager } from "./preview/Manager.ts";
 import { PortDiscovery } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
@@ -166,6 +186,8 @@ async function writeThreadMarkdownExportFile(input: {
 }
 
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
+const SHELL_RESUME_MAX_GAP = 1_000;
+const THREAD_RESUME_MAX_GAP = 1_000;
 
 function toAuthAccessStreamEvent(
   change: BootstrapCredentialChange | SessionCredentialChange,
@@ -207,9 +229,10 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
+const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
+      const currentSessionId = currentSession.sessionId;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -292,61 +315,16 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
       const toShellStreamEvent = (
         event: OrchestrationEvent,
       ): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never, never> => {
-        switch (event.type) {
-          case "project.created":
-          case "project.meta-updated":
-            return projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
-              Effect.map((project) =>
-                Option.map(project, (nextProject) => ({
-                  kind: "project-upserted" as const,
-                  sequence: event.sequence,
-                  project: nextProject,
-                })),
-              ),
-              Effect.catch(() => Effect.succeed(Option.none())),
-            );
-          case "project.deleted":
-            return Effect.succeed(
-              Option.some({
-                kind: "project-removed" as const,
-                sequence: event.sequence,
-                projectId: event.payload.projectId,
-              }),
-            );
-          case "thread.deleted":
-            return Effect.succeed(
-              Option.some({
-                kind: "thread-removed" as const,
-                sequence: event.sequence,
-                threadId: event.payload.threadId,
-              }),
-            );
-          default:
-            if (event.aggregateKind === "workflow") {
-              return Effect.succeed(
-                Option.some({
-                  kind: "workflow-event" as const,
-                  sequence: event.sequence,
-                  event,
-                }),
-              );
-            }
-            if (event.aggregateKind !== "thread") {
-              return Effect.succeed(Option.none());
-            }
-            return projectionSnapshotQuery
-              .getThreadShellById(ThreadId.make(event.aggregateId))
-              .pipe(
-                Effect.map((thread) =>
-                  Option.map(thread, (nextThread) => ({
-                    kind: "thread-upserted" as const,
-                    sequence: event.sequence,
-                    thread: nextThread,
-                  })),
-                ),
-                Effect.catch(() => Effect.succeed(Option.none())),
-              );
+        if (event.aggregateKind === "workflow") {
+          return Effect.succeed(
+            Option.some({
+              kind: "workflow-event" as const,
+              sequence: event.sequence,
+              event,
+            }),
+          );
         }
+        return projectShellStreamEvent(projectionSnapshotQuery, event);
       };
 
       const loadServerConfig = Effect.gen(function* () {
@@ -376,6 +354,8 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             otlpMetricsEnabled: config.otlpMetricsUrl !== undefined,
           },
           settings,
+          shellResumeCompletionMarker: true,
+          threadResumeCompletionMarker: true,
         };
       });
 
@@ -466,14 +446,21 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
         Effect.gen(function* () {
           const runId = WorkflowRunId.make(input.idempotencyKey);
           const createdAt = new Date().toISOString();
+          const settings = yield* serverSettings.getSettings;
+          const isBuiltInWorkflow =
+            input.workflowId === REVIEW_CHANGES_WORKFLOW_ID ||
+            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID;
+          const customWorkflow = isBuiltInWorkflow
+            ? undefined
+            : settings.agentWorkflows.customWorkflows.find(
+                (candidate) => candidate.id === input.workflowId,
+              );
 
-          if (
-            input.workflowId !== REVIEW_CHANGES_WORKFLOW_ID &&
-            input.workflowId !== FIX_REVIEW_ISSUES_WORKFLOW_ID
-          ) {
+          if (!isBuiltInWorkflow && customWorkflow === undefined) {
             return workflowSkipped(input, "workflow-not-found", "Workflow not found.");
           }
           if (
+            customWorkflow === undefined &&
             input.destinationMode !== undefined &&
             input.destinationMode !== "child-chat" &&
             !(
@@ -487,21 +474,25 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             });
           }
 
-          const settings = yield* serverSettings.getSettings;
           const reviewSettings = settings.agentWorkflows.reviewChanges;
           const fixSettings = settings.agentWorkflows.fixReviewIssues;
           const override = settings.agentWorkflows.builtInOverrides[input.workflowId];
-          const workflowSettings =
-            input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
-          const enabled = override?.enabled ?? workflowSettings.enabled;
-          if (!enabled) {
-            return workflowSkipped(
-              input,
-              "workflow-disabled",
-              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
-                ? "Fix Review Issues workflow is disabled."
-                : "Review Code workflow is disabled.",
-            );
+          if (customWorkflow !== undefined && !customWorkflow.enabled) {
+            return workflowSkipped(input, "workflow-disabled", "Workflow is disabled.");
+          }
+          if (customWorkflow === undefined) {
+            const workflowSettings =
+              input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID ? fixSettings : reviewSettings;
+            const enabled = override?.enabled ?? workflowSettings.enabled;
+            if (!enabled) {
+              return workflowSkipped(
+                input,
+                "workflow-disabled",
+                input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID
+                  ? "Fix Review Issues workflow is disabled."
+                  : "Review Code workflow is disabled.",
+              );
+            }
           }
 
           const threadOption = yield* projectionSnapshotQuery.getThreadShellById(input.threadId);
@@ -527,7 +518,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 parseReviewChangesScope(override?.defaultInput?.scope) ??
                 reviewSettings.defaultScope ??
                 DEFAULT_REVIEW_CHANGES_SCOPE;
-              const reviewContext = yield* git.resolveReviewChangesContext({
+              const reviewContext = yield* git.claimReviewChangesContext({
                 cwd,
                 scope: requestedScope,
                 ...(requestedScope === "pull-request" &&
@@ -599,6 +590,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 interactionMode: input.interactionMode,
                 branch: reviewContext.branch,
                 worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                ...(reviewContext.scope === "pull-request"
+                  ? { pullRequest: reviewContext.pullRequest }
+                  : {}),
                 reviewSnapshot: reviewContext.snapshot,
                 createdAt,
               });
@@ -638,6 +632,70 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           }
           const project = projectOption.value;
           const cwd = input.cwd ?? thread.worktreePath ?? project.workspaceRoot;
+
+          if (customWorkflow !== undefined) {
+            const prompt = customWorkflow.promptTemplate.trim();
+            if (prompt.length === 0) {
+              return yield* new WorkflowRunError({
+                message: "Custom workflow prompt cannot be empty.",
+              });
+            }
+            const destinationMode = input.destinationMode ?? customWorkflow.destinationMode;
+            const threadId =
+              destinationMode === "same-chat"
+                ? input.threadId
+                : ThreadId.make(`workflow:${runId}:target`);
+            const commandId = CommandId.make(`workflow:${runId}:request`);
+            const messageId = MessageId.make(`workflow:${runId}:input`);
+            const modelSelection =
+              customWorkflow.modelSelection ??
+              input.modelSelection ??
+              project.defaultModelSelection ??
+              thread.modelSelection;
+            const runtimeMode = input.runtimeMode ?? thread.runtimeMode;
+            const interactionMode = input.interactionMode ?? thread.interactionMode;
+            if (destinationMode !== "same-chat") {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.create",
+                commandId: CommandId.make(`workflow:${runId}:create-target`),
+                threadId,
+                projectId: project.id,
+                parentThreadId: destinationMode === "child-chat" ? input.threadId : null,
+                title: input.title ?? customWorkflow.name,
+                modelSelection,
+                runtimeMode,
+                interactionMode,
+                branch: thread.branch,
+                worktreePath: cwd === project.workspaceRoot ? null : cwd,
+                createdAt,
+              });
+            }
+            const dispatchResult = yield* orchestrationEngine.dispatch({
+              type: "thread.turn.start",
+              commandId,
+              threadId,
+              message: {
+                messageId,
+                role: "user",
+                text: prompt,
+                attachments: [],
+              },
+              modelSelection,
+              titleSeed: input.title ?? customWorkflow.name,
+              runtimeMode,
+              interactionMode,
+              createdAt,
+            });
+            return {
+              status: "started" as const,
+              runId,
+              threadId,
+              commandId,
+              messageId,
+              sequence: dispatchResult.sequence,
+              createdAt,
+            } satisfies WorkflowRunResult;
+          }
 
           if (input.workflowId === FIX_REVIEW_ISSUES_WORKFLOW_ID) {
             const issues = typeof input.input?.issues === "string" ? input.input.issues.trim() : "";
@@ -692,6 +750,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                 interactionMode: input.interactionMode ?? thread.interactionMode,
                 branch: workerWorkspace.branch,
                 worktreePath: workerWorkspace.worktreePath,
+                ...("pullRequest" in workerWorkspace
+                  ? { pullRequest: workerWorkspace.pullRequest }
+                  : {}),
               },
               createdAt,
             });
@@ -702,7 +763,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             parseReviewChangesScope(override?.defaultInput?.scope) ??
             reviewSettings.defaultScope ??
             DEFAULT_REVIEW_CHANGES_SCOPE;
-          const reviewContext = yield* git.resolveReviewChangesContext({
+          const reviewContext = yield* git.claimReviewChangesContext({
             cwd,
             scope: requestedScope,
             ...(requestedScope === "pull-request" &&
@@ -779,6 +840,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               interactionMode,
               branch: reviewContext.branch,
               worktreePath: cwd === project.workspaceRoot ? null : cwd,
+              ...(reviewContext.scope === "pull-request"
+                ? { pullRequest: reviewContext.pullRequest }
+                : {}),
               reviewSnapshot: reviewContext.snapshot,
             },
             createdAt,
@@ -1009,24 +1073,58 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.searchThreads]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.searchThreads,
+            (
+              projectionSnapshotQuery.searchTranscript?.(input.query) ??
+              Effect.succeed({ matches: [] })
+            ).pipe(
+              Effect.flatMap((result) =>
+                Effect.forEach(result.matches.slice(0, input.limit ?? 50), (match) =>
+                  projectionSnapshotQuery.getThreadDetailById(match.threadId).pipe(
+                    Effect.map((thread) =>
+                      Option.map(thread, (value) => ({
+                        threadId: match.threadId,
+                        projectId: value.projectId,
+                        source: match.role,
+                        snippet: match.excerpt.slice(0, 240),
+                        messageCreatedAt: match.updatedAt,
+                      })),
+                    ),
+                  ),
+                ),
+              ),
+              Effect.map((matches) => ({
+                matches: matches.flatMap((match) =>
+                  Option.match(match, {
+                    onNone: () => [],
+                    onSome: (value) => [value],
+                  }),
+                ),
+              })),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationGetSnapshotError({
+                    message: "Failed to search conversation threads",
+                    cause,
+                  }),
+              ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.getThreadSnapshot]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getThreadSnapshot,
-            Effect.all([
-              projectionSnapshotQuery.getThreadDetailById(input.threadId),
-              projectionSnapshotQuery.getShellSnapshot(),
-            ]).pipe(
-              Effect.flatMap(([threadDetail, shellSnapshot]) => {
-                if (Option.isNone(threadDetail)) {
+            projectionSnapshotQuery.getThreadDetailSnapshotById(input.threadId).pipe(
+              Effect.flatMap((snapshot) => {
+                if (Option.isNone(snapshot)) {
                   return new OrchestrationGetSnapshotError({
                     message: `Thread ${input.threadId} was not found`,
                     cause: input.threadId,
                   });
                 }
-                return Effect.succeed({
-                  snapshotSequence: shellSnapshot.snapshotSequence,
-                  thread: threadDetail.value,
-                }).pipe(Effect.map(projectThreadDetailSnapshot));
+                return Effect.succeed(snapshot.value).pipe(Effect.map(projectThreadDetailSnapshot));
               }),
               Effect.mapError((cause) =>
                 cause instanceof OrchestrationGetSnapshotError
@@ -1039,11 +1137,76 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             ),
             { "rpc.aggregate": "orchestration" },
           ),
-        [ORCHESTRATION_WS_METHODS.subscribeShell]: (_input) =>
+        [ORCHESTRATION_WS_METHODS.subscribeShell]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
+              const liveStream = orchestrationEngine.streamDomainEvents.pipe(
+                Stream.mapEffect(toShellStreamEvent),
+                Stream.flatMap((event) =>
+                  Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                ),
+              );
+
+              // Attach live delivery before loading the snapshot so newly created
+              // workflow threads cannot disappear during startup or reconnect.
+              const liveBuffer = yield* Queue.unbounded<OrchestrationShellStreamItem>();
+              yield* Effect.forkScoped(
+                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
+              );
+
+              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
+              const synchronizedThenLive =
+                input.requestCompletionMarker === true
+                  ? Stream.concat(
+                      Stream.fromEffect(
+                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                      ).pipe(Stream.drain),
+                      bufferedLiveStream,
+                    )
+                  : bufferedLiveStream;
+
+              if (input.afterSequence !== undefined) {
+                const afterSequence = input.afterSequence;
+                const headSequence = (yield* orchestrationEngine.getReadModel()).snapshotSequence;
+                const replayGap = headSequence - afterSequence;
+                if (replayGap >= 0 && replayGap <= SHELL_RESUME_MAX_GAP) {
+                  const catchUpStream = orchestrationEngine.readEvents(afterSequence).pipe(
+                    Stream.take(replayGap),
+                    Stream.mapEffect(toShellStreamEvent),
+                    Stream.flatMap((event) =>
+                      Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                    ),
+                    Stream.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: "Failed to replay orchestration shell events",
+                          cause,
+                        }),
+                    ),
+                  );
+                  const liveAfterHead = bufferedLiveStream.pipe(
+                    Stream.filter(
+                      (item) => item.kind !== "snapshot" && item.sequence > headSequence,
+                    ),
+                  );
+                  return Stream.concat(
+                    catchUpStream,
+                    input.requestCompletionMarker === true
+                      ? Stream.concat(
+                          Stream.make({
+                            kind: "synchronized" as const,
+                            sequence: headSequence,
+                          }),
+                          liveAfterHead,
+                        )
+                      : liveAfterHead,
+                  );
+                }
+              }
+
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                Effect.map(filterActiveShellSnapshot),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationGetSnapshotError({
@@ -1052,20 +1215,18 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                     }),
                 ),
               );
-
-              const liveStream = orchestrationEngine.streamDomainEvents.pipe(
-                Stream.mapEffect(toShellStreamEvent),
-                Stream.flatMap((event) =>
-                  Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
-                ),
-              );
-
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot,
                 }),
-                liveStream,
+                synchronizedThenLive.pipe(
+                  Stream.filter(
+                    (item) =>
+                      item.kind === "synchronized" ||
+                      (item.kind !== "snapshot" && item.sequence > snapshot.snapshotSequence),
+                  ),
+                ),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -1093,39 +1254,97 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
               yield* Effect.forkScoped(
                 liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
               );
+              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
 
-              const [threadDetail, snapshotSequence] = yield* Effect.all(
-                [
-                  projectionSnapshotQuery.getThreadDetailById(input.threadId),
-                  projectionSnapshotQuery.getSnapshotSequence(),
-                ],
-                { concurrency: "unbounded" },
-              ).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationGetSnapshotError({
-                      message: `Failed to load thread ${input.threadId}`,
-                      cause,
-                    }),
-                ),
-              );
+              if (input.afterSequence !== undefined) {
+                const afterSequence = input.afterSequence;
+                const headSequence = (yield* orchestrationEngine.getReadModel()).snapshotSequence;
+                const replayGap = headSequence - afterSequence;
+                if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
+                  const catchUpStream = orchestrationEngine.readEvents(afterSequence).pipe(
+                    Stream.take(replayGap),
+                    Stream.filter(
+                      (event) =>
+                        event.aggregateKind === "thread" &&
+                        event.aggregateId === input.threadId &&
+                        isThreadDetailEvent(event),
+                    ),
+                    Stream.map((event) => ({
+                      kind: "event" as const,
+                      event: projectActivityEvent(event),
+                    })),
+                    Stream.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to replay thread ${input.threadId} events`,
+                          cause,
+                        }),
+                    ),
+                  );
+                  const liveAfterHead = bufferedLiveStream.pipe(
+                    Stream.filter(
+                      (item) => item.kind === "event" && item.event.sequence > headSequence,
+                    ),
+                  );
+                  return Stream.concat(
+                    catchUpStream,
+                    input.requestCompletionMarker === true
+                      ? Stream.concat(
+                          Stream.make({
+                            kind: "synchronized" as const,
+                            sequence: headSequence,
+                          }),
+                          liveAfterHead,
+                        )
+                      : liveAfterHead,
+                  );
+                }
+              }
 
-              if (Option.isNone(threadDetail)) {
+              const threadSnapshot = yield* projectionSnapshotQuery
+                .getThreadDetailSnapshotById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to load thread ${input.threadId}`,
+                        cause,
+                      }),
+                  ),
+                );
+
+              if (Option.isNone(threadSnapshot)) {
                 return yield* new OrchestrationGetSnapshotError({
                   message: `Thread ${input.threadId} was not found`,
                   cause: input.threadId,
                 });
               }
+              const { snapshotSequence, thread } = threadSnapshot.value;
+              const synchronizedThenLive =
+                input.requestCompletionMarker === true
+                  ? Stream.concat(
+                      Stream.fromEffect(
+                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                      ).pipe(Stream.drain),
+                      bufferedLiveStream,
+                    )
+                  : bufferedLiveStream;
 
               return Stream.concat(
                 Stream.make({
                   kind: "snapshot" as const,
                   snapshot: projectThreadDetailSnapshot({
                     snapshotSequence,
-                    thread: threadDetail.value,
+                    thread,
                   }),
                 }),
-                Stream.fromQueue(liveBuffer),
+                synchronizedThenLive.pipe(
+                  Stream.filter(
+                    (item) =>
+                      item.kind === "synchronized" ||
+                      (item.kind === "event" && item.event.sequence > snapshotSequence),
+                  ),
+                ),
               );
             }),
             { "rpc.aggregate": "orchestration" },
@@ -1308,10 +1527,46 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             WS_METHODS.projectsSearchEntries,
             Effect.gen(function* () {
               const cwd =
-                input.scope._tag === "thread"
-                  ? yield* Effect.gen(function* () {
-                      const thread = yield* projectionSnapshotQuery
-                        .getThreadDetailById(input.scope.threadId)
+                "cwd" in input
+                  ? input.cwd
+                  : input.scope._tag === "thread"
+                    ? yield* Effect.gen(function* () {
+                        const thread = yield* projectionSnapshotQuery
+                          .getThreadDetailById(input.scope.threadId)
+                          .pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ProjectSearchEntriesError({
+                                  message: "Unable to authorize workspace entry search.",
+                                  cause,
+                                }),
+                            ),
+                          );
+                        if (Option.isNone(thread)) {
+                          return yield* new ProjectSearchEntriesError({
+                            message: "Workspace thread was not found.",
+                          });
+                        }
+                        const project = yield* projectionSnapshotQuery
+                          .getProjectShellById(thread.value.projectId)
+                          .pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ProjectSearchEntriesError({
+                                  message: "Unable to authorize workspace entry search.",
+                                  cause,
+                                }),
+                            ),
+                          );
+                        if (Option.isNone(project)) {
+                          return yield* new ProjectSearchEntriesError({
+                            message: "Workspace project was not found.",
+                          });
+                        }
+                        return thread.value.worktreePath ?? project.value.workspaceRoot;
+                      })
+                    : yield* projectionSnapshotQuery
+                        .getProjectShellById(input.scope.projectId)
                         .pipe(
                           Effect.mapError(
                             (cause) =>
@@ -1320,52 +1575,21 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
                                 cause,
                               }),
                           ),
-                        );
-                      if (Option.isNone(thread)) {
-                        return yield* new ProjectSearchEntriesError({
-                          message: "Workspace thread was not found.",
-                        });
-                      }
-                      const project = yield* projectionSnapshotQuery
-                        .getProjectShellById(thread.value.projectId)
-                        .pipe(
-                          Effect.mapError(
-                            (cause) =>
-                              new ProjectSearchEntriesError({
-                                message: "Unable to authorize workspace entry search.",
-                                cause,
-                              }),
-                          ),
-                        );
-                      if (Option.isNone(project)) {
-                        return yield* new ProjectSearchEntriesError({
-                          message: "Workspace project was not found.",
-                        });
-                      }
-                      return thread.value.worktreePath ?? project.value.workspaceRoot;
-                    })
-                  : yield* projectionSnapshotQuery.getProjectShellById(input.scope.projectId).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProjectSearchEntriesError({
-                            message: "Unable to authorize workspace entry search.",
-                            cause,
-                          }),
-                      ),
-                      Effect.flatMap(
-                        Option.match({
-                          onNone: () =>
-                            new ProjectSearchEntriesError({
-                              message: "Workspace project was not found.",
+                          Effect.flatMap(
+                            Option.match({
+                              onNone: () =>
+                                new ProjectSearchEntriesError({
+                                  message: "Workspace project was not found.",
+                                }),
+                              onSome: (project) => Effect.succeed(project.workspaceRoot),
                             }),
-                          onSome: (project) => Effect.succeed(project.workspaceRoot),
-                        }),
-                      ),
-                    );
+                          ),
+                        );
               return yield* workspaceEntries.search({
                 cwd,
                 query: input.query,
                 limit: input.limit,
+                ...("kind" in input && input.kind !== undefined ? { kind: input.kind } : {}),
               });
             }).pipe(
               Effect.mapError((cause) =>
@@ -1383,6 +1607,9 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             WS_METHODS.projectsReadFile,
             Effect.gen(function* () {
+              if ("cwd" in input) {
+                return yield* workspaceFileSystem.readFile(input);
+              }
               const thread = yield* projectionSnapshotQuery
                 .getThreadDetailById(input.threadId)
                 .pipe(
@@ -1655,6 +1882,12 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
             git.resolveReviewChangesContext(input),
             { "rpc.aggregate": "git" },
           ),
+        [WS_METHODS.gitPrewarmReviewChangesContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.gitPrewarmReviewChangesContext,
+            git.prewarmReviewChangesContext(input),
+            { "rpc.aggregate": "git" },
+          ),
         [WS_METHODS.gitListOpenPullRequests]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitListOpenPullRequests,
@@ -1722,6 +1955,7 @@ const makeWsRpcLayer = (currentSessionId: AuthSessionId) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
             projectionSnapshotQuery.getShellSnapshot().pipe(
+              Effect.map(filterArchivedShellSnapshot),
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetSnapshotError({
@@ -2165,12 +2399,37 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           },
         }).pipe(
           Effect.provide(
-            makeWsRpcLayer(session.sessionId).pipe(Layer.provideMerge(RpcSerialization.layerJson)),
+            Layer.mergeAll(
+              makeWsRpcLayer(session),
+              RpcSerialization.layerJson,
+              rpcAuthorizationLayer(new Set(session.scopes)),
+            ),
           ),
         );
+        const waitUntilSessionInactive = sessions
+          .waitUntilInactive(session.sessionId)
+          .pipe(Effect.as(HttpServerResponse.empty({ status: 401 })));
+        // A silently replaced socket leaves every subscription on the old
+        // connection dead, so connection open/close is the anchor every stream
+        // log below correlates against.
+        const connectionId = crypto.randomUUID();
+        const connectedAt = Date.now();
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),
-          () => rpcWebSocketHttpEffect.pipe(withLogContext({ sessionId: session.sessionId })),
+          () =>
+            Effect.logInfo("websocket connected", {
+              userAgent: request.headers["user-agent"],
+            }).pipe(
+              Effect.andThen(Effect.raceFirst(rpcWebSocketHttpEffect, waitUntilSessionInactive)),
+              Effect.onExit((exit) =>
+                Effect.logInfo("websocket disconnected", {
+                  durationMs: Date.now() - connectedAt,
+                  outcome: outcomeFromExit(exit),
+                  ...(Exit.isFailure(exit) ? { cause: Cause.pretty(exit.cause) } : {}),
+                }),
+              ),
+              withLogContext({ sessionId: session.sessionId, connectionId }),
+            ),
           () => sessions.markDisconnected(session.sessionId),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),

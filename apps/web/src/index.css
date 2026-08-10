@@ -10,6 +10,8 @@
   --spacing-titlebar: 52px;
   --animate-skeleton: skeleton 2s -1s infinite linear;
   --animate-status-pulse: status-pulse 2s infinite;
+  /* Opacity-only, 3s cadence — cheap to composite and matches the Working badge. */
+  --animate-status-badge-pulse: status-badge-pulse 3s ease-in-out infinite;
   --animate-status-ping: status-ping 2s infinite;
   --font-mono: var(--app-font-mono-stack);
   --font-sans: var(--app-font-sans-stack);
@@ -64,6 +66,15 @@
     }
     100% {
       opacity: 1;
+    }
+  }
+  @keyframes status-badge-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
     }
   }
   @keyframes status-ping {
@@ -135,10 +146,20 @@
   --app-code-font-size: 12px;
   --app-chat-font-size: 14px;
   --app-sidebar-font-size: 12px;
-  /* Secondary sidebar text (project, branch, timestamps) tracks the sidebar
-     font-size knob instead of a fixed size, so one setting scales the whole
-     row. Floored so a small sidebar font never renders sub-legible metadata. */
-  --app-sidebar-meta-font-size: max(10px, calc(var(--app-sidebar-font-size) - 1px));
+  /* The thread title is the row's anchor, so it scales just above the sidebar
+     font-size knob rather than relying on metadata shrinking alone — at the
+     12px default there is too little headroom below to build the step from
+     one side only. */
+  --app-sidebar-title-font-size: calc(var(--app-sidebar-font-size) + 1px);
+  /* Secondary sidebar text (project, worktree, branch, PR, timestamps). Its own
+     setting rather than a derived size so metadata can stay visibly quieter
+     than chat titles at any sidebar font size. */
+  --app-sidebar-meta-font-size: 11px;
+  /* Sidebar row rhythm, driven by the Sidebar row spacing setting. The gap
+     between rows must beat the gap between a row's own lines or three-line
+     cards read as one loose list instead of discrete threads. */
+  --app-sidebar-row-gap: 0.25rem;
+  --app-sidebar-row-padding-y: 0.5rem;
   --app-tool-font-size: 12px;
   --app-input-font-size: 14px;
   --sidebar-translucency-alpha: 100%;
@@ -151,7 +172,13 @@
   --app-chrome-background: var(--background);
   --foreground: var(--color-neutral-800);
   --card: var(--color-white);
-  --sidebar-surface: color-mix(in srgb, var(--card) var(--sidebar-translucency-alpha), transparent);
+  /* Sidebar fill base. Translucency mixes this toward transparent; opaque = solid base. */
+  --sidebar-base: var(--card);
+  --sidebar-surface: color-mix(
+    in srgb,
+    var(--sidebar-base) var(--sidebar-translucency-alpha),
+    transparent
+  );
   --card-foreground: var(--color-neutral-800);
   --popover: var(--color-white);
   --popover-foreground: var(--color-neutral-800);
@@ -182,9 +209,11 @@
     --app-chrome-background: var(--background);
     --foreground: var(--color-neutral-100);
     --card: color-mix(in srgb, var(--background) 98%, var(--color-white));
+    /* Match Cursor's opaque sidebar chrome. */
+    --sidebar-base: #171616;
     --sidebar-surface: color-mix(
       in srgb,
-      var(--card) var(--sidebar-translucency-alpha),
+      var(--sidebar-base) var(--sidebar-translucency-alpha),
       transparent
     );
     --card-foreground: var(--color-neutral-100);
@@ -303,6 +332,10 @@ html[data-ui-font="geist"] {
     "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 
+html[data-ui-font="system-ui"] {
+  --app-font-sans-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
 html[data-code-font="sf-mono"] {
   --app-font-mono-stack:
     "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, ui-monospace, monospace;
@@ -335,6 +368,17 @@ html[data-ui-density="comfortable"] {
 html[data-ui-density="spacious"] {
   --spacing: 0.31rem;
   font-size: 16.5px;
+}
+
+/* ── Sidebar row spacing ─────────────────────────────────────── */
+html[data-sidebar-row-spacing="compact"] {
+  --app-sidebar-row-gap: 0.125rem;
+  --app-sidebar-row-padding-y: 0.3125rem;
+}
+
+html[data-sidebar-row-spacing="relaxed"] {
+  --app-sidebar-row-gap: 0.5rem;
+  --app-sidebar-row-padding-y: 0.75rem;
 }
 
 body {

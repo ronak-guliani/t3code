@@ -170,6 +170,18 @@ export interface DesktopUpdateCheckResult {
   state: DesktopUpdateState;
 }
 
+export interface DesktopLocalRebuildState {
+  enabled: boolean;
+  sourceRoot: string | null;
+  reason: string | null;
+}
+
+export interface DesktopLocalRebuildResult {
+  accepted: boolean;
+  logPath: string | null;
+  message: string | null;
+}
+
 export interface DesktopEnvironmentBootstrap {
   label: string;
   httpBaseUrl: string | null;
@@ -255,6 +267,8 @@ export interface DesktopPreviewTabState {
   canGoForward: boolean;
   /** Current zoom factor (1.0 = 100%). */
   zoomFactor: number;
+  /** Whether this tab is mirrored into a native always-on-top PiP window. */
+  pictureInPicture: boolean;
   colorScheme: DesktopPreviewColorScheme;
   controller: "human" | "agent" | "none";
   updatedAt: string;
@@ -292,6 +306,7 @@ export const DesktopPreviewTabStateSchema: Schema.Codec<DesktopPreviewTabState> 
   canGoBack: Schema.Boolean,
   canGoForward: Schema.Boolean,
   zoomFactor: Schema.Number,
+  pictureInPicture: Schema.Boolean,
   colorScheme: DesktopPreviewColorSchemeSchema,
   controller: Schema.Literals(["human", "agent", "none"]),
   updatedAt: Schema.String,
@@ -743,6 +758,10 @@ export interface DesktopPreviewBridge {
   captureScreenshot: (tabId: string) => Promise<DesktopPreviewScreenshotArtifact>;
   revealArtifact: (path: string) => Promise<void>;
   copyArtifactToClipboard: (path: string) => Promise<void>;
+  pictureInPicture: {
+    open: (tabId: string) => Promise<void>;
+    close: (tabId: string) => Promise<void>;
+  };
   recording: {
     startScreencast: (tabId: string) => Promise<void>;
     stopScreencast: (tabId: string) => Promise<void>;
@@ -798,6 +817,8 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  getLocalRebuildState?: () => Promise<DesktopLocalRebuildState>;
+  rebuildAndRestart?: () => Promise<DesktopLocalRebuildResult>;
   showNotification: (request: DesktopNotificationRequest) => Promise<boolean>;
   onNotificationClick: (listener: (click: DesktopNotificationClick) => void) => () => void;
 }
@@ -940,6 +961,7 @@ export interface EnvironmentApi {
     resolveReviewChangesContext: (
       input: GitResolveReviewChangesContextInput,
     ) => Promise<GitResolveReviewChangesContextResult>;
+    prewarmReviewChangesContext: (input: GitResolveReviewChangesContextInput) => Promise<void>;
     pull: (input: GitPullInput) => Promise<GitPullResult>;
     refreshStatus: (input: GitStatusInput) => Promise<GitStatusResult>;
     onStatus: (

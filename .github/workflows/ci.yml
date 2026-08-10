@@ -64,6 +64,10 @@ jobs:
       - name: Browser test
         run: pnpm --dir apps/web test:browser
 
+      - name: Direct Connect smoke test
+        timeout-minutes: 8
+        run: pnpm test:direct-connect-smoke
+
       - name: Build desktop pipeline
         run: pnpm build:desktop
 
@@ -99,6 +103,10 @@ jobs:
 
       - name: Exercise packaged T3 Connect CLI
         run: pnpm release:cli-smoke
+
+      - name: Exercise production Direct Connect flow
+        timeout-minutes: 8
+        run: pnpm test:direct-connect-smoke
 
   windows_smoke:
     name: Windows Smoke

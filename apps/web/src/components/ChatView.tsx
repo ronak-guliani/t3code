@@ -54,6 +54,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useShallow } from "zustand/react/shallow";
 import { useGitStatus } from "~/lib/gitStatusState";
 import { usePrimaryEnvironmentId } from "../environments/primary/context";
+import { readEnvironmentConnection } from "../environments/runtime";
 import { readEnvironmentApi } from "../environmentApi";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -124,9 +125,15 @@ import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { PreviewPanel } from "./preview/PreviewPanel";
+import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { dispatchPreviewAction } from "./preview/previewActionBus";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
-import { useBrowserPanelState, useRightPanelStore } from "~/rightPanelStore";
+import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import {
+  setThreadPlanSidebarOpen,
+  useBrowserPanelState,
+  useRightPanelStore,
+} from "~/rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
 import { closePreviewSession } from "./preview/closePreviewSession";
@@ -234,6 +241,22 @@ import { deriveMessagesTimelineRows } from "./chat/MessagesTimeline.logic";
 import { FindInChatBar } from "./chat/FindInChatBar";
 import { useChatFind } from "./chat/useChatFind";
 import { isInsightActivity } from "../insights";
+
+async function ensureRoutableServerThread(threadRef: ScopedThreadRef): Promise<void> {
+  if (await waitForRoutableServerThread(threadRef)) {
+    return;
+  }
+
+  const connection = readEnvironmentConnection(threadRef.environmentId);
+  if (!connection) {
+    throw new Error(`No connection is available for environment ${threadRef.environmentId}.`);
+  }
+
+  await connection.refreshShellSnapshot();
+  if (!(await waitForRoutableServerThread(threadRef, 0))) {
+    throw new Error(`Thread ${threadRef.threadId} was not found after refreshing the workspace.`);
+  }
+}
 
 const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
@@ -804,11 +827,9 @@ function ChatViewBody(
   const insightsOpen = activeRightPanel === "insights";
   const setPlanSidebarOpen = useCallback(
     (open: boolean) => {
-      if (open) {
-        useRightPanelStore.getState().open(routeThreadRef, "plan");
-      } else {
-        useRightPanelStore.getState().close(routeThreadRef);
-      }
+      // Close only the plan surface so thread switches / plan dismiss do not
+      // collapse an open browser (or other) right-panel surface for this thread.
+      setThreadPlanSidebarOpen(routeThreadRef, open);
     },
     [routeThreadRef],
   );
@@ -1063,7 +1084,12 @@ function ChatViewBody(
   }, []);
 
   const openOrReuseProjectDraftThread = useCallback(
-    async (input: { branch: string; worktreePath: string | null; envMode: DraftThreadEnvMode }) => {
+    async (input: {
+      branch: string;
+      worktreePath: string | null;
+      envMode: DraftThreadEnvMode;
+      pullRequest?: import("@t3tools/contracts").GitResolvedPullRequest | null;
+    }) => {
       if (!activeProject) {
         throw new Error("No active project is available for this pull request.");
       }
@@ -1140,11 +1166,16 @@ function ChatViewBody(
   );
 
   const handlePreparedPullRequestThread = useCallback(
-    async (input: { branch: string; worktreePath: string | null }) => {
+    async (input: {
+      branch: string;
+      worktreePath: string | null;
+      pullRequest: import("@t3tools/contracts").GitResolvedPullRequest;
+    }) => {
       await openOrReuseProjectDraftThread({
         branch: input.branch,
         worktreePath: input.worktreePath,
         envMode: input.worktreePath ? "worktree" : "local",
+        pullRequest: input.pullRequest,
       });
     },
     [openOrReuseProjectDraftThread],
@@ -1220,6 +1251,7 @@ function ChatViewBody(
   const activeThreadActivityHistoryKey = getActivityHistoryKey(
     activeThreadActivityRequestKey,
     liveThreadActivities,
+    activeLatestTurn?.turnId,
   );
   const activeThreadActivityHistoryKeyRef = useRef(activeThreadActivityHistoryKey);
   activeThreadActivityHistoryKeyRef.current = activeThreadActivityHistoryKey;
@@ -1247,7 +1279,7 @@ function ChatViewBody(
   );
   const hasMoreOlderActivities = activeOlderActivityState.loaded
     ? activeOlderActivityState.hasMore
-    : (activeThread?.hasMoreActivities ?? false);
+    : (activeThread?.hasMoreCurrentTurnActivities ?? false);
   const loadOlderActivities = useCallback(() => {
     if (!activeThread || !activeThreadActivityHistoryKey || !hasMoreOlderActivities) return;
     const oldestActivity = threadActivities[0];
@@ -1257,6 +1289,7 @@ function ChatViewBody(
     const api = readEnvironmentApi(activeThread.environmentId);
     if (!api) return;
     const requestKey = activeThreadActivityHistoryKey;
+    const activeTurnId = activeLatestTurn?.turnId;
     inFlightOlderActivitiesKeyRef.current = requestKey;
     setOlderActivityState((previous) => ({
       historyKey: requestKey,
@@ -1268,6 +1301,7 @@ function ChatViewBody(
     void api.orchestration
       .getThreadActivities({
         threadId: activeThread.id,
+        ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
         beforeCreatedAt: oldestActivity.createdAt,
         beforeActivityId: oldestActivity.id,
       })
@@ -1311,7 +1345,13 @@ function ChatViewBody(
           );
         }
       });
-  }, [activeThread, activeThreadActivityHistoryKey, hasMoreOlderActivities, threadActivities]);
+  }, [
+    activeLatestTurn?.turnId,
+    activeThread,
+    activeThreadActivityHistoryKey,
+    hasMoreOlderActivities,
+    threadActivities,
+  ]);
   const workLogEntries = useMemo(
     () => deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
@@ -2060,6 +2100,26 @@ function ChatViewBody(
     );
   }, [activeThreadKey]);
   const previewState = useThreadPreviewState(activeThreadRef);
+  const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
+    activeThreadRef ? selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef) : null,
+  );
+  const [composerInsetElement, setComposerInsetElement] = useState<HTMLDivElement | null>(null);
+  const [composerBottomInset, setComposerBottomInset] = useState(0);
+  useLayoutEffect(() => {
+    if (!composerInsetElement) return;
+    const updateHeight = () => {
+      const nextHeight = Math.ceil(composerInsetElement.getBoundingClientRect().height);
+      if (nextHeight <= 0) return;
+      setComposerBottomInset((currentHeight) =>
+        currentHeight === nextHeight ? currentHeight : nextHeight,
+      );
+    };
+    updateHeight();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(composerInsetElement);
+    return () => observer.disconnect();
+  }, [composerInsetElement]);
   const openPreview = useAtomCommand(previewEnvironment.open);
   const closePreview = useAtomCommand(previewEnvironment.close);
   const activeBrowserSurface = browserPanel.surfaces.find(
@@ -3435,6 +3495,11 @@ function ChatViewBody(
                       interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftThread?.pullRequest
+                        ? { pullRequest: draftThread.pullRequest }
+                        : activeThread && "pullRequest" in activeThread && activeThread.pullRequest
+                          ? { pullRequest: activeThread.pullRequest }
+                          : {}),
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -3986,21 +4051,32 @@ function ChatViewBody(
           createdAt,
         });
       })
-      .then(() => {
-        return waitForRoutableServerThread(
-          scopeThreadRef(activeThread.environmentId, nextThreadId),
-        );
-      })
-      .then(() => {
-        // Signal that the plan sidebar should open on the new thread when enabled.
-        planSidebarOpenOnNextThreadRef.current = autoOpenPlanSidebar;
-        return navigate({
-          to: "/$environmentId/$threadId",
-          params: {
-            environmentId: activeThread.environmentId,
-            threadId: nextThreadId,
-          },
-        });
+      .then(async () => {
+        try {
+          await ensureRoutableServerThread(
+            scopeThreadRef(activeThread.environmentId, nextThreadId),
+          );
+          // Signal that the plan sidebar should open on the new thread when enabled.
+          planSidebarOpenOnNextThreadRef.current = autoOpenPlanSidebar;
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: {
+              environmentId: activeThread.environmentId,
+              threadId: nextThreadId,
+            },
+          });
+        } catch (err) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Implementation thread started but could not be opened",
+              description:
+                err instanceof Error
+                  ? err.message
+                  : "Open the implementation thread from the sidebar to continue.",
+            }),
+          );
+        }
       })
       .catch(async (err: unknown) => {
         await api.orchestration
@@ -4298,15 +4374,42 @@ function ChatViewBody(
             return;
           }
 
-          if (result.threadId !== activeThread.id) {
-            await waitForRoutableServerThread(scopeThreadRef(environmentId, result.threadId));
-            await navigate({
-              to: "/$environmentId/$threadId",
-              params: {
-                environmentId,
-                threadId: result.threadId,
-              },
-            });
+          const resultThreadRef = scopeThreadRef(environmentId, result.threadId);
+          // The review prompt lives in thread detail, whose subscription is
+          // otherwise opened only once the route mounts — a round trip
+          // serialized after navigation. Opening it here overlaps it with the
+          // routability wait and the navigation itself.
+          const releaseThreadDetail = retainThreadDetailSubscription(
+            environmentId,
+            result.threadId,
+          );
+          try {
+            await ensureRoutableServerThread(resultThreadRef);
+            if (!isServerThread || result.threadId !== activeThread.id) {
+              await navigate({
+                to: "/$environmentId/$threadId",
+                params: {
+                  environmentId,
+                  threadId: result.threadId,
+                },
+              });
+            }
+          } catch (error) {
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Workflow started but could not be opened",
+                description:
+                  error instanceof Error
+                    ? error.message
+                    : "Open the workflow thread from the sidebar to continue.",
+              }),
+            );
+          } finally {
+            // The mounted route holds its own retain by now, so this only drops
+            // the temporary one. Released subscriptions stay warm rather than
+            // closing immediately, so a slow mount still reuses this one.
+            releaseThreadDetail();
           }
         })
         .catch((error: unknown) => {
@@ -4359,6 +4462,29 @@ function ChatViewBody(
     }
     return (await api.git.listOpenPullRequests({ cwd: gitCwd })).pullRequests;
   }, [environmentId, gitCwd]);
+
+  // A pull-request capture spends ~700ms in `gh pr view` + `gh pr diff` before
+  // the review thread can even be created. Firing it on hover lets the server
+  // park that work so the click that follows claims it. The RPC acknowledges
+  // only: the captured diff can be megabytes, and shipping it to a browser that
+  // would discard it costs more socket time than the click saves.
+  const prewarmReviewPullRequest = useCallback(
+    (pullRequestNumber: number) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !gitCwd) {
+        return;
+      }
+      void api.git
+        .prewarmReviewChangesContext({
+          cwd: gitCwd,
+          scope: "pull-request",
+          pullRequestNumber,
+        })
+        // Prewarming is best-effort; the click reports any real failure.
+        .catch(() => {});
+    },
+    [environmentId, gitCwd],
+  );
 
   // Copilot session startup is ~2.2s, and only `session/new` needs the thread.
   // Warming on intent lets the agent be ready by the time the run dispatches.
@@ -4512,7 +4638,7 @@ function ChatViewBody(
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-chat-background">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-chat-background">
       {/* Top bar */}
       <header
         className={cn(
@@ -4556,6 +4682,7 @@ function ChatViewBody(
           onRunWorkflow={onRunWorkflow}
           onListOpenPullRequests={listOpenPullRequests}
           onPrewarmProviderSession={prewarmProviderSession}
+          onPrewarmReviewPullRequest={prewarmReviewPullRequest}
           onNavigateThread={navigateToThread}
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
@@ -4592,7 +4719,10 @@ function ChatViewBody(
       <div className="flex min-h-0 min-w-0 flex-1">
         {/* Chat column */}
         <div
-          className={cn("flex min-h-0 min-w-0 flex-1 flex-col", rightPanelMaximized && "hidden")}
+          className={cn(
+            "relative flex min-h-0 min-w-0 flex-1 flex-col",
+            rightPanelMaximized && "hidden",
+          )}
         >
           {/* Messages Wrapper */}
           <div ref={messagesViewportRef} className="relative flex min-h-0 flex-1 flex-col">
@@ -4663,6 +4793,7 @@ function ChatViewBody(
 
           {/* Input bar */}
           <div
+            ref={setComposerInsetElement}
             className={cn(
               "pt-1.5 ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:pt-2 sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
               isGitRepo
@@ -4779,6 +4910,15 @@ function ChatViewBody(
                 }
               }}
               onPrepared={handlePreparedPullRequestThread}
+            />
+          ) : null}
+
+          {activeThreadRef && activePreviewMiniPlayer ? (
+            <ThreadPreviewMiniPlayer
+              key={`${activeThreadKey}:${activePreviewMiniPlayer.tabId}`}
+              threadRef={activeThreadRef}
+              tabId={activePreviewMiniPlayer.tabId}
+              bottomInset={composerBottomInset}
             />
           ) : null}
         </div>

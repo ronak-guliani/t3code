@@ -1,5 +1,5 @@
 import * as NodeHttp from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
@@ -113,6 +114,14 @@ const readPersistedSnapshot = (baseDir: string) =>
     }).pipe(Effect.provide(makeProjectPersistenceLayer(config)));
   });
 
+const reviewChangesContext = {
+  scope: "uncommitted" as const,
+  branch: null,
+  statusShort: " M file.ts",
+  untrackedFiles: [],
+  hasReviewableChanges: true,
+};
+
 const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const config = yield* makeCliTestServerConfig(baseDir);
@@ -136,14 +145,8 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       Layer.provide(
         Layer.mock(GitCore)({
           createWorktree: () => Effect.die("unexpected createWorktree call in CLI live test"),
-          resolveReviewChangesContext: () =>
-            Effect.succeed({
-              scope: "uncommitted" as const,
-              branch: null,
-              statusShort: " M file.ts",
-              untrackedFiles: [],
-              hasReviewableChanges: true,
-            }),
+          resolveReviewChangesContext: () => Effect.succeed(reviewChangesContext),
+          claimReviewChangesContext: () => Effect.succeed(reviewChangesContext),
         }),
       ),
       Layer.provide(
@@ -199,6 +202,33 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
   it.effect("accepts canonical --no-<flag> boolean negation", () =>
     runCliWithRuntime(["--no-log-websocket-events", "--version"]),
   );
+
+  it.effect("runs Connect status without parsing an invalid server port", () => {
+    const baseDir = mkdtempSync(join(process.cwd(), ".connect-cli-invalid-port-"));
+    return captureStdout(
+      runCli(["connect", "status", "--json", "--base-dir", baseDir]).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: { T3CODE_PORT: "not-a-port" },
+            }),
+          ),
+        ),
+      ),
+    ).pipe(
+      Effect.tap(({ output }) =>
+        Effect.sync(() => {
+          const parsed: unknown = JSON.parse(output);
+          assert.deepInclude(parsed, { state: "logged-out" });
+        }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          rmSync(baseDir, { recursive: true, force: true });
+        }),
+      ),
+    );
+  });
 
   it.effect("exposes review command scope flags", () =>
     Effect.gen(function* () {

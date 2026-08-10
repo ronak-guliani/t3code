@@ -50,6 +50,12 @@ function createTestClient() {
     },
     orchestration: {
       dispatchCommand: vi.fn(async () => undefined),
+      getShellSnapshot: vi.fn(async () => ({
+        snapshotSequence: 2,
+        projects: [],
+        threads: [],
+        updatedAt: "2026-04-12T00:00:01.000Z",
+      })),
       getTurnDiff: vi.fn(async () => undefined),
       getFullThreadDiff: vi.fn(async () => undefined),
       subscribeShell: vi.fn(
@@ -151,10 +157,112 @@ function createTestClient() {
         });
       }
     },
+    emitShellEvent: (sequence: number) => {
+      for (const listener of shellListeners) {
+        listener({
+          kind: "thread-removed",
+          sequence,
+          threadId: "thread-removed",
+        });
+      }
+    },
   };
 }
 
 describe("createEnvironmentConnection", () => {
+  it("refreshes and applies the latest shell snapshot on demand", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client } = createTestClient();
+    const syncShellSnapshot = vi.fn();
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot,
+      applyTerminalEvent: vi.fn(),
+      applySidebarStateSnapshot: vi.fn(),
+      readLegacyPinnedThreads: vi.fn(() => ({})),
+      markLegacySidebarPinsMigrated: vi.fn(),
+    });
+
+    await connection.ensureBootstrapped();
+    await connection.refreshShellSnapshot();
+
+    expect(client.orchestration.getShellSnapshot).toHaveBeenCalledTimes(1);
+    expect(syncShellSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({ snapshotSequence: 2 }),
+      environmentId,
+    );
+
+    await connection.dispose();
+  });
+
+  it("does not apply a refresh snapshot behind the live shell stream", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitShellEvent } = createTestClient();
+    let resolveSnapshot!: (snapshot: {
+      snapshotSequence: number;
+      projects: never[];
+      threads: never[];
+      updatedAt: string;
+    }) => void;
+    vi.mocked(client.orchestration.getShellSnapshot).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const syncShellSnapshot = vi.fn();
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot,
+      applyTerminalEvent: vi.fn(),
+      applySidebarStateSnapshot: vi.fn(),
+      readLegacyPinnedThreads: vi.fn(() => ({})),
+      markLegacySidebarPinsMigrated: vi.fn(),
+    });
+
+    await connection.ensureBootstrapped();
+    const refresh = connection.refreshShellSnapshot();
+    emitShellEvent(3);
+    resolveSnapshot({
+      snapshotSequence: 2,
+      projects: [],
+      threads: [],
+      updatedAt: "2026-04-12T00:00:01.000Z",
+    });
+    await refresh;
+
+    expect(syncShellSnapshot).not.toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotSequence: 2 }),
+      environmentId,
+    );
+
+    await connection.dispose();
+  });
+
   it("bootstraps from the shell subscription snapshot", async () => {
     const environmentId = EnvironmentId.make("env-1");
     const { client } = createTestClient();

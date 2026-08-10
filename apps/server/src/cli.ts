@@ -48,8 +48,6 @@ import {
   Path,
   References,
   Schema,
-  SchemaIssue,
-  SchemaTransformation,
   Stream,
 } from "effect";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
@@ -88,6 +86,7 @@ import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
 import { getAutoBootstrapDefaultModelSelection } from "./serverRuntimeStartup.ts";
 import { readPersistedServerRuntimeState } from "./serverRuntimeState.ts";
+import { DurationFromString } from "./cli/duration.ts";
 import { WorkspacePaths } from "./workspace/Services/WorkspacePaths.ts";
 import { WorkspacePathsLive } from "./workspace/Layers/WorkspacePaths.ts";
 import {
@@ -126,6 +125,8 @@ import {
   type CliSnapshot,
 } from "./cli/liveContext.ts";
 import { connectCommand } from "./cli/connect.ts";
+import { serviceCommand } from "./cli/service.ts";
+import { pairCommand } from "./cli/pair.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
@@ -273,6 +274,7 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  backgroundService: Config.boolean("T3CODE_BACKGROUND_SERVICE").pipe(Config.withDefault(false)),
 });
 
 interface CliServerFlags {
@@ -394,7 +396,9 @@ export const resolveServerConfig = (
     );
     const serverTracePath = env.traceFile ?? derivedPaths.serverTracePath;
     yield* fs.makeDirectory(path.dirname(serverTracePath), { recursive: true });
-    const startupPresentation = options?.startupPresentation ?? "browser";
+    const startupPresentation = env.backgroundService
+      ? "service"
+      : (options?.startupPresentation ?? "browser");
     const isHeadlessStartup = startupPresentation === "headless";
     const noBrowser = Option.getOrElse(
       resolveOptionPrecedence(
@@ -490,69 +494,6 @@ const resolveCliAuthConfig = (
     },
     cliLogLevel,
   );
-
-const DurationShorthandPattern = /^(?<value>\d+)(?<unit>ms|s|m|h|d|w)$/i;
-
-const parseDurationInput = (value: string): Duration.Duration | null => {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return null;
-
-  const shorthand = DurationShorthandPattern.exec(trimmed);
-  const normalizedInput = shorthand?.groups
-    ? (() => {
-        const amountText = shorthand.groups.value;
-        const unitText = shorthand.groups.unit;
-        if (typeof amountText !== "string" || typeof unitText !== "string") {
-          return null;
-        }
-
-        const amount = Number.parseInt(amountText, 10);
-        if (!Number.isFinite(amount)) return null;
-
-        switch (unitText.toLowerCase()) {
-          case "ms":
-            return `${amount} millis`;
-          case "s":
-            return `${amount} seconds`;
-          case "m":
-            return `${amount} minutes`;
-          case "h":
-            return `${amount} hours`;
-          case "d":
-            return `${amount} days`;
-          case "w":
-            return `${amount} weeks`;
-          default:
-            return null;
-        }
-      })()
-    : (trimmed as Duration.Input);
-
-  if (normalizedInput === null) return null;
-
-  const decoded = Duration.fromInput(normalizedInput as Duration.Input);
-  return Option.isSome(decoded) ? decoded.value : null;
-};
-
-const DurationFromString = Schema.String.pipe(
-  Schema.decodeTo(
-    Schema.Duration,
-    SchemaTransformation.transformOrFail({
-      decode: (value) => {
-        const duration = parseDurationInput(value);
-        if (duration !== null) {
-          return Effect.succeed(duration);
-        }
-        return Effect.fail(
-          new SchemaIssue.InvalidValue(Option.some(value), {
-            message: "Invalid duration. Use values like 5m, 1h, 30d, or 15 minutes.",
-          }),
-        );
-      },
-      encode: (duration) => Effect.succeed(Duration.format(duration)),
-    }),
-  ),
-);
 
 const runWithAuthControlPlane = <A, E>(
   flags: CliAuthLocationFlags,
@@ -2070,6 +2011,40 @@ const chatSetBranchCommand = Command.make("set-branch", {
   ),
 );
 
+const cwdFlag = Flag.string("cwd").pipe(Flag.withDefault(process.cwd()));
+
+const chatAssociatePrCommand = Command.make("associate-pr", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  reference: Argument.string("reference").pipe(
+    Argument.withDescription("Pull request URL, number, or explicit GitHub reference."),
+  ),
+  cwd: cwdFlag,
+}).pipe(
+  Command.withDescription("Durably associate a pull request with a chat."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const resolved = yield* callWsRpc(flags, (client) =>
+        client[WS_METHODS.gitResolvePullRequest]({
+          cwd: flags.cwd,
+          reference: flags.reference,
+        }),
+      );
+      yield* withThreadDispatch(flags, flags.chat, ({ thread, dispatch }) =>
+        Effect.gen(function* () {
+          const result = yield* dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId: thread.id,
+            pullRequest: resolved.pullRequest,
+          });
+          yield* printJson({ pullRequest: resolved.pullRequest, result });
+        }),
+      );
+    }),
+  ),
+);
+
 const chatHandoffCommand = Command.make("handoff", {
   ...liveTargetFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
@@ -2423,6 +2398,7 @@ const chatCommand = Command.make("chat").pipe(
     chatSetRuntimeCommand,
     chatSetInteractionCommand,
     chatSetBranchCommand,
+    chatAssociatePrCommand,
     chatHandoffCommand,
     chatSendCommand,
     chatNewCommand,
@@ -3271,7 +3247,6 @@ const providerCommand = Command.make("provider").pipe(
   ]),
 );
 
-const cwdFlag = Flag.string("cwd").pipe(Flag.withDefault(process.cwd()));
 const queryFlag = Flag.string("query").pipe(Flag.optional);
 const limitFlag = Flag.integer("limit").pipe(Flag.optional);
 const forceFlag = Flag.boolean("force").pipe(Flag.withDefault(false));
@@ -4889,6 +4864,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
     Command.withSubcommands([
       startCommand,
       serveCommand,
+      pairCommand,
       serverCommand,
       authCommand,
       projectCommand,
@@ -4914,5 +4890,6 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       rpcCommand,
       orchestrationCommand,
       connectCommand,
+      serviceCommand,
     ]),
   );

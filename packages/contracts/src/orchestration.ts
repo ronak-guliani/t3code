@@ -14,10 +14,12 @@ import {
   QueuedTurnId,
   ThreadId,
   TrimmedNonEmptyString,
+  TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { ReviewResult, ReviewSnapshot } from "./review.ts";
+import { GitPullRequestAssociation } from "./git.ts";
 import {
   WorkflowArtifact,
   WorkflowDefinition,
@@ -39,6 +41,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
+  searchThreads: "orchestration.searchThreads",
   searchTranscript: "orchestration.searchTranscript",
 } as const;
 
@@ -419,6 +422,11 @@ export const OrchestrationThread = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /**
+   * Durable PR association for this thread. Never inferred from checkout/branch
+   * equality — only set by explicit PR checkout/create/open flows.
+   */
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   reviewResult: Schema.optionalKey(Schema.NullOr(ReviewResult)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
@@ -443,6 +451,7 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   activityContext: Schema.optionalKey(Schema.Array(OrchestrationThreadActivity)),
   hasMoreActivities: Schema.optionalKey(Schema.Boolean),
+  hasMoreCurrentTurnActivities: Schema.optionalKey(Schema.Boolean),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
 });
@@ -491,6 +500,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -525,8 +535,16 @@ export const OrchestrationShellSnapshot = Schema.Struct({
 });
 export type OrchestrationShellSnapshot = typeof OrchestrationShellSnapshot.Type;
 
+export const OrchestrationSubscribeShellInput = Schema.Struct({
+  afterSequence: Schema.optionalKey(NonNegativeInt),
+  requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
+});
+export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
+
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  afterSequence: Schema.optionalKey(NonNegativeInt),
+  requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
@@ -578,6 +596,7 @@ const ThreadCreateCommand = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
 });
@@ -642,6 +661,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
 });
 
 const ThreadWorkspaceHandoffCommand = Schema.Struct({
@@ -696,6 +716,7 @@ const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
 });
@@ -866,6 +887,7 @@ export const WorkflowWorkerConfig = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
 });
 export type WorkflowWorkerConfig = typeof WorkflowWorkerConfig.Type;
@@ -1161,6 +1183,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  pullRequest: Schema.optionalKey(Schema.NullOr(GitPullRequestAssociation)),
   reviewSnapshot: Schema.optionalKey(ReviewSnapshot),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -1224,6 +1247,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   updatedAt: IsoDateTime,
 });
 
@@ -1672,6 +1696,10 @@ export type OrchestrationShellStreamEvent = typeof OrchestrationShellStreamEvent
 
 export const OrchestrationShellStreamItem = Schema.Union([
   Schema.Struct({
+    kind: Schema.Literal("synchronized"),
+    sequence: Schema.optionalKey(NonNegativeInt),
+  }),
+  Schema.Struct({
     kind: Schema.Literal("snapshot"),
     snapshot: OrchestrationShellSnapshot,
   }),
@@ -1680,6 +1708,10 @@ export const OrchestrationShellStreamItem = Schema.Union([
 export type OrchestrationShellStreamItem = typeof OrchestrationShellStreamItem.Type;
 
 export const OrchestrationThreadStreamItem = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("synchronized"),
+    sequence: Schema.optionalKey(NonNegativeInt),
+  }),
   Schema.Struct({
     kind: Schema.Literal("snapshot"),
     snapshot: OrchestrationThreadDetailSnapshot,
@@ -1918,6 +1950,26 @@ export const OrchestrationSearchTranscriptResult = Schema.Struct({
 });
 export type OrchestrationSearchTranscriptResult = typeof OrchestrationSearchTranscriptResult.Type;
 
+export const OrchestrationSearchThreadsInput = Schema.Struct({
+  query: TrimmedString.check(Schema.isMinLength(2), Schema.isMaxLength(200)),
+  limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+});
+export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
+
+export const OrchestrationThreadSearchMatch = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  source: Schema.Literals(["user", "assistant"]),
+  snippet: Schema.String.check(Schema.isMaxLength(240)),
+  messageCreatedAt: Schema.NullOr(IsoDateTime),
+});
+export type OrchestrationThreadSearchMatch = typeof OrchestrationThreadSearchMatch.Type;
+
+export const OrchestrationSearchThreadsResult = Schema.Struct({
+  matches: Schema.Array(OrchestrationThreadSearchMatch),
+});
+export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
+
 export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
   Struct.assign({
     threadId: ThreadId,
@@ -1933,6 +1985,7 @@ export type OrchestrationGetTurnDiffResult = typeof OrchestrationGetTurnDiffResu
 
 export const OrchestrationGetThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
+  turnId: Schema.optionalKey(TurnId),
   beforeCreatedAt: IsoDateTime,
   beforeActivityId: EventId,
   limit: Schema.optionalKey(NonNegativeInt),
@@ -2021,6 +2074,10 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationSearchTranscriptInput,
     output: OrchestrationSearchTranscriptResult,
   },
+  searchThreads: {
+    input: OrchestrationSearchThreadsInput,
+    output: OrchestrationSearchThreadsResult,
+  },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
     output: OrchestrationReplayEventsResult,
@@ -2042,7 +2099,7 @@ export const OrchestrationRpcSchemas = {
     output: OrchestrationThreadStreamItem,
   },
   subscribeShell: {
-    input: Schema.Struct({}),
+    input: OrchestrationSubscribeShellInput,
     output: OrchestrationShellStreamItem,
   },
 } as const;

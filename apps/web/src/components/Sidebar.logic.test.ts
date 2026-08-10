@@ -15,6 +15,8 @@ import {
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarThreadGitCwd,
+  resolveFilteredSidebarProjects,
+  resolveProjectExpanded,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   shouldClearThreadSelectionOnMouseDown,
@@ -597,6 +599,29 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Working", pulse: true });
   });
 
+  it("renders purely informational states as a top-right corner badge", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          virtualAgentRun: {
+            parentThreadId: ThreadId.make("parent-thread"),
+            taskId: "agent-1",
+            status: "running",
+          },
+        },
+      }),
+    ).toMatchObject({ label: "Working", presentation: "corner-badge", pulse: true });
+  });
+
+  it("keeps a label on states that ask the user to act", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, hasPendingApprovals: true },
+      }),
+    ).toMatchObject({ label: "Pending Approval", presentation: "label" });
+  });
+
   it("shows pending approval before all other statuses", () => {
     expect(
       resolveThreadStatusPill({
@@ -688,7 +713,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({ label: "Completed", pulse: false, presentation: "corner-badge" });
   });
 
   it("shows completed when there is an unseen completion and no active blocker", () => {
@@ -706,7 +731,74 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Completed", pulse: false });
+    ).toMatchObject({ label: "Completed", pulse: false, presentation: "corner-badge" });
+  });
+});
+
+describe("resolveProjectExpanded", () => {
+  it("honours the stored state while the project has a header", () => {
+    expect(resolveProjectExpanded({ storedExpanded: false, hasHeader: true })).toBe(false);
+    expect(resolveProjectExpanded({ storedExpanded: true, hasHeader: true })).toBe(true);
+  });
+
+  it("forces expansion when the header is hidden", () => {
+    // The header holds the only disclosure control, so a collapsed project
+    // would otherwise filter down to an empty, unrecoverable list. The same
+    // effective value must drive keyboard jump targets and prev/next.
+    expect(resolveProjectExpanded({ storedExpanded: false, hasHeader: false })).toBe(true);
+    expect(resolveProjectExpanded({ storedExpanded: true, hasHeader: false })).toBe(true);
+  });
+});
+
+describe("resolveFilteredSidebarProjects", () => {
+  const web = { memberProjects: [{ physicalProjectKey: "local:/code/web" }] };
+  const api = {
+    memberProjects: [
+      { physicalProjectKey: "local:/code/api" },
+      { physicalProjectKey: "remote:/code/api" },
+    ],
+  };
+  const projects = [web, api];
+
+  it("shows every project when no filter is set", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: null });
+    expect(result.projects).toEqual(projects);
+    expect(result.activeProject).toBeNull();
+  });
+
+  it("narrows to the filtered project", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: "local:/code/api" });
+    expect(result.projects).toEqual([api]);
+    expect(result.activeProject).toBe(api);
+  });
+
+  it("matches a grouped project through its remote member", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: "remote:/code/api" });
+    expect(result.projects).toEqual([api]);
+    expect(result.activeProject).toBe(api);
+  });
+
+  it("keeps same-path projects in different environments separately selectable", () => {
+    // Regression: keying the filter on cwd alone made the second of two
+    // `separate`-mode checkouts sharing a path impossible to select.
+    const localRepo = { memberProjects: [{ physicalProjectKey: "local:/repo" }] };
+    const remoteRepo = { memberProjects: [{ physicalProjectKey: "remote:/repo" }] };
+    const sameCwdProjects = [localRepo, remoteRepo];
+
+    expect(
+      resolveFilteredSidebarProjects({ projects: sameCwdProjects, filterKey: "remote:/repo" })
+        .activeProject,
+    ).toBe(remoteRepo);
+    expect(
+      resolveFilteredSidebarProjects({ projects: sameCwdProjects, filterKey: "local:/repo" })
+        .activeProject,
+    ).toBe(localRepo);
+  });
+
+  it("falls back to all projects when the filtered project is gone", () => {
+    const result = resolveFilteredSidebarProjects({ projects, filterKey: "local:/code/removed" });
+    expect(result.projects).toEqual(projects);
+    expect(result.activeProject).toBeNull();
   });
 });
 
@@ -747,18 +839,21 @@ describe("resolveProjectStatusIndicator", () => {
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
+          presentation: "corner-badge",
         },
         {
           label: "Pending Approval",
           colorClass: "text-amber-600",
           dotClass: "bg-amber-500",
           pulse: false,
+          presentation: "label",
         },
         {
           label: "Working",
           colorClass: "text-sky-600",
           dotClass: "bg-sky-500",
           pulse: true,
+          presentation: "corner-badge",
         },
       ]),
     ).toMatchObject({ label: "Pending Approval", dotClass: "bg-amber-500" });
@@ -772,12 +867,14 @@ describe("resolveProjectStatusIndicator", () => {
           colorClass: "text-emerald-600",
           dotClass: "bg-emerald-500",
           pulse: false,
+          presentation: "corner-badge",
         },
         {
           label: "Plan Ready",
           colorClass: "text-violet-600",
           dotClass: "bg-violet-500",
           pulse: false,
+          presentation: "label",
         },
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });

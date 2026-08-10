@@ -1,4 +1,9 @@
-import { AuthClientMetadataDeviceType, AuthSessionId } from "@t3tools/contracts";
+import {
+  AuthClientMetadataDeviceType,
+  type AuthEnvironmentScope,
+  AuthEnvironmentScopes,
+  AuthSessionId,
+} from "@t3tools/contracts";
 import { Option, Schema, Context } from "effect";
 import type { Effect } from "effect";
 
@@ -18,7 +23,12 @@ export const AuthSessionRecord = Schema.Struct({
   sessionId: AuthSessionId,
   subject: Schema.String,
   role: Schema.Literals(["owner", "client"]),
-  method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
+  scopes: Schema.NullOr(AuthEnvironmentScopes),
+  method: Schema.Literals([
+    "browser-session-cookie",
+    "bearer-session-token",
+    "bearer-access-token",
+  ]),
   client: AuthSessionClientMetadataRecord,
   issuedAt: Schema.DateTimeUtcFromString,
   expiresAt: Schema.DateTimeUtcFromString,
@@ -31,12 +41,19 @@ export const CreateAuthSessionInput = Schema.Struct({
   sessionId: AuthSessionId,
   subject: Schema.String,
   role: Schema.Literals(["owner", "client"]),
-  method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
+  scopes: Schema.NullOr(AuthEnvironmentScopes),
+  method: Schema.Literals([
+    "browser-session-cookie",
+    "bearer-session-token",
+    "bearer-access-token",
+  ]),
   client: AuthSessionClientMetadataRecord,
   issuedAt: Schema.DateTimeUtcFromString,
   expiresAt: Schema.DateTimeUtcFromString,
 });
 export type CreateAuthSessionInput = typeof CreateAuthSessionInput.Type;
+
+export type PersistedAuthSessionScopes = ReadonlyArray<AuthEnvironmentScope> | null;
 
 export const GetAuthSessionByIdInput = Schema.Struct({
   sessionId: AuthSessionId,
@@ -47,6 +64,12 @@ export const ListActiveAuthSessionsInput = Schema.Struct({
   now: Schema.DateTimeUtcFromString,
 });
 export type ListActiveAuthSessionsInput = typeof ListActiveAuthSessionsInput.Type;
+
+export const ListInactiveAuthSessionIdsInput = Schema.Struct({
+  sessionIds: Schema.Array(AuthSessionId),
+  now: Schema.DateTimeUtcFromString,
+});
+export type ListInactiveAuthSessionIdsInput = typeof ListInactiveAuthSessionIdsInput.Type;
 
 export const RevokeAuthSessionInput = Schema.Struct({
   sessionId: AuthSessionId,
@@ -76,6 +99,9 @@ export interface AuthSessionRepositoryShape {
   readonly listActive: (
     input: ListActiveAuthSessionsInput,
   ) => Effect.Effect<ReadonlyArray<AuthSessionRecord>, AuthSessionRepositoryError>;
+  readonly listInactiveIds: (
+    input: ListInactiveAuthSessionIdsInput,
+  ) => Effect.Effect<ReadonlyArray<AuthSessionId>, AuthSessionRepositoryError>;
   readonly revoke: (
     input: RevokeAuthSessionInput,
   ) => Effect.Effect<boolean, AuthSessionRepositoryError>;

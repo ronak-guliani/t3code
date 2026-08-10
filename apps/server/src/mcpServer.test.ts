@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import { __testing, startMcpHttpServer } from "./mcpServer.ts";
@@ -28,7 +29,12 @@ describe("MCP Streamable HTTP server", () => {
   it("serves authenticated workspace tools over loopback HTTP", async () => {
     const server = await startMcpHttpServer({
       cwd: process.cwd(),
-      toolsets: new Set(["create_isolated_workspace", "switch_workspace"]),
+      toolsets: new Set([
+        "create_isolated_workspace",
+        "switch_workspace",
+        "create_nested_thread",
+        "associate_pull_request",
+      ]),
       threadId: "thread-1",
       cliCommand: "t3-test",
     });
@@ -53,7 +59,12 @@ describe("MCP Streamable HTTP server", () => {
         jsonrpc: "2.0",
         id: 1,
         result: {
-          tools: [{ name: "create_isolated_workspace" }, { name: "switch_workspace" }],
+          tools: [
+            { name: "create_isolated_workspace" },
+            { name: "switch_workspace" },
+            { name: "create_nested_thread" },
+            { name: "associate_pull_request" },
+          ],
         },
       });
 
@@ -94,6 +105,214 @@ describe("MCP Streamable HTTP server", () => {
       await Promise.all([server.close(), socketClosed]);
     } finally {
       socket.destroy();
+    }
+  });
+});
+
+describe("associate_pull_request MCP tool", () => {
+  it("records an explicit PR association on the authenticated current thread", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-associate-pr-"));
+    const binDir = path.join(root, "bin");
+    const cliPath = path.join(binDir, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await mkdir(binDir);
+      await writeFile(cliPath, '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\n');
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await __testing.associatePullRequestTool(
+        {
+          cwd: root,
+          toolsets: new Set(["associate_pull_request"]),
+          threadId: "thread-1",
+          cliCommand: cliPath,
+          cliArgsPrefix: ["server.mjs"],
+          cliBaseDir: "/tmp/t3-dev",
+        },
+        { reference: "https://github.com/acme/repo/pull/42" },
+      );
+
+      const cliArgs = (await readFile(argsPath, "utf8")).trim().split("\n");
+      expect(cliArgs).toEqual([
+        "server.mjs",
+        "chat",
+        "associate-pr",
+        "thread-1",
+        "https://github.com/acme/repo/pull/42",
+        "--cwd",
+        root,
+        "--base-dir",
+        "/tmp/t3-dev",
+      ]);
+    } finally {
+      if (originalArgsPath === undefined) {
+        delete process.env.T3_MCP_TEST_ARGS;
+      } else {
+        process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      }
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects calls without an authenticated current thread", async () => {
+    await expect(
+      __testing.associatePullRequestTool(
+        {
+          cwd: process.cwd(),
+          toolsets: new Set(["associate_pull_request"]),
+          threadId: undefined,
+          cliCommand: "t3-test",
+        },
+        { reference: "#42" },
+      ),
+    ).rejects.toThrow("only available from a T3 provider session");
+  });
+});
+
+describe("create_nested_thread MCP tool", () => {
+  it("accepts any Copilot model slug and makes reasoning optional", () => {
+    expect(__testing.availableTools(new Set(["create_nested_thread"]))).toEqual([
+      expect.objectContaining({
+        name: "create_nested_thread",
+        inputSchema: expect.objectContaining({
+          type: "object",
+          properties: expect.objectContaining({
+            model: expect.objectContaining({
+              type: "string",
+              minLength: 1,
+            }),
+          }),
+          required: ["project", "title", "prompt", "model"],
+        }),
+      }),
+    ]);
+
+    const [tool] = __testing.availableTools(new Set(["create_nested_thread"]));
+    expect(tool?.inputSchema.properties?.model).not.toHaveProperty("enum");
+  });
+
+  it("creates a flavor-scoped child on the authenticated parent provider instance", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-thread-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(
+        cliPath,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
+      );
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            cliArgsPrefix: ["server.mjs"],
+            cliBaseDir: "/tmp/t3-dev",
+            runtimeMode: "approval-required",
+            providerInstanceId: ProviderInstanceId.make("copilot-team"),
+          },
+          {
+            project: "project-1",
+            title: "Investigate nesting",
+            prompt: "Find the root cause.",
+            model: "gpt-5.6-terra",
+            reasoning: "high",
+          },
+        ),
+      ).resolves.toBe('{"threadId":"child-1"}');
+
+      expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "server.mjs",
+        "chat",
+        "new",
+        "--project",
+        "project-1",
+        "--parent",
+        "parent-1",
+        "--provider",
+        "copilot-team",
+        "--model",
+        "gpt-5.6-terra",
+        "--reasoning",
+        "high",
+        "--runtime-mode",
+        "approval-required",
+        "--title",
+        "Investigate nesting",
+        "Find the root cause.",
+        "--base-dir",
+        "/tmp/t3-dev",
+      ]);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("omits reasoning for Copilot models without a selectable reasoning level", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-thread-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(
+        cliPath,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
+      );
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: "project-1",
+            title: "Investigate nesting",
+            prompt: "Find the root cause.",
+            model: "claude-opus-5",
+          },
+        ),
+      ).resolves.toBe('{"threadId":"child-1"}');
+
+      expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "chat",
+        "new",
+        "--project",
+        "project-1",
+        "--parent",
+        "parent-1",
+        "--provider",
+        "copilot",
+        "--model",
+        "claude-opus-5",
+        "--runtime-mode",
+        "full-access",
+        "--title",
+        "Investigate nesting",
+        "Find the root cause.",
+      ]);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

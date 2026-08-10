@@ -1,4 +1,4 @@
-import { AuthSessionId } from "@t3tools/contracts";
+import { AuthEnvironmentScopes, AuthSessionId } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { Effect, Layer, Option, Schema } from "effect";
@@ -15,6 +15,7 @@ import {
   CreateAuthSessionInput,
   GetAuthSessionByIdInput,
   ListActiveAuthSessionsInput,
+  ListInactiveAuthSessionIdsInput,
   RevokeAuthSessionInput,
   RevokeOtherAuthSessionsInput,
   SetAuthSessionLastConnectedAtInput,
@@ -24,7 +25,12 @@ const AuthSessionDbRow = Schema.Struct({
   sessionId: AuthSessionId,
   subject: Schema.String,
   role: Schema.Literals(["owner", "client"]),
-  method: Schema.Literals(["browser-session-cookie", "bearer-session-token"]),
+  scopes: Schema.NullOr(Schema.fromJsonString(AuthEnvironmentScopes)),
+  method: Schema.Literals([
+    "browser-session-cookie",
+    "bearer-session-token",
+    "bearer-access-token",
+  ]),
   clientLabel: Schema.NullOr(Schema.String),
   clientIpAddress: Schema.NullOr(Schema.String),
   clientUserAgent: Schema.NullOr(Schema.String),
@@ -42,6 +48,7 @@ function toAuthSessionRecord(row: typeof AuthSessionDbRow.Type): typeof AuthSess
     sessionId: row.sessionId,
     subject: row.subject,
     role: row.role,
+    scopes: row.scopes,
     method: row.method,
     client: {
       label: row.clientLabel,
@@ -76,6 +83,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           session_id,
           subject,
           role,
+          scopes,
           method,
           client_label,
           client_ip_address,
@@ -91,6 +99,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           ${input.sessionId},
           ${input.subject},
           ${input.role},
+          ${input.scopes === null ? null : JSON.stringify(input.scopes)},
           ${input.method},
           ${input.client.label},
           ${input.client.ipAddress},
@@ -114,6 +123,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           session_id AS "sessionId",
           subject AS "subject",
           role AS "role",
+          scopes AS "scopes",
           method AS "method",
           client_label AS "clientLabel",
           client_ip_address AS "clientIpAddress",
@@ -139,6 +149,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           session_id AS "sessionId",
           subject AS "subject",
           role AS "role",
+          scopes AS "scopes",
           method AS "method",
           client_label AS "clientLabel",
           client_ip_address AS "clientIpAddress",
@@ -154,6 +165,18 @@ const makeAuthSessionRepository = Effect.gen(function* () {
         WHERE revoked_at IS NULL
           AND expires_at > ${now}
         ORDER BY issued_at DESC, session_id DESC
+      `,
+  });
+
+  const listInactiveSessionIds = SqlSchema.findAll({
+    Request: ListInactiveAuthSessionIdsInput,
+    Result: Schema.Struct({ sessionId: AuthSessionId }),
+    execute: ({ sessionIds, now }) =>
+      sql`
+        SELECT session_id AS "sessionId"
+        FROM auth_sessions
+        WHERE ${sql.in("session_id", sessionIds)}
+          AND (revoked_at IS NOT NULL OR expires_at <= ${now})
       `,
   });
 
@@ -231,6 +254,19 @@ const makeAuthSessionRepository = Effect.gen(function* () {
       Effect.flatMap((rows) => Effect.succeed(rows.map((row) => toAuthSessionRecord(row)))),
     );
 
+  const listInactiveIds: AuthSessionRepositoryShape["listInactiveIds"] = (input) =>
+    input.sessionIds.length === 0
+      ? Effect.succeed([])
+      : listInactiveSessionIds(input).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "AuthSessionRepository.listInactiveIds:query",
+              "AuthSessionRepository.listInactiveIds:decodeRows",
+            ),
+          ),
+          Effect.map((rows) => rows.map((row) => row.sessionId)),
+        );
+
   const revoke: AuthSessionRepositoryShape["revoke"] = (input) =>
     revokeSessionRows(input).pipe(
       Effect.mapError(
@@ -267,6 +303,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
     create,
     getById,
     listActive,
+    listInactiveIds,
     revoke,
     revokeAllExcept,
     setLastConnectedAt,

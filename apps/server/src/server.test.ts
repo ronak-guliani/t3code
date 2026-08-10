@@ -38,6 +38,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Exit,
   FileSystem,
   Layer,
   ManagedRuntime,
@@ -392,6 +393,24 @@ const buildAppUnderTest = (options?: {
       ...options?.config,
     };
     const layerConfig = Layer.succeed(ServerConfig, config);
+    const stubReviewChangesContext: GitCoreShape["resolveReviewChangesContext"] = (input) =>
+      input.scope === "against-base"
+        ? Effect.succeed({
+            scope: "against-base",
+            branch: null,
+            statusShort: "",
+            untrackedFiles: [],
+            hasReviewableChanges: false,
+            baseBranch: "main",
+            mergeBaseSha: "0".repeat(40),
+          })
+        : Effect.succeed({
+            scope: "uncommitted",
+            branch: null,
+            statusShort: "",
+            untrackedFiles: [],
+            hasReviewableChanges: false,
+          });
     const gitCoreLayer = Layer.mock(GitCore)({
       isInsideWorkTree: () => Effect.succeed(false),
       listWorkspaceFiles: () =>
@@ -400,24 +419,11 @@ const buildAppUnderTest = (options?: {
           truncated: false,
         }),
       filterIgnoredPaths: (_cwd, relativePaths) => Effect.succeed(relativePaths),
-      resolveReviewChangesContext: (input) =>
-        input.scope === "against-base"
-          ? Effect.succeed({
-              scope: "against-base",
-              branch: null,
-              statusShort: "",
-              untrackedFiles: [],
-              hasReviewableChanges: false,
-              baseBranch: "main",
-              mergeBaseSha: "0".repeat(40),
-            })
-          : Effect.succeed({
-              scope: "uncommitted",
-              branch: null,
-              statusShort: "",
-              untrackedFiles: [],
-              hasReviewableChanges: false,
-            }),
+      resolveReviewChangesContext: stubReviewChangesContext,
+      // The workflow run path claims a possibly prewarmed capture; with nothing
+      // parked it must resolve exactly as a fresh capture would.
+      claimReviewChangesContext: stubReviewChangesContext,
+      prewarmReviewChangesContext: () => Effect.void,
       ...options?.layers?.gitCore,
     });
     const gitManagerLayer = Layer.mock(GitManager)({
@@ -546,6 +552,7 @@ const buildAppUnderTest = (options?: {
           getProjectShellById: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadDetailSnapshotById: () => Effect.succeed(Option.none()),
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
@@ -835,6 +842,36 @@ const getAuthenticatedBearerSessionToken = (credential = defaultDesktopBootstrap
     return body.sessionToken;
   });
 
+const exchangeAccessToken = (
+  scopes: ReadonlyArray<string>,
+  credential = defaultDesktopBootstrapToken,
+) =>
+  Effect.gen(function* () {
+    const tokenUrl = yield* getHttpServerUrl("/oauth/token");
+    const response = yield* Effect.promise(() =>
+      fetch(tokenUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+          subject_token: credential,
+          subject_token_type: "urn:t3:params:oauth:token-type:environment-bootstrap",
+          requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+          scope: scopes.join(" "),
+        }),
+      }),
+    );
+    const body = (yield* Effect.promise(() => response.json())) as {
+      readonly access_token?: string;
+    };
+    if (!response.ok || body.access_token === undefined) {
+      return yield* Effect.fail(new Error(`OAuth exchange failed with status ${response.status}.`));
+    }
+    return body.access_token;
+  });
+
 const bootstrapMobileBearerSession = (credential = defaultDesktopBootstrapToken) =>
   Effect.gen(function* () {
     const bootstrapUrl = yield* getHttpServerUrl("/mobile/v1/auth/bootstrap/bearer");
@@ -1106,10 +1143,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(body.authenticated, false);
       assert.equal(body.auth.policy, "desktop-managed-local");
       assert.deepEqual(body.auth.bootstrapMethods, ["desktop-bootstrap"]);
-      assert.deepEqual(body.auth.sessionMethods, [
-        "browser-session-cookie",
-        "bearer-session-token",
-      ]);
+      assert.deepEqual(body.auth.sessionMethods, ["browser-session-cookie", "bearer-access-token"]);
       assert.isTrue(body.auth.sessionCookieName.startsWith("t3_session_"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
@@ -1344,6 +1378,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const response = yield* HttpClient.post("/api/auth/pairing-token");
       assert.equal(response.status, 401);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("enforces narrowed owner access-token scopes on access management routes", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const authorization = `Bearer ${accessToken}`;
+
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { authorization },
+      });
+      const linksResponse = yield* HttpClient.get("/api/auth/pairing-links", {
+        headers: { authorization },
+      });
+      const clientsResponse = yield* HttpClient.get("/api/auth/clients", {
+        headers: { authorization },
+      });
+
+      assert.equal(pairingResponse.status, 403);
+      assert.equal(linksResponse.status, 403);
+      assert.equal(clientsResponse.status, 403);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -1707,6 +1763,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("consumes an official websocket ticket exactly once", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
+      const ticketResponse = yield* Effect.promise(() =>
+        fetch(ticketUrl, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer " + bearerToken,
+          },
+        }),
+      );
+      const ticketBody = (yield* Effect.promise(() => ticketResponse.json())) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+      const legacyParameterUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsToken=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const legacyParameterConnected = yield* Effect.scoped(
+        connectNodeWebSocket(legacyParameterUrl),
+      ).pipe(Effect.exit, Effect.map(Exit.isSuccess));
+      const firstConnected = yield* Effect.scoped(connectNodeWebSocket(wsUrl)).pipe(
+        Effect.exit,
+        Effect.map(Exit.isSuccess),
+      );
+      const replayConnected = yield* Effect.scoped(connectNodeWebSocket(wsUrl)).pipe(
+        Effect.exit,
+        Effect.map(Exit.isSuccess),
+      );
+
+      assert.equal(ticketResponse.status, 200);
+      assert.isFalse(legacyParameterConnected);
+      assert.isTrue(firstConnected);
+      assert.isFalse(replayConnected);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("loads a large CLI shell snapshot without reading the full projection", () =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
@@ -1761,8 +1860,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getShellSnapshot: () => Effect.die("Thread detail must not load the shell snapshot"),
-            getSnapshotSequence: () => Effect.succeed(42),
-            getThreadDetailById: () => Effect.succeed(Option.some(detail)),
+            getThreadDetailSnapshotById: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 42,
+                  thread: detail,
+                }),
+              ),
           },
         },
       });
@@ -1786,7 +1890,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("buffers thread events published while the initial snapshot loads", () =>
+  it.effect("does not replay thread events already materialized in the snapshot", () =>
     Effect.gen(function* () {
       const thread = makeDefaultOrchestrationReadModel().threads[0];
       if (!thread) {
@@ -1794,6 +1898,28 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }
 
       const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const includedEvent = {
+        sequence: 1,
+        eventId: EventId.make("event-included"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:00.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-included"),
+          role: "user",
+          text: "Already in snapshot",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
       const messageEvent = {
         sequence: 2,
         eventId: EventId.make("event-message"),
@@ -1816,7 +1942,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           updatedAt: "2026-01-01T00:00:01.000Z",
         },
       } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
-
+      const completionEvent = {
+        ...messageEvent,
+        sequence: 3,
+        eventId: EventId.make("event-completion"),
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        payload: {
+          ...messageEvent.payload,
+          messageId: MessageId.make("message-2"),
+          text: "Complete",
+          createdAt: "2026-01-01T00:00:02.000Z",
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
@@ -1825,13 +1963,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           projectionSnapshotQuery: {
             getShellSnapshot: () =>
               Effect.die("Thread subscription must not load the shell snapshot"),
-            getThreadDetailById: () =>
+            getThreadDetailSnapshotById: () =>
               Effect.gen(function* () {
                 yield* Effect.sleep("25 millis");
+                yield* PubSub.publish(liveEvents, includedEvent);
                 yield* PubSub.publish(liveEvents, messageEvent);
-                return Option.some(thread);
+                return Option.some({
+                  snapshotSequence: 2,
+                  thread: {
+                    ...thread,
+                    messages: [
+                      ...thread.messages,
+                      {
+                        id: includedEvent.payload.messageId,
+                        role: includedEvent.payload.role,
+                        text: includedEvent.payload.text,
+                        turnId: includedEvent.payload.turnId,
+                        streaming: includedEvent.payload.streaming,
+                        createdAt: includedEvent.payload.createdAt,
+                        updatedAt: includedEvent.payload.updatedAt,
+                      },
+                      {
+                        id: messageEvent.payload.messageId,
+                        role: messageEvent.payload.role,
+                        text: messageEvent.payload.text,
+                        turnId: messageEvent.payload.turnId,
+                        streaming: messageEvent.payload.streaming,
+                        createdAt: messageEvent.payload.createdAt,
+                        updatedAt: messageEvent.payload.updatedAt,
+                      },
+                    ],
+                  },
+                });
               }),
-            getSnapshotSequence: () => Effect.succeed(1),
           },
         },
       });
@@ -1841,13 +2005,389 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.subscribeThread]({
             threadId: defaultThreadId,
-          }).pipe(Stream.take(2), Stream.runCollect),
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "snapshot" ? PubSub.publish(liveEvents, completionEvent) : Effect.void,
+            ),
+            Stream.take(2),
+            Stream.runCollect,
+          ),
         ),
       ).pipe(Effect.timeout("2 seconds"));
 
       assert.equal(items[0]?.kind, "snapshot");
       assert.equal(items[1]?.kind, "event");
-      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 2);
+      assert.equal(items[1]?.kind === "event" ? items[1].event.sequence : null, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("resumes a thread subscription from a cursor and marks catch-up complete", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const messageEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-thread-resume"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.message-sent",
+        payload: {
+          threadId: defaultThreadId,
+          messageId: MessageId.make("message-thread-resume"),
+          role: "assistant",
+          text: "Caught up",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-01-01T00:00:01.000Z",
+          updatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+      const liveMessageEvent = {
+        ...messageEvent,
+        sequence: 3,
+        eventId: EventId.make("event-thread-live"),
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        payload: {
+          ...messageEvent.payload,
+          messageId: MessageId.make("message-thread-live"),
+          text: "Live",
+          createdAt: "2026-01-01T00:00:02.000Z",
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.message-sent" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            getReadModel: () =>
+              PubSub.publish(liveEvents, messageEvent).pipe(
+                Effect.as({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
+              ),
+            readEvents: () => Stream.make(messageEvent),
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshotById: () =>
+              Effect.die("A valid resume cursor must not reload the thread snapshot"),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "synchronized"
+                ? PubSub.publish(liveEvents, liveMessageEvent)
+                : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "event");
+      assert.equal(items[0]?.kind === "event" ? items[0].event.sequence : null, 2);
+      assert.equal(items[1]?.kind, "synchronized");
+      assert.equal(items[1]?.kind === "synchronized" ? items[1].sequence : null, 2);
+      assert.equal(items[2]?.kind, "event");
+      assert.equal(items[2]?.kind === "event" ? items[2].event.sequence : null, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("advances a thread cursor past unrelated replay events", () =>
+    Effect.gen(function* () {
+      const otherThreadId = ThreadId.make("thread-other");
+      const unrelatedEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-unrelated-thread"),
+        aggregateKind: "thread",
+        aggregateId: otherThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.deleted",
+        payload: {
+          threadId: otherThreadId,
+          deletedAt: "2026-01-01T00:00:01.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.deleted" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            getReadModel: () =>
+              Effect.succeed({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
+            readEvents: () => Stream.make(unrelatedEvent),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshotById: () =>
+              Effect.die("A valid resume cursor must not reload the thread snapshot"),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const item = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+            threadId: defaultThreadId,
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(Stream.runHead),
+        ),
+      ).pipe(Effect.timeout("2 seconds"), Effect.map(Option.getOrThrow));
+
+      assert.equal(item.kind, "synchronized");
+      assert.equal(item.kind === "synchronized" ? item.sequence : null, 2);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("resumes the shell subscription from a cursor and marks catch-up complete", () =>
+    Effect.gen(function* () {
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const thread = makeDefaultOrchestrationThreadShell();
+      const createdEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-shell-resume"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.created",
+        payload: {
+          threadId: defaultThreadId,
+          projectId: defaultProjectId,
+          parentThreadId: null,
+          title: thread.title,
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          pendingRuntimeMode: null,
+          interactionMode: thread.interactionMode,
+          branch: thread.branch,
+          worktreePath: thread.worktreePath,
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>;
+      const liveCreatedEvent = {
+        ...createdEvent,
+        sequence: 3,
+        eventId: EventId.make("event-shell-live"),
+        occurredAt: "2026-01-01T00:00:02.000Z",
+        payload: {
+          ...createdEvent.payload,
+          updatedAt: "2026-01-01T00:00:02.000Z",
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            getReadModel: () =>
+              PubSub.publish(liveEvents, createdEvent).pipe(
+                Effect.as({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
+              ),
+            readEvents: () => Stream.make(createdEvent),
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.die("A valid resume cursor must not reload the shell snapshot"),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+            afterSequence: 1,
+            requestCompletionMarker: true,
+          }).pipe(
+            Stream.tap((item) =>
+              item.kind === "synchronized"
+                ? PubSub.publish(liveEvents, liveCreatedEvent)
+                : Effect.void,
+            ),
+            Stream.take(3),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "thread-upserted");
+      assert.equal(items[0]?.kind === "thread-upserted" ? items[0].sequence : null, 2);
+      assert.equal(items[1]?.kind, "synchronized");
+      assert.equal(items[1]?.kind === "synchronized" ? items[1].sequence : null, 2);
+      assert.equal(items[2]?.kind, "thread-upserted");
+      assert.equal(items[2]?.kind === "thread-upserted" ? items[2].sequence : null, 3);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("buffers shell events published while the initial snapshot loads", () =>
+    Effect.gen(function* () {
+      const model = makeDefaultOrchestrationReadModel();
+      const thread = makeDefaultOrchestrationThreadShell();
+
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const createdEvent = {
+        sequence: 2,
+        eventId: EventId.make("event-thread-created"),
+        aggregateKind: "thread",
+        aggregateId: defaultThreadId,
+        occurredAt: "2026-01-01T00:00:01.000Z",
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "thread.created",
+        payload: {
+          threadId: defaultThreadId,
+          projectId: defaultProjectId,
+          parentThreadId: null,
+          title: thread.title,
+          modelSelection: thread.modelSelection,
+          runtimeMode: thread.runtimeMode,
+          pendingRuntimeMode: null,
+          interactionMode: thread.interactionMode,
+          branch: thread.branch,
+          worktreePath: thread.worktreePath,
+          createdAt: thread.createdAt,
+          updatedAt: thread.updatedAt,
+        },
+      } satisfies Extract<OrchestrationEvent, { type: "thread.created" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* Effect.sleep("25 millis");
+                yield* PubSub.publish(liveEvents, createdEvent);
+                return {
+                  snapshotSequence: 1,
+                  projects: model.projects,
+                  threads: [],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(2),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      assert.equal(items[1]?.kind, "thread-upserted");
+      assert.equal(items[1]?.kind === "thread-upserted" ? items[1].thread.id : null, thread.id);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("removes every archived nested thread from the shell stream", () =>
+    Effect.gen(function* () {
+      const parentThreadId = ThreadId.make("thread-archive-parent");
+      const childThreadId = ThreadId.make("thread-archive-child");
+      const archivedAt = "2026-01-01T00:00:01.000Z";
+      const liveEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const archiveEvent = (threadId: ThreadId, sequence: number) =>
+        ({
+          sequence,
+          eventId: EventId.make(`event-thread-archived-${threadId}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: archivedAt,
+          commandId: CommandId.make("cmd-thread-archive-parent"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-thread-archive-parent"),
+          metadata: {},
+          type: "thread.archived",
+          payload: {
+            threadId,
+            archivedAt,
+            updatedAt: archivedAt,
+          },
+        }) satisfies Extract<OrchestrationEvent, { type: "thread.archived" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(liveEvents),
+          },
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.gen(function* () {
+                yield* Effect.sleep("25 millis");
+                yield* PubSub.publish(liveEvents, archiveEvent(parentThreadId, 2));
+                yield* PubSub.publish(liveEvents, archiveEvent(childThreadId, 3));
+                return {
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [
+                    makeDefaultOrchestrationThreadShell({
+                      id: parentThreadId,
+                      archivedAt,
+                    }),
+                    makeDefaultOrchestrationThreadShell({
+                      id: childThreadId,
+                      archivedAt,
+                    }),
+                  ],
+                  updatedAt: "2026-01-01T00:00:00.000Z",
+                };
+              }),
+            getThreadShellById: () =>
+              Effect.die("Archived threads must not be read from the active shell"),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(3),
+            Stream.runCollect,
+          ),
+        ),
+      ).pipe(Effect.timeout("2 seconds"));
+
+      assert.equal(items[0]?.kind, "snapshot");
+      if (items[0]?.kind === "snapshot") {
+        assert.deepEqual(items[0].snapshot.threads, []);
+      }
+      assert.deepEqual(
+        items.slice(1).map((item) => (item.kind === "thread-removed" ? item.threadId : null)),
+        [parentThreadId, childThreadId],
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -2264,6 +2804,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.equal(limitedReplay.error.code, "invalid-message");
         }),
       );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("rejects scoped read-only tickets on the legacy mobile websocket", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/mobile/v1/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+      const connected = yield* Effect.scoped(connectNodeWebSocket(wsUrl)).pipe(
+        Effect.exit,
+        Effect.map(Exit.isSuccess),
+      );
+
+      assert.equal(ticketResponse.status, 200);
+      assert.isFalse(connected);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2913,6 +3478,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isAtLeast(response.entries.length, 1);
       assert.isTrue(response.entries.some((entry) => entry.path === "needle-file.ts"));
       assert.equal(response.truncated, false);
+
+      const directResponse = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsSearchEntries]({
+            cwd: workspaceDir,
+            query: "",
+            limit: 10,
+            kind: "file",
+          }),
+        ),
+      );
+      assert.isTrue(directResponse.entries.some((entry) => entry.path === "needle-file.ts"));
+      assert.isTrue(directResponse.entries.every((entry) => entry.kind === "file"));
+
+      const readResponse = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.projectsReadFile]({
+            cwd: workspaceDir,
+            relativePath: "needle-file.ts",
+          }),
+        ),
+      );
+      assert.equal(readResponse.contents, "export const needle = 1;");
+      assert.equal(readResponse.byteLength, 24);
+      assert.equal(readResponse.truncated, false);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3363,6 +3953,246 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(workflowCommand?.type === "workflow.run.request");
       assert.equal(workflowCommand.workerConfig.branch, "contributor/feature/fork-fix");
       assert.equal(workflowCommand.workerConfig.worktreePath, "/tmp/pr-42-worktree");
+      assert.deepEqual(workflowCommand.workerConfig.pullRequest, {
+        number: 42,
+        title: "Fork contribution",
+        url: "https://github.com/example/repo/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/fork-fix",
+        state: "open",
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("dispatches configured custom workflows", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: OrchestrationCommand[] = [];
+      const readModel = makeDefaultOrchestrationReadModel();
+      const project = readModel.projects[0]!;
+      const thread = makeDefaultOrchestrationThreadShell({ branch: "feature/custom-workflow" });
+      const workflowModelSelection = {
+        instanceId: ProviderInstanceId.make("copilot"),
+        model: "gpt-5.6-sol",
+      };
+
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              agentWorkflows: {
+                ...DEFAULT_SERVER_SETTINGS.agentWorkflows,
+                customWorkflows: [
+                  {
+                    id: "custom-release-check",
+                    enabled: true,
+                    name: "Release check",
+                    buttonLabel: "Check release",
+                    promptTemplate: "Verify the release is ready.",
+                    modelSelection: workflowModelSelection,
+                    showInHeader: true,
+                    destinationMode: "child-chat",
+                    automation: {
+                      afterAssistantTurnCompletes: false,
+                      cooldownMs: 300_000,
+                      maxRunsPerThread: 1,
+                    },
+                  },
+                ],
+              },
+            }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const runWorkflow = (
+        idempotencyKey: string,
+        destinationMode?: "same-chat" | "new-chat" | "child-chat",
+      ) =>
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[WS_METHODS.workflowRun]({
+              workflowId: "custom-release-check",
+              threadId: defaultThreadId,
+              ...(destinationMode === undefined ? {} : { destinationMode }),
+              trigger: "manual",
+              idempotencyKey,
+            }),
+          ),
+        );
+
+      const childResult = yield* runWorkflow("custom-release-check-child");
+      const childRetryResult = yield* runWorkflow("custom-release-check-child");
+      const newResult = yield* runWorkflow("custom-release-check-new", "new-chat");
+      const sameResult = yield* runWorkflow("custom-release-check-same", "same-chat");
+
+      assert.equal(childResult.status, "started");
+      assert.equal(childRetryResult.status, "started");
+      assert.equal(newResult.status, "started");
+      assert.equal(sameResult.status, "started");
+      if (
+        childResult.status !== "started" ||
+        childRetryResult.status !== "started" ||
+        newResult.status !== "started" ||
+        sameResult.status !== "started"
+      ) {
+        return;
+      }
+
+      assert.notEqual(childResult.threadId, defaultThreadId);
+      assert.equal(childRetryResult.threadId, childResult.threadId);
+      assert.equal(childRetryResult.commandId, childResult.commandId);
+      assert.equal(childRetryResult.messageId, childResult.messageId);
+      assert.notEqual(newResult.threadId, defaultThreadId);
+      assert.equal(sameResult.threadId, defaultThreadId);
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        [
+          "thread.create",
+          "thread.turn.start",
+          "thread.create",
+          "thread.turn.start",
+          "thread.create",
+          "thread.turn.start",
+          "thread.turn.start",
+        ],
+      );
+
+      const childCreate = dispatchedCommands[0];
+      const childTurn = dispatchedCommands[1];
+      const childRetryCreate = dispatchedCommands[2];
+      const childRetryTurn = dispatchedCommands[3];
+      const newCreate = dispatchedCommands[4];
+      const newTurn = dispatchedCommands[5];
+      const sameTurn = dispatchedCommands[6];
+      assertTrue(childCreate?.type === "thread.create");
+      assertTrue(childTurn?.type === "thread.turn.start");
+      assertTrue(childRetryCreate?.type === "thread.create");
+      assertTrue(childRetryTurn?.type === "thread.turn.start");
+      assertTrue(newCreate?.type === "thread.create");
+      assertTrue(newTurn?.type === "thread.turn.start");
+      assertTrue(sameTurn?.type === "thread.turn.start");
+      if (
+        childCreate?.type !== "thread.create" ||
+        childTurn?.type !== "thread.turn.start" ||
+        childRetryCreate?.type !== "thread.create" ||
+        childRetryTurn?.type !== "thread.turn.start" ||
+        newCreate?.type !== "thread.create" ||
+        newTurn?.type !== "thread.turn.start" ||
+        sameTurn?.type !== "thread.turn.start"
+      ) {
+        return;
+      }
+
+      assert.equal(childCreate.parentThreadId, defaultThreadId);
+      assert.equal(childCreate.threadId, childResult.threadId);
+      assert.equal(childRetryCreate.commandId, childCreate.commandId);
+      assert.equal(childRetryCreate.threadId, childCreate.threadId);
+      assert.equal(childRetryTurn.commandId, childTurn.commandId);
+      assert.equal(childRetryTurn.threadId, childTurn.threadId);
+      assert.equal(newCreate.parentThreadId, null);
+      assert.equal(newCreate.threadId, newResult.threadId);
+      assert.equal(sameTurn.threadId, defaultThreadId);
+      for (const command of [
+        childCreate,
+        childTurn,
+        childRetryCreate,
+        childRetryTurn,
+        newCreate,
+        newTurn,
+        sameTurn,
+      ]) {
+        assert.deepEqual(command.modelSelection, workflowModelSelection);
+        assert.equal(command.runtimeMode, "full-access");
+        assert.equal(command.interactionMode, "default");
+      }
+      for (const command of [childTurn, childRetryTurn, newTurn, sameTurn]) {
+        assert.equal(command.message.text, "Verify the release is ready.");
+        assert.equal(command.titleSeed, "Release check");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("keeps built-in workflow IDs reserved", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: OrchestrationCommand[] = [];
+      const readModel = makeDefaultOrchestrationReadModel();
+      const project = readModel.projects[0]!;
+      const thread = makeDefaultOrchestrationThreadShell();
+
+      yield* buildAppUnderTest({
+        layers: {
+          serverSettings: {
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              agentWorkflows: {
+                ...DEFAULT_SERVER_SETTINGS.agentWorkflows,
+                customWorkflows: [
+                  {
+                    id: "review-changes",
+                    enabled: true,
+                    name: "Shadow review",
+                    buttonLabel: "Shadow",
+                    promptTemplate: "This custom prompt must not run.",
+                    showInHeader: true,
+                    destinationMode: "same-chat",
+                    automation: {
+                      afterAssistantTurnCompletes: false,
+                      cooldownMs: 300_000,
+                      maxRunsPerThread: 1,
+                    },
+                  },
+                ],
+              },
+            }),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+          projectionSnapshotQuery: {
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.workflowRun]({
+            workflowId: "review-changes",
+            threadId: defaultThreadId,
+            destinationMode: "child-chat",
+            trigger: "manual",
+            idempotencyKey: "reserved-review-id",
+          }),
+        ),
+      );
+
+      assert.equal(result.status, "skipped");
+      assert.equal(result.runId, "reserved-review-id");
+      if (result.status !== "skipped") {
+        return;
+      }
+      assert.equal(result.reason, "no-reviewable-changes");
+      assert.equal(result.message, "No uncommitted changes.");
+      assert.deepEqual(dispatchedCommands, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -4023,6 +4853,21 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         layers: {
           projectionSnapshotQuery: {
             getSnapshot: () => Effect.succeed(snapshot),
+            getThreadDetailById: () => Effect.succeed(Option.some(snapshot.threads[0]!)),
+            searchTranscript: () =>
+              Effect.succeed({
+                matches: [
+                  {
+                    threadId: ThreadId.make("thread-1"),
+                    title: "Thread A",
+                    projectTitle: "Project A",
+                    branch: null,
+                    role: "user",
+                    excerpt: "official search result",
+                    updatedAt: now,
+                  },
+                ],
+              }),
           },
           orchestrationEngine: {
             dispatch: () => Effect.succeed({ sequence: 7 }),
@@ -4090,6 +4935,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.deepEqual(replayResult, []);
+
+      const searchResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.searchThreads]({
+            query: "official",
+            limit: 10,
+          }),
+        ),
+      );
+      assert.deepStrictEqual(searchResult.matches, [
+        {
+          threadId: ThreadId.make("thread-1"),
+          projectId: ProjectId.make("project-a"),
+          source: "user",
+          snippet: "official search result",
+          messageCreatedAt: now,
+        },
+      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

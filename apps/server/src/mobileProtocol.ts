@@ -2,6 +2,8 @@
 import { createHash } from "node:crypto";
 
 import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   AuthBootstrapInput,
   type AuthBearerBootstrapResult,
   type AuthSessionState,
@@ -32,23 +34,20 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
   OrchestrationGetTurnDiffError,
-  ThreadId,
 } from "@t3tools/contracts";
-import { Data, Effect, Layer, Option, Ref, Schema, Stream } from "effect";
+import { Data, Effect, Layer, Option, Queue, Ref, Schema, Stream } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { AuthError, ServerAuth } from "./auth/Services/ServerAuth.ts";
-import { respondToAuthError } from "./auth/http.ts";
+import { requireSessionScope, respondToAuthError } from "./auth/http.ts";
 import { deriveAuthClientMetadata } from "./auth/utils.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { dispatchThroughStartupGate } from "./orchestration/gatedDispatch.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
-import {
-  ProjectionSnapshotQuery,
-  type ProjectionSnapshotQueryShape,
-} from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { filterActiveShellSnapshot, toShellStreamEvent } from "./orchestration/shellStream.ts";
 import { isThreadDetailEvent } from "./orchestration/threadDetailEvents.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
 
@@ -221,56 +220,6 @@ function encodeServerMessage(message: MobileServerMessage): string {
   return JSON.stringify(encodeMobileServerMessage(message));
 }
 
-function toShellStreamEvent(
-  projectionSnapshotQuery: ProjectionSnapshotQueryShape,
-  event: OrchestrationEvent,
-): Effect.Effect<Option.Option<OrchestrationShellStreamEvent>, never> {
-  switch (event.type) {
-    case "project.created":
-    case "project.meta-updated":
-      return projectionSnapshotQuery.getProjectShellById(event.payload.projectId).pipe(
-        Effect.map((project) =>
-          Option.map(project, (nextProject) => ({
-            kind: "project-upserted" as const,
-            sequence: event.sequence,
-            project: nextProject,
-          })),
-        ),
-        Effect.catch(() => Effect.succeed(Option.none())),
-      );
-    case "project.deleted":
-      return Effect.succeed(
-        Option.some({
-          kind: "project-removed" as const,
-          sequence: event.sequence,
-          projectId: event.payload.projectId,
-        }),
-      );
-    case "thread.deleted":
-      return Effect.succeed(
-        Option.some({
-          kind: "thread-removed" as const,
-          sequence: event.sequence,
-          threadId: event.payload.threadId,
-        }),
-      );
-    default:
-      if (event.aggregateKind !== "thread") {
-        return Effect.succeed(Option.none());
-      }
-      return projectionSnapshotQuery.getThreadShellById(ThreadId.make(event.aggregateId)).pipe(
-        Effect.map((thread) =>
-          Option.map(thread, (nextThread) => ({
-            kind: "thread-upserted" as const,
-            sequence: event.sequence,
-            thread: nextThread,
-          })),
-        ),
-        Effect.catch(() => Effect.succeed(Option.none())),
-      );
-  }
-}
-
 export const mobileDescriptorRouteLayer = HttpRouter.add(
   "GET",
   MOBILE_HTTP_PREFIX,
@@ -382,7 +331,9 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
         const orchestrationEngine = yield* OrchestrationEngineService;
         const checkpointDiffQuery = yield* CheckpointDiffQuery;
         const startup = yield* ServerRuntimeStartup;
-        yield* serverAuth.authenticateWebSocketUpgrade(request);
+        const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
+        yield* requireSessionScope(session.role, AuthOrchestrationReadScope, session.scopes);
+        yield* requireSessionScope(session.role, AuthOrchestrationOperateScope, session.scopes);
 
         const socket = yield* request.upgrade;
         const write = yield* socket.writer;
@@ -494,7 +445,18 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
 
             switch (message.method) {
               case "orchestration.subscribeShell": {
+                const liveStream = orchestrationEngine.streamDomainEvents.pipe(
+                  Stream.mapEffect((event) => toShellStreamEvent(projectionSnapshotQuery, event)),
+                  Stream.flatMap((event) =>
+                    Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                  ),
+                );
+                const liveBuffer = yield* Queue.unbounded<OrchestrationShellStreamEvent>();
+                yield* Effect.forkScoped(
+                  liveStream.pipe(Stream.runForEach((event) => Queue.offer(liveBuffer, event))),
+                );
                 const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                  Effect.map(filterActiveShellSnapshot),
                   Effect.mapError(
                     (cause) =>
                       new OrchestrationGetSnapshotError({
@@ -510,14 +472,12 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   }),
                 );
 
-                yield* orchestrationEngine.streamDomainEvents.pipe(
-                  Stream.mapEffect((event) => toShellStreamEvent(projectionSnapshotQuery, event)),
-                  Stream.flatMap((event) =>
-                    Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                yield* Effect.forkScoped(
+                  Stream.fromQueue(liveBuffer).pipe(
+                    Stream.filter((event) => event.sequence > snapshot.snapshotSequence),
+                    Stream.runForEach((event) => send(mobileStream(message.id, event))),
+                    Effect.ignoreCause,
                   ),
-                  Stream.runForEach((event) => send(mobileStream(message.id, event))),
-                  Effect.ignoreCause,
-                  Effect.forkScoped,
                 );
                 return;
               }

@@ -58,6 +58,7 @@ import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScrip
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import { ServerEnvironmentLive } from "./environment/Layers/ServerEnvironment.ts";
 import {
+  authAccessTokenRouteLayer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,
@@ -69,6 +70,7 @@ import {
   authPairingCredentialRouteLayer,
   authSessionRouteLayer,
   authWebSocketTokenRouteLayer,
+  authWebSocketTicketRouteLayer,
 } from "./auth/http.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
@@ -353,6 +355,7 @@ const RuntimeServicesLive = ServerRuntimeStartupLive.pipe(
 );
 
 export const makeRoutesLayer = Layer.mergeAll(
+  authAccessTokenRouteLayer,
   authBearerBootstrapRouteLayer,
   authBootstrapRouteLayer,
   authClientsRevokeOthersRouteLayer,
@@ -363,6 +366,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   authPairingCredentialRouteLayer,
   authSessionRouteLayer,
   authWebSocketTokenRouteLayer,
+  authWebSocketTicketRouteLayer,
   assetRouteLayer,
   attachmentsRouteLayer,
   orchestrationDispatchRouteLayer,
@@ -409,8 +413,22 @@ export const makeServerLayer = Layer.unwrap(
             path: config.serverRuntimeStatePath,
             state,
           });
+          const serviceRuntimeStatePath = process.env.T3CODE_SERVICE_RUNTIME_STATE_PATH;
+          if (serviceRuntimeStatePath) {
+            yield* persistServerRuntimeState({
+              path: serviceRuntimeStatePath,
+              state,
+            });
+          }
         }),
-        () => clearPersistedServerRuntimeState(config.serverRuntimeStatePath),
+        () =>
+          Effect.gen(function* () {
+            yield* clearPersistedServerRuntimeState(config.serverRuntimeStatePath);
+            const serviceRuntimeStatePath = process.env.T3CODE_SERVICE_RUNTIME_STATE_PATH;
+            if (serviceRuntimeStatePath) {
+              yield* clearPersistedServerRuntimeState(serviceRuntimeStatePath);
+            }
+          }),
       ),
     );
 

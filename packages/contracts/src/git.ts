@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Schema, SchemaTransformation } from "effect";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ReviewChangesScope } from "./agentWorkflows.ts";
 import { ReviewSnapshot } from "./reviewSchemas.ts";
@@ -95,15 +95,30 @@ const GitWorktree = Schema.Struct({
   path: TrimmedNonEmptyStringSchema,
   branch: TrimmedNonEmptyStringSchema,
 });
-const GitResolvedPullRequest = Schema.Struct({
+export const GitResolvedPullRequest = Schema.Struct({
   number: PositiveInt,
   title: TrimmedNonEmptyStringSchema,
   url: Schema.String,
   baseBranch: TrimmedNonEmptyStringSchema,
   headBranch: TrimmedNonEmptyStringSchema,
-  state: GitPullRequestState,
+  state: Schema.NullOr(GitPullRequestState).pipe(
+    Schema.decodeTo(
+      GitPullRequestState,
+      SchemaTransformation.transform({
+        decode: (state) => state ?? "open",
+        encode: (state) => state,
+      }),
+    ),
+  ),
 });
 export type GitResolvedPullRequest = typeof GitResolvedPullRequest.Type;
+
+/** Durable PR identity; state is null when explicit historical provenance omitted it. */
+export const GitPullRequestAssociation = Schema.Struct({
+  ...GitResolvedPullRequest.fields,
+  state: Schema.NullOr(GitPullRequestState),
+});
+export type GitPullRequestAssociation = typeof GitPullRequestAssociation.Type;
 
 // RPC Inputs
 

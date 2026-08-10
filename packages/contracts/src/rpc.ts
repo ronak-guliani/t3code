@@ -3,7 +3,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { OpenError, OpenInEditorInput, RevealInFileManagerInput } from "./editor.ts";
-import { AuthAccessStreamEvent } from "./auth.ts";
+import { AuthAccessStreamEvent, EnvironmentRpcAuthorization } from "./auth.ts";
 import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
@@ -58,6 +58,8 @@ import {
   OrchestrationReplayEventsInput,
   OrchestrationSearchTranscriptInput,
   OrchestrationSearchTranscriptResult,
+  OrchestrationSearchThreadsInput,
+  OrchestrationSearchThreadsResult,
   OrchestrationRpcSchemas,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -66,10 +68,10 @@ import {
   ProjectListEntriesInput,
   ProjectListEntriesResult,
   ProjectReadFileError,
-  ProjectReadFileInput,
+  ProjectReadFileRpcInput,
   ProjectReadFileResult,
   ProjectSearchEntriesError,
-  ProjectSearchEntriesInput,
+  ProjectSearchEntriesRpcInput,
   ProjectSearchEntriesResult,
   ProjectWriteFileError,
   ProjectWriteFileInput,
@@ -224,6 +226,7 @@ export const WS_METHODS = {
   gitListOpenPullRequests: "git.listOpenPullRequests",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
   gitResolveReviewChangesContext: "git.resolveReviewChangesContext",
+  gitPrewarmReviewChangesContext: "git.prewarmReviewChangesContext",
 
   // Vcs methods (upstream VCS driver foundation)
   vcsPull: "vcs.pull",
@@ -366,7 +369,7 @@ export const WsServerExportThreadMarkdownRpc = Rpc.make(WS_METHODS.serverExportT
 });
 
 export const WsProjectsSearchEntriesRpc = Rpc.make(WS_METHODS.projectsSearchEntries, {
-  payload: ProjectSearchEntriesInput,
+  payload: ProjectSearchEntriesRpcInput,
   success: ProjectSearchEntriesResult,
   error: ProjectSearchEntriesError,
 });
@@ -378,7 +381,7 @@ export const WsProjectsListEntriesRpc = Rpc.make(WS_METHODS.projectsListEntries,
 });
 
 export const WsProjectsReadFileRpc = Rpc.make(WS_METHODS.projectsReadFile, {
-  payload: ProjectReadFileInput,
+  payload: ProjectReadFileRpcInput,
   success: ProjectReadFileResult,
   error: ProjectReadFileError,
 });
@@ -526,6 +529,19 @@ export const WsGitResolveReviewChangesContextRpc = Rpc.make(
   },
 );
 
+/**
+ * Acknowledges only: the captured context can reach several megabytes, and
+ * returning it to a browser that discards it would spend the latency this call
+ * exists to remove on the socket the ensuing run needs.
+ */
+export const WsGitPrewarmReviewChangesContextRpc = Rpc.make(
+  WS_METHODS.gitPrewarmReviewChangesContext,
+  {
+    payload: GitResolveReviewChangesContextInput,
+    error: GitCommandError,
+  },
+);
+
 export const WsGitListBranchesRpc = Rpc.make(WS_METHODS.gitListBranches, {
   payload: GitListBranchesInput,
   success: GitListBranchesResult,
@@ -656,6 +672,11 @@ export const WsOrchestrationSearchTranscriptRpc = Rpc.make(
     error: OrchestrationGetSnapshotError,
   },
 );
+export const WsOrchestrationSearchThreadsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.searchThreads, {
+  payload: OrchestrationSearchThreadsInput,
+  success: OrchestrationSearchThreadsResult,
+  error: OrchestrationGetSnapshotError,
+});
 
 export const WsOrchestrationGetShellSnapshotRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getShellSnapshot,
@@ -932,6 +953,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsGitListOpenPullRequestsRpc,
   WsGitPreparePullRequestThreadRpc,
   WsGitResolveReviewChangesContextRpc,
+  WsGitPrewarmReviewChangesContextRpc,
   WsGitListBranchesRpc,
   WsGitCreateWorktreeRpc,
   WsGitRemoveWorktreeRpc,
@@ -957,6 +979,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffStateRpc,
   WsOrchestrationGetFullThreadDiffStateRpc,
   WsOrchestrationReplayEventsRpc,
+  WsOrchestrationSearchThreadsRpc,
   WsOrchestrationSearchTranscriptRpc,
   WsOrchestrationGetShellSnapshotRpc,
   WsOrchestrationGetThreadSnapshotRpc,
@@ -988,4 +1011,4 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
-);
+).middleware(EnvironmentRpcAuthorization);

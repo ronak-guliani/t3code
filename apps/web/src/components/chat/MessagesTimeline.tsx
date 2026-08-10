@@ -18,7 +18,6 @@ import {
   type ReactNode,
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import { deriveTimelineEntries, formatElapsed, type AgentRun } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -52,12 +51,14 @@ import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
+  collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
   MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveWorkGroupExpanded,
+  stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
   type WorkGroupExpansionOverride,
@@ -233,20 +234,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // The reviewer's structured output is rendered as the findings card, so hide
   // the raw JSON message it came from — identified by content, because later
   // turns in the same review thread append ordinary assistant replies.
+  // Stabilize the Set identity: a fresh empty/equal Set on every stream chunk
+  // would rebuild TimelineRowCtx and re-render every mounted row.
+  const reviewOutputMessageIdsRef = useRef<ReadonlySet<string> | undefined>(undefined);
   const reviewOutputMessageIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (!reviewResultActive) return ids;
-    for (const entry of rawRows) {
-      if (
-        entry.kind === "message" &&
-        entry.message.role === "assistant" &&
-        isReviewOutputText(entry.message.text ?? "")
-      ) {
-        ids.add(entry.id);
-      }
-    }
-    return ids;
-  }, [rawRows, reviewResultActive]);
+    const next = stabilizeReadonlyStringSet(
+      collectReviewOutputMessageIds(rows, reviewResultActive),
+      reviewOutputMessageIdsRef.current,
+    );
+    reviewOutputMessageIdsRef.current = next;
+    return next;
+  }, [rows, reviewResultActive]);
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
@@ -337,14 +335,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   );
 
   const listHeader = useMemo(() => {
-    if (loadingOlder) {
+    const canLoadOlder = hasMoreOlder && onLoadOlder !== undefined;
+
+    if (loadingOlder && canLoadOlder) {
       return (
         <div className="flex items-center justify-center py-2 text-xs text-muted-foreground">
           Loading older history...
         </div>
       );
     }
-    if (hasMoreOlder) {
+    if (canLoadOlder) {
       return (
         <button
           type="button"
@@ -706,7 +706,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
 
       {row.kind === "working" && (
         <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[10px] text-muted-foreground/50">
+          <div className="flex items-center gap-2 pt-1 text-[7.5px] text-muted-foreground/50">
             <span className="inline-flex items-center gap-[3px]">
               <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
               <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
@@ -935,7 +935,7 @@ const ReasoningSection = memo(function ReasoningSection({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground/50 transition-colors hover:text-foreground/70"
+          className="inline-flex shrink-0 items-center gap-1 text-[9px] text-muted-foreground/50 transition-colors hover:text-foreground/70"
           onClick={() => setIsExpanded((value) => !value)}
           aria-expanded={isExpanded}
         >

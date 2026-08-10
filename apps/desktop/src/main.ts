@@ -31,6 +31,8 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateCheckResult,
   DesktopUpdateState,
+  DesktopLocalRebuildResult,
+  DesktopLocalRebuildState,
 } from "@t3tools/contracts";
 import { DesktopNotificationRequest } from "@t3tools/contracts";
 import { autoUpdater } from "electron-updater";
@@ -91,6 +93,12 @@ import { resolveDesktopAppBranding } from "./appBranding.ts";
 import { bindFirstRevealTrigger, type RevealSubscription } from "./windowReveal.ts";
 import { createMainWindowWebPreferences } from "./mainWindowPreferences.ts";
 import { startPreviewRuntime, type PreviewRuntimeHandle } from "./preview/Runtime.ts";
+import { resolveDesktopCliPassthrough } from "./desktopCliPassthrough.ts";
+import {
+  launchLocalDevRebuild,
+  readEmbeddedDevSourceRoot,
+  resolveLocalDevRebuildState,
+} from "./localDevRebuild.ts";
 
 const decodeDesktopNotificationRequest = Schema.decodeUnknownSync(DesktopNotificationRequest);
 
@@ -132,6 +140,8 @@ const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const UPDATE_CHECK_CHANNEL = "desktop:update-check";
+const LOCAL_REBUILD_GET_STATE_CHANNEL = "desktop:local-rebuild-get-state";
+const LOCAL_REBUILD_START_CHANNEL = "desktop:local-rebuild-start";
 const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
 const GET_LOCAL_ENVIRONMENT_BOOTSTRAP_CHANNEL = "desktop:get-local-environment-bootstrap";
 const GET_CLIENT_SETTINGS_CHANNEL = "desktop:get-client-settings";
@@ -255,6 +265,7 @@ let desktopProtocolRegistered = false;
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
 let backendLogSink: RotatingFileSink | null = null;
+let localRebuildStarted = false;
 let restoreStdIoCapture: (() => void) | null = null;
 let backendObservabilitySettings = readPersistedBackendObservabilitySettings();
 let desktopSettings = readDesktopSettings(DESKTOP_SETTINGS_PATH, app.getVersion());
@@ -698,6 +709,15 @@ function resolveAppRoot(): string {
     return ROOT_DIR;
   }
   return app.getAppPath();
+}
+
+function getLocalDevRebuildState(): DesktopLocalRebuildState {
+  return resolveLocalDevRebuildState({
+    isPackaged: app.isPackaged,
+    isDevAppFlavor,
+    platform: process.platform,
+    sourceRoot: readEmbeddedDevSourceRoot(resolveAppRoot()),
+  });
 }
 
 /** Read the baked-in app-update.yml config (if applicable). */
@@ -1954,6 +1974,33 @@ function registerIpcHandlers(): void {
       state: updateState,
     } satisfies DesktopUpdateCheckResult;
   });
+
+  ipcMain.removeHandler(LOCAL_REBUILD_GET_STATE_CHANNEL);
+  ipcMain.handle(LOCAL_REBUILD_GET_STATE_CHANNEL, async () => getLocalDevRebuildState());
+
+  ipcMain.removeHandler(LOCAL_REBUILD_START_CHANNEL);
+  ipcMain.handle(LOCAL_REBUILD_START_CHANNEL, async () => {
+    if (localRebuildStarted) {
+      return {
+        accepted: false,
+        logPath: Path.join(LOG_DIR, "dev-rebuild.log"),
+        message: "A local rebuild is already in progress.",
+      } satisfies DesktopLocalRebuildResult;
+    }
+    localRebuildStarted = true;
+    const result = await launchLocalDevRebuild(
+      getLocalDevRebuildState(),
+      LOG_DIR,
+      undefined,
+      () => {
+        localRebuildStarted = false;
+      },
+    );
+    if (!result.accepted) {
+      localRebuildStarted = false;
+    }
+    return result satisfies DesktopLocalRebuildResult;
+  });
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {
@@ -2166,8 +2213,6 @@ function createWindow(initialUrl?: string): BrowserWindow {
   return window;
 }
 
-configureAppIdentity();
-
 async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap start");
   const configuredBackendPort = resolveConfiguredDesktopBackendPort(process.env.T3CODE_PORT);
@@ -2241,75 +2286,102 @@ async function bootstrap(): Promise<void> {
   ensureInitialBackendWindowOpen();
 }
 
-app.on("before-quit", () => {
-  isQuitting = true;
-  void previewRuntime?.dispose();
-  previewRuntime = null;
-  updateInstallInFlight = false;
-  writeDesktopLogHeader("before-quit received");
-  clearUpdatePollTimer();
-  cancelBackendReadinessWait();
-  stopBackend();
-  restoreStdIoCapture?.();
-});
+function startDesktopApplication(): void {
+  configureAppIdentity();
 
-app
-  .whenReady()
-  .then(() => {
-    writeDesktopLogHeader("app ready");
-    configureAppIdentity();
-    configureApplicationMenu();
-    registerDesktopProtocol();
-    configureAutoUpdater();
-    void bootstrap().catch((error) => {
-      if (isBackendReadinessAborted(error) && isQuitting) {
-        return;
-      }
-      handleFatalStartupError("bootstrap", error);
-    });
-
-    app.on("activate", () => {
-      const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
-      if (existingWindow) {
-        revealWindow(existingWindow);
-        return;
-      }
-      if (isDevelopment) {
-        mainWindow = createWindow();
-        return;
-      }
-      ensureInitialBackendWindowOpen();
-    });
-  })
-  .catch((error) => {
-    handleFatalStartupError("whenReady", error);
-  });
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin" && !isQuitting) {
-    app.quit();
-  }
-});
-
-if (process.platform !== "win32") {
-  process.on("SIGINT", () => {
-    if (isQuitting) return;
+  app.on("before-quit", () => {
     isQuitting = true;
-    writeDesktopLogHeader("SIGINT received");
+    void previewRuntime?.dispose();
+    previewRuntime = null;
+    updateInstallInFlight = false;
+    writeDesktopLogHeader("before-quit received");
     clearUpdatePollTimer();
     cancelBackendReadinessWait();
     stopBackend();
     restoreStdIoCapture?.();
-    app.quit();
   });
 
-  process.on("SIGTERM", () => {
-    if (isQuitting) return;
-    isQuitting = true;
-    writeDesktopLogHeader("SIGTERM received");
-    clearUpdatePollTimer();
-    stopBackend();
-    restoreStdIoCapture?.();
-    app.quit();
+  app
+    .whenReady()
+    .then(() => {
+      writeDesktopLogHeader("app ready");
+      configureAppIdentity();
+      configureApplicationMenu();
+      registerDesktopProtocol();
+      configureAutoUpdater();
+      void bootstrap().catch((error) => {
+        if (isBackendReadinessAborted(error) && isQuitting) {
+          return;
+        }
+        handleFatalStartupError("bootstrap", error);
+      });
+
+      app.on("activate", () => {
+        const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
+        if (existingWindow) {
+          revealWindow(existingWindow);
+          return;
+        }
+        if (isDevelopment) {
+          mainWindow = createWindow();
+          return;
+        }
+        ensureInitialBackendWindowOpen();
+      });
+    })
+    .catch((error) => {
+      handleFatalStartupError("whenReady", error);
+    });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin" && !isQuitting) {
+      app.quit();
+    }
   });
+
+  if (process.platform !== "win32") {
+    process.on("SIGINT", () => {
+      if (isQuitting) return;
+      isQuitting = true;
+      writeDesktopLogHeader("SIGINT received");
+      clearUpdatePollTimer();
+      cancelBackendReadinessWait();
+      stopBackend();
+      restoreStdIoCapture?.();
+      app.quit();
+    });
+
+    process.on("SIGTERM", () => {
+      if (isQuitting) return;
+      isQuitting = true;
+      writeDesktopLogHeader("SIGTERM received");
+      clearUpdatePollTimer();
+      stopBackend();
+      restoreStdIoCapture?.();
+      app.quit();
+    });
+  }
+}
+
+const desktopCliPassthrough = resolveDesktopCliPassthrough({
+  argv: process.argv,
+  backendEntry: resolveBackendEntry(),
+  execPath: process.execPath,
+  env: process.env,
+});
+
+if (desktopCliPassthrough) {
+  const child = ChildProcess.spawn(desktopCliPassthrough.command, [...desktopCliPassthrough.args], {
+    env: desktopCliPassthrough.env,
+    stdio: "inherit",
+  });
+  child.once("error", (error) => {
+    console.error(`[desktop] failed to launch embedded CLI: ${formatErrorMessage(error)}`);
+    app.exit(1);
+  });
+  child.once("close", (code) => {
+    app.exit(code ?? 1);
+  });
+} else {
+  startDesktopApplication();
 }

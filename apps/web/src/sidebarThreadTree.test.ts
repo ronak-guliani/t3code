@@ -13,7 +13,9 @@ import {
   buildSidebarThreadRows,
   deriveSidebarThreadsWithAgentRuns,
   expandSidebarThreadsWithAgentRuns,
+  isThreadInSubtree,
   selectVisibleSidebarThreads,
+  selectVisibleThreadRows,
 } from "./sidebarThreadTree";
 import type { AgentRun } from "./session-logic";
 import type { SidebarThreadSummary } from "./types";
@@ -54,6 +56,7 @@ const workingStatus: ThreadStatusPill = {
   colorClass: "text-sky-600",
   dotClass: "bg-sky-500",
   pulse: true,
+  presentation: "corner-badge",
 };
 
 function activity(
@@ -201,6 +204,20 @@ describe("buildSidebarThreadRows", () => {
     ).toEqual([unrelatedOrphan.id]);
   });
 
+  it("recognizes a nested chat as part of its parent subtree", () => {
+    const parent = thread("thread-1");
+    const child = thread("thread-2", { parentThreadId: parent.id });
+    const grandchild = thread("thread-3", { parentThreadId: child.id });
+    const unrelated = thread("thread-4");
+
+    expect(
+      isThreadInSubtree([parent, child, grandchild, unrelated], parent.id, grandchild.id),
+    ).toBe(true);
+    expect(isThreadInSubtree([parent, child, grandchild, unrelated], parent.id, unrelated.id)).toBe(
+      false,
+    );
+  });
+
   it("renders child chats indented directly below expanded parents", () => {
     const parent = thread("thread-1");
     const child = thread("thread-2", { parentThreadId: parent.id });
@@ -249,6 +266,7 @@ describe("buildSidebarThreadRows", () => {
       colorClass: "text-emerald-600",
       dotClass: "bg-emerald-500",
       pulse: false,
+      presentation: "corner-badge",
     };
 
     const result = buildSidebarThreadRows({
@@ -379,5 +397,53 @@ describe("buildSidebarThreadRows", () => {
     });
 
     expect(result.rowViews.map((row) => row.thread.id)).toEqual([root2.id, root1.id, child.id]);
+  });
+});
+
+describe("selectVisibleThreadRows", () => {
+  function rowsForThreads(threads: readonly SidebarThreadSummary[]) {
+    return buildSidebarThreadRows({
+      threads,
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map(threads.map((entry) => [key(entry.id), true])),
+      sortOrder: "created_at",
+      resolveThreadStatus: () => null,
+    }).rowViews;
+  }
+
+  it("returns the original rows untouched when the window covers every root", () => {
+    const rowViews = rowsForThreads([thread("thread-1"), thread("thread-2")]);
+
+    const result = selectVisibleThreadRows({ rowViews, rootLimit: 5 });
+
+    expect(result.hasOverflow).toBe(false);
+    expect(result.rows).toBe(rowViews);
+  });
+
+  it("counts only root threads against the limit so children stay attached", () => {
+    // Roots sort newest-first, so thread-3 is the first root row.
+    const parent = thread("thread-3");
+    const child = thread("thread-2", { parentThreadId: parent.id });
+    const rowViews = rowsForThreads([parent, child, thread("thread-1")]);
+
+    const result = selectVisibleThreadRows({ rowViews, rootLimit: 1 });
+
+    expect(result.hasOverflow).toBe(true);
+    expect(result.rows.map((row) => row.thread.id)).toEqual([parent.id, child.id]);
+  });
+
+  it("widens the window so the required thread always renders", () => {
+    const threads = [thread("thread-1"), thread("thread-2"), thread("thread-3")];
+    const rowViews = rowsForThreads(threads);
+    const lastRow = rowViews.at(-1);
+
+    const result = selectVisibleThreadRows({
+      rowViews,
+      rootLimit: 1,
+      requiredThreadKey: lastRow ? key(lastRow.thread.id) : null,
+    });
+
+    expect(result.hasOverflow).toBe(false);
+    expect(result.rows).toBe(rowViews);
   });
 });

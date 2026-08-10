@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  GitPullRequestAssociation,
   ModelSelection,
   OrchestrationLatestTurn,
   OrchestrationBackgroundAgentRunShell,
@@ -128,12 +129,14 @@ export interface Thread {
   pendingSourceProposedPlan?: OrchestrationLatestTurn["sourceProposedPlan"];
   branch: string | null;
   worktreePath: string | null;
+  pullRequest?: GitPullRequestAssociation | null;
   reviewSnapshot?: ReviewSnapshot | undefined;
   reviewResult?: ReviewResult | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
   activityContext?: readonly OrchestrationThreadActivity[];
   hasMoreActivities?: boolean;
+  hasMoreCurrentTurnActivities?: boolean;
   // Lifecycle activities retained for Insights beyond the capped `activities`
   // window. Derived in the store; may be absent on directly-built fixtures.
   insightActivities?: readonly OrchestrationThreadActivity[];
@@ -160,6 +163,7 @@ export interface ThreadShell {
   updatedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  pullRequest?: GitPullRequestAssociation | null;
 }
 
 export interface ThreadTurnState {
@@ -185,6 +189,7 @@ export interface SidebarThreadSummary {
   latestTurn: OrchestrationLatestTurn | null;
   branch: string | null;
   worktreePath: string | null;
+  pullRequest?: GitPullRequestAssociation | null;
   latestUserMessageAt: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;

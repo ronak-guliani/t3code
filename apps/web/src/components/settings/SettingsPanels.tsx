@@ -19,6 +19,7 @@ import {
   DEFAULT_AGENT_WORKFLOW_MAX_RUNS_PER_THREAD,
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
+  type DesktopLocalRebuildState,
   type ModelSelection,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -34,6 +35,8 @@ import {
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_INPUT_FONT_SIZE,
   DEFAULT_SIDEBAR_FONT_SIZE,
+  DEFAULT_SIDEBAR_META_FONT_SIZE,
+  DEFAULT_SIDEBAR_ROW_SPACING,
   DEFAULT_SIDEBAR_TRANSLUCENCY,
   DEFAULT_SIDEBAR_V2_ENABLED,
   DEFAULT_STATUS_LINE_FONT_SIZE,
@@ -44,6 +47,7 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   type CodeFont,
   type FontSize,
+  type SidebarRowSpacing,
   type SidebarTranslucency,
   type ThreadCompletionNotificationMode,
   type UiDensity,
@@ -146,6 +150,16 @@ const UI_DENSITY_OPTIONS: ReadonlyArray<{ value: UiDensity; label: string; hint:
   { value: "default", label: "Default", hint: "— balanced" },
   { value: "comfortable", label: "Comfortable", hint: "— relaxed spacing" },
   { value: "spacious", label: "Spacious", hint: "— more breathing room" },
+];
+
+const SIDEBAR_ROW_SPACING_OPTIONS: ReadonlyArray<{
+  value: SidebarRowSpacing;
+  label: string;
+  hint: string;
+}> = [
+  { value: "compact", label: "Compact", hint: "— more threads on screen" },
+  { value: "default", label: "Default", hint: "— balanced" },
+  { value: "relaxed", label: "Relaxed", hint: "— more breathing room" },
 ];
 
 const SIDEBAR_TRANSLUCENCY_OPTIONS: ReadonlyArray<{
@@ -297,7 +311,15 @@ const UI_FONT_OPTIONS: ReadonlyArray<{ value: UiFont; label: string }> = [
     value: "geist",
     label: "Geist",
   },
+  {
+    value: "system-ui",
+    label: "San Francisco",
+  },
 ];
+
+function isUiFont(value: unknown): value is UiFont {
+  return UI_FONT_OPTIONS.some((option) => option.value === value);
+}
 
 const CODE_FONT_OPTIONS: ReadonlyArray<{ value: CodeFont; label: string }> = [
   {
@@ -486,10 +508,67 @@ function AboutVersionSection() {
   const queryClient = useQueryClient();
   const updateStateQuery = useDesktopUpdateState();
   const [isChangingUpdateChannel, setIsChangingUpdateChannel] = useState(false);
+  const [localRebuildState, setLocalRebuildState] = useState<DesktopLocalRebuildState | null>(null);
+  const [isStartingLocalRebuild, setIsStartingLocalRebuild] = useState(false);
 
   const updateState = updateStateQuery.data ?? null;
   const hasDesktopBridge = typeof window !== "undefined" && Boolean(window.desktopBridge);
   const selectedUpdateChannel = updateState?.channel ?? "latest";
+
+  useEffect(() => {
+    const getLocalRebuildState = window.desktopBridge?.getLocalRebuildState;
+    if (!getLocalRebuildState) return;
+
+    let cancelled = false;
+    void getLocalRebuildState()
+      .then((state) => {
+        if (!cancelled) setLocalRebuildState(state);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleLocalRebuild = useCallback(() => {
+    const rebuildAndRestart = window.desktopBridge?.rebuildAndRestart;
+    if (!rebuildAndRestart || isStartingLocalRebuild) return;
+    if (!window.confirm("Build the current checkout, install it, and restart T3 Code?")) return;
+
+    setIsStartingLocalRebuild(true);
+    void rebuildAndRestart()
+      .then((result) => {
+        if (result.accepted) {
+          toastManager.add({
+            type: "success",
+            title: "Local rebuild started",
+            description: "T3 Code will restart after the new build is ready.",
+          });
+          return;
+        }
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not start local rebuild",
+            description: [result.message, result.logPath ? `Log: ${result.logPath}` : null]
+              .filter(Boolean)
+              .join(" "),
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not start local rebuild",
+            description: error instanceof Error ? error.message : "Local rebuild failed to start.",
+          }),
+        );
+      })
+      .finally(() => {
+        setIsStartingLocalRebuild(false);
+      });
+  }, [isStartingLocalRebuild]);
 
   const handleUpdateChannelChange = useCallback(
     (channel: DesktopUpdateChannel) => {
@@ -642,6 +721,28 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
+      {localRebuildState?.enabled ? (
+        <SettingsRow
+          title="Local source"
+          description="Build and install the current checkout, then restart T3 Code."
+          status={
+            <span className="block break-all font-mono text-[11px] text-foreground">
+              {localRebuildState.sourceRoot}
+            </span>
+          }
+          control={
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isStartingLocalRebuild}
+              onClick={handleLocalRebuild}
+            >
+              <RefreshCwIcon className={isStartingLocalRebuild ? "animate-spin" : undefined} />
+              {isStartingLocalRebuild ? "Starting..." : "Rebuild and restart"}
+            </Button>
+          }
+        />
+      ) : null}
       <SettingsRow
         title="Update track"
         description="Stable follows full releases. Nightly follows the nightly desktop channel and can switch back to stable immediately."
@@ -738,6 +839,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.sidebarFontSize !== DEFAULT_UNIFIED_SETTINGS.sidebarFontSize
         ? ["Sidebar font size"]
         : []),
+      ...(settings.sidebarMetaFontSize !== DEFAULT_UNIFIED_SETTINGS.sidebarMetaFontSize
+        ? ["Sidebar metadata font size"]
+        : []),
+      ...(settings.sidebarRowSpacing !== DEFAULT_UNIFIED_SETTINGS.sidebarRowSpacing
+        ? ["Sidebar row spacing"]
+        : []),
       ...(settings.toolFontSize !== DEFAULT_UNIFIED_SETTINGS.toolFontSize
         ? ["Tool font size"]
         : []),
@@ -789,6 +896,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.enableAssistantStreaming,
       settings.agentWorkflows,
       settings.sidebarFontSize,
+      settings.sidebarMetaFontSize,
+      settings.sidebarRowSpacing,
       settings.sidebarTranslucency,
       settings.threadCompletionNotifications,
       settings.timestampFormat,
@@ -1412,7 +1521,7 @@ export function GeneralSettingsPanel() {
             <Select
               value={settings.uiFont}
               onValueChange={(value) => {
-                if (value === "dm-sans" || value === "geist") {
+                if (isUiFont(value)) {
                   updateSettings({ uiFont: value });
                 }
               }}
@@ -1672,6 +1781,87 @@ export function GeneralSettingsPanel() {
                 {FONT_SIZE_OPTIONS.map((option) => (
                   <SelectItem hideIndicator key={option.value} value={String(option.value)}>
                     {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Sidebar metadata font size"
+          description="Font size for the project name, worktree, branch, pull request, and timestamps on sidebar rows."
+          resetAction={
+            settings.sidebarMetaFontSize !== DEFAULT_SIDEBAR_META_FONT_SIZE ? (
+              <SettingResetButton
+                label="sidebar metadata font size"
+                onClick={() =>
+                  updateSettings({
+                    sidebarMetaFontSize: DEFAULT_SIDEBAR_META_FONT_SIZE,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.sidebarMetaFontSize)}
+              onValueChange={(value) => {
+                const num = Number(value);
+                if (isFontSize(num)) {
+                  updateSettings({ sidebarMetaFontSize: num });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Sidebar metadata font size">
+                <SelectValue>
+                  {FONT_SIZE_OPTIONS.find((option) => option.value === settings.sidebarMetaFontSize)
+                    ?.label ?? `${DEFAULT_SIDEBAR_META_FONT_SIZE}px`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {FONT_SIZE_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Sidebar row spacing"
+          description="Control the padding inside sidebar rows and the gap between them."
+          resetAction={
+            settings.sidebarRowSpacing !== DEFAULT_SIDEBAR_ROW_SPACING ? (
+              <SettingResetButton
+                label="sidebar row spacing"
+                onClick={() => updateSettings({ sidebarRowSpacing: DEFAULT_SIDEBAR_ROW_SPACING })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.sidebarRowSpacing}
+              onValueChange={(value) => {
+                if (SIDEBAR_ROW_SPACING_OPTIONS.some((option) => option.value === value)) {
+                  updateSettings({ sidebarRowSpacing: value as SidebarRowSpacing });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Sidebar row spacing">
+                <SelectValue>
+                  {SIDEBAR_ROW_SPACING_OPTIONS.find(
+                    (option) => option.value === settings.sidebarRowSpacing,
+                  )?.label ?? "Default"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {SIDEBAR_ROW_SPACING_OPTIONS.map((option) => (
+                  <SelectItem hideIndicator key={option.value} value={option.value}>
+                    <div>
+                      <span className="font-medium">{option.label}</span>
+                      <span className="ml-2 text-muted-foreground/70">{option.hint}</span>
+                    </div>
                   </SelectItem>
                 ))}
               </SelectPopup>

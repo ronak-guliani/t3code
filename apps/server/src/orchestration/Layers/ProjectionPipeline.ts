@@ -32,6 +32,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionWorkflowRepository } from "../../persistence/Services/ProjectionWorkflows.ts";
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
+import { pullRequestFromReviewSnapshot } from "../reviewPullRequest.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -603,6 +604,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             interactionMode: event.payload.interactionMode,
             branch: event.payload.branch,
             worktreePath: event.payload.worktreePath,
+            pullRequest:
+              event.payload.pullRequest !== undefined
+                ? event.payload.pullRequest
+                : (pullRequestFromReviewSnapshot(event.payload.reviewSnapshot) ?? null),
             reviewSnapshot: event.payload.reviewSnapshot ?? null,
             reviewResult: null,
             latestTurnId: null,
@@ -747,6 +752,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
               : {}),
+            ...(event.payload.pullRequest !== undefined
+              ? { pullRequest: event.payload.pullRequest }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -859,6 +867,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           });
           if (Option.isNone(existingRow)) {
             return;
+          }
+          const latestTurn =
+            existingRow.value.latestTurnId === null
+              ? Option.none()
+              : yield* projectionTurnRepository.getByTurnId({
+                  threadId: event.payload.threadId,
+                  turnId: existingRow.value.latestTurnId,
+                });
+          if (
+            Option.isSome(latestTurn) &&
+            latestTurn.value.state === "running" &&
+            event.payload.session.status !== "running"
+          ) {
+            yield* projectionTurnRepository.upsertByTurnId({
+              ...latestTurn.value,
+              state: event.payload.session.status === "error" ? "error" : "interrupted",
+              completedAt: event.payload.session.updatedAt,
+            });
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
@@ -1350,16 +1376,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
               assistantMessageId: event.payload.messageId,
-              state: event.payload.streaming
-                ? existingTurn.value.state
-                : existingTurn.value.state === "interrupted"
-                  ? "interrupted"
-                  : existingTurn.value.state === "error"
-                    ? "error"
-                    : "completed",
-              completedAt: event.payload.streaming
-                ? existingTurn.value.completedAt
-                : (existingTurn.value.completedAt ?? event.payload.updatedAt),
               startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
             });

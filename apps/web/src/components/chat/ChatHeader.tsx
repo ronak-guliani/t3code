@@ -61,6 +61,7 @@ interface ChatHeaderProps {
   onRunWorkflow: (request: AgentWorkflowRunRequest) => void;
   onListOpenPullRequests: () => Promise<ReadonlyArray<GitResolvedPullRequest>>;
   onPrewarmProviderSession: () => void;
+  onPrewarmReviewPullRequest: (pullRequestNumber: number) => void;
   onNavigateThread: (threadId: ThreadId) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -101,6 +102,7 @@ export const ChatHeader = memo(function ChatHeader({
   onRunWorkflow,
   onListOpenPullRequests,
   onPrewarmProviderSession,
+  onPrewarmReviewPullRequest,
   onNavigateThread,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -119,7 +121,7 @@ export const ChatHeader = memo(function ChatHeader({
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
-        <SidebarTrigger className="size-7 shrink-0 md:hidden" />
+        <SidebarTrigger className="no-drag size-7 shrink-0" />
         <h2
           className="min-w-0 shrink truncate font-medium text-foreground"
           style={{ fontSize: "var(--app-chat-font-size)" }}
@@ -164,6 +166,7 @@ export const ChatHeader = memo(function ChatHeader({
           onRun={onRunWorkflow}
           onListOpenPullRequests={onListOpenPullRequests}
           onPrewarmProviderSession={onPrewarmProviderSession}
+          onPrewarmReviewPullRequest={onPrewarmReviewPullRequest}
         />
         <WorkflowRunsButton runs={workflowRuns} onNavigateThread={onNavigateThread} />
         <Tooltip>

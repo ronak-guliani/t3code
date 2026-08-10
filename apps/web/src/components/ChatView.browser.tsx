@@ -25,7 +25,7 @@ import { createModelCapabilities, createModelSelection } from "@t3tools/shared/m
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
@@ -2207,14 +2207,30 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("starts review in the draft root thread", async () => {
+  it("promotes a draft root when reviewing an open pull request", async () => {
     setDraftThreadWithoutWorktree();
+    let promotedSnapshot: OrchestrationReadModel | null = null;
 
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createDraftOnlySnapshot(),
       resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.gitListOpenPullRequests) {
+          return {
+            pullRequests: [
+              {
+                number: 77,
+                title: "Load threads with compact bounded history",
+                url: "https://github.com/pingdotgg/t3code/pull/77",
+                baseBranch: "main",
+                headBranch: "bounded-thread-history",
+                state: "open",
+              },
+            ],
+          };
+        }
         if (body._tag === WS_METHODS.workflowRun) {
+          promotedSnapshot = addThreadToSnapshot(fixture.snapshot, THREAD_ID);
           return {
             status: "started",
             runId: "review-run",
@@ -2225,12 +2241,49 @@ describe("ChatView timeline estimator parity (full app)", () => {
             createdAt: NOW_ISO,
           };
         }
+        if (body._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot && promotedSnapshot !== null) {
+          fixture.snapshot = promotedSnapshot;
+          return toShellSnapshot(promotedSnapshot);
+        }
         return undefined;
       },
     });
 
     try {
-      (await waitForButtonByText("Review uncommitted changes")).click();
+      const optionsButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Review Code options"]'),
+        "Unable to find review options.",
+      );
+      optionsButton.click();
+
+      const openPullRequests = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((element) =>
+            element.textContent?.includes("Open pull requests"),
+          ) ?? null,
+        "Unable to find open pull requests.",
+      );
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some((request) => request._tag === WS_METHODS.gitListOpenPullRequests),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      openPullRequests.focus();
+      openPullRequests.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+
+      const pullRequest = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((element) =>
+            element.textContent?.includes("#77 Load threads with compact bounded history"),
+          ) ?? null,
+        "Unable to find pull request.",
+      );
+      pullRequest.click();
 
       await vi.waitFor(
         () => {
@@ -2243,6 +2296,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
             workflowId: "review-changes",
             projectId: PROJECT_ID,
             destinationMode: "same-chat",
+            input: {
+              scope: "pull-request",
+              pullRequestNumber: 77,
+            },
           });
           expect(
             wsRequests.some(
@@ -2251,6 +2308,207 @@ describe("ChatView timeline estimator parity (full app)", () => {
                 request.type === "thread.create",
             ),
           ).toBe(false);
+          expect(
+            wsRequests.some(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot,
+            ),
+          ).toBe(true);
+          expect(
+            useStore.getState().environmentStateById[LOCAL_ENVIRONMENT_ID]?.threadShellById,
+          ).toHaveProperty(THREAD_ID);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("recovers a review worker from a shell snapshot before navigating", async () => {
+    const workerThreadId = ThreadId.make("review-worker-thread");
+    let workerSnapshot: OrchestrationReadModel | null = null;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-review-parent" as MessageId,
+        targetText: "Review this pull request",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.gitListOpenPullRequests) {
+          return {
+            pullRequests: [
+              {
+                number: 1359,
+                title: "Keep review workers visible",
+                url: "https://github.com/pingdotgg/t3code/pull/1359",
+                baseBranch: "main",
+                headBranch: "review-worker-visibility",
+                state: "open",
+              },
+            ],
+          };
+        }
+        if (body._tag === WS_METHODS.workflowRun) {
+          workerSnapshot = addThreadToSnapshot(fixture.snapshot, workerThreadId);
+          return {
+            status: "started",
+            runId: "review-run",
+            threadId: workerThreadId,
+            commandId: "review-command",
+            messageId: "review-message",
+            sequence: 2,
+            createdAt: NOW_ISO,
+          };
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot && workerSnapshot !== null) {
+          fixture.snapshot = workerSnapshot;
+          return toShellSnapshot(workerSnapshot);
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const optionsButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Review Code options"]'),
+        "Unable to find review options.",
+      );
+      optionsButton.click();
+
+      const openPullRequests = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((element) =>
+            element.textContent?.includes("Open pull requests"),
+          ) ?? null,
+        "Unable to find open pull requests.",
+      );
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some((request) => request._tag === WS_METHODS.gitListOpenPullRequests),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      openPullRequests.focus();
+      openPullRequests.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+
+      const pullRequest = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((element) =>
+            element.textContent?.includes("#1359 Keep review workers visible"),
+          ) ?? null,
+        "Unable to find pull request.",
+      );
+      pullRequest.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.find((request) => request._tag === WS_METHODS.workflowRun),
+          ).toMatchObject({
+            workflowId: "review-changes",
+            threadId: THREAD_ID,
+            input: {
+              scope: "pull-request",
+              pullRequestNumber: 1359,
+            },
+            destinationMode: "child-chat",
+          });
+          expect(
+            wsRequests.some(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot,
+            ),
+          ).toBe(true);
+          expect(mounted.router.state.location.pathname).toBe(serverThreadPath(workerThreadId));
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reports routing failure without claiming a started workflow failed to start", async () => {
+    const workerThreadId = ThreadId.make("review-worker-delayed");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-review-delayed-parent" as MessageId,
+        targetText: "Review this pull request",
+      }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.gitListOpenPullRequests) {
+          return {
+            pullRequests: [
+              {
+                number: 1360,
+                title: "Delay review worker projection",
+                url: "https://github.com/pingdotgg/t3code/pull/1360",
+                baseBranch: "main",
+                headBranch: "delayed-review-worker",
+                state: "open",
+              },
+            ],
+          };
+        }
+        if (body._tag === WS_METHODS.workflowRun) {
+          return {
+            status: "started",
+            runId: "review-run-delayed",
+            threadId: workerThreadId,
+            commandId: "review-command-delayed",
+            messageId: "review-message-delayed",
+            sequence: 2,
+            createdAt: NOW_ISO,
+          };
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot) {
+          return toShellSnapshot(fixture.snapshot);
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const optionsButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Review Code options"]'),
+        "Unable to find review options.",
+      );
+      optionsButton.click();
+
+      const openPullRequests = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((element) =>
+            element.textContent?.includes("Open pull requests"),
+          ) ?? null,
+        "Unable to find open pull requests.",
+      );
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some((request) => request._tag === WS_METHODS.gitListOpenPullRequests),
+        ).toBe(true);
+      });
+      openPullRequests.focus();
+      openPullRequests.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }),
+      );
+
+      const pullRequest = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((element) =>
+            element.textContent?.includes("#1360 Delay review worker projection"),
+          ) ?? null,
+        "Unable to find pull request.",
+      );
+      pullRequest.click();
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("Workflow started but could not be opened");
+          expect(document.body.textContent).not.toContain("Could not start workflow");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -3843,7 +4101,83 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("hides the archive action when the pointer leaves a thread row", async () => {
+  it("keeps working UI visible when an assistant segment completes before the turn", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-multi-segment-turn" as MessageId,
+      targetText: "multi-segment turn target",
+      sessionStatus: "ready",
+    });
+    const runningTurnId = "turn-multi-segment" as TurnId;
+    const runningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              latestTurn: {
+                turnId: runningTurnId,
+                state: "running",
+                requestedAt: isoAt(100),
+                startedAt: isoAt(101),
+                completedAt: null,
+                assistantMessageId: null,
+              },
+            }
+          : thread,
+      ),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: runningSnapshot,
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Stop generation"]'),
+        "Unable to find stop generation button.",
+      );
+
+      rpcHarness.emitStreamValue(ORCHESTRATION_WS_METHODS.subscribeThread, {
+        kind: "event",
+        event: {
+          sequence: runningSnapshot.snapshotSequence + 1,
+          eventId: EventId.make("event-assistant-segment-completed"),
+          aggregateKind: "thread",
+          aggregateId: THREAD_ID,
+          occurredAt: isoAt(102),
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.message-sent",
+          payload: {
+            threadId: THREAD_ID,
+            messageId: "assistant-segment-1" as MessageId,
+            role: "assistant",
+            text: "I will inspect the changes.",
+            turnId: runningTurnId,
+            streaming: false,
+            createdAt: isoAt(102),
+            updatedAt: isoAt(103),
+          },
+        },
+      });
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain("I will inspect the changes.");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(document.body.textContent).toContain("Working");
+      expect(document.querySelector('button[aria-label="Stop generation"]')).not.toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides the thread actions menu when the pointer leaves a thread row", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -3856,32 +4190,71 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
 
       await expect.element(threadRow).toBeInTheDocument();
-      const archiveButton = await waitForElement(
+      const actionsTrigger = await waitForElement(
         () =>
-          document.querySelector<HTMLButtonElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
-        "Unable to find archive button.",
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-actions-${THREAD_ID}"]`),
+        "Unable to find thread actions trigger.",
       );
-      const archiveAction = archiveButton.parentElement;
+      const hoverCluster = actionsTrigger.parentElement;
       expect(
-        archiveAction,
-        "Archive button should render inside a visibility wrapper.",
+        hoverCluster,
+        "Thread actions trigger should render inside a hover cluster.",
       ).not.toBeNull();
-      expect(getComputedStyle(archiveAction!).opacity).toBe("0");
+      expect(getComputedStyle(hoverCluster!).opacity).toBe("0");
 
       await threadRow.hover();
       await vi.waitFor(
         () => {
-          expect(getComputedStyle(archiveAction!).opacity).toBe("1");
+          expect(getComputedStyle(hoverCluster!).opacity).toBe("1");
         },
         { timeout: 4_000, interval: 16 },
       );
 
+      // The row button truncates (and so clips) its last child, meaning the meta
+      // slot has to size to its widest state instead of a fixed width.
+      const metaSlot = hoverCluster!.parentElement;
+      expect(metaSlot, "Hover cluster should render inside the row meta slot.").not.toBeNull();
+      expect(metaSlot!.scrollWidth).toBeLessThanOrEqual(metaSlot!.clientWidth);
+
       await page.getByTestId("composer-editor").hover();
       await vi.waitFor(
         () => {
-          expect(getComputedStyle(archiveAction!).opacity).toBe("0");
+          expect(getComputedStyle(hoverCluster!).opacity).toBe("0");
         },
         { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the thread actions menu when the trigger is activated by keyboard", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-archive-keyboard-test" as MessageId,
+        targetText: "archive keyboard target",
+      }),
+    });
+
+    try {
+      const threadRow = page.getByTestId(`thread-row-${THREAD_ID}`);
+
+      await expect.element(threadRow).toBeInTheDocument();
+      const actionsTrigger = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-actions-${THREAD_ID}"]`),
+        "Unable to find thread actions trigger.",
+      );
+
+      // Enter must reach the trigger instead of being swallowed by the row's
+      // own activation handler, which would navigate away.
+      actionsTrigger.focus();
+      await userEvent.keyboard("{Enter}");
+
+      await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
+        "Keyboard activation should open the thread actions menu.",
       );
     } finally {
       await mounted.cleanup();
@@ -3939,9 +4312,20 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await expect.element(threadRow).toBeInTheDocument();
       await threadRow.hover();
 
-      const archiveButton = page.getByTestId(`thread-archive-${THREAD_ID}`);
-      await expect.element(archiveButton).toBeInTheDocument();
-      await archiveButton.click();
+      // The overflow menu renders in a portal, so drive it through the DOM the
+      // same way the rest of this file drives portaled surfaces.
+      const actionsTrigger = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(`[data-testid="thread-actions-${THREAD_ID}"]`),
+        "Unable to find thread actions trigger.",
+      );
+      actionsTrigger.click();
+
+      const archiveItem = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-archive-${THREAD_ID}"]`),
+        "Unable to find the archive menu item.",
+      );
+      archiveItem.click();
 
       const confirmButton = page.getByTestId(`thread-archive-confirm-${THREAD_ID}`);
       await expect.element(confirmButton).toBeInTheDocument();
@@ -6094,6 +6478,76 @@ describe("ChatView timeline estimator parity (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not delete a started implementation thread when routing times out", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotWithPlanFollowUpPrompt(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return { sequence: fixture.snapshot.snapshotSequence + 1 };
+        }
+        if (body._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot) {
+          return toShellSnapshot(fixture.snapshot);
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const implementationActions = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>('button[aria-label="Implementation actions"]'),
+        "Unable to find implementation actions trigger.",
+      );
+      implementationActions.click();
+
+      const implementInNewThread = await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+            (element) => element.textContent?.trim() === "Implement in a new thread",
+          ) ?? null,
+        "Unable to find implement-in-new-thread action.",
+      );
+      implementInNewThread.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.turn.start",
+            ),
+          ).toBe(true);
+          expect(
+            wsRequests.some(
+              (request) => request._tag === ORCHESTRATION_WS_METHODS.getShellSnapshot,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).toContain(
+            "Implementation thread started but could not be opened",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.delete",
+        ),
+      ).toBe(false);
     } finally {
       await mounted.cleanup();
     }

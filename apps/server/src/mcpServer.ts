@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { Effect } from "effect";
+import type { ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
 
@@ -35,6 +36,8 @@ export interface McpServeOptions {
   readonly cliCommand: string;
   readonly cliArgsPrefix?: ReadonlyArray<string>;
   readonly cliBaseDir?: string;
+  readonly runtimeMode?: RuntimeMode;
+  readonly providerInstanceId?: ProviderInstanceId;
 }
 
 export interface McpHttpServer {
@@ -73,6 +76,8 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["worktree_handoff", "create_isolated_workspace"],
   ["switch_workspace", "switch_workspace"],
   ["use_existing_worktree", "switch_workspace"],
+  ["create_nested_thread", "create_nested_thread"],
+  ["associate_pull_request", "associate_pull_request"],
 ] as const);
 
 function writeJsonResponse(response: ServerResponse, status: number, payload: unknown): void {
@@ -625,6 +630,77 @@ async function switchWorkspaceTool(
   });
 }
 
+async function createNestedThreadTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId) {
+    throw new Error("create_nested_thread is only available from a T3 provider session");
+  }
+  const project = asString(args.project)?.trim();
+  const title = asString(args.title)?.trim();
+  const prompt = asString(args.prompt)?.trim();
+  const model = asString(args.model)?.trim();
+  const reasoning = asString(args.reasoning)?.trim();
+  if (!project) throw new Error("create_nested_thread requires a non-empty project");
+  if (!title) throw new Error("create_nested_thread requires a non-empty title");
+  if (!prompt) throw new Error("create_nested_thread requires a non-empty prompt");
+  if (!model) throw new Error("create_nested_thread requires a non-empty model");
+
+  if (!options.runtimeMode) {
+    throw new Error("create_nested_thread requires an authenticated parent runtime mode");
+  }
+  if (!options.providerInstanceId) {
+    throw new Error("create_nested_thread requires an authenticated parent provider instance");
+  }
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "new",
+    "--project",
+    project,
+    "--parent",
+    options.threadId,
+    "--provider",
+    options.providerInstanceId,
+    "--model",
+    model,
+    ...(reasoning ? ["--reasoning", reasoning] : []),
+    "--runtime-mode",
+    options.runtimeMode,
+    "--title",
+    title,
+    prompt,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
+async function associatePullRequestTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId) {
+    throw new Error("associate_pull_request is only available from a T3 provider session");
+  }
+  const reference = asString(args.reference)?.trim();
+  if (!reference) {
+    throw new Error("associate_pull_request requires a pull request URL or number");
+  }
+
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "associate-pr",
+    options.threadId,
+    reference,
+    "--cwd",
+    options.cwd,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "read_file",
@@ -755,6 +831,41 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
       required: ["path"],
     },
   },
+  {
+    name: "create_nested_thread",
+    description:
+      "Create and start a helper thread nested under the current T3 thread. Uses the authenticated current thread identity and flavor-scoped CLI automatically; do not use terminal-based `t3 chat new` for delegation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Project id, title, or workspace root." },
+        title: { type: "string" },
+        prompt: { type: "string" },
+        model: {
+          type: "string",
+          minLength: 1,
+          description: "Any model slug available through the authenticated Copilot provider.",
+        },
+        reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+      },
+      required: ["project", "title", "prompt", "model"],
+    },
+  },
+  {
+    name: "associate_pull_request",
+    description:
+      "Durably associate a pull request with the authenticated current T3 thread. Call this after successfully creating or explicitly opening a PR for this thread. The URL or number is resolved through GitHub and persisted on the thread; never infer association from the current branch.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reference: {
+          type: "string",
+          description: "Pull request URL or number, such as https://github.com/acme/repo/pull/42.",
+        },
+      },
+      required: ["reference"],
+    },
+  },
 ];
 
 function availableTools(toolsets: ReadonlySet<string>): ReadonlyArray<McpTool> {
@@ -791,6 +902,10 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await createIsolatedWorkspaceTool(options, args);
     case "switch_workspace":
       return await switchWorkspaceTool(options, args);
+    case "create_nested_thread":
+      return await createNestedThreadTool(options, args);
+    case "associate_pull_request":
+      return await associatePullRequestTool(options, args);
     default:
       throw new Error(`Unsupported MCP tool: ${name}`);
   }
@@ -885,7 +1000,9 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
 
 /** Exposed for tests. */
 export const __testing = {
+  associatePullRequestTool,
   availableTools,
   createIsolatedWorkspaceTool,
+  createNestedThreadTool,
   switchWorkspaceTool,
 };
