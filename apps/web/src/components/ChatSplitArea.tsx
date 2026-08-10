@@ -764,7 +764,7 @@ function ChatPaneLeaf(props: ChatPaneLeafProps) {
           focusRing,
         )}
       >
-        <div className="drag-region flex h-13 shrink-0 items-center justify-end border-b border-border/40 px-2">
+        <div className="drag-region flex h-titlebar shrink-0 items-center justify-end border-b border-border px-3 sm:px-5">
           <div className="no-drag">{paneActions}</div>
         </div>
         <ChatSplitEmptyPane

@@ -455,7 +455,10 @@ export default function SidebarV2() {
   return (
     <>
       {hasMacSidebarChrome ? (
-        <SidebarHeader aria-hidden className="drag-region h-8 shrink-0 p-0 wco:h-8" />
+        <SidebarHeader
+          aria-hidden
+          className="drag-region h-titlebar shrink-0 p-0 wco:h-[env(titlebar-area-height)]"
+        />
       ) : null}
       <SidebarHoverThreadPrewarmer />
       <SidebarContent className="gap-1 pt-1">

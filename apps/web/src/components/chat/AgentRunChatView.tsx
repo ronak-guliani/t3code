@@ -31,8 +31,9 @@ export const AgentRunChatView = memo(function AgentRunChatView({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-chat-background">
       <header
         className={cn(
+          "shrink-0 border-b border-border",
           isElectron
-            ? "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]"
+            ? "drag-region flex h-titlebar items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]"
             : "py-2 ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:py-3 sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
         )}
       >

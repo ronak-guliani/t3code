@@ -4515,9 +4515,10 @@ function ChatViewBody(
       {/* Top bar */}
       <header
         className={cn(
+          "shrink-0 border-b border-border",
           isElectron
             ? cn(
-                "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
+                "drag-region flex h-titlebar items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]",
                 reserveTitleBarControlInset &&
                   "wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
               )

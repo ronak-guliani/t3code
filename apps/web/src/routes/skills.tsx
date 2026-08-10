@@ -151,7 +151,7 @@ function SkillsHeader({
       className={cn(
         "shrink-0 border-b border-border px-3 py-2 sm:px-5",
         isElectron &&
-          "drag-region h-[52px] wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
+          "drag-region h-titlebar wco:h-[env(titlebar-area-height)] wco:pr-[calc(100vw-env(titlebar-area-width)-env(titlebar-area-x)+1em)]",
       )}
     >
       <div className="flex min-h-7 items-center gap-2 sm:min-h-6">
