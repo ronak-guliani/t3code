@@ -4344,6 +4344,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         targetMessageId: "msg-user-new-thread-test" as MessageId,
         targetText: "new thread selection test",
       }),
+      resolveRpc: (body) =>
+        body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+          ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+          : undefined,
     });
 
     try {
@@ -4365,12 +4369,29 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // The composer editor should be present for the new draft thread.
       await waitForComposerEditor();
 
-      usePendingTurnStore
-        .getState()
-        .beginPendingTurn(scopeThreadRef(LOCAL_ENVIRONMENT_ID, newThreadId), undefined);
+      const submittedText = "Keep this optimistic message visible";
+      useComposerDraftStore.getState().setPrompt(newDraftId, submittedText);
+      await waitForLayout();
+      const sendButton = await waitForSendButton();
+      expect(sendButton.disabled).toBe(false);
+      sendButton.click();
+      await expect.element(page.getByText(submittedText, { exact: true })).toBeInTheDocument();
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                request.type === "thread.turn.start" &&
+                request.threadId === newThreadId,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
 
       // Thread existence is sufficient for the canonical route. Pending send
-      // feedback must survive the draft-to-server ChatView remount.
+      // feedback and the optimistic message must survive the ChatView remount.
       await materializePromotedDraftThreadViaDomainEvent(newThreadId);
       await waitForURL(
         mounted.router,
@@ -4378,6 +4399,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Promoted drafts should canonicalize as soon as the server thread exists.",
       );
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+      await expect.element(page.getByText(submittedText, { exact: true })).toBeInTheDocument();
       await expect.element(page.getByRole("button", { name: "Sending" })).toBeInTheDocument();
       await expect
         .element(page.getByTestId(`thread-row-${newThreadId}`))
@@ -4398,6 +4420,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
       // entered the running state.
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
     } finally {
+      const currentPath = mounted.router.state.location.pathname;
+      const threadId = currentPath.startsWith(`/${LOCAL_ENVIRONMENT_ID}/`)
+        ? (currentPath.split("/").at(-1) as ThreadId)
+        : null;
+      if (threadId) {
+        usePendingTurnStore
+          .getState()
+          .clearThreadState(scopeThreadRef(LOCAL_ENVIRONMENT_ID, threadId));
+      }
       await mounted.cleanup();
     }
   });

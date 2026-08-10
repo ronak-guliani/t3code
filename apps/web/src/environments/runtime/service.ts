@@ -14,6 +14,7 @@ import { Throttler } from "@tanstack/react-pacer";
 import {
   createKnownEnvironment,
   getKnownEnvironmentWsBaseUrl,
+  parseScopedThreadKey,
   scopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
@@ -623,6 +624,46 @@ function reconcileSnapshotDerivedState() {
   useTerminalStateStore.getState().removeOrphanedTerminalStates(activeThreadKeys);
 }
 
+function reconcilePendingThreadState(
+  threadRef: ReturnType<typeof scopeThreadRef>,
+  deleted = false,
+) {
+  const pendingTurnStore = usePendingTurnStore.getState();
+  if (deleted) {
+    pendingTurnStore.clearThreadState(threadRef);
+    return;
+  }
+
+  const threadKey = scopedThreadKey(threadRef);
+  const pendingTurn = pendingTurnStore.pendingByThreadKey[threadKey];
+  if (!pendingTurn) {
+    return;
+  }
+  const thread = selectSidebarThreadSummaryByRef(useStore.getState(), threadRef);
+  if (thread && !isPendingTurnActive(pendingTurn, thread)) {
+    pendingTurnStore.clearPendingTurn(threadRef);
+  }
+}
+
+function reconcilePendingEnvironmentSnapshot(
+  environmentId: EnvironmentId,
+  snapshot: OrchestrationShellSnapshot,
+) {
+  const pendingTurnStore = usePendingTurnStore.getState();
+  const snapshotThreadIds = new Set(snapshot.threads.map((thread) => thread.id));
+  const storedThreadKeys = new Set([
+    ...Object.keys(pendingTurnStore.pendingByThreadKey),
+    ...Object.keys(pendingTurnStore.optimisticMessagesByThreadKey),
+  ]);
+  for (const threadKey of storedThreadKeys) {
+    const threadRef = parseScopedThreadKey(threadKey);
+    if (!threadRef || threadRef.environmentId !== environmentId) {
+      continue;
+    }
+    reconcilePendingThreadState(threadRef, !snapshotThreadIds.has(threadRef.threadId));
+  }
+}
+
 export function shouldApplyTerminalEvent(input: {
   serverThreadArchivedAt: string | null | undefined;
   hasDraftThread: boolean;
@@ -657,7 +698,6 @@ function applyRecoveredEventBatch(
   }
 
   useStore.getState().applyOrchestrationEvents(uiEvents, environmentId);
-  const pendingTurnStore = usePendingTurnStore.getState();
   const affectedThreadIds = new Set(
     events.flatMap((event) =>
       event.aggregateKind === "thread" ? [ThreadId.make(event.aggregateId)] : [],
@@ -665,18 +705,10 @@ function applyRecoveredEventBatch(
   );
   for (const threadId of affectedThreadIds) {
     const threadRef = scopeThreadRef(environmentId, threadId);
-    const threadKey = scopedThreadKey(threadRef);
-    const pendingTurn = pendingTurnStore.pendingByThreadKey[threadKey];
-    if (!pendingTurn) {
-      continue;
-    }
-    const thread = selectThreadByRef(useStore.getState(), threadRef);
     const deleted = events.some(
       (event) => event.type === "thread.deleted" && event.payload.threadId === threadId,
     );
-    if (deleted || !isPendingTurnActive(pendingTurn, thread)) {
-      pendingTurnStore.clearPendingTurn(threadRef);
-    }
+    reconcilePendingThreadState(threadRef, deleted);
   }
   if (needsProjectUiSync) {
     const projects = selectProjectsAcrossEnvironments(useStore.getState());
@@ -761,6 +793,9 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       return;
     case "thread-upserted":
       syncThreadUiFromStore();
+      if (threadRef) {
+        reconcilePendingThreadState(threadRef);
+      }
       if (!previousThread && threadRef) {
         markPromotedDraftThreadByRef(threadRef);
       }
@@ -772,6 +807,7 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       return;
     case "thread-removed":
       if (threadRef) {
+        reconcilePendingThreadState(threadRef, true);
         disposeThreadDetailSubscriptionByKey(scopedThreadKey(threadRef));
         useComposerDraftStore.getState().clearDraftThread(threadRef);
         useUiStateStore.getState().clearThreadUi(scopedThreadKey(threadRef));
@@ -803,6 +839,7 @@ function createEnvironmentConnectionHandlers() {
 
       useStore.getState().syncServerShellSnapshot(snapshot, environmentId);
       markAppliedProjectionSnapshot(environmentId, snapshot);
+      reconcilePendingEnvironmentSnapshot(environmentId, snapshot);
       reconcileThreadDetailSubscriptionsForEnvironment(
         environmentId,
         snapshot.threads.map((thread) => thread.id),

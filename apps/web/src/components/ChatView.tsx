@@ -99,7 +99,13 @@ import {
 } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
-import { hasServerAcknowledgedPendingTurn, usePendingTurnStore } from "../pendingTurnStore";
+import {
+  collectUserMessageBlobPreviewUrls,
+  hasServerAcknowledgedPendingTurn,
+  revokeBlobPreviewUrl,
+  revokeUserMessagePreviewUrls,
+  usePendingTurnStore,
+} from "../pendingTurnStore";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -203,7 +209,6 @@ import {
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
   canStartThreadTurn,
-  collectUserMessageBlobPreviewUrls,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
   getActivityHistoryKey,
@@ -218,8 +223,6 @@ import {
   reconcileMountedTerminalThreadIds,
   resolveInterruptTurnId,
   resolveSendEnvMode,
-  revokeBlobPreviewUrl,
-  revokeUserMessagePreviewUrls,
   shouldWriteThreadErrorToCurrentServerThread,
   type ThreadPlanCatalogEntry,
   waitForRoutableServerThread,
@@ -260,6 +263,7 @@ const IMAGE_ONLY_BOOTSTRAP_PROMPT =
   "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const DiffPanel = lazy(() => import("./DiffPanel"));
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
+const EMPTY_OPTIMISTIC_USER_MESSAGES: ChatMessage[] = [];
 const EMPTY_OLDER_ACTIVITY_STATE = {
   historyKey: null,
   activities: EMPTY_ACTIVITIES as ReadonlyArray<OrchestrationThreadActivity>,
@@ -430,6 +434,7 @@ type PersistentTerminalLaunchContext = Pick<TerminalLaunchContext, "cwd" | "work
 
 function useLocalDispatchState(input: {
   activeThread: Thread | undefined;
+  isServerThread: boolean;
   activeLatestTurn: Thread["latestTurn"] | null;
   phase: SessionPhase;
   activePendingApproval: ApprovalRequestId | null;
@@ -447,9 +452,15 @@ function useLocalDispatchState(input: {
   const beginLocalDispatch = useCallback(
     (options?: { preparingWorktree?: boolean }) => {
       if (!threadRef) return;
-      usePendingTurnStore.getState().beginPendingTurn(threadRef, input.activeThread, options);
+      usePendingTurnStore
+        .getState()
+        .beginPendingTurn(
+          threadRef,
+          input.isServerThread ? input.activeThread : undefined,
+          options,
+        );
     },
-    [input.activeThread, threadRef],
+    [input.activeThread, input.isServerThread, threadRef],
   );
 
   const resetLocalDispatch = useCallback(() => {
@@ -796,11 +807,10 @@ function ChatViewBody(
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
-  const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
-  const optimisticUserMessagesRef = useRef(optimisticUserMessages);
-  useLayoutEffect(() => {
-    optimisticUserMessagesRef.current = optimisticUserMessages;
-  }, [optimisticUserMessages]);
+  const optimisticUserMessages = usePendingTurnStore(
+    (state) =>
+      state.optimisticMessagesByThreadKey[routeThreadKey] ?? EMPTY_OPTIMISTIC_USER_MESSAGES,
+  );
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
     Record<string, string | null>
   >({});
@@ -1436,6 +1446,7 @@ function ChatViewBody(
     isSendBusy,
   } = useLocalDispatchState({
     activeThread,
+    isServerThread,
     activeLatestTurn,
     phase,
     activePendingApproval: activePendingApproval?.requestId ?? null,
@@ -1483,9 +1494,6 @@ function ChatViewBody(
   useEffect(() => {
     return () => {
       clearAttachmentPreviewHandoffs();
-      for (const message of optimisticUserMessagesRef.current) {
-        revokeUserMessagePreviewUrls(message);
-      }
     };
   }, [clearAttachmentPreviewHandoffs]);
   const handoffAttachmentPreviews = useCallback((messageId: MessageId, previewUrls: string[]) => {
@@ -2746,15 +2754,12 @@ function ChatViewBody(
       return;
     }
     const serverIds = new Set(activeThread.messages.map((message) => message.id));
-    const removedMessages = optimisticUserMessages.filter((message) => serverIds.has(message.id));
-    if (removedMessages.length === 0) {
+    if (!optimisticUserMessages.some((message) => serverIds.has(message.id))) {
       return;
     }
-    const timer = window.setTimeout(() => {
-      setOptimisticUserMessages((existing) =>
-        existing.filter((message) => !serverIds.has(message.id)),
-      );
-    }, 0);
+    const removedMessages = usePendingTurnStore
+      .getState()
+      .removeOptimisticMessages(routeThreadRef, serverIds);
     for (const removedMessage of removedMessages) {
       const previewUrls = collectUserMessageBlobPreviewUrls(removedMessage);
       if (previewUrls.length > 0) {
@@ -2763,18 +2768,9 @@ function ChatViewBody(
       }
       revokeUserMessagePreviewUrls(removedMessage);
     }
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages, routeThreadKey]);
+  }, [activeThread?.messages, handoffAttachmentPreviews, optimisticUserMessages, routeThreadRef]);
 
   useEffect(() => {
-    setOptimisticUserMessages((existing) => {
-      for (const message of existing) {
-        revokeUserMessagePreviewUrls(message);
-      }
-      return [];
-    });
     setExpandedImage(null);
   }, [draftId, routeThreadKey]);
 
@@ -3399,17 +3395,14 @@ function ChatViewBody(
     }));
     scrollSubmittedMessageToEnd();
 
-    setOptimisticUserMessages((existing) => [
-      ...existing,
-      {
-        id: messageIdForSend,
-        role: "user",
-        text: outgoingMessageText,
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        createdAt: messageCreatedAt,
-        streaming: false,
-      },
-    ]);
+    usePendingTurnStore.getState().addOptimisticMessage(routeThreadRef, {
+      id: messageIdForSend,
+      role: "user",
+      text: outgoingMessageText,
+      ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+      createdAt: messageCreatedAt,
+      streaming: false,
+    });
     scrollSubmittedMessageToEnd();
 
     if (expiredTerminalContextCount > 0) {
@@ -3539,14 +3532,9 @@ function ChatViewBody(
         composerImagesRef.current.length === 0 &&
         composerTerminalContextsRef.current.length === 0
       ) {
-        setOptimisticUserMessages((existing) => {
-          const removed = existing.filter((message) => message.id === messageIdForSend);
-          for (const message of removed) {
-            revokeUserMessagePreviewUrls(message);
-          }
-          const next = existing.filter((message) => message.id !== messageIdForSend);
-          return next.length === existing.length ? existing : next;
-        });
+        usePendingTurnStore
+          .getState()
+          .discardOptimisticMessages(routeThreadRef, new Set([messageIdForSend]));
         promptRef.current = draftPromptForSend;
         const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
         composerImagesRef.current = retryComposerImages;
@@ -3874,16 +3862,13 @@ function ChatViewBody(
 
       scrollSubmittedMessageToEnd();
 
-      setOptimisticUserMessages((existing) => [
-        ...existing,
-        {
-          id: messageIdForSend,
-          role: "user",
-          text: outgoingMessageText,
-          createdAt: messageCreatedAt,
-          streaming: false,
-        },
-      ]);
+      usePendingTurnStore.getState().addOptimisticMessage(routeThreadRef, {
+        id: messageIdForSend,
+        role: "user",
+        text: outgoingMessageText,
+        createdAt: messageCreatedAt,
+        streaming: false,
+      });
       scrollSubmittedMessageToEnd();
 
       try {
@@ -3935,9 +3920,9 @@ function ChatViewBody(
         }
         sendInFlightRef.current = false;
       } catch (err) {
-        setOptimisticUserMessages((existing) =>
-          existing.filter((message) => message.id !== messageIdForSend),
-        );
+        usePendingTurnStore
+          .getState()
+          .discardOptimisticMessages(routeThreadRef, new Set([messageIdForSend]));
         setThreadError(
           threadIdForSend,
           err instanceof Error ? err.message : "Failed to send plan follow-up.",

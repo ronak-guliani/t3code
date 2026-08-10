@@ -1,9 +1,14 @@
 import { scopedThreadKey } from "@t3tools/client-runtime";
-import type { OrchestrationSessionStatus, ScopedThreadRef, TurnId } from "@t3tools/contracts";
+import type {
+  MessageId,
+  OrchestrationSessionStatus,
+  ScopedThreadRef,
+  TurnId,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 
 import { derivePhase } from "./session-logic";
-import type { SessionPhase, Thread } from "./types";
+import type { ChatMessage, SessionPhase, Thread } from "./types";
 
 export interface PendingTurnSnapshot {
   startedAt: string;
@@ -18,12 +23,52 @@ export interface PendingTurnSnapshot {
 
 interface PendingTurnStoreState {
   pendingByThreadKey: Record<string, PendingTurnSnapshot>;
+  optimisticMessagesByThreadKey: Record<string, ChatMessage[]>;
   beginPendingTurn: (
     threadRef: ScopedThreadRef,
     thread: Thread | undefined,
     options?: { preparingWorktree?: boolean },
   ) => void;
   clearPendingTurn: (threadRef: ScopedThreadRef) => void;
+  addOptimisticMessage: (threadRef: ScopedThreadRef, message: ChatMessage) => void;
+  removeOptimisticMessages: (
+    threadRef: ScopedThreadRef,
+    messageIds: ReadonlySet<MessageId>,
+  ) => ChatMessage[];
+  discardOptimisticMessages: (
+    threadRef: ScopedThreadRef,
+    messageIds?: ReadonlySet<MessageId>,
+  ) => void;
+  clearThreadState: (threadRef: ScopedThreadRef) => void;
+}
+
+export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
+  if (!previewUrl || typeof URL === "undefined" || !previewUrl.startsWith("blob:")) {
+    return;
+  }
+  URL.revokeObjectURL(previewUrl);
+}
+
+export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
+  if (message.role !== "user" || !message.attachments) {
+    return;
+  }
+  for (const attachment of message.attachments) {
+    if (attachment.type === "image") {
+      revokeBlobPreviewUrl(attachment.previewUrl);
+    }
+  }
+}
+
+export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
+  if (message.role !== "user" || !message.attachments) {
+    return [];
+  }
+  return message.attachments.flatMap((attachment) =>
+    attachment.type === "image" && attachment.previewUrl?.startsWith("blob:")
+      ? [attachment.previewUrl]
+      : [],
+  );
 }
 
 export function createPendingTurnSnapshot(
@@ -119,8 +164,9 @@ export function isPendingTurnActive(
   });
 }
 
-export const usePendingTurnStore = create<PendingTurnStoreState>((set) => ({
+export const usePendingTurnStore = create<PendingTurnStoreState>((set, get) => ({
   pendingByThreadKey: {},
+  optimisticMessagesByThreadKey: {},
   beginPendingTurn: (threadRef, thread, options) => {
     const threadKey = scopedThreadKey(threadRef);
     set((state) => {
@@ -152,5 +198,52 @@ export const usePendingTurnStore = create<PendingTurnStoreState>((set) => ({
       const { [threadKey]: _removed, ...pendingByThreadKey } = state.pendingByThreadKey;
       return { pendingByThreadKey };
     });
+  },
+  addOptimisticMessage: (threadRef, message) => {
+    const threadKey = scopedThreadKey(threadRef);
+    set((state) => ({
+      optimisticMessagesByThreadKey: {
+        ...state.optimisticMessagesByThreadKey,
+        [threadKey]: [...(state.optimisticMessagesByThreadKey[threadKey] ?? []), message],
+      },
+    }));
+  },
+  removeOptimisticMessages: (threadRef, messageIds) => {
+    const threadKey = scopedThreadKey(threadRef);
+    const existing = get().optimisticMessagesByThreadKey[threadKey] ?? [];
+    const removed = existing.filter((message) => messageIds.has(message.id));
+    if (removed.length === 0) {
+      return [];
+    }
+    const remaining = existing.filter((message) => !messageIds.has(message.id));
+    set((state) => {
+      const optimisticMessagesByThreadKey = { ...state.optimisticMessagesByThreadKey };
+      if (remaining.length === 0) {
+        delete optimisticMessagesByThreadKey[threadKey];
+      } else {
+        optimisticMessagesByThreadKey[threadKey] = remaining;
+      }
+      return { optimisticMessagesByThreadKey };
+    });
+    return removed;
+  },
+  discardOptimisticMessages: (threadRef, messageIds) => {
+    const threadKey = scopedThreadKey(threadRef);
+    const existing = get().optimisticMessagesByThreadKey[threadKey] ?? [];
+    const removed = messageIds ? get().removeOptimisticMessages(threadRef, messageIds) : existing;
+    if (!messageIds && existing.length > 0) {
+      set((state) => {
+        const optimisticMessagesByThreadKey = { ...state.optimisticMessagesByThreadKey };
+        delete optimisticMessagesByThreadKey[threadKey];
+        return { optimisticMessagesByThreadKey };
+      });
+    }
+    for (const message of removed) {
+      revokeUserMessagePreviewUrls(message);
+    }
+  },
+  clearThreadState: (threadRef) => {
+    get().discardOptimisticMessages(threadRef);
+    get().clearPendingTurn(threadRef);
   },
 }));

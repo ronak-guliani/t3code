@@ -1,13 +1,14 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import {
   EnvironmentId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { isPendingTurnActive, usePendingTurnStore } from "./pendingTurnStore";
 
@@ -18,7 +19,10 @@ const threadRef = scopeThreadRef(
 
 describe("pendingTurnStore", () => {
   beforeEach(() => {
-    usePendingTurnStore.setState({ pendingByThreadKey: {} });
+    usePendingTurnStore.setState({
+      pendingByThreadKey: {},
+      optimisticMessagesByThreadKey: {},
+    });
   });
 
   it("keeps pending feedback available across component remounts", () => {
@@ -26,6 +30,66 @@ describe("pendingTurnStore", () => {
 
     const pendingTurn = Object.values(usePendingTurnStore.getState().pendingByThreadKey)[0];
     expect(isPendingTurnActive(pendingTurn, null)).toBe(true);
+  });
+
+  it("keeps optimistic messages available across component remounts", () => {
+    usePendingTurnStore.getState().addOptimisticMessage(threadRef, {
+      id: MessageId.make("message-1"),
+      role: "user",
+      text: "Ship it",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      streaming: false,
+    });
+
+    expect(Object.values(usePendingTurnStore.getState().optimisticMessagesByThreadKey)).toEqual([
+      [
+        expect.objectContaining({
+          id: "message-1",
+          text: "Ship it",
+        }),
+      ],
+    ]);
+  });
+
+  it("clears all shared thread state when the server removes a thread", () => {
+    usePendingTurnStore.getState().beginPendingTurn(threadRef, undefined);
+    usePendingTurnStore.getState().addOptimisticMessage(threadRef, {
+      id: MessageId.make("message-1"),
+      role: "user",
+      text: "Ship it",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      streaming: false,
+    });
+
+    usePendingTurnStore.getState().clearThreadState(threadRef);
+
+    expect(usePendingTurnStore.getState().pendingByThreadKey).toEqual({});
+    expect(usePendingTurnStore.getState().optimisticMessagesByThreadKey).toEqual({});
+  });
+
+  it("owns and revokes optimistic attachment previews until thread cleanup", () => {
+    const revokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    usePendingTurnStore.getState().addOptimisticMessage(threadRef, {
+      id: MessageId.make("message-image"),
+      role: "user",
+      text: "",
+      attachments: [
+        {
+          type: "image",
+          id: "image-1",
+          name: "image.png",
+          mimeType: "image/png",
+          sizeBytes: 10,
+          previewUrl: "blob:optimistic-image",
+        },
+      ],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      streaming: false,
+    });
+
+    usePendingTurnStore.getState().clearThreadState(threadRef);
+
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:optimistic-image");
   });
 
   it("clears pending feedback explicitly after acknowledgement or failure", () => {
