@@ -638,6 +638,19 @@ async function materializePromotedDraftThreadViaDomainEvent(threadId: ThreadId):
   sendShellThreadUpsert(threadId, { session: null });
 }
 
+function bindPromotedDraftProviderSessionViaDomainEvent(threadId: ThreadId): void {
+  fixture.snapshot = updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
+    threadId,
+    status: "ready",
+    providerName: "copilot",
+    runtimeMode: "full-access",
+    activeTurnId: null,
+    lastError: null,
+    updatedAt: NOW_ISO,
+  });
+  sendShellThreadUpsert(threadId);
+}
+
 async function startPromotedServerThreadViaDomainEvent(threadId: ThreadId): Promise<void> {
   fixture.snapshot = updateThreadSessionInSnapshot(fixture.snapshot, threadId, {
     threadId,
@@ -4399,6 +4412,15 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Promoted drafts should canonicalize as soon as the server thread exists.",
       );
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+      await expect.element(page.getByText(submittedText, { exact: true })).toBeInTheDocument();
+      await expect.element(page.getByRole("button", { name: "Sending" })).toBeInTheDocument();
+      await expect
+        .element(page.getByTestId(`thread-row-${newThreadId}`))
+        .toHaveTextContent("Working");
+
+      // Binding the provider session precedes turn projection for slow ACP
+      // startup and must not clear optimistic send feedback.
+      bindPromotedDraftProviderSessionViaDomainEvent(newThreadId);
       await expect.element(page.getByText(submittedText, { exact: true })).toBeInTheDocument();
       await expect.element(page.getByRole("button", { name: "Sending" })).toBeInTheDocument();
       await expect

@@ -10,7 +10,11 @@ import {
 } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isPendingTurnActive, usePendingTurnStore } from "./pendingTurnStore";
+import {
+  hasServerAcknowledgedPendingTurn,
+  isPendingTurnActive,
+  usePendingTurnStore,
+} from "./pendingTurnStore";
 
 const threadRef = scopeThreadRef(
   EnvironmentId.make("00000000-0000-4000-8000-000000000001"),
@@ -30,6 +34,59 @@ describe("pendingTurnStore", () => {
 
     const pendingTurn = Object.values(usePendingTurnStore.getState().pendingByThreadKey)[0];
     expect(isPendingTurnActive(pendingTurn, null)).toBe(true);
+  });
+
+  it("does not treat pre-turn provider session binding as acknowledgement", () => {
+    usePendingTurnStore.getState().beginPendingTurn(threadRef, undefined);
+    const pendingTurn = Object.values(usePendingTurnStore.getState().pendingByThreadKey)[0]!;
+
+    expect(
+      hasServerAcknowledgedPendingTurn({
+        pendingTurn,
+        phase: "ready",
+        latestTurn: null,
+        session: {
+          provider: ProviderDriverKind.make("copilot"),
+          status: "ready",
+          createdAt: pendingTurn.startedAt,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+          orchestrationStatus: "idle",
+        },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("acknowledges a pending send once a turn is projected", () => {
+    usePendingTurnStore.getState().beginPendingTurn(threadRef, undefined);
+    const pendingTurn = Object.values(usePendingTurnStore.getState().pendingByThreadKey)[0]!;
+
+    expect(
+      hasServerAcknowledgedPendingTurn({
+        pendingTurn,
+        phase: "ready",
+        latestTurn: {
+          turnId: TurnId.make("turn-1"),
+          state: "running",
+          requestedAt: "2026-01-01T00:00:01.000Z",
+          startedAt: null,
+          completedAt: null,
+          assistantMessageId: null,
+        },
+        session: {
+          provider: ProviderDriverKind.make("copilot"),
+          status: "ready",
+          createdAt: pendingTurn.startedAt,
+          updatedAt: "2026-01-01T00:00:01.000Z",
+          orchestrationStatus: "idle",
+        },
+        hasPendingApproval: false,
+        hasPendingUserInput: false,
+        threadError: null,
+      }),
+    ).toBe(true);
   });
 
   it("keeps optimistic messages available across component remounts", () => {

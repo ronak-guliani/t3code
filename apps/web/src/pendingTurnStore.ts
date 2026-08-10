@@ -17,6 +17,7 @@ export interface PendingTurnSnapshot {
   latestTurnRequestedAt: string | null;
   latestTurnStartedAt: string | null;
   latestTurnCompletedAt: string | null;
+  startedWithoutServerState: boolean;
   sessionOrchestrationStatus: OrchestrationSessionStatus | null;
   sessionUpdatedAt: string | null;
 }
@@ -84,6 +85,7 @@ export function createPendingTurnSnapshot(
     latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
     latestTurnStartedAt: latestTurn?.startedAt ?? null,
     latestTurnCompletedAt: latestTurn?.completedAt ?? null,
+    startedWithoutServerState: activeThread === undefined,
     sessionOrchestrationStatus: session?.orchestrationStatus ?? null,
     sessionUpdatedAt: session?.updatedAt ?? null,
   };
@@ -107,6 +109,9 @@ export function hasServerAcknowledgedPendingTurn(input: {
 
   const latestTurn = input.latestTurn ?? null;
   const session = input.session ?? null;
+  if (session?.status === "error" || session?.status === "closed") {
+    return true;
+  }
   const latestTurnChanged =
     input.pendingTurn.latestTurnTurnId !== (latestTurn?.turnId ?? null) ||
     input.pendingTurn.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||
@@ -127,8 +132,14 @@ export function hasServerAcknowledgedPendingTurn(input: {
     return true;
   }
 
+  if (latestTurnChanged) {
+    return true;
+  }
+  if (input.pendingTurn.startedWithoutServerState) {
+    return false;
+  }
+
   return (
-    latestTurnChanged ||
     input.pendingTurn.sessionOrchestrationStatus !== (session?.orchestrationStatus ?? null) ||
     input.pendingTurn.sessionUpdatedAt !== (session?.updatedAt ?? null)
   );
