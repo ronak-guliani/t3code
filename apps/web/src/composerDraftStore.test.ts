@@ -742,6 +742,39 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(draftByKey(draftId)?.prompt).toBe("keep me");
   });
 
+  it("persists mapped and invested sessions while omitting empty unmapped sessions", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setPrompt(draftId, "keep me after reload");
+    store.setProjectDraftThreadId(projectRef, otherDraftId, { threadId: otherThreadId });
+    store.createDetachedDraftSession(projectRef, sharedDraftId);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        partialize: (
+          state: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const persistedState = persistApi.getOptions().partialize(useComposerDraftStore.getState());
+
+    expect(persistedState.draftThreadsByThreadKey[draftId]).toBeDefined();
+    expect(persistedState.draftThreadsByThreadKey[otherDraftId]).toBeDefined();
+    expect(persistedState.draftThreadsByThreadKey[sharedDraftId]).toBeUndefined();
+
+    const rehydratedState = persistApi
+      .getOptions()
+      .merge(persistedState, useComposerDraftStore.getInitialState());
+    expect(rehydratedState.draftThreadsByThreadKey[draftId]?.threadId).toBe(threadId);
+    expect(rehydratedState.draftsByThreadKey[draftId]?.prompt).toBe("keep me after reload");
+    expect(rehydratedState.draftThreadsByThreadKey[otherDraftId]?.threadId).toBe(otherThreadId);
+    expect(rehydratedState.draftThreadsByThreadKey[sharedDraftId]).toBeUndefined();
+  });
+
   it("clears every draft session owned by a project", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, { threadId });

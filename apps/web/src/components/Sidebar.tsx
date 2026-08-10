@@ -1776,13 +1776,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const removeProject = useCallback(
     async (member: SidebarProjectGroupMember, options: { force?: boolean } = {}): Promise<void> => {
       const memberProjectRef = scopeProjectRef(member.environmentId, member.id);
-      const draftStore = useComposerDraftStore.getState();
-      const projectDraftThread = draftStore.getDraftThreadByProjectRef(memberProjectRef);
-      if (projectDraftThread) {
-        draftStore.clearDraftThread(projectDraftThread.draftId);
-      }
-      draftStore.clearProjectDraftThreadId(memberProjectRef);
-
       const projectApi = readEnvironmentApi(member.environmentId);
       if (!projectApi) {
         throw new Error("Project API unavailable.");
@@ -1794,6 +1787,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         projectId: member.id,
         ...(options.force === true ? { force: true } : {}),
       });
+      useComposerDraftStore.getState().clearProjectDraftThreadId(memberProjectRef);
     },
     [],
   );
@@ -3001,56 +2995,51 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
 }) {
   const { composer, draftId } = props.row;
   const promptPreview = composer.prompt.trim().split("\n", 1)[0] ?? "";
-  const attachmentCount =
-    Math.max(composer.images.length, composer.persistedAttachments.length) +
-    composer.terminalContexts.length +
-    composer.previewAnnotations.length;
+  const attachmentIds = new Set([
+    ...composer.images.map((attachment) => attachment.id),
+    ...composer.persistedAttachments.map((attachment) => attachment.id),
+    ...composer.previewAnnotations.map((annotation) => annotation.id),
+  ]);
+  const attachmentCount = attachmentIds.size + composer.terminalContexts.length;
   const preview =
     promptPreview || `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
 
   return (
     <SidebarMenuItem>
       <div
-        role="button"
-        tabIndex={0}
         data-testid="sidebar-draft-row"
-        className={`group/draft relative cursor-pointer rounded-md px-2 py-1.5 outline-none ${
+        className={`group/draft relative flex items-center rounded-md ${
           props.isActive ? "bg-sidebar-accent" : "bg-amber-400/[0.04] hover:bg-amber-400/[0.08]"
         }`}
-        onClick={() => props.onNavigate(draftId)}
-        onKeyDown={(event) => {
-          if (event.currentTarget !== event.target) return;
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            props.onNavigate(draftId);
-          }
-        }}
       >
-        <div className="flex items-center gap-1.5">
-          <ProjectFavicon
-            environmentId={props.project.environmentId}
-            cwd={props.project.cwd}
-            className="size-3.5"
-          />
-          <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {props.project.displayName}
+        <button
+          type="button"
+          className="min-w-0 flex-1 cursor-pointer px-2 py-1.5 text-left outline-none"
+          onClick={() => props.onNavigate(draftId)}
+        >
+          <span className="flex items-center gap-1.5">
+            <ProjectFavicon
+              environmentId={props.project.environmentId}
+              cwd={props.project.cwd}
+              className="size-3.5"
+            />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              {props.project.displayName}
+            </span>
           </span>
-          <button
-            type="button"
-            aria-label="Discard draft"
-            title="Discard draft"
-            className="pointer-events-none rounded-sm text-muted-foreground opacity-0 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/draft:pointer-events-auto group-hover/draft:opacity-100"
-            onClick={(event) => {
-              event.stopPropagation();
-              props.onDiscard(draftId);
-            }}
-          >
-            <XIcon className="size-3" />
-          </button>
-        </div>
-        <div className="mt-0.5 truncate text-[length:var(--app-sidebar-font-size)] text-foreground/90">
-          {preview}
-        </div>
+          <span className="mt-0.5 block truncate text-[length:var(--app-sidebar-font-size)] text-foreground/90">
+            {preview}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-label="Discard draft"
+          title="Discard draft"
+          className="pointer-events-none mr-1 rounded-sm p-1 text-muted-foreground opacity-0 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/draft:pointer-events-auto group-hover/draft:opacity-100"
+          onClick={() => props.onDiscard(draftId)}
+        >
+          <XIcon className="size-3" />
+        </button>
       </div>
     </SidebarMenuItem>
   );
