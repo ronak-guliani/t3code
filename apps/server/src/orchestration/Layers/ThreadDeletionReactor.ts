@@ -1,8 +1,9 @@
-import type { OrchestrationEvent } from "@t3tools/contracts";
+import { CommandId, type OrchestrationEvent, type ThreadId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { GitManager } from "../../git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
@@ -12,6 +13,10 @@ import {
 } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
+import {
+  isRemovableArchiveWorktreePath,
+  shouldScheduleArchiveWorktreeCleanup,
+} from "../archiveWorktreeCleanup.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ThreadDeletionReactor,
@@ -21,7 +26,8 @@ import { findCanonicalActiveWorktreeOwner } from "../worktreeOwnership.ts";
 
 type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 type ThreadArchivedEvent = Extract<OrchestrationEvent, { type: "thread.archived" }>;
-type ThreadCleanupLifecycleEvent = ThreadDeletedEvent | ThreadArchivedEvent;
+type ThreadUnarchivedEvent = Extract<OrchestrationEvent, { type: "thread.unarchived" }>;
+type ThreadCleanupLifecycleEvent = ThreadDeletedEvent | ThreadArchivedEvent | ThreadUnarchivedEvent;
 
 const MAX_WORKTREE_CLEANUP_ATTEMPTS = 5;
 
@@ -86,6 +92,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager;
   const git = yield* GitCore;
+  const gitManager = yield* GitManager;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const fileSystem = yield* FileSystem.FileSystem;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
@@ -132,6 +139,17 @@ const make = Effect.gen(function* () {
         const canonicalPath = yield* Effect.promise(() =>
           canonicalizeWorktreePath(cleanup.worktreePath),
         );
+        const canonicalCwd = yield* Effect.promise(() => canonicalizeWorktreePath(cleanup.cwd));
+        // Never remove the project's main checkout.
+        if (canonicalPath === canonicalCwd) {
+          yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
+          yield* Effect.logWarning("cancelled worktree cleanup for project workspace root", {
+            threadId: cleanup.threadId,
+            worktreePath: canonicalPath,
+          });
+          return Option.none();
+        }
+
         const readModel = yield* orchestrationEngine.getReadModel();
         const cleanupThread = readModel.threads.find((thread) => thread.id === cleanup.threadId);
         // Archive cleanup can race unarchive: the job still names this thread, but
@@ -312,24 +330,234 @@ const make = Effect.gen(function* () {
       Effect.uninterruptible,
     );
 
+  const isWorktreeCleanupPendingForPath = Effect.fn("isWorktreeCleanupPendingForPath")(function* (
+    worktreePath: string,
+  ) {
+    if (yield* worktreeCleanupJobs.existsByPath(worktreePath)) {
+      return true;
+    }
+    const jobs = yield* worktreeCleanupJobs.list();
+    return yield* Effect.forEach(
+      jobs,
+      (job) =>
+        Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
+          Effect.map((pendingPath) => pendingPath === worktreePath),
+        ),
+      { concurrency: 4 },
+    ).pipe(Effect.map((matches) => matches.some(Boolean)));
+  });
+
+  const cancelPendingCleanupForThreadAndPath = Effect.fn("cancelPendingCleanupForThreadAndPath")(
+    function* (threadId: ThreadId, worktreePath: string | null) {
+      yield* worktreeCleanupJobs.cancelByThreadId(threadId);
+      if (worktreePath === null) {
+        return;
+      }
+      const canonicalPath = yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
+      const jobs = yield* worktreeCleanupJobs.list();
+      yield* Effect.forEach(
+        jobs,
+        (job) =>
+          Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
+            Effect.flatMap((pendingPath) =>
+              pendingPath === canonicalPath
+                ? worktreeCleanupJobs.cancelByThreadId(job.threadId)
+                : Effect.void,
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      );
+    },
+  );
+
+  const scheduleArchiveWorktreeCleanup = Effect.fn("scheduleArchiveWorktreeCleanup")(function* (
+    threadId: ThreadId,
+  ) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    if (thread === undefined || thread.worktreePath === null || thread.pullRequest == null) {
+      return;
+    }
+    const project = readModel.projects.find((entry) => entry.id === thread.projectId);
+    if (project === undefined) {
+      return;
+    }
+
+    const canonicalWorktreePath = yield* Effect.promise(() =>
+      canonicalizeWorktreePath(thread.worktreePath!),
+    );
+    const canonicalWorkspaceRoot = yield* Effect.promise(() =>
+      canonicalizeWorktreePath(project.workspaceRoot),
+    );
+    if (
+      !isRemovableArchiveWorktreePath({
+        canonicalWorktreePath,
+        canonicalWorkspaceRoot,
+      })
+    ) {
+      yield* Effect.logInfo("skipped archive worktree cleanup for project workspace root", {
+        threadId,
+        worktreePath: canonicalWorktreePath,
+      });
+      return;
+    }
+
+    if (yield* isWorktreeCleanupPendingForPath(canonicalWorktreePath)) {
+      return;
+    }
+
+    const hasActiveOwner = Option.isSome(
+      yield* findCanonicalActiveWorktreeOwner(readModel, threadId, canonicalWorktreePath),
+    );
+
+    const resolved = yield* gitManager
+      .resolvePullRequest({
+        cwd: project.workspaceRoot,
+        reference: String(thread.pullRequest.number),
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("archive worktree cleanup skipped; failed to refresh PR state", {
+            threadId,
+            pullRequestNumber: thread.pullRequest?.number,
+            error: error instanceof Error ? error.message : String(error),
+          }).pipe(Effect.as(null)),
+        ),
+      );
+    if (resolved === null) {
+      return;
+    }
+
+    if (
+      !shouldScheduleArchiveWorktreeCleanup({
+        pullRequestState: resolved.pullRequest.state,
+        hasActiveOwner,
+        isRemovableWorktreePath: true,
+      })
+    ) {
+      return;
+    }
+
+    // Persist refreshed PR state so later reads don't keep a stale open state.
+    if (thread.pullRequest.state !== resolved.pullRequest.state) {
+      yield* orchestrationEngine
+        .dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make(crypto.randomUUID()),
+          threadId,
+          pullRequest: {
+            ...thread.pullRequest,
+            state: resolved.pullRequest.state,
+            title: resolved.pullRequest.title,
+            url: resolved.pullRequest.url,
+            baseBranch: resolved.pullRequest.baseBranch,
+            headBranch: resolved.pullRequest.headBranch,
+          },
+        })
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logDebug("failed to persist refreshed PR state after archive", {
+              threadId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        );
+    }
+
+    yield* worktreeCleanupJobs
+      .upsert({
+        threadId,
+        cwd: project.workspaceRoot,
+        worktreePath: canonicalWorktreePath,
+        requestedAt: new Date().toISOString(),
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logDebug("archive worktree cleanup job not reserved", {
+            threadId,
+            worktreePath: canonicalWorktreePath,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      );
+    // Only enqueue when this thread still owns the pending reservation.
+    const reserved = yield* worktreeCleanupJobs.getPendingByThreadId(threadId);
+    if (Option.isNone(reserved)) {
+      return;
+    }
+    yield* enqueueWorktreeCleanup(threadId);
+    yield* Effect.logInfo("scheduled archive worktree cleanup after live PR refresh", {
+      threadId,
+      worktreePath: canonicalWorktreePath,
+      pullRequestState: resolved.pullRequest.state,
+    });
+  });
+
+  const processThreadUnarchived = Effect.fn("processThreadUnarchived")(function* (
+    event: ThreadUnarchivedEvent,
+  ) {
+    const { threadId } = event.payload;
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    const worktreePath = thread?.worktreePath ?? null;
+    yield* cancelPendingCleanupForThreadAndPath(threadId, worktreePath);
+
+    if (worktreePath === null) {
+      return;
+    }
+    const canonicalPath = yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
+    const stillExists = yield* fileSystem.exists(canonicalPath);
+    if (stillExists) {
+      return;
+    }
+
+    // Clear the orchestration read model via a domain event so later bindings
+    // don't treat a missing path as still owned by this thread.
+    yield* orchestrationEngine
+      .dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make(crypto.randomUUID()),
+        threadId,
+        worktreePath: null,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("failed to clear missing worktreePath after unarchive", {
+            threadId,
+            worktreePath: canonicalPath,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      );
+  });
+
   const processThreadLifecycleEvent = Effect.fn("processThreadLifecycleEvent")(function* (
     event: ThreadCleanupLifecycleEvent,
   ) {
+    if (event.type === "thread.unarchived") {
+      yield* processThreadUnarchived(event);
+      return;
+    }
+
     const { threadId } = event.payload;
-    if (event.payload.worktreeCleanup !== undefined) {
+    if (event.type === "thread.deleted" && event.payload.worktreeCleanup !== undefined) {
       // Cleanup worker tears down this thread, then any inactive path siblings,
       // before removing the checkout.
       yield* enqueueWorktreeCleanup(threadId);
       return;
     }
-    // Always tear down archived threads, even without a cleanup reservation.
+
+    // Always tear down archived/deleted threads, even without a cleanup reservation.
     // Otherwise a sibling that reserved cleanup can delete a shared checkout
     // while this thread's provider/terminals are still attached.
-    if (event.type === "thread.archived" || event.type === "thread.deleted") {
-      yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
-        concurrency: "unbounded",
-        discard: true,
-      });
+    yield* Effect.all([stopProviderSession(threadId), closeThreadTerminals(threadId)], {
+      concurrency: "unbounded",
+      discard: true,
+    });
+
+    if (event.type === "thread.archived") {
+      // Live-refresh PR state: associations are usually stored while open.
+      yield* scheduleArchiveWorktreeCleanup(threadId);
     }
   });
 
@@ -392,7 +620,11 @@ const make = Effect.gen(function* () {
     );
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-        if (event.type !== "thread.deleted" && event.type !== "thread.archived") {
+        if (
+          event.type !== "thread.deleted" &&
+          event.type !== "thread.archived" &&
+          event.type !== "thread.unarchived"
+        ) {
           return Effect.void;
         }
         return worker.enqueue(event);

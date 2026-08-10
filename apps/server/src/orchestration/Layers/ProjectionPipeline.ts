@@ -661,9 +661,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           // Archive can schedule destructive cleanup. Cancel any pending job for
           // this thread (or its path aliases) so unarchive cannot race a remove
           // that treats the restored thread as non-owning.
+          // Missing-path clearing is done by ThreadDeletionReactor via
+          // thread.meta.update so the orchestration read model stays in sync.
           yield* worktreeCleanupJobRepository.cancelByThreadId(event.payload.threadId);
           const worktreePath = existingRow.value.worktreePath;
-          let clearedMissingWorktree = false;
           if (worktreePath !== null) {
             const canonicalPath = yield* Effect.promise(() =>
               canonicalizeWorktreePath(worktreePath),
@@ -681,14 +682,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 ),
               { concurrency: 4, discard: true },
             );
-            const stillExists = yield* fileSystem.exists(canonicalPath);
-            clearedMissingWorktree = !stillExists;
           }
 
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: null,
-            ...(clearedMissingWorktree ? { worktreePath: null } : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

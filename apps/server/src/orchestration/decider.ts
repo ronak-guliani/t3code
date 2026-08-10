@@ -23,7 +23,6 @@ import {
   threadHasSettlementOverride,
   threadIsSnoozed,
 } from "./commandInvariants.ts";
-import { canonicalizeWorktreePath } from "../git/worktreePaths.ts";
 import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
@@ -87,12 +86,6 @@ const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwn
     yield* findCanonicalActiveWorktreeOwner(readModel, excludedThreadIds, worktreePath),
   );
 });
-
-function threadHasMergedPullRequest(thread: {
-  readonly pullRequest?: { readonly state: "open" | "closed" | "merged" | null } | null;
-}): boolean {
-  return thread.pullRequest?.state === "merged";
-}
 
 function forkedTitle(title: string): string {
   return title.startsWith(FORK_TITLE_PREFIX) ? title : `${FORK_TITLE_PREFIX}${title}`;
@@ -548,45 +541,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       const occurredAt = nowIso();
       const threadsToArchive = collectActiveThreadSubtree(readModel, command.threadId);
-      const archiveThreadIds = new Set(threadsToArchive.map((thread) => thread.id));
-      // One cleanup reservation per canonical worktree path for this archive batch.
-      const cleanupPathOwners = new Set<string>();
-      const archivedEvents: PlannedOrchestrationEvent[] = [];
-
-      for (const thread of threadsToArchive) {
-        const project = readModel.projects.find((entry) => entry.id === thread.projectId);
-        const worktreePath = thread.worktreePath;
-        const canonicalWorktreePath =
-          worktreePath === null
-            ? null
-            : yield* Effect.promise(() => canonicalizeWorktreePath(worktreePath));
-        const shouldCheckWorktreeOwnership =
-          threadHasMergedPullRequest(thread) &&
-          canonicalWorktreePath !== null &&
-          project !== undefined &&
-          !cleanupPathOwners.has(canonicalWorktreePath);
-        const hasActiveWorktreeOwner =
-          shouldCheckWorktreeOwnership && canonicalWorktreePath !== null
-            ? yield* hasCanonicalActiveWorktreeOwner(
-                readModel,
-                archiveThreadIds,
-                canonicalWorktreePath,
-              )
-            : true;
-        const worktreeCleanup =
-          shouldCheckWorktreeOwnership &&
-          !hasActiveWorktreeOwner &&
-          project !== undefined &&
-          canonicalWorktreePath !== null
-            ? {
-                cwd: project.workspaceRoot,
-                path: canonicalWorktreePath,
-              }
-            : undefined;
-        if (worktreeCleanup !== undefined) {
-          cleanupPathOwners.add(worktreeCleanup.path);
-        }
-        archivedEvents.push({
+      // Cleanup is scheduled by ThreadDeletionReactor after a live PR-state refresh so
+      // chats associated while open still clean up once the PR has merged.
+      return threadsToArchive.map(
+        (thread): PlannedOrchestrationEvent => ({
           ...withEventBase({
             aggregateKind: "thread",
             aggregateId: thread.id,
@@ -598,12 +556,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             threadId: thread.id,
             archivedAt: occurredAt,
             updatedAt: occurredAt,
-            ...(worktreeCleanup !== undefined ? { worktreeCleanup } : {}),
           },
-        });
-      }
-
-      return archivedEvents;
+        }),
+      );
     }
 
     case "thread.unarchive": {
