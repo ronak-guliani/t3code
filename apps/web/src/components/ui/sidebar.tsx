@@ -25,10 +25,12 @@ import { Schema } from "effect";
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_OPEN_STORAGE_KEY = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-const SIDEBAR_WIDTH = "16rem";
+/* 14rem, not 16rem: thread titles truncate long before the extra 32px pays for
+   itself, and the narrower rail buys that width back for the chat. */
+const SIDEBAR_WIDTH = "14rem";
 const SIDEBAR_WIDTH_MOBILE = "calc(100vw - var(--spacing(3)))";
 const SIDEBAR_WIDTH_ICON = "3rem";
-const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 16 * 16;
+const SIDEBAR_RESIZE_DEFAULT_MIN_WIDTH = 14 * 16;
 
 function readStoredSidebarOpen(defaultOpen: boolean): boolean {
   if (typeof window === "undefined") {

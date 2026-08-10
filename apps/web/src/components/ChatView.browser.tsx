@@ -4263,6 +4263,47 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("renders sidebar thread titles in the configured interface font and size", async () => {
+    // The sidebar is the densest surface in the app, so it is also the first
+    // place a font setting that silently fails to apply becomes visible.
+    localStorage.setItem(
+      "t3code:client-settings:v1",
+      JSON.stringify({
+        ...DEFAULT_CLIENT_SETTINGS,
+        uiFont: "system-ui",
+        sidebarFontSize: 15,
+      }),
+    );
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-sidebar-font-target" as MessageId,
+        targetText: "sidebar font target",
+      }),
+    });
+
+    try {
+      const threadTitle = await waitForElement(
+        () => document.querySelector<HTMLElement>(`[data-testid="thread-title-${THREAD_ID}"]`),
+        "Unable to find the sidebar thread title.",
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(document.documentElement.getAttribute("data-ui-font")).toBe("system-ui");
+          const style = getComputedStyle(threadTitle);
+          expect(style.fontFamily).toContain("-apple-system");
+          expect(style.fontFamily).not.toContain("DM Sans");
+          expect(style.fontSize).toBe("15px");
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+      localStorage.removeItem("t3code:client-settings:v1");
+    }
+  });
+
   it("exposes the full thread title on the sidebar row tooltip", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

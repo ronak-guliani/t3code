@@ -29,6 +29,7 @@ import {
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import {
   DEFAULT_CHAT_FONT_SIZE,
+  RECOMMENDED_FONT_SIZES_BY_UI_DENSITY,
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
   DEFAULT_CODE_FONT,
   DEFAULT_CODE_FONT_SIZE,
@@ -853,6 +854,9 @@ export function GeneralSettingsPanel() {
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
+  // Each size's "reset" target follows the active density, so resetting always
+  // lands on the value that density was designed around.
+  const recommendedFontSizes = RECOMMENDED_FONT_SIZES_BY_UI_DENSITY[settings.uiDensity];
   const [openingPathByTarget, setOpeningPathByTarget] = useState({
     keybindings: false,
     logsDirectory: false,
@@ -1312,12 +1316,17 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="UI density"
-          description="Control spacing across the entire interface — sidebar, chat, composer, and toolbars."
+          description="Control spacing and type size across the entire interface — sidebar, chat, composer, and toolbars. Changing this applies the recommended font sizes for that density; each size stays adjustable below."
           resetAction={
             settings.uiDensity !== DEFAULT_UI_DENSITY ? (
               <SettingResetButton
                 label="UI density"
-                onClick={() => updateSettings({ uiDensity: DEFAULT_UI_DENSITY })}
+                onClick={() =>
+                  updateSettings({
+                    uiDensity: DEFAULT_UI_DENSITY,
+                    ...RECOMMENDED_FONT_SIZES_BY_UI_DENSITY[DEFAULT_UI_DENSITY],
+                  })
+                }
               />
             ) : null
           }
@@ -1326,7 +1335,13 @@ export function GeneralSettingsPanel() {
               value={settings.uiDensity}
               onValueChange={(value) => {
                 if (UI_DENSITY_OPTIONS.some((option) => option.value === value)) {
-                  updateSettings({ uiDensity: value as UiDensity });
+                  const density = value as UiDensity;
+                  // Spacing alone cannot make a layout read as dense; the type
+                  // scale has to move with it.
+                  updateSettings({
+                    uiDensity: density,
+                    ...RECOMMENDED_FONT_SIZES_BY_UI_DENSITY[density],
+                  });
                 }
               }}
             >
@@ -1506,12 +1521,12 @@ export function GeneralSettingsPanel() {
           title="Code font size"
           description="Font size for code blocks, diffs, and terminals."
           resetAction={
-            settings.codeFontSize !== DEFAULT_CODE_FONT_SIZE ? (
+            settings.codeFontSize !== recommendedFontSizes.codeFontSize ? (
               <SettingResetButton
                 label="code font size"
                 onClick={() =>
                   updateSettings({
-                    codeFontSize: DEFAULT_CODE_FONT_SIZE,
+                    codeFontSize: recommendedFontSizes.codeFontSize,
                   })
                 }
               />
@@ -1547,12 +1562,12 @@ export function GeneralSettingsPanel() {
           title="Chat font size"
           description="Font size for assistant and user messages in the chat."
           resetAction={
-            settings.chatFontSize !== DEFAULT_CHAT_FONT_SIZE ? (
+            settings.chatFontSize !== recommendedFontSizes.chatFontSize ? (
               <SettingResetButton
                 label="chat font size"
                 onClick={() =>
                   updateSettings({
-                    chatFontSize: DEFAULT_CHAT_FONT_SIZE,
+                    chatFontSize: recommendedFontSizes.chatFontSize,
                   })
                 }
               />
@@ -1588,12 +1603,12 @@ export function GeneralSettingsPanel() {
           title="Status line font size"
           description="Font size for assistant metadata lines, including timestamps, elapsed time, and resume commands."
           resetAction={
-            settings.statusLineFontSize !== DEFAULT_STATUS_LINE_FONT_SIZE ? (
+            settings.statusLineFontSize !== recommendedFontSizes.statusLineFontSize ? (
               <SettingResetButton
                 label="status line font size"
                 onClick={() =>
                   updateSettings({
-                    statusLineFontSize: DEFAULT_STATUS_LINE_FONT_SIZE,
+                    statusLineFontSize: recommendedFontSizes.statusLineFontSize,
                   })
                 }
               />
@@ -1629,12 +1644,12 @@ export function GeneralSettingsPanel() {
           title="Input font size"
           description="Font size for the message composer, its controls, and menus."
           resetAction={
-            settings.inputFontSize !== DEFAULT_INPUT_FONT_SIZE ? (
+            settings.inputFontSize !== recommendedFontSizes.inputFontSize ? (
               <SettingResetButton
                 label="input font size"
                 onClick={() =>
                   updateSettings({
-                    inputFontSize: DEFAULT_INPUT_FONT_SIZE,
+                    inputFontSize: recommendedFontSizes.inputFontSize,
                   })
                 }
               />
@@ -1670,12 +1685,12 @@ export function GeneralSettingsPanel() {
           title="Sidebar font size"
           description="Font size for project and chat titles in the sidebar."
           resetAction={
-            settings.sidebarFontSize !== DEFAULT_SIDEBAR_FONT_SIZE ? (
+            settings.sidebarFontSize !== recommendedFontSizes.sidebarFontSize ? (
               <SettingResetButton
                 label="sidebar font size"
                 onClick={() =>
                   updateSettings({
-                    sidebarFontSize: DEFAULT_SIDEBAR_FONT_SIZE,
+                    sidebarFontSize: recommendedFontSizes.sidebarFontSize,
                   })
                 }
               />
@@ -1711,12 +1726,12 @@ export function GeneralSettingsPanel() {
           title="Sidebar metadata font size"
           description="Font size for the project name, worktree, branch, pull request, and timestamps on sidebar rows."
           resetAction={
-            settings.sidebarMetaFontSize !== DEFAULT_SIDEBAR_META_FONT_SIZE ? (
+            settings.sidebarMetaFontSize !== recommendedFontSizes.sidebarMetaFontSize ? (
               <SettingResetButton
                 label="sidebar metadata font size"
                 onClick={() =>
                   updateSettings({
-                    sidebarMetaFontSize: DEFAULT_SIDEBAR_META_FONT_SIZE,
+                    sidebarMetaFontSize: recommendedFontSizes.sidebarMetaFontSize,
                   })
                 }
               />
@@ -1792,12 +1807,12 @@ export function GeneralSettingsPanel() {
           title="Tool output font size"
           description="Font size for work log entries and tool call output."
           resetAction={
-            settings.toolFontSize !== DEFAULT_TOOL_FONT_SIZE ? (
+            settings.toolFontSize !== recommendedFontSizes.toolFontSize ? (
               <SettingResetButton
                 label="tool output font size"
                 onClick={() =>
                   updateSettings({
-                    toolFontSize: DEFAULT_TOOL_FONT_SIZE,
+                    toolFontSize: recommendedFontSizes.toolFontSize,
                   })
                 }
               />
