@@ -330,12 +330,20 @@ describe("PreviewManager", () => {
         const lateRegistration = yield* manager
           .registerWebview("tab-closing", 43)
           .pipe(Effect.forkChild({ startImmediately: true }));
+        const recreate = yield* manager
+          .createTab("tab-closing")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        const secondClose = yield* manager
+          .closeTab("tab-closing")
+          .pipe(Effect.forkChild({ startImmediately: true }));
         yield* Effect.yieldNow;
         expect(replacementListeners.on).not.toHaveBeenCalled();
         const lateCapture = yield* Effect.exit(manager.startRecording("tab-closing"));
 
         yield* Deferred.succeed(continueCloseCleanup, undefined);
         yield* Fiber.join(closing);
+        const recreated = yield* Fiber.join(recreate);
+        yield* Fiber.join(secondClose);
         const registrationExit = yield* Fiber.await(lateRegistration);
         for (const exit of [registrationExit, lateCapture]) {
           expect(Exit.isFailure(exit)).toBe(true);
@@ -348,6 +356,10 @@ describe("PreviewManager", () => {
         expect(replacementListeners.on).not.toHaveBeenCalled();
         expect(replacementListeners.off).not.toHaveBeenCalled();
         expect(replacementListeners.ipc.off).not.toHaveBeenCalled();
+        expect(recreated.webContentsId).toBeNull();
+        expect(Exit.isFailure(yield* Effect.exit(manager.startRecording("tab-closing")))).toBe(
+          true,
+        );
       }),
     ),
   );

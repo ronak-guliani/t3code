@@ -453,7 +453,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ReadonlyMap<string, PictureInPictureSession>
   >(new Map());
   const pictureInPictureMutationSemaphore = yield* Semaphore.make(1);
-  const closingTabIdsRef = yield* Ref.make<ReadonlySet<string>>(new Set());
+  const closingTabIdsRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const tabLifecycleLocks = new Map<
     string,
     { readonly semaphore: Semaphore.Semaphore; users: number }
@@ -1464,17 +1464,22 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
 
   const closeTab = Effect.fn("PreviewManager.closeTab")(function* (tabId: string) {
-    const claimed = yield* Ref.modify(closingTabIdsRef, (closingTabIds) => {
-      if (closingTabIds.has(tabId)) return [false, closingTabIds] as const;
-      return [true, new Set([...closingTabIds, tabId])] as const;
+    yield* Ref.update(closingTabIdsRef, (closingTabIds) => {
+      const next = new Map(closingTabIds);
+      next.set(tabId, (next.get(tabId) ?? 0) + 1);
+      return next;
     });
-    if (!claimed) return;
     return yield* withTabLifecycleLock(tabId, closeTabUnlocked(tabId)).pipe(
       Effect.ensuring(
         Ref.update(closingTabIdsRef, (closingTabIds) => {
           if (!closingTabIds.has(tabId)) return closingTabIds;
-          const next = new Set(closingTabIds);
-          next.delete(tabId);
+          const next = new Map(closingTabIds);
+          const pendingCloses = next.get(tabId) ?? 0;
+          if (pendingCloses <= 1) {
+            next.delete(tabId);
+          } else {
+            next.set(tabId, pendingCloses - 1);
+          }
           return next;
         }),
       ),
@@ -2208,90 +2213,92 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const claim = yield* withTabLifecycleLock(
       tabId,
       pictureInPictureMutationSemaphore.withPermit(
-        Effect.gen(function* () {
-          const existing = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId);
-          if (existing && !existing.window.isDestroyed()) {
-            return { kind: "existing" as const, session: existing };
-          }
-          if (existing) yield* releasePictureInPicture(tabId, existing, false);
-          const wc = yield* requireWebContents(tabId);
-          const title = yield* attempt(
-            { operation: "pictureInPicture.readTitle", tabId, webContentsId: wc.id },
-            () => wc.getTitle().trim(),
-          );
-          const window = yield* attempt(
-            { operation: "pictureInPicture.create", tabId, webContentsId: wc.id },
-            () =>
-              new BrowserWindow({
-                width: PICTURE_IN_PICTURE_INITIAL_WIDTH,
-                height: PICTURE_IN_PICTURE_INITIAL_HEIGHT,
-                minWidth: PICTURE_IN_PICTURE_MIN_WIDTH,
-                minHeight: PICTURE_IN_PICTURE_MIN_HEIGHT,
-                title: title ? `Preview · ${title}` : "Browser preview",
-                show: false,
-                alwaysOnTop: true,
-                autoHideMenuBar: true,
-                fullscreenable: false,
-                maximizable: false,
-                minimizable: false,
-                resizable: true,
-                skipTaskbar: true,
-                backgroundColor: "#111111",
-                ...(hostPlatform === "darwin" ? { type: "panel" as const } : {}),
-                webPreferences: {
-                  preload: `${__dirname}/preview-pip-preload.cjs`,
-                  backgroundThrottling: false,
-                  contextIsolation: true,
-                  nodeIntegration: false,
-                  sandbox: true,
-                },
-              }),
-          );
-          const initializationScope = yield* Scope.fork(parentScope, "sequential");
-          const ready = yield* Deferred.make<void, PreviewManagerError>();
-          const session: PictureInPictureSession = {
-            window,
-            webContentsId: wc.id,
-            ready,
-            initializationScope,
-          };
-          yield* attempt(
-            { operation: "pictureInPicture.configure", tabId, webContentsId: wc.id },
-            () => {
-              window.once("closed", () => {
-                runFork(
-                  pictureInPictureMutationSemaphore.withPermit(
-                    releasePictureInPicture(tabId, session, false),
-                  ),
-                );
-              });
-              if (hostPlatform === "darwin") {
-                window.setVisibleOnAllWorkspaces(true, {
-                  visibleOnFullScreen: true,
-                  skipTransformProcessType: true,
+        Effect.uninterruptible(
+          Effect.gen(function* () {
+            const existing = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId);
+            if (existing && !existing.window.isDestroyed()) {
+              return { kind: "existing" as const, session: existing };
+            }
+            if (existing) yield* releasePictureInPicture(tabId, existing, false);
+            const wc = yield* requireWebContents(tabId);
+            const title = yield* attempt(
+              { operation: "pictureInPicture.readTitle", tabId, webContentsId: wc.id },
+              () => wc.getTitle().trim(),
+            );
+            const window = yield* attempt(
+              { operation: "pictureInPicture.create", tabId, webContentsId: wc.id },
+              () =>
+                new BrowserWindow({
+                  width: PICTURE_IN_PICTURE_INITIAL_WIDTH,
+                  height: PICTURE_IN_PICTURE_INITIAL_HEIGHT,
+                  minWidth: PICTURE_IN_PICTURE_MIN_WIDTH,
+                  minHeight: PICTURE_IN_PICTURE_MIN_HEIGHT,
+                  title: title ? `Preview · ${title}` : "Browser preview",
+                  show: false,
+                  alwaysOnTop: true,
+                  autoHideMenuBar: true,
+                  fullscreenable: false,
+                  maximizable: false,
+                  minimizable: false,
+                  resizable: true,
+                  skipTaskbar: true,
+                  backgroundColor: "#111111",
+                  ...(hostPlatform === "darwin" ? { type: "panel" as const } : {}),
+                  webPreferences: {
+                    preload: `${__dirname}/preview-pip-preload.cjs`,
+                    backgroundThrottling: false,
+                    contextIsolation: true,
+                    nodeIntegration: false,
+                    sandbox: true,
+                  },
+                }),
+            );
+            const initializationScope = yield* Scope.fork(parentScope, "sequential");
+            const ready = yield* Deferred.make<void, PreviewManagerError>();
+            const session: PictureInPictureSession = {
+              window,
+              webContentsId: wc.id,
+              ready,
+              initializationScope,
+            };
+            yield* attempt(
+              { operation: "pictureInPicture.configure", tabId, webContentsId: wc.id },
+              () => {
+                window.once("closed", () => {
+                  runFork(
+                    pictureInPictureMutationSemaphore.withPermit(
+                      releasePictureInPicture(tabId, session, false),
+                    ),
+                  );
                 });
-              }
-            },
-          ).pipe(
-            Effect.onError(() =>
-              Effect.all(
-                [
-                  Scope.close(initializationScope, Exit.void).pipe(Effect.ignore),
-                  attempt({ operation: "pictureInPicture.close", tabId }, () =>
-                    window.close(),
-                  ).pipe(Effect.ignore),
-                ],
-                { discard: true },
+                if (hostPlatform === "darwin") {
+                  window.setVisibleOnAllWorkspaces(true, {
+                    visibleOnFullScreen: true,
+                    skipTransformProcessType: true,
+                  });
+                }
+              },
+            ).pipe(
+              Effect.onError(() =>
+                Effect.all(
+                  [
+                    Scope.close(initializationScope, Exit.void).pipe(Effect.ignore),
+                    attempt({ operation: "pictureInPicture.close", tabId }, () =>
+                      window.close(),
+                    ).pipe(Effect.ignore),
+                  ],
+                  { discard: true },
+                ),
               ),
-            ),
-          );
-          yield* SynchronizedRef.update(pictureInPictureSessionsRef, (sessions) =>
-            replaceMap(sessions, (copy) => {
-              copy.set(tabId, session);
-            }),
-          );
-          return { kind: "created" as const, session };
-        }),
+            );
+            yield* SynchronizedRef.update(pictureInPictureSessionsRef, (sessions) =>
+              replaceMap(sessions, (copy) => {
+                copy.set(tabId, session);
+              }),
+            );
+            return { kind: "created" as const, session };
+          }),
+        ),
       ),
     );
     const session = claim.session;
@@ -2377,39 +2384,52 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         }),
       );
     });
-    const initializationExit = yield* Effect.gen(function* () {
+    const awaitInitialization = Effect.gen(function* () {
       const initializationFiber = yield* Effect.forkIn(initialize, session.initializationScope);
       return yield* Fiber.await(initializationFiber);
-    }).pipe(
-      Effect.onInterrupt(() =>
-        pictureInPictureMutationSemaphore.withPermit(releasePictureInPicture(tabId, session, true)),
-      ),
-    );
-    if (Exit.isSuccess(initializationExit)) {
-      const published = yield* pictureInPictureMutationSemaphore.withPermit(
+    });
+    const finalizeInitialization = (initializationExit: Exit.Exit<void, PreviewManagerError>) =>
+      Effect.uninterruptible(
         Effect.gen(function* () {
-          const current = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId);
-          if (current !== session || session.window.isDestroyed()) {
-            if (current === session) {
-              yield* releasePictureInPicture(tabId, session, false);
-            }
-            return false;
+          if (Exit.isSuccess(initializationExit)) {
+            const published = yield* pictureInPictureMutationSemaphore.withPermit(
+              Effect.gen(function* () {
+                const current = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(
+                  tabId,
+                );
+                if (current !== session || session.window.isDestroyed()) {
+                  if (current === session) {
+                    yield* releasePictureInPicture(tabId, session, false);
+                  }
+                  return false;
+                }
+                yield* Deferred.done(session.ready, initializationExit);
+                return true;
+              }),
+            );
+            if (published) return;
+            return yield* Deferred.await(session.ready);
           }
           yield* Deferred.done(session.ready, initializationExit);
-          return true;
+          const current = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId);
+          if (current === session) {
+            yield* pictureInPictureMutationSemaphore.withPermit(
+              releasePictureInPicture(tabId, session, true),
+            );
+          }
+          return yield* Effect.failCause(initializationExit.cause);
         }),
       );
-      if (published) return;
-      return yield* Deferred.await(session.ready);
-    }
-    yield* Deferred.done(session.ready, initializationExit);
-    const current = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId);
-    if (current === session) {
-      yield* pictureInPictureMutationSemaphore.withPermit(
-        releasePictureInPicture(tabId, session, true),
-      );
-    }
-    return yield* Effect.failCause(initializationExit.cause);
+    return yield* Effect.uninterruptibleMask((restore) =>
+      restore(awaitInitialization).pipe(
+        Effect.flatMap(finalizeInitialization),
+        Effect.onInterrupt(() =>
+          pictureInPictureMutationSemaphore.withPermit(
+            releasePictureInPicture(tabId, session, true),
+          ),
+        ),
+      ),
+    );
   });
 
   const startRecording = Effect.fn("PreviewManager.startRecording")(function* (tabId: string) {
