@@ -18,6 +18,7 @@ import {
 import { Skeleton } from "~/components/ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
+import { isElectron } from "~/env";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
 import { Schema } from "effect";
 
@@ -382,6 +383,19 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       <span className="sr-only">{isOpen ? "Collapse sidebar" : "Expand sidebar"}</span>
     </Button>
   );
+}
+
+/**
+ * Re-exposes the collapse control in content chrome only while the sidebar's
+ * own trigger is hidden, so the two never render at once. The sidebar hosts a
+ * trigger only in the desktop app's title-bar header; on web the sidebar header
+ * is hidden at `md` and up, so the content header keeps ownership there.
+ */
+function SidebarCollapsedTrigger({ className, ...props }: React.ComponentProps<typeof Button>) {
+  const { open, isMobile } = useSidebar();
+  const sidebarHostsTrigger = isElectron && !isMobile && open;
+  if (sidebarHostsTrigger) return null;
+  return <SidebarTrigger className={className} {...props} />;
 }
 
 function clampSidebarWidth(width: number, options: SidebarResolvedResizableOptions): number {
@@ -1037,6 +1051,7 @@ export {
   SidebarGroup,
   SidebarGroupAction,
   SidebarGroupContent,
+  SidebarCollapsedTrigger,
   SidebarGroupLabel,
   SidebarHeader,
   SidebarInput,

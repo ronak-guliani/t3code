@@ -8,7 +8,7 @@ import type { LegendListRef } from "@legendapp/list/react";
 import { useSettings } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { Badge } from "../ui/badge";
-import { SidebarTrigger } from "../ui/sidebar";
+import { SidebarCollapsedTrigger } from "../ui/sidebar";
 import { MessagesTimeline } from "./MessagesTimeline";
 
 export const AgentRunChatView = memo(function AgentRunChatView({
@@ -32,12 +32,12 @@ export const AgentRunChatView = memo(function AgentRunChatView({
       <header
         className={cn(
           isElectron
-            ? "drag-region flex h-[52px] items-center px-3 sm:px-5 wco:h-[env(titlebar-area-height)]"
+            ? "drag-region flex h-(--app-title-bar-height) items-center px-3 wco:h-[env(titlebar-area-height)]"
             : "py-2 ps-[calc(env(safe-area-inset-left)+--spacing(3))] pe-[calc(env(safe-area-inset-right)+--spacing(3))] sm:py-3 sm:ps-[calc(env(safe-area-inset-left)+--spacing(5))] sm:pe-[calc(env(safe-area-inset-right)+--spacing(5))]",
         )}
       >
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
-          <SidebarTrigger className="no-drag size-7 shrink-0" />
+          <SidebarCollapsedTrigger className="no-drag size-6 shrink-0" />
           <h2
             className="min-w-0 shrink truncate font-medium text-foreground"
             style={{ fontSize: "var(--app-chat-font-size)" }}

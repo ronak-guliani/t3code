@@ -1496,10 +1496,12 @@ async function waitForNewThreadShortcutLabel(): Promise<void> {
 }
 
 async function waitForCommandPaletteShortcutLabel(): Promise<void> {
-  await waitForElement(
-    () => document.querySelector('[data-testid="command-palette-trigger"] kbd'),
-    "Command palette shortcut label did not render.",
-  );
+  // The shortcut moved from a permanent Kbd badge into the trigger's tooltip,
+  // so assert it stays discoverable there.
+  await waitForElement(() => {
+    const trigger = document.querySelector<HTMLElement>('[data-testid="command-palette-trigger"]');
+    return /^Search \(.+\)$/.test(trigger?.getAttribute("title") ?? "") ? trigger : null;
+  }, "Command palette shortcut label did not render.");
 }
 
 async function waitForCommandPaletteInput(placeholder: string): Promise<HTMLInputElement> {

@@ -157,6 +157,9 @@
      cards read as one loose list instead of discrete threads. */
   --app-sidebar-row-gap: 0.25rem;
   --app-sidebar-row-padding-y: 0.5rem;
+  /* Desktop title-bar strip that doubles as the content header. Sized to clear
+     the window controls without turning the header into a second toolbar. */
+  --app-title-bar-height: 40px;
   --app-tool-font-size: 12px;
   --app-input-font-size: 14px;
   --sidebar-translucency-alpha: 100%;

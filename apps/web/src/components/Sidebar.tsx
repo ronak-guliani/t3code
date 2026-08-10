@@ -219,6 +219,17 @@ const SIDEBAR_LIST_ANIMATION_OPTIONS = {
 } as const;
 const EMPTY_THREAD_JUMP_LABELS = new Map<string, string>();
 
+/**
+ * Sidebar popup menus must match sidebar row typography. `MenuItem`'s defaults
+ * include `sm:` variants, which tailwind-merge cannot strip with unprefixed
+ * utilities, so the breakpoint size has to be restated. Icons carry an explicit
+ * size for the same reason: it stops the default `:not([class*='size-'])` rule
+ * from matching at all, rather than relying on specificity ties.
+ */
+const SIDEBAR_MENU_ITEM_CLASS =
+  "min-h-7 gap-2 text-[length:var(--app-sidebar-font-size)] sm:min-h-7 sm:text-[length:var(--app-sidebar-font-size)]";
+const SIDEBAR_MENU_ICON_CLASS = "size-3.5";
+
 /** Root threads mounted per project before the tail sentinel grows the window. */
 const SIDEBAR_THREAD_WINDOW_SIZE = 30;
 
@@ -708,30 +719,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       </MenuTrigger>
       <MenuPopup align="end" side="bottom" className="min-w-40">
         {virtualAgentRun ? null : (
-          <MenuItem
-            className="text-[length:var(--app-sidebar-font-size)]"
-            onClick={handleTogglePinnedSelected}
-          >
-            <PinIcon className={isPinned ? "fill-current" : undefined} />
+          <MenuItem className={SIDEBAR_MENU_ITEM_CLASS} onClick={handleTogglePinnedSelected}>
+            <PinIcon className={`${SIDEBAR_MENU_ICON_CLASS}${isPinned ? " fill-current" : ""}`} />
             {isPinned ? "Unpin" : "Pin"}
           </MenuItem>
         )}
         {prStatus ? (
-          <MenuItem
-            className="text-[length:var(--app-sidebar-font-size)]"
-            onClick={handleOpenPrSelected}
-          >
-            <GitPullRequestIcon />
+          <MenuItem className={SIDEBAR_MENU_ITEM_CLASS} onClick={handleOpenPrSelected}>
+            <GitPullRequestIcon className={SIDEBAR_MENU_ICON_CLASS} />
             Open pull request #{prStatus.number}
           </MenuItem>
         ) : null}
         {canArchive ? (
           <MenuItem
-            className="text-[length:var(--app-sidebar-font-size)]"
+            className={SIDEBAR_MENU_ITEM_CLASS}
             data-testid={`thread-archive-${thread.id}`}
             onClick={virtualAgentRun ? handleDismissAgentRunSelected : handleArchiveSelected}
           >
-            <ArchiveIcon />
+            <ArchiveIcon className={SIDEBAR_MENU_ICON_CLASS} />
             {virtualAgentRun ? "Archive run" : "Archive"}
           </MenuItem>
         ) : null}
@@ -761,7 +766,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         className={`${resolveThreadRowClassName({
           isActive,
           isSelected,
-        })} relative isolate`}
+        })} relative isolate px-1.5`}
         onClick={handleRowClick}
         onKeyDown={handleRowKeyDown}
         onContextMenu={handleRowContextMenu}
@@ -1153,9 +1158,10 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
   const content = (
     <SidebarMenuSub
       className={`my-0 mx-0 w-full translate-x-0 gap-0.5 overflow-hidden border-l-0 py-0 ${
-        // One project-chevron slot (icon + gap) of indent, so a thread's status
-        // dot lands under the project favicon instead of a third left edge.
-        indented ? "ps-[calc(var(--spacing)*5.5)] pe-0" : "px-0"
+        // Half a project-chevron slot of indent: enough to read threads as
+        // nested under the project, without pushing titles into the middle of
+        // the sidebar the way a full icon-width inset did.
+        indented ? "ps-3 pe-0" : "px-0"
       }`}
       style={{ animation: "none", transition: "none" }}
     >
@@ -2868,9 +2874,11 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   const canGoBack = router.history.canGoBack();
   const canGoForward = historyIndex < router.history.length - 1;
   const wordmark = (
-    <div className="flex w-full items-center gap-2">
-      {/* Mobile sheet open/close; desktop collapse uses content-header SidebarTrigger icons. */}
-      <SidebarTrigger className="no-drag shrink-0 md:hidden" />
+    <div className="flex w-full items-center gap-1">
+      {/* Primary collapse control lives beside the traffic lights, matching the
+          window chrome it belongs to; the content header only re-exposes it
+          once the sidebar is collapsed and this one is gone. */}
+      <SidebarTrigger className="no-drag size-6 shrink-0" />
       <div
         aria-label="Chat navigation history"
         className="ml-auto flex items-center gap-0.5"
@@ -2901,11 +2909,11 @@ const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 
   return isElectron ? (
-    <SidebarHeader className="drag-region h-8 flex-row items-center gap-3 py-0 pr-3 pl-[90px] sm:gap-2.5 sm:pr-4 wco:h-8 wco:pl-[calc(env(titlebar-area-x)+1em)]">
+    <SidebarHeader className="drag-region h-7 flex-row items-center gap-2 py-0 pr-2 pl-[78px] wco:h-8 wco:pl-[calc(env(titlebar-area-x)+1em)]">
       {wordmark}
     </SidebarHeader>
   ) : (
-    <SidebarHeader className="gap-2 px-2 py-0 sm:px-2 md:hidden">{wordmark}</SidebarHeader>
+    <SidebarHeader className="gap-2 px-2 py-0 md:hidden">{wordmark}</SidebarHeader>
   );
 });
 
