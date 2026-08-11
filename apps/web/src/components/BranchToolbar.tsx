@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { memo, useMemo } from "react";
 
+import type { ContextWindowSnapshot } from "../lib/contextWindow";
 import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
@@ -25,6 +26,7 @@ import {
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
+import { ContextWindowMeter } from "./chat/ContextWindowMeter";
 import { Button } from "./ui/button";
 import {
   Menu,
@@ -51,6 +53,8 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  activeContextWindow: ContextWindowSnapshot | null;
+  activeThreadProviderDisplayName: string | null;
 }
 
 interface MobileRunContextSelectorProps {
@@ -186,6 +190,8 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
+  activeContextWindow,
+  activeThreadProviderDisplayName,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -286,6 +292,12 @@ export const BranchToolbar = memo(function BranchToolbar({
         {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
         {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
       />
+      {activeContextWindow ? (
+        <ContextWindowMeter
+          usage={activeContextWindow}
+          providerDisplayName={activeThreadProviderDisplayName}
+        />
+      ) : null}
     </div>
   );
 });
