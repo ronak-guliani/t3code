@@ -43,8 +43,8 @@ const threadCache = new WeakMap<
   }
 >();
 
-const threadCoreCache = new WeakMap<
-  ThreadShell,
+const threadCoreCache = new Map<
+  ThreadId,
   {
     session: ThreadSession | null;
     turnState: ThreadTurnState | undefined;
@@ -157,7 +157,7 @@ export function getThreadCoreFromEnvironmentState(
   const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
   const queuedTurns = state.queuedTurnsByThreadId[threadId] ?? EMPTY_QUEUED_TURNS;
   const reviewState = state.reviewStateByThreadId?.[threadId];
-  const cached = threadCoreCache.get(shell);
+  const cached = threadCoreCache.get(threadId);
 
   if (
     cached &&
@@ -193,7 +193,7 @@ export function getThreadCoreFromEnvironmentState(
     ...reviewState,
   };
 
-  threadCoreCache.set(shell, {
+  threadCoreCache.set(threadId, {
     session,
     turnState,
     activities,

@@ -52,6 +52,7 @@ function createScopedThreadCoreSelector(
 function createScopedThreadMessagesSelector(
   resolveRef: (state: AppState) => ScopedThreadRef | null | undefined,
 ): (state: AppState) => ChatMessage[] {
+  const emptyMessages: ChatMessage[] = [];
   let previousEnvironmentState: EnvironmentState | undefined;
   let previousThreadId: ThreadId | undefined;
   let previousMessages: ChatMessage[] | undefined;
@@ -59,7 +60,7 @@ function createScopedThreadMessagesSelector(
   return (state) => {
     const ref = resolveRef(state);
     if (!ref) {
-      return [];
+      return emptyMessages;
     }
 
     const environmentState = selectEnvironmentState(state, ref.environmentId);
@@ -83,6 +84,7 @@ function createScopedThreadMessagesSelector(
 function createScopedThreadMessageIdsSelector(
   resolveRef: (state: AppState) => ScopedThreadRef | null | undefined,
 ): (state: AppState) => readonly MessageId[] {
+  const emptyMessageIds: MessageId[] = [];
   let previousEnvironmentState: EnvironmentState | undefined;
   let previousThreadId: ThreadId | undefined;
   let previousMessageIds: readonly MessageId[] | undefined;
@@ -90,7 +92,7 @@ function createScopedThreadMessageIdsSelector(
   return (state) => {
     const ref = resolveRef(state);
     if (!ref) {
-      return [];
+      return emptyMessageIds;
     }
 
     const environmentState = selectEnvironmentState(state, ref.environmentId);

@@ -68,6 +68,29 @@ function buildState(messageText: string): EnvironmentState {
 }
 
 describe("getThreadCoreFromEnvironmentState", () => {
+  it("returns a stable thread reference when the shell is replaced on stream", () => {
+    const state = buildState("Hello");
+    const firstThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+    const shell = state.threadShellById[THREAD_ID]!;
+    state.threadShellById = {
+      ...state.threadShellById,
+      [THREAD_ID]: {
+        ...shell,
+        updatedAt: "2026-01-01T00:00:01.000Z",
+      },
+    };
+    const messageId = state.messageIdsByThreadId[THREAD_ID]![0]!;
+    state.messageByThreadId[THREAD_ID]![messageId] = {
+      ...state.messageByThreadId[THREAD_ID]![messageId]!,
+      text: "Hello world",
+    };
+
+    const secondThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+
+    expect(firstThread).toBeDefined();
+    expect(secondThread).toBe(firstThread);
+  });
+
   it("returns a stable thread reference when only message text changes", () => {
     const state = buildState("Hello");
     const firstThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);

@@ -1224,6 +1224,9 @@ function ChatViewBody(
     thread: activeThread,
     selectedProvider: selectedProviderByThreadId,
     threadProvider,
+    hasMessages: isServerThread
+      ? serverMessageIds.length > 0
+      : (activeThread?.messages.length ?? 0) > 0,
   });
   const primaryServerConfig = useServerConfig();
   const activeEnvRuntimeState = useSavedEnvironmentRuntimeStore((s) =>
