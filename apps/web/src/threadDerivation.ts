@@ -11,6 +11,7 @@ import type {
 } from "./types";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
+const EMPTY_MESSAGE_IDS: MessageId[] = [];
 const EMPTY_ACTIVITIES: Thread["activities"] = [];
 const EMPTY_ACTIVITY_CONTEXT: NonNullable<Thread["activityContext"]> = [];
 const EMPTY_INSIGHT_ACTIVITIES: NonNullable<Thread["insightActivities"]> = [];
@@ -29,6 +30,24 @@ const threadCache = new WeakMap<
     session: ThreadSession | null;
     turnState: ThreadTurnState | undefined;
     messages: Thread["messages"];
+    activities: Thread["activities"];
+    activityContext: NonNullable<Thread["activityContext"]>;
+    hasMoreActivities: boolean;
+    hasMoreCurrentTurnActivities: boolean;
+    insightActivities: NonNullable<Thread["insightActivities"]>;
+    proposedPlans: Thread["proposedPlans"];
+    turnDiffSummaries: Thread["turnDiffSummaries"];
+    queuedTurns: readonly OrchestrationQueuedTurn[];
+    reviewState: NonNullable<EnvironmentState["reviewStateByThreadId"]>[ThreadId] | undefined;
+    thread: Thread;
+  }
+>();
+
+const threadCoreCache = new WeakMap<
+  ThreadShell,
+  {
+    session: ThreadSession | null;
+    turnState: ThreadTurnState | undefined;
     activities: Thread["activities"];
     activityContext: NonNullable<Thread["activityContext"]>;
     hasMoreActivities: boolean;
@@ -69,12 +88,22 @@ function collectByIds<TKey extends string, TValue>(
   return nextValues;
 }
 
-function selectThreadMessages(state: EnvironmentState, threadId: ThreadId): Thread["messages"] {
+export function selectThreadMessages(
+  state: EnvironmentState,
+  threadId: ThreadId,
+): Thread["messages"] {
   return collectByIds(
     state.messageIdsByThreadId[threadId],
     state.messageByThreadId[threadId] ?? EMPTY_MESSAGE_MAP,
     EMPTY_MESSAGES,
   );
+}
+
+export function selectThreadMessageIds(
+  state: EnvironmentState,
+  threadId: ThreadId,
+): readonly MessageId[] {
+  return state.messageIdsByThreadId[threadId] ?? EMPTY_MESSAGE_IDS;
 }
 
 function selectThreadActivities(state: EnvironmentState, threadId: ThreadId): Thread["activities"] {
@@ -105,6 +134,81 @@ function selectThreadTurnDiffSummaries(
     state.turnDiffSummaryByThreadId[threadId] ?? EMPTY_TURN_DIFF_MAP,
     EMPTY_TURN_DIFF_SUMMARIES,
   );
+}
+
+export function getThreadCoreFromEnvironmentState(
+  state: EnvironmentState,
+  threadId: ThreadId,
+): Thread | undefined {
+  const shell = state.threadShellById[threadId];
+  if (!shell) {
+    return undefined;
+  }
+
+  const session = state.threadSessionById[threadId] ?? null;
+  const turnState = state.threadTurnStateById[threadId];
+  const activities = selectThreadActivities(state, threadId);
+  const activityContext = state.activityContextByThreadId[threadId] ?? EMPTY_ACTIVITY_CONTEXT;
+  const hasMoreActivities = state.hasMoreActivitiesByThreadId?.[threadId] ?? false;
+  const hasMoreCurrentTurnActivities =
+    state.hasMoreCurrentTurnActivitiesByThreadId?.[threadId] ?? false;
+  const insightActivities = state.insightActivitiesByThreadId[threadId] ?? EMPTY_INSIGHT_ACTIVITIES;
+  const proposedPlans = selectThreadProposedPlans(state, threadId);
+  const turnDiffSummaries = selectThreadTurnDiffSummaries(state, threadId);
+  const queuedTurns = state.queuedTurnsByThreadId[threadId] ?? EMPTY_QUEUED_TURNS;
+  const reviewState = state.reviewStateByThreadId?.[threadId];
+  const cached = threadCoreCache.get(shell);
+
+  if (
+    cached &&
+    cached.session === session &&
+    cached.turnState === turnState &&
+    cached.activities === activities &&
+    cached.activityContext === activityContext &&
+    cached.hasMoreActivities === hasMoreActivities &&
+    cached.hasMoreCurrentTurnActivities === hasMoreCurrentTurnActivities &&
+    cached.insightActivities === insightActivities &&
+    cached.proposedPlans === proposedPlans &&
+    cached.turnDiffSummaries === turnDiffSummaries &&
+    cached.queuedTurns === queuedTurns &&
+    cached.reviewState === reviewState
+  ) {
+    return cached.thread;
+  }
+
+  const thread: Thread = {
+    ...shell,
+    session,
+    latestTurn: turnState?.latestTurn ?? null,
+    pendingSourceProposedPlan: turnState?.pendingSourceProposedPlan,
+    messages: EMPTY_MESSAGES,
+    activities,
+    activityContext,
+    hasMoreActivities,
+    hasMoreCurrentTurnActivities,
+    insightActivities,
+    proposedPlans,
+    turnDiffSummaries,
+    ...(queuedTurns.length > 0 ? { queuedTurns: [...queuedTurns] } : {}),
+    ...reviewState,
+  };
+
+  threadCoreCache.set(shell, {
+    session,
+    turnState,
+    activities,
+    activityContext,
+    hasMoreActivities,
+    hasMoreCurrentTurnActivities,
+    insightActivities,
+    proposedPlans,
+    turnDiffSummaries,
+    queuedTurns,
+    reviewState,
+    thread,
+  });
+
+  return thread;
 }
 
 export function getThreadFromEnvironmentState(
