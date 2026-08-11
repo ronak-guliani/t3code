@@ -1,5 +1,5 @@
 import type { EnvironmentId, PullRequestMonitorRecord, PullRequestRef } from "@t3tools/contracts";
-import { ActivityIcon, PauseIcon, PlayIcon, RadarIcon } from "lucide-react";
+import { ActivityIcon, LifeBuoyIcon, PauseIcon, PlayIcon, RadarIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";
 
 import { cn } from "~/lib/utils";
@@ -53,12 +53,16 @@ export function PullRequestMonitorStrip(props: {
   );
   const start = useAtomCommand(pullRequestEnvironment.monitorsStart, { reportFailure: false });
   const stop = useAtomCommand(pullRequestEnvironment.monitorsStop, { reportFailure: false });
+  const launchFallback = useAtomCommand(pullRequestEnvironment.monitorsLaunchFallback, {
+    reportFailure: false,
+  });
 
   const monitor = statusQuery.data?.monitor ?? null;
   const openFeedback = statusQuery.data?.openFeedback ?? [];
   const recentDeliveries = statusQuery.data?.recentDeliveries ?? [];
   const recentReports = statusQuery.data?.recentReports ?? [];
   const active = monitor?.enabled === true;
+  const showFallback = active && monitor?.ownerThreadId === null;
   const summary = useMemo(() => blockersSummary(monitor), [monitor]);
   const feedbackSummary = useMemo(() => {
     if (openFeedback.length === 0) return null;
@@ -109,6 +113,31 @@ export function PullRequestMonitorStrip(props: {
       });
     }
   }, [monitor, props.environmentId, props.reference, statusQuery, stop]);
+
+  const onFallback = useCallback(async () => {
+    try {
+      const result = await launchFallback({
+        environmentId: props.environmentId,
+        input: monitor
+          ? { monitorId: monitor.id, reason: "owner-missing" }
+          : { reference: props.reference, reason: "owner-missing" },
+      });
+      statusQuery.refresh();
+      toastManager.add({
+        type: "success",
+        title: result.launched ? "Fallback maintenance thread launched" : "Fallback not needed",
+        description: result.launched
+          ? `Owner transferred to ${result.fallbackThreadId}`
+          : (result.skippedReason ?? "No launch"),
+      });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not launch fallback maintenance",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [launchFallback, monitor, props.environmentId, props.reference, statusQuery]);
 
   return (
     <div
@@ -179,6 +208,18 @@ export function PullRequestMonitorStrip(props: {
           </p>
         ) : null}
       </div>
+      {showFallback ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1 px-2"
+          onClick={onFallback}
+        >
+          <LifeBuoyIcon className="size-3.5" />
+          Fallback
+        </Button>
+      ) : null}
       {active ? (
         <Button type="button" size="sm" variant="ghost" className="h-7 gap-1 px-2" onClick={onStop}>
           <PauseIcon className="size-3.5" />

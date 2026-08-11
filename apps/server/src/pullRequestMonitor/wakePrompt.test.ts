@@ -1,7 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { PullRequestMonitorReadiness, PullRequestMonitorSnapshot } from "@t3tools/contracts";
 
-import { buildWakePrompt, formatBlockersSummary } from "./wakePrompt.ts";
+import {
+  buildFallbackMaintenancePrompt,
+  buildWakePrompt,
+  formatBlockersSummary,
+} from "./wakePrompt.ts";
 
 const snapshot = {
   provider: "github",
@@ -51,6 +55,24 @@ describe("wakePrompt", () => {
     });
     expect(prompt).toContain("acme/app#12");
     expect(prompt).toContain("t3_pr_monitor_report");
+    expect(prompt.length).toBeLessThan(4_000);
+  });
+
+  it("builds a bounded fallback maintenance prompt", () => {
+    const prompt = buildFallbackMaintenancePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      url: "https://github.com/acme/app/pull/12",
+      headBranch: "feat/x",
+      headSha: "abc123",
+      reason: "owner-missing",
+      previousOwnerThreadId: null,
+      note: "CI still red",
+      readinessSummary: formatBlockersSummary(readiness),
+    });
+    expect(prompt).toContain("fallback PR maintenance");
+    expect(prompt).toContain("sole modifying owner");
+    expect(prompt).toContain("CI still red");
     expect(prompt.length).toBeLessThan(4_000);
   });
 });

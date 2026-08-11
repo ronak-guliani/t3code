@@ -180,6 +180,11 @@ const handlers = {
         reviewThreadId: scope.threadId,
       });
     }),
+  t3_pr_monitor_launch_fallback: (input) =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      return yield* monitors.launchFallback(input);
+    }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 
 export const OrchestratorToolkitHandlersLive = OrchestratorToolkit.toLayer(handlers);

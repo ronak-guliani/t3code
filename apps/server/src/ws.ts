@@ -1554,6 +1554,12 @@ const makeWsRpcLayer = (
             pullRequestMonitors.submitFindings(input),
             { "rpc.aggregate": "pull-request-monitors" },
           ),
+        [WS_METHODS.pullRequestMonitorsLaunchFallback]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsLaunchFallback,
+            pullRequestMonitors.launchFallback(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,

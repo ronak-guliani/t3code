@@ -88,6 +88,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.pullRequestMonitorsReport]: AuthOrchestrationOperateScope,
   [WS_METHODS.pullRequestMonitorsTransfer]: AuthOrchestrationOperateScope,
   [WS_METHODS.pullRequestMonitorsSubmitFindings]: AuthOrchestrationOperateScope,
+  [WS_METHODS.pullRequestMonitorsLaunchFallback]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlLookupRepository]: AuthOrchestrationReadScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthOrchestrationOperateScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthOrchestrationOperateScope,

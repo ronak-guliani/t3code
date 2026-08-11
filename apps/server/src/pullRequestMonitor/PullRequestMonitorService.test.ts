@@ -15,9 +15,12 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
 import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
 import Migration0052 from "../persistence/Migrations/052_PullRequestMonitorOwnership.ts";
+import Migration0053 from "../persistence/Migrations/053_PullRequestMonitorFallback.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./PullRequestMonitorFeedbackService.ts";
 import {
@@ -138,7 +141,13 @@ function seedThread(threadId: ThreadId) {
 const fakeThreads = ThreadManagement.ThreadManagementService.of({
   ensureLegacyTranscript: () => Effect.void,
   dispatch: () => Effect.die("unused"),
-  getThreadProjection: () => Effect.die("unused"),
+  getThreadProjection: (threadId) =>
+    Effect.fail(
+      new ThreadManagement.ThreadManagementThreadNotFoundError({
+        projectId,
+        threadId,
+      }),
+    ),
   getThreadSnapshot: () => Effect.die("unused"),
   getProjectThread: (input) => {
     if (!knownThreads.has(input.threadId)) {
@@ -172,12 +181,34 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
   streamDomainEvents: Stream.die("unused"),
 });
 
+const launchedFallbackIds: ThreadId[] = [];
+const fakeLaunch = ThreadLaunch.ThreadLaunchService.of({
+  launch: (input) =>
+    Effect.sync(() => {
+      const threadId = ThreadId.make(`thr_fallback_${launchedFallbackIds.length + 1}`);
+      launchedFallbackIds.push(threadId);
+      return {
+        threadId,
+        projection: {
+          thread: {
+            id: threadId,
+            projectId: input.projectId,
+            archivedAt: null,
+            deletedAt: null,
+          },
+        } as never,
+        resumed: false,
+      };
+    }),
+});
+
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* SqlClient.SqlClient;
     yield* Migration0050;
     yield* Migration0051;
     yield* Migration0052;
+    yield* Migration0053;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
@@ -189,7 +220,9 @@ const FeedbackLayer = pullRequestMonitorFeedbackServiceLayer.pipe(
 const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
   Layer.provide(FeedbackLayer),
+  Layer.provide(Layer.succeed(ThreadLaunch.ThreadLaunchService, fakeLaunch)),
   Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
+  Layer.provide(ServerSettings.layerTest()),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
 );
@@ -408,7 +441,7 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
-  it.effect("rejects ownership transfer to a missing project thread", () =>
+it.effect("rejects ownership transfer to a missing project thread", () =>
     Effect.gen(function* () {
       const service = yield* PullRequestMonitorService;
       const owner = ThreadId.make("thr_owner_valid");
@@ -427,6 +460,36 @@ layer("PullRequestMonitorService", (it) => {
         }),
       );
       assert.isTrue(result._tag === "Failure");
+    }),
+  );
+
+  it.effect("launchFallback creates exclusive owner via prepared worktree thread", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 47,
+      });
+      assert.isNull(started.monitor.ownerThreadId);
+
+      const fallback = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-missing",
+      });
+      assert.isTrue(fallback.launched);
+      assert.isNotNull(fallback.fallbackThreadId);
+      assert.strictEqual(fallback.monitor.ownerThreadId, fallback.fallbackThreadId);
+      assert.isNull(fallback.previousOwnerThreadId);
+
+      // Second launch within cooldown should not dual-own.
+      const again = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-missing",
+      });
+      assert.isFalse(again.launched);
+      assert.strictEqual(again.skippedReason, "recent-fallback-cooldown");
+      assert.strictEqual(again.fallbackThreadId, fallback.fallbackThreadId);
     }),
   );
 });

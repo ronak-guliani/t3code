@@ -650,6 +650,10 @@ export const ServerSettings = Schema.Struct({
   autoMonitorPullRequestsOnCreate: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  // When owner is missing/unavailable, launch a prepared fallback maintenance thread.
+  autoLaunchPrMonitorFallback: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -745,6 +749,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableLegacyTokenStreaming: Schema.optionalKey(Schema.Boolean),
   autoMonitorPullRequestsOnCreate: Schema.optionalKey(Schema.Boolean),
+  autoLaunchPrMonitorFallback: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({

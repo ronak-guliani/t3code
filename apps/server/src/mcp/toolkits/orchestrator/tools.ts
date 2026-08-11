@@ -32,6 +32,8 @@ import {
   PullRequestMonitorReportInput,
   PullRequestMonitorReportResult,
   PullRequestMonitorSubmitFindingsResult,
+  PullRequestMonitorLaunchFallbackInput,
+  PullRequestMonitorLaunchFallbackResult,
   PullRequestRef,
   ThreadId,
 } from "@t3tools/contracts";
@@ -279,6 +281,19 @@ export const PrMonitorSubmitFindingsTool = Tool.make("t3_pr_monitor_submit_findi
   .annotate(Tool.Destructive, false)
   .annotate(Tool.OpenWorld, true);
 
+export const PrMonitorLaunchFallbackTool = Tool.make("t3_pr_monitor_launch_fallback", {
+  description:
+    "Launch a fallback PR maintenance thread with a prepared worktree when the owner is missing or unavailable. Transfers exclusive ownership to the new thread. Never creates concurrent modifying owners. force=true requires human-approved takeover of an available owner.",
+  parameters: PullRequestMonitorLaunchFallbackInput,
+  success: PullRequestMonitorLaunchFallbackResult,
+  failure: PullRequestMonitorError,
+  failureMode: "return",
+  dependencies: monitorDependencies,
+})
+  .annotate(Tool.Title, "PR monitor launch fallback")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true);
+
 export const PrMonitorReportTool = Tool.make("t3_pr_monitor_report", {
   description:
     "Report a disposition on a durable PR monitor feedback item: accepted, rejected, resolved, or needs-human. Triggers an immediate monitor recheck. Use this instead of silently ignoring findings.",
@@ -311,4 +326,5 @@ export const OrchestratorToolkit = Toolkit.make(
   PrMonitorContextTool,
   PrMonitorReportTool,
   PrMonitorSubmitFindingsTool,
+  PrMonitorLaunchFallbackTool,
 );

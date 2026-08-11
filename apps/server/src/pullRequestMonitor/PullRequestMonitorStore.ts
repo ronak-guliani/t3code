@@ -232,6 +232,27 @@ export interface PullRequestMonitorStoreApi {
     readonly reason: string;
     readonly createdAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly latestFallbackLaunch: (monitorId: PullRequestMonitorId) => Effect.Effect<
+    {
+      readonly launchId: string;
+      readonly commandId: string;
+      readonly threadId: string | null;
+      readonly reason: string;
+      readonly status: string;
+      readonly createdAt: string;
+    } | null,
+    PullRequestMonitorError
+  >;
+  readonly recordFallbackLaunch: (input: {
+    readonly launchId: string;
+    readonly monitorId: PullRequestMonitorId;
+    readonly commandId: string;
+    readonly threadId: string | null;
+    readonly reason: string;
+    readonly status: string;
+    readonly error: string | null;
+    readonly createdAt: string;
+  }) => Effect.Effect<void, PullRequestMonitorError>;
 }
 
 export const make = Effect.gen(function* () {
@@ -678,6 +699,55 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  const latestFallbackLaunch: PullRequestMonitorStoreApi["latestFallbackLaunch"] = (monitorId) =>
+    sql<{
+      launch_id: string;
+      command_id: string;
+      thread_id: string | null;
+      reason: string;
+      status: string;
+      created_at: string;
+    }>`
+      SELECT launch_id, command_id, thread_id, reason, status, created_at
+      FROM pull_request_monitor_fallback_launches
+      WHERE monitor_id = ${monitorId}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `.pipe(
+      Effect.map((rows) => {
+        const row = rows[0];
+        if (!row) return null;
+        return {
+          launchId: row.launch_id,
+          commandId: row.command_id,
+          threadId: row.thread_id,
+          reason: row.reason,
+          status: row.status,
+          createdAt: row.created_at,
+        };
+      }),
+      Effect.mapError((cause) => storeError("Failed to load fallback launch.", cause)),
+    );
+
+  const recordFallbackLaunch: PullRequestMonitorStoreApi["recordFallbackLaunch"] = (input) =>
+    sql`
+      INSERT INTO pull_request_monitor_fallback_launches (
+        launch_id, monitor_id, command_id, thread_id, reason, status, error, created_at
+      ) VALUES (
+        ${input.launchId},
+        ${input.monitorId},
+        ${input.commandId},
+        ${input.threadId},
+        ${input.reason},
+        ${input.status},
+        ${input.error},
+        ${input.createdAt}
+      )
+    `.pipe(
+      Effect.mapError((cause) => storeError("Failed to record fallback launch.", cause)),
+      Effect.asVoid,
+    );
+
   return {
     canonicalKey: formatPullRequestMonitorCanonicalKey,
     getById,
@@ -698,6 +768,8 @@ export const make = Effect.gen(function* () {
     getHostCooldownUntil,
     setHostCooldown,
     recordOwnershipEvent,
+    latestFallbackLaunch,
+    recordFallbackLaunch,
   } satisfies PullRequestMonitorStoreApi;
 });
 
