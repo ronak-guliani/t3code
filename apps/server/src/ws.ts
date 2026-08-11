@@ -124,6 +124,7 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -419,6 +420,7 @@ const makeWsRpcLayer = (
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const pullRequests = yield* PullRequestService.PullRequestService;
+      const pullRequestMonitors = yield* PullRequestMonitors.PullRequestMonitorService;
       const usage = yield* UsageService.UsageService;
       const projectService = yield* ProjectService.ProjectService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -1502,6 +1504,32 @@ const makeWsRpcLayer = (
             pullRequests.requestReviewers(input),
             { "rpc.aggregate": "pull-requests" },
           ),
+        [WS_METHODS.pullRequestMonitorsStart]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestMonitorsStart, pullRequestMonitors.start(input), {
+            "rpc.aggregate": "pull-request-monitors",
+          }),
+        [WS_METHODS.pullRequestMonitorsStop]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestMonitorsStop, pullRequestMonitors.stop(input), {
+            "rpc.aggregate": "pull-request-monitors",
+          }),
+        [WS_METHODS.pullRequestMonitorsStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsStatus,
+            pullRequestMonitors.status(input),
+            {
+              "rpc.aggregate": "pull-request-monitors",
+            },
+          ),
+        [WS_METHODS.pullRequestMonitorsList]: (input) =>
+          observeRpcEffect(WS_METHODS.pullRequestMonitorsList, pullRequestMonitors.list(input), {
+            "rpc.aggregate": "pull-request-monitors",
+          }),
+        [WS_METHODS.pullRequestMonitorsSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.pullRequestMonitorsSubscribe,
+            pullRequestMonitors.subscribeList(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
@@ -2084,6 +2112,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const pullRequestMonitors = yield* PullRequestMonitors.PullRequestMonitorService;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2110,6 +2139,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
+              Layer.provide(
+                Layer.succeed(PullRequestMonitors.PullRequestMonitorService, pullRequestMonitors),
+              ),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

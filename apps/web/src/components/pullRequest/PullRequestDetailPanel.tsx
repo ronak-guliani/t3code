@@ -81,6 +81,7 @@ import { PullRequestActivityUnavailableState } from "./PullRequestActivityUnavai
 import { DiffPanelLoadingState } from "../DiffPanelShell";
 import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
 import type { PullRequestAskSelectionInput } from "./PullRequestCodeTab";
+import { PullRequestMonitorStrip } from "./PullRequestMonitorStrip";
 import { PullRequestSummaryTab } from "./PullRequestSummaryTab";
 import { PullRequestTimelineTab } from "./PullRequestTimelineTab";
 import {
@@ -1151,6 +1152,12 @@ export function PullRequestDetailPanel({
                     />
                   </span>
                 </div>
+              </div>
+            ) : null}
+
+            {detail ? (
+              <div className="col-span-2 px-4 pb-3">
+                <PullRequestMonitorStrip environmentId={environmentId} reference={reference} />
               </div>
             ) : null}
 
