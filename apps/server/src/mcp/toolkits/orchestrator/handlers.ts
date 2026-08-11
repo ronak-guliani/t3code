@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
+import { PullRequestMonitorService } from "../../../pullRequestMonitor/PullRequestMonitorService.ts";
 
 const handlers = {
   orchestrator_capabilities: () =>
@@ -108,6 +109,20 @@ const handlers = {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
       return yield* service.interruptThread(scope, input);
+    }),
+  t3_pr_monitor_context: (input) =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      return yield* monitors.context(input);
+    }),
+  t3_pr_monitor_report: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const monitors = yield* PullRequestMonitorService;
+      return yield* monitors.report({
+        ...input,
+        reporterThreadId: input.reporterThreadId ?? scope.threadId,
+      });
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 

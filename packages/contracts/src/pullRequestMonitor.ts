@@ -239,10 +239,140 @@ export const PullRequestMonitorListInput = Schema.Struct({
 });
 export type PullRequestMonitorListInput = typeof PullRequestMonitorListInput.Type;
 
+export const PullRequestMonitorFeedbackDisposition = Schema.Literals([
+  "accepted",
+  "rejected",
+  "resolved",
+  "needs-human",
+]);
+export type PullRequestMonitorFeedbackDisposition =
+  typeof PullRequestMonitorFeedbackDisposition.Type;
+
+export const PullRequestMonitorFeedbackItemStatus = Schema.Literals(["open", "closed"]);
+export type PullRequestMonitorFeedbackItemStatus = typeof PullRequestMonitorFeedbackItemStatus.Type;
+
+export const PullRequestMonitorFeedbackItemId = TrimmedNonEmptyString.pipe(
+  Schema.brand("PullRequestMonitorFeedbackItemId"),
+);
+export type PullRequestMonitorFeedbackItemId = typeof PullRequestMonitorFeedbackItemId.Type;
+
+export const PullRequestMonitorFeedbackRevisionId = TrimmedNonEmptyString.pipe(
+  Schema.brand("PullRequestMonitorFeedbackRevisionId"),
+);
+export type PullRequestMonitorFeedbackRevisionId = typeof PullRequestMonitorFeedbackRevisionId.Type;
+
+export const PullRequestMonitorFeedbackDeliveryId = TrimmedNonEmptyString.pipe(
+  Schema.brand("PullRequestMonitorFeedbackDeliveryId"),
+);
+export type PullRequestMonitorFeedbackDeliveryId = typeof PullRequestMonitorFeedbackDeliveryId.Type;
+
+export const PullRequestMonitorFeedbackItem = Schema.Struct({
+  id: PullRequestMonitorFeedbackItemId,
+  monitorId: PullRequestMonitorId,
+  stableKey: TrimmedNonEmptyString,
+  kind: PullRequestMonitorActionableEventKind,
+  status: PullRequestMonitorFeedbackItemStatus,
+  disposition: Schema.NullOr(PullRequestMonitorFeedbackDisposition),
+  dispositionNote: Schema.NullOr(Schema.String.check(Schema.isMaxLength(2_000))),
+  dispositionAt: Schema.NullOr(IsoDateTime),
+  dispositionByThreadId: Schema.NullOr(ThreadId),
+  firstSeenAt: IsoDateTime,
+  lastSeenAt: IsoDateTime,
+  currentRevisionId: Schema.NullOr(PullRequestMonitorFeedbackRevisionId),
+  /** Bound payload excerpt from the latest revision. */
+  summary: Schema.String.check(Schema.isMaxLength(500)),
+});
+export type PullRequestMonitorFeedbackItem = typeof PullRequestMonitorFeedbackItem.Type;
+
+export const PullRequestMonitorFeedbackRevision = Schema.Struct({
+  id: PullRequestMonitorFeedbackRevisionId,
+  itemId: PullRequestMonitorFeedbackItemId,
+  revisionNumber: PositiveInt,
+  sourceRevision: TrimmedNonEmptyString,
+  headSha: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  summary: Schema.String.check(Schema.isMaxLength(500)),
+  /** Structured untrusted payload; clients/MCP tools may render it. */
+  payload: Schema.Unknown,
+});
+export type PullRequestMonitorFeedbackRevision = typeof PullRequestMonitorFeedbackRevision.Type;
+
+export const PullRequestMonitorFeedbackDeliveryStatus = Schema.Literals([
+  "pending",
+  "delivered",
+  "failed",
+  "suppressed",
+]);
+export type PullRequestMonitorFeedbackDeliveryStatus =
+  typeof PullRequestMonitorFeedbackDeliveryStatus.Type;
+
+export const PullRequestMonitorFeedbackDelivery = Schema.Struct({
+  id: PullRequestMonitorFeedbackDeliveryId,
+  monitorId: PullRequestMonitorId,
+  batchKey: TrimmedNonEmptyString,
+  targetThreadId: ThreadId,
+  commandId: TrimmedNonEmptyString,
+  messageId: TrimmedNonEmptyString,
+  revisionIds: Schema.Array(PullRequestMonitorFeedbackRevisionId),
+  status: PullRequestMonitorFeedbackDeliveryStatus,
+  attemptCount: NonNegativeInt,
+  lastError: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+  deliveredAt: Schema.NullOr(IsoDateTime),
+});
+export type PullRequestMonitorFeedbackDelivery = typeof PullRequestMonitorFeedbackDelivery.Type;
+
+export const PullRequestMonitorFeedbackReport = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  monitorId: PullRequestMonitorId,
+  itemId: PullRequestMonitorFeedbackItemId,
+  disposition: PullRequestMonitorFeedbackDisposition,
+  note: Schema.NullOr(Schema.String.check(Schema.isMaxLength(2_000))),
+  reporterThreadId: Schema.NullOr(ThreadId),
+  createdAt: IsoDateTime,
+});
+export type PullRequestMonitorFeedbackReport = typeof PullRequestMonitorFeedbackReport.Type;
+
+export const PullRequestMonitorReportInput = Schema.Struct({
+  monitorId: Schema.optional(PullRequestMonitorId),
+  reference: Schema.optional(PullRequestRef),
+  itemId: PullRequestMonitorFeedbackItemId,
+  disposition: PullRequestMonitorFeedbackDisposition,
+  note: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+  reporterThreadId: Schema.optional(ThreadId),
+});
+export type PullRequestMonitorReportInput = typeof PullRequestMonitorReportInput.Type;
+
+export const PullRequestMonitorReportResult = Schema.Struct({
+  item: PullRequestMonitorFeedbackItem,
+  report: PullRequestMonitorFeedbackReport,
+  recheckRequested: Schema.Boolean,
+});
+export type PullRequestMonitorReportResult = typeof PullRequestMonitorReportResult.Type;
+
+export const PullRequestMonitorContextInput = Schema.Struct({
+  monitorId: Schema.optional(PullRequestMonitorId),
+  reference: Schema.optional(PullRequestRef),
+  includeClosed: Schema.optional(Schema.Boolean),
+});
+export type PullRequestMonitorContextInput = typeof PullRequestMonitorContextInput.Type;
+
+export const PullRequestMonitorContextResult = Schema.Struct({
+  monitor: Schema.NullOr(PullRequestMonitorRecord),
+  latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
+  openItems: Schema.Array(PullRequestMonitorFeedbackItem),
+  recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
+  recentReports: Schema.Array(PullRequestMonitorFeedbackReport),
+});
+export type PullRequestMonitorContextResult = typeof PullRequestMonitorContextResult.Type;
+
 export const PullRequestMonitorStatusResult = Schema.Struct({
   monitor: Schema.NullOr(PullRequestMonitorRecord),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
   recentEvents: Schema.Array(PullRequestMonitorActionableEvent),
+  openFeedback: Schema.Array(PullRequestMonitorFeedbackItem),
+  recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
+  recentReports: Schema.Array(PullRequestMonitorFeedbackReport),
 });
 export type PullRequestMonitorStatusResult = typeof PullRequestMonitorStatusResult.Type;
 

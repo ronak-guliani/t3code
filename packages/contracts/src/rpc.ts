@@ -205,6 +205,10 @@ import {
   PullRequestMonitorStatusInput,
   PullRequestMonitorStatusResult,
   PullRequestMonitorStopInput,
+  PullRequestMonitorContextInput,
+  PullRequestMonitorContextResult,
+  PullRequestMonitorReportInput,
+  PullRequestMonitorReportResult,
 } from "./pullRequestMonitor.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -333,6 +337,8 @@ export const WS_METHODS = {
   pullRequestMonitorsStatus: "pullRequestMonitors.status",
   pullRequestMonitorsList: "pullRequestMonitors.list",
   pullRequestMonitorsSubscribe: "pullRequestMonitors.subscribe",
+  pullRequestMonitorsContext: "pullRequestMonitors.context",
+  pullRequestMonitorsReport: "pullRequestMonitors.report",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -636,6 +642,18 @@ export const WsPullRequestMonitorsSubscribeRpc = Rpc.make(WS_METHODS.pullRequest
   success: PullRequestMonitorListResult,
   error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
   stream: true,
+});
+
+export const WsPullRequestMonitorsContextRpc = Rpc.make(WS_METHODS.pullRequestMonitorsContext, {
+  payload: PullRequestMonitorContextInput,
+  success: PullRequestMonitorContextResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsReportRpc = Rpc.make(WS_METHODS.pullRequestMonitorsReport, {
+  payload: PullRequestMonitorReportInput,
+  success: PullRequestMonitorReportResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
 });
 
 export const WsSourceControlLookupRepositoryRpc = Rpc.make(
@@ -1153,6 +1171,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestMonitorsStatusRpc,
   WsPullRequestMonitorsListRpc,
   WsPullRequestMonitorsSubscribeRpc,
+  WsPullRequestMonitorsContextRpc,
+  WsPullRequestMonitorsReportRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,

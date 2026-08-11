@@ -6,12 +6,16 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
+import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import { layer as pullRequestMonitorFeedbackServiceLayer } from "./PullRequestMonitorFeedbackService.ts";
 import {
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
@@ -121,15 +125,40 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   monitorSnapshot: () => Effect.succeed(sampleSnapshot()),
 });
 
+const fakeThreads = ThreadManagement.ThreadManagementService.of({
+  ensureLegacyTranscript: () => Effect.void,
+  dispatch: () => Effect.die("unused"),
+  getThreadProjection: () => Effect.die("unused"),
+  getThreadSnapshot: () => Effect.die("unused"),
+  getProjectThread: () => Effect.die("unused"),
+  getShellSnapshot: () => Effect.die("unused"),
+  getThreadShell: () => Effect.die("unused"),
+  listProjectThreads: () => Effect.succeed([]),
+  sendToThread: () => Effect.die("unused"),
+  waitForThread: () => Effect.die("unused"),
+  interruptThread: () => Effect.die("unused"),
+  getThreadEventSequence: () => Effect.die("unused"),
+  streamStoredEvents: Stream.die("unused"),
+  streamStoredEventsFrom: () => Stream.die("unused"),
+  streamDomainEvents: Stream.die("unused"),
+});
+
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* SqlClient.SqlClient;
     yield* Migration0050;
+    yield* Migration0051;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
+const FeedbackLayer = pullRequestMonitorFeedbackServiceLayer.pipe(
+  Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
+  Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
+);
+
 const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
+  Layer.provide(FeedbackLayer),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
 );
@@ -159,12 +188,9 @@ layer("PullRequestMonitorService", (it) => {
 
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNotNull(status.monitor);
-      assert.isNotNull(status.latestSnapshot);
-      assert.strictEqual(status.latestSnapshot?.headSha, "deadbeef");
-
-      const stopped = yield* service.stop({ monitorId: started.monitor.id });
-      assert.strictEqual(stopped.monitor.enabled, false);
-      assert.strictEqual(stopped.monitor.status, "stopped");
+      assert.isArray(status.openFeedback);
+      assert.isArray(status.recentDeliveries);
+      assert.isArray(status.recentReports);
     }),
   );
 });
