@@ -16,9 +16,14 @@
  * a constant height on screen instead, and the floor lets it grow rather than
  * clip once zoomed content needs more than that. `titleBarRowHeightForZoom()`
  * in the desktop main process mirrors this so the lights land on the same line.
+ *
+ * Because the height is fixed rather than intrinsic, the row also centres its
+ * own content: a header that instead padded itself to the row's height would
+ * overflow it and sit off the line the traffic lights are drawn on. Carrying
+ * the centring here means a call site cannot forget it.
  */
 export const TITLEBAR_ROW_CLASS =
-  "h-[max(28px,calc(var(--spacing-titlebar)/var(--app-zoom,1)))] wco:h-[env(titlebar-area-height)]";
+  "flex items-center h-[max(28px,calc(var(--spacing-titlebar)/var(--app-zoom,1)))] wco:h-[env(titlebar-area-height)]";
 
 /**
  * Right inset that keeps trailing header content clear of the Windows overlay

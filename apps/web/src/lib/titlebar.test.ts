@@ -38,6 +38,16 @@ describe("TITLEBAR_ROW_CLASS", () => {
     // which a cross-package import cannot reach.
     expect(Number(floorCssPx)).toBe(28);
   });
+
+  it("centres its own content on the row", () => {
+    // Regression: the row is a fixed height rather than an intrinsic one, so a
+    // header that padded itself to the old height instead of centring inside
+    // it overflowed the row and sat below the line the traffic lights are
+    // drawn on. Carrying the centring in the shared class is what stops a call
+    // site from reintroducing that.
+    expect(TITLEBAR_ROW_CLASS).toMatch(/(^|\s)flex(\s|$)/);
+    expect(TITLEBAR_ROW_CLASS).toMatch(/(^|\s)items-center(\s|$)/);
+  });
 });
 
 describe("TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS", () => {
