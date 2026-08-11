@@ -4729,6 +4729,15 @@ function ChatViewBody(
       toggleTerminalVisibility,
     ],
   );
+  // A fresh JSX node every render would defeat ChatHeader's memo, re-rendering
+  // its un-memoized project, Git, and workflow controls on every streamed chunk.
+  const headerPanelToggles = useMemo(
+    () =>
+      showPanelRail ? undefined : (
+        <ChatPanelToggles orientation="horizontal" {...panelTogglesState} />
+      ),
+    [panelTogglesState, showPanelRail],
+  );
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -4779,11 +4788,7 @@ function ChatViewBody(
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
           onExportThread={onExportThread}
-          {...(showPanelRail
-            ? {}
-            : {
-                panelToggles: <ChatPanelToggles orientation="horizontal" {...panelTogglesState} />,
-              })}
+          {...(headerPanelToggles ? { panelToggles: headerPanelToggles } : {})}
           paneActions={paneActions}
         />
       </header>
