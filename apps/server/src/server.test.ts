@@ -3192,6 +3192,27 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes websocket rpc server.prewarmProviderSession", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      // Executes the handler body, so an unbound service reference in it fails
+      // here instead of taking down every stream on a live socket.
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverPrewarmProviderSession]({
+            instanceId: ProviderInstanceId.make("codex"),
+            cwd: "/tmp",
+            runtimeMode: "full-access",
+          }),
+        ),
+      );
+
+      assert.deepEqual(response, {});
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc server.upsertKeybinding", () =>
     Effect.gen(function* () {
       const rule: KeybindingRule = {

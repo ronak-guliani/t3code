@@ -929,7 +929,7 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
-  it("does not retry stream subscriptions after application-level failures", async () => {
+  it("backs off instead of hot-looping after application-level failures", async () => {
     const transport = createTransport("ws://localhost:3020");
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let attempts = 0;
@@ -941,7 +941,7 @@ describe("WsTransport", () => {
           return Stream.fail(new Error("Git command failed in GitCore.statusDetails"));
         }),
       vi.fn(),
-      { retryDelay: 10 },
+      { retryDelay: 60_000 },
     );
 
     await waitFor(() => {
@@ -958,6 +958,7 @@ describe("WsTransport", () => {
     expect(attempts).toBe(1);
     expect(warnSpy).toHaveBeenCalledWith("[ws] stream-parked", {
       error: "Git command failed in GitCore.statusDetails",
+      retryInMs: 30_000,
     });
     expect(warnSpy).not.toHaveBeenCalledWith("[ws] stream-retry", expect.anything());
 
@@ -1156,7 +1157,9 @@ describe("WsTransport", () => {
           return Stream.fail(new Error("Git command failed in GitCore.statusDetails"));
         }),
       vi.fn(),
-      { retryDelay: 10 },
+      // Longer than the test, so only the reconnect wakes the park; the recorded
+      // delay is the 30s ceiling.
+      { retryDelay: 60_000 },
     );
 
     await waitFor(() => {
@@ -1184,6 +1187,7 @@ describe("WsTransport", () => {
 
     expect(warnSpy).toHaveBeenCalledWith("[ws] stream-parked", {
       error: "Git command failed in GitCore.statusDetails",
+      retryInMs: 30_000,
     });
 
     unsubscribe();
@@ -1202,7 +1206,9 @@ describe("WsTransport", () => {
           return Stream.fail(new Error("Git command failed in GitCore.statusDetails"));
         }),
       vi.fn(),
-      { retryDelay: 10 },
+      // Longer than the test, so only the reconnect wakes the park; the recorded
+      // delay is the 30s ceiling.
+      { retryDelay: 60_000 },
     );
 
     await waitFor(() => {
@@ -1217,6 +1223,7 @@ describe("WsTransport", () => {
     await waitFor(() => {
       expect(warnSpy).toHaveBeenCalledWith("[ws] stream-parked", {
         error: "Git command failed in GitCore.statusDetails",
+        retryInMs: 30_000,
       });
     });
 
@@ -1230,6 +1237,38 @@ describe("WsTransport", () => {
     await waitFor(() => {
       expect(attempts).toBe(2);
     }, 5_000);
+
+    unsubscribe();
+    await transport.dispose();
+  }, 20_000);
+
+  it("retries a parked stream on backoff while the socket stays healthy", async () => {
+    const transport = createTransport("ws://localhost:3020");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let attempts = 0;
+
+    // A server-side handler defect (e.g. a ReferenceError in an RPC handler)
+    // fails every stream on the socket without closing it, so nothing reconnects.
+    const unsubscribe = transport.subscribe(
+      () =>
+        Stream.suspend(() => {
+          attempts += 1;
+          return Stream.fail(new Error("providerService is not defined"));
+        }),
+      vi.fn(),
+      { retryDelay: 10 },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(3);
+    }, 5_000);
+
+    expect(sockets).toHaveLength(1);
 
     unsubscribe();
     await transport.dispose();

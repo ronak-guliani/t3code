@@ -33,6 +33,8 @@ interface RequestOptions {
 }
 
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
+// A parked stream retries on this ceiling even while the socket stays healthy.
+const MAX_PARKED_SUBSCRIPTION_RETRY_DELAY_MS = 30_000;
 const NOOP: () => void = () => undefined;
 
 interface TransportSession {
@@ -123,6 +125,7 @@ export class WsTransport {
     let active = true;
     let hasReceivedValue = false;
     let restartRequested = false;
+    let parkedAttempt = 0;
     let wakeParkedLoop: (() => void) | null = null;
     const retryDelayMs = Duration.toMillis(
       Duration.fromInputUnsafe(options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS),
@@ -147,16 +150,31 @@ export class WsTransport {
     };
     this.streamSubscriptions.add(subscription);
 
-    // Parks the loop until the transport reconnects instead of abandoning the
-    // subscription, so a one-off server-side stream failure cannot leave the UI
-    // permanently stale.
-    const awaitRestart = () =>
+    // Parks the loop instead of abandoning the subscription, so a one-off
+    // server-side stream failure cannot leave the UI permanently stale. The park
+    // is bounded by backoff as well as the next reconnect, because a healthy
+    // socket produces no reconnect to wake it.
+    const nextParkedBackoffMs = () => {
+      parkedAttempt += 1;
+      return Math.min(
+        retryDelayMs * 2 ** (parkedAttempt - 1),
+        MAX_PARKED_SUBSCRIPTION_RETRY_DELAY_MS,
+      );
+    };
+    const awaitRestartOrDelay = (delayMs: number) =>
       new Promise<void>((resolve) => {
         if (!active || this.disposed || restartRequested) {
           resolve();
           return;
         }
-        wakeParkedLoop = resolve;
+        const timeoutId = setTimeout(() => {
+          wakeParkedLoop = null;
+          resolve();
+        }, delayMs);
+        wakeParkedLoop = () => {
+          clearTimeout(timeoutId);
+          resolve();
+        };
       });
 
     void (async () => {
@@ -184,6 +202,7 @@ export class WsTransport {
             () => {
               this.hasReportedTransportDisconnect = false;
               hasReceivedValue = true;
+              parkedAttempt = 0;
             },
           );
           cancelCurrentStream = runningStream.cancel;
@@ -201,8 +220,9 @@ export class WsTransport {
 
           const formattedError = formatErrorMessage(error);
           if (!isTransportConnectionErrorMessage(formattedError)) {
-            recordWsDiagnostic("stream-parked", { error: formattedError });
-            await awaitRestart();
+            const retryInMs = nextParkedBackoffMs();
+            recordWsDiagnostic("stream-parked", { error: formattedError, retryInMs });
+            await awaitRestartOrDelay(retryInMs);
             continue;
           }
 
