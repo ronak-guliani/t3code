@@ -39,6 +39,8 @@ export type SourceControlActionKind =
 export interface SourceControlActionScope {
   readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
+  readonly projectId?: string | null;
+  readonly threadId?: ThreadId | null;
 }
 
 interface SourceControlActionState<
@@ -237,6 +239,8 @@ export function useGitStackedAction(scope: SourceControlActionScope) {
         ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
         ...(input.featureBranch ? { featureBranch: true } : {}),
         ...(input.filePaths?.length ? { filePaths: input.filePaths } : {}),
+        ...(scope.projectId ? { projectId: scope.projectId } : {}),
+        ...(scope.threadId ? { threadId: scope.threadId } : {}),
         ...(input.onProgress ? { onProgress: input.onProgress } : {}),
       });
     },

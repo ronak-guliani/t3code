@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
+  ThreadId,
   type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorSnapshot,
   type PullRequestRef,
@@ -13,6 +14,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
 import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
+import Migration0052 from "../persistence/Migrations/052_PullRequestMonitorOwnership.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -150,6 +152,7 @@ const MigratedSql = Layer.effectDiscard(
     yield* SqlClient.SqlClient;
     yield* Migration0050;
     yield* Migration0051;
+    yield* Migration0052;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
@@ -272,6 +275,54 @@ layer("PullRequestMonitorService", (it) => {
       const state = yield* feedbackStore.getState(started.monitor.id);
       assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
       assert.strictEqual(state.deliveryFailureCount, 1);
+    }),
+  );
+
+  it.effect("transfers ownership to a single owner thread", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const ownerA = ThreadId.make("thr_owner_a");
+      const ownerB = ThreadId.make("thr_owner_b");
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 43,
+        ownerThreadId: ownerA,
+      });
+      assert.strictEqual(started.monitor.ownerThreadId, ownerA);
+
+      const transferred = yield* service.transferOwnership({
+        monitorId: started.monitor.id,
+        toThreadId: ownerB,
+        reason: "fallback",
+      });
+      assert.strictEqual(transferred.monitor.ownerThreadId, ownerB);
+      assert.isNull(transferred.monitor.linkedReviewThreadId);
+    }),
+  );
+
+  it.effect("submitFindings links review thread without dual owners", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_owner_main");
+      const review = ThreadId.make("thr_review_1");
+      const result = yield* service.submitFindings({
+        reference: {
+          projectId,
+          repository: "acme/app",
+          number: 44,
+        },
+        reviewThreadId: review,
+        ownerThreadId: owner,
+        summary: "Three findings handed off",
+        startMonitoring: true,
+      });
+      assert.strictEqual(result.monitoringStarted, true);
+      assert.strictEqual(result.ownerThreadId, owner);
+      assert.strictEqual(result.linkedReviewThreadId, review);
+      assert.strictEqual(result.monitor.ownerThreadId, owner);
+      assert.strictEqual(result.monitor.linkedReviewThreadId, review);
+      assert.notStrictEqual(result.monitor.ownerThreadId, result.monitor.linkedReviewThreadId);
     }),
   );
 });

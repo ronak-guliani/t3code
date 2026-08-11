@@ -31,6 +31,8 @@ import {
   PullRequestMonitorError,
   PullRequestMonitorReportInput,
   PullRequestMonitorReportResult,
+  PullRequestMonitorSubmitFindingsInput,
+  PullRequestMonitorSubmitFindingsResult,
 } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
@@ -250,6 +252,19 @@ export const PrMonitorContextTool = Tool.make("t3_pr_monitor_context", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
+export const PrMonitorSubmitFindingsTool = Tool.make("t3_pr_monitor_submit_findings", {
+  description:
+    "Handoff structured review findings for a PR: link this review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass.",
+  parameters: PullRequestMonitorSubmitFindingsInput,
+  success: PullRequestMonitorSubmitFindingsResult,
+  failure: PullRequestMonitorError,
+  failureMode: "return",
+  dependencies: monitorDependencies,
+})
+  .annotate(Tool.Title, "PR monitor submit findings")
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true);
+
 export const PrMonitorReportTool = Tool.make("t3_pr_monitor_report", {
   description:
     "Report a disposition on a durable PR monitor feedback item: accepted, rejected, resolved, or needs-human. Triggers an immediate monitor recheck. Use this instead of silently ignoring findings.",
@@ -281,4 +296,5 @@ export const OrchestratorToolkit = Toolkit.make(
   ThreadInterruptTool,
   PrMonitorContextTool,
   PrMonitorReportTool,
+  PrMonitorSubmitFindingsTool,
 );

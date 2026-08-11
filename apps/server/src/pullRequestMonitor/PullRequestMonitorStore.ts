@@ -70,6 +70,7 @@ interface MonitorRow {
   readonly number: number;
   readonly project_id: string;
   readonly owner_thread_id: string | null;
+  readonly linked_review_thread_id: string | null;
   readonly status: string;
   readonly enabled: number;
   readonly readiness_json: string | null;
@@ -120,6 +121,8 @@ function rowToRecord(
       number: row.number,
       projectId: row.project_id as PullRequestMonitorRecord["projectId"],
       ownerThreadId: row.owner_thread_id as PullRequestMonitorRecord["ownerThreadId"],
+      linkedReviewThreadId: (row.linked_review_thread_id ??
+        null) as PullRequestMonitorRecord["linkedReviewThreadId"],
       status: row.status as PullRequestMonitorLifecycleStatus,
       enabled: row.enabled === 1,
       readiness,
@@ -211,6 +214,14 @@ export interface PullRequestMonitorStoreApi {
     readonly cooldownUntil: string;
     readonly reason: string;
     readonly nowIso: string;
+  }) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly recordOwnershipEvent: (input: {
+    readonly eventId: string;
+    readonly monitorId: PullRequestMonitorId;
+    readonly fromThreadId: string | null;
+    readonly toThreadId: string | null;
+    readonly reason: string;
+    readonly createdAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
 }
 
@@ -319,7 +330,7 @@ export const make = Effect.gen(function* () {
     sql`
       INSERT INTO pull_request_monitors (
         monitor_id, canonical_key, provider, host, repository, number, project_id,
-        owner_thread_id, status, enabled, readiness_json, head_sha, source_revision,
+        owner_thread_id, linked_review_thread_id, status, enabled, readiness_json, head_sha, source_revision,
         cursor_json, last_polled_at, next_poll_at, last_error, poll_failure_count,
         created_at, updated_at, stopped_at
       ) VALUES (
@@ -331,6 +342,7 @@ export const make = Effect.gen(function* () {
         ${record.number},
         ${record.projectId},
         ${record.ownerThreadId},
+        ${record.linkedReviewThreadId},
         ${record.status},
         ${record.enabled ? 1 : 0},
         ${record.readiness ? JSON.stringify(record.readiness) : null},
@@ -355,6 +367,7 @@ export const make = Effect.gen(function* () {
       ? sql`
           UPDATE pull_request_monitors SET
             owner_thread_id = ${record.ownerThreadId},
+            linked_review_thread_id = ${record.linkedReviewThreadId},
             status = ${record.status},
             enabled = ${record.enabled ? 1 : 0},
             readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
@@ -372,6 +385,7 @@ export const make = Effect.gen(function* () {
       : sql`
           UPDATE pull_request_monitors SET
             owner_thread_id = ${record.ownerThreadId},
+            linked_review_thread_id = ${record.linkedReviewThreadId},
             status = ${record.status},
             enabled = ${record.enabled ? 1 : 0},
             readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
@@ -591,6 +605,23 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  const recordOwnershipEvent: PullRequestMonitorStoreApi["recordOwnershipEvent"] = (input) =>
+    sql`
+      INSERT INTO pull_request_monitor_ownership_events (
+        event_id, monitor_id, from_thread_id, to_thread_id, reason, created_at
+      ) VALUES (
+        ${input.eventId},
+        ${input.monitorId},
+        ${input.fromThreadId},
+        ${input.toThreadId},
+        ${input.reason},
+        ${input.createdAt}
+      )
+    `.pipe(
+      Effect.mapError((cause) => storeError("Failed to record ownership event.", cause)),
+      Effect.asVoid,
+    );
+
   return {
     canonicalKey: formatPullRequestMonitorCanonicalKey,
     getById,
@@ -609,6 +640,7 @@ export const make = Effect.gen(function* () {
     releaseLease,
     getHostCooldownUntil,
     setHostCooldown,
+    recordOwnershipEvent,
   } satisfies PullRequestMonitorStoreApi;
 });
 

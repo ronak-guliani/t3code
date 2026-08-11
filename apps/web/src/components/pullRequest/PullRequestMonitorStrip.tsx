@@ -132,6 +132,22 @@ export function PullRequestMonitorStrip(props: {
               server-owned
             </span>
           ) : null}
+          {monitor?.ownerThreadId ? (
+            <span
+              className="rounded bg-sky-500/10 px-1.5 py-0.5 font-mono text-[11px] text-sky-800 dark:text-sky-300"
+              title={`Owner thread ${monitor.ownerThreadId}`}
+            >
+              owner {monitor.ownerThreadId.slice(0, 8)}
+            </span>
+          ) : null}
+          {monitor?.linkedReviewThreadId ? (
+            <span
+              className="rounded bg-violet-500/10 px-1.5 py-0.5 font-mono text-[11px] text-violet-800 dark:text-violet-300"
+              title={`Review thread ${monitor.linkedReviewThreadId}`}
+            >
+              review {monitor.linkedReviewThreadId.slice(0, 8)}
+            </span>
+          ) : null}
           {openFeedback.length > 0 ? (
             <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-700 dark:text-amber-300">
               {openFeedback.length} open feedback

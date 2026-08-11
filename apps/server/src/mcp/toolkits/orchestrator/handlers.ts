@@ -169,6 +169,15 @@ const handlers = {
         reporterThreadId: input.reporterThreadId ?? scope.threadId,
       });
     }),
+  t3_pr_monitor_submit_findings: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const monitors = yield* PullRequestMonitorService;
+      return yield* monitors.submitFindings({
+        ...input,
+        reviewThreadId: input.reviewThreadId ?? scope.threadId,
+      });
+    }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 
 export const OrchestratorToolkitHandlersLive = OrchestratorToolkit.toLayer(handlers);

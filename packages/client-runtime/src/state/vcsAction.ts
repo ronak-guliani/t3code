@@ -76,6 +76,8 @@ export interface RunVcsStackedActionInput {
   readonly commitMessage?: string;
   readonly featureBranch?: boolean;
   readonly filePaths?: ReadonlyArray<string>;
+  readonly projectId?: string;
+  readonly threadId?: string;
   readonly onProgress?: (event: GitActionProgressEvent) => void;
 }
 
@@ -466,6 +468,12 @@ export function createVcsActionManager<R, E>(
           ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
           ...(input.featureBranch ? { featureBranch: true } : {}),
           ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
+          ...(input.projectId
+            ? { projectId: input.projectId as GitRunStackedActionInput["projectId"] }
+            : {}),
+          ...(input.threadId
+            ? { threadId: input.threadId as GitRunStackedActionInput["threadId"] }
+            : {}),
         };
         const clearOwnedState = Effect.sync(() => {
           const current = registry.get(stateAtom);

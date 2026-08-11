@@ -527,6 +527,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin
         ? ["New worktrees start from origin"]
         : []),
+      ...(settings.autoMonitorPullRequestsOnCreate !==
+      DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate
+        ? ["Auto-monitor created pull requests"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -546,6 +550,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
+      settings.autoMonitorPullRequestsOnCreate,
       settings.diffIgnoreWhitespace,
       settings.environmentIdentificationMode,
       settings.fontFamilyCode,
@@ -651,6 +656,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       providerHealthRefreshInterval: DEFAULT_UNIFIED_SETTINGS.providerHealthRefreshInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
+      autoMonitorPullRequestsOnCreate: DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -2134,6 +2140,34 @@ export function GeneralSettingsPanel() {
             }
           />
         ) : null}
+
+        <SettingsRow
+          title="Auto-monitor created pull requests"
+          description="When a thread creates a PR, associate ownership and start server-owned monitoring for that thread."
+          resetAction={
+            settings.autoMonitorPullRequestsOnCreate !==
+            DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate ? (
+              <SettingResetButton
+                label="auto-monitor created pull requests"
+                onClick={() =>
+                  updateSettings({
+                    autoMonitorPullRequestsOnCreate:
+                      DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.autoMonitorPullRequestsOnCreate}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoMonitorPullRequestsOnCreate: Boolean(checked) })
+              }
+              aria-label="Auto-monitor created pull requests"
+            />
+          }
+        />
 
         <SettingsRow
           {...searchableSetting("add-project-starts-in")}

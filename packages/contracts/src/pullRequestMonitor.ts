@@ -200,6 +200,7 @@ export const PullRequestMonitorRecord = Schema.Struct({
   number: PositiveInt,
   projectId: ProjectId,
   ownerThreadId: Schema.NullOr(ThreadId),
+  linkedReviewThreadId: Schema.NullOr(ThreadId),
   status: PullRequestMonitorLifecycleStatus,
   enabled: Schema.Boolean,
   readiness: Schema.NullOr(PullRequestMonitorReadiness),
@@ -385,6 +386,33 @@ export const PullRequestMonitorMutationResult = Schema.Struct({
   monitor: PullRequestMonitorRecord,
 });
 export type PullRequestMonitorMutationResult = typeof PullRequestMonitorMutationResult.Type;
+
+export const PullRequestMonitorTransferInput = Schema.Struct({
+  monitorId: Schema.optional(PullRequestMonitorId),
+  reference: Schema.optional(PullRequestRef),
+  toThreadId: ThreadId,
+  reason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+});
+export type PullRequestMonitorTransferInput = typeof PullRequestMonitorTransferInput.Type;
+
+export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
+  reference: PullRequestRef,
+  reviewThreadId: ThreadId,
+  ownerThreadId: Schema.optional(ThreadId),
+  summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+  startMonitoring: Schema.optional(Schema.Boolean),
+});
+export type PullRequestMonitorSubmitFindingsInput =
+  typeof PullRequestMonitorSubmitFindingsInput.Type;
+
+export const PullRequestMonitorSubmitFindingsResult = Schema.Struct({
+  monitor: PullRequestMonitorRecord,
+  linkedReviewThreadId: ThreadId,
+  ownerThreadId: Schema.NullOr(ThreadId),
+  monitoringStarted: Schema.Boolean,
+});
+export type PullRequestMonitorSubmitFindingsResult =
+  typeof PullRequestMonitorSubmitFindingsResult.Type;
 
 export class PullRequestMonitorError extends Schema.TaggedErrorClass<PullRequestMonitorError>()(
   "PullRequestMonitorError",

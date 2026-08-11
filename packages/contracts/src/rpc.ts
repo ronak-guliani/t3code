@@ -209,6 +209,9 @@ import {
   PullRequestMonitorContextResult,
   PullRequestMonitorReportInput,
   PullRequestMonitorReportResult,
+  PullRequestMonitorTransferInput,
+  PullRequestMonitorSubmitFindingsInput,
+  PullRequestMonitorSubmitFindingsResult,
 } from "./pullRequestMonitor.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -339,6 +342,8 @@ export const WS_METHODS = {
   pullRequestMonitorsSubscribe: "pullRequestMonitors.subscribe",
   pullRequestMonitorsContext: "pullRequestMonitors.context",
   pullRequestMonitorsReport: "pullRequestMonitors.report",
+  pullRequestMonitorsTransfer: "pullRequestMonitors.transfer",
+  pullRequestMonitorsSubmitFindings: "pullRequestMonitors.submitFindings",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -655,6 +660,21 @@ export const WsPullRequestMonitorsReportRpc = Rpc.make(WS_METHODS.pullRequestMon
   success: PullRequestMonitorReportResult,
   error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
 });
+
+export const WsPullRequestMonitorsTransferRpc = Rpc.make(WS_METHODS.pullRequestMonitorsTransfer, {
+  payload: PullRequestMonitorTransferInput,
+  success: PullRequestMonitorMutationResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsSubmitFindingsRpc = Rpc.make(
+  WS_METHODS.pullRequestMonitorsSubmitFindings,
+  {
+    payload: PullRequestMonitorSubmitFindingsInput,
+    success: PullRequestMonitorSubmitFindingsResult,
+    error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsSourceControlLookupRepositoryRpc = Rpc.make(
   WS_METHODS.sourceControlLookupRepository,
@@ -1173,6 +1193,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestMonitorsSubscribeRpc,
   WsPullRequestMonitorsContextRpc,
   WsPullRequestMonitorsReportRpc,
+  WsPullRequestMonitorsTransferRpc,
+  WsPullRequestMonitorsSubmitFindingsRpc,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,
