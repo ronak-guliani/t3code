@@ -7085,7 +7085,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("renders all six right-panel surface branches and preserves browser sessions while switching", async () => {
+  it("renders all seven right-panel surface branches and preserves inactive surfaces", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithLongProposedPlan(),
@@ -7123,6 +7123,9 @@ describe("ChatView timeline estimator parity (full app)", () => {
       rightPanel.open(THREAD_REF, "diff");
       await expectSurface("diff");
 
+      rightPanel.open(THREAD_REF, "insights");
+      await expectSurface("insights");
+
       useTerminalStateStore.getState().newTerminal(THREAD_REF, "terminal-surface");
       useTerminalStateStore.getState().setTerminalOpen(THREAD_REF, true);
       rightPanel.openTerminal(THREAD_REF, "terminal-surface");
@@ -7143,6 +7146,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       rightPanel.activateSurface(THREAD_REF, "browser:preview-browser-test");
       await expectSurface("preview");
+      expect(document.querySelectorAll("[data-chat-view-right-panel-surface]")).toHaveLength(1);
+      expect(document.querySelector("[data-right-panel-insights]")).not.toBeNull();
       expect(wsRequests.some((request) => request._tag === WS_METHODS.previewClose)).toBe(false);
     } finally {
       await mounted.cleanup();
@@ -7194,6 +7199,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         targetMessageId: "msg-user-preview-shortcut" as MessageId,
         targetText: "preview shortcut",
       }),
+      resolveRpc: (body) => {
+        if (body._tag === WS_METHODS.previewOpen) return createPreviewSnapshot();
+        return undefined;
+      },
       configureFixture: (nextFixture) => {
         nextFixture.serverConfig = {
           ...nextFixture.serverConfig,
