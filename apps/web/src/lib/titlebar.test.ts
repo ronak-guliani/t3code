@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { readWindowZoomFactor, TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS } from "./titlebar";
+import {
+  readWindowZoomFactor,
+  TITLEBAR_ROW_CLASS,
+  TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS,
+} from "./titlebar";
 
 describe("readWindowZoomFactor", () => {
   it("derives the zoom factor from the screen-point to CSS-pixel ratio", () => {
@@ -15,6 +19,24 @@ describe("readWindowZoomFactor", () => {
     ["a non-finite measurement", { outerWidth: Number.NaN, innerWidth: 1600 }],
   ])("falls back to 1 for %s", (_label, view) => {
     expect(readWindowZoomFactor(view)).toBe(1);
+  });
+});
+
+describe("TITLEBAR_ROW_CLASS", () => {
+  it("holds the row to a constant on-screen height with a floor for zoomed content", () => {
+    // Regression: the row was a plain `h-titlebar`, so it grew with the page
+    // zoom and dragged the traffic lights down away from the window corner.
+    // `titleBarRowHeightForZoom()` in the desktop main process mirrors this
+    // expression; the two must agree or the lights fall off the row.
+    const match =
+      /h-\[max\((\d+)px,calc\(var\(--spacing-titlebar\)\/var\(--app-zoom,1\)\)\)\]/.exec(
+        TITLEBAR_ROW_CLASS,
+      );
+    expect(match).not.toBeNull();
+    const [, floorCssPx = ""] = match ?? [];
+    // Keep in sync with `TITLEBAR_ROW_MIN_CSS_HEIGHT` in the desktop package,
+    // which a cross-package import cannot reach.
+    expect(Number(floorCssPx)).toBe(28);
   });
 });
 
