@@ -62,6 +62,10 @@ import {
   collectStaleActiveTurnToastRequests,
   collectThreadCompletionNotifications,
 } from "../threadCompletionNotifications";
+import {
+  INTERNAL_PULL_REQUEST_NAVIGATION_EVENT,
+  type InternalPullRequestNavigation,
+} from "../lib/openPullRequestLink";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -115,6 +119,7 @@ function RootRouteView() {
         <ThreadCompletionNotificationCoordinator />
         <StaleActiveTurnToastCoordinator />
         <EventRouter />
+        <InternalPullRequestNavigationHandler />
         <DesktopBrowserRuntime authenticated />
         <PreviewAutomationHosts />
         <ElectronBrowserHost />
@@ -130,6 +135,32 @@ function RootRouteView() {
       </AnchoredToastProvider>
     </ToastProvider>
   );
+}
+
+function InternalPullRequestNavigationHandler() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const open = (event: Event) => {
+      const { number, repository } = (event as CustomEvent<InternalPullRequestNavigation>).detail;
+      if (
+        !Number.isSafeInteger(number) ||
+        number <= 0 ||
+        typeof repository !== "string" ||
+        repository.length === 0
+      ) {
+        return;
+      }
+      void navigate({
+        to: "/pull-requests",
+        search: { state: "all", involvement: "all", repository, number },
+      });
+    };
+    window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
+    return () => window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
+  }, [navigate]);
+
+  return null;
 }
 
 function ThreadCompletionNotificationCoordinator() {
