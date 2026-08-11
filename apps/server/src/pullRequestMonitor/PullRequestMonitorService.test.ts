@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
+  type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorSnapshot,
   type PullRequestRef,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedb
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./PullRequestMonitorFeedbackService.ts";
 import {
   layer as pullRequestMonitorServiceLayer,
@@ -191,6 +193,80 @@ layer("PullRequestMonitorService", (it) => {
       assert.isArray(status.openFeedback);
       assert.isArray(status.recentDeliveries);
       assert.isArray(status.recentReports);
+    }),
+  );
+
+  it.effect("clears reopened dispositions and preserves concurrent pending revisions", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 43,
+      });
+      const now = "2026-08-11T00:00:00.000Z";
+      const itemId = "fb_item_reopened" as PullRequestMonitorFeedbackItemId;
+      const item = {
+        id: itemId,
+        monitorId: started.monitor.id,
+        stableKey: "review:reopened",
+        kind: "review" as const,
+        status: "open" as const,
+        disposition: null,
+        dispositionNote: null,
+        dispositionAt: null,
+        dispositionByThreadId: null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        currentRevisionId: null,
+        summary: "Reopened finding",
+      };
+
+      yield* feedbackStore.upsertOpenItem({ item });
+      yield* feedbackStore.setDisposition({
+        itemId,
+        disposition: "resolved",
+        note: "Fixed",
+        at: now,
+        byThreadId: null,
+        status: "closed",
+      });
+      yield* feedbackStore.upsertOpenItem({ item });
+
+      const reopened = yield* feedbackStore.getItem(itemId);
+      assert.isNotNull(reopened);
+      assert.strictEqual(reopened.status, "open");
+      assert.isNull(reopened.disposition);
+      assert.isNull(reopened.dispositionNote);
+
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        debounceUntil: "2026-08-11T00:00:15.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-b"],
+        debounceUntil: "2026-08-11T00:00:30.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.setDeliveryCircuitState({
+        monitorId: started.monitor.id,
+        deliveryFailureCount: 1,
+        circuitOpenUntil: null,
+        updatedAt: now,
+      });
+      yield* feedbackStore.removePendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        updatedAt: now,
+      });
+
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
+      assert.strictEqual(state.deliveryFailureCount, 1);
     }),
   );
 });

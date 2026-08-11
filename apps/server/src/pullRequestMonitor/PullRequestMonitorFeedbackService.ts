@@ -26,8 +26,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeCrypto from "node:crypto";
 import * as Result from "effect/Result";
-import * as Schedule from "effect/Schedule";
-import * as Stream from "effect/Stream";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -242,11 +240,9 @@ export const layer = Layer.effect(
 
         if (newRevisionIds.length === 0) return;
 
-        const state = yield* feedbackStore.getState(input.monitor.id);
-        const pending = Array.from(new Set([...state.pendingRevisionIds, ...newRevisionIds]));
-        yield* feedbackStore.saveState({
-          ...state,
-          pendingRevisionIds: pending,
+        yield* feedbackStore.appendPendingRevisionIds({
+          monitorId: input.monitor.id,
+          revisionIds: newRevisionIds,
           debounceUntil: addMs(now, FEEDBACK_DEBOUNCE_MS),
           updatedAt: now,
         });
@@ -321,20 +317,30 @@ export const layer = Layer.effect(
             validated.failure instanceof Error
               ? validated.failure.message
               : String(validated.failure);
-          const terminal =
-            /no longer open|no owner thread|not active|head changed/i.test(message) ||
-            attemptCount >= MAX_DELIVERY_ATTEMPTS;
+          const suppressedByRevalidation =
+            /no longer open|no owner thread|not active|head changed/i.test(message);
+          const terminal = suppressedByRevalidation || attemptCount >= MAX_DELIVERY_ATTEMPTS;
+          if (suppressedByRevalidation) {
+            yield* feedbackStore.setDeliveryCircuitState({
+              monitorId: state.monitorId,
+              deliveryFailureCount: 0,
+              circuitOpenUntil: null,
+              updatedAt: now,
+            });
+          }
           const failureCount = state.deliveryFailureCount + 1;
           const circuitOpenUntil =
             failureCount >= DELIVERY_CIRCUIT_THRESHOLD
               ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
               : state.circuitOpenUntil;
-          yield* feedbackStore.saveState({
-            ...state,
-            deliveryFailureCount: failureCount,
-            circuitOpenUntil,
-            updatedAt: now,
-          });
+          if (!suppressedByRevalidation) {
+            yield* feedbackStore.setDeliveryCircuitState({
+              monitorId: state.monitorId,
+              deliveryFailureCount: failureCount,
+              circuitOpenUntil,
+              updatedAt: now,
+            });
+          }
           yield* feedbackStore.updateDelivery({
             ...delivery,
             status: terminal ? "suppressed" : "failed",
@@ -391,8 +397,8 @@ export const layer = Layer.effect(
             failureCount >= DELIVERY_CIRCUIT_THRESHOLD
               ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
               : state.circuitOpenUntil;
-          yield* feedbackStore.saveState({
-            ...state,
+          yield* feedbackStore.setDeliveryCircuitState({
+            monitorId: state.monitorId,
             deliveryFailureCount: failureCount,
             circuitOpenUntil,
             updatedAt: now,
@@ -425,8 +431,8 @@ export const layer = Layer.effect(
             messageId: sendResult.success.message.id,
           }),
         });
-        yield* feedbackStore.saveState({
-          ...state,
+        yield* feedbackStore.setDeliveryCircuitState({
+          monitorId: state.monitorId,
           deliveryFailureCount: 0,
           circuitOpenUntil: null,
           updatedAt: now,
@@ -477,10 +483,9 @@ export const layer = Layer.effect(
           });
         }
 
-        yield* feedbackStore.saveState({
-          ...state,
-          pendingRevisionIds: [],
-          debounceUntil: null,
+        yield* feedbackStore.removePendingRevisionIds({
+          monitorId: monitor.id,
+          revisionIds,
           updatedAt: now,
         });
       }
@@ -504,13 +509,6 @@ export const layer = Layer.effect(
       Effect.forkScoped,
       Effect.interruptible,
     );
-    yield* Stream.fromSchedule(Schedule.spaced(Duration.seconds(20))).pipe(
-      Stream.mapEffect(() => flushDueDeliveries),
-      Stream.runDrain,
-      Effect.forkScoped,
-      Effect.interruptible,
-    );
-
     const context: (typeof PullRequestMonitorFeedbackService.Service)["context"] = (input) =>
       Effect.gen(function* () {
         const monitor = yield* input.resolveMonitor();
