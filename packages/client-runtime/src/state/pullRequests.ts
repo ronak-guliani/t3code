@@ -154,5 +154,27 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       scheduler: commandScheduler,
       concurrency: serialPerEnvironment,
     }),
+    monitorsStart: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pull-request-monitors:start",
+      tag: WS_METHODS.pullRequestMonitorsStart,
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
+    monitorsStop: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pull-request-monitors:stop",
+      tag: WS_METHODS.pullRequestMonitorsStop,
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
+    monitorsStatus: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:pull-request-monitors:status",
+      tag: WS_METHODS.pullRequestMonitorsStatus,
+      staleTimeMs: 5_000,
+    }),
+    monitorsList: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:pull-request-monitors:list",
+      tag: WS_METHODS.pullRequestMonitorsList,
+      staleTimeMs: 5_000,
+    }),
   };
 }

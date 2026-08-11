@@ -52,8 +52,9 @@ export const make = Effect.map(
 );
 
 export const layer = Layer.effect(PullRequestProviderRegistry, make).pipe(
-  Layer.provide(GitHubPullRequestCli.layer.pipe(Layer.provide(GitHubCli.layer))),
+  Layer.provide(GitHubPullRequestCli.layer),
   Layer.provide(GitLabPullRequestCli.layer.pipe(Layer.provide(GitLabCli.layer))),
   Layer.provide(BitbucketPullRequestApi.layer.pipe(Layer.provide(BitbucketApi.layer))),
   Layer.provide(AzureDevOpsPullRequestCli.layer.pipe(Layer.provide(AzureDevOpsCli.layer))),
+  Layer.provide(GitHubCli.layer),
 );

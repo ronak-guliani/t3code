@@ -28,6 +28,7 @@ import {
   type PullRequestListResult,
   type PullRequestListStatsInput,
   type PullRequestListStatsResult,
+  type PullRequestMonitorSnapshot,
   type PullRequestProviderSummary,
   type PullRequestRef,
   type PullRequestReviewVerdict,
@@ -148,6 +149,13 @@ export class PullRequestService extends Context.Service<
       input: PullRequestReviewerRequestInput,
     ) => Effect.Effect<void, PullRequestError>;
     readonly invalidate: (input: PullRequestInvalidateInput) => Effect.Effect<void>;
+    /**
+     * Fresh host read for durable monitoring. Bypasses detail/activity caches so correctness-
+     * critical poll/diff/readiness never depends on a stale UI snapshot.
+     */
+    readonly monitorSnapshot: (
+      input: PullRequestRef,
+    ) => Effect.Effect<PullRequestMonitorSnapshot, PullRequestError>;
   }
 >()("t3/pullRequest/PullRequestService") {}
 
@@ -1648,6 +1656,28 @@ export const make = Effect.gen(function* () {
         ),
       );
 
+  const monitorSnapshot: PullRequestService["Service"]["monitorSnapshot"] = (input) =>
+    requireProject(input).pipe(
+      Effect.flatMap((project) => {
+        if (project.api.monitorSnapshot === undefined) {
+          return Effect.fail(
+            new PullRequestOperationError({
+              operation: "monitorSnapshot",
+              detail: `${project.api.kind} does not support pull request monitoring yet.`,
+            }),
+          );
+        }
+        return project.api
+          .monitorSnapshot({
+            cwd: project.project.workspaceRoot,
+            repository: project.repository,
+            host: project.host,
+            number: input.number,
+          })
+          .pipe(Effect.mapError(toPullRequestError("monitorSnapshot")));
+      }),
+    );
+
   return PullRequestService.of({
     list,
     listStats,
@@ -1655,6 +1685,7 @@ export const make = Effect.gen(function* () {
     activity,
     diff,
     diffFileContents,
+    monitorSnapshot,
     runAction: invalidatedByMutation(runAction),
     comment: invalidatedByMutation(comment),
     submitReview: invalidatedByMutation(submitReview),

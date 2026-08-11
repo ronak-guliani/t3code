@@ -23,6 +23,7 @@ export * from "./git.ts";
 export * from "./vcs.ts";
 export * from "./sourceControl.ts";
 export * from "./pullRequest.ts";
+export * from "./pullRequestMonitor.ts";
 export * from "./orchestration.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
