@@ -200,6 +200,8 @@ export interface PullRequestProviderApi {
   /** The signed-in account, which is what involvement filtering compares against. */
   readonly getViewer: (input: {
     readonly cwd: string;
+    /** The account is scoped to a host, rather than whichever host gh picks by default. */
+    readonly host: string;
   }) => Effect.Effect<string, PullRequestProviderError>;
 
   readonly listChangeRequests: (

@@ -506,10 +506,9 @@ export const PullRequestActivity = Schema.Struct({
   reviewers: Schema.optional(Schema.Array(PullRequestActor)),
   comments: Schema.Array(PullRequestComment),
   /**
-   * How many remarks the host itself counts in the conversation, which is the number a surface
-   * showing a count has to show: `comments` carries what was read, and a reader who can see 225
-   * on the host is not reassured by a page that says 10. Never less than `comments` holds, and
-   * equal to it wherever the host was read to the end.
+   * The host's conversation count when it is available. A bounded or failed thread read instead
+   * reports a strict lower bound above `comments`, so a surface never presents an incomplete
+   * conversation as complete.
    */
   commentCount: NonNegativeInt,
   /**
@@ -568,13 +567,17 @@ export const PullRequestDiffResult = Schema.Struct({
 export type PullRequestDiffResult = typeof PullRequestDiffResult.Type;
 
 /** The complete old and new files Pierre needs to open omitted context in a host-backed patch. */
+// GitHub paths fit below POSIX's PATH_MAX. Bounding them, together with ten 64 KiB bodies, keeps
+// the review body and inline drafts below one MiB before JSON framing.
+const PullRequestFilePath = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
+
 export const PullRequestDiffFileContentsInput = Schema.Struct({
   ...PullRequestRef.fields,
   /** One commit's own comparison; absent means the whole change request. */
   commit: Schema.optional(TrimmedNonEmptyString),
   changeType: Schema.Literals(["change", "rename-pure", "rename-changed", "new", "deleted"]),
-  oldPath: TrimmedNonEmptyString,
-  newPath: TrimmedNonEmptyString,
+  oldPath: PullRequestFilePath,
+  newPath: PullRequestFilePath,
 });
 export type PullRequestDiffFileContentsInput = typeof PullRequestDiffFileContentsInput.Type;
 
@@ -596,6 +599,8 @@ export type PullRequestActionInput = typeof PullRequestActionInput.Type;
 // enforced here to keep oversized payloads off the wire and out of subprocess plumbing; the
 // service rejects a body that is only whitespace.
 const CommentBody = Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536));
+// Ten maximum-sized remarks plus the review body and bounded paths leave headroom under 1 MiB.
+export const MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS = 10;
 
 export const PullRequestCommentInput = Schema.Struct({
   ...PullRequestRef.fields,
@@ -605,11 +610,11 @@ export type PullRequestCommentInput = typeof PullRequestCommentInput.Type;
 
 /** One remark in a review that has not been sent yet, anchored to a line of the diff. */
 export const PullRequestReviewCommentDraft = Schema.Struct({
-  path: TrimmedNonEmptyString,
+  path: PullRequestFilePath,
   /**
    * What the file was called before the change, sent only when it differs.
    */
-  oldPath: Schema.optional(TrimmedNonEmptyString),
+  oldPath: Schema.optional(PullRequestFilePath),
   line: PositiveInt,
   side: PullRequestDiffSide,
   body: CommentBody,
@@ -626,7 +631,9 @@ export const PullRequestSubmitReviewInput = Schema.Struct({
   verdict: PullRequestReviewVerdict,
   /** The review's own words. May be empty, which is how an approval with no remarks is sent. */
   body: Schema.String.check(Schema.isMaxLength(65_536)),
-  comments: Schema.Array(PullRequestReviewCommentDraft),
+  comments: Schema.Array(PullRequestReviewCommentDraft).check(
+    Schema.isMaxLength(MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS),
+  ),
 });
 export type PullRequestSubmitReviewInput = typeof PullRequestSubmitReviewInput.Type;
 

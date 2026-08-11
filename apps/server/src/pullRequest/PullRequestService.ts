@@ -102,6 +102,8 @@ const DETAIL_STALE_WINDOW = Duration.minutes(5);
 const DIFF_STALE_WINDOW = Duration.minutes(10);
 /** How long one host's signed-in login is believed without asking its CLI again. */
 const VIEWER_CACHE_TTL = Duration.minutes(10);
+/** A file expansion may walk paged diffs, but never an unbounded host-controlled cursor chain. */
+const DIFF_FILE_PROOF_MAX_PAGES = 100;
 const LIST_CACHE_CAPACITY = 64;
 const LIST_STATS_CACHE_CAPACITY = 32;
 const DETAIL_CACHE_CAPACITY = 128;
@@ -353,6 +355,76 @@ function pullRequestHostOf(
   return host === undefined || host.length === 0 ? "github" : host.toLowerCase();
 }
 
+interface DiffFilePaths {
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+}
+
+function pathFromDiffMarker(value: string, prefix: "a/" | "b/"): string | null {
+  const path = value.split("\t", 1)[0];
+  if (path === undefined || path === "/dev/null") return null;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
+}
+
+/**
+ * Extracts unambiguous file identities from unified-diff sections. The REST fallback emits these
+ * headers even for binary files and pure renames, so this proves membership without trusting a
+ * caller-provided path.
+ */
+function diffFilePaths(patch: string): ReadonlyArray<DiffFilePaths> {
+  const normalized = patch.replaceAll("\r\n", "\n");
+  const boundaries = [...normalized.matchAll(/^diff --git a\/(.+) b\/(.+)$/gmu)];
+  return boundaries.flatMap((boundary, index): ReadonlyArray<DiffFilePaths> => {
+    const oldPath = boundary[1];
+    const newPath = boundary[2];
+    if (oldPath === undefined || newPath === undefined) return [];
+    const start = boundary.index ?? 0;
+    const end = boundaries[index + 1]?.index ?? normalized.length;
+    const section = normalized.slice(start, end);
+    const oldMarker = /^--- (.+)$/mu.exec(section)?.[1];
+    const newMarker = /^\+\+\+ (.+)$/mu.exec(section)?.[1];
+    // A pure rename has no ---/+++ pair; its ordinary, unquoted header is still enough.
+    if (oldMarker === undefined && newMarker === undefined) {
+      return oldPath.includes('"') || newPath.includes('"') ? [] : [{ oldPath, newPath }];
+    }
+    if (oldMarker === undefined || newMarker === undefined) return [];
+    return [
+      {
+        oldPath: pathFromDiffMarker(oldMarker, "a/"),
+        newPath: pathFromDiffMarker(newMarker, "b/"),
+      },
+    ];
+  });
+}
+
+function matchesDiffFile(
+  file: DiffFilePaths,
+  input: Pick<PullRequestDiffFileContentsInput, "changeType" | "oldPath" | "newPath">,
+): boolean {
+  switch (input.changeType) {
+    case "new":
+      return file.oldPath === null && file.newPath === input.newPath;
+    case "deleted":
+      return file.oldPath === input.oldPath && file.newPath === null;
+    case "change":
+      return file.oldPath === input.oldPath && file.newPath === input.newPath;
+    case "rename-pure":
+    case "rename-changed":
+      return (
+        file.oldPath === input.oldPath &&
+        file.newPath === input.newPath &&
+        file.oldPath !== file.newPath
+      );
+  }
+}
+
+function patchContainsDiffFile(
+  patch: string,
+  input: Pick<PullRequestDiffFileContentsInput, "changeType" | "oldPath" | "newPath">,
+): boolean {
+  return diffFilePaths(patch).some((file) => matchesDiffFile(file, input));
+}
+
 export const make = Effect.gen(function* () {
   const registry = yield* PullRequestProviderRegistry;
   const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
@@ -503,7 +575,7 @@ export const make = Effect.gen(function* () {
           // unreadable worktree would otherwise report the whole host as signed out.
           const roots =
             viewerRoots.get(host) ?? forHost.map(({ project }) => project.workspaceRoot);
-          return Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd }))).pipe(
+          return Effect.firstSuccessOf(roots.map((cwd) => api.getViewer({ cwd, host }))).pipe(
             Effect.map((viewer) => ({
               host,
               kind: api.kind,
@@ -956,12 +1028,73 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const diffFileContents: PullRequestService["Service"]["diffFileContents"] = () =>
-    Effect.fail(
-      new PullRequestOperationError({
-        operation: "diffFileContents",
-        detail: "Pull request file expansion is unavailable.",
-      }),
+  const diffFileContents: PullRequestService["Service"]["diffFileContents"] = (input) =>
+    requireProject(input).pipe(
+      Effect.flatMap(
+        (project): Effect.Effect<PullRequestDiffFileContentsResult, PullRequestError> => {
+          const getDiffFileContents = project.api.getDiffFileContents;
+          if (!project.api.capabilities.diff || getDiffFileContents === undefined) {
+            return Effect.fail(
+              new PullRequestOperationError({
+                operation: "diffFileContents",
+                detail: "This host cannot expand files from a change request diff.",
+              }),
+            );
+          }
+          return Effect.gen(function* () {
+            const cursors = new Set<string>();
+            let cursor: string | undefined;
+            for (let page = 0; page < DIFF_FILE_PROOF_MAX_PAGES; page += 1) {
+              const diff = yield* project.api
+                .getDiff({
+                  cwd: project.project.workspaceRoot,
+                  repository: project.repository,
+                  host: project.host,
+                  number: input.number,
+                  ...(cursor === undefined ? {} : { cursor }),
+                  ...(input.commit === undefined ? {} : { commit: input.commit }),
+                })
+                .pipe(Effect.mapError(toPullRequestError("diffFileContents")));
+              if (patchContainsDiffFile(diff.patch, input)) {
+                return yield* getDiffFileContents({
+                  cwd: project.project.workspaceRoot,
+                  repository: project.repository,
+                  host: project.host,
+                  number: input.number,
+                  ...(input.commit === undefined ? {} : { commit: input.commit }),
+                  changeType: input.changeType,
+                  oldPath: input.oldPath,
+                  newPath: input.newPath,
+                }).pipe(Effect.mapError(toPullRequestError("diffFileContents")));
+              }
+              if (diff.nextCursor === null || cursors.has(diff.nextCursor)) break;
+              cursors.add(diff.nextCursor);
+              cursor = diff.nextCursor;
+            }
+            return yield* new PullRequestOperationError({
+              operation: "diffFileContents",
+              detail: "The requested file is not in this change request diff.",
+            });
+          });
+        },
+      ),
+    );
+
+  const ensureReviewThreadBelongsTo = (
+    input: PullRequestRef & { readonly threadId: string },
+    operation: "replyToThread" | "setThreadResolution",
+  ): Effect.Effect<void, PullRequestError> =>
+    activity(input).pipe(
+      Effect.flatMap((reviewActivity) =>
+        reviewActivity.reviewThreads.some((thread) => thread.id === input.threadId)
+          ? Effect.void
+          : Effect.fail(
+              new PullRequestOperationError({
+                operation,
+                detail: "The review conversation does not belong to this change request.",
+              }),
+            ),
+      ),
     );
 
   const runAction: PullRequestService["Service"]["runAction"] = (input) =>
@@ -1146,16 +1279,20 @@ export const make = Effect.gen(function* () {
                 }),
               );
             }
-            return project.api
-              .replyToThread({
-                cwd: project.project.workspaceRoot,
-                repository: project.repository,
-                host: project.host,
-                number: input.number,
-                threadId: input.threadId,
-                body: input.body,
-              })
-              .pipe(Effect.mapError(toPullRequestError("replyToThread")));
+            return ensureReviewThreadBelongsTo(input, "replyToThread").pipe(
+              Effect.flatMap(() =>
+                project.api
+                  .replyToThread({
+                    cwd: project.project.workspaceRoot,
+                    repository: project.repository,
+                    host: project.host,
+                    number: input.number,
+                    threadId: input.threadId,
+                    body: input.body,
+                  })
+                  .pipe(Effect.mapError(toPullRequestError("replyToThread"))),
+              ),
+            );
           }),
         );
       }),
@@ -1183,16 +1320,20 @@ export const make = Effect.gen(function* () {
                 }),
               );
             }
-            return project.api
-              .setThreadResolution({
-                cwd: project.project.workspaceRoot,
-                repository: project.repository,
-                host: project.host,
-                number: input.number,
-                threadId: input.threadId,
-                resolved: input.resolved,
-              })
-              .pipe(Effect.mapError(toPullRequestError("setThreadResolution")));
+            return ensureReviewThreadBelongsTo(input, "setThreadResolution").pipe(
+              Effect.flatMap(() =>
+                project.api
+                  .setThreadResolution({
+                    cwd: project.project.workspaceRoot,
+                    repository: project.repository,
+                    host: project.host,
+                    number: input.number,
+                    threadId: input.threadId,
+                    resolved: input.resolved,
+                  })
+                  .pipe(Effect.mapError(toPullRequestError("setThreadResolution"))),
+              ),
+            );
           }),
         );
       }),

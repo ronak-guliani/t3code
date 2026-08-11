@@ -4,7 +4,7 @@ import type {
   PullRequestListEntry,
   PullRequestListState,
 } from "@t3tools/contracts";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { GitPullRequestIcon, LoaderCircleIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { type ReactNode, useDeferredValue, useEffect, useMemo } from "react";
@@ -39,6 +39,7 @@ type PullRequestsSearchPatch = {
 const LIST_STATES = ["all", "open", "closed", "merged"] as const;
 const INVOLVEMENTS = ["all", "reviewing", "authored"] as const;
 const PAGE_SIZE = 50;
+const STATS_BATCH_SIZE = 500;
 const EMPTY_PROJECTS: readonly Project[] = [];
 
 function isListState(value: unknown): value is PullRequestListState {
@@ -111,18 +112,23 @@ function PullRequestsRoute() {
       right.updatedAt.localeCompare(left.updatedAt),
     );
   }, [listQuery.data?.pages]);
-  const statsQuery = useQuery(
-    pullRequestListStatsQueryOptions({
-      environmentId: supported ? environmentId : null,
-      request: {
-        refs: entries.map(({ projectId, repository, number }) => ({
-          projectId,
-          repository,
-          number,
-        })),
-      },
-    }),
+  const statReferenceBatches = useMemo(
+    () =>
+      Array.from({ length: Math.ceil(entries.length / STATS_BATCH_SIZE) }, (_, index) =>
+        entries
+          .slice(index * STATS_BATCH_SIZE, (index + 1) * STATS_BATCH_SIZE)
+          .map(({ projectId, repository, number }) => ({ projectId, repository, number })),
+      ),
+    [entries],
   );
+  const statsQueries = useQueries({
+    queries: statReferenceBatches.map((refs) =>
+      pullRequestListStatsQueryOptions({
+        environmentId: supported ? environmentId : null,
+        request: { refs },
+      }),
+    ),
+  });
   const invalidateMutation = useMutation(
     pullRequestInvalidateMutationOptions({
       environmentId: supported ? environmentId : null,
@@ -131,16 +137,18 @@ function PullRequestsRoute() {
   );
   const entriesWithStats = useMemo(() => {
     const stats = new Map(
-      statsQuery.data?.stats.map((stat) => [
-        `${stat.projectId}:${stat.repository}#${stat.number}`,
-        stat,
-      ]) ?? [],
+      statsQueries.flatMap((query) =>
+        (query.data?.stats ?? []).map((stat) => [
+          `${stat.projectId}:${stat.repository}#${stat.number}`,
+          stat,
+        ]),
+      ),
     );
     return entries.map((entry) => {
       const stat = stats.get(`${entry.projectId}:${entry.repository}#${entry.number}`);
       return stat && entry.additions === 0 && entry.deletions === 0 ? { ...entry, ...stat } : entry;
     });
-  }, [entries, statsQuery.data?.stats]);
+  }, [entries, statsQueries]);
   const explicitSelection = useMemo(
     () =>
       search.repository && search.number && search.selectedProjectId
@@ -404,6 +412,7 @@ function PullRequestsRoute() {
             {selected ? (
               <PullRequestDetailPanel
                 environmentId={environmentId!}
+                key={`${selected.projectId}:${selected.repository}#${selected.number}`}
                 reference={selected}
                 onClose={() => updateSearch({}, true)}
               />

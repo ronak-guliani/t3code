@@ -175,16 +175,32 @@ export function pullRequestListInfiniteQueryOptions(input: {
   readonly request: Omit<PullRequestListInput, "cursors">;
   readonly enabled?: boolean;
 }) {
+  type ListPageParam =
+    | { readonly kind: "cursors"; readonly cursors: PullRequestListInput["cursors"] }
+    | { readonly kind: "limit"; readonly limit: number }
+    | null;
+
   return infiniteQueryOptions({
     queryKey: pullRequestQueryKeys.list(input.environmentId, input.request),
-    initialPageParam: null as PullRequestListInput["cursors"] | null,
+    initialPageParam: null as ListPageParam,
     queryFn: ({ pageParam }) =>
       requirePullRequestApi(input.environmentId).list({
         ...input.request,
-        ...(pageParam ? { cursors: pageParam } : {}),
+        ...(pageParam?.kind === "cursors" ? { cursors: pageParam.cursors } : {}),
+        ...(pageParam?.kind === "limit" ? { limit: pageParam.limit } : {}),
       }),
-    getNextPageParam: (lastPage) =>
-      Object.keys(lastPage.nextCursors).length > 0 ? lastPage.nextCursors : undefined,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) => {
+      if (Object.keys(lastPage.nextCursors).length > 0) {
+        return { kind: "cursors", cursors: lastPage.nextCursors } as const;
+      }
+      if (!lastPage.truncated) {
+        return undefined;
+      }
+      const currentLimit =
+        lastPageParam?.kind === "limit" ? lastPageParam.limit : (input.request.limit ?? 99);
+      const nextLimit = Math.min(currentLimit * 2, 500);
+      return nextLimit > currentLimit ? ({ kind: "limit", limit: nextLimit } as const) : undefined;
+    },
     enabled: input.environmentId !== null && (input.enabled ?? true),
     staleTime: PULL_REQUEST_STALE_TIME_MS,
     refetchOnWindowFocus: true,

@@ -10,6 +10,7 @@ import type {
   PullRequestReviewThread,
   PullRequestReviewVerdict,
 } from "@t3tools/contracts";
+import { MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS } from "@t3tools/contracts";
 import { parsePatchFiles } from "@pierre/diffs";
 import { FileDiff, type FileDiffMetadata, Virtualizer } from "@pierre/diffs/react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -41,7 +42,7 @@ import {
   pullRequestSetThreadResolutionMutationOptions,
   pullRequestSubmitReviewMutationOptions,
 } from "~/lib/pullRequestReactQuery";
-import { openPullRequestLink } from "~/lib/openPullRequestLink";
+import { openExternalPullRequestLink } from "~/lib/openPullRequestLink";
 import { buildPatchCacheKey, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -52,6 +53,7 @@ import {
   nextPendingReviewCommentId,
   pullRequestReviewKey,
   usePullRequestReviewStore,
+  type PendingReviewComment,
 } from "./pullRequestReviewStore";
 import {
   PullRequestActorLabel,
@@ -181,7 +183,9 @@ function ReviewThread({
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && reply.trim()) {
                 event.preventDefault();
-                void onReply(thread.id, reply.trim()).then(() => setReply(""));
+                void onReply(thread.id, reply.trim())
+                  .then(() => setReply(""))
+                  .catch(() => undefined);
               }
             }}
           />
@@ -189,7 +193,11 @@ function ReviewThread({
             <Button
               disabled={pending || reply.trim().length === 0}
               size="xs"
-              onClick={() => void onReply(thread.id, reply.trim()).then(() => setReply(""))}
+              onClick={() =>
+                void onReply(thread.id, reply.trim())
+                  .then(() => setReply(""))
+                  .catch(() => undefined)
+              }
             >
               Reply
             </Button>
@@ -212,7 +220,7 @@ function ReviewComposer({
   readonly onSubmit: (input: {
     readonly verdict: PullRequestReviewVerdict;
     readonly body: string;
-    readonly comments: readonly PullRequestReviewCommentDraft[];
+    readonly comments: readonly PendingReviewComment[];
   }) => void;
 }) {
   const key = pullRequestReviewKey(reference);
@@ -227,11 +235,12 @@ function ReviewComposer({
   );
 
   if (!canSubmit) return null;
+  const hasContent = summary.trim().length > 0 || comments.length > 0;
   const submit = (verdict: PullRequestReviewVerdict) =>
     onSubmit({
       verdict,
       body: summary,
-      comments: comments.map(({ id: _id, ...comment }) => comment),
+      comments,
     });
 
   return (
@@ -276,7 +285,7 @@ function ReviewComposer({
           .filter((verdict) => detail.viewerPermissions.verdicts.includes(verdict))
           .map((verdict) => (
             <Button
-              disabled={submitting}
+              disabled={submitting || (verdict !== "approve" && !hasContent)}
               key={verdict}
               size="xs"
               variant={verdict === "request-changes" ? "destructive" : "outline"}
@@ -352,6 +361,9 @@ function CodeTab({
   const [body, setBody] = useState("");
   const key = pullRequestReviewKey(reference);
   const add = usePullRequestReviewStore((state) => state.add);
+  const pendingReviewComments = usePullRequestReviewStore(
+    (state) => state.commentsByKey[key] ?? EMPTY_PENDING_REVIEW_COMMENTS,
+  );
   const { resolvedTheme } = useTheme();
   const renderablePages = useMemo(
     () =>
@@ -446,7 +458,12 @@ function CodeTab({
           />
           <div className="mt-2 flex justify-end">
             <Button
-              disabled={!path.trim() || !body.trim() || !isValidCommentLine}
+              disabled={
+                !path.trim() ||
+                !body.trim() ||
+                !isValidCommentLine ||
+                pendingReviewComments.length >= MAX_PULL_REQUEST_INLINE_REVIEW_COMMENTS
+              }
               size="xs"
               onClick={() => {
                 add(key, {
@@ -708,7 +725,10 @@ export function PullRequestDetailPanel({
           <a
             className="inline-flex items-center gap-1 hover:text-foreground"
             href={detail.url}
-            onClick={(event) => openPullRequestLink(event, detail.url)}
+            onClick={(event) => {
+              event.preventDefault();
+              openExternalPullRequestLink(detail.url);
+            }}
           >
             GitHub <ExternalLinkIcon className="size-3" />
           </a>
@@ -878,18 +898,21 @@ export function PullRequestDetailPanel({
                   <Button
                     disabled={postComment.isPending || !comment.trim()}
                     size="xs"
-                    onClick={() =>
+                    onClick={() => {
+                      const submittedComment = comment.trim();
                       void postComment
-                        .mutateAsync({ ...reference, body: comment.trim() })
-                        .then(() => setComment(""))
+                        .mutateAsync({ ...reference, body: submittedComment })
+                        .then(() =>
+                          setComment((current) => (current === submittedComment ? "" : current)),
+                        )
                         .catch((error) =>
                           toastManager.add({
                             type: "error",
                             title: "Could not post comment",
                             description: errorMessage(error),
                           }),
-                        )
-                    }
+                        );
+                    }}
                   >
                     Comment
                   </Button>
@@ -913,15 +936,17 @@ export function PullRequestDetailPanel({
                 </Button>
               </div>
             ) : null}
-            {detail.comments.map((item) => (
-              <article className="border-b border-border/60 pb-4" key={item.id}>
-                <div className="flex gap-2 text-xs text-muted-foreground">
-                  <PullRequestActorLabel actor={item.author} className="text-foreground" />
-                  <span>{formatRelativeTimeLabel(item.createdAt)}</span>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-sm">{item.body}</p>
-              </article>
-            ))}
+            {detail.comments
+              .filter((item) => item.kind !== "review-comment")
+              .map((item) => (
+                <article className="border-b border-border/60 pb-4" key={item.id}>
+                  <div className="flex gap-2 text-xs text-muted-foreground">
+                    <PullRequestActorLabel actor={item.author} className="text-foreground" />
+                    <span>{formatRelativeTimeLabel(item.createdAt)}</span>
+                  </div>
+                  <p className="mt-2 whitespace-pre-wrap text-sm">{item.body}</p>
+                </article>
+              ))}
             {detail.reviewThreads.map((thread) => (
               <ReviewThread
                 detail={detail}
@@ -980,10 +1005,13 @@ export function PullRequestDetailPanel({
                   ...reference,
                   verdict,
                   body,
-                  comments,
+                  comments: comments.map(({ id: _id, ...comment }) => comment),
                 })
                 .then(() => {
-                  usePullRequestReviewStore.getState().clear(reviewKey);
+                  usePullRequestReviewStore.getState().removeSubmitted(
+                    reviewKey,
+                    comments.map((comment) => comment.id),
+                  );
                   usePullRequestReviewStore.getState().clearSubmitted(reviewKey, body);
                   toastManager.add({ type: "success", title: "Review submitted" });
                 })

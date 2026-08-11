@@ -122,7 +122,9 @@ export const make = Effect.gen(function* () {
     capabilities: CAPABILITIES,
 
     getViewer: (input) =>
-      cli.getViewerLogin({ cwd: input.cwd }).pipe(Effect.mapError(fail("getViewer"))),
+      cli
+        .getViewerLogin({ cwd: input.cwd, host: input.host })
+        .pipe(Effect.mapError(fail("getViewer"))),
 
     listChangeRequests: (input) =>
       cli
@@ -256,8 +258,15 @@ export const make = Effect.gen(function* () {
         { concurrency: 2 },
       ).pipe(
         Effect.mapError(fail("getChangeRequestActivity")),
-        Effect.map(
-          ([pullRequest, reviewThreads]): ProviderChangeRequestActivity => ({
+        Effect.map(([pullRequest, reviewThreads]): ProviderChangeRequestActivity => {
+          const comments = [...pullRequest.comments, ...reviewThreads.comments]
+            .map((comment) => ({
+              ...comment,
+              author: withAvatar(comment.author, reviewThreads.avatarsByLogin, input.host),
+            }))
+            .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+          const commentCount = pullRequest.comments.length + reviewThreads.commentCount;
+          return {
             author: withAvatar(pullRequest.author, reviewThreads.avatarsByLogin, input.host),
             reviewers: reviewThreads.reviewers,
             commits: (reviewThreads.commits.length > 0
@@ -270,15 +279,14 @@ export const make = Effect.gen(function* () {
                 (author) => withAvatar(author, reviewThreads.avatarsByLogin, input.host) ?? author,
               ),
             })),
-            comments: [...pullRequest.comments, ...reviewThreads.comments]
-              .map((comment) => ({
-                ...comment,
-                author: withAvatar(comment.author, reviewThreads.avatarsByLogin, input.host),
-              }))
-              .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt)),
+            comments,
             // `gh pr view --json comments,reviews` follows GitHub's cursors itself, so those two
-            // are always whole and only the thread walk can stop short of the host.
-            commentCount: pullRequest.comments.length + reviewThreads.commentCount,
+            // are always whole and only the thread walk can stop short of the host. Its exact
+            // count is not available after a failed or page-capped thread walk, so preserve
+            // every known host count and otherwise report a lower bound above what was loaded.
+            commentCount: reviewThreads.truncated
+              ? Math.max(commentCount, comments.length + 1)
+              : commentCount,
             commentsTruncated: reviewThreads.truncated,
             reviewThreads: reviewThreads.reviewThreads.map((thread) => ({
               ...thread,
@@ -287,8 +295,8 @@ export const make = Effect.gen(function* () {
                 author: withAvatar(comment.author, reviewThreads.avatarsByLogin, input.host),
               })),
             })),
-          }),
-        ),
+          };
+        }),
       ),
 
     getViewerPermissions: (input) =>

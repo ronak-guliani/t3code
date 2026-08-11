@@ -62,6 +62,10 @@ const teamRequestedChange: ProviderChangeRequest = {
 };
 
 function provider(): PullRequestProviderApi {
+  return providerWith();
+}
+
+function providerWith(overrides: Partial<PullRequestProviderApi> = {}): PullRequestProviderApi {
   return {
     kind: "github",
     capabilities: {
@@ -94,19 +98,25 @@ function provider(): PullRequestProviderApi {
     setReviewerRequest: () => Effect.void,
     replyToThread: () => Effect.void,
     setThreadResolution: () => Effect.void,
+    ...overrides,
   };
 }
 
-function makeService() {
+function makeService(
+  input: {
+    readonly project?: OrchestrationProjectShell;
+    readonly provider?: PullRequestProviderApi;
+  } = {},
+) {
   return PullRequestService.make.pipe(
     Effect.provide(
       Layer.mergeAll(
-        Layer.succeed(PullRequestProviderRegistry, fromProviders([provider()])),
+        Layer.succeed(PullRequestProviderRegistry, fromProviders([input.provider ?? provider()])),
         Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
           getShellSnapshot: () =>
             Effect.succeed({
               snapshotSequence: 1,
-              projects: [project],
+              projects: [input.project ?? project],
               threads: [],
               updatedAt: "2026-08-10T00:00:00Z",
             }),
@@ -150,7 +160,25 @@ it.effect("refuses a mutation that names a repository outside the selected proje
 
 it.effect("does not read a path that was not proven to be in the pull request diff", () =>
   Effect.gen(function* () {
-    const service = yield* makeService();
+    let fileContentsCalls = 0;
+    const service = yield* makeService({
+      provider: providerWith({
+        getDiff: () =>
+          Effect.succeed({
+            patch: [
+              "diff --git a/src/other.ts b/src/other.ts",
+              "--- a/src/other.ts",
+              "+++ b/src/other.ts",
+            ].join("\n"),
+            truncated: false,
+            nextCursor: null,
+          }),
+        getDiffFileContents: () => {
+          fileContentsCalls += 1;
+          return Effect.succeed({ oldContents: "", newContents: "" });
+        },
+      }),
+    });
 
     const error = yield* service
       .diffFileContents({
@@ -167,5 +195,176 @@ it.effect("does not read a path that was not proven to be in the pull request di
       assert.fail(`Expected PullRequestOperationError, got ${error._tag}`);
     }
     assert.strictEqual(error.operation, "diffFileContents");
+    assert.strictEqual(fileContentsCalls, 0);
+  }),
+);
+
+it.effect("expands only a file proven in the requested commit diff", () =>
+  Effect.gen(function* () {
+    const commit = "a".repeat(40);
+    const diffInputs: Array<{
+      readonly commit?: string | undefined;
+      readonly cursor?: string | undefined;
+    }> = [];
+    const fileInputs: Array<{ readonly commit?: string | undefined }> = [];
+    const service = yield* makeService({
+      provider: providerWith({
+        getDiff: (input) => {
+          diffInputs.push(input);
+          return Effect.succeed({
+            patch:
+              input.cursor === undefined
+                ? [
+                    "diff --git a/src/earlier.ts b/src/earlier.ts",
+                    "--- a/src/earlier.ts",
+                    "+++ b/src/earlier.ts",
+                  ].join("\n")
+                : [
+                    "diff --git a/src/file.ts b/src/file.ts",
+                    "--- a/src/file.ts",
+                    "+++ b/src/file.ts",
+                    "@@ -1 +1 @@",
+                    "-before",
+                    "+after",
+                  ].join("\n"),
+            truncated: false,
+            nextCursor: input.cursor === undefined ? "page-2" : null,
+          });
+        },
+        getDiffFileContents: (input) => {
+          fileInputs.push(input);
+          return Effect.succeed({ oldContents: "before\n", newContents: "after\n" });
+        },
+      }),
+    });
+
+    const result = yield* service.diffFileContents({
+      projectId: project.id,
+      repository: "acme/web",
+      number: 42,
+      commit,
+      changeType: "change",
+      oldPath: "src/file.ts",
+      newPath: "src/file.ts",
+    });
+
+    assert.deepStrictEqual(result, { oldContents: "before\n", newContents: "after\n" });
+    assert.deepStrictEqual(
+      diffInputs.map((input) => input.commit),
+      [commit, commit],
+    );
+    assert.deepStrictEqual(
+      diffInputs.map((input) => input.cursor),
+      [undefined, "page-2"],
+    );
+    assert.deepStrictEqual(
+      fileInputs.map((input) => input.commit),
+      [commit],
+    );
+  }),
+);
+
+it.effect("scopes viewer discovery to the project's GitHub host", () =>
+  Effect.gen(function* () {
+    const viewerInputs: Array<{ readonly cwd: string; readonly host: string }> = [];
+    const enterpriseProject: OrchestrationProjectShell = {
+      ...project,
+      workspaceRoot: "/workspace/enterprise",
+      repositoryIdentity: {
+        ...project.repositoryIdentity!,
+        canonicalKey: "github.example.test/acme/web",
+      },
+    };
+    const service = yield* makeService({
+      project: enterpriseProject,
+      provider: providerWith({
+        getViewer: (input) => {
+          viewerInputs.push(input);
+          return Effect.succeed("enterprise-user");
+        },
+      }),
+    });
+
+    yield* service.list({ state: "open" });
+
+    assert.deepStrictEqual(viewerInputs, [
+      { cwd: "/workspace/enterprise", host: "github.example.test" },
+    ]);
+  }),
+);
+
+it.effect("mutates only review threads proven to belong to the selected pull request", () =>
+  Effect.gen(function* () {
+    const replies: string[] = [];
+    const resolutions: string[] = [];
+    const service = yield* makeService({
+      provider: providerWith({
+        getChangeRequestActivity: () =>
+          Effect.succeed({
+            comments: [],
+            commentCount: 0,
+            commentsTruncated: false,
+            reviewThreads: [
+              {
+                id: "thread-on-pr",
+                path: "src/file.ts",
+                line: 1,
+                side: "right",
+                isResolved: false,
+                isOutdated: false,
+                comments: [],
+              },
+            ],
+            commits: [],
+          }),
+        replyToThread: (input) => {
+          replies.push(input.threadId);
+          return Effect.void;
+        },
+        setThreadResolution: (input) => {
+          resolutions.push(input.threadId);
+          return Effect.void;
+        },
+      }),
+    });
+
+    yield* service.replyToThread({
+      projectId: project.id,
+      repository: "acme/web",
+      number: 42,
+      threadId: "thread-on-pr",
+      body: "Resolved in the latest commit.",
+    });
+    yield* service.setThreadResolution({
+      projectId: project.id,
+      repository: "acme/web",
+      number: 42,
+      threadId: "thread-on-pr",
+      resolved: true,
+    });
+
+    const replyError = yield* service
+      .replyToThread({
+        projectId: project.id,
+        repository: "acme/web",
+        number: 42,
+        threadId: "thread-on-another-pr",
+        body: "This must not be sent.",
+      })
+      .pipe(Effect.flip);
+    const resolutionError = yield* service
+      .setThreadResolution({
+        projectId: project.id,
+        repository: "acme/web",
+        number: 42,
+        threadId: "thread-on-another-pr",
+        resolved: true,
+      })
+      .pipe(Effect.flip);
+
+    assert.deepStrictEqual(replies, ["thread-on-pr"]);
+    assert.deepStrictEqual(resolutions, ["thread-on-pr"]);
+    assert.strictEqual(replyError._tag, "PullRequestOperationError");
+    assert.strictEqual(resolutionError._tag, "PullRequestOperationError");
   }),
 );

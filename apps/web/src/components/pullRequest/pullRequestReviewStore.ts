@@ -26,6 +26,7 @@ interface PullRequestReviewStore {
   readonly summariesByKey: Readonly<Record<string, string>>;
   readonly add: (key: string, comment: PendingReviewComment) => void;
   readonly remove: (key: string, commentId: string) => void;
+  readonly removeSubmitted: (key: string, commentIds: readonly string[]) => void;
   readonly clear: (key: string) => void;
   readonly setSummary: (key: string, value: string) => void;
   readonly clearSubmitted: (key: string, value: string) => void;
@@ -45,6 +46,18 @@ export const usePullRequestReviewStore = create<PullRequestReviewStore>()((set) 
     set((state) => {
       const remaining = (state.commentsByKey[key] ?? EMPTY_PENDING_REVIEW_COMMENTS).filter(
         (comment) => comment.id !== commentId,
+      );
+      if (remaining.length > 0) {
+        return { commentsByKey: { ...state.commentsByKey, [key]: remaining } };
+      }
+      const { [key]: _removed, ...commentsByKey } = state.commentsByKey;
+      return { commentsByKey };
+    }),
+  removeSubmitted: (key, commentIds) =>
+    set((state) => {
+      const submitted = new Set(commentIds);
+      const remaining = (state.commentsByKey[key] ?? EMPTY_PENDING_REVIEW_COMMENTS).filter(
+        (comment) => !submitted.has(comment.id),
       );
       if (remaining.length > 0) {
         return { commentsByKey: { ...state.commentsByKey, [key]: remaining } };

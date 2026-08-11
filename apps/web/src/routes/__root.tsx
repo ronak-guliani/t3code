@@ -65,7 +65,10 @@ import {
 import {
   INTERNAL_PULL_REQUEST_NAVIGATION_EVENT,
   type InternalPullRequestNavigation,
+  openExternalPullRequestLink,
 } from "../lib/openPullRequestLink";
+import { usePrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
+import { selectProjectsAcrossEnvironments } from "../store";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -139,26 +142,51 @@ function RootRouteView() {
 
 function InternalPullRequestNavigationHandler() {
   const navigate = useNavigate();
+  const descriptor = usePrimaryEnvironmentDescriptor();
+  const environmentId = usePrimaryEnvironmentId();
+  const projects = useStore(selectProjectsAcrossEnvironments);
 
   useEffect(() => {
     const open = (event: Event) => {
-      const { number, repository } = (event as CustomEvent<InternalPullRequestNavigation>).detail;
+      const { host, number, repository, url } = (
+        event as CustomEvent<InternalPullRequestNavigation>
+      ).detail;
       if (
         !Number.isSafeInteger(number) ||
         number <= 0 ||
+        typeof host !== "string" ||
+        host.length === 0 ||
         typeof repository !== "string" ||
         repository.length === 0
       ) {
         return;
       }
+      const project = projects.find(
+        (candidate) =>
+          candidate.environmentId === environmentId &&
+          candidate.repositoryIdentity?.provider === "github" &&
+          candidate.repositoryIdentity.displayName?.toLowerCase() === repository.toLowerCase() &&
+          candidate.repositoryIdentity.canonicalKey.split("/", 1).at(0)?.toLowerCase() ===
+            host.toLowerCase(),
+      );
+      if (!descriptor?.capabilities.pullRequests || !project) {
+        openExternalPullRequestLink(url);
+        return;
+      }
       void navigate({
         to: "/pull-requests",
-        search: { state: "all", involvement: "all", repository, number },
+        search: {
+          state: "all",
+          involvement: "all",
+          repository,
+          number,
+          selectedProjectId: project.id,
+        },
       });
     };
     window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
     return () => window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, open);
-  }, [navigate]);
+  }, [descriptor?.capabilities.pullRequests, environmentId, navigate, projects]);
 
   return null;
 }

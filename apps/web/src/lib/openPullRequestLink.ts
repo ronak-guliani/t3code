@@ -1,24 +1,58 @@
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
 
-const GITHUB_PULL_REQUEST_URL =
-  /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)(?:[/?#].*)?$/i;
-
 export interface InternalPullRequestNavigation {
+  readonly host: string;
   readonly repository: string;
   readonly number: number;
+  readonly url: string;
 }
 
 export const INTERNAL_PULL_REQUEST_NAVIGATION_EVENT = "t3:open-pull-request";
 
 export function githubPullRequestNavigation(url: string): InternalPullRequestNavigation | null {
-  const match = GITHUB_PULL_REQUEST_URL.exec(url.trim());
-  const owner = match?.[1];
-  const repository = match?.[2];
-  const number = Number(match?.[3]);
-  return owner && repository && Number.isSafeInteger(number) && number > 0
-    ? { repository: `${owner}/${repository}`, number }
-    : null;
+  try {
+    const parsed = new URL(url.trim());
+    const [owner, repository, pull, number, ...rest] = parsed.pathname.split("/").filter(Boolean);
+    const parsedNumber = Number(number);
+    return parsed.protocol === "https:" &&
+      owner &&
+      repository &&
+      pull === "pull" &&
+      rest.length === 0 &&
+      Number.isSafeInteger(parsedNumber) &&
+      parsedNumber > 0
+      ? {
+          host: parsed.host,
+          repository: `${owner}/${repository}`,
+          number: parsedNumber,
+          url,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function openExternalPullRequestLink(prUrl: string): void {
+  const api = readLocalApi();
+  if (!api) {
+    toastManager.add({
+      type: "error",
+      title: "Link opening is unavailable.",
+    });
+    return;
+  }
+
+  void api.shell.openExternal(prUrl).catch((error: unknown) => {
+    toastManager.add(
+      stackedThreadToast({
+        type: "error",
+        title: "Unable to open PR link",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      }),
+    );
+  });
 }
 
 /**
@@ -44,22 +78,5 @@ export function openPullRequestLink(
     return;
   }
 
-  const api = readLocalApi();
-  if (!api) {
-    toastManager.add({
-      type: "error",
-      title: "Link opening is unavailable.",
-    });
-    return;
-  }
-
-  void api.shell.openExternal(prUrl).catch((error: unknown) => {
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: "Unable to open PR link",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      }),
-    );
-  });
+  openExternalPullRequestLink(prUrl);
 }
