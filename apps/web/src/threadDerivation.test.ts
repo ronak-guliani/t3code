@@ -68,6 +68,46 @@ function buildState(messageText: string): EnvironmentState {
 }
 
 describe("getThreadCoreFromEnvironmentState", () => {
+  it("rebuilds the core thread when shell-owned fields change", () => {
+    const state = buildState("Hello");
+    const firstThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+    const shell = state.threadShellById[THREAD_ID]!;
+    state.threadShellById = {
+      ...state.threadShellById,
+      [THREAD_ID]: {
+        ...shell,
+        title: "Renamed thread",
+        updatedAt: "2026-01-01T00:00:02.000Z",
+      },
+    };
+
+    const secondThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+
+    expect(firstThread).toBeDefined();
+    expect(secondThread).not.toBe(firstThread);
+    expect(secondThread?.title).toBe("Renamed thread");
+  });
+
+  it("rebuilds the core thread when the shell error changes", () => {
+    const state = buildState("Hello");
+    const firstThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+    const shell = state.threadShellById[THREAD_ID]!;
+    state.threadShellById = {
+      ...state.threadShellById,
+      [THREAD_ID]: {
+        ...shell,
+        error: "Provider disconnected",
+        updatedAt: "2026-01-01T00:00:02.000Z",
+      },
+    };
+
+    const secondThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);
+
+    expect(firstThread).toBeDefined();
+    expect(secondThread).not.toBe(firstThread);
+    expect(secondThread?.error).toBe("Provider disconnected");
+  });
+
   it("returns a stable thread reference when the shell is replaced on stream", () => {
     const state = buildState("Hello");
     const firstThread = getThreadCoreFromEnvironmentState(state, THREAD_ID);

@@ -43,9 +43,63 @@ const threadCache = new WeakMap<
   }
 >();
 
+function threadPullRequestEqual(
+  previous: ThreadShell["pullRequest"],
+  next: ThreadShell["pullRequest"],
+): boolean {
+  if (previous === next) {
+    return true;
+  }
+  if (!previous || !next) {
+    return previous === next;
+  }
+  return (
+    previous.number === next.number &&
+    previous.title === next.title &&
+    previous.url === next.url &&
+    previous.baseBranch === next.baseBranch &&
+    previous.headBranch === next.headBranch &&
+    previous.state === next.state
+  );
+}
+
+function threadShellContentEqualIgnoringUpdatedAt(
+  previous: ThreadShell,
+  next: ThreadShell,
+): boolean {
+  if (previous === next) {
+    return true;
+  }
+
+  return (
+    previous.id === next.id &&
+    previous.environmentId === next.environmentId &&
+    previous.codexThreadId === next.codexThreadId &&
+    previous.projectId === next.projectId &&
+    previous.parentThreadId === next.parentThreadId &&
+    previous.title === next.title &&
+    previous.modelSelection.instanceId === next.modelSelection.instanceId &&
+    previous.modelSelection.model === next.modelSelection.model &&
+    previous.runtimeMode === next.runtimeMode &&
+    previous.pendingRuntimeMode === next.pendingRuntimeMode &&
+    previous.interactionMode === next.interactionMode &&
+    previous.error === next.error &&
+    previous.createdAt === next.createdAt &&
+    previous.archivedAt === next.archivedAt &&
+    previous.settledOverride === next.settledOverride &&
+    previous.settledAt === next.settledAt &&
+    previous.snoozedUntil === next.snoozedUntil &&
+    previous.snoozedAt === next.snoozedAt &&
+    previous.branch === next.branch &&
+    previous.worktreePath === next.worktreePath &&
+    threadPullRequestEqual(previous.pullRequest, next.pullRequest)
+  );
+}
+
 const threadCoreCache = new Map<
   ThreadId,
   {
+    shell: ThreadShell;
     session: ThreadSession | null;
     turnState: ThreadTurnState | undefined;
     activities: Thread["activities"];
@@ -161,6 +215,7 @@ export function getThreadCoreFromEnvironmentState(
 
   if (
     cached &&
+    threadShellContentEqualIgnoringUpdatedAt(cached.shell, shell) &&
     cached.session === session &&
     cached.turnState === turnState &&
     cached.activities === activities &&
@@ -194,6 +249,7 @@ export function getThreadCoreFromEnvironmentState(
   };
 
   threadCoreCache.set(threadId, {
+    shell,
     session,
     turnState,
     activities,
