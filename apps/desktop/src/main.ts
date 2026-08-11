@@ -94,6 +94,10 @@ import { bindFirstRevealTrigger, type RevealSubscription } from "./windowReveal.
 import { createMainWindowWebPreferences } from "./mainWindowPreferences.ts";
 import { trafficLightPositionForZoom } from "./titleBarGeometry.ts";
 import { DEFAULT_ZOOM_FACTOR, nextZoomLevel } from "./zoomLevels.ts";
+import {
+  dispatchZoomMenuAction as dispatchZoomMenuActionToWindow,
+  type ZoomMenuAction,
+} from "./zoomMenuAction.ts";
 import { startPreviewRuntime, type PreviewRuntimeHandle } from "./preview/Runtime.ts";
 import { resolveDesktopCliPassthrough } from "./desktopCliPassthrough.ts";
 import {
@@ -907,7 +911,7 @@ function registerDesktopProtocol(): void {
   desktopProtocolRegistered = true;
 }
 
-function dispatchMenuAction(action: string, options?: { readonly reveal?: boolean }): void {
+function dispatchMenuAction(action: string): void {
   const existingWindow =
     BrowserWindow.getFocusedWindow() ?? mainWindow ?? BrowserWindow.getAllWindows()[0];
   const targetWindow = existingWindow ?? createWindow();
@@ -918,9 +922,7 @@ function dispatchMenuAction(action: string, options?: { readonly reveal?: boolea
   const send = () => {
     if (targetWindow.isDestroyed()) return;
     targetWindow.webContents.send(MENU_ACTION_CHANNEL, action);
-    if (options?.reveal !== false) {
-      revealWindow(targetWindow);
-    }
+    revealWindow(targetWindow);
   };
 
   if (targetWindow.webContents.isLoadingMainFrame()) {
@@ -929,6 +931,10 @@ function dispatchMenuAction(action: string, options?: { readonly reveal?: boolea
   }
 
   send();
+}
+
+function dispatchZoomMenuAction(action: ZoomMenuAction): void {
+  dispatchZoomMenuActionToWindow(mainWindow, MENU_ACTION_CHANNEL, action);
 }
 
 function handleCheckForUpdatesMenuClick(): void {
@@ -1042,23 +1048,23 @@ function configureApplicationMenu(): void {
         {
           label: "Actual Size",
           accelerator: "CmdOrCtrl+0",
-          click: () => dispatchMenuAction("reset-zoom", { reveal: false }),
+          click: () => dispatchZoomMenuAction("reset-zoom"),
         },
         {
           label: "Zoom In",
           accelerator: "CmdOrCtrl+=",
-          click: () => dispatchMenuAction("zoom-in", { reveal: false }),
+          click: () => dispatchZoomMenuAction("zoom-in"),
         },
         {
           label: "Zoom In",
           accelerator: "CmdOrCtrl+Plus",
           visible: false,
-          click: () => dispatchMenuAction("zoom-in", { reveal: false }),
+          click: () => dispatchZoomMenuAction("zoom-in"),
         },
         {
           label: "Zoom Out",
           accelerator: "CmdOrCtrl+-",
-          click: () => dispatchMenuAction("zoom-out", { reveal: false }),
+          click: () => dispatchZoomMenuAction("zoom-out"),
         },
         { type: "separator" },
         { role: "togglefullscreen" },
