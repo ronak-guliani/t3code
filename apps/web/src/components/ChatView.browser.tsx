@@ -57,6 +57,7 @@ import { useTerminalStateStore } from "../terminalStateStore";
 import { usePendingTurnStore } from "../pendingTurnStore";
 import { useUiStateStore } from "../uiStateStore";
 import { resetPreviewStateForTests, applyPreviewServerSnapshot } from "../previewStateStore";
+import { usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
 import { useRightPanelStore } from "../rightPanelStore";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { createAuthenticatedSessionHandlers } from "../../test/authHttpHandlers";
@@ -7193,6 +7194,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
   });
 
   it("dispatches preview commands globally", async () => {
+    let previewOpenCount = 0;
     const mounted = await mountChatView({
       viewport: WIDE_FOOTER_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -7200,7 +7202,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
         targetText: "preview shortcut",
       }),
       resolveRpc: (body) => {
-        if (body._tag === WS_METHODS.previewOpen) return createPreviewSnapshot();
+        if (body._tag === WS_METHODS.previewOpen) {
+          previewOpenCount += 1;
+          return createPreviewSnapshot();
+        }
         return undefined;
       },
       configureFixture: (nextFixture) => {
@@ -7245,7 +7250,45 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await vi.waitFor(() => {
         expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
       });
+
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "b",
+          ctrlKey: true,
+          metaKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-chat-view-right-panel-surface="preview"]'),
+        ).not.toBeNull();
+        expect(previewOpenCount).toBe(1);
+      });
+
+      useRightPanelStore.getState().close(THREAD_REF);
+      usePreviewMiniPlayerStore.getState().open(THREAD_REF, "preview-browser-test");
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "b",
+          ctrlKey: true,
+          metaKey: true,
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]).toBeUndefined();
+        expect(
+          document.querySelector('[data-chat-view-right-panel-surface="preview"]'),
+        ).not.toBeNull();
+        expect(previewOpenCount).toBe(1);
+      });
     } finally {
+      usePreviewMiniPlayerStore.getState().close(THREAD_REF);
       await mounted.cleanup();
     }
   });
