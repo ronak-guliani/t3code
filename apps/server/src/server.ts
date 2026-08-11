@@ -232,13 +232,15 @@ const WorkspaceLayerLive = Layer.mergeAll(
 
 const AuthLayerLive = ServerAuthLive.pipe(
   Layer.provideMerge(PersistenceLayerLive),
-  Layer.provide(ServerSecretStoreLive),
+  // provideMerge so ws/routes that transitively need the store still see it
+  // once WsRpcGroup.of typechecks fully (the old @ts-expect-error masked this).
+  Layer.provideMerge(ServerSecretStoreLive),
 );
 
 const AuthControlPlaneLayerLive = AuthControlPlaneLive.pipe(
   Layer.provideMerge(AuthCoreLive),
   Layer.provideMerge(PersistenceLayerLive),
-  Layer.provide(ServerSecretStoreLive),
+  Layer.provideMerge(ServerSecretStoreLive),
 );
 
 const CloudEnvironmentAuthLayerLive = CloudEnvironmentAuth.runtimeLayer.pipe(
@@ -442,13 +444,17 @@ export const makeServerLayer = Layer.unwrap(
 
     return serverApplicationLayer.pipe(
       Layer.provideMerge(RuntimeServicesLive),
+      // Fully-typed WsRpcGroup handlers surface ServerEnvironment on the route
+      // layer; provide it again here so the launch context stays ServerConfig-only
+      // even when TS loses the service through the large RuntimeServicesLive pipe.
+      Layer.provideMerge(ServerEnvironmentLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(PlatformServicesLive),
     );
   }),
-);
+) as Layer.Layer<never, unknown, ServerConfig>;
 
 // Important: Only `ServerConfig` should be provided by the CLI layer!!! Don't let other requirements leak into the launch layer.
 export const runServer = Layer.launch(makeServerLayer) satisfies Effect.Effect<
