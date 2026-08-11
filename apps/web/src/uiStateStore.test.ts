@@ -13,6 +13,7 @@ import {
   persistState,
   reorderPinnedThreads,
   sanitizePersistedProjectFilterKey,
+  sanitizePersistedThreadLastVisitedAt,
   reorderProjects,
   setAgentRunDismissed,
   setChangedFilesDiffScope,
@@ -644,6 +645,41 @@ describe("uiStateStore persistence round-trip", () => {
       [projectA.key]: false,
       [projectB.key]: false,
     });
+  });
+
+  it("persists thread visit stamps so completed threads stay seen across a restart", () => {
+    // Regression: `threadLastVisitedAtById` was missing from the persisted
+    // payload, so every relaunch dropped visit history and `hasUnseenCompletion`
+    // lit a "completed" dot on every finished thread.
+    persistState({
+      ...makeUiState(),
+      threadLastVisitedAtById: { "thread-a": "2026-02-01T10:00:00.000Z" },
+    });
+
+    const persisted = JSON.parse(
+      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
+    ) as PersistedUiState;
+
+    expect(persisted.threadLastVisitedAtById).toEqual({
+      "thread-a": "2026-02-01T10:00:00.000Z",
+    });
+  });
+
+  it("drops malformed visit stamps and caps the payload at the most recent visits", () => {
+    const threadLastVisitedAtById: Record<string, string> = { garbage: "not-a-date" };
+    for (let index = 0; index < 600; index += 1) {
+      threadLastVisitedAtById[`thread-${index}`] = new Date(
+        Date.UTC(2026, 0, 1) + index * 60_000,
+      ).toISOString();
+    }
+
+    const sanitized = sanitizePersistedThreadLastVisitedAt(threadLastVisitedAtById);
+
+    expect(Object.keys(sanitized)).toHaveLength(500);
+    expect(sanitized.garbage).toBeUndefined();
+    // Newest kept, oldest evicted.
+    expect(sanitized["thread-599"]).toBeDefined();
+    expect(sanitized["thread-0"]).toBeUndefined();
   });
 
   it("persists and restores the sidebar project filter", () => {
