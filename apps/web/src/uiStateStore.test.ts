@@ -647,7 +647,7 @@ describe("uiStateStore persistence round-trip", () => {
     });
   });
 
-  it("persists thread visit stamps so completed threads stay seen across a restart", () => {
+  it("restores thread visit stamps so completed threads stay seen across a restart", async () => {
     // Regression: `threadLastVisitedAtById` was missing from the persisted
     // payload, so every relaunch dropped visit history and `hasUnseenCompletion`
     // lit a "completed" dot on every finished thread.
@@ -656,11 +656,18 @@ describe("uiStateStore persistence round-trip", () => {
       threadLastVisitedAtById: { "thread-a": "2026-02-01T10:00:00.000Z" },
     });
 
-    const persisted = JSON.parse(
-      localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}",
-    ) as PersistedUiState;
+    expect(
+      JSON.parse(localStorageStub.getItem(PERSISTED_STATE_KEY) ?? "{}")
+        .threadLastVisitedAtById as unknown,
+    ).toEqual({ "thread-a": "2026-02-01T10:00:00.000Z" });
 
-    expect(persisted.threadLastVisitedAtById).toEqual({
+    // Re-import the module so the store is built from the stored payload the
+    // way it is on a real relaunch; asserting on the payload alone would still
+    // pass if the restore were dropped.
+    vi.resetModules();
+    const restarted = await import("./uiStateStore");
+
+    expect(restarted.useUiStateStore.getState().threadLastVisitedAtById).toEqual({
       "thread-a": "2026-02-01T10:00:00.000Z",
     });
   });

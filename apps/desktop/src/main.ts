@@ -92,11 +92,8 @@ import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runti
 import { resolveDesktopAppBranding } from "./appBranding.ts";
 import { bindFirstRevealTrigger, type RevealSubscription } from "./windowReveal.ts";
 import { createMainWindowWebPreferences } from "./mainWindowPreferences.ts";
-import {
-  DEFAULT_ZOOM_FACTOR,
-  stepZoomFactor,
-  trafficLightPositionForZoom,
-} from "./titleBarGeometry.ts";
+import { trafficLightPositionForZoom } from "./titleBarGeometry.ts";
+import { DEFAULT_ZOOM_FACTOR, nextZoomLevel, type ZoomDirection } from "./zoomLevels.ts";
 import { startPreviewRuntime, type PreviewRuntimeHandle } from "./preview/Runtime.ts";
 import { resolveDesktopCliPassthrough } from "./desktopCliPassthrough.ts";
 import {
@@ -1039,15 +1036,19 @@ function configureApplicationMenu(): void {
         // Explicit handlers rather than the built-in zoom roles: macOS window
         // controls do not scale with page zoom, so each change has to
         // reposition them onto the resized title-bar row.
-        { label: "Actual Size", accelerator: "CmdOrCtrl+0", click: () => zoomFocusedWindow(0) },
-        { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: () => zoomFocusedWindow(1) },
+        {
+          label: "Actual Size",
+          accelerator: "CmdOrCtrl+0",
+          click: () => zoomFocusedWindow("reset"),
+        },
+        { label: "Zoom In", accelerator: "CmdOrCtrl+=", click: () => zoomFocusedWindow("in") },
         {
           label: "Zoom In",
           accelerator: "CmdOrCtrl+Plus",
           visible: false,
-          click: () => zoomFocusedWindow(1),
+          click: () => zoomFocusedWindow("in"),
         },
-        { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: () => zoomFocusedWindow(-1) },
+        { label: "Zoom Out", accelerator: "CmdOrCtrl+-", click: () => zoomFocusedWindow("out") },
         { type: "separator" },
         { role: "togglefullscreen" },
       ],
@@ -2099,7 +2100,7 @@ function applyWindowZoom(window: BrowserWindow, zoomFactor: number): void {
   syncTrafficLightPosition(window);
 }
 
-function zoomFocusedWindow(direction: 1 | -1 | 0): void {
+function zoomFocusedWindow(direction: ZoomDirection | "reset"): void {
   const window = BrowserWindow.getFocusedWindow();
   if (!window) {
     return;
@@ -2107,7 +2108,7 @@ function zoomFocusedWindow(direction: 1 | -1 | 0): void {
   const current = window.webContents.getZoomFactor();
   applyWindowZoom(
     window,
-    direction === 0 ? DEFAULT_ZOOM_FACTOR : stepZoomFactor(current, direction),
+    direction === "reset" ? DEFAULT_ZOOM_FACTOR : nextZoomLevel(current, direction),
   );
 }
 

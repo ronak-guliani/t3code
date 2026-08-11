@@ -19,9 +19,23 @@ describe("readWindowZoomFactor", () => {
 });
 
 describe("TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS", () => {
-  it("resolves to the unzoomed 80px inset when the zoom variable is unset", () => {
-    // 28px gap + the 52pt traffic-light span, which only shrinks in CSS pixels
-    // once the page is zoomed.
-    expect(TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS).toContain("calc(28px+52px/var(--app-zoom,1))");
+  it("keeps a constant screen-space gap after the traffic lights at every zoom", () => {
+    // Regression: the inset used to resolve to `28 * zoom + 52` points while
+    // the controls ended at `16 * zoom + 52`, so the gap grew as `12 * zoom`.
+    const match = /calc\((\d+)px\+(\d+)px\/var\(--app-zoom,1\)\)/.exec(
+      TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS,
+    );
+    expect(match).not.toBeNull();
+    const [, constantPx = "", scaledPx = ""] = match ?? [];
+
+    for (const zoomFactor of [0.75, 1, 1.5, 2, 3]) {
+      // The renderer lays the inset out in zoomed CSS pixels; multiplying by
+      // the zoom factor converts it to the screen points the controls live in.
+      const insetPoints = (Number(constantPx) + Number(scaledPx) / zoomFactor) * zoomFactor;
+      // Main places the first control at `16 * zoom`; three controls at a 20pt
+      // pitch and 12pt diameter span a further 52pt.
+      const controlsEndPoints = 16 * zoomFactor + 52;
+      expect(insetPoints - controlsEndPoints).toBeCloseTo(12, 6);
+    }
   });
 });
