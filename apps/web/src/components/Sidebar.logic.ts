@@ -24,6 +24,14 @@ type SidebarProject = {
 
 export type ThreadTraversalDirection = "previous" | "next";
 
+export function shouldRenderSidebarDraft(input: {
+  hasUserContent: boolean;
+  isPromoting: boolean;
+  serverThreadPublished: boolean;
+}): boolean {
+  return !input.serverThreadPublished && (input.hasUserContent || input.isPromoting);
+}
+
 /**
  * How a status renders in the v1 sidebar:
  * - `label`: inline colored dot + text (actionable / transient states)
