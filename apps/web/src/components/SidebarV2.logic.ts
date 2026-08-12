@@ -165,6 +165,7 @@ export function isSidebarV2ActiveStatus(status: SidebarV2Status): boolean {
 function buildThreadNodes(
   threads: readonly SidebarThreadSummary[],
   pendingThreadKeys: ReadonlySet<string>,
+  queuedThreadKeys: ReadonlySet<string> = new Set(),
 ): SidebarV2ThreadNode[] {
   const parentByKey = normalizeParentThreadKeys(threads);
   // Sorted once up front so roots and children land in order as they are
@@ -182,6 +183,7 @@ function buildThreadNodes(
           status: resolveSidebarV2Status({
             ...thread,
             hasPendingTurn: pendingThreadKeys.has(threadKey),
+            hasQueuedTurn: queuedThreadKeys.has(threadKey),
           }),
           rolledUpStatus: "ready",
           descendantCount: 0,
@@ -312,13 +314,18 @@ export function classifySidebarV2Shelves(input: {
   readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean>;
   readonly activeThreadKey?: string | undefined;
   readonly pendingThreadKeys?: ReadonlySet<string>;
+  readonly queuedThreadKeys?: ReadonlySet<string>;
 }): SidebarV2Shelves {
   const visibleThreads = selectVisibleSidebarThreads(input.threads);
   const flattenInput = {
     activeThreadKey: input.activeThreadKey,
     expandedOverrideByThreadKey: input.expandedOverrideByThreadKey ?? NO_EXPANDED_OVERRIDES,
   };
-  const rootNodes = buildThreadNodes(visibleThreads, input.pendingThreadKeys ?? new Set());
+  const rootNodes = buildThreadNodes(
+    visibleThreads,
+    input.pendingThreadKeys ?? new Set(),
+    input.queuedThreadKeys ?? new Set(),
+  );
   // Only roots are pinnable: a nested chat rides along with its parent, so a
   // stale pin on a thread that has since become a child is ignored.
   const groupByRootKey = new Map(
@@ -409,6 +416,7 @@ type SidebarV2StatusInput = Pick<
   "hasPendingApprovals" | "hasPendingUserInput" | "latestTurn" | "session" | "virtualAgentRun"
 > & {
   readonly hasPendingTurn?: boolean;
+  readonly hasQueuedTurn?: boolean;
 };
 
 export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2Status {
@@ -417,8 +425,11 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
   // Upstream reads a provider-session phase this fork does not carry, so
   // "working" reuses the same predicate v1's status pill does — including the
   // pre-adoption `connecting` phase, which is work the user is waiting on.
+  // `hasQueuedTurn` covers the handoff gap after turn A completes and before
+  // the continuation turn is adopted.
   if (
     thread.hasPendingTurn ||
+    thread.hasQueuedTurn ||
     thread.virtualAgentRun?.status === "running" ||
     isThreadActivelyWorking(thread.latestTurn, thread.session) ||
     thread.session?.status === "connecting"

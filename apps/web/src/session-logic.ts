@@ -221,6 +221,41 @@ function isTerminalSessionActivity(session: SessionActivityState | null): boolea
   );
 }
 
+/**
+ * Non-failed queued turns mean the thread still has work to do — including the
+ * gap between a workspace-handoff turn completing and its continuation starting.
+ */
+export function hasActionableQueuedTurn(
+  queuedTurns: readonly { readonly failedAt: string | null }[] | null | undefined,
+): boolean {
+  return (queuedTurns ?? []).some((queuedTurn) => queuedTurn.failedAt === null);
+}
+
+/** Stable `environmentId:threadId` keys for sidebar/notification "still working" checks. */
+export function collectActionableQueuedThreadKeys(
+  environmentStateById: Readonly<
+    Record<
+      string,
+      {
+        readonly queuedTurnsByThreadId: Readonly<
+          Record<string, readonly { readonly failedAt: string | null }[] | undefined>
+        >;
+      }
+    >
+  >,
+): string[] {
+  const keys: string[] = [];
+  for (const [environmentId, environmentState] of Object.entries(environmentStateById)) {
+    for (const [threadId, queuedTurns] of Object.entries(environmentState.queuedTurnsByThreadId)) {
+      if (hasActionableQueuedTurn(queuedTurns)) {
+        keys.push(`${environmentId}:${threadId}`);
+      }
+    }
+  }
+  keys.sort();
+  return keys;
+}
+
 export function isThreadActivelyWorking(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,

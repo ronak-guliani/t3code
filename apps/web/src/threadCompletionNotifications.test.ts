@@ -4,8 +4,10 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  QueuedTurnId,
   ThreadId,
   TurnId,
+  type OrchestrationQueuedTurn,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import type { EnvironmentState } from "./store";
@@ -27,6 +29,7 @@ function makeEnvironmentState(overrides: {
   readonly title?: string;
   readonly completedAt?: string;
   readonly activeTurnId?: TurnId | null;
+  readonly queuedTurns?: readonly OrchestrationQueuedTurn[];
 }): EnvironmentState {
   const nextThreadId = overrides.threadId ?? threadId;
   const turnId = overrides.turnId ?? TurnId.make("turn-1");
@@ -50,7 +53,13 @@ function makeEnvironmentState(overrides: {
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
-    queuedTurnsByThreadId: {},
+    queuedTurnsByThreadId: {
+      ...(overrides.queuedTurns
+        ? {
+            [nextThreadId]: overrides.queuedTurns,
+          }
+        : {}),
+    },
     sidebarThreadSummaryById: {
       [nextThreadId]: {
         id: nextThreadId,
@@ -191,6 +200,86 @@ describe("collectThreadCompletionNotifications", () => {
         tracker,
       }),
     ).toEqual([]);
+  });
+
+  it("does not notify a completed turn while a handoff/user continuation is still queued", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const completedWithQueue = makeEnvironmentState({
+      bootstrapComplete: true,
+      threadId: ThreadId.make("thread-handoff"),
+      turnId: TurnId.make("turn-handoff-boundary"),
+      title: "Handoff in progress",
+      completedAt: "2026-06-10T00:03:00.000Z",
+      queuedTurns: [
+        {
+          id: QueuedTurnId.make("queued-turn-continuation"),
+          threadId: ThreadId.make("thread-handoff"),
+          message: {
+            messageId: MessageId.make("message-continuation"),
+            role: "user",
+            text: "Continuing in the new worktree",
+            attachments: [],
+          },
+          createdAt: "2026-06-10T00:02:59.000Z",
+          updatedAt: "2026-06-10T00:02:59.000Z",
+          failedAt: null,
+          failureMessage: null,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        } satisfies OrchestrationQueuedTurn,
+      ],
+    });
+
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: {
+          [environmentId]: completedWithQueue,
+        },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+      }),
+    ).toEqual([]);
+
+    // Once the queue drains, the same completed boundary may notify if it is
+    // still the latest terminal turn and has not been seeded yet.
+    const afterQueueDrained = makeEnvironmentState({
+      bootstrapComplete: true,
+      threadId: ThreadId.make("thread-handoff"),
+      turnId: TurnId.make("turn-handoff-boundary"),
+      title: "Handoff in progress",
+      completedAt: "2026-06-10T00:03:00.000Z",
+    });
+
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: {
+          [environmentId]: afterQueueDrained,
+        },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+      }),
+    ).toMatchObject([
+      {
+        kind: "thread-turn-completed",
+        threadId: "thread-handoff",
+        turnId: "turn-handoff-boundary",
+        title: "Chat completed",
+      },
+    ]);
   });
 });
 

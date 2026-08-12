@@ -522,6 +522,10 @@ describe("resolveSidebarV2Status", () => {
     );
   });
 
+  it("reports a queued continuation as working across the handoff boundary", () => {
+    expect(resolveSidebarV2Status({ ...thread(), hasQueuedTurn: true })).toBe("working");
+  });
+
   it("reports an errored session as failed and everything else as ready", () => {
     expect(resolveSidebarV2Status(thread({ session: session({ status: "error" }) }))).toBe(
       "failed",

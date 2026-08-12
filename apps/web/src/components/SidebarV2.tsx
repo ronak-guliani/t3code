@@ -63,6 +63,7 @@ import {
 } from "../sidebarThreadTree";
 import { createThreadExpandedOverridesSelector, useUiStateStore } from "../uiStateStore";
 import { usePendingTurnStore } from "../pendingTurnStore";
+import { collectActionableQueuedThreadKeys } from "../session-logic";
 import {
   classifySidebarV2Shelves,
   resolveThreadLifecycleSupport,
@@ -293,6 +294,10 @@ export default function SidebarV2() {
     useShallow((state) => Object.keys(state.pendingByThreadKey)),
   );
   const pendingThreadKeySet = useMemo(() => new Set(pendingThreadKeys), [pendingThreadKeys]);
+  const queuedThreadKeys = useStore(
+    useShallow((state) => collectActionableQueuedThreadKeys(state.environmentStateById)),
+  );
+  const queuedThreadKeySet = useMemo(() => new Set(queuedThreadKeys), [queuedThreadKeys]);
   const setAgentRunDismissed = useUiStateStore((state) => state.setAgentRunDismissed);
   const pinnedThreadKeysByProjectKey = useUiStateStore(
     (state) => state.pinnedThreadKeysByProjectId,
@@ -402,6 +407,7 @@ export default function SidebarV2() {
       pinnedThreadKeysByProjectKey,
       expandedOverrideByThreadKey,
       pendingThreadKeys: pendingThreadKeySet,
+      queuedThreadKeys: queuedThreadKeySet,
       ...(activeClassificationThreadKey === null
         ? {}
         : { activeThreadKey: activeClassificationThreadKey }),
@@ -409,6 +415,7 @@ export default function SidebarV2() {
   }, [
     activeClassificationThreadKey,
     pendingThreadKeySet,
+    queuedThreadKeySet,
     expandedOverrideByThreadKey,
     now,
     pinnedThreadKeysByProjectKey,

@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import type { EnvironmentState } from "./store";
 import type { ThreadCompletionNotificationMode } from "@t3tools/contracts/settings";
+import { hasActionableQueuedTurn } from "./session-logic";
 
 export interface StaleActiveTurnToastRequest {
   readonly environmentId: EnvironmentId;
@@ -64,6 +65,13 @@ export function collectThreadCompletionNotifications(
       : true;
     for (const candidate of candidates) {
       if (input.tracker.notifiedTurnKeys.has(candidate.turnKey)) {
+        continue;
+      }
+
+      // A pending queue (handoff continuation or user follow-up) means this
+      // completed turn is a boundary, not the end of work. Do not seed
+      // notifiedTurnKeys so a later true completion can still notify.
+      if (hasActionableQueuedTurn(environmentState.queuedTurnsByThreadId[candidate.summary.id])) {
         continue;
       }
 
