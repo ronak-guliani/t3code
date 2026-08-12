@@ -75,4 +75,30 @@ describe("wakePrompt", () => {
     expect(prompt).toContain("CI still red");
     expect(prompt.length).toBeLessThan(4_000);
   });
+
+  it("caps many long blockers so the prompt stays bounded", () => {
+    const crowded: PullRequestMonitorReadiness = {
+      ready: false,
+      label: "blocked",
+      blockers: Array.from({ length: 40 }, (_, index) => ({
+        kind: "check-failed" as const,
+        detail: `check-${index} ${"x".repeat(500)}`,
+      })),
+    };
+    const summary = formatBlockersSummary(crowded);
+    expect(summary.length).toBeLessThanOrEqual(1_200);
+    expect(summary).toContain("more");
+    const prompt = buildFallbackMaintenancePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      url: "https://github.com/acme/app/pull/12",
+      headBranch: "feat/x",
+      headSha: "abc123",
+      reason: "owner-unavailable",
+      previousOwnerThreadId: "thr_old",
+      note: "x".repeat(2_000),
+      readinessSummary: summary,
+    });
+    expect(prompt.length).toBeLessThan(4_000);
+  });
 });

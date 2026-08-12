@@ -44,7 +44,6 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import { PullRequestMonitorService } from "../../../pullRequestMonitor/PullRequestMonitorService.ts";
-import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext, OrchestratorMcpService];
 const monitorDependencies = [

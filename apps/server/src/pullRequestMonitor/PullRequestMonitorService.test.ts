@@ -24,6 +24,7 @@ import {
   layer as pullRequestMonitorFeedbackServiceLayer,
   PullRequestMonitorFeedbackService,
 } from "./PullRequestMonitorFeedbackService.ts";
+import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
 import {
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
@@ -140,15 +141,21 @@ const knownThreads = new Map<
     worktreePath: string | null;
     archivedAt: string | null;
     deletedAt: string | null;
+    runs: ReadonlyArray<{ readonly status: string }>;
   }
 >();
 
-function seedThread(threadId: ThreadId, worktreePath: string | null = "/tmp/wt") {
+function seedThread(
+  threadId: ThreadId,
+  worktreePath: string | null = "/tmp/wt",
+  runs: ReadonlyArray<{ readonly status: string }> = [],
+) {
   knownThreads.set(threadId, {
     projectId,
     worktreePath,
     archivedAt: null,
     deletedAt: null,
+    runs,
   });
 }
 
@@ -172,7 +179,7 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
         archivedAt: row.archivedAt,
         deletedAt: row.deletedAt,
       },
-      runs: [],
+      runs: row.runs,
       messages: [],
     } as never);
   },
@@ -195,7 +202,7 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
         archivedAt: row.archivedAt,
         deletedAt: row.deletedAt,
       },
-      runs: [],
+      runs: row.runs,
       messages: [],
     } as never);
   },
@@ -212,19 +219,25 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
 });
 
 const launchedFallbackIds: ThreadId[] = [];
+const launchedWorkspaceStrategies: Array<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"]> = [];
+let launchWorktreePath: string | null = "/tmp/fallback";
+let launchRunStatus: string | null = null;
 const fakeLaunch = ThreadLaunch.ThreadLaunchService.of({
   launch: (input) =>
     Effect.sync(() => {
+      launchedWorkspaceStrategies.push(input.workspaceStrategy);
       const threadId = ThreadId.make(`thr_fallback_${launchedFallbackIds.length + 1}`);
       launchedFallbackIds.push(threadId);
-      seedThread(threadId, `/tmp/fallback-${threadId}`);
+      const path = launchWorktreePath === null ? null : `${launchWorktreePath}-${threadId}`;
+      const runs = launchRunStatus === null ? [] : [{ status: launchRunStatus }];
+      seedThread(threadId, path, runs);
       return {
         threadId,
         projection: {
           thread: {
             id: threadId,
             projectId: input.projectId,
-            worktreePath: `/tmp/fallback-${threadId}`,
+            worktreePath: path,
             archivedAt: null,
             deletedAt: null,
           },
@@ -431,6 +444,7 @@ layer("PullRequestMonitorService", (it) => {
       });
       assert.isNull(started.monitor.ownerThreadId);
 
+      const before = launchedWorkspaceStrategies.length;
       const fallback = yield* service.launchFallback({
         monitorId: started.monitor.id,
         reason: "owner-missing",
@@ -439,6 +453,13 @@ layer("PullRequestMonitorService", (it) => {
       assert.isNotNull(fallback.fallbackThreadId);
       assert.strictEqual(fallback.monitor.ownerThreadId, fallback.fallbackThreadId);
       assert.isNull(fallback.previousOwnerThreadId);
+      const strategy = launchedWorkspaceStrategies[before];
+      assert.isDefined(strategy);
+      assert.strictEqual(strategy!.type, "worktree");
+      if (strategy!.type === "worktree") {
+        assert.strictEqual(strategy.baseRef, "deadbeef");
+        assert.strictEqual(strategy.startFromOrigin, false);
+      }
 
       // Second launch within cooldown should not dual-own.
       const again = yield* service.launchFallback({
@@ -448,6 +469,103 @@ layer("PullRequestMonitorService", (it) => {
       assert.isFalse(again.launched);
       assert.strictEqual(again.skippedReason, "recent-fallback-cooldown");
       assert.strictEqual(again.fallbackThreadId, fallback.fallbackThreadId);
+    }),
+  );
+
+  it.effect("launchFallback refuses available owner without force", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_owner_live");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 48,
+        ownerThreadId: owner,
+      });
+
+      const refused = yield* Effect.result(
+        service.launchFallback({
+          monitorId: started.monitor.id,
+          reason: "explicit",
+        }),
+      );
+      assert.strictEqual(refused._tag, "Failure");
+
+      const forced = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "explicit",
+        force: true,
+      });
+      assert.isTrue(forced.launched);
+      assert.strictEqual(forced.previousOwnerThreadId, owner);
+      assert.notStrictEqual(forced.fallbackThreadId, owner);
+    }),
+  );
+
+  it.effect("launchFallback does not transfer ownership when prep fails", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 49,
+      });
+      launchWorktreePath = null;
+      launchRunStatus = "failed";
+      const result = yield* Effect.result(
+        service.launchFallback({
+          monitorId: started.monitor.id,
+          reason: "owner-missing",
+        }),
+      );
+      launchWorktreePath = "/tmp/fallback";
+      launchRunStatus = null;
+      assert.strictEqual(result._tag, "Failure");
+      const status = yield* service.status({ monitorId: started.monitor.id });
+      assert.isNull(status.monitor?.ownerThreadId ?? null);
+    }),
+  );
+
+  it.effect("feedback state append/remove keep circuit fields atomic", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 50,
+      });
+      const now = "2026-08-11T00:00:00.000Z";
+
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        debounceUntil: "2026-08-11T00:00:15.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-b"],
+        debounceUntil: "2026-08-11T00:00:30.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.setDeliveryCircuitState({
+        monitorId: started.monitor.id,
+        deliveryFailureCount: 2,
+        circuitOpenUntil: "2026-08-11T00:05:00.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.removePendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        updatedAt: now,
+      });
+
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
+      assert.strictEqual(state.deliveryFailureCount, 2);
+      assert.strictEqual(state.circuitOpenUntil, "2026-08-11T00:05:00.000Z");
     }),
   );
 

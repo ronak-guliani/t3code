@@ -15,14 +15,23 @@ export function formatBlockersSummary(
   }
   const maxBlockers = options?.maxBlockers ?? 8;
   const maxChars = options?.maxChars ?? 1_200;
+  const overflowCount = Math.max(0, readiness.blockers.length - maxBlockers);
+  const overflowLine = overflowCount > 0 ? `- …and ${overflowCount} more` : null;
   const lines = readiness.blockers.slice(0, maxBlockers).map((blocker) => {
     const detail = blocker.detail ? `: ${excerpt(blocker.detail)}` : "";
     return `- ${blocker.kind}${detail}`;
   });
-  if (readiness.blockers.length > maxBlockers) {
-    lines.push(`- …and ${readiness.blockers.length - maxBlockers} more`);
+  let summary = lines.join("\n");
+  if (overflowLine) {
+    const withOverflow = summary.length === 0 ? overflowLine : `${summary}\n${overflowLine}`;
+    if (withOverflow.length <= maxChars) {
+      return withOverflow;
+    }
+    // Keep the overflow marker when truncating so callers can tell the list was capped.
+    const budget = Math.max(0, maxChars - overflowLine.length - 2);
+    const head = budget === 0 ? "" : `${summary.slice(0, Math.max(0, budget - 1))}…`;
+    return head.length === 0 ? overflowLine.slice(0, maxChars) : `${head}\n${overflowLine}`;
   }
-  const summary = lines.join("\n");
   return summary.length > maxChars ? `${summary.slice(0, maxChars - 1)}…` : summary;
 }
 

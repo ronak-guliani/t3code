@@ -248,11 +248,9 @@ export const layer = Layer.effect(
 
         if (newRevisionIds.length === 0) return;
 
-        const state = yield* feedbackStore.getState(input.monitor.id);
-        const pending = Array.from(new Set([...state.pendingRevisionIds, ...newRevisionIds]));
-        yield* feedbackStore.saveState({
-          ...state,
-          pendingRevisionIds: pending,
+        yield* feedbackStore.appendPendingRevisionIds({
+          monitorId: input.monitor.id,
+          revisionIds: newRevisionIds,
           debounceUntil: addMs(now, FEEDBACK_DEBOUNCE_MS),
           updatedAt: now,
         });
@@ -327,20 +325,29 @@ export const layer = Layer.effect(
             validated.failure instanceof Error
               ? validated.failure.message
               : String(validated.failure);
-          const terminal =
-            /no longer open|no owner thread|not active|head changed/i.test(message) ||
-            attemptCount >= MAX_DELIVERY_ATTEMPTS;
-          const failureCount = state.deliveryFailureCount + 1;
-          const circuitOpenUntil =
-            failureCount >= DELIVERY_CIRCUIT_THRESHOLD
-              ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
-              : state.circuitOpenUntil;
-          yield* feedbackStore.saveState({
-            ...state,
-            deliveryFailureCount: failureCount,
-            circuitOpenUntil,
-            updatedAt: now,
-          });
+          const suppressedByRevalidation =
+            /no longer open|no owner thread|not active|head changed/i.test(message);
+          const terminal = suppressedByRevalidation || attemptCount >= MAX_DELIVERY_ATTEMPTS;
+          if (suppressedByRevalidation) {
+            yield* feedbackStore.setDeliveryCircuitState({
+              monitorId: state.monitorId,
+              deliveryFailureCount: 0,
+              circuitOpenUntil: null,
+              updatedAt: now,
+            });
+          } else {
+            const failureCount = state.deliveryFailureCount + 1;
+            const circuitOpenUntil =
+              failureCount >= DELIVERY_CIRCUIT_THRESHOLD
+                ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
+                : state.circuitOpenUntil;
+            yield* feedbackStore.setDeliveryCircuitState({
+              monitorId: state.monitorId,
+              deliveryFailureCount: failureCount,
+              circuitOpenUntil,
+              updatedAt: now,
+            });
+          }
           yield* feedbackStore.updateDelivery({
             ...delivery,
             status: terminal ? "suppressed" : "failed",
@@ -397,8 +404,8 @@ export const layer = Layer.effect(
             failureCount >= DELIVERY_CIRCUIT_THRESHOLD
               ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
               : state.circuitOpenUntil;
-          yield* feedbackStore.saveState({
-            ...state,
+          yield* feedbackStore.setDeliveryCircuitState({
+            monitorId: state.monitorId,
             deliveryFailureCount: failureCount,
             circuitOpenUntil,
             updatedAt: now,
@@ -431,8 +438,8 @@ export const layer = Layer.effect(
             messageId: sendResult.success.message.id,
           }),
         });
-        yield* feedbackStore.saveState({
-          ...state,
+        yield* feedbackStore.setDeliveryCircuitState({
+          monitorId: state.monitorId,
           deliveryFailureCount: 0,
           circuitOpenUntil: null,
           updatedAt: now,
@@ -483,10 +490,9 @@ export const layer = Layer.effect(
           });
         }
 
-        yield* feedbackStore.saveState({
-          ...state,
-          pendingRevisionIds: [],
-          debounceUntil: null,
+        yield* feedbackStore.removePendingRevisionIds({
+          monitorId: monitor.id,
+          revisionIds,
           updatedAt: now,
         });
       }

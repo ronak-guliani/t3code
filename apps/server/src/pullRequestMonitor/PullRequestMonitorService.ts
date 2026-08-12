@@ -680,23 +680,36 @@ export const layer = Layer.effect(
 
     const waitForPreparedWorktree = (threadId: ThreadId) =>
       Effect.gen(function* () {
-        // ThreadLaunch forks worktree prep; wait briefly for a concrete worktree before
-        // transferring exclusive ownership so failed prep cannot become the durable owner.
-        for (let attempt = 0; attempt < 20; attempt++) {
+        // ThreadLaunch returns after forking prep. Wait for the prepared-run to leave
+        // "preparing" (release or fail) before transferring exclusive ownership.
+        for (let attempt = 0; attempt < 40; attempt++) {
           const projectionResult = yield* Effect.result(threads.getThreadProjection(threadId));
-          if (Result.isSuccess(projectionResult)) {
-            const worktreePath = projectionResult.success.thread.worktreePath;
-            if (typeof worktreePath === "string" && worktreePath.length > 0) {
-              return true as const;
-            }
-            const runs = projectionResult.success.runs ?? [];
-            const failedPrep = runs.some(
-              (run) => run.status === "failed" || (run as { failure?: unknown }).failure != null,
-            );
-            if (failedPrep && attempt > 2) {
+          if (Result.isFailure(projectionResult)) {
+            if (isMissingThreadFailure(projectionResult.failure) && attempt > 2) {
               return false as const;
             }
+            yield* Effect.sleep(Duration.millis(500));
+            continue;
           }
+
+          const { thread, runs } = projectionResult.success;
+          const preparing = runs.some((run) => run.status === "preparing");
+          if (preparing) {
+            yield* Effect.sleep(Duration.millis(500));
+            continue;
+          }
+
+          const failed = runs.some((run) => run.status === "failed");
+          if (failed) {
+            return false as const;
+          }
+
+          const worktreePath = thread.worktreePath;
+          if (typeof worktreePath === "string" && worktreePath.length > 0) {
+            return true as const;
+          }
+
+          // No preparing runs and no worktree yet — still bootstrapping the launch.
           yield* Effect.sleep(Duration.millis(500));
         }
         return false as const;
@@ -806,7 +819,9 @@ export const layer = Layer.effect(
           ),
         );
 
-        // Prefer exact head SHA so fork PRs do not require origin/<headBranch>.
+        // Exact PR head OID from the monitor snapshot. Do not startFromOrigin/<headBranch>:
+        // fork PRs often lack that branch under the base repo's origin. ThreadLaunch prep
+        // fails closed (no ownership transfer) when the object is not materializable locally.
         const baseRef = snapshot.headSha;
         const previousOwner = monitor.ownerThreadId;
         const prompt = buildFallbackMaintenancePrompt({
@@ -834,6 +849,7 @@ export const layer = Layer.effect(
               type: "worktree",
               baseRef,
               branch: `t3/pr-monitor/${monitor.number}/${attemptId.slice(0, 8)}`,
+              // Never resolve origin/<headBranch>; baseRef is the PR head SHA.
               startFromOrigin: false,
             },
             initialMessage: {
