@@ -31,12 +31,15 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
@@ -55,6 +58,8 @@ import { buildFallbackMaintenancePrompt, formatBlockersSummary } from "./wakePro
 
 /** Minimum gap between successful/attempted fallback launches per monitor. */
 const FALLBACK_COOLDOWN_MS = 30 * 60 * 1000;
+/** Exclusive claim while a fallback launch is materializing a worktree/thread. */
+const FALLBACK_LAUNCH_LEASE_MS = 3 * 60 * 1000;
 
 function isoNow() {
   return Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
@@ -147,6 +152,8 @@ export const layer = Layer.effect(
     const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const projects = yield* ProjectService.ProjectService;
+    const git = yield* GitWorkflow.GitWorkflowService;
     const crypto = yield* Crypto.Crypto;
     const ownerId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const changes = yield* PubSub.sliding<void>(1);
@@ -715,6 +722,29 @@ export const layer = Layer.effect(
         return false as const;
       });
 
+    const abandonFallbackThread = (input: {
+      readonly projectId: PullRequestMonitorRecord["projectId"];
+      readonly threadId: ThreadId;
+      readonly commandIdPrefix: string;
+    }) =>
+      Effect.gen(function* () {
+        yield* threads
+          .interruptThread({
+            projectId: input.projectId,
+            threadId: input.threadId,
+            commandId: CommandId.make(`${input.commandIdPrefix}:interrupt`),
+            reason: "Abandoned PR monitor fallback launch.",
+          })
+          .pipe(Effect.ignore);
+        yield* threads
+          .dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make(`${input.commandIdPrefix}:archive`),
+            threadId: input.threadId,
+          })
+          .pipe(Effect.ignore);
+      });
+
     const launchFallback = (
       input: PullRequestMonitorLaunchFallbackInput,
     ): Effect.Effect<PullRequestMonitorLaunchFallbackResult, PullRequestMonitorError> =>
@@ -730,14 +760,30 @@ export const layer = Layer.effect(
 
         const force = input.force === true;
         const now = yield* isoNow();
-        const latest = yield* store.latestFallbackLaunch(monitor.id);
-        if (latest && latest.status === "launched") {
-          const age =
-            DateTime.toEpochMillis(DateTime.makeUnsafe(now)) -
-            DateTime.toEpochMillis(DateTime.makeUnsafe(latest.createdAt));
-          if (age >= 0 && age < FALLBACK_COOLDOWN_MS) {
+        const previousOwner = monitor.ownerThreadId;
+        const availability = yield* ownerAvailability(previousOwner);
+        if (availability.kind === "unknown") {
+          return yield* Effect.fail(
+            monitorError(
+              "Could not verify owner thread availability; refusing fallback takeover.",
+              { monitorId: monitor.id, cause: availability.cause },
+            ),
+          );
+        }
+        if (availability.kind === "available" && !force) {
+          // Cooldown only short-circuits when the recorded fallback owner is still alive.
+          const latest = yield* store.latestFallbackLaunch(monitor.id);
+          if (latest && latest.status === "launched") {
+            const age =
+              DateTime.toEpochMillis(DateTime.makeUnsafe(now)) -
+              DateTime.toEpochMillis(DateTime.makeUnsafe(latest.createdAt));
             const existingThread = latest.threadId as ThreadId | null;
-            if (existingThread && monitor.ownerThreadId === existingThread) {
+            if (
+              age >= 0 &&
+              age < FALLBACK_COOLDOWN_MS &&
+              existingThread &&
+              previousOwner === existingThread
+            ) {
               return {
                 monitor,
                 fallbackThreadId: existingThread,
@@ -748,18 +794,6 @@ export const layer = Layer.effect(
               };
             }
           }
-        }
-
-        const availability = yield* ownerAvailability(monitor.ownerThreadId);
-        if (availability.kind === "unknown") {
-          return yield* Effect.fail(
-            monitorError(
-              "Could not verify owner thread availability; refusing fallback takeover.",
-              { monitorId: monitor.id, cause: availability.cause },
-            ),
-          );
-        }
-        if (availability.kind === "available" && !force) {
           return yield* Effect.fail(
             monitorError(
               "Owner thread is still available. Use force only with explicit human approval, or transfer ownership first.",
@@ -768,177 +802,301 @@ export const layer = Layer.effect(
           );
         }
 
-        const snapshotResult = yield* Effect.result(
-          pullRequests.monitorSnapshot({
-            projectId: monitor.projectId,
-            repository: monitor.repository,
-            number: monitor.number,
-          }),
-        );
-        if (Result.isFailure(snapshotResult)) {
-          return yield* Effect.fail(
-            monitorError("Could not load PR snapshot for fallback launch.", {
-              monitorId: monitor.id,
-              cause: snapshotResult.failure,
-            }),
-          );
-        }
-        const snapshot = snapshotResult.success;
-        if (snapshot.state !== "open") {
-          return yield* Effect.fail(
-            monitorError("Pull request is not open; refusing fallback launch.", {
-              monitorId: monitor.id,
-            }),
-          );
-        }
-
-        const reason: PullRequestMonitorFallbackReason =
-          input.reason ??
-          (force
-            ? "explicit"
-            : availability.kind === "unavailable" && availability.reason === "owner-missing"
-              ? "owner-missing"
-              : "owner-unavailable");
-
-        // Per-attempt IDs so cooldown expiry can relaunch after a dead/archived fallback.
+        // Serialize concurrent fallback attempts (RPC + auto path) with a short exclusive lease.
         const attemptId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-        const commandIdValue = `command:pr-monitor-fallback:${monitor.id}:${attemptId}`;
-        const commandId = CommandId.make(commandIdValue);
-        const messageId = MessageId.make(`message:pr-monitor-fallback:${monitor.id}:${attemptId}`);
-        const readiness = monitor.readiness ?? {
-          ready: false,
-          label: "blocked" as const,
-          blockers: [{ kind: "checks-missing" as const, detail: "No readiness yet" }],
-        };
-        const settings = yield* serverSettings.getSettings.pipe(
-          Effect.mapError((cause) =>
-            monitorError("Could not read settings for fallback launch.", {
-              monitorId: monitor.id,
-              cause,
-            }),
-          ),
-        );
-
-        // Exact PR head OID from the monitor snapshot. Do not startFromOrigin/<headBranch>:
-        // fork PRs often lack that branch under the base repo's origin. ThreadLaunch prep
-        // fails closed (no ownership transfer) when the object is not materializable locally.
-        const baseRef = snapshot.headSha;
-        const previousOwner = monitor.ownerThreadId;
-        const prompt = buildFallbackMaintenancePrompt({
-          prNumber: monitor.number,
-          repository: monitor.repository,
-          url: snapshot.url,
-          headBranch: snapshot.headBranch,
-          headSha: snapshot.headSha,
-          reason,
-          previousOwnerThreadId: previousOwner,
-          note: input.note ?? null,
-          readinessSummary: formatBlockersSummary(readiness),
+        const fallbackLeaseKey = `fallback:${monitor.canonicalKey}`;
+        const leased = yield* store.tryAcquireLease({
+          canonicalKey: fallbackLeaseKey,
+          ownerId: attemptId,
+          nowIso: now,
+          expiresAt: addMs(now, FALLBACK_LAUNCH_LEASE_MS),
         });
-
-        const launchResult = yield* Effect.result(
-          threadLaunch.launch({
-            commandId,
-            projectId: monitor.projectId,
-            title: `PR maintenance ${monitor.repository}#${monitor.number}`,
-            generateTitle: false,
-            modelSelection: settings.textGenerationModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            workspaceStrategy: {
-              type: "worktree",
-              baseRef,
-              branch: `t3/pr-monitor/${monitor.number}/${attemptId.slice(0, 8)}`,
-              // Never resolve origin/<headBranch>; baseRef is the PR head SHA.
-              startFromOrigin: false,
-            },
-            initialMessage: {
-              messageId,
-              text: prompt,
-              attachments: [],
-            },
-            createdBy: "system",
-            creationSource: "server",
-          }),
-        );
-
-        if (Result.isFailure(launchResult)) {
-          const message =
-            launchResult.failure instanceof Error
-              ? launchResult.failure.message
-              : String(launchResult.failure);
-          yield* store.recordFallbackLaunch({
-            launchId: attemptId,
-            monitorId: monitor.id,
-            commandId: commandIdValue,
-            threadId: null,
-            reason,
-            status: "failed",
-            error: message.slice(0, 1000),
-            createdAt: now,
-          });
+        if (!leased) {
+          const latest = yield* store.latestFallbackLaunch(monitor.id);
+          const inflightThread = latest?.threadId as ThreadId | null | undefined;
+          if (inflightThread) {
+            return {
+              monitor,
+              fallbackThreadId: inflightThread,
+              previousOwnerThreadId: null,
+              launched: false,
+              skippedReason: "fallback-launch-in-flight",
+              commandId: latest.commandId,
+            };
+          }
           return yield* Effect.fail(
-            monitorError(`Fallback thread launch failed: ${message.slice(0, 300)}`, {
+            monitorError("Another fallback launch is already in progress for this monitor.", {
               monitorId: monitor.id,
-              cause: launchResult.failure,
             }),
           );
         }
 
-        const fallbackThreadId = launchResult.success.threadId;
-        const prepared = yield* waitForPreparedWorktree(fallbackThreadId);
-        if (!prepared) {
+        return yield* Effect.gen(function* () {
+          const snapshotResult = yield* Effect.result(
+            pullRequests.monitorSnapshot({
+              projectId: monitor.projectId,
+              repository: monitor.repository,
+              number: monitor.number,
+            }),
+          );
+          if (Result.isFailure(snapshotResult)) {
+            return yield* Effect.fail(
+              monitorError("Could not load PR snapshot for fallback launch.", {
+                monitorId: monitor.id,
+                cause: snapshotResult.failure,
+              }),
+            );
+          }
+          const snapshot = snapshotResult.success;
+          if (snapshot.state !== "open") {
+            return yield* Effect.fail(
+              monitorError("Pull request is not open; refusing fallback launch.", {
+                monitorId: monitor.id,
+              }),
+            );
+          }
+
+          const reason: PullRequestMonitorFallbackReason =
+            input.reason ??
+            (force
+              ? "explicit"
+              : availability.kind === "unavailable" && availability.reason === "owner-missing"
+                ? "owner-missing"
+                : "owner-unavailable");
+
+          const commandIdValue = `command:pr-monitor-fallback:${monitor.id}:${attemptId}`;
+          const commandId = CommandId.make(commandIdValue);
+          const messageId = MessageId.make(
+            `message:pr-monitor-fallback:${monitor.id}:${attemptId}`,
+          );
+          const readiness = monitor.readiness ?? {
+            ready: false,
+            label: "blocked" as const,
+            blockers: [{ kind: "checks-missing" as const, detail: "No readiness yet" }],
+          };
+          const settings = yield* serverSettings.getSettings.pipe(
+            Effect.mapError((cause) =>
+              monitorError("Could not read settings for fallback launch.", {
+                monitorId: monitor.id,
+                cause,
+              }),
+            ),
+          );
+
+          const project = yield* projects.getById(monitor.projectId).pipe(
+            Effect.mapError((cause) =>
+              monitorError("Could not resolve project for fallback launch.", {
+                monitorId: monitor.id,
+                cause,
+              }),
+            ),
+            Effect.flatMap(
+              Option.match({
+                onNone: () =>
+                  Effect.fail(
+                    monitorError("Project no longer exists for fallback launch.", {
+                      monitorId: monitor.id,
+                    }),
+                  ),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
+
+          // Materialize refs/pull/<n>/head (and fork heads) before creating a thread worktree.
+          const prCheckout = yield* Effect.result(
+            git.preparePullRequestThread({
+              cwd: project.workspaceRoot,
+              reference: `#${monitor.number}`,
+              mode: "worktree",
+            }),
+          );
+          if (Result.isFailure(prCheckout)) {
+            const message =
+              prCheckout.failure instanceof Error
+                ? prCheckout.failure.message
+                : String(prCheckout.failure);
+            yield* store.recordFallbackLaunch({
+              launchId: attemptId,
+              monitorId: monitor.id,
+              commandId: commandIdValue,
+              threadId: null,
+              reason,
+              status: "failed",
+              error: message.slice(0, 1000),
+              createdAt: now,
+            });
+            return yield* Effect.fail(
+              monitorError(
+                `Could not materialize PR head for fallback launch: ${message.slice(0, 300)}`,
+                { monitorId: monitor.id, cause: prCheckout.failure },
+              ),
+            );
+          }
+          if (
+            prCheckout.success.worktreePath === null ||
+            prCheckout.success.worktreePath.length === 0
+          ) {
+            yield* store.recordFallbackLaunch({
+              launchId: attemptId,
+              monitorId: monitor.id,
+              commandId: commandIdValue,
+              threadId: null,
+              reason,
+              status: "failed",
+              error: "PR head preparation did not yield a worktree path.",
+              createdAt: now,
+            });
+            return yield* Effect.fail(
+              monitorError("PR head preparation did not yield a worktree path.", {
+                monitorId: monitor.id,
+              }),
+            );
+          }
+
+          const prompt = buildFallbackMaintenancePrompt({
+            prNumber: monitor.number,
+            repository: monitor.repository,
+            url: snapshot.url,
+            headBranch: snapshot.headBranch,
+            headSha: snapshot.headSha,
+            reason,
+            previousOwnerThreadId: previousOwner,
+            note: input.note ?? null,
+            readinessSummary: formatBlockersSummary(readiness),
+          });
+
+          const launchResult = yield* Effect.result(
+            threadLaunch.launch({
+              commandId,
+              projectId: monitor.projectId,
+              title: `PR maintenance ${monitor.repository}#${monitor.number}`,
+              generateTitle: false,
+              modelSelection: settings.textGenerationModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              workspaceStrategy: {
+                type: "existing_worktree",
+                worktreePath: prCheckout.success.worktreePath,
+                branch: prCheckout.success.branch,
+              },
+              initialMessage: {
+                messageId,
+                text: prompt,
+                attachments: [],
+              },
+              createdBy: "system",
+              creationSource: "server",
+            }),
+          );
+
+          if (Result.isFailure(launchResult)) {
+            const message =
+              launchResult.failure instanceof Error
+                ? launchResult.failure.message
+                : String(launchResult.failure);
+            yield* store.recordFallbackLaunch({
+              launchId: attemptId,
+              monitorId: monitor.id,
+              commandId: commandIdValue,
+              threadId: null,
+              reason,
+              status: "failed",
+              error: message.slice(0, 1000),
+              createdAt: now,
+            });
+            return yield* Effect.fail(
+              monitorError(`Fallback thread launch failed: ${message.slice(0, 300)}`, {
+                monitorId: monitor.id,
+                cause: launchResult.failure,
+              }),
+            );
+          }
+
+          const fallbackThreadId = launchResult.success.threadId;
+          const prepared = yield* waitForPreparedWorktree(fallbackThreadId);
+          if (!prepared) {
+            yield* abandonFallbackThread({
+              projectId: monitor.projectId,
+              threadId: fallbackThreadId,
+              commandIdPrefix: commandIdValue,
+            });
+            yield* store.recordFallbackLaunch({
+              launchId: attemptId,
+              monitorId: monitor.id,
+              commandId: commandIdValue,
+              threadId: fallbackThreadId,
+              reason,
+              status: "failed",
+              error: "Worktree preparation did not complete; ownership was not transferred.",
+              createdAt: now,
+            });
+            return yield* Effect.fail(
+              monitorError(
+                "Fallback worktree preparation did not complete; ownership was not transferred.",
+                { monitorId: monitor.id },
+              ),
+            );
+          }
+
+          const transferred = yield* store.transferOwnershipAtomic({
+            monitorId: monitor.id,
+            ownerThreadId: fallbackThreadId,
+            expectedOwnerThreadId: previousOwner,
+            updatedAt: now,
+            eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+            toThreadId: fallbackThreadId,
+            reason: `fallback:${reason}`,
+          });
+          if (!transferred) {
+            yield* abandonFallbackThread({
+              projectId: monitor.projectId,
+              threadId: fallbackThreadId,
+              commandIdPrefix: commandIdValue,
+            });
+            yield* store.recordFallbackLaunch({
+              launchId: attemptId,
+              monitorId: monitor.id,
+              commandId: commandIdValue,
+              threadId: fallbackThreadId,
+              reason,
+              status: "failed",
+              error: "Ownership changed during fallback launch; abandoned prepared thread.",
+              createdAt: now,
+            });
+            return yield* Effect.fail(
+              monitorError(
+                "Ownership changed during fallback launch; abandoned prepared thread.",
+                { monitorId: monitor.id },
+              ),
+            );
+          }
+
           yield* store.recordFallbackLaunch({
             launchId: attemptId,
             monitorId: monitor.id,
             commandId: commandIdValue,
             threadId: fallbackThreadId,
             reason,
-            status: "failed",
-            error: "Worktree preparation did not complete; ownership was not transferred.",
+            status: "launched",
+            error: null,
             createdAt: now,
           });
-          return yield* Effect.fail(
-            monitorError(
-              "Fallback worktree preparation did not complete; ownership was not transferred.",
-              { monitorId: monitor.id },
-            ),
-          );
-        }
+          yield* notify;
 
-        const updated = {
-          ...monitor,
-          ownerThreadId: fallbackThreadId,
-          updatedAt: now,
-        };
-        yield* store.transferOwnershipAtomic({
-          monitorId: monitor.id,
-          ownerThreadId: fallbackThreadId,
-          updatedAt: now,
-          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
-          toThreadId: fallbackThreadId,
-          reason: `fallback:${reason}`,
-        });
-        yield* store.recordFallbackLaunch({
-          launchId: attemptId,
-          monitorId: monitor.id,
-          commandId: commandIdValue,
-          threadId: fallbackThreadId,
-          reason,
-          status: "launched",
-          error: null,
-          createdAt: now,
-        });
-        yield* notify;
-
-        return {
-          monitor: updated,
-          fallbackThreadId,
-          previousOwnerThreadId: previousOwner,
-          launched: true,
-          skippedReason: null,
-          commandId: commandIdValue,
-        };
+          return {
+            monitor: {
+              ...monitor,
+              ownerThreadId: fallbackThreadId,
+              updatedAt: now,
+            },
+            fallbackThreadId,
+            previousOwnerThreadId: previousOwner,
+            launched: true,
+            skippedReason: null,
+            commandId: commandIdValue,
+          };
+        }).pipe(Effect.ensuring(store.releaseLease(fallbackLeaseKey, attemptId)));
       });
 
     return PullRequestMonitorService.of({

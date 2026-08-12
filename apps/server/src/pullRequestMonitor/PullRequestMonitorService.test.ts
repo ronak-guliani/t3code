@@ -7,15 +7,18 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
 import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
 import Migration0052 from "../persistence/Migrations/052_PullRequestMonitorOwnership.ts";
 import Migration0053 from "../persistence/Migrations/053_PullRequestMonitorFallback.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -29,6 +32,7 @@ import {
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
 } from "./PullRequestMonitorService.ts";
+import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 
 const projectId = ProjectId.make("proj_monitor_1");
 
@@ -159,9 +163,16 @@ function seedThread(
   });
 }
 
+const abandonedThreadIds: ThreadId[] = [];
 const fakeThreads = ThreadManagement.ThreadManagementService.of({
   ensureLegacyTranscript: () => Effect.void,
-  dispatch: () => Effect.die("unused"),
+  dispatch: (command) => {
+    if (command.type === "thread.archive") {
+      abandonedThreadIds.push(command.threadId);
+      return Effect.succeed({ storedEvents: [] } as never);
+    }
+    return Effect.die("unused");
+  },
   getThreadProjection: (threadId) => {
     const row = knownThreads.get(threadId);
     if (!row) {
@@ -211,7 +222,7 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
   listProjectThreads: () => Effect.succeed([]),
   sendToThread: () => Effect.die("unused"),
   waitForThread: () => Effect.die("unused"),
-  interruptThread: () => Effect.die("unused"),
+  interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
   getThreadEventSequence: () => Effect.die("unused"),
   streamStoredEvents: Stream.die("unused"),
   streamStoredEventsFrom: () => Stream.die("unused"),
@@ -220,15 +231,22 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
 
 const launchedFallbackIds: ThreadId[] = [];
 const launchedWorkspaceStrategies: Array<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"]> = [];
+const preparedPrReferences: string[] = [];
 let launchWorktreePath: string | null = "/tmp/fallback";
 let launchRunStatus: string | null = null;
+let preparePrWorktreePath: string | null = "/tmp/pr-head";
 const fakeLaunch = ThreadLaunch.ThreadLaunchService.of({
   launch: (input) =>
     Effect.sync(() => {
       launchedWorkspaceStrategies.push(input.workspaceStrategy);
       const threadId = ThreadId.make(`thr_fallback_${launchedFallbackIds.length + 1}`);
       launchedFallbackIds.push(threadId);
-      const path = launchWorktreePath === null ? null : `${launchWorktreePath}-${threadId}`;
+      const path =
+        input.workspaceStrategy.type === "existing_worktree"
+          ? input.workspaceStrategy.worktreePath
+          : launchWorktreePath === null
+            ? null
+            : `${launchWorktreePath}-${threadId}`;
       const runs = launchRunStatus === null ? [] : [{ status: launchRunStatus }];
       seedThread(threadId, path, runs);
       return {
@@ -246,6 +264,42 @@ const fakeLaunch = ThreadLaunch.ThreadLaunchService.of({
       };
     }),
 });
+
+const fakeProjects = ProjectService.ProjectService.of({
+  getById: (id) =>
+    Effect.succeed(
+      id === projectId
+        ? Option.some({
+            id: projectId,
+            title: "App",
+            workspaceRoot: "/tmp/app",
+            repositoryIdentity: null,
+            scripts: null,
+            createdAt: "2026-08-11T00:00:00.000Z",
+            updatedAt: "2026-08-11T00:00:00.000Z",
+            deletedAt: null,
+          } as never)
+        : Option.none(),
+    ),
+  getByWorkspaceRoot: () => Effect.succeed(Option.none()),
+  snapshot: Effect.succeed({ projects: [] } as never),
+} as never);
+
+const fakeGit = GitWorkflow.GitWorkflowService.of({
+  preparePullRequestThread: (input) =>
+    Effect.gen(function* () {
+      preparedPrReferences.push(input.reference);
+      if (preparePrWorktreePath === null) {
+        return yield* Effect.fail(new Error("PR head missing"));
+      }
+      return {
+        pullRequest: { number: Number(input.reference.replace("#", "")) },
+        branch: "feat/monitor",
+        worktreePath: preparePrWorktreePath,
+        isOnPullRequestHead: true,
+      } as never;
+    }),
+} as never);
 
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -267,6 +321,8 @@ const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provideMerge(FeedbackLayer),
   Layer.provide(Layer.succeed(ThreadLaunch.ThreadLaunchService, fakeLaunch)),
   Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
+  Layer.provide(Layer.succeed(ProjectService.ProjectService, fakeProjects)),
+  Layer.provide(Layer.succeed(GitWorkflow.GitWorkflowService, fakeGit)),
   Layer.provide(ServerSettings.layerTest()),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
@@ -445,6 +501,7 @@ layer("PullRequestMonitorService", (it) => {
       assert.isNull(started.monitor.ownerThreadId);
 
       const before = launchedWorkspaceStrategies.length;
+      const refsBefore = preparedPrReferences.length;
       const fallback = yield* service.launchFallback({
         monitorId: started.monitor.id,
         reason: "owner-missing",
@@ -453,15 +510,15 @@ layer("PullRequestMonitorService", (it) => {
       assert.isNotNull(fallback.fallbackThreadId);
       assert.strictEqual(fallback.monitor.ownerThreadId, fallback.fallbackThreadId);
       assert.isNull(fallback.previousOwnerThreadId);
+      assert.strictEqual(preparedPrReferences[refsBefore], "#47");
       const strategy = launchedWorkspaceStrategies[before];
       assert.isDefined(strategy);
-      assert.strictEqual(strategy!.type, "worktree");
-      if (strategy!.type === "worktree") {
-        assert.strictEqual(strategy.baseRef, "deadbeef");
-        assert.strictEqual(strategy.startFromOrigin, false);
+      assert.strictEqual(strategy!.type, "existing_worktree");
+      if (strategy!.type === "existing_worktree") {
+        assert.strictEqual(strategy.worktreePath, "/tmp/pr-head");
       }
 
-      // Second launch within cooldown should not dual-own.
+      // Second launch within cooldown should not dual-own while owner remains available.
       const again = yield* service.launchFallback({
         monitorId: started.monitor.id,
         reason: "owner-missing",
@@ -469,6 +526,32 @@ layer("PullRequestMonitorService", (it) => {
       assert.isFalse(again.launched);
       assert.strictEqual(again.skippedReason, "recent-fallback-cooldown");
       assert.strictEqual(again.fallbackThreadId, fallback.fallbackThreadId);
+    }),
+  );
+
+  it.effect("launchFallback relaunches when cooldown owner is deleted", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 51,
+      });
+      const first = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-missing",
+      });
+      assert.isTrue(first.launched);
+      // Simulate dead fallback owner while still recorded on the monitor.
+      knownThreads.delete(first.fallbackThreadId);
+
+      const second = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-unavailable",
+      });
+      assert.isTrue(second.launched);
+      assert.notStrictEqual(second.fallbackThreadId, first.fallbackThreadId);
+      assert.strictEqual(second.previousOwnerThreadId, first.fallbackThreadId);
     }),
   );
 
@@ -511,8 +594,11 @@ layer("PullRequestMonitorService", (it) => {
         repository: "acme/app",
         number: 49,
       });
+      const abandonedBefore = abandonedThreadIds.length;
       launchWorktreePath = null;
       launchRunStatus = "failed";
+      // Force launch path to seed a failed run with no usable worktree.
+      preparePrWorktreePath = "/tmp/pr-head-failed";
       const result = yield* Effect.result(
         service.launchFallback({
           monitorId: started.monitor.id,
@@ -521,9 +607,41 @@ layer("PullRequestMonitorService", (it) => {
       );
       launchWorktreePath = "/tmp/fallback";
       launchRunStatus = null;
+      preparePrWorktreePath = "/tmp/pr-head";
       assert.strictEqual(result._tag, "Failure");
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNull(status.monitor?.ownerThreadId ?? null);
+      assert.isTrue(abandonedThreadIds.length > abandonedBefore);
+    }),
+  );
+
+  it.effect("launchFallback serializes concurrent attempts with a lease", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const monitorStore = yield* PullRequestMonitorStore.make;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 52,
+      });
+      // Hold the fallback lease so a concurrent launch cannot dual-start agents.
+      const now = "2026-08-11T00:00:00.000Z";
+      const held = yield* monitorStore.tryAcquireLease({
+        canonicalKey: `fallback:${started.monitor.canonicalKey}`,
+        ownerId: "holder",
+        nowIso: now,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      assert.isTrue(held);
+
+      const blocked = yield* Effect.result(
+        service.launchFallback({
+          monitorId: started.monitor.id,
+          reason: "owner-missing",
+        }),
+      );
+      assert.strictEqual(blocked._tag, "Failure");
+      yield* monitorStore.releaseLease(`fallback:${started.monitor.canonicalKey}`, "holder");
     }),
   );
 
