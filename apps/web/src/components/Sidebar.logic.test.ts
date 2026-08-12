@@ -563,6 +563,7 @@ describe("isContextMenuPointerDown", () => {
 describe("resolveThreadStatusPill", () => {
   const baseThread = {
     hasActionableProposedPlan: false,
+    hasPendingQueuedTurn: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     interactionMode: "plan" as const,
@@ -673,6 +674,7 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
+          hasPendingQueuedTurn: true,
           latestTurn: makeLatestTurn(),
           session: {
             ...baseThread.session,
@@ -682,7 +684,6 @@ describe("resolveThreadStatusPill", () => {
           },
         },
         lastVisitedAt: "2026-03-09T10:06:00.000Z",
-        hasQueuedTurn: true,
       }),
     ).toMatchObject({ label: "Working", pulse: true });
   });
@@ -724,6 +725,7 @@ describe("resolveThreadStatusPill", () => {
         thread: {
           ...baseThread,
           hasActionableProposedPlan: true,
+          hasPendingQueuedTurn: false,
           latestTurn: makeLatestTurn(),
           session: {
             ...baseThread.session,

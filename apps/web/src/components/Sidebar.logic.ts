@@ -105,6 +105,7 @@ type ThreadStatusInput = Pick<
   | "hasActionableProposedPlan"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "hasPendingQueuedTurn"
   | "interactionMode"
   | "latestTurn"
   | "session"
@@ -419,7 +420,6 @@ export function resolveThreadStatusPill(input: {
   readonly thread: ThreadStatusInput;
   readonly lastVisitedAt: string | null | undefined;
   readonly hasPendingTurn?: boolean;
-  readonly hasQueuedTurn?: boolean;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
@@ -433,7 +433,7 @@ export function resolveThreadStatusPill(input: {
 
   if (
     input.hasPendingTurn ||
-    input.hasQueuedTurn ||
+    thread.hasPendingQueuedTurn ||
     thread.virtualAgentRun?.status === "running" ||
     isThreadActivelyWorking(thread.latestTurn, thread.session)
   ) {
@@ -463,9 +463,8 @@ export function resolveThreadStatusPill(input: {
 export function resolveSidebarThreadRowStatus(input: {
   readonly threadStatus: ThreadStatusPill | null;
   readonly hasPendingTurn: boolean;
-  readonly hasQueuedTurn?: boolean;
 }): ThreadStatusPill | null {
-  if (!input.hasPendingTurn && !input.hasQueuedTurn) {
+  if (!input.hasPendingTurn) {
     return input.threadStatus;
   }
   return resolveProjectStatusIndicator([THREAD_STATUSES.working, input.threadStatus]);

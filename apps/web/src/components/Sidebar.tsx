@@ -111,11 +111,7 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import {
-  collectActionableQueuedThreadKeys,
-  hasActionableQueuedTurn,
-  isThreadActivelyWorking,
-} from "../session-logic";
+import { isThreadActivelyWorking } from "../session-logic";
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import {
@@ -447,15 +443,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const pendingTurn = usePendingTurnStore(
     (state) => state.pendingByThreadKey[pendingTurnKey] ?? null,
   );
-  const hasQueuedTurn = useStore((state) =>
-    hasActionableQueuedTurn(
-      state.environmentStateById[thread.environmentId]?.queuedTurnsByThreadId[thread.id],
-    ),
-  );
   const effectiveThreadStatus = resolveSidebarThreadRowStatus({
     threadStatus,
     hasPendingTurn: isPendingTurnActive(pendingTurn, thread),
-    hasQueuedTurn,
   });
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const discoveredPorts = useThreadDiscoveredPorts({
@@ -1629,11 +1619,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     return counts;
   }, [memberProjectByScopedKey, project.memberProjects, projectThreads]);
 
-  const queuedThreadKeys = useStore(
-    useShallow((state) => collectActionableQueuedThreadKeys(state.environmentStateById)),
-  );
-  const queuedThreadKeySet = useMemo(() => new Set(queuedThreadKeys), [queuedThreadKeys]);
-
   const {
     projectStatus,
     visibleProjectThreads,
@@ -1648,12 +1633,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       ]),
     );
     const resolveProjectThreadStatus = (thread: SidebarThreadSummary) => {
-      const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      const lastVisitedAt = lastVisitedAtByThreadKey.get(threadKey);
+      const lastVisitedAt = lastVisitedAtByThreadKey.get(
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      );
       return resolveThreadStatusPill({
         thread,
         lastVisitedAt,
-        hasQueuedTurn: queuedThreadKeySet.has(threadKey),
       });
     };
     const visibleProjectThreads = selectVisibleSidebarThreads(projectThreads);
@@ -1677,7 +1662,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     threadExpandedOverrides,
     pinnedThreadKeys,
     projectThreads,
-    queuedThreadKeySet,
     threadExpandedOverrides,
     threadLastVisitedAts,
     threadSortOrder,

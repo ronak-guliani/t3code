@@ -4,10 +4,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
-  QueuedTurnId,
   ThreadId,
   TurnId,
-  type OrchestrationQueuedTurn,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import type { EnvironmentState } from "./store";
@@ -29,7 +27,7 @@ function makeEnvironmentState(overrides: {
   readonly title?: string;
   readonly completedAt?: string;
   readonly activeTurnId?: TurnId | null;
-  readonly queuedTurns?: readonly OrchestrationQueuedTurn[];
+  readonly hasPendingQueuedTurn?: boolean;
 }): EnvironmentState {
   const nextThreadId = overrides.threadId ?? threadId;
   const turnId = overrides.turnId ?? TurnId.make("turn-1");
@@ -53,13 +51,7 @@ function makeEnvironmentState(overrides: {
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
     turnDiffSummaryByThreadId: {},
-    queuedTurnsByThreadId: {
-      ...(overrides.queuedTurns
-        ? {
-            [nextThreadId]: overrides.queuedTurns,
-          }
-        : {}),
-    },
+    queuedTurnsByThreadId: {},
     sidebarThreadSummaryById: {
       [nextThreadId]: {
         id: nextThreadId,
@@ -97,6 +89,7 @@ function makeEnvironmentState(overrides: {
         hasPendingApprovals: false,
         hasPendingUserInput: false,
         hasActionableProposedPlan: false,
+        hasPendingQueuedTurn: overrides.hasPendingQueuedTurn ?? false,
       },
     },
     bootstrapComplete: overrides.bootstrapComplete,
@@ -220,24 +213,7 @@ describe("collectThreadCompletionNotifications", () => {
       turnId: TurnId.make("turn-handoff-boundary"),
       title: "Handoff in progress",
       completedAt: "2026-06-10T00:03:00.000Z",
-      queuedTurns: [
-        {
-          id: QueuedTurnId.make("queued-turn-continuation"),
-          threadId: ThreadId.make("thread-handoff"),
-          message: {
-            messageId: MessageId.make("message-continuation"),
-            role: "user",
-            text: "Continuing in the new worktree",
-            attachments: [],
-          },
-          createdAt: "2026-06-10T00:02:59.000Z",
-          updatedAt: "2026-06-10T00:02:59.000Z",
-          failedAt: null,
-          failureMessage: null,
-          runtimeMode: "full-access",
-          interactionMode: "default",
-        } satisfies OrchestrationQueuedTurn,
-      ],
+      hasPendingQueuedTurn: true,
     });
 
     expect(
