@@ -15,6 +15,7 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
+import { cn } from "~/lib/utils";
 import {
   type EnvMode,
   type EnvironmentOption,
@@ -55,6 +56,7 @@ interface BranchToolbarProps {
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
   activeContextWindow: ContextWindowSnapshot | null;
   activeThreadProviderDisplayName: string | null;
+  showGitControls?: boolean;
 }
 
 interface MobileRunContextSelectorProps {
@@ -192,6 +194,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onEnvironmentChange,
   activeContextWindow,
   activeThreadProviderDisplayName,
+  showGitControls = true,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -236,62 +239,69 @@ export const BranchToolbar = memo(function BranchToolbar({
   );
   const isMobile = useIsMobile();
 
-  if (!hasActiveThread || !activeProject) return null;
+  if (!hasActiveThread || !activeProject || (!showGitControls && !activeContextWindow)) return null;
 
   return (
     <div
-      className="mx-auto flex w-full max-w-3xl items-center justify-between gap-2 pb-3 pt-1"
+      className={cn(
+        "mx-auto flex w-full max-w-3xl items-center gap-2 pb-3 pt-1",
+        showGitControls ? "justify-between" : "justify-end",
+      )}
       style={{
         paddingLeft: "calc(env(safe-area-inset-left) + var(--spacing) * 2.5)",
         paddingRight: "calc(env(safe-area-inset-right) + var(--spacing) * 2.5)",
       }}
     >
-      {isMobile ? (
-        <MobileRunContextSelector
-          envLocked={envLocked}
-          envModeLocked={envModeLocked}
-          environmentId={environmentId}
-          availableEnvironments={availableEnvironments}
-          showEnvironmentPicker={showEnvironmentPicker}
-          onEnvironmentChange={onEnvironmentChange}
-          effectiveEnvMode={effectiveEnvMode}
-          activeWorktreePath={activeWorktreePath}
-          onEnvModeChange={onEnvModeChange}
-        />
-      ) : (
-        <div className="flex min-w-0 shrink-0 items-center gap-1">
-          {showEnvironmentPicker && availableEnvironments && onEnvironmentChange && (
-            <>
-              <BranchToolbarEnvironmentSelector
-                envLocked={envLocked}
-                environmentId={environmentId}
-                availableEnvironments={availableEnvironments}
-                onEnvironmentChange={onEnvironmentChange}
+      {showGitControls ? (
+        <>
+          {isMobile ? (
+            <MobileRunContextSelector
+              envLocked={envLocked}
+              envModeLocked={envModeLocked}
+              environmentId={environmentId}
+              availableEnvironments={availableEnvironments}
+              showEnvironmentPicker={showEnvironmentPicker}
+              onEnvironmentChange={onEnvironmentChange}
+              effectiveEnvMode={effectiveEnvMode}
+              activeWorktreePath={activeWorktreePath}
+              onEnvModeChange={onEnvModeChange}
+            />
+          ) : (
+            <div className="flex min-w-0 shrink-0 items-center gap-1">
+              {showEnvironmentPicker && availableEnvironments && onEnvironmentChange && (
+                <>
+                  <BranchToolbarEnvironmentSelector
+                    envLocked={envLocked}
+                    environmentId={environmentId}
+                    availableEnvironments={availableEnvironments}
+                    onEnvironmentChange={onEnvironmentChange}
+                  />
+                  <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
+                </>
+              )}
+              <BranchToolbarEnvModeSelector
+                envLocked={envModeLocked}
+                effectiveEnvMode={effectiveEnvMode}
+                activeWorktreePath={activeWorktreePath}
+                onEnvModeChange={onEnvModeChange}
               />
-              <Separator orientation="vertical" className="mx-0.5 h-3.5!" />
-            </>
+            </div>
           )}
-          <BranchToolbarEnvModeSelector
-            envLocked={envModeLocked}
-            effectiveEnvMode={effectiveEnvMode}
-            activeWorktreePath={activeWorktreePath}
-            onEnvModeChange={onEnvModeChange}
-          />
-        </div>
-      )}
 
-      <BranchToolbarBranchSelector
-        className="min-w-0 flex-1 justify-end md:ml-auto md:flex-none"
-        environmentId={environmentId}
-        threadId={threadId}
-        {...(draftId ? { draftId } : {})}
-        envLocked={branchLocked}
-        {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
-        {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
-        {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
-        {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
-        {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
-      />
+          <BranchToolbarBranchSelector
+            className="min-w-0 flex-1 justify-end md:ml-auto md:flex-none"
+            environmentId={environmentId}
+            threadId={threadId}
+            {...(draftId ? { draftId } : {})}
+            envLocked={branchLocked}
+            {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
+            {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
+            {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
+            {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}
+            {...(onComposerFocusRequest ? { onComposerFocusRequest } : {})}
+          />
+        </>
+      ) : null}
       {activeContextWindow ? (
         <ContextWindowMeter
           usage={activeContextWindow}
