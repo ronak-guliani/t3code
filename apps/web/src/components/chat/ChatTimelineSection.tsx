@@ -522,10 +522,25 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       select: (search) => parseThreadMessageRouteSearch(search),
     });
     const [highlightedMessageId, setHighlightedMessageId] = useState<MessageId | null>(null);
+    const handledRouteMessageRef = useRef<string | null>(null);
+    const highlightTimeoutRef = useRef<number | null>(null);
+
+    useEffect(
+      () => () => {
+        if (highlightTimeoutRef.current !== null) {
+          window.clearTimeout(highlightTimeoutRef.current);
+        }
+      },
+      [],
+    );
 
     useEffect(() => {
       const messageId = routeMessageSearch.message;
       if (!messageId) {
+        return;
+      }
+      const routeMessageKey = `${routeThreadKey}:${messageId}`;
+      if (handledRouteMessageRef.current === routeMessageKey) {
         return;
       }
       const rowIndex = timelineRows.findIndex(
@@ -539,12 +554,15 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       if (!row) {
         return;
       }
+      handledRouteMessageRef.current = routeMessageKey;
       const highlightedId = messageId as MessageId;
       setHighlightedMessageId(highlightedId);
       scrollTimelineRowIntoView({ rowId: row.id, rowIndex, legendListRef: listRef });
-      const timeoutId = window.setTimeout(() => setHighlightedMessageId(null), 1_800);
-      return () => window.clearTimeout(timeoutId);
-    }, [listRef, routeMessageSearch.message, timelineRows]);
+      if (highlightTimeoutRef.current !== null) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
+      highlightTimeoutRef.current = window.setTimeout(() => setHighlightedMessageId(null), 1_800);
+    }, [listRef, routeMessageSearch.message, routeThreadKey, timelineRows]);
 
     const onRevertToTurnCountRef = useRef(onRevertToTurnCount);
     onRevertToTurnCountRef.current = onRevertToTurnCount;
