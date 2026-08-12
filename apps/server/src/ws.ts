@@ -1812,8 +1812,7 @@ const makeWsRpcLayer = (
                       Effect.gen(function* () {
                         // Auto-associate ownership + start monitor when a thread creates a PR.
                         if (
-                          (result.pr.status === "created" ||
-                            result.pr.status === "opened_existing") &&
+                          result.pr.status === "created" &&
                           typeof result.pr.number === "number" &&
                           input.projectId !== undefined &&
                           input.threadId !== undefined
@@ -1842,7 +1841,10 @@ const makeWsRpcLayer = (
                                 number: result.pr.number,
                                 ownerThreadId: input.threadId,
                               })
-                              .pipe(Effect.ignore);
+                              .pipe(
+                                Effect.ignore({ log: true }),
+                                Effect.forkDetach({ startImmediately: true }),
+                              );
                           }
                         }
                         yield* refreshGitStatus(input.cwd);

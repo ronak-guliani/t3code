@@ -304,6 +304,7 @@ layer("PullRequestMonitorService", (it) => {
   it.effect("submitFindings links review thread without dual owners", () =>
     Effect.gen(function* () {
       const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
       const owner = ThreadId.make("thr_owner_main");
       const review = ThreadId.make("thr_review_1");
       const result = yield* service.submitFindings({
@@ -323,6 +324,54 @@ layer("PullRequestMonitorService", (it) => {
       assert.strictEqual(result.monitor.ownerThreadId, owner);
       assert.strictEqual(result.monitor.linkedReviewThreadId, review);
       assert.notStrictEqual(result.monitor.ownerThreadId, result.monitor.linkedReviewThreadId);
+
+      const events = yield* sql<{
+        readonly from_thread_id: string | null;
+        readonly to_thread_id: string | null;
+      }>`
+        SELECT from_thread_id, to_thread_id
+        FROM pull_request_monitor_ownership_events
+        WHERE monitor_id = ${result.monitor.id}
+      `;
+      assert.deepEqual(events, [{ from_thread_id: null, to_thread_id: owner }]);
+    }),
+  );
+
+  it.effect("submitFindings audits an owner handoff after starting an existing monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const ownerA = ThreadId.make("thr_owner_audit_a");
+      const ownerB = ThreadId.make("thr_owner_audit_b");
+      const review = ThreadId.make("thr_review_audit");
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 45,
+        ownerThreadId: ownerA,
+      });
+
+      const result = yield* service.submitFindings({
+        reference: {
+          projectId,
+          repository: "acme/app",
+          number: 45,
+        },
+        reviewThreadId: review,
+        ownerThreadId: ownerB,
+      });
+      assert.strictEqual(result.monitor.ownerThreadId, ownerB);
+
+      const events = yield* sql<{
+        readonly from_thread_id: string | null;
+        readonly to_thread_id: string | null;
+      }>`
+        SELECT from_thread_id, to_thread_id
+        FROM pull_request_monitor_ownership_events
+        WHERE monitor_id = ${started.monitor.id}
+        ORDER BY created_at
+      `;
+      assert.deepEqual(events, [{ from_thread_id: ownerA, to_thread_id: ownerB }]);
     }),
   );
 });

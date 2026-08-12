@@ -499,7 +499,6 @@ export const layer = Layer.effect(
             projectId: input.reference.projectId,
             repository: input.reference.repository,
             number: input.reference.number,
-            ...(input.ownerThreadId === undefined ? {} : { ownerThreadId: input.ownerThreadId }),
           });
           monitorRecord = started.monitor;
         } else {
