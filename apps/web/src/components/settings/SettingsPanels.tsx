@@ -531,6 +531,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate
         ? ["Auto-monitor created pull requests"]
         : []),
+      ...(settings.autoLaunchPrMonitorFallback !==
+      DEFAULT_UNIFIED_SETTINGS.autoLaunchPrMonitorFallback
+        ? ["Auto-launch PR monitor fallback"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -551,6 +555,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
       settings.autoMonitorPullRequestsOnCreate,
+      settings.autoLaunchPrMonitorFallback,
       settings.diffIgnoreWhitespace,
       settings.environmentIdentificationMode,
       settings.fontFamilyCode,
@@ -657,6 +662,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       newWorktreesStartFromOrigin: DEFAULT_UNIFIED_SETTINGS.newWorktreesStartFromOrigin,
       autoMonitorPullRequestsOnCreate: DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate,
+      autoLaunchPrMonitorFallback: DEFAULT_UNIFIED_SETTINGS.autoLaunchPrMonitorFallback,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
@@ -2165,6 +2171,34 @@ export function GeneralSettingsPanel() {
                 updateSettings({ autoMonitorPullRequestsOnCreate: Boolean(checked) })
               }
               aria-label="Auto-monitor created pull requests"
+            />
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("auto-launch-pr-monitor-fallback")}
+          description="When a monitored PR has open feedback but no available owner thread, launch a prepared maintenance worktree and transfer exclusive ownership."
+          resetAction={
+            settings.autoLaunchPrMonitorFallback !==
+            DEFAULT_UNIFIED_SETTINGS.autoLaunchPrMonitorFallback ? (
+              <SettingResetButton
+                label="auto-launch PR monitor fallback"
+                onClick={() =>
+                  updateSettings({
+                    autoLaunchPrMonitorFallback:
+                      DEFAULT_UNIFIED_SETTINGS.autoLaunchPrMonitorFallback,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.autoLaunchPrMonitorFallback}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoLaunchPrMonitorFallback: Boolean(checked) })
+              }
+              aria-label="Auto-launch PR monitor fallback"
             />
           }
         />

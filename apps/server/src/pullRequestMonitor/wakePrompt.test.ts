@@ -1,7 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import type { PullRequestMonitorReadiness, PullRequestMonitorSnapshot } from "@t3tools/contracts";
 
-import { buildWakePrompt, formatBlockersSummary } from "./wakePrompt.ts";
+import {
+  buildFallbackMaintenancePrompt,
+  buildWakePrompt,
+  formatBlockersSummary,
+} from "./wakePrompt.ts";
 
 const snapshot = {
   provider: "github",
@@ -17,7 +21,7 @@ const snapshot = {
   behindBaseBy: 0,
   titleExcerpt: "Add feature",
   url: "https://github.com/acme/app/pull/12",
-  fetchedAt: new Date().toISOString(),
+  fetchedAt: "2026-08-11T00:00:00.000Z",
   sourceRevision: "rev1",
   completeness: {
     reviewsComplete: true,
@@ -51,6 +55,50 @@ describe("wakePrompt", () => {
     });
     expect(prompt).toContain("acme/app#12");
     expect(prompt).toContain("t3_pr_monitor_report");
+    expect(prompt.length).toBeLessThan(4_000);
+  });
+
+  it("builds a bounded fallback maintenance prompt", () => {
+    const prompt = buildFallbackMaintenancePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      url: "https://github.com/acme/app/pull/12",
+      headBranch: "feat/x",
+      headSha: "abc123",
+      reason: "owner-missing",
+      previousOwnerThreadId: null,
+      note: "CI still red",
+      readinessSummary: formatBlockersSummary(readiness),
+    });
+    expect(prompt).toContain("fallback PR maintenance");
+    expect(prompt).toContain("sole modifying owner");
+    expect(prompt).toContain("CI still red");
+    expect(prompt.length).toBeLessThan(4_000);
+  });
+
+  it("caps many long blockers so the prompt stays bounded", () => {
+    const crowded: PullRequestMonitorReadiness = {
+      ready: false,
+      label: "blocked",
+      blockers: Array.from({ length: 40 }, (_, index) => ({
+        kind: "check-failed" as const,
+        detail: `check-${index} ${"x".repeat(500)}`,
+      })),
+    };
+    const summary = formatBlockersSummary(crowded);
+    expect(summary.length).toBeLessThanOrEqual(1_200);
+    expect(summary).toContain("more");
+    const prompt = buildFallbackMaintenancePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      url: "https://github.com/acme/app/pull/12",
+      headBranch: "feat/x",
+      headSha: "abc123",
+      reason: "owner-unavailable",
+      previousOwnerThreadId: "thr_old",
+      note: "x".repeat(2_000),
+      readinessSummary: summary,
+    });
     expect(prompt.length).toBeLessThan(4_000);
   });
 });

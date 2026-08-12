@@ -193,6 +193,12 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       scheduler: commandScheduler,
       concurrency: serialPerEnvironment,
     }),
+    monitorsLaunchFallback: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pull-request-monitors:launch-fallback",
+      tag: WS_METHODS.pullRequestMonitorsLaunchFallback,
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
     monitorsSubmitFindings: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:pull-request-monitors:submit-findings",
       tag: WS_METHODS.pullRequestMonitorsSubmitFindings,

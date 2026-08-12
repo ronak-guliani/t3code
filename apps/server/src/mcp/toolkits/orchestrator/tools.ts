@@ -32,6 +32,8 @@ import {
   PullRequestMonitorReportInput,
   PullRequestMonitorReportResult,
   PullRequestMonitorSubmitFindingsResult,
+  PullRequestMonitorLaunchFallbackInput,
+  PullRequestMonitorLaunchFallbackResult,
   PullRequestRef,
   ThreadId,
 } from "@t3tools/contracts";
@@ -50,6 +52,7 @@ const monitorDependencies = [
   ThreadManagement.ThreadManagementService,
 ];
 
+/** MCP omits reviewThreadId — it is always the invoking thread. */
 const McpPrMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,
   ownerThreadId: Schema.optional(ThreadId),
@@ -268,7 +271,7 @@ export const PrMonitorContextTool = Tool.make("t3_pr_monitor_context", {
 
 export const PrMonitorSubmitFindingsTool = Tool.make("t3_pr_monitor_submit_findings", {
   description:
-    "Handoff structured review findings for a PR: link this invoking review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass.",
+    "Handoff structured review findings for a PR: link this invoking review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass. reviewThreadId is always this MCP thread.",
   parameters: McpPrMonitorSubmitFindingsInput,
   success: PullRequestMonitorSubmitFindingsResult,
   failure: PullRequestMonitorError,
@@ -277,6 +280,19 @@ export const PrMonitorSubmitFindingsTool = Tool.make("t3_pr_monitor_submit_findi
 })
   .annotate(Tool.Title, "PR monitor submit findings")
   .annotate(Tool.Destructive, false)
+  .annotate(Tool.OpenWorld, true);
+
+export const PrMonitorLaunchFallbackTool = Tool.make("t3_pr_monitor_launch_fallback", {
+  description:
+    "Launch a fallback PR maintenance thread with a prepared worktree when the owner is missing or unavailable. Transfers exclusive ownership to the new thread. Never creates concurrent modifying owners. force=true requires human-approved takeover of an available owner.",
+  parameters: PullRequestMonitorLaunchFallbackInput,
+  success: PullRequestMonitorLaunchFallbackResult,
+  failure: PullRequestMonitorError,
+  failureMode: "return",
+  dependencies: monitorDependencies,
+})
+  .annotate(Tool.Title, "PR monitor launch fallback")
+  .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
 export const PrMonitorReportTool = Tool.make("t3_pr_monitor_report", {
@@ -311,4 +327,5 @@ export const OrchestratorToolkit = Toolkit.make(
   PrMonitorContextTool,
   PrMonitorReportTool,
   PrMonitorSubmitFindingsTool,
+  PrMonitorLaunchFallbackTool,
 );

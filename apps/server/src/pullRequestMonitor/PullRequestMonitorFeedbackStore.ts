@@ -21,6 +21,8 @@ const decodeStringArray = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
 
+const isPullRequestMonitorError = Schema.is(PullRequestMonitorError);
+
 function storeError(message: string, cause?: unknown) {
   return new PullRequestMonitorError({ message, cause });
 }
@@ -168,6 +170,7 @@ export interface PullRequestMonitorFeedbackStoreApi {
   readonly insertReport: (
     report: PullRequestMonitorFeedbackReport,
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  /** Atomically apply disposition + durable audit report row. */
   readonly reportDisposition: (input: {
     readonly itemId: PullRequestMonitorFeedbackItemId;
     readonly disposition: PullRequestMonitorFeedbackDisposition;
@@ -184,17 +187,20 @@ export interface PullRequestMonitorFeedbackStoreApi {
   readonly getState: (
     monitorId: PullRequestMonitorId,
   ) => Effect.Effect<FeedbackMonitorState, PullRequestMonitorError>;
+  /** Atomically union revision ids into pending without clobbering circuit fields. */
   readonly appendPendingRevisionIds: (input: {
     readonly monitorId: PullRequestMonitorId;
     readonly revisionIds: ReadonlyArray<string>;
     readonly debounceUntil: string;
     readonly updatedAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
+  /** Atomically remove specific pending revision ids (and clear debounce when empty). */
   readonly removePendingRevisionIds: (input: {
     readonly monitorId: PullRequestMonitorId;
     readonly revisionIds: ReadonlyArray<string>;
     readonly updatedAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
+  /** Atomically update only delivery-circuit columns. */
   readonly setDeliveryCircuitState: (input: {
     readonly monitorId: PullRequestMonitorId;
     readonly deliveryFailureCount: number;
@@ -402,7 +408,7 @@ export const PullRequestMonitorFeedbackStore = {
             debounceUntil: null,
             deliveryFailureCount: 0,
             circuitOpenUntil: null,
-            updatedAt: new Date(0).toISOString(),
+            updatedAt: "1970-01-01T00:00:00.000Z",
           } satisfies FeedbackMonitorState;
         }
         const pending = yield* decodeStringArray(row.pending_revision_ids_json).pipe(
@@ -418,7 +424,7 @@ export const PullRequestMonitorFeedbackStore = {
         } satisfies FeedbackMonitorState;
       }).pipe(
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to load feedback state.", cause),
         ),
@@ -542,7 +548,7 @@ export const PullRequestMonitorFeedbackStore = {
       `.pipe(
         Effect.flatMap((rows) => (rows[0] ? rowToDelivery(rows[0]) : Effect.succeed(null))),
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to load delivery by batch key.", cause),
         ),
@@ -557,7 +563,7 @@ export const PullRequestMonitorFeedbackStore = {
       `.pipe(
         Effect.flatMap((rows) => Effect.forEach(rows, rowToDelivery)),
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to list deliveries.", cause),
         ),
@@ -576,7 +582,7 @@ export const PullRequestMonitorFeedbackStore = {
       `.pipe(
         Effect.flatMap((rows) => Effect.forEach(rows, rowToDelivery)),
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to list due deliveries.", cause),
         ),

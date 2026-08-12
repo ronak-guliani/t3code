@@ -2,28 +2,37 @@ import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
   ThreadId,
-  type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorSnapshot,
   type PullRequestRef,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
 import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
 import Migration0052 from "../persistence/Migrations/052_PullRequestMonitorOwnership.ts";
+import Migration0053 from "../persistence/Migrations/053_PullRequestMonitorFallback.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import {
+  layer as pullRequestMonitorFeedbackServiceLayer,
+  PullRequestMonitorFeedbackService,
+} from "./PullRequestMonitorFeedbackService.ts";
 import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
-import { layer as pullRequestMonitorFeedbackServiceLayer } from "./PullRequestMonitorFeedbackService.ts";
 import {
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
 } from "./PullRequestMonitorService.ts";
+import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 
 const projectId = ProjectId.make("proj_monitor_1");
 
@@ -129,19 +138,66 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   monitorSnapshot: () => Effect.succeed(sampleSnapshot()),
 });
 
-const knownThreads = new Set<string>();
+const knownThreads = new Map<
+  string,
+  {
+    projectId: typeof projectId;
+    worktreePath: string | null;
+    archivedAt: string | null;
+    deletedAt: string | null;
+    runs: ReadonlyArray<{ readonly status: string }>;
+  }
+>();
 
-function seedThread(threadId: ThreadId) {
-  knownThreads.add(threadId);
+function seedThread(
+  threadId: ThreadId,
+  worktreePath: string | null = "/tmp/wt",
+  runs: ReadonlyArray<{ readonly status: string }> = [],
+) {
+  knownThreads.set(threadId, {
+    projectId,
+    worktreePath,
+    archivedAt: null,
+    deletedAt: null,
+    runs,
+  });
 }
 
+const abandonedThreadIds: ThreadId[] = [];
 const fakeThreads = ThreadManagement.ThreadManagementService.of({
   ensureLegacyTranscript: () => Effect.void,
-  dispatch: () => Effect.die("unused"),
-  getThreadProjection: () => Effect.die("unused"),
+  dispatch: (command) => {
+    if (command.type === "thread.archive") {
+      abandonedThreadIds.push(command.threadId);
+      return Effect.succeed({ storedEvents: [] } as never);
+    }
+    return Effect.die("unused");
+  },
+  getThreadProjection: (threadId) => {
+    const row = knownThreads.get(threadId);
+    if (!row) {
+      return Effect.fail({
+        _tag: "OrchestratorProjectionError",
+        threadId,
+        cause: { _tag: "ProjectionStoreThreadNotFoundError", threadId },
+      } as never);
+    }
+    return Effect.succeed({
+      thread: {
+        id: threadId,
+        projectId: row.projectId,
+        worktreePath: row.worktreePath,
+        archivedAt: row.archivedAt,
+        deletedAt: row.deletedAt,
+      },
+      runs: row.runs,
+      messages: [],
+    } as never);
+  },
   getThreadSnapshot: () => Effect.die("unused"),
   getProjectThread: (input) => {
-    if (!knownThreads.has(input.threadId)) {
+    const row = knownThreads.get(input.threadId);
+    if (!row || row.projectId !== input.projectId || row.deletedAt !== null) {
       return Effect.fail(
         new ThreadManagement.ThreadManagementThreadNotFoundError({
           projectId: input.projectId,
@@ -152,11 +208,12 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
     return Effect.succeed({
       thread: {
         id: input.threadId,
-        projectId: input.projectId,
-        archivedAt: null,
-        deletedAt: null,
+        projectId: row.projectId,
+        worktreePath: row.worktreePath,
+        archivedAt: row.archivedAt,
+        deletedAt: row.deletedAt,
       },
-      runs: [],
+      runs: row.runs,
       messages: [],
     } as never);
   },
@@ -165,12 +222,84 @@ const fakeThreads = ThreadManagement.ThreadManagementService.of({
   listProjectThreads: () => Effect.succeed([]),
   sendToThread: () => Effect.die("unused"),
   waitForThread: () => Effect.die("unused"),
-  interruptThread: () => Effect.die("unused"),
+  interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
   getThreadEventSequence: () => Effect.die("unused"),
   streamStoredEvents: Stream.die("unused"),
   streamStoredEventsFrom: () => Stream.die("unused"),
   streamDomainEvents: Stream.die("unused"),
 });
+
+const launchedFallbackIds: ThreadId[] = [];
+const launchedWorkspaceStrategies: Array<ThreadLaunch.ThreadLaunchInput["workspaceStrategy"]> = [];
+const preparedPrReferences: string[] = [];
+let launchWorktreePath: string | null = "/tmp/fallback";
+let launchRunStatus: string | null = null;
+let preparePrWorktreePath: string | null = "/tmp/pr-head";
+const fakeLaunch = ThreadLaunch.ThreadLaunchService.of({
+  launch: (input) =>
+    Effect.sync(() => {
+      launchedWorkspaceStrategies.push(input.workspaceStrategy);
+      const threadId = ThreadId.make(`thr_fallback_${launchedFallbackIds.length + 1}`);
+      launchedFallbackIds.push(threadId);
+      const path =
+        input.workspaceStrategy.type === "existing_worktree"
+          ? input.workspaceStrategy.worktreePath
+          : launchWorktreePath === null
+            ? null
+            : `${launchWorktreePath}-${threadId}`;
+      const runs = launchRunStatus === null ? [] : [{ status: launchRunStatus }];
+      seedThread(threadId, path, runs);
+      return {
+        threadId,
+        projection: {
+          thread: {
+            id: threadId,
+            projectId: input.projectId,
+            worktreePath: path,
+            archivedAt: null,
+            deletedAt: null,
+          },
+        } as never,
+        resumed: false,
+      };
+    }),
+});
+
+const fakeProjects = ProjectService.ProjectService.of({
+  getById: (id) =>
+    Effect.succeed(
+      id === projectId
+        ? Option.some({
+            id: projectId,
+            title: "App",
+            workspaceRoot: "/tmp/app",
+            repositoryIdentity: null,
+            scripts: null,
+            createdAt: "2026-08-11T00:00:00.000Z",
+            updatedAt: "2026-08-11T00:00:00.000Z",
+            deletedAt: null,
+          } as never)
+        : Option.none(),
+    ),
+  getByWorkspaceRoot: () => Effect.succeed(Option.none()),
+  snapshot: Effect.succeed({ projects: [] } as never),
+} as never);
+
+const fakeGit = GitWorkflow.GitWorkflowService.of({
+  preparePullRequestThread: (input) =>
+    Effect.gen(function* () {
+      preparedPrReferences.push(input.reference);
+      if (preparePrWorktreePath === null) {
+        return yield* Effect.fail(new Error("PR head missing"));
+      }
+      return {
+        pullRequest: { number: Number(input.reference.replace("#", "")) },
+        branch: "feat/monitor",
+        worktreePath: preparePrWorktreePath,
+        isOnPullRequestHead: true,
+      } as never;
+    }),
+} as never);
 
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -178,6 +307,7 @@ const MigratedSql = Layer.effectDiscard(
     yield* Migration0050;
     yield* Migration0051;
     yield* Migration0052;
+    yield* Migration0053;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
@@ -188,8 +318,12 @@ const FeedbackLayer = pullRequestMonitorFeedbackServiceLayer.pipe(
 
 const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
-  Layer.provide(FeedbackLayer),
+  Layer.provideMerge(FeedbackLayer),
+  Layer.provide(Layer.succeed(ThreadLaunch.ThreadLaunchService, fakeLaunch)),
   Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
+  Layer.provide(Layer.succeed(ProjectService.ProjectService, fakeProjects)),
+  Layer.provide(Layer.succeed(GitWorkflow.GitWorkflowService, fakeGit)),
+  Layer.provide(ServerSettings.layerTest()),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
 );
@@ -227,80 +361,6 @@ layer("PullRequestMonitorService", (it) => {
       const stopped = yield* service.stop({ monitorId: started.monitor.id });
       assert.strictEqual(stopped.monitor.enabled, false);
       assert.strictEqual(stopped.monitor.status, "stopped");
-    }),
-  );
-
-  it.effect("clears reopened dispositions and preserves concurrent pending revisions", () =>
-    Effect.gen(function* () {
-      const service = yield* PullRequestMonitorService;
-      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
-      const started = yield* service.start({
-        projectId,
-        repository: "acme/app",
-        number: 43,
-      });
-      const now = "2026-08-11T00:00:00.000Z";
-      const itemId = "fb_item_reopened" as PullRequestMonitorFeedbackItemId;
-      const item = {
-        id: itemId,
-        monitorId: started.monitor.id,
-        stableKey: "review:reopened",
-        kind: "review" as const,
-        status: "open" as const,
-        disposition: null,
-        dispositionNote: null,
-        dispositionAt: null,
-        dispositionByThreadId: null,
-        firstSeenAt: now,
-        lastSeenAt: now,
-        currentRevisionId: null,
-        summary: "Reopened finding",
-      };
-
-      yield* feedbackStore.upsertOpenItem({ item });
-      yield* feedbackStore.setDisposition({
-        itemId,
-        disposition: "resolved",
-        note: "Fixed",
-        at: now,
-        byThreadId: null,
-        status: "closed",
-      });
-      yield* feedbackStore.upsertOpenItem({ item });
-
-      const reopened = yield* feedbackStore.getItem(itemId);
-      assert.isNotNull(reopened);
-      assert.strictEqual(reopened.status, "open");
-      assert.isNull(reopened.disposition);
-      assert.isNull(reopened.dispositionNote);
-
-      yield* feedbackStore.appendPendingRevisionIds({
-        monitorId: started.monitor.id,
-        revisionIds: ["revision-a"],
-        debounceUntil: "2026-08-11T00:00:15.000Z",
-        updatedAt: now,
-      });
-      yield* feedbackStore.appendPendingRevisionIds({
-        monitorId: started.monitor.id,
-        revisionIds: ["revision-b"],
-        debounceUntil: "2026-08-11T00:00:30.000Z",
-        updatedAt: now,
-      });
-      yield* feedbackStore.setDeliveryCircuitState({
-        monitorId: started.monitor.id,
-        deliveryFailureCount: 1,
-        circuitOpenUntil: null,
-        updatedAt: now,
-      });
-      yield* feedbackStore.removePendingRevisionIds({
-        monitorId: started.monitor.id,
-        revisionIds: ["revision-a"],
-        updatedAt: now,
-      });
-
-      const state = yield* feedbackStore.getState(started.monitor.id);
-      assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
-      assert.strictEqual(state.deliveryFailureCount, 1);
     }),
   );
 
@@ -427,6 +487,285 @@ layer("PullRequestMonitorService", (it) => {
         }),
       );
       assert.isTrue(result._tag === "Failure");
+    }),
+  );
+
+  it.effect("launchFallback creates exclusive owner via prepared worktree thread", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 47,
+      });
+      assert.isNull(started.monitor.ownerThreadId);
+
+      const before = launchedWorkspaceStrategies.length;
+      const refsBefore = preparedPrReferences.length;
+      const fallback = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-missing",
+      });
+      assert.isTrue(fallback.launched);
+      assert.isNotNull(fallback.fallbackThreadId);
+      assert.strictEqual(fallback.monitor.ownerThreadId, fallback.fallbackThreadId);
+      assert.isNull(fallback.previousOwnerThreadId);
+      assert.strictEqual(preparedPrReferences[refsBefore], "#47");
+      const strategy = launchedWorkspaceStrategies[before];
+      assert.isDefined(strategy);
+      assert.strictEqual(strategy!.type, "existing_worktree");
+      if (strategy!.type === "existing_worktree") {
+        assert.strictEqual(strategy.worktreePath, "/tmp/pr-head");
+      }
+
+      // Second launch within cooldown should not dual-own while owner remains available.
+      const again = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-missing",
+      });
+      assert.isFalse(again.launched);
+      assert.strictEqual(again.skippedReason, "recent-fallback-cooldown");
+      assert.strictEqual(again.fallbackThreadId, fallback.fallbackThreadId);
+    }),
+  );
+
+  it.effect("launchFallback relaunches when cooldown owner is deleted", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 51,
+      });
+      const first = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-missing",
+      });
+      assert.isTrue(first.launched);
+      // Simulate dead fallback owner while still recorded on the monitor.
+      knownThreads.delete(first.fallbackThreadId);
+
+      const second = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "owner-unavailable",
+      });
+      assert.isTrue(second.launched);
+      assert.notStrictEqual(second.fallbackThreadId, first.fallbackThreadId);
+      assert.strictEqual(second.previousOwnerThreadId, first.fallbackThreadId);
+    }),
+  );
+
+  it.effect("launchFallback refuses available owner without force", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_owner_live");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 48,
+        ownerThreadId: owner,
+      });
+
+      const refused = yield* Effect.result(
+        service.launchFallback({
+          monitorId: started.monitor.id,
+          reason: "explicit",
+        }),
+      );
+      assert.strictEqual(refused._tag, "Failure");
+
+      const forced = yield* service.launchFallback({
+        monitorId: started.monitor.id,
+        reason: "explicit",
+        force: true,
+      });
+      assert.isTrue(forced.launched);
+      assert.strictEqual(forced.previousOwnerThreadId, owner);
+      assert.notStrictEqual(forced.fallbackThreadId, owner);
+    }),
+  );
+
+  it.effect("launchFallback does not transfer ownership when prep fails", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 49,
+      });
+      const abandonedBefore = abandonedThreadIds.length;
+      launchWorktreePath = null;
+      launchRunStatus = "failed";
+      // Force launch path to seed a failed run with no usable worktree.
+      preparePrWorktreePath = "/tmp/pr-head-failed";
+      const result = yield* Effect.result(
+        service.launchFallback({
+          monitorId: started.monitor.id,
+          reason: "owner-missing",
+        }),
+      );
+      launchWorktreePath = "/tmp/fallback";
+      launchRunStatus = null;
+      preparePrWorktreePath = "/tmp/pr-head";
+      assert.strictEqual(result._tag, "Failure");
+      const status = yield* service.status({ monitorId: started.monitor.id });
+      assert.isNull(status.monitor?.ownerThreadId ?? null);
+      assert.isTrue(abandonedThreadIds.length > abandonedBefore);
+    }),
+  );
+
+  it.effect("launchFallback serializes concurrent attempts with a lease", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const monitorStore = yield* PullRequestMonitorStore.make;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 52,
+      });
+      // Hold the fallback lease so a concurrent launch cannot dual-start agents.
+      const now = "2026-08-11T00:00:00.000Z";
+      const held = yield* monitorStore.tryAcquireLease({
+        canonicalKey: `fallback:${started.monitor.canonicalKey}`,
+        ownerId: "holder",
+        nowIso: now,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      assert.isTrue(held);
+
+      const blocked = yield* Effect.result(
+        service.launchFallback({
+          monitorId: started.monitor.id,
+          reason: "owner-missing",
+        }),
+      );
+      assert.strictEqual(blocked._tag, "Failure");
+      yield* monitorStore.releaseLease(`fallback:${started.monitor.canonicalKey}`, "holder");
+    }),
+  );
+
+  it.effect("feedback state append/remove keep circuit fields atomic", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 50,
+      });
+      const now = "2026-08-11T00:00:00.000Z";
+
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        debounceUntil: "2026-08-11T00:00:15.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-b"],
+        debounceUntil: "2026-08-11T00:00:30.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.setDeliveryCircuitState({
+        monitorId: started.monitor.id,
+        deliveryFailureCount: 2,
+        circuitOpenUntil: "2026-08-11T00:05:00.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.removePendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        updatedAt: now,
+      });
+
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
+      assert.strictEqual(state.deliveryFailureCount, 2);
+      assert.strictEqual(state.circuitOpenUntil, "2026-08-11T00:05:00.000Z");
+    }),
+  );
+
+  it.effect("reopens resolved feedback with cleared disposition fields", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const owner = ThreadId.make("thr_feedback_owner");
+      seedThread(owner);
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 46,
+        ownerThreadId: owner,
+      });
+
+      const event = {
+        kind: "check-failed" as const,
+        sourceId: "check-ci",
+        detail: "ci failed",
+        edited: false,
+      };
+      const snapshot = sampleSnapshot();
+      const readiness = {
+        ready: false as const,
+        label: "blocked" as const,
+        blockers: [{ kind: "check-failed" as const, detail: "ci failed" }],
+      };
+
+      yield* feedback.ingestSnapshot({
+        monitor: started.monitor,
+        snapshot,
+        readiness,
+        events: [event],
+      });
+      const afterIngest = yield* feedback.context({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+        resolveMonitor: () => Effect.succeed(started.monitor),
+      });
+      assert.strictEqual(afterIngest.items.length, 1);
+      const item = afterIngest.items[0]!;
+      assert.strictEqual(item.status, "open");
+      assert.isNull(item.disposition);
+
+      yield* feedback.report({
+        monitorId: started.monitor.id,
+        itemId: item.id,
+        disposition: "resolved",
+        note: "fixed",
+        reporterThreadId: owner,
+        resolveMonitor: () => Effect.succeed(started.monitor),
+        requestRecheck: () => Effect.void,
+      });
+      const afterResolve = yield* feedback.context({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+        resolveMonitor: () => Effect.succeed(started.monitor),
+      });
+      const resolved = afterResolve.items.find((row) => row.id === item.id);
+      assert.isDefined(resolved);
+      assert.strictEqual(resolved!.status, "closed");
+      assert.strictEqual(resolved!.disposition, "resolved");
+
+      yield* feedback.ingestSnapshot({
+        monitor: started.monitor,
+        snapshot,
+        readiness,
+        events: [event],
+      });
+      const afterReopen = yield* feedback.context({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+        resolveMonitor: () => Effect.succeed(started.monitor),
+      });
+      const reopened = afterReopen.items.find((row) => row.id === item.id);
+      assert.isDefined(reopened);
+      assert.strictEqual(reopened!.status, "open");
+      assert.isNull(reopened!.disposition);
+      assert.isNull(reopened!.dispositionNote);
+      assert.isNull(reopened!.dispositionAt);
+      assert.isNull(reopened!.dispositionByThreadId);
     }),
   );
 });

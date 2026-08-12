@@ -1554,6 +1554,12 @@ const makeWsRpcLayer = (
             pullRequestMonitors.submitFindings(input),
             { "rpc.aggregate": "pull-request-monitors" },
           ),
+        [WS_METHODS.pullRequestMonitorsLaunchFallback]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsLaunchFallback,
+            pullRequestMonitors.launchFallback(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
@@ -1818,6 +1824,7 @@ const makeWsRpcLayer = (
                           input.threadId !== undefined
                         ) {
                           const settingsResult = yield* Effect.result(serverSettings.getSettings);
+                          // Fail closed: only auto-monitor when settings load and the flag is true.
                           const enabled =
                             Result.isSuccess(settingsResult) &&
                             settingsResult.success.autoMonitorPullRequestsOnCreate === true;

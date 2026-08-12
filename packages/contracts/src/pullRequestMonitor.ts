@@ -364,6 +364,7 @@ export type PullRequestMonitorContextInput = typeof PullRequestMonitorContextInp
 export const PullRequestMonitorContextResult = Schema.Struct({
   monitor: Schema.NullOr(PullRequestMonitorRecord),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
+  /** Feedback items for this monitor. May include closed when includeClosed is set. */
   items: Schema.Array(PullRequestMonitorFeedbackItem),
   recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
   recentReports: Schema.Array(PullRequestMonitorFeedbackReport),
@@ -416,6 +417,37 @@ export const PullRequestMonitorSubmitFindingsResult = Schema.Struct({
 });
 export type PullRequestMonitorSubmitFindingsResult =
   typeof PullRequestMonitorSubmitFindingsResult.Type;
+
+export const PullRequestMonitorFallbackReason = Schema.Literals([
+  "owner-missing",
+  "owner-unavailable",
+  "explicit",
+  "worktree-unavailable",
+]);
+export type PullRequestMonitorFallbackReason = typeof PullRequestMonitorFallbackReason.Type;
+
+/** Launch a fallback maintenance thread for a monitored PR. Never dual-owns. */
+export const PullRequestMonitorLaunchFallbackInput = Schema.Struct({
+  monitorId: Schema.optional(PullRequestMonitorId),
+  reference: Schema.optional(PullRequestRef),
+  reason: Schema.optional(PullRequestMonitorFallbackReason),
+  /** When true, transfer even if the current owner thread still exists (human-approved). */
+  force: Schema.optional(Schema.Boolean),
+  note: Schema.optional(Schema.String.check(Schema.isMaxLength(1_000))),
+});
+export type PullRequestMonitorLaunchFallbackInput =
+  typeof PullRequestMonitorLaunchFallbackInput.Type;
+
+export const PullRequestMonitorLaunchFallbackResult = Schema.Struct({
+  monitor: PullRequestMonitorRecord,
+  fallbackThreadId: ThreadId,
+  previousOwnerThreadId: Schema.NullOr(ThreadId),
+  launched: Schema.Boolean,
+  skippedReason: Schema.NullOr(Schema.String),
+  commandId: TrimmedNonEmptyString,
+});
+export type PullRequestMonitorLaunchFallbackResult =
+  typeof PullRequestMonitorLaunchFallbackResult.Type;
 
 export class PullRequestMonitorError extends Schema.TaggedErrorClass<PullRequestMonitorError>()(
   "PullRequestMonitorError",
