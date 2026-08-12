@@ -205,6 +205,8 @@ const GitLayerLive = Layer.empty.pipe(
 
 const PullRequestLayerLive = PullRequestServiceLive.pipe(
   Layer.provideMerge(PullRequestProviderRegistryLive),
+  // monitorSnapshot reads the host via GitHubCli outside the PR CLI wrapper.
+  Layer.provideMerge(GitHubCliLive),
 );
 
 // The MCP credential registry and the automation broker are runtime services:
