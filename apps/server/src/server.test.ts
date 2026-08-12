@@ -24,7 +24,9 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RelayClientInstallFailedError,
   ResolvedKeybindingRule,
+  type RuntimeMode,
   ThreadId,
   TurnId,
   WS_METHODS,
@@ -32,7 +34,12 @@ import {
   EditorId,
 } from "@t3tools/contracts";
 import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
-import { CLOUDFLARED_VERSION, CLOUDFLARED_PATH_ENV_NAME } from "@t3tools/shared/relayClient";
+import * as RelayClient from "@t3tools/shared/relayClient";
+import {
+  CLOUDFLARED_VERSION,
+  CLOUDFLARED_PATH_ENV_NAME,
+  type RelayClientShape,
+} from "@t3tools/shared/relayClient";
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
@@ -95,6 +102,7 @@ import {
   ProviderRegistry,
   type ProviderRegistryShape,
 } from "./provider/Services/ProviderRegistry.ts";
+import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService.ts";
 import { ServerLifecycleEvents, type ServerLifecycleEventsShape } from "./serverLifecycleEvents.ts";
 import { ServerRuntimeStartup, type ServerRuntimeStartupShape } from "./serverRuntimeStartup.ts";
 import { ServerSettingsService, type ServerSettingsShape } from "./serverSettings.ts";
@@ -361,6 +369,8 @@ const buildAppUnderTest = (options?: {
     serverRuntimeStartup?: Partial<ServerRuntimeStartupShape>;
     serverEnvironment?: Partial<ServerEnvironmentShape>;
     repositoryIdentityResolver?: Partial<RepositoryIdentityResolverShape>;
+    providerService?: Partial<ProviderServiceShape>;
+    relayClient?: Partial<RelayClientShape>;
   };
 }) =>
   Effect.gen(function* () {
@@ -681,13 +691,58 @@ const buildAppUnderTest = (options?: {
       ),
       Layer.provideMerge(authTestLayer),
       Layer.provideMerge(SidebarStateLive.pipe(Layer.provide(SqlitePersistenceMemory))),
-      Layer.provideMerge(CloudHttpRuntimeLayerLive.pipe(Layer.provide(authTestLayer))),
+      Layer.provideMerge(
+        options?.layers?.relayClient
+          ? // mergeAll after the cast cloud layer: later RelayClient wins at runtime
+            // while other cloud services stay available for route construction.
+            Layer.mergeAll(
+              CloudHttpRuntimeLayerLive.pipe(Layer.provide(authTestLayer)),
+              Layer.succeed(
+                RelayClient.RelayClient,
+                RelayClient.RelayClient.of({
+                  resolve: Effect.succeed({
+                    status: "missing" as const,
+                    version: CLOUDFLARED_VERSION,
+                  }),
+                  install: Effect.die("Not implemented in server test."),
+                  installWithProgress: () => Effect.die("Not implemented in server test."),
+                  ...options.layers.relayClient,
+                }),
+              ),
+            )
+          : CloudHttpRuntimeLayerLive.pipe(Layer.provide(authTestLayer)),
+      ),
       Layer.provide(_workspaceAndProjectServicesLayer),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(layerConfig),
     );
 
-    yield* Layer.build(appLayer);
+    // provideMerge: ProviderService is only read via serviceOption, so it is not
+    // a layer requirement and must be re-exported into the final context.
+    const appLayerWithProvider = options?.layers?.providerService
+      ? appLayer.pipe(
+          Layer.provideMerge(
+            Layer.mock(ProviderService)({
+              startSession: () => Effect.die("Not implemented in server test."),
+              forkSession: () => Effect.die("Not implemented in server test."),
+              sendTurn: () => Effect.die("Not implemented in server test."),
+              interruptTurn: () => Effect.die("Not implemented in server test."),
+              respondToRequest: () => Effect.die("Not implemented in server test."),
+              respondToUserInput: () => Effect.die("Not implemented in server test."),
+              stopSession: () => Effect.die("Not implemented in server test."),
+              listSessions: () => Effect.succeed([]),
+              prewarmSession: () => Effect.void,
+              getCapabilities: () => Effect.die("Not implemented in server test."),
+              getInstanceInfo: () => Effect.die("Not implemented in server test."),
+              rollbackConversation: () => Effect.die("Not implemented in server test."),
+              streamEvents: Stream.empty,
+              ...options.layers.providerService,
+            }),
+          ),
+        )
+      : appLayer;
+
+    yield* Layer.build(appLayerWithProvider);
     return config;
   });
 
@@ -3195,13 +3250,12 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc server.prewarmProviderSession", () =>
+  it.effect("routes websocket rpc server.prewarmProviderSession without provider service", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
 
       const wsUrl = yield* getWsServerUrl("/ws");
-      // Executes the handler body, so an unbound service reference in it fails
-      // here instead of taking down every stream on a live socket.
+      // Handler must stay callable when ProviderService is absent (serviceOption).
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.serverPrewarmProviderSession]({
@@ -3213,6 +3267,44 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.deepEqual(response, {});
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes websocket rpc server.prewarmProviderSession to ProviderService", () =>
+    Effect.gen(function* () {
+      const calls: Array<{
+        readonly instanceId: ProviderInstanceId;
+        readonly cwd: string;
+        readonly runtimeMode: RuntimeMode;
+      }> = [];
+
+      yield* buildAppUnderTest({
+        layers: {
+          providerService: {
+            prewarmSession: (input) =>
+              Effect.sync(() => {
+                calls.push(input);
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const payload = {
+        instanceId: ProviderInstanceId.make("codex"),
+        cwd: "/tmp",
+        runtimeMode: "full-access" as const satisfies RuntimeMode,
+      };
+      // Exercises the onSome branch so regressions that stop forwarding the
+      // payload (or reintroduce an unbound service) fail this test.
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverPrewarmProviderSession](payload),
+        ),
+      );
+
+      assert.deepEqual(response, {});
+      assert.deepEqual(calls, [payload]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -3286,6 +3378,42 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           process.env[CLOUDFLARED_PATH_ENV_NAME] = previousOverride;
         }
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("routes websocket rpc cloud.installRelayClient failures", () =>
+    Effect.gen(function* () {
+      const installError = new RelayClient.RelayClientInstallError({
+        reason: "write_failed",
+        message: "simulated relay client install failure",
+      });
+      yield* buildAppUnderTest({
+        layers: {
+          relayClient: {
+            installWithProgress: (report) =>
+              report({ type: "progress", stage: "checking" }).pipe(
+                Effect.andThen(Effect.fail(installError)),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      // Proves the handler maps RelayClientInstallError into the declared
+      // RelayClientInstallFailedError channel (unencodable errors kill streams).
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.cloudInstallRelayClient]({}).pipe(Stream.runCollect, Effect.result),
+        ),
+      );
+
+      assertFailure(
+        result,
+        new RelayClientInstallFailedError({
+          reason: "write_failed",
+          message: "simulated relay client install failure",
+        }),
+      );
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

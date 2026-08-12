@@ -352,9 +352,18 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provide(NetService.layer),
 );
 
+// Deep Layer pipes lose `ServerEnvironment` from R even though
+// RuntimeCoreDependenciesLive provideMerges it. Re-provide here and narrow
+// only this sublayer's input so makeServerLayer stays ServerConfig-checked
+// without a whole-graph assertion.
 const RuntimeServicesLive = ServerRuntimeStartupLive.pipe(
   Layer.provideMerge(RuntimeDependenciesLive),
-);
+  Layer.provideMerge(ServerEnvironmentLive),
+) as Layer.Layer<
+  Layer.Success<typeof ServerRuntimeStartupLive> | Layer.Success<typeof RuntimeDependenciesLive>,
+  Layer.Error<typeof ServerRuntimeStartupLive> | Layer.Error<typeof RuntimeDependenciesLive>,
+  ServerConfig
+>;
 
 export const makeRoutesLayer = Layer.mergeAll(
   authAccessTokenRouteLayer,
@@ -444,17 +453,13 @@ export const makeServerLayer = Layer.unwrap(
 
     return serverApplicationLayer.pipe(
       Layer.provideMerge(RuntimeServicesLive),
-      // Fully-typed WsRpcGroup handlers surface ServerEnvironment on the route
-      // layer; provide it again here so the launch context stays ServerConfig-only
-      // even when TS loses the service through the large RuntimeServicesLive pipe.
-      Layer.provideMerge(ServerEnvironmentLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ObservabilityLive),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(PlatformServicesLive),
     );
   }),
-) as Layer.Layer<never, unknown, ServerConfig>;
+);
 
 // Important: Only `ServerConfig` should be provided by the CLI layer!!! Don't let other requirements leak into the launch layer.
 export const runServer = Layer.launch(makeServerLayer) satisfies Effect.Effect<

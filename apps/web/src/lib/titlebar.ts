@@ -6,10 +6,24 @@
  */
 
 /**
- * Height of the shared title-bar row. Falls back to the native overlay height
- * under Windows' controls overlay, which dictates its own row.
+ * Height of the shared title-bar row.
+ *
+ * The row is window chrome sharing a line with the macOS traffic lights, which
+ * macOS draws in screen points and page zoom does not scale. A plain `44px` row
+ * grew with the zoom and dragged the whole line — lights, title, and actions —
+ * down away from the window corner: at 150% it stood 66pt tall and pushed the
+ * lights 28pt down, against Cursor's 9pt. Dividing by the zoom holds the row to
+ * a constant height on screen instead, and the floor lets it grow rather than
+ * clip once zoomed content needs more than that. `titleBarRowHeightForZoom()`
+ * in the desktop main process mirrors this so the lights land on the same line.
+ *
+ * Because the height is fixed rather than intrinsic, the row also centres its
+ * own content: a header that instead padded itself to the row's height would
+ * overflow it and sit off the line the traffic lights are drawn on. Carrying
+ * the centring here means a call site cannot forget it.
  */
-export const TITLEBAR_ROW_CLASS = "h-titlebar wco:h-[env(titlebar-area-height)]";
+export const TITLEBAR_ROW_CLASS =
+  "flex items-center h-[max(28px,calc(var(--spacing-titlebar)/var(--app-zoom,1)))] wco:h-[env(titlebar-area-height)]";
 
 /**
  * Right inset that keeps trailing header content clear of the Windows overlay
@@ -24,15 +38,14 @@ export const TITLEBAR_CONTROL_INSET_CLASS =
  * controls) so the leading header content starts just after them.
  *
  * macOS draws the traffic lights in screen points at a fixed 12pt diameter and
- * 20pt pitch, and Chromium's page zoom does not scale them. The main process
- * places the first control at `16 * zoom` points, so the last one ends at
- * `16 * zoom + 52` points. Expressed in the renderer's zoomed CSS pixels that
- * is `16 + 52 / zoom`; adding a constant 12pt gap (`12 / zoom` CSS pixels)
- * gives `16px + 64px / zoom`, which keeps the gap after the last control the
+ * 20pt pitch, and Chromium's page zoom does not scale them. Main pins the first
+ * one 10pt from the window edge, so three of them end 62pt in (`10 + 2 * 20 +
+ * 12`); a 12pt gap after the last one puts the content at 74pt. Dividing by the
+ * zoom converts that to the renderer's zoomed CSS pixels, so the gap stays the
  * same on screen at every zoom level instead of widening with it.
  */
 export const TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS =
-  "pl-[calc(16px+64px/var(--app-zoom,1))] wco:pl-[calc(env(titlebar-area-x)+1em)]";
+  "pl-[calc(74px/var(--app-zoom,1))] wco:pl-[calc(env(titlebar-area-x)+1em)]";
 
 /** CSS custom property holding the window's current page-zoom factor. */
 export const APP_ZOOM_CSS_VARIABLE = "--app-zoom";

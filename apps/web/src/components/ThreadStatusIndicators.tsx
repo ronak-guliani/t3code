@@ -162,6 +162,7 @@ export function ThreadStatusLabel({
         className={`inline-flex size-3.5 shrink-0 items-center justify-center ${status.colorClass}`}
       >
         <span
+          data-thread-status-pulse={status.pulse ? "" : undefined}
           className={`${compact ? "size-[7px]" : "size-[5px]"} rounded-full ${status.dotClass} ${
             status.pulse ? "animate-status-pulse" : ""
           }`}
@@ -178,6 +179,7 @@ export function ThreadStatusLabel({
       style={{ fontSize: "var(--app-sidebar-font-size)" }}
     >
       <span
+        data-thread-status-pulse={status.pulse ? "" : undefined}
         className={`size-[5px] rounded-full ${status.dotClass} ${
           status.pulse ? "animate-status-pulse" : ""
         }`}
@@ -284,10 +286,8 @@ export function ThreadRowLeadingStatus({ thread }: { thread: SidebarThreadSummar
   );
   const prStatus = prStatusIndicator(thread.pullRequest);
   const threadStatus = resolveThreadStatusPill({
-    thread: {
-      ...thread,
-      lastVisitedAt,
-    },
+    thread,
+    lastVisitedAt,
   });
 
   if (!prStatus && !threadStatus) {

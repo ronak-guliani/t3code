@@ -35,6 +35,8 @@ interface RequestOptions {
 const DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS = Duration.millis(250);
 // A parked stream retries on this ceiling even while the socket stays healthy.
 const MAX_PARKED_SUBSCRIPTION_RETRY_DELAY_MS = 30_000;
+// Spread concurrent parks so many failed streams do not wake in lockstep.
+const PARKED_BACKOFF_JITTER_RATIO = 0.25;
 const NOOP: () => void = () => undefined;
 
 interface TransportSession {
@@ -127,6 +129,8 @@ export class WsTransport {
     let restartRequested = false;
     let parkedAttempt = 0;
     let wakeParkedLoop: (() => void) | null = null;
+    // Fixed per subscription so retries grow smoothly without re-rolling jitter.
+    const parkedJitterFactor = Math.random();
     const retryDelayMs = Duration.toMillis(
       Duration.fromInputUnsafe(options?.retryDelay ?? DEFAULT_SUBSCRIPTION_RETRY_DELAY_MS),
     );
@@ -153,13 +157,16 @@ export class WsTransport {
     // Parks the loop instead of abandoning the subscription, so a one-off
     // server-side stream failure cannot leave the UI permanently stale. The park
     // is bounded by backoff as well as the next reconnect, because a healthy
-    // socket produces no reconnect to wake it.
+    // socket produces no reconnect to wake it. Jitter desynchronizes concurrent
+    // parks that would otherwise retry on the same 30s ceiling.
     const nextParkedBackoffMs = () => {
       parkedAttempt += 1;
-      return Math.min(
+      const baseMs = Math.min(
         retryDelayMs * 2 ** (parkedAttempt - 1),
         MAX_PARKED_SUBSCRIPTION_RETRY_DELAY_MS,
       );
+      const jitterMs = Math.floor(baseMs * PARKED_BACKOFF_JITTER_RATIO * parkedJitterFactor);
+      return baseMs + jitterMs;
     };
     const awaitRestartOrDelay = (delayMs: number) =>
       new Promise<void>((resolve) => {
