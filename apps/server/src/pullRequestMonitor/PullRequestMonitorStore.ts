@@ -165,6 +165,16 @@ export interface PullRequestMonitorStoreApi {
     record: PullRequestMonitorRecord,
     cursor?: PullRequestMonitorCursor,
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  /** Poll/lifecycle fields only — never rewrites ownership. */
+  readonly updatePollState: (
+    record: PullRequestMonitorRecord,
+    cursor?: PullRequestMonitorCursor,
+  ) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly scheduleRecheck: (input: {
+    readonly monitorId: PullRequestMonitorId;
+    readonly nextPollAt: string;
+    readonly updatedAt: string;
+  }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly getCursor: (
     id: PullRequestMonitorId,
   ) => Effect.Effect<PullRequestMonitorCursor, PullRequestMonitorError>;
@@ -380,6 +390,55 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  const updatePollState: PullRequestMonitorStoreApi["updatePollState"] = (record, cursor) =>
+    (cursor
+      ? sql`
+          UPDATE pull_request_monitors SET
+            status = ${record.status},
+            enabled = ${record.enabled ? 1 : 0},
+            readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
+            head_sha = ${record.headSha},
+            source_revision = ${record.sourceRevision},
+            cursor_json = ${JSON.stringify(cursor)},
+            last_polled_at = ${record.lastPolledAt},
+            next_poll_at = ${record.nextPollAt},
+            last_error = ${record.lastError},
+            poll_failure_count = ${record.pollFailureCount},
+            updated_at = ${record.updatedAt},
+            stopped_at = ${record.stoppedAt}
+          WHERE monitor_id = ${record.id}
+        `
+      : sql`
+          UPDATE pull_request_monitors SET
+            status = ${record.status},
+            enabled = ${record.enabled ? 1 : 0},
+            readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
+            head_sha = ${record.headSha},
+            source_revision = ${record.sourceRevision},
+            last_polled_at = ${record.lastPolledAt},
+            next_poll_at = ${record.nextPollAt},
+            last_error = ${record.lastError},
+            poll_failure_count = ${record.pollFailureCount},
+            updated_at = ${record.updatedAt},
+            stopped_at = ${record.stoppedAt}
+          WHERE monitor_id = ${record.id}
+        `
+    ).pipe(
+      Effect.mapError((cause) => storeError("Failed to update monitor poll state.", cause)),
+      Effect.asVoid,
+    );
+
+  const scheduleRecheck: PullRequestMonitorStoreApi["scheduleRecheck"] = (input) =>
+    sql`
+      UPDATE pull_request_monitors SET
+        next_poll_at = ${input.nextPollAt},
+        updated_at = ${input.updatedAt}
+      WHERE monitor_id = ${input.monitorId}
+    `.pipe(
+      Effect.mapError((cause) => storeError("Failed to schedule monitor recheck.", cause)),
+      Effect.asVoid,
+    );
+
   const getCursor: PullRequestMonitorStoreApi["getCursor"] = (id) =>
     sql<{ cursor_json: string | null }>`
       SELECT cursor_json FROM pull_request_monitors WHERE monitor_id = ${id}
@@ -541,6 +600,8 @@ export const make = Effect.gen(function* () {
     listDue,
     insert,
     update,
+    updatePollState,
+    scheduleRecheck,
     getCursor,
     saveSnapshot,
     latestSnapshot,

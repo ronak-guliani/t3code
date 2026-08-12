@@ -262,7 +262,7 @@ export const layer = Layer.effect(
             nextPollAt: cooldownUntil,
             updatedAt: now,
           };
-          yield* store.update(deferred);
+          yield* store.updatePollState(deferred);
           return;
         }
 
@@ -311,7 +311,7 @@ export const layer = Layer.effect(
             nextPollAt: addMs(now, delay),
             updatedAt: now,
           };
-          yield* store.update(failed);
+          yield* store.updatePollState(failed);
           yield* store.releaseLease(monitor.canonicalKey, ownerId);
           yield* notify;
           return;
@@ -349,6 +349,8 @@ export const layer = Layer.effect(
         };
 
         const snapshotId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        // Persist observed snapshot, then ingest feedback before advancing the cursor so a
+        // transient ingest failure cannot permanently drop actionable events.
         yield* store.saveSnapshot({
           snapshotId,
           monitorId: monitor.id,
@@ -356,15 +358,17 @@ export const layer = Layer.effect(
           readiness,
           events: actionableEvents,
         });
-        yield* store.update(updated, nextCursor);
-        yield* feedback
-          .ingestSnapshot({
+        if (actionableEvents.length > 0) {
+          yield* feedback.ingestSnapshot({
             monitor: updated,
             snapshot,
             readiness,
             events: actionableEvents,
-          })
-          .pipe(Effect.ignore);
+          });
+          yield* store.updatePollState(updated, nextCursor);
+        } else {
+          yield* store.updatePollState(updated, nextCursor);
+        }
         yield* store.releaseLease(monitor.canonicalKey, ownerId);
         yield* notify;
       }).pipe(
@@ -377,7 +381,7 @@ export const layer = Layer.effect(
               failureCount,
               hadActionableEvents: false,
             });
-            yield* store.update({
+            yield* store.updatePollState({
               ...monitor,
               status: "error",
               lastError: String(cause).slice(0, 1000),
@@ -419,8 +423,8 @@ export const layer = Layer.effect(
     const requestRecheck = (monitor: PullRequestMonitorRecord) =>
       Effect.gen(function* () {
         const now = yield* isoNow();
-        yield* store.update({
-          ...monitor,
+        yield* store.scheduleRecheck({
+          monitorId: monitor.id,
           nextPollAt: now,
           updatedAt: now,
         });

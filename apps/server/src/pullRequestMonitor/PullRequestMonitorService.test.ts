@@ -190,9 +190,14 @@ layer("PullRequestMonitorService", (it) => {
 
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNotNull(status.monitor);
+      assert.isNotNull(status.latestSnapshot);
       assert.isArray(status.openFeedback);
       assert.isArray(status.recentDeliveries);
       assert.isArray(status.recentReports);
+
+      const stopped = yield* service.stop({ monitorId: started.monitor.id });
+      assert.strictEqual(stopped.monitor.enabled, false);
+      assert.strictEqual(stopped.monitor.status, "stopped");
     }),
   );
 

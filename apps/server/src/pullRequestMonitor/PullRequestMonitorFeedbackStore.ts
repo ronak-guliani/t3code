@@ -168,6 +168,15 @@ export interface PullRequestMonitorFeedbackStoreApi {
   readonly insertReport: (
     report: PullRequestMonitorFeedbackReport,
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly reportDisposition: (input: {
+    readonly itemId: PullRequestMonitorFeedbackItemId;
+    readonly disposition: PullRequestMonitorFeedbackDisposition;
+    readonly note: string | null;
+    readonly at: string;
+    readonly byThreadId: ThreadId | null;
+    readonly status: "open" | "closed";
+    readonly report: PullRequestMonitorFeedbackReport;
+  }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly listReports: (input: {
     readonly monitorId: PullRequestMonitorId;
     readonly limit?: number;
@@ -338,6 +347,36 @@ export const PullRequestMonitorFeedbackStore = {
         Effect.mapError((cause) => storeError("Failed to insert feedback report.", cause)),
         Effect.asVoid,
       );
+
+    const reportDisposition: PullRequestMonitorFeedbackStoreApi["reportDisposition"] = (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              UPDATE pull_request_monitor_feedback_items
+              SET disposition = ${input.disposition},
+                  disposition_note = ${input.note},
+                  disposition_at = ${input.at},
+                  disposition_by_thread_id = ${input.byThreadId},
+                  status = ${input.status}
+              WHERE item_id = ${input.itemId}
+            `;
+            yield* sql`
+              INSERT INTO pull_request_monitor_feedback_reports (
+                report_id, monitor_id, item_id, disposition, note, reporter_thread_id, created_at, recheck_requested
+              ) VALUES (
+                ${input.report.id}, ${input.report.monitorId}, ${input.report.itemId}, ${input.report.disposition},
+                ${input.report.note}, ${input.report.reporterThreadId}, ${input.report.createdAt}, 1
+              )
+            `;
+          }),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            storeError("Failed to commit feedback disposition report.", cause),
+          ),
+          Effect.asVoid,
+        );
 
     const listReports: PullRequestMonitorFeedbackStoreApi["listReports"] = (input) =>
       sql<ReportRow>`
@@ -560,6 +599,7 @@ export const PullRequestMonitorFeedbackStore = {
       listItems,
       setDisposition,
       insertReport,
+      reportDisposition,
       listReports,
       getState,
       appendPendingRevisionIds,

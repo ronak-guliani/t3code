@@ -360,7 +360,7 @@ export type PullRequestMonitorContextInput = typeof PullRequestMonitorContextInp
 export const PullRequestMonitorContextResult = Schema.Struct({
   monitor: Schema.NullOr(PullRequestMonitorRecord),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
-  openItems: Schema.Array(PullRequestMonitorFeedbackItem),
+  items: Schema.Array(PullRequestMonitorFeedbackItem),
   recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
   recentReports: Schema.Array(PullRequestMonitorFeedbackReport),
 });

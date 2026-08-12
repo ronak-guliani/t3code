@@ -151,8 +151,8 @@ export const layer = Layer.effect(
     ) =>
       Effect.gen(function* () {
         if (input.events.length === 0) return;
-        if (!input.monitor.ownerThreadId) return;
         if (input.snapshot.state !== "open") return;
+        // Persist durable items/revisions even without an owner. Delivery waits for an owner.
 
         const now = yield* isoNow();
         const newRevisionIds: string[] = [];
@@ -496,7 +496,17 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const now = yield* isoNow();
           const due = yield* feedbackStore.listDueDeliveries(now, 16);
-          yield* Effect.forEach(due, deliverOne, { concurrency: 2 });
+          const byMonitor = new Map<string, typeof due>();
+          for (const delivery of due) {
+            const group = byMonitor.get(delivery.monitorId) ?? [];
+            group.push(delivery);
+            byMonitor.set(delivery.monitorId, group);
+          }
+          yield* Effect.forEach(
+            [...byMonitor.values()],
+            (group) => Effect.forEach(group, deliverOne, { concurrency: 1 }),
+            { concurrency: 2 },
+          );
         }),
       ),
       Effect.ignore,
@@ -516,13 +526,13 @@ export const layer = Layer.effect(
           return {
             monitor: null,
             latestSnapshot: null,
-            openItems: [],
+            items: [],
             recentDeliveries: [],
             recentReports: [],
           };
         }
         const latest = yield* monitorStore.latestSnapshot(monitor.id);
-        const openItems = yield* feedbackStore.listItems({
+        const items = yield* feedbackStore.listItems({
           monitorId: monitor.id,
           includeClosed: input.includeClosed === true,
         });
@@ -531,7 +541,7 @@ export const layer = Layer.effect(
         return {
           monitor,
           latestSnapshot: latest?.snapshot ?? null,
-          openItems,
+          items,
           recentDeliveries,
           recentReports,
         };
@@ -549,14 +559,6 @@ export const layer = Layer.effect(
           input.disposition === "accepted" || input.disposition === "needs-human"
             ? "open"
             : "closed";
-        yield* feedbackStore.setDisposition({
-          itemId: item.id,
-          disposition: input.disposition,
-          note: input.note ?? null,
-          at: now,
-          byThreadId: input.reporterThreadId ?? null,
-          status,
-        });
         const reportRow: PullRequestMonitorFeedbackReport = {
           id: `fb_report_${stableHash([monitor.id, item.id, input.disposition, now])}`,
           monitorId: monitor.id,
@@ -566,7 +568,15 @@ export const layer = Layer.effect(
           reporterThreadId: input.reporterThreadId ?? null,
           createdAt: now,
         };
-        yield* feedbackStore.insertReport(reportRow);
+        yield* feedbackStore.reportDisposition({
+          itemId: item.id,
+          disposition: input.disposition,
+          note: input.note ?? null,
+          at: now,
+          byThreadId: input.reporterThreadId ?? null,
+          status,
+          report: reportRow,
+        });
         // Immediate post-report recheck so dispositions are verified against fresh PR state.
         yield* input.requestRecheck(monitor);
         const fresh = yield* feedbackStore.getItem(item.id);
