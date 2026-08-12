@@ -364,6 +364,7 @@ export type PullRequestMonitorContextInput = typeof PullRequestMonitorContextInp
 export const PullRequestMonitorContextResult = Schema.Struct({
   monitor: Schema.NullOr(PullRequestMonitorRecord),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
+  /** Feedback items for this monitor. May include closed when includeClosed is set. */
   items: Schema.Array(PullRequestMonitorFeedbackItem),
   recentDeliveries: Schema.Array(PullRequestMonitorFeedbackDelivery),
   recentReports: Schema.Array(PullRequestMonitorFeedbackReport),

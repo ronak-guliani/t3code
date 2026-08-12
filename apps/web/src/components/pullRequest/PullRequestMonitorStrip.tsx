@@ -1,4 +1,6 @@
 import type { EnvironmentId, PullRequestMonitorRecord, PullRequestRef } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { ActivityIcon, LifeBuoyIcon, PauseIcon, PlayIcon, RadarIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";
 
@@ -123,12 +125,23 @@ export function PullRequestMonitorStrip(props: {
           : { reference: props.reference, reason: "owner-missing" },
       });
       statusQuery.refresh();
+      if (AsyncResult.isFailure(result)) {
+        const error = Cause.squash(result.cause);
+        toastManager.add({
+          type: "error",
+          title: "Could not launch fallback maintenance",
+          description: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
       toastManager.add({
         type: "success",
-        title: result.launched ? "Fallback maintenance thread launched" : "Fallback not needed",
-        description: result.launched
-          ? `Owner transferred to ${result.fallbackThreadId}`
-          : (result.skippedReason ?? "No launch"),
+        title: result.value.launched
+          ? "Fallback maintenance thread launched"
+          : "Fallback not needed",
+        description: result.value.launched
+          ? `Owner transferred to ${result.value.fallbackThreadId}`
+          : (result.value.skippedReason ?? "No launch"),
       });
     } catch (error) {
       toastManager.add({

@@ -44,6 +44,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import { PullRequestMonitorService } from "../../../pullRequestMonitor/PullRequestMonitorService.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext, OrchestratorMcpService];
 const monitorDependencies = [
@@ -52,6 +53,7 @@ const monitorDependencies = [
   ThreadManagement.ThreadManagementService,
 ];
 
+/** MCP omits reviewThreadId — it is always the invoking thread. */
 const McpPrMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,
   ownerThreadId: Schema.optional(ThreadId),
@@ -270,7 +272,7 @@ export const PrMonitorContextTool = Tool.make("t3_pr_monitor_context", {
 
 export const PrMonitorSubmitFindingsTool = Tool.make("t3_pr_monitor_submit_findings", {
   description:
-    "Handoff structured review findings for a PR: link this invoking review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass.",
+    "Handoff structured review findings for a PR: link this invoking review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass. reviewThreadId is always this MCP thread.",
   parameters: McpPrMonitorSubmitFindingsInput,
   success: PullRequestMonitorSubmitFindingsResult,
   failure: PullRequestMonitorError,

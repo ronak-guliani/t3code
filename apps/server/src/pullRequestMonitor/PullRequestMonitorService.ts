@@ -32,6 +32,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
@@ -60,7 +61,33 @@ function isoNow() {
 }
 
 function addMs(iso: string, ms: number): string {
-  return new Date(new Date(iso).getTime() + ms).toISOString();
+  return DateTime.formatIso(
+    DateTime.toUtc(DateTime.add(DateTime.makeUnsafe(iso), { milliseconds: ms })),
+  );
+}
+
+function isMissingThreadFailure(failure: unknown): boolean {
+  let current: unknown = failure;
+  for (let depth = 0; depth < 4 && current != null; depth++) {
+    if (
+      Predicate.hasProperty(current, "_tag") &&
+      current._tag === "ProjectionStoreThreadNotFoundError"
+    ) {
+      return true;
+    }
+    if (
+      Predicate.hasProperty(current, "_tag") &&
+      current._tag === "ThreadManagementThreadNotFoundError"
+    ) {
+      return true;
+    }
+    if (Predicate.hasProperty(current, "cause")) {
+      current = current.cause;
+      continue;
+    }
+    break;
+  }
+  return false;
 }
 
 function monitorError(
@@ -125,33 +152,50 @@ export const layer = Layer.effect(
     const changes = yield* PubSub.sliding<void>(1);
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
 
-const requireProjectThread = (input: {
+    const ownerAvailability = (ownerThreadId: ThreadId | null) =>
+      Effect.gen(function* () {
+        if (ownerThreadId === null) {
+          return {
+            kind: "unavailable" as const,
+            reason: "owner-missing" as const,
+          };
+        }
+        const projectionResult = yield* Effect.result(threads.getThreadProjection(ownerThreadId));
+        if (Result.isFailure(projectionResult)) {
+          const failure = projectionResult.failure;
+          // Only explicit missing threads are unavailable. Operational/decode errors fail closed.
+          if (isMissingThreadFailure(failure)) {
+            return {
+              kind: "unavailable" as const,
+              reason: "owner-unavailable" as const,
+            };
+          }
+          return {
+            kind: "unknown" as const,
+            cause: failure,
+          };
+        }
+        const thread = projectionResult.success.thread;
+        if (thread.deletedAt !== null || thread.archivedAt !== null) {
+          return {
+            kind: "unavailable" as const,
+            reason: "owner-unavailable" as const,
+          };
+        }
+        return { kind: "available" as const };
+      });
+
+    const requireProjectThread = (input: {
       projectId: PullRequestMonitorRecord["projectId"];
       threadId: ThreadId;
     }) =>
-      threads.getProjectThread(input).pipe(
+      threads.getProjectThread({ projectId: input.projectId, threadId: input.threadId }).pipe(
         Effect.mapError((cause) =>
           monitorError("Target thread is missing, deleted, or outside this monitor project.", {
             cause,
           }),
         ),
       );
-
-    const ownerAvailability = (ownerThreadId: ThreadId | null) =>
-      Effect.gen(function* () {
-        if (ownerThreadId === null) {
-          return { available: false as const, reason: "owner-missing" as const };
-        }
-        const projectionResult = yield* Effect.result(threads.getThreadProjection(ownerThreadId));
-        if (Result.isFailure(projectionResult)) {
-          return { available: false as const, reason: "owner-unavailable" as const };
-        }
-        const thread = projectionResult.success.thread;
-        if (thread.deletedAt !== null || thread.archivedAt !== null) {
-          return { available: false as const, reason: "owner-unavailable" as const };
-        }
-        return { available: true as const, reason: "owner-available" as const };
-      });
 
     const resolveMonitor = (input: {
       readonly monitorId?: PullRequestMonitorId | undefined;
@@ -247,6 +291,7 @@ const requireProjectThread = (input: {
             );
           }
           const nextOwner = input.ownerThreadId ?? existing.ownerThreadId;
+          // Ownership-scoped write so a concurrent poll cannot be clobbered by start().
           if (nextOwner !== existing.ownerThreadId) {
             if (nextOwner === null) {
               return yield* monitorError("Cannot clear monitor ownership through start().", {
@@ -268,13 +313,14 @@ const requireProjectThread = (input: {
             projectId: input.projectId,
             ownerThreadId: nextOwner,
             linkedReviewThreadId: existing.linkedReviewThreadId ?? null,
-            status: existing.status === "terminal" ? "monitoring" : "monitoring",
+            status: "monitoring",
             enabled: true,
             lastError: null,
             nextPollAt: now,
             updatedAt: now,
             stoppedAt: null,
           };
+          // Poll-only fields + enablement; never rewrite ownership here.
           yield* store.updatePollState(resumed);
           yield* notify;
           // Kick an immediate observe pass for the resumed monitor.
@@ -326,6 +372,7 @@ const requireProjectThread = (input: {
           updatedAt: now,
           stoppedAt: now,
         };
+        // Poll/lifecycle fields only — preserve concurrent ownership handoffs.
         yield* store.updatePollState(stopped);
         yield* store.releaseLease(monitor.canonicalKey, ownerId);
         yield* notify;
@@ -366,7 +413,7 @@ const requireProjectThread = (input: {
 
         if (Result.isFailure(snapshotResult)) {
           const failureCount = monitor.pollFailureCount + 1;
-          const delay = nextPollDelayMs({
+          const delay = yield* nextPollDelayMs({
             readiness: monitor.readiness,
             failureCount,
             hadActionableEvents: false,
@@ -406,7 +453,7 @@ const requireProjectThread = (input: {
         if (snapshot.state !== "open") status = "terminal";
         else if (readiness.ready) status = "ready";
 
-        const delay = nextPollDelayMs({
+        const delay = yield* nextPollDelayMs({
           readiness,
           failureCount: 0,
           hadActionableEvents: actionableEvents.length > 0,
@@ -430,8 +477,8 @@ const requireProjectThread = (input: {
         };
 
         const snapshotId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-        // Persist observed snapshot, then ingest feedback before advancing the cursor so a
-        // transient ingest failure cannot permanently drop actionable events.
+        // Persist observed snapshot for audit, then ingest feedback before advancing the
+        // cursor so a transient ingest failure cannot permanently drop actionable events.
         yield* store.saveSnapshot({
           snapshotId,
           monitorId: monitor.id,
@@ -451,11 +498,11 @@ const requireProjectThread = (input: {
           yield* store.updatePollState(updated, nextCursor);
         }
 
-        // Auto fallback only when owner is missing/unavailable and there is work.
-        // Fail closed: only when settings load and the flag is explicitly true.
+        // Auto fallback only when owner is explicitly missing/unavailable and there is work.
+        // Fail closed on settings/read errors and operational projection failures.
         if (actionableEvents.length > 0 && snapshot.state === "open" && updated.enabled) {
           const availability = yield* ownerAvailability(updated.ownerThreadId);
-          if (!availability.available) {
+          if (availability.kind === "unavailable") {
             const settingsResult = yield* Effect.result(serverSettings.getSettings);
             if (
               Result.isSuccess(settingsResult) &&
@@ -476,7 +523,7 @@ const requireProjectThread = (input: {
           Effect.gen(function* () {
             const now = yield* isoNow();
             const failureCount = monitor.pollFailureCount + 1;
-            const delay = nextPollDelayMs({
+            const delay = yield* nextPollDelayMs({
               readiness: monitor.readiness,
               failureCount,
               hadActionableEvents: false,
@@ -580,6 +627,7 @@ const requireProjectThread = (input: {
     const submitFindings = (input: PullRequestMonitorSubmitFindingsInput) =>
       Effect.gen(function* () {
         const startMonitoring = input.startMonitoring !== false;
+        // Start without mutating ownership so handoff audit sees the true previous owner.
         let monitorRecord: PullRequestMonitorRecord;
         if (startMonitoring) {
           const started = yield* start({
@@ -592,12 +640,12 @@ const requireProjectThread = (input: {
           monitorRecord = yield* resolveMonitor({ reference: input.reference });
         }
 
-        const ownerThreadId =
-          input.ownerThreadId ?? monitorRecord.ownerThreadId ?? (null as ThreadId | null);
         yield* requireProjectThread({
           projectId: monitorRecord.projectId,
           threadId: input.reviewThreadId,
         });
+        const ownerThreadId =
+          input.ownerThreadId ?? monitorRecord.ownerThreadId ?? (null as ThreadId | null);
         if (ownerThreadId !== null) {
           yield* requireProjectThread({
             projectId: monitorRecord.projectId,
@@ -611,6 +659,7 @@ const requireProjectThread = (input: {
           ownerThreadId,
           updatedAt: now,
         };
+        // Always use ownership-scoped SQL so concurrent poll updates cannot clobber the link.
         yield* store.transferOwnershipAtomic({
           monitorId: updated.id,
           ownerThreadId,
@@ -629,6 +678,30 @@ const requireProjectThread = (input: {
         };
       });
 
+    const waitForPreparedWorktree = (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        // ThreadLaunch forks worktree prep; wait briefly for a concrete worktree before
+        // transferring exclusive ownership so failed prep cannot become the durable owner.
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const projectionResult = yield* Effect.result(threads.getThreadProjection(threadId));
+          if (Result.isSuccess(projectionResult)) {
+            const worktreePath = projectionResult.success.thread.worktreePath;
+            if (typeof worktreePath === "string" && worktreePath.length > 0) {
+              return true as const;
+            }
+            const runs = projectionResult.success.runs ?? [];
+            const failedPrep = runs.some(
+              (run) => run.status === "failed" || (run as { failure?: unknown }).failure != null,
+            );
+            if (failedPrep && attempt > 2) {
+              return false as const;
+            }
+          }
+          yield* Effect.sleep(Duration.millis(500));
+        }
+        return false as const;
+      });
+
     const launchFallback = (
       input: PullRequestMonitorLaunchFallbackInput,
     ): Effect.Effect<PullRequestMonitorLaunchFallbackResult, PullRequestMonitorError> =>
@@ -643,20 +716,12 @@ const requireProjectThread = (input: {
         }
 
         const force = input.force === true;
-        const availability = yield* ownerAvailability(monitor.ownerThreadId);
-        if (availability.available && !force) {
-          return yield* Effect.fail(
-            monitorError(
-              "Owner thread is still available. Use force only with explicit human approval, or transfer ownership first.",
-              { monitorId: monitor.id },
-            ),
-          );
-        }
-
         const now = yield* isoNow();
         const latest = yield* store.latestFallbackLaunch(monitor.id);
         if (latest && latest.status === "launched") {
-          const age = new Date(now).getTime() - new Date(latest.createdAt).getTime();
+          const age =
+            DateTime.toEpochMillis(DateTime.makeUnsafe(now)) -
+            DateTime.toEpochMillis(DateTime.makeUnsafe(latest.createdAt));
           if (age >= 0 && age < FALLBACK_COOLDOWN_MS) {
             const existingThread = latest.threadId as ThreadId | null;
             if (existingThread && monitor.ownerThreadId === existingThread) {
@@ -670,6 +735,24 @@ const requireProjectThread = (input: {
               };
             }
           }
+        }
+
+        const availability = yield* ownerAvailability(monitor.ownerThreadId);
+        if (availability.kind === "unknown") {
+          return yield* Effect.fail(
+            monitorError(
+              "Could not verify owner thread availability; refusing fallback takeover.",
+              { monitorId: monitor.id, cause: availability.cause },
+            ),
+          );
+        }
+        if (availability.kind === "available" && !force) {
+          return yield* Effect.fail(
+            monitorError(
+              "Owner thread is still available. Use force only with explicit human approval, or transfer ownership first.",
+              { monitorId: monitor.id },
+            ),
+          );
         }
 
         const snapshotResult = yield* Effect.result(
@@ -700,19 +783,19 @@ const requireProjectThread = (input: {
           input.reason ??
           (force
             ? "explicit"
-            : availability.reason === "owner-missing"
+            : availability.kind === "unavailable" && availability.reason === "owner-missing"
               ? "owner-missing"
               : "owner-unavailable");
 
-        const commandIdValue = `command:pr-monitor-fallback:${monitor.id}:${snapshot.headSha ?? "unknown"}`;
+        // Per-attempt IDs so cooldown expiry can relaunch after a dead/archived fallback.
+        const attemptId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        const commandIdValue = `command:pr-monitor-fallback:${monitor.id}:${attemptId}`;
         const commandId = CommandId.make(commandIdValue);
-        const messageId = MessageId.make(
-          `message:pr-monitor-fallback:${monitor.id}:${snapshot.headSha ?? "unknown"}`,
-        );
+        const messageId = MessageId.make(`message:pr-monitor-fallback:${monitor.id}:${attemptId}`);
         const readiness = monitor.readiness ?? {
           ready: false,
           label: "blocked" as const,
-          blockers: [{ kind: "unknown", detail: "No readiness yet" }],
+          blockers: [{ kind: "checks-missing" as const, detail: "No readiness yet" }],
         };
         const settings = yield* serverSettings.getSettings.pipe(
           Effect.mapError((cause) =>
@@ -723,7 +806,8 @@ const requireProjectThread = (input: {
           ),
         );
 
-        const baseRef = snapshot.headBranch || snapshot.headSha || "HEAD";
+        // Prefer exact head SHA so fork PRs do not require origin/<headBranch>.
+        const baseRef = snapshot.headSha;
         const previousOwner = monitor.ownerThreadId;
         const prompt = buildFallbackMaintenancePrompt({
           prNumber: monitor.number,
@@ -749,7 +833,8 @@ const requireProjectThread = (input: {
             workspaceStrategy: {
               type: "worktree",
               baseRef,
-              startFromOrigin: true,
+              branch: `t3/pr-monitor/${monitor.number}/${attemptId.slice(0, 8)}`,
+              startFromOrigin: false,
             },
             initialMessage: {
               messageId,
@@ -767,7 +852,7 @@ const requireProjectThread = (input: {
               ? launchResult.failure.message
               : String(launchResult.failure);
           yield* store.recordFallbackLaunch({
-            launchId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+            launchId: attemptId,
             monitorId: monitor.id,
             commandId: commandIdValue,
             threadId: null,
@@ -785,22 +870,41 @@ const requireProjectThread = (input: {
         }
 
         const fallbackThreadId = launchResult.success.threadId;
+        const prepared = yield* waitForPreparedWorktree(fallbackThreadId);
+        if (!prepared) {
+          yield* store.recordFallbackLaunch({
+            launchId: attemptId,
+            monitorId: monitor.id,
+            commandId: commandIdValue,
+            threadId: fallbackThreadId,
+            reason,
+            status: "failed",
+            error: "Worktree preparation did not complete; ownership was not transferred.",
+            createdAt: now,
+          });
+          return yield* Effect.fail(
+            monitorError(
+              "Fallback worktree preparation did not complete; ownership was not transferred.",
+              { monitorId: monitor.id },
+            ),
+          );
+        }
+
         const updated = {
           ...monitor,
           ownerThreadId: fallbackThreadId,
           updatedAt: now,
         };
-        yield* store.update(updated);
-        yield* store.recordOwnershipEvent({
-          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+        yield* store.transferOwnershipAtomic({
           monitorId: monitor.id,
-          fromThreadId: previousOwner,
+          ownerThreadId: fallbackThreadId,
+          updatedAt: now,
+          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
           toThreadId: fallbackThreadId,
           reason: `fallback:${reason}`,
-          createdAt: now,
         });
         yield* store.recordFallbackLaunch({
-          launchId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+          launchId: attemptId,
           monitorId: monitor.id,
           commandId: commandIdValue,
           threadId: fallbackThreadId,

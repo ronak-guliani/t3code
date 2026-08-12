@@ -183,6 +183,11 @@ const handlers = {
   t3_pr_monitor_launch_fallback: (input) =>
     Effect.gen(function* () {
       const monitors = yield* PullRequestMonitorService;
+      const status = yield* monitors.status({
+        ...(input.monitorId === undefined ? {} : { monitorId: input.monitorId }),
+        ...(input.reference === undefined ? {} : { reference: input.reference }),
+      });
+      yield* assertMonitorInInvokerProject(status.monitor?.projectId);
       return yield* monitors.launchFallback(input);
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];

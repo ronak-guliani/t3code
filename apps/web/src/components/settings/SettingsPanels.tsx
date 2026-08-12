@@ -2176,7 +2176,7 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Auto-launch PR monitor fallback"
+          {...searchableSetting("auto-launch-pr-monitor-fallback")}
           description="When a monitored PR has open feedback but no available owner thread, launch a prepared maintenance worktree and transfer exclusive ownership."
           resetAction={
             settings.autoLaunchPrMonitorFallback !==

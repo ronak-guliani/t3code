@@ -1824,6 +1824,7 @@ const makeWsRpcLayer = (
                           input.threadId !== undefined
                         ) {
                           const settingsResult = yield* Effect.result(serverSettings.getSettings);
+                          // Fail closed: only auto-monitor when settings load and the flag is true.
                           const enabled =
                             Result.isSuccess(settingsResult) &&
                             settingsResult.success.autoMonitorPullRequestsOnCreate === true;

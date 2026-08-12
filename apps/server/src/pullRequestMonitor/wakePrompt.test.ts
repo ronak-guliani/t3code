@@ -21,7 +21,7 @@ const snapshot = {
   behindBaseBy: 0,
   titleExcerpt: "Add feature",
   url: "https://github.com/acme/app/pull/12",
-  fetchedAt: new Date().toISOString(),
+  fetchedAt: "2026-08-11T00:00:00.000Z",
   sourceRevision: "rev1",
   completeness: {
     reviewsComplete: true,

@@ -16,6 +16,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { emptyCursor, type PullRequestMonitorCursor } from "./monitorDiff.ts";
 import { MAX_RETAINED_SNAPSHOTS } from "./pollSchedule.ts";
 
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const decodeCursor = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -97,6 +99,8 @@ interface SnapshotRow {
   readonly events_json: string;
 }
 
+const isPullRequestMonitorError = Schema.is(PullRequestMonitorError);
+
 function storeError(message: string, cause?: unknown) {
   return new PullRequestMonitorError({ message, cause });
 }
@@ -168,11 +172,15 @@ export interface PullRequestMonitorStoreApi {
     record: PullRequestMonitorRecord,
     cursor?: PullRequestMonitorCursor,
   ) => Effect.Effect<void, PullRequestMonitorError>;
-  /** Poll/lifecycle fields only — never rewrites ownership. */
+  /**
+   * Poll/lifecycle fields only — never rewrites ownership or review-link metadata,
+   * so concurrent transfer/handoff cannot be clobbered by an in-flight poll.
+   */
   readonly updatePollState: (
     record: PullRequestMonitorRecord,
     cursor?: PullRequestMonitorCursor,
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  /** Narrow recheck schedule bump that cannot overwrite concurrent poll/ownership writes. */
   readonly scheduleRecheck: (input: {
     readonly monitorId: PullRequestMonitorId;
     readonly nextPollAt: string;
@@ -266,9 +274,7 @@ export const make = Effect.gen(function* () {
         rows[0] === undefined ? Effect.succeed(null) : rowToRecord(rows[0]),
       ),
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
-          ? cause
-          : storeError("Failed to load monitor.", cause),
+        isPullRequestMonitorError(cause) ? cause : storeError("Failed to load monitor.", cause),
       ),
     );
 
@@ -280,7 +286,7 @@ export const make = Effect.gen(function* () {
         rows[0] === undefined ? Effect.succeed(null) : rowToRecord(rows[0]),
       ),
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
+        isPullRequestMonitorError(cause)
           ? cause
           : storeError("Failed to load monitor by key.", cause),
       ),
@@ -299,7 +305,7 @@ export const make = Effect.gen(function* () {
         rows[0] === undefined ? Effect.succeed(null) : rowToRecord(rows[0]),
       ),
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
+        isPullRequestMonitorError(cause)
           ? cause
           : storeError("Failed to load monitor by project ref.", cause),
       ),
@@ -333,9 +339,7 @@ export const make = Effect.gen(function* () {
       return yield* Effect.forEach(rows, rowToRecord, { concurrency: 1 });
     }).pipe(
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
-          ? cause
-          : storeError("Failed to list monitors.", cause),
+        isPullRequestMonitorError(cause) ? cause : storeError("Failed to list monitors.", cause),
       ),
     );
 
@@ -350,7 +354,7 @@ export const make = Effect.gen(function* () {
     `.pipe(
       Effect.flatMap((rows) => Effect.forEach(rows, rowToRecord, { concurrency: 1 })),
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
+        isPullRequestMonitorError(cause)
           ? cause
           : storeError("Failed to list due monitors.", cause),
       ),
@@ -375,10 +379,10 @@ export const make = Effect.gen(function* () {
         ${record.linkedReviewThreadId},
         ${record.status},
         ${record.enabled ? 1 : 0},
-        ${record.readiness ? JSON.stringify(record.readiness) : null},
+        ${record.readiness ? encodeUnknownJson(record.readiness) : null},
         ${record.headSha},
         ${record.sourceRevision},
-        ${JSON.stringify(cursor)},
+        ${encodeUnknownJson(cursor)},
         ${record.lastPolledAt},
         ${record.nextPollAt},
         ${record.lastError},
@@ -400,10 +404,10 @@ export const make = Effect.gen(function* () {
             linked_review_thread_id = ${record.linkedReviewThreadId},
             status = ${record.status},
             enabled = ${record.enabled ? 1 : 0},
-            readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
+            readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
             head_sha = ${record.headSha},
             source_revision = ${record.sourceRevision},
-            cursor_json = ${JSON.stringify(cursor)},
+            cursor_json = ${encodeUnknownJson(cursor)},
             last_polled_at = ${record.lastPolledAt},
             next_poll_at = ${record.nextPollAt},
             last_error = ${record.lastError},
@@ -418,7 +422,7 @@ export const make = Effect.gen(function* () {
             linked_review_thread_id = ${record.linkedReviewThreadId},
             status = ${record.status},
             enabled = ${record.enabled ? 1 : 0},
-            readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
+            readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
             head_sha = ${record.headSha},
             source_revision = ${record.sourceRevision},
             last_polled_at = ${record.lastPolledAt},
@@ -440,10 +444,10 @@ export const make = Effect.gen(function* () {
           UPDATE pull_request_monitors SET
             status = ${record.status},
             enabled = ${record.enabled ? 1 : 0},
-            readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
+            readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
             head_sha = ${record.headSha},
             source_revision = ${record.sourceRevision},
-            cursor_json = ${JSON.stringify(cursor)},
+            cursor_json = ${encodeUnknownJson(cursor)},
             last_polled_at = ${record.lastPolledAt},
             next_poll_at = ${record.nextPollAt},
             last_error = ${record.lastError},
@@ -456,7 +460,7 @@ export const make = Effect.gen(function* () {
           UPDATE pull_request_monitors SET
             status = ${record.status},
             enabled = ${record.enabled ? 1 : 0},
-            readiness_json = ${record.readiness ? JSON.stringify(record.readiness) : null},
+            readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
             head_sha = ${record.headSha},
             source_revision = ${record.sourceRevision},
             last_polled_at = ${record.lastPolledAt},
@@ -487,6 +491,7 @@ export const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
+          // Read previous owner inside the transaction so concurrent transfers audit correctly.
           const current = yield* sql<{ owner_thread_id: string | null }>`
             SELECT owner_thread_id
             FROM pull_request_monitors
@@ -543,7 +548,7 @@ export const make = Effect.gen(function* () {
         );
       }),
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
+        isPullRequestMonitorError(cause)
           ? cause
           : storeError("Failed to load monitor cursor.", cause),
       ),
@@ -561,9 +566,9 @@ export const make = Effect.gen(function* () {
           ${input.snapshot.sourceRevision},
           ${input.snapshot.headSha},
           ${input.snapshot.fetchedAt},
-          ${JSON.stringify(input.snapshot)},
-          ${JSON.stringify(input.readiness)},
-          ${JSON.stringify(input.events)}
+          ${encodeUnknownJson(input.snapshot)},
+          ${encodeUnknownJson(input.readiness)},
+          ${encodeUnknownJson(input.events)}
         )
       `;
       yield* sql`
@@ -602,7 +607,7 @@ export const make = Effect.gen(function* () {
         }).pipe(Effect.mapError((cause) => storeError("Could not decode snapshot.", cause)));
       }),
       Effect.mapError((cause) =>
-        cause instanceof PullRequestMonitorError
+        isPullRequestMonitorError(cause)
           ? cause
           : storeError("Failed to load latest snapshot.", cause),
       ),

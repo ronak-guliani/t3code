@@ -21,6 +21,8 @@ const decodeStringArray = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
 
+const isPullRequestMonitorError = Schema.is(PullRequestMonitorError);
+
 function storeError(message: string, cause?: unknown) {
   return new PullRequestMonitorError({ message, cause });
 }
@@ -168,6 +170,7 @@ export interface PullRequestMonitorFeedbackStoreApi {
   readonly insertReport: (
     report: PullRequestMonitorFeedbackReport,
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  /** Atomically apply disposition + durable audit report row. */
   readonly reportDisposition: (input: {
     readonly itemId: PullRequestMonitorFeedbackItemId;
     readonly disposition: PullRequestMonitorFeedbackDisposition;
@@ -184,23 +187,7 @@ export interface PullRequestMonitorFeedbackStoreApi {
   readonly getState: (
     monitorId: PullRequestMonitorId,
   ) => Effect.Effect<FeedbackMonitorState, PullRequestMonitorError>;
-  readonly appendPendingRevisionIds: (input: {
-    readonly monitorId: PullRequestMonitorId;
-    readonly revisionIds: ReadonlyArray<string>;
-    readonly debounceUntil: string;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PullRequestMonitorError>;
-  readonly removePendingRevisionIds: (input: {
-    readonly monitorId: PullRequestMonitorId;
-    readonly revisionIds: ReadonlyArray<string>;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PullRequestMonitorError>;
-  readonly setDeliveryCircuitState: (input: {
-    readonly monitorId: PullRequestMonitorId;
-    readonly deliveryFailureCount: number;
-    readonly circuitOpenUntil: string | null;
-    readonly updatedAt: string;
-  }) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly saveState: (state: FeedbackMonitorState) => Effect.Effect<void, PullRequestMonitorError>;
   readonly insertDelivery: (
     delivery: PullRequestMonitorFeedbackDelivery & {
       readonly nextAttemptAt: string | null;
@@ -402,7 +389,7 @@ export const PullRequestMonitorFeedbackStore = {
             debounceUntil: null,
             deliveryFailureCount: 0,
             circuitOpenUntil: null,
-            updatedAt: new Date(0).toISOString(),
+            updatedAt: "1970-01-01T00:00:00.000Z",
           } satisfies FeedbackMonitorState;
         }
         const pending = yield* decodeStringArray(row.pending_revision_ids_json).pipe(
@@ -418,87 +405,29 @@ export const PullRequestMonitorFeedbackStore = {
         } satisfies FeedbackMonitorState;
       }).pipe(
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to load feedback state.", cause),
         ),
       );
 
-    const appendPendingRevisionIds: PullRequestMonitorFeedbackStoreApi["appendPendingRevisionIds"] =
-      (input) =>
-        sql`
-        INSERT INTO pull_request_monitor_feedback_state (
-          monitor_id, pending_revision_ids_json, debounce_until, delivery_failure_count,
-          circuit_open_until, updated_at
-        ) VALUES (
-          ${input.monitorId}, ${JSON.stringify(input.revisionIds)}, ${input.debounceUntil},
-          0, NULL, ${input.updatedAt}
-        )
-        ON CONFLICT(monitor_id) DO UPDATE SET
-          pending_revision_ids_json = (
-            SELECT json_group_array(value)
-            FROM (
-              SELECT value
-              FROM json_each(pull_request_monitor_feedback_state.pending_revision_ids_json)
-              UNION
-              SELECT value
-              FROM json_each(excluded.pending_revision_ids_json)
-            )
-          ),
-          debounce_until = excluded.debounce_until,
-          updated_at = excluded.updated_at
-      `.pipe(
-          Effect.mapError((cause) =>
-            storeError("Failed to append pending feedback revisions.", cause),
-          ),
-          Effect.asVoid,
-        );
-
-    const removePendingRevisionIds: PullRequestMonitorFeedbackStoreApi["removePendingRevisionIds"] =
-      (input) =>
-        sql`
-        UPDATE pull_request_monitor_feedback_state
-        SET pending_revision_ids_json = (
-              SELECT COALESCE(json_group_array(value), '[]')
-              FROM json_each(pending_revision_ids_json)
-              WHERE value NOT IN (SELECT value FROM json_each(${JSON.stringify(input.revisionIds)}))
-            ),
-            debounce_until = CASE
-              WHEN NOT EXISTS (
-                SELECT 1
-                FROM json_each(pending_revision_ids_json)
-                WHERE value NOT IN (SELECT value FROM json_each(${JSON.stringify(input.revisionIds)}))
-              ) THEN NULL
-              ELSE debounce_until
-            END,
-            updated_at = ${input.updatedAt}
-        WHERE monitor_id = ${input.monitorId}
-      `.pipe(
-          Effect.mapError((cause) =>
-            storeError("Failed to remove pending feedback revisions.", cause),
-          ),
-          Effect.asVoid,
-        );
-
-    const setDeliveryCircuitState: PullRequestMonitorFeedbackStoreApi["setDeliveryCircuitState"] = (
-      input,
-    ) =>
+    const saveState: PullRequestMonitorFeedbackStoreApi["saveState"] = (state) =>
       sql`
         INSERT INTO pull_request_monitor_feedback_state (
           monitor_id, pending_revision_ids_json, debounce_until, delivery_failure_count,
           circuit_open_until, updated_at
         ) VALUES (
-          ${input.monitorId}, '[]', NULL, ${input.deliveryFailureCount},
-          ${input.circuitOpenUntil}, ${input.updatedAt}
+          ${state.monitorId}, ${JSON.stringify(state.pendingRevisionIds)}, ${state.debounceUntil},
+          ${state.deliveryFailureCount}, ${state.circuitOpenUntil}, ${state.updatedAt}
         )
         ON CONFLICT(monitor_id) DO UPDATE SET
+          pending_revision_ids_json = excluded.pending_revision_ids_json,
+          debounce_until = excluded.debounce_until,
           delivery_failure_count = excluded.delivery_failure_count,
           circuit_open_until = excluded.circuit_open_until,
           updated_at = excluded.updated_at
       `.pipe(
-        Effect.mapError((cause) =>
-          storeError("Failed to update feedback delivery circuit.", cause),
-        ),
+        Effect.mapError((cause) => storeError("Failed to save feedback state.", cause)),
         Effect.asVoid,
       );
 
@@ -542,7 +471,7 @@ export const PullRequestMonitorFeedbackStore = {
       `.pipe(
         Effect.flatMap((rows) => (rows[0] ? rowToDelivery(rows[0]) : Effect.succeed(null))),
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to load delivery by batch key.", cause),
         ),
@@ -557,7 +486,7 @@ export const PullRequestMonitorFeedbackStore = {
       `.pipe(
         Effect.flatMap((rows) => Effect.forEach(rows, rowToDelivery)),
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to list deliveries.", cause),
         ),
@@ -576,7 +505,7 @@ export const PullRequestMonitorFeedbackStore = {
       `.pipe(
         Effect.flatMap((rows) => Effect.forEach(rows, rowToDelivery)),
         Effect.mapError((cause) =>
-          cause instanceof PullRequestMonitorError
+          isPullRequestMonitorError(cause)
             ? cause
             : storeError("Failed to list due deliveries.", cause),
         ),
@@ -602,9 +531,7 @@ export const PullRequestMonitorFeedbackStore = {
       reportDisposition,
       listReports,
       getState,
-      appendPendingRevisionIds,
-      removePendingRevisionIds,
-      setDeliveryCircuitState,
+      saveState,
       insertDelivery,
       updateDelivery,
       getDeliveryByBatchKey,

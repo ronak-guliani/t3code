@@ -6,16 +6,24 @@ import type {
 
 const excerpt = (body: string) => body.replace(/\s+/g, " ").trim().slice(0, 280);
 
-export function formatBlockersSummary(readiness: PullRequestMonitorReadiness): string {
+export function formatBlockersSummary(
+  readiness: PullRequestMonitorReadiness,
+  options?: { readonly maxBlockers?: number; readonly maxChars?: number },
+): string {
   if (readiness.blockers.length === 0) {
     return readiness.label === "ready-to-merge" ? "Ready to merge" : "No known blockers";
   }
-  return readiness.blockers
-    .map((blocker) => {
-      const detail = blocker.detail ? `: ${blocker.detail}` : "";
-      return `- ${blocker.kind}${detail}`;
-    })
-    .join("\n");
+  const maxBlockers = options?.maxBlockers ?? 8;
+  const maxChars = options?.maxChars ?? 1_200;
+  const lines = readiness.blockers.slice(0, maxBlockers).map((blocker) => {
+    const detail = blocker.detail ? `: ${excerpt(blocker.detail)}` : "";
+    return `- ${blocker.kind}${detail}`;
+  });
+  if (readiness.blockers.length > maxBlockers) {
+    lines.push(`- …and ${readiness.blockers.length - maxBlockers} more`);
+  }
+  const summary = lines.join("\n");
+  return summary.length > maxChars ? `${summary.slice(0, maxChars - 1)}…` : summary;
 }
 
 function formatEvent(
@@ -76,12 +84,16 @@ export function buildFallbackMaintenancePrompt(input: {
   readonly note: string | null;
   readonly readinessSummary: string;
 }): string {
-  const noteLine = input.note ? `\nOperator note: ${input.note.slice(0, 500)}` : "";
+  const noteLine = input.note ? `\nOperator note: ${excerpt(input.note)}` : "";
   const prev =
     input.previousOwnerThreadId === null
       ? "none"
       : `${input.previousOwnerThreadId} (transferred exclusive ownership to this thread)`;
-  return `You are a fallback PR maintenance thread for ${input.repository}#${input.prNumber}.
+  const readinessSummary =
+    input.readinessSummary.length > 1_200
+      ? `${input.readinessSummary.slice(0, 1_199)}…`
+      : input.readinessSummary;
+  const body = `You are a fallback PR maintenance thread for ${input.repository}#${input.prNumber}.
 
 Reason: ${input.reason}
 Previous owner: ${prev}
@@ -89,7 +101,7 @@ PR URL: ${input.url ?? "(unknown)"}
 Head branch: ${input.headBranch ?? "(unknown)"}
 Head SHA: ${input.headSha ?? "(unknown)"}
 Status:
-${input.readinessSummary}
+${readinessSummary}
 ${noteLine}
 
 Policy:
@@ -100,6 +112,7 @@ Policy:
 - Fix legitimate findings and push. Never force-push, rewrite protected history, or merge without explicit human approval.
 - Merge stays human-controlled.
 - If the situation is ambiguous or unsafe, stop and ask the user (needs-human).`;
+  return body.length > 3_500 ? `${body.slice(0, 3_499)}…` : body;
 }
 
 /**

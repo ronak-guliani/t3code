@@ -23,9 +23,12 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as NodeCrypto from "node:crypto";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -45,8 +48,12 @@ function isoNow() {
 }
 
 function addMs(iso: string, ms: number): string {
-  return new Date(new Date(iso).getTime() + ms).toISOString();
+  return DateTime.formatIso(
+    DateTime.toUtc(DateTime.add(DateTime.makeUnsafe(iso), { milliseconds: ms })),
+  );
 }
+
+const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 function stableHash(parts: ReadonlyArray<string>): string {
   return NodeCrypto.createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
@@ -152,7 +159,8 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         if (input.events.length === 0) return;
         if (input.snapshot.state !== "open") return;
-        // Persist durable items/revisions even without an owner. Delivery waits for an owner.
+        // Persist durable items/revisions even without an owner. Delivery waits for an
+        // owner (phase 5+); skipping ingest would lose events once the cursor advances.
 
         const now = yield* isoNow();
         const newRevisionIds: string[] = [];
@@ -240,9 +248,11 @@ export const layer = Layer.effect(
 
         if (newRevisionIds.length === 0) return;
 
-        yield* feedbackStore.appendPendingRevisionIds({
-          monitorId: input.monitor.id,
-          revisionIds: newRevisionIds,
+        const state = yield* feedbackStore.getState(input.monitor.id);
+        const pending = Array.from(new Set([...state.pendingRevisionIds, ...newRevisionIds]));
+        yield* feedbackStore.saveState({
+          ...state,
+          pendingRevisionIds: pending,
           debounceUntil: addMs(now, FEEDBACK_DEBOUNCE_MS),
           updatedAt: now,
         });
@@ -317,30 +327,20 @@ export const layer = Layer.effect(
             validated.failure instanceof Error
               ? validated.failure.message
               : String(validated.failure);
-          const suppressedByRevalidation =
-            /no longer open|no owner thread|not active|head changed/i.test(message);
-          const terminal = suppressedByRevalidation || attemptCount >= MAX_DELIVERY_ATTEMPTS;
-          if (suppressedByRevalidation) {
-            yield* feedbackStore.setDeliveryCircuitState({
-              monitorId: state.monitorId,
-              deliveryFailureCount: 0,
-              circuitOpenUntil: null,
-              updatedAt: now,
-            });
-          }
+          const terminal =
+            /no longer open|no owner thread|not active|head changed/i.test(message) ||
+            attemptCount >= MAX_DELIVERY_ATTEMPTS;
           const failureCount = state.deliveryFailureCount + 1;
           const circuitOpenUntil =
             failureCount >= DELIVERY_CIRCUIT_THRESHOLD
               ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
               : state.circuitOpenUntil;
-          if (!suppressedByRevalidation) {
-            yield* feedbackStore.setDeliveryCircuitState({
-              monitorId: state.monitorId,
-              deliveryFailureCount: failureCount,
-              circuitOpenUntil,
-              updatedAt: now,
-            });
-          }
+          yield* feedbackStore.saveState({
+            ...state,
+            deliveryFailureCount: failureCount,
+            circuitOpenUntil,
+            updatedAt: now,
+          });
           yield* feedbackStore.updateDelivery({
             ...delivery,
             status: terminal ? "suppressed" : "failed",
@@ -397,8 +397,8 @@ export const layer = Layer.effect(
             failureCount >= DELIVERY_CIRCUIT_THRESHOLD
               ? addMs(now, DELIVERY_CIRCUIT_COOLDOWN_MS)
               : state.circuitOpenUntil;
-          yield* feedbackStore.setDeliveryCircuitState({
-            monitorId: state.monitorId,
+          yield* feedbackStore.saveState({
+            ...state,
             deliveryFailureCount: failureCount,
             circuitOpenUntil,
             updatedAt: now,
@@ -425,14 +425,14 @@ export const layer = Layer.effect(
           lastError: null,
           nextAttemptAt: null,
           deliveredAt: now,
-          receiptJson: JSON.stringify({
+          receiptJson: encodeUnknownJson({
             delivery: sendResult.success.delivery,
             runId: sendResult.success.run.id,
             messageId: sendResult.success.message.id,
           }),
         });
-        yield* feedbackStore.setDeliveryCircuitState({
-          monitorId: state.monitorId,
+        yield* feedbackStore.saveState({
+          ...state,
           deliveryFailureCount: 0,
           circuitOpenUntil: null,
           updatedAt: now,
@@ -483,9 +483,10 @@ export const layer = Layer.effect(
           });
         }
 
-        yield* feedbackStore.removePendingRevisionIds({
-          monitorId: monitor.id,
-          revisionIds,
+        yield* feedbackStore.saveState({
+          ...state,
+          pendingRevisionIds: [],
+          debounceUntil: null,
           updatedAt: now,
         });
       }
@@ -496,6 +497,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const now = yield* isoNow();
           const due = yield* feedbackStore.listDueDeliveries(now, 16);
+          // Group by monitor so circuit/order updates cannot race within one monitor.
           const byMonitor = new Map<string, typeof due>();
           for (const delivery of due) {
             const group = byMonitor.get(delivery.monitorId) ?? [];
@@ -519,6 +521,13 @@ export const layer = Layer.effect(
       Effect.forkScoped,
       Effect.interruptible,
     );
+    yield* Stream.fromSchedule(Schedule.spaced(Duration.seconds(20))).pipe(
+      Stream.mapEffect(() => flushDueDeliveries),
+      Stream.runDrain,
+      Effect.forkScoped,
+      Effect.interruptible,
+    );
+
     const context: (typeof PullRequestMonitorFeedbackService.Service)["context"] = (input) =>
       Effect.gen(function* () {
         const monitor = yield* input.resolveMonitor();
