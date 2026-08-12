@@ -97,7 +97,6 @@ const rpcClientMock = {
     listStats: vi.fn(),
     detail: vi.fn(),
     activity: vi.fn(),
-    diffFileContents: vi.fn(),
     runAction: vi.fn(),
     comment: vi.fn(),
     submitReview: vi.fn(),

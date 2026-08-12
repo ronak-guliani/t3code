@@ -1850,12 +1850,6 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             withPullRequests((service) => service.activity(input)),
             { "rpc.aggregate": "pull-requests" },
           ),
-        [WS_METHODS.pullRequestsDiffFileContents]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.pullRequestsDiffFileContents,
-            withPullRequests((service) => service.diffFileContents(input)),
-            { "rpc.aggregate": "pull-requests" },
-          ),
         [WS_METHODS.pullRequestsRunAction]: (input) =>
           observeRpcEffect(
             WS_METHODS.pullRequestsRunAction,

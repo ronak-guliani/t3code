@@ -3,7 +3,6 @@ import type {
   PullRequestAction,
   PullRequestActivity,
   PullRequestDetail,
-  PullRequestDetailView,
   PullRequestDiffSide,
   PullRequestRef,
   PullRequestReviewCommentDraft,
@@ -62,6 +61,7 @@ import {
 } from "./pullRequestPresentation";
 
 type DetailTab = "summary" | "conversation" | "code";
+type PullRequestDetailView = PullRequestDetail & PullRequestActivity;
 
 const TABS: readonly { readonly value: DetailTab; readonly label: string }[] = [
   { value: "summary", label: "Summary" },
@@ -167,7 +167,9 @@ function ReviewThread({
               <PullRequestActorLabel actor={comment.author} className="text-foreground" />
               <span>{formatRelativeTimeLabel(comment.createdAt)}</span>
             </div>
-            <p className="mt-1 whitespace-pre-wrap">{comment.body}</p>
+            <div className="mt-1">
+              <ChatMarkdown cwd={detail.workspaceRoot} text={comment.body} />
+            </div>
           </div>
         ))}
       </div>
@@ -564,9 +566,15 @@ export function PullRequestDetailPanel({
   readonly onClose: () => void;
 }) {
   const queryClient = useQueryClient();
-  const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
-  const activityQuery = useQuery(pullRequestActivityQueryOptions({ environmentId, reference }));
   const [tab, setTab] = useState<DetailTab>("summary");
+  const detailQuery = useQuery(pullRequestDetailQueryOptions({ environmentId, reference }));
+  const activityQuery = useQuery(
+    pullRequestActivityQueryOptions({
+      environmentId,
+      reference,
+      enabled: tab !== "summary",
+    }),
+  );
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
   const detail = toDetailView(detailQuery.data, activityQuery.data);
@@ -944,19 +952,11 @@ export function PullRequestDetailPanel({
                     <PullRequestActorLabel actor={item.author} className="text-foreground" />
                     <span>{formatRelativeTimeLabel(item.createdAt)}</span>
                   </div>
-                  <p className="mt-2 whitespace-pre-wrap text-sm">{item.body}</p>
+                  <div className="mt-2 text-sm">
+                    <ChatMarkdown cwd={detail.workspaceRoot} text={item.body} />
+                  </div>
                 </article>
               ))}
-            {detail.reviewThreads.map((thread) => (
-              <ReviewThread
-                detail={detail}
-                key={thread.id}
-                pending={reply.isPending || resolve.isPending}
-                thread={thread}
-                onReply={sendReply}
-                onResolve={toggleResolved}
-              />
-            ))}
             {detail.commentsTruncated ? (
               <p className="text-xs text-muted-foreground">
                 GitHub returned the most recent {detail.comments.length} of {detail.commentCount}{" "}
@@ -978,7 +978,7 @@ export function PullRequestDetailPanel({
                 </ul>
               </section>
             ) : null}
-            {detail.comments.length === 0 && detail.reviewThreads.length === 0 ? (
+            {detail.comments.every((item) => item.kind === "review-comment") ? (
               <p className="text-sm text-muted-foreground">No conversation yet.</p>
             ) : null}
           </div>

@@ -306,9 +306,6 @@ export const make = Effect.gen(function* () {
 
     getDiff: (input) => cli.getPullRequestDiff(input).pipe(Effect.mapError(fail("getDiff"))),
 
-    getDiffFileContents: (input) =>
-      cli.getPullRequestDiffFileContents(input).pipe(Effect.mapError(fail("getDiffFileContents"))),
-
     listReviewerCandidates: (input) =>
       cli.listReviewerCandidates(input).pipe(Effect.mapError(fail("listReviewerCandidates"))),
 

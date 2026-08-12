@@ -171,11 +171,6 @@ export interface ProviderDiffSlice {
   readonly nextCursor: string | null;
 }
 
-export interface ProviderDiffFileContents {
-  readonly oldContents: string;
-  readonly newContents: string;
-}
-
 export interface ProviderRepositoryRef {
   readonly cwd: string;
   /** Provider-native repository identity, e.g. `owner/repo` or `group/subgroup/project`. */
@@ -301,20 +296,6 @@ export interface PullRequestProviderApi {
       readonly commit?: string | undefined;
     },
   ) => Effect.Effect<ProviderDiffSlice, PullRequestProviderError>;
-
-  /**
-   * Full files at the exact revisions the host used for its patch. Optional where the provider
-   * exposes no diff at all; the service refuses expansion there just as it refuses the patch.
-   */
-  readonly getDiffFileContents?: (
-    input: ProviderRepositoryRef & {
-      readonly number: number;
-      readonly commit?: string | undefined;
-      readonly changeType: "change" | "rename-pure" | "rename-changed" | "new" | "deleted";
-      readonly oldPath: string;
-      readonly newPath: string;
-    },
-  ) => Effect.Effect<ProviderDiffFileContents, PullRequestProviderError>;
 
   readonly runAction: (
     input: ProviderRepositoryRef & {

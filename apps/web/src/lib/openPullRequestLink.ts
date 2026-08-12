@@ -1,5 +1,6 @@
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import type { Project } from "../types";
 
 export interface InternalPullRequestNavigation {
   readonly host: string;
@@ -9,6 +10,27 @@ export interface InternalPullRequestNavigation {
 }
 
 export const INTERNAL_PULL_REQUEST_NAVIGATION_EVENT = "t3:open-pull-request";
+
+export function findGitHubPullRequestProject(
+  projects: readonly Project[],
+  input: {
+    readonly environmentId: Project["environmentId"] | null | undefined;
+    readonly host: string | null | undefined;
+    readonly repository: string;
+  },
+): Project | undefined {
+  const repository = input.repository.toLowerCase();
+  const canonicalKey = input.host ? `${input.host}/${input.repository}`.toLowerCase() : undefined;
+
+  return projects.find(
+    (project) =>
+      (input.environmentId === undefined || project.environmentId === input.environmentId) &&
+      project.repositoryIdentity?.provider === "github" &&
+      (canonicalKey
+        ? project.repositoryIdentity.canonicalKey.toLowerCase() === canonicalKey
+        : project.repositoryIdentity.displayName?.toLowerCase() === repository),
+  );
+}
 
 export function githubPullRequestNavigation(url: string): InternalPullRequestNavigation | null {
   try {

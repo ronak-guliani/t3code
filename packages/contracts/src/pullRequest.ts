@@ -522,17 +522,6 @@ export const PullRequestActivity = Schema.Struct({
 });
 export type PullRequestActivity = typeof PullRequestActivity.Type;
 
-/** The complete detail shape after the independently loaded activity has been applied. */
-export const PullRequestDetailView = Schema.Struct({
-  ...PullRequestDetail.fields,
-  ...PullRequestActivity.fields,
-  // A composed view always has the core identity fields, even when the activity did not enrich
-  // them. Re-declare them as required after the activity's optional overrides.
-  author: Schema.NullOr(PullRequestActor),
-  reviewers: Schema.Array(PullRequestActor),
-});
-export type PullRequestDetailView = typeof PullRequestDetailView.Type;
-
 /**
  * A diff arrives a slice at a time, because a large change is more than any host will hand over
  * at once — GitHub refuses outright past 300 files — and more than a viewer can lay out in one
@@ -566,27 +555,6 @@ export const PullRequestDiffResult = Schema.Struct({
 });
 export type PullRequestDiffResult = typeof PullRequestDiffResult.Type;
 
-/** The complete old and new files Pierre needs to open omitted context in a host-backed patch. */
-// GitHub paths fit below POSIX's PATH_MAX. Bounding them, together with ten 64 KiB bodies, keeps
-// the review body and inline drafts below one MiB before JSON framing.
-const PullRequestFilePath = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
-
-export const PullRequestDiffFileContentsInput = Schema.Struct({
-  ...PullRequestRef.fields,
-  /** One commit's own comparison; absent means the whole change request. */
-  commit: Schema.optional(TrimmedNonEmptyString),
-  changeType: Schema.Literals(["change", "rename-pure", "rename-changed", "new", "deleted"]),
-  oldPath: PullRequestFilePath,
-  newPath: PullRequestFilePath,
-});
-export type PullRequestDiffFileContentsInput = typeof PullRequestDiffFileContentsInput.Type;
-
-export const PullRequestDiffFileContentsResult = Schema.Struct({
-  oldContents: Schema.String,
-  newContents: Schema.String,
-});
-export type PullRequestDiffFileContentsResult = typeof PullRequestDiffFileContentsResult.Type;
-
 export const PullRequestActionInput = Schema.Struct({
   ...PullRequestRef.fields,
   action: PullRequestAction,
@@ -607,6 +575,10 @@ export const PullRequestCommentInput = Schema.Struct({
   body: CommentBody,
 });
 export type PullRequestCommentInput = typeof PullRequestCommentInput.Type;
+
+// GitHub paths fit below POSIX's PATH_MAX. Bounding them, together with ten 64 KiB bodies, keeps
+// the review body and inline drafts below one MiB before JSON framing.
+const PullRequestFilePath = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
 
 /** One remark in a review that has not been sent yet, anchored to a line of the diff. */
 export const PullRequestReviewCommentDraft = Schema.Struct({

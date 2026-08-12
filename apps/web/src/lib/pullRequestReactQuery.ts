@@ -4,13 +4,10 @@ import type {
   PullRequestActivity,
   PullRequestCommentInput,
   PullRequestDetail,
-  PullRequestDiffFileContentsInput,
-  PullRequestDiffFileContentsResult,
   PullRequestDiffInput,
   PullRequestDiffResult,
   PullRequestInvalidateInput,
   PullRequestListInput,
-  PullRequestListResult,
   PullRequestListStatsInput,
   PullRequestListStatsResult,
   PullRequestRef,
@@ -80,17 +77,6 @@ export const pullRequestQueryKeys = {
       reference.repository,
       reference.number,
     ] as const,
-  diff: (environmentId: EnvironmentId | null, input: PullRequestDiffInput) =>
-    [
-      "pull-requests",
-      environmentId ?? null,
-      "diff",
-      input.projectId,
-      input.repository,
-      input.number,
-      input.commit ?? null,
-      input.cursor ?? null,
-    ] as const,
   diffInfinite: (
     environmentId: EnvironmentId | null,
     input: Omit<PullRequestDiffInput, "cursor">,
@@ -103,22 +89,6 @@ export const pullRequestQueryKeys = {
       input.repository,
       input.number,
       input.commit ?? null,
-    ] as const,
-  diffFileContents: (
-    environmentId: EnvironmentId | null,
-    input: PullRequestDiffFileContentsInput,
-  ) =>
-    [
-      "pull-requests",
-      environmentId ?? null,
-      "diff-file-contents",
-      input.projectId,
-      input.repository,
-      input.number,
-      input.commit ?? null,
-      input.changeType,
-      input.oldPath,
-      input.newPath,
     ] as const,
   reviewerCandidates: (environmentId: EnvironmentId | null, reference: PullRequestRef) =>
     [
@@ -155,30 +125,15 @@ function requirePullRequestApi(environmentId: EnvironmentId | null) {
   return ensureEnvironmentApi(environmentId).pullRequests;
 }
 
-export function pullRequestListQueryOptions(input: {
-  readonly environmentId: EnvironmentId | null;
-  readonly request: PullRequestListInput;
-  readonly enabled?: boolean;
-}) {
-  return queryOptions<PullRequestListResult>({
-    queryKey: pullRequestQueryKeys.list(input.environmentId, input.request),
-    queryFn: () => requirePullRequestApi(input.environmentId).list(input.request),
-    enabled: input.environmentId !== null && (input.enabled ?? true),
-    staleTime: PULL_REQUEST_STALE_TIME_MS,
-    refetchOnWindowFocus: true,
-    refetchOnReconnect: true,
-  });
-}
-
 export function pullRequestListInfiniteQueryOptions(input: {
   readonly environmentId: EnvironmentId | null;
   readonly request: Omit<PullRequestListInput, "cursors">;
   readonly enabled?: boolean;
 }) {
-  type ListPageParam =
-    | { readonly kind: "cursors"; readonly cursors: PullRequestListInput["cursors"] }
-    | { readonly kind: "limit"; readonly limit: number }
-    | null;
+  type ListPageParam = {
+    readonly kind: "cursors";
+    readonly cursors: PullRequestListInput["cursors"];
+  } | null;
 
   return infiniteQueryOptions({
     queryKey: pullRequestQueryKeys.list(input.environmentId, input.request),
@@ -187,19 +142,12 @@ export function pullRequestListInfiniteQueryOptions(input: {
       requirePullRequestApi(input.environmentId).list({
         ...input.request,
         ...(pageParam?.kind === "cursors" ? { cursors: pageParam.cursors } : {}),
-        ...(pageParam?.kind === "limit" ? { limit: pageParam.limit } : {}),
       }),
-    getNextPageParam: (lastPage, _allPages, lastPageParam) => {
+    getNextPageParam: (lastPage) => {
       if (Object.keys(lastPage.nextCursors).length > 0) {
         return { kind: "cursors", cursors: lastPage.nextCursors } as const;
       }
-      if (!lastPage.truncated) {
-        return undefined;
-      }
-      const currentLimit =
-        lastPageParam?.kind === "limit" ? lastPageParam.limit : (input.request.limit ?? 99);
-      const nextLimit = Math.min(currentLimit * 2, 500);
-      return nextLimit > currentLimit ? ({ kind: "limit", limit: nextLimit } as const) : undefined;
+      return undefined;
     },
     enabled: input.environmentId !== null && (input.enabled ?? true),
     staleTime: PULL_REQUEST_STALE_TIME_MS,
@@ -293,24 +241,6 @@ export async function fetchPullRequestDiff(input: {
   return decodePullRequestDiff(await response.json());
 }
 
-export function pullRequestDiffQueryOptions(input: {
-  readonly environmentId: EnvironmentId | null;
-  readonly request: PullRequestDiffInput;
-  readonly enabled?: boolean;
-}) {
-  return queryOptions<PullRequestDiffResult>({
-    queryKey: pullRequestQueryKeys.diff(input.environmentId, input.request),
-    queryFn: () => {
-      if (!input.environmentId) {
-        throw new Error("Pull request diffs are unavailable.");
-      }
-      return fetchPullRequestDiff({ environmentId: input.environmentId, request: input.request });
-    },
-    enabled: input.environmentId !== null && (input.enabled ?? true),
-    staleTime: PULL_REQUEST_STALE_TIME_MS,
-  });
-}
-
 export function pullRequestDiffInfiniteQueryOptions(input: {
   readonly environmentId: EnvironmentId | null;
   readonly request: Omit<PullRequestDiffInput, "cursor">;
@@ -337,19 +267,6 @@ export function pullRequestDiffInfiniteQueryOptions(input: {
   });
 }
 
-export function pullRequestDiffFileContentsQueryOptions(input: {
-  readonly environmentId: EnvironmentId | null;
-  readonly request: PullRequestDiffFileContentsInput;
-  readonly enabled?: boolean;
-}) {
-  return queryOptions<PullRequestDiffFileContentsResult>({
-    queryKey: pullRequestQueryKeys.diffFileContents(input.environmentId, input.request),
-    queryFn: () => requirePullRequestApi(input.environmentId).diffFileContents(input.request),
-    enabled: input.environmentId !== null && (input.enabled ?? true),
-    staleTime: PULL_REQUEST_STALE_TIME_MS,
-  });
-}
-
 export function pullRequestReviewerCandidatesQueryOptions(input: {
   readonly environmentId: EnvironmentId | null;
   readonly reference: PullRequestRef;
@@ -366,13 +283,59 @@ export function pullRequestReviewerCandidatesQueryOptions(input: {
 export function invalidatePullRequestQueries(
   queryClient: QueryClient,
   environmentId: EnvironmentId | null,
+  reference: PullRequestRef,
+  options: {
+    readonly includeDiff?: boolean;
+    readonly includeListings?: boolean;
+  } = {},
 ) {
-  return queryClient.invalidateQueries({
-    queryKey: pullRequestQueryKeys.environment(environmentId),
-  });
+  const invalidations = [
+    queryClient.invalidateQueries({
+      queryKey: pullRequestQueryKeys.detail(environmentId, reference),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: pullRequestQueryKeys.activity(environmentId, reference),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: pullRequestQueryKeys.reviewerCandidates(environmentId, reference),
+    }),
+  ];
+  if (options.includeDiff) {
+    invalidations.push(
+      queryClient.invalidateQueries({
+        queryKey: [
+          ...pullRequestQueryKeys.environment(environmentId),
+          "diff",
+          reference.projectId,
+          reference.repository,
+          reference.number,
+        ],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: [
+          ...pullRequestQueryKeys.environment(environmentId),
+          "diff-infinite",
+          reference.projectId,
+          reference.repository,
+          reference.number,
+        ],
+      }),
+    );
+  }
+  if (options.includeListings) {
+    invalidations.push(
+      queryClient.invalidateQueries({
+        queryKey: [...pullRequestQueryKeys.environment(environmentId), "list"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: [...pullRequestQueryKeys.environment(environmentId), "list-stats"],
+      }),
+    );
+  }
+  return Promise.all(invalidations);
 }
 
-function pullRequestMutationOptions<TInput>(input: {
+function pullRequestMutationOptions<TInput extends PullRequestRef>(input: {
   readonly environmentId: EnvironmentId | null;
   readonly queryClient: QueryClient;
   readonly mutationKey: readonly unknown[];
@@ -380,12 +343,20 @@ function pullRequestMutationOptions<TInput>(input: {
     api: ReturnType<typeof requirePullRequestApi>,
     value: TInput,
   ) => Promise<void>;
+  readonly invalidation?: {
+    readonly includeDiff?: boolean;
+    readonly includeListings?: boolean;
+  };
 }) {
   return mutationOptions({
     mutationKey: input.mutationKey,
     mutationFn: (value: TInput) =>
       input.mutationFn(requirePullRequestApi(input.environmentId), value),
-    onSuccess: () => invalidatePullRequestQueries(input.queryClient, input.environmentId),
+    onSuccess: (_result, value) =>
+      invalidatePullRequestQueries(input.queryClient, input.environmentId, value, {
+        ...(input.invalidation?.includeDiff ? { includeDiff: true } : {}),
+        ...(input.invalidation?.includeListings ? { includeListings: true } : {}),
+      }),
   });
 }
 
@@ -397,6 +368,7 @@ export function pullRequestRunActionMutationOptions(input: {
     ...input,
     mutationKey: pullRequestMutationKeys.runAction(input.environmentId),
     mutationFn: (api, value) => api.runAction(value),
+    invalidation: { includeListings: true },
   });
 }
 
@@ -459,9 +431,29 @@ export function pullRequestInvalidateMutationOptions(input: {
   readonly environmentId: EnvironmentId | null;
   readonly queryClient: QueryClient;
 }) {
-  return pullRequestMutationOptions<PullRequestInvalidateInput>({
-    ...input,
+  return mutationOptions({
     mutationKey: pullRequestMutationKeys.invalidate(input.environmentId),
-    mutationFn: (api, value) => api.invalidate(value),
+    mutationFn: (value: PullRequestInvalidateInput) =>
+      requirePullRequestApi(input.environmentId).invalidate(value),
+    onSuccess: (_result, value) => {
+      if (value.reference) {
+        return invalidatePullRequestQueries(
+          input.queryClient,
+          input.environmentId,
+          value.reference,
+          {
+            includeDiff: true,
+          },
+        );
+      }
+      return Promise.all([
+        input.queryClient.invalidateQueries({
+          queryKey: [...pullRequestQueryKeys.environment(input.environmentId), "list"],
+        }),
+        input.queryClient.invalidateQueries({
+          queryKey: [...pullRequestQueryKeys.environment(input.environmentId), "list-stats"],
+        }),
+      ]);
+    },
   });
 }

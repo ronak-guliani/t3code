@@ -66,7 +66,6 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       listStats: rpcClient.pullRequests.listStats,
       detail: rpcClient.pullRequests.detail,
       activity: rpcClient.pullRequests.activity,
-      diffFileContents: rpcClient.pullRequests.diffFileContents,
       runAction: rpcClient.pullRequests.runAction,
       comment: rpcClient.pullRequests.comment,
       submitReview: rpcClient.pullRequests.submitReview,

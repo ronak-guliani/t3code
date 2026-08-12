@@ -109,8 +109,6 @@ import type {
   PullRequestActivity,
   PullRequestCommentInput,
   PullRequestDetail,
-  PullRequestDiffFileContentsInput,
-  PullRequestDiffFileContentsResult,
   PullRequestInvalidateInput,
   PullRequestListInput,
   PullRequestListResult,
@@ -996,9 +994,6 @@ export interface EnvironmentApi {
     listStats: (input: PullRequestListStatsInput) => Promise<PullRequestListStatsResult>;
     detail: (input: PullRequestRef) => Promise<PullRequestDetail>;
     activity: (input: PullRequestRef) => Promise<PullRequestActivity>;
-    diffFileContents: (
-      input: PullRequestDiffFileContentsInput,
-    ) => Promise<PullRequestDiffFileContentsResult>;
     runAction: (input: PullRequestActionInput) => Promise<void>;
     comment: (input: PullRequestCommentInput) => Promise<void>;
     submitReview: (input: PullRequestSubmitReviewInput) => Promise<void>;

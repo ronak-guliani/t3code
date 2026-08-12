@@ -140,7 +140,6 @@ export interface WsRpcClient {
     readonly listStats: RpcUnaryMethod<typeof WS_METHODS.pullRequestsListStats>;
     readonly detail: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDetail>;
     readonly activity: RpcUnaryMethod<typeof WS_METHODS.pullRequestsActivity>;
-    readonly diffFileContents: RpcUnaryMethod<typeof WS_METHODS.pullRequestsDiffFileContents>;
     readonly runAction: RpcUnaryMethod<typeof WS_METHODS.pullRequestsRunAction>;
     readonly comment: RpcUnaryMethod<typeof WS_METHODS.pullRequestsComment>;
     readonly submitReview: RpcUnaryMethod<typeof WS_METHODS.pullRequestsSubmitReview>;
@@ -345,8 +344,6 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.pullRequestsDetail](input)),
       activity: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsActivity](input)),
-      diffFileContents: (input) =>
-        transport.request((client) => client[WS_METHODS.pullRequestsDiffFileContents](input)),
       runAction: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsRunAction](input)),
       comment: (input) =>

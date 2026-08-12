@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, type PullRequestListResult } from "@t3tools/contracts";
 
 import {
   pullRequestDiffInfiniteQueryOptions,
@@ -36,6 +36,23 @@ describe("pullRequestReactQuery", () => {
     expect(options.queryKey).toEqual(
       pullRequestQueryKeys.list(ENVIRONMENT_ID, { state: "open", projectId: PROJECT_ID }),
     );
+  });
+
+  it("stops a cursorless truncated listing", () => {
+    const options = pullRequestListInfiniteQueryOptions({
+      environmentId: ENVIRONMENT_ID,
+      request: { state: "open", projectId: PROJECT_ID },
+    });
+    const page = {
+      viewers: {},
+      providers: [],
+      entries: [],
+      errors: [],
+      truncated: true,
+      nextCursors: {},
+    } satisfies PullRequestListResult;
+
+    expect(options.getNextPageParam(page, [page], null, [null])).toBeUndefined();
   });
 
   it("does not put diff continuation cursors in the infinite query key", () => {

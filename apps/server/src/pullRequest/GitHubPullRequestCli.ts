@@ -135,48 +135,6 @@ export class GitHubDiffCommitError extends Schema.TaggedErrorClass<GitHubDiffCom
   }
 }
 
-/** The revisions read successfully, but cannot name both sides this file needs. */
-export class GitHubDiffRevisionsUnavailableError extends Schema.TaggedErrorClass<GitHubDiffRevisionsUnavailableError>()(
-  "GitHubDiffRevisionsUnavailableError",
-  {
-    command: Schema.Literal("gh"),
-    cwd: Schema.String,
-    number: Schema.Int,
-    commit: Schema.optional(Schema.String),
-  },
-) {
-  get detail(): string {
-    return this.commit === undefined
-      ? `Pull request #${this.number} reported no usable base and head revisions.`
-      : `Commit ${this.commit} reported no usable revisions for this file.`;
-  }
-
-  override get message(): string {
-    return `GitHub CLI failed in getPullRequestDiffFileContents: ${this.detail}`;
-  }
-}
-
-/** A blob exists, but expanding it would be unsafe or would not produce text. */
-export class GitHubDiffFileContentsUnavailableError extends Schema.TaggedErrorClass<GitHubDiffFileContentsUnavailableError>()(
-  "GitHubDiffFileContentsUnavailableError",
-  {
-    command: Schema.Literal("gh"),
-    cwd: Schema.String,
-    path: Schema.String,
-    reason: Schema.Literals(["oversized", "binary"]),
-  },
-) {
-  get detail(): string {
-    return this.reason === "oversized"
-      ? `The diff file '${this.path}' exceeds the 1 MB expansion limit.`
-      : `The diff file '${this.path}' is binary.`;
-  }
-
-  override get message(): string {
-    return `GitHub CLI failed in getPullRequestDiffFileContents: ${this.detail}`;
-  }
-}
-
 /**
  * Not a decode failure: a repository was named that cannot go into a search or into a GraphQL
  * document as itself. Every qualifier and every alias below is composed from `owner/name`, so a
@@ -205,17 +163,12 @@ export type GitHubPullRequestCliError =
   | GitHubPullRequestReadError
   | GitHubDiffCursorError
   | GitHubDiffCommitError
-  | GitHubDiffRevisionsUnavailableError
-  | GitHubDiffFileContentsUnavailableError
   | GitHubRepositorySelectorError
   | GitHubViewerLoginUnavailableError;
 
 /** A large pull request can produce a multi-megabyte patch; past this it is truncated. */
 const DIFF_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const DIFF_TIMEOUT_MS = 60_000;
-/** Pierre expansion is for source files, not blobs large enough to stall a review surface. */
-const DIFF_FILE_MAX_OUTPUT_BYTES = 1024 * 1024;
-
 /** A search-free fallback may scan older rows for local filters, but never the whole repository. */
 const PULL_REQUEST_FALLBACK_MAX_ROWS = 1_000;
 
@@ -347,20 +300,6 @@ export class GitHubPullRequestCli extends Context.Service<
       /** One commit's own changes, rather than everything the pull request carries. */
       readonly commit?: string | undefined;
     }) => Effect.Effect<GitHubPullRequestDiffSlice, GitHubPullRequestCliError>;
-
-    readonly getPullRequestDiffFileContents: (input: {
-      readonly cwd: string;
-      readonly repository: string;
-      readonly host: string;
-      readonly number: number;
-      readonly commit?: string | undefined;
-      readonly changeType: "change" | "rename-pure" | "rename-changed" | "new" | "deleted";
-      readonly oldPath: string;
-      readonly newPath: string;
-    }) => Effect.Effect<
-      { readonly oldContents: string; readonly newContents: string },
-      GitHubPullRequestCliError
-    >;
 
     readonly listReviewThreadComments: (input: {
       readonly cwd: string;
@@ -803,96 +742,6 @@ export const make = Effect.gen(function* () {
       );
   };
 
-  const getPullRequestDiffFileContents: GitHubPullRequestCli["Service"]["getPullRequestDiffFileContents"] =
-    (input) =>
-      Effect.gen(function* () {
-        if (input.commit !== undefined && !isCommitSha(input.commit)) {
-          return yield* new GitHubDiffCommitError({ command: "gh", cwd: input.cwd });
-        }
-        const { owner, name } = parseRepositorySelector(input.repository);
-        const refsResult = yield* github.execute({
-          cwd: input.cwd,
-          args: [
-            "api",
-            "--hostname",
-            input.host,
-            input.commit === undefined
-              ? `repos/${owner}/${name}/pulls/${input.number}`
-              : `repos/${owner}/${name}/commits/${input.commit}`,
-            "--jq",
-            input.commit === undefined
-              ? "[.base.sha, .head.sha] | @tsv"
-              : "[.parents[0].sha, .sha] | @tsv",
-          ],
-          maxOutputBytes: 1024,
-          truncateOutputAtMaxBytes: true,
-          timeoutMs: DIFF_TIMEOUT_MS,
-        });
-        // Keep a leading tab: a root commit has no parent, and jq represents that absent old
-        // revision as the empty field before the tab. Every file in it is new, so that is a
-        // usable answer whenever the caller does not need the old side.
-        const [baseRef, headRef, ...extraRefs] = refsResult.stdout.trimEnd().split("\t");
-        const rootCommitNewFile =
-          input.commit !== undefined && input.changeType === "new" && baseRef === "";
-        if (
-          refsResult.stdoutTruncated ||
-          !headRef ||
-          extraRefs.length > 0 ||
-          (!rootCommitNewFile && (baseRef === undefined || !isCommitSha(baseRef))) ||
-          !isCommitSha(headRef)
-        ) {
-          return yield* new GitHubDiffRevisionsUnavailableError({
-            command: "gh",
-            cwd: input.cwd,
-            number: input.number,
-            ...(input.commit === undefined ? {} : { commit: input.commit }),
-          });
-        }
-
-        const readFile = (revision: string, filePath: string) =>
-          github
-            .execute({
-              cwd: input.cwd,
-              args: [
-                "api",
-                "--hostname",
-                input.host,
-                "--header",
-                "Accept: application/vnd.github.raw+json",
-                `repos/${owner}/${name}/contents/${filePath
-                  .split("/")
-                  .map(encodeURIComponent)
-                  .join("/")}?ref=${encodeURIComponent(revision)}`,
-              ],
-              maxOutputBytes: DIFF_FILE_MAX_OUTPUT_BYTES,
-              truncateOutputAtMaxBytes: true,
-              timeoutMs: DIFF_TIMEOUT_MS,
-            })
-            .pipe(
-              Effect.flatMap((result) =>
-                result.stdoutTruncated || result.stdout.includes("\0")
-                  ? Effect.fail(
-                      new GitHubDiffFileContentsUnavailableError({
-                        command: "gh",
-                        cwd: input.cwd,
-                        path: filePath,
-                        reason: result.stdoutTruncated ? "oversized" : "binary",
-                      }),
-                    )
-                  : Effect.succeed(result.stdout),
-              ),
-            );
-
-        const [oldContents, newContents] = yield* Effect.all(
-          [
-            input.changeType === "new" ? Effect.succeed("") : readFile(baseRef, input.oldPath),
-            input.changeType === "deleted" ? Effect.succeed("") : readFile(headRef, input.newPath),
-          ],
-          { concurrency: 2 },
-        );
-        return { oldContents, newContents };
-      });
-
   return GitHubPullRequestCli.of({
     getViewerLogin: (input) =>
       github
@@ -1175,8 +1024,6 @@ export const make = Effect.gen(function* () {
           Effect.catch((error) => filesPage(1).pipe(Effect.catch(() => Effect.fail(error)))),
         );
     },
-
-    getPullRequestDiffFileContents,
 
     listReviewThreadComments: (input) =>
       Effect.gen(function* () {

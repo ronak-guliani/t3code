@@ -1,9 +1,4 @@
-import type {
-  ProjectId,
-  PullRequestInvolvement,
-  PullRequestListEntry,
-  PullRequestListState,
-} from "@t3tools/contracts";
+import type { ProjectId, PullRequestInvolvement, PullRequestListState } from "@t3tools/contracts";
 import { useInfiniteQuery, useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { GitPullRequestIcon, LoaderCircleIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
@@ -19,6 +14,7 @@ import {
   pullRequestListInfiniteQueryOptions,
   pullRequestListStatsQueryOptions,
 } from "../lib/pullRequestReactQuery";
+import { findGitHubPullRequestProject } from "../lib/openPullRequestLink";
 import { cn } from "../lib/utils";
 import { selectProjectsAcrossEnvironments, useStore } from "../store";
 import type { Project } from "../types";
@@ -28,6 +24,7 @@ export interface PullRequestsSearch {
   readonly involvement: PullRequestInvolvement;
   readonly projectId?: ProjectId;
   readonly q?: string;
+  readonly host?: string;
   readonly repository?: string;
   readonly number?: number;
   readonly selectedProjectId?: ProjectId;
@@ -58,6 +55,7 @@ export const Route = createFileRoute("/_chat/pull-requests")({
       ? { projectId: search.projectId as ProjectId }
       : {}),
     ...(typeof search.q === "string" && search.q.trim() ? { q: search.q.slice(0, 200) } : {}),
+    ...(typeof search.host === "string" && search.host ? { host: search.host.slice(0, 300) } : {}),
     ...(typeof search.repository === "string" && search.repository
       ? { repository: search.repository.slice(0, 300) }
       : {}),
@@ -101,17 +99,10 @@ function PullRequestsRoute() {
       },
     }),
   );
-  const entries = useMemo(() => {
-    const deduped = new Map<string, PullRequestListEntry>();
-    for (const page of listQuery.data?.pages ?? []) {
-      for (const entry of page.entries) {
-        deduped.set(`${entry.projectId}:${entry.repository}#${entry.number}`, entry);
-      }
-    }
-    return [...deduped.values()].toSorted((left, right) =>
-      right.updatedAt.localeCompare(left.updatedAt),
-    );
-  }, [listQuery.data?.pages]);
+  const entries = useMemo(
+    () => listQuery.data?.pages.flatMap((page) => page.entries) ?? [],
+    [listQuery.data?.pages],
+  );
   const statReferenceBatches = useMemo(
     () =>
       Array.from({ length: Math.ceil(entries.length / STATS_BATCH_SIZE) }, (_, index) =>
@@ -166,20 +157,13 @@ function PullRequestsRoute() {
     if (explicitSelection || !repository || !number) {
       return null;
     }
-    const listed = entriesWithStats.find(
-      (entry) =>
-        entry.number === number && entry.repository.toLowerCase() === repository.toLowerCase(),
-    );
-    if (listed) {
-      return listed;
-    }
-    const project = projects.find(
-      (candidate) =>
-        candidate.repositoryIdentity?.provider === "github" &&
-        candidate.repositoryIdentity.displayName?.toLowerCase() === repository.toLowerCase(),
-    );
+    const project = findGitHubPullRequestProject(projects, {
+      environmentId,
+      host: search.host,
+      repository,
+    });
     return project ? { projectId: project.id, repository, number } : null;
-  }, [entriesWithStats, explicitSelection, projects, search.number, search.repository]);
+  }, [environmentId, explicitSelection, projects, search.host, search.number, search.repository]);
   const selected = explicitSelection ?? inferredSelection;
   const updateSearch = (patch: PullRequestsSearchPatch, clearSelection = false) => {
     void navigate({
@@ -192,6 +176,7 @@ function PullRequestsRoute() {
           ...(next.q ? { q: next.q } : {}),
           ...(!clearSelection && next.repository && next.number && next.selectedProjectId
             ? {
+                ...(next.host ? { host: next.host } : {}),
                 repository: next.repository,
                 number: next.number,
                 selectedProjectId: next.selectedProjectId,

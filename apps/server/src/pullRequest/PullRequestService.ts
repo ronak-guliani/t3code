@@ -15,8 +15,6 @@ import {
   type PullRequestActivity,
   type PullRequestCommentInput,
   type PullRequestDetail,
-  type PullRequestDiffFileContentsInput,
-  type PullRequestDiffFileContentsResult,
   type PullRequestDiffStat,
   type PullRequestDiffInput,
   type PullRequestDiffResult,
@@ -102,8 +100,6 @@ const DETAIL_STALE_WINDOW = Duration.minutes(5);
 const DIFF_STALE_WINDOW = Duration.minutes(10);
 /** How long one host's signed-in login is believed without asking its CLI again. */
 const VIEWER_CACHE_TTL = Duration.minutes(10);
-/** A file expansion may walk paged diffs, but never an unbounded host-controlled cursor chain. */
-const DIFF_FILE_PROOF_MAX_PAGES = 100;
 const LIST_CACHE_CAPACITY = 64;
 const LIST_STATS_CACHE_CAPACITY = 32;
 const DETAIL_CACHE_CAPACITY = 128;
@@ -127,9 +123,6 @@ export class PullRequestService extends Context.Service<
     readonly diff: (
       input: PullRequestDiffInput,
     ) => Effect.Effect<PullRequestDiffResult, PullRequestError>;
-    readonly diffFileContents: (
-      input: PullRequestDiffFileContentsInput,
-    ) => Effect.Effect<PullRequestDiffFileContentsResult, PullRequestError>;
     readonly runAction: (input: PullRequestActionInput) => Effect.Effect<void, PullRequestError>;
     readonly comment: (input: PullRequestCommentInput) => Effect.Effect<void, PullRequestError>;
     readonly submitReview: (
@@ -353,76 +346,6 @@ function pullRequestHostOf(
 ): string {
   const host = identity?.canonicalKey?.split("/")[0]?.trim();
   return host === undefined || host.length === 0 ? "github" : host.toLowerCase();
-}
-
-interface DiffFilePaths {
-  readonly oldPath: string | null;
-  readonly newPath: string | null;
-}
-
-function pathFromDiffMarker(value: string, prefix: "a/" | "b/"): string | null {
-  const path = value.split("\t", 1)[0];
-  if (path === undefined || path === "/dev/null") return null;
-  return path.startsWith(prefix) ? path.slice(prefix.length) : null;
-}
-
-/**
- * Extracts unambiguous file identities from unified-diff sections. The REST fallback emits these
- * headers even for binary files and pure renames, so this proves membership without trusting a
- * caller-provided path.
- */
-function diffFilePaths(patch: string): ReadonlyArray<DiffFilePaths> {
-  const normalized = patch.replaceAll("\r\n", "\n");
-  const boundaries = [...normalized.matchAll(/^diff --git a\/(.+) b\/(.+)$/gmu)];
-  return boundaries.flatMap((boundary, index): ReadonlyArray<DiffFilePaths> => {
-    const oldPath = boundary[1];
-    const newPath = boundary[2];
-    if (oldPath === undefined || newPath === undefined) return [];
-    const start = boundary.index ?? 0;
-    const end = boundaries[index + 1]?.index ?? normalized.length;
-    const section = normalized.slice(start, end);
-    const oldMarker = /^--- (.+)$/mu.exec(section)?.[1];
-    const newMarker = /^\+\+\+ (.+)$/mu.exec(section)?.[1];
-    // A pure rename has no ---/+++ pair; its ordinary, unquoted header is still enough.
-    if (oldMarker === undefined && newMarker === undefined) {
-      return oldPath.includes('"') || newPath.includes('"') ? [] : [{ oldPath, newPath }];
-    }
-    if (oldMarker === undefined || newMarker === undefined) return [];
-    return [
-      {
-        oldPath: pathFromDiffMarker(oldMarker, "a/"),
-        newPath: pathFromDiffMarker(newMarker, "b/"),
-      },
-    ];
-  });
-}
-
-function matchesDiffFile(
-  file: DiffFilePaths,
-  input: Pick<PullRequestDiffFileContentsInput, "changeType" | "oldPath" | "newPath">,
-): boolean {
-  switch (input.changeType) {
-    case "new":
-      return file.oldPath === null && file.newPath === input.newPath;
-    case "deleted":
-      return file.oldPath === input.oldPath && file.newPath === null;
-    case "change":
-      return file.oldPath === input.oldPath && file.newPath === input.newPath;
-    case "rename-pure":
-    case "rename-changed":
-      return (
-        file.oldPath === input.oldPath &&
-        file.newPath === input.newPath &&
-        file.oldPath !== file.newPath
-      );
-  }
-}
-
-function patchContainsDiffFile(
-  patch: string,
-  input: Pick<PullRequestDiffFileContentsInput, "changeType" | "oldPath" | "newPath">,
-): boolean {
-  return diffFilePaths(patch).some((file) => matchesDiffFile(file, input));
 }
 
 export const make = Effect.gen(function* () {
@@ -1025,58 +948,6 @@ export const make = Effect.gen(function* () {
                 detail: "This host cannot provide a diff for a change request.",
               }),
             ),
-      ),
-    );
-
-  const diffFileContents: PullRequestService["Service"]["diffFileContents"] = (input) =>
-    requireProject(input).pipe(
-      Effect.flatMap(
-        (project): Effect.Effect<PullRequestDiffFileContentsResult, PullRequestError> => {
-          const getDiffFileContents = project.api.getDiffFileContents;
-          if (!project.api.capabilities.diff || getDiffFileContents === undefined) {
-            return Effect.fail(
-              new PullRequestOperationError({
-                operation: "diffFileContents",
-                detail: "This host cannot expand files from a change request diff.",
-              }),
-            );
-          }
-          return Effect.gen(function* () {
-            const cursors = new Set<string>();
-            let cursor: string | undefined;
-            for (let page = 0; page < DIFF_FILE_PROOF_MAX_PAGES; page += 1) {
-              const diff = yield* project.api
-                .getDiff({
-                  cwd: project.project.workspaceRoot,
-                  repository: project.repository,
-                  host: project.host,
-                  number: input.number,
-                  ...(cursor === undefined ? {} : { cursor }),
-                  ...(input.commit === undefined ? {} : { commit: input.commit }),
-                })
-                .pipe(Effect.mapError(toPullRequestError("diffFileContents")));
-              if (patchContainsDiffFile(diff.patch, input)) {
-                return yield* getDiffFileContents({
-                  cwd: project.project.workspaceRoot,
-                  repository: project.repository,
-                  host: project.host,
-                  number: input.number,
-                  ...(input.commit === undefined ? {} : { commit: input.commit }),
-                  changeType: input.changeType,
-                  oldPath: input.oldPath,
-                  newPath: input.newPath,
-                }).pipe(Effect.mapError(toPullRequestError("diffFileContents")));
-              }
-              if (diff.nextCursor === null || cursors.has(diff.nextCursor)) break;
-              cursors.add(diff.nextCursor);
-              cursor = diff.nextCursor;
-            }
-            return yield* new PullRequestOperationError({
-              operation: "diffFileContents",
-              detail: "The requested file is not in this change request diff.",
-            });
-          });
-        },
       ),
     );
 
@@ -1744,18 +1615,19 @@ export const make = Effect.gen(function* () {
     });
 
   // A mutation's own client re-reads right after it, and every other client's next read must
-  // see the action too — so a write forgets the change request it touched and the listings its
-  // state change reorders, for everyone, without any client asking.
+  // see the affected pull request. Only state-changing actions can move a row between listings
+  // or change its order, so the conversation and reviewer writes leave those shared caches hot.
   const invalidatedByMutation =
     <I extends PullRequestRef>(
       method: (input: I) => Effect.Effect<void, PullRequestError>,
+      scope: "reference" | "listings" = "reference",
     ): ((input: I) => Effect.Effect<void, PullRequestError>) =>
     (input) =>
       method(input).pipe(
         Effect.tap(() =>
           Effect.sync(() => {
             bumpRefEpoch(input);
-            listingsEpoch = ++epochCounter;
+            if (scope === "listings") listingsEpoch = ++epochCounter;
           }),
         ),
       );
@@ -1766,8 +1638,7 @@ export const make = Effect.gen(function* () {
     detail,
     activity,
     diff,
-    diffFileContents,
-    runAction: invalidatedByMutation(runAction),
+    runAction: invalidatedByMutation(runAction, "listings"),
     comment: invalidatedByMutation(comment),
     submitReview: invalidatedByMutation(submitReview),
     replyToThread: invalidatedByMutation(replyToThread),

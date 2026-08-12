@@ -63,6 +63,7 @@ import {
   collectThreadCompletionNotifications,
 } from "../threadCompletionNotifications";
 import {
+  findGitHubPullRequestProject,
   INTERNAL_PULL_REQUEST_NAVIGATION_EVENT,
   type InternalPullRequestNavigation,
   openExternalPullRequestLink,
@@ -161,14 +162,11 @@ function InternalPullRequestNavigationHandler() {
       ) {
         return;
       }
-      const project = projects.find(
-        (candidate) =>
-          candidate.environmentId === environmentId &&
-          candidate.repositoryIdentity?.provider === "github" &&
-          candidate.repositoryIdentity.displayName?.toLowerCase() === repository.toLowerCase() &&
-          candidate.repositoryIdentity.canonicalKey.split("/", 1).at(0)?.toLowerCase() ===
-            host.toLowerCase(),
-      );
+      const project = findGitHubPullRequestProject(projects, {
+        environmentId,
+        host,
+        repository,
+      });
       if (!descriptor?.capabilities.pullRequests || !project) {
         openExternalPullRequestLink(url);
         return;
@@ -178,6 +176,7 @@ function InternalPullRequestNavigationHandler() {
         search: {
           state: "all",
           involvement: "all",
+          host,
           repository,
           number,
           selectedProjectId: project.id,
