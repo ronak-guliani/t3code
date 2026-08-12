@@ -13,6 +13,7 @@ import {
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
+  resolveSidebarDraftPreview,
   shouldRenderSidebarDraft,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarThreadGitCwd,
@@ -53,6 +54,18 @@ describe("shouldRenderSidebarDraft", () => {
         serverThreadPublished: false,
       }),
     ).toBe(true);
+  });
+
+  describe("resolveSidebarDraftPreview", () => {
+    it("keeps the submitted message visible after composer cleanup", () => {
+      expect(
+        resolveSidebarDraftPreview({
+          draftPrompt: null,
+          draftAttachmentCount: 0,
+          optimisticMessage: { text: "Implement the sidebar fix\nwith tests" },
+        }),
+      ).toBe("Implement the sidebar fix");
+    });
   });
 
   it("hands off to the regular thread row once it is published", () => {

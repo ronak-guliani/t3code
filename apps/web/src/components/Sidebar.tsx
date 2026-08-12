@@ -107,7 +107,6 @@ import {
   DraftId,
   type DraftSessionState,
   type DraftThreadEnvMode,
-  type ComposerThreadDraftState,
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -171,6 +170,7 @@ import {
   resolveSidebarThreadRowStatus,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
+  resolveSidebarDraftPreview,
   shouldRenderSidebarDraft,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
@@ -1409,6 +1409,7 @@ interface SidebarProjectItemProps {
   activeRouteThreadKey: string | null;
   routeDraftId: string | null;
   navigateToDraft: (draftId: DraftId) => void;
+  draftRows: readonly SidebarDraftRowData[];
   newThreadShortcutLabel: string | null;
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
@@ -1437,6 +1438,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     activeRouteThreadKey,
     routeDraftId,
     navigateToDraft,
+    draftRows,
     newThreadShortcutLabel,
     handleNewThread,
     archiveThread,
@@ -1538,38 +1540,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       ),
     [sidebarThreads],
   );
-  const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
-  const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
   const clearDraftThread = useComposerDraftStore((store) => store.clearDraftThread);
-  const projectDraftRows = useMemo(() => {
-    const memberProjectKeys = new Set(project.memberProjectRefs.map(scopedProjectKey));
-    const rows: SidebarDraftRowData[] = [];
-    for (const [draftKey, session] of Object.entries(draftThreadsByThreadKey)) {
-      const projectKey = scopedProjectKey(
-        scopeProjectRef(session.environmentId, session.projectId),
-      );
-      if (!memberProjectKeys.has(projectKey)) {
-        continue;
-      }
-      const promotedThreadKey = session.promotedTo ? scopedThreadKey(session.promotedTo) : null;
-      const composer = draftsByThreadKey[draftKey];
-      if (
-        composer &&
-        shouldRenderSidebarDraft({
-          hasUserContent: composerDraftHasUserContent(composer),
-          isPromoting: session.promotedTo != null,
-          serverThreadPublished: promotedThreadKey
-            ? sidebarThreadByKey.has(promotedThreadKey)
-            : false,
-        })
-      ) {
-        rows.push({ draftId: DraftId.make(draftKey), session, composer });
-      }
-    }
-    return rows.sort((left, right) =>
-      right.session.createdAt.localeCompare(left.session.createdAt),
-    );
-  }, [draftsByThreadKey, draftThreadsByThreadKey, project.memberProjectRefs, sidebarThreadByKey]);
   // Keep a ref so callbacks can read the latest map without appearing in
   // dependency arrays (avoids invalidating every thread-row memo on each
   // thread-list change).
@@ -1733,39 +1704,49 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
   // The project header is the only collapse tier: once it is open every thread
   // of that project is listed, so nothing hides behind a second "show more".
-  const { renderedThreadRows, showEmptyThreadState, shouldShowThreadPanel } = useMemo(() => {
-    const pinnedCollapsedThreadKey = pinnedCollapsedThread
-      ? scopedThreadKey(
-          scopeThreadRef(pinnedCollapsedThread.environmentId, pinnedCollapsedThread.id),
-        )
-      : null;
-    const renderedThreadRows =
-      pinnedCollapsedThread && pinnedCollapsedThreadKey
-        ? [
-            {
-              thread: pinnedCollapsedThread,
-              threadKey: pinnedCollapsedThreadKey,
-              depth: 0,
-              hasChildren: false,
-              isExpanded: false,
-              childCount: 0,
-              status: threadStatusByKey.get(pinnedCollapsedThreadKey) ?? null,
-              rolledUpStatus: threadStatusByKey.get(pinnedCollapsedThreadKey) ?? null,
-            } satisfies SidebarThreadRowView,
-          ]
-        : [...visibleProjectThreadRows];
-    return {
-      renderedThreadRows,
-      showEmptyThreadState: projectExpanded && visibleProjectThreads.length === 0,
-      shouldShowThreadPanel: projectExpanded || pinnedCollapsedThread !== null,
-    };
-  }, [
-    pinnedCollapsedThread,
-    projectExpanded,
-    threadStatusByKey,
-    visibleProjectThreads,
-    visibleProjectThreadRows,
-  ]);
+  const { renderedThreadRows, visibleDraftRows, showEmptyThreadState, shouldShowThreadPanel } =
+    useMemo(() => {
+      const pinnedCollapsedThreadKey = pinnedCollapsedThread
+        ? scopedThreadKey(
+            scopeThreadRef(pinnedCollapsedThread.environmentId, pinnedCollapsedThread.id),
+          )
+        : null;
+      const renderedThreadRows =
+        pinnedCollapsedThread && pinnedCollapsedThreadKey
+          ? [
+              {
+                thread: pinnedCollapsedThread,
+                threadKey: pinnedCollapsedThreadKey,
+                depth: 0,
+                hasChildren: false,
+                isExpanded: false,
+                childCount: 0,
+                status: threadStatusByKey.get(pinnedCollapsedThreadKey) ?? null,
+                rolledUpStatus: threadStatusByKey.get(pinnedCollapsedThreadKey) ?? null,
+              } satisfies SidebarThreadRowView,
+            ]
+          : [...visibleProjectThreadRows];
+      const activeDraftRow = routeDraftId
+        ? draftRows.find((row) => row.draftId === routeDraftId)
+        : undefined;
+      const visibleDraftRows = projectExpanded ? draftRows : activeDraftRow ? [activeDraftRow] : [];
+      return {
+        renderedThreadRows,
+        visibleDraftRows,
+        showEmptyThreadState:
+          projectExpanded && visibleProjectThreads.length === 0 && draftRows.length === 0,
+        shouldShowThreadPanel:
+          projectExpanded || pinnedCollapsedThread !== null || activeDraftRow !== undefined,
+      };
+    }, [
+      draftRows,
+      pinnedCollapsedThread,
+      projectExpanded,
+      routeDraftId,
+      threadStatusByKey,
+      visibleProjectThreads,
+      visibleProjectThreadRows,
+    ]);
 
   const handleProjectButtonClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -2635,7 +2616,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         orderedProjectThreadKeys={orderedProjectThreadKeys}
         pinnedThreadKeys={pinnedThreadKeys}
         renderedThreadRows={renderedThreadRows}
-        draftRows={projectDraftRows}
+        draftRows={visibleDraftRows}
         memberProjectByScopedKey={memberProjectByScopedKey}
         showEmptyThreadState={showEmptyThreadState}
         shouldShowThreadPanel={shouldShowThreadPanel}
@@ -3073,8 +3054,11 @@ interface SidebarProjectsContentProps {
 interface SidebarDraftRowData {
   draftId: DraftId;
   session: DraftSessionState;
-  composer: ComposerThreadDraftState;
+  draftPrompt: string | null;
+  draftAttachmentCount: number;
 }
+
+const EMPTY_SIDEBAR_DRAFT_ROWS: readonly SidebarDraftRowData[] = [];
 
 const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   row: SidebarDraftRowData;
@@ -3082,7 +3066,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   onNavigate: (draftId: DraftId) => void;
   onDiscard: (draftId: DraftId) => void;
 }) {
-  const { composer, draftId } = props.row;
+  const { draftId } = props.row;
   const draftThreadRef = scopeThreadRef(
     props.row.session.environmentId,
     props.row.session.threadId,
@@ -3091,15 +3075,14 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   const hasPendingTurn = usePendingTurnStore((state) =>
     Boolean(state.pendingByThreadKey[draftThreadKey]),
   );
-  const promptPreview = composer.prompt.trim().split("\n", 1)[0] ?? "";
-  const attachmentIds = new Set([
-    ...composer.images.map((attachment) => attachment.id),
-    ...composer.persistedAttachments.map((attachment) => attachment.id),
-    ...composer.previewAnnotations.map((annotation) => annotation.id),
-  ]);
-  const attachmentCount = attachmentIds.size + composer.terminalContexts.length;
-  const preview =
-    promptPreview || `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
+  const optimisticMessage = usePendingTurnStore(
+    (state) => state.optimisticMessagesByThreadKey[draftThreadKey]?.at(-1) ?? null,
+  );
+  const preview = resolveSidebarDraftPreview({
+    draftPrompt: props.row.draftPrompt,
+    draftAttachmentCount: props.row.draftAttachmentCount,
+    optimisticMessage,
+  });
   const isPromoting = props.row.session.promotedTo != null;
 
   return (
@@ -3186,6 +3169,60 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     attachProjectListAutoAnimateRef,
     projectsLength,
   } = props;
+  const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
+  const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
+  const publishedThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const draftRowsByProjectKey = useMemo(() => {
+    const projectKeyByMemberRef = new Map(
+      allProjects.flatMap((project) =>
+        project.memberProjectRefs.map((projectRef) => [
+          scopedProjectKey(projectRef),
+          project.projectKey,
+        ]),
+      ),
+    );
+    const serverThreadKeys = new Set(
+      publishedThreads.map((thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+      ),
+    );
+    const grouped = new Map<string, SidebarDraftRowData[]>();
+    for (const [draftKey, session] of Object.entries(draftThreadsByThreadKey)) {
+      const projectKey = projectKeyByMemberRef.get(
+        scopedProjectKey(scopeProjectRef(session.environmentId, session.projectId)),
+      );
+      if (!projectKey) continue;
+      const composer = draftsByThreadKey[draftKey];
+      if (
+        !shouldRenderSidebarDraft({
+          hasUserContent: composerDraftHasUserContent(composer),
+          isPromoting: session.promotedTo != null,
+          serverThreadPublished: session.promotedTo
+            ? serverThreadKeys.has(scopedThreadKey(session.promotedTo))
+            : false,
+        })
+      ) {
+        continue;
+      }
+      const attachmentIds = new Set([
+        ...(composer?.images.map((attachment) => attachment.id) ?? []),
+        ...(composer?.persistedAttachments.map((attachment) => attachment.id) ?? []),
+        ...(composer?.previewAnnotations.map((annotation) => annotation.id) ?? []),
+      ]);
+      const rows = grouped.get(projectKey) ?? [];
+      rows.push({
+        draftId: DraftId.make(draftKey),
+        session,
+        draftPrompt: composer?.prompt ?? null,
+        draftAttachmentCount: attachmentIds.size + (composer?.terminalContexts.length ?? 0),
+      });
+      grouped.set(projectKey, rows);
+    }
+    for (const rows of grouped.values()) {
+      rows.sort((left, right) => right.session.createdAt.localeCompare(left.session.createdAt));
+    }
+    return grouped;
+  }, [allProjects, draftsByThreadKey, draftThreadsByThreadKey, publishedThreads]);
   const handleProjectSortOrderChange = useCallback(
     (sortOrder: SidebarProjectSortOrder) => {
       updateSettings({ sidebarProjectSortOrder: sortOrder });
@@ -3325,6 +3362,9 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         }
                         routeDraftId={routeDraftId}
                         navigateToDraft={navigateToDraft}
+                        draftRows={
+                          draftRowsByProjectKey.get(project.projectKey) ?? EMPTY_SIDEBAR_DRAFT_ROWS
+                        }
                         newThreadShortcutLabel={newThreadShortcutLabel}
                         handleNewThread={handleNewThread}
                         archiveThread={archiveThread}
@@ -3359,6 +3399,9 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 }
                 routeDraftId={routeDraftId}
                 navigateToDraft={navigateToDraft}
+                draftRows={
+                  draftRowsByProjectKey.get(project.projectKey) ?? EMPTY_SIDEBAR_DRAFT_ROWS
+                }
                 newThreadShortcutLabel={newThreadShortcutLabel}
                 handleNewThread={handleNewThread}
                 archiveThread={archiveThread}
