@@ -1542,6 +1542,18 @@ const makeWsRpcLayer = (
             pullRequestMonitors.report(input),
             { "rpc.aggregate": "pull-request-monitors" },
           ),
+        [WS_METHODS.pullRequestMonitorsTransfer]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsTransfer,
+            pullRequestMonitors.transferOwnership(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsSubmitFindings]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsSubmitFindings,
+            pullRequestMonitors.submitFindings(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
@@ -1796,10 +1808,45 @@ const makeWsRpcLayer = (
                 .pipe(
                   Effect.matchCauseEffect({
                     onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: () =>
-                      refreshGitStatus(input.cwd).pipe(
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
+                    onSuccess: (result) =>
+                      Effect.gen(function* () {
+                        // Auto-associate ownership + start monitor when a thread creates a PR.
+                        if (
+                          result.pr.status === "created" &&
+                          typeof result.pr.number === "number" &&
+                          input.projectId !== undefined &&
+                          input.threadId !== undefined
+                        ) {
+                          const settingsResult = yield* Effect.result(serverSettings.getSettings);
+                          const enabled =
+                            Result.isSuccess(settingsResult) &&
+                            settingsResult.success.autoMonitorPullRequestsOnCreate === true;
+                          const repository = (() => {
+                            const url = "url" in result.pr ? result.pr.url : undefined;
+                            if (typeof url !== "string") return null;
+                            try {
+                              const path = new URL(url).pathname.replace(/^\/+/, "");
+                              const parts = path.split("/");
+                              if (parts.length >= 2) return `${parts[0]}/${parts[1]}`;
+                            } catch {
+                              return null;
+                            }
+                            return null;
+                          })();
+                          if (enabled && repository) {
+                            yield* pullRequestMonitors
+                              .start({
+                                projectId: input.projectId,
+                                repository,
+                                number: result.pr.number,
+                                ownerThreadId: input.threadId,
+                              })
+                              .pipe(Effect.ignore({ log: true }));
+                          }
+                        }
+                        yield* refreshGitStatus(input.cwd);
+                        yield* Queue.end(queue);
+                      }).pipe(Effect.asVoid),
                   }),
                 ),
             ),

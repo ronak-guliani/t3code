@@ -14,7 +14,11 @@ import {
   type PullRequestMonitorReportResult,
   type PullRequestMonitorContextInput,
   type PullRequestMonitorContextResult,
+  type PullRequestMonitorTransferInput,
+  type PullRequestMonitorSubmitFindingsInput,
+  type PullRequestMonitorSubmitFindingsResult,
   type PullRequestRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -28,6 +32,7 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { diffPullRequestMonitorSnapshot, emptyCursor } from "./monitorDiff.ts";
 import {
   HOST_COOLDOWN_MS,
@@ -83,6 +88,12 @@ export class PullRequestMonitorService extends Context.Service<
     readonly report: (
       input: PullRequestMonitorReportInput,
     ) => Effect.Effect<PullRequestMonitorReportResult, PullRequestMonitorError>;
+    readonly transferOwnership: (
+      input: PullRequestMonitorTransferInput,
+    ) => Effect.Effect<PullRequestMonitorMutationResult, PullRequestMonitorError>;
+    readonly submitFindings: (
+      input: PullRequestMonitorSubmitFindingsInput,
+    ) => Effect.Effect<PullRequestMonitorSubmitFindingsResult, PullRequestMonitorError>;
   }
 >()("t3/pullRequestMonitor/PullRequestMonitorService") {}
 
@@ -92,10 +103,23 @@ export const layer = Layer.effect(
     const store = yield* PullRequestMonitorStore.make;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const feedback = yield* PullRequestMonitorFeedbackService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
     const crypto = yield* Crypto.Crypto;
     const ownerId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const changes = yield* PubSub.sliding<void>(1);
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+
+    const requireProjectThread = (input: {
+      projectId: PullRequestMonitorRecord["projectId"];
+      threadId: ThreadId;
+    }) =>
+      threads.getProjectThread(input).pipe(
+        Effect.mapError((cause) =>
+          monitorError("Target thread is missing, deleted, or outside this monitor project.", {
+            cause,
+          }),
+        ),
+      );
 
     const resolveMonitor = (input: {
       readonly monitorId?: PullRequestMonitorId | undefined;
@@ -184,10 +208,34 @@ export const layer = Layer.effect(
         const now = yield* isoNow();
 
         if (existing) {
+          if (existing.projectId !== input.projectId) {
+            return yield* monitorError(
+              "This pull request is already monitored by another project.",
+              { monitorId: existing.id },
+            );
+          }
+          const nextOwner = input.ownerThreadId ?? existing.ownerThreadId;
+          if (nextOwner !== existing.ownerThreadId) {
+            if (nextOwner === null) {
+              return yield* monitorError("Cannot clear monitor ownership through start().", {
+                monitorId: existing.id,
+              });
+            }
+            yield* requireProjectThread({ projectId: existing.projectId, threadId: nextOwner });
+            yield* store.transferOwnershipAtomic({
+              monitorId: existing.id,
+              ownerThreadId: nextOwner,
+              updatedAt: now,
+              eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+              toThreadId: nextOwner,
+              reason: "start-owner-associate",
+            });
+          }
           const resumed: PullRequestMonitorRecord = {
             ...existing,
             projectId: input.projectId,
-            ownerThreadId: input.ownerThreadId ?? existing.ownerThreadId,
+            ownerThreadId: nextOwner,
+            linkedReviewThreadId: existing.linkedReviewThreadId ?? null,
             status: existing.status === "terminal" ? "monitoring" : "monitoring",
             enabled: true,
             lastError: null,
@@ -195,7 +243,7 @@ export const layer = Layer.effect(
             updatedAt: now,
             stoppedAt: null,
           };
-          yield* store.update(resumed);
+          yield* store.updatePollState(resumed);
           yield* notify;
           // Kick an immediate observe pass for the resumed monitor.
           yield* pollMonitor(resumed).pipe(Effect.ignore);
@@ -213,6 +261,7 @@ export const layer = Layer.effect(
           number: detail.number,
           projectId: input.projectId,
           ownerThreadId: input.ownerThreadId ?? null,
+          linkedReviewThreadId: null,
           status: "monitoring",
           enabled: true,
           readiness: null,
@@ -245,7 +294,7 @@ export const layer = Layer.effect(
           updatedAt: now,
           stoppedAt: now,
         };
-        yield* store.update(stopped);
+        yield* store.updatePollState(stopped);
         yield* store.releaseLease(monitor.canonicalKey, ownerId);
         yield* notify;
         return { monitor: stopped };
@@ -451,6 +500,84 @@ export const layer = Layer.effect(
         requestRecheck,
       });
 
+    const transferOwnership = (input: PullRequestMonitorTransferInput) =>
+      Effect.gen(function* () {
+        const monitor = yield* resolveMonitor(input);
+        if (monitor.ownerThreadId === input.toThreadId) {
+          return { monitor };
+        }
+        yield* requireProjectThread({ projectId: monitor.projectId, threadId: input.toThreadId });
+        // Never allow two concurrent modifying owners: transfer replaces the single owner.
+        const now = yield* isoNow();
+        const updated = {
+          ...monitor,
+          ownerThreadId: input.toThreadId,
+          updatedAt: now,
+        };
+        yield* store.transferOwnershipAtomic({
+          monitorId: monitor.id,
+          ownerThreadId: input.toThreadId,
+          updatedAt: now,
+          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+          toThreadId: input.toThreadId,
+          reason: input.reason ?? "transfer",
+        });
+        yield* notify;
+        return { monitor: updated };
+      });
+
+    const submitFindings = (input: PullRequestMonitorSubmitFindingsInput) =>
+      Effect.gen(function* () {
+        const startMonitoring = input.startMonitoring !== false;
+        let monitorRecord: PullRequestMonitorRecord;
+        if (startMonitoring) {
+          const started = yield* start({
+            projectId: input.reference.projectId,
+            repository: input.reference.repository,
+            number: input.reference.number,
+          });
+          monitorRecord = started.monitor;
+        } else {
+          monitorRecord = yield* resolveMonitor({ reference: input.reference });
+        }
+
+        const ownerThreadId =
+          input.ownerThreadId ?? monitorRecord.ownerThreadId ?? (null as ThreadId | null);
+        yield* requireProjectThread({
+          projectId: monitorRecord.projectId,
+          threadId: input.reviewThreadId,
+        });
+        if (ownerThreadId !== null) {
+          yield* requireProjectThread({
+            projectId: monitorRecord.projectId,
+            threadId: ownerThreadId,
+          });
+        }
+        const now = yield* isoNow();
+        const updated = {
+          ...monitorRecord,
+          linkedReviewThreadId: input.reviewThreadId,
+          ownerThreadId,
+          updatedAt: now,
+        };
+        yield* store.transferOwnershipAtomic({
+          monitorId: updated.id,
+          ownerThreadId,
+          linkedReviewThreadId: input.reviewThreadId,
+          updatedAt: now,
+          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+          toThreadId: ownerThreadId,
+          reason: input.summary?.slice(0, 500) ?? "review-handoff",
+        });
+        yield* notify;
+        return {
+          monitor: updated,
+          linkedReviewThreadId: input.reviewThreadId,
+          ownerThreadId,
+          monitoringStarted: startMonitoring,
+        };
+      });
+
     return PullRequestMonitorService.of({
       start,
       stop,
@@ -464,6 +591,8 @@ export const layer = Layer.effect(
       pollOnce,
       context,
       report,
+      transferOwnership,
+      submitFindings,
     });
   }),
 );

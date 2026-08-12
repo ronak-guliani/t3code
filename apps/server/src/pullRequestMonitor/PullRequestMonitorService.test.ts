@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
+  ThreadId,
   type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorSnapshot,
   type PullRequestRef,
@@ -13,6 +14,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
 import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
+import Migration0052 from "../persistence/Migrations/052_PullRequestMonitorOwnership.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -127,12 +129,37 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   monitorSnapshot: () => Effect.succeed(sampleSnapshot()),
 });
 
+const knownThreads = new Set<string>();
+
+function seedThread(threadId: ThreadId) {
+  knownThreads.add(threadId);
+}
+
 const fakeThreads = ThreadManagement.ThreadManagementService.of({
   ensureLegacyTranscript: () => Effect.void,
   dispatch: () => Effect.die("unused"),
   getThreadProjection: () => Effect.die("unused"),
   getThreadSnapshot: () => Effect.die("unused"),
-  getProjectThread: () => Effect.die("unused"),
+  getProjectThread: (input) => {
+    if (!knownThreads.has(input.threadId)) {
+      return Effect.fail(
+        new ThreadManagement.ThreadManagementThreadNotFoundError({
+          projectId: input.projectId,
+          threadId: input.threadId,
+        }),
+      );
+    }
+    return Effect.succeed({
+      thread: {
+        id: input.threadId,
+        projectId: input.projectId,
+        archivedAt: null,
+        deletedAt: null,
+      },
+      runs: [],
+      messages: [],
+    } as never);
+  },
   getShellSnapshot: () => Effect.die("unused"),
   getThreadShell: () => Effect.die("unused"),
   listProjectThreads: () => Effect.succeed([]),
@@ -150,6 +177,7 @@ const MigratedSql = Layer.effectDiscard(
     yield* SqlClient.SqlClient;
     yield* Migration0050;
     yield* Migration0051;
+    yield* Migration0052;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
@@ -161,6 +189,7 @@ const FeedbackLayer = pullRequestMonitorFeedbackServiceLayer.pipe(
 const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
   Layer.provide(FeedbackLayer),
+  Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
 );
@@ -272,6 +301,132 @@ layer("PullRequestMonitorService", (it) => {
       const state = yield* feedbackStore.getState(started.monitor.id);
       assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
       assert.strictEqual(state.deliveryFailureCount, 1);
+    }),
+  );
+
+  it.effect("transfers ownership to a single owner thread", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const ownerA = ThreadId.make("thr_owner_a");
+      const ownerB = ThreadId.make("thr_owner_b");
+      seedThread(ownerA);
+      seedThread(ownerB);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 43,
+        ownerThreadId: ownerA,
+      });
+      assert.strictEqual(started.monitor.ownerThreadId, ownerA);
+
+      const transferred = yield* service.transferOwnership({
+        monitorId: started.monitor.id,
+        toThreadId: ownerB,
+        reason: "fallback",
+      });
+      assert.strictEqual(transferred.monitor.ownerThreadId, ownerB);
+      assert.isNull(transferred.monitor.linkedReviewThreadId);
+    }),
+  );
+
+  it.effect("submitFindings links review thread without dual owners", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const owner = ThreadId.make("thr_owner_main");
+      const review = ThreadId.make("thr_review_1");
+      seedThread(owner);
+      seedThread(review);
+      const result = yield* service.submitFindings({
+        reference: {
+          projectId,
+          repository: "acme/app",
+          number: 44,
+        },
+        reviewThreadId: review,
+        ownerThreadId: owner,
+        summary: "Three findings handed off",
+        startMonitoring: true,
+      });
+      assert.strictEqual(result.monitoringStarted, true);
+      assert.strictEqual(result.ownerThreadId, owner);
+      assert.strictEqual(result.linkedReviewThreadId, review);
+      assert.strictEqual(result.monitor.ownerThreadId, owner);
+      assert.strictEqual(result.monitor.linkedReviewThreadId, review);
+      assert.notStrictEqual(result.monitor.ownerThreadId, result.monitor.linkedReviewThreadId);
+
+      const events = yield* sql<{
+        readonly from_thread_id: string | null;
+        readonly to_thread_id: string | null;
+      }>`
+        SELECT from_thread_id, to_thread_id
+        FROM pull_request_monitor_ownership_events
+        WHERE monitor_id = ${result.monitor.id}
+      `;
+      assert.deepEqual(events, [{ from_thread_id: null, to_thread_id: owner }]);
+    }),
+  );
+
+  it.effect("submitFindings audits an owner handoff after starting an existing monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const ownerA = ThreadId.make("thr_owner_audit_a");
+      const ownerB = ThreadId.make("thr_owner_audit_b");
+      const review = ThreadId.make("thr_review_audit");
+      seedThread(ownerA);
+      seedThread(ownerB);
+      seedThread(review);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 45,
+        ownerThreadId: ownerA,
+      });
+
+      const result = yield* service.submitFindings({
+        reference: {
+          projectId,
+          repository: "acme/app",
+          number: 45,
+        },
+        reviewThreadId: review,
+        ownerThreadId: ownerB,
+      });
+      assert.strictEqual(result.monitor.ownerThreadId, ownerB);
+
+      const events = yield* sql<{
+        readonly from_thread_id: string | null;
+        readonly to_thread_id: string | null;
+      }>`
+        SELECT from_thread_id, to_thread_id
+        FROM pull_request_monitor_ownership_events
+        WHERE monitor_id = ${started.monitor.id}
+        ORDER BY created_at
+      `;
+      assert.deepEqual(events, [{ from_thread_id: ownerA, to_thread_id: ownerB }]);
+    }),
+  );
+
+  it.effect("rejects ownership transfer to a missing project thread", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_owner_valid");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 46,
+        ownerThreadId: owner,
+      });
+
+      const result = yield* Effect.result(
+        service.transferOwnership({
+          monitorId: started.monitor.id,
+          toThreadId: ThreadId.make("thr_owner_missing"),
+        }),
+      );
+      assert.isTrue(result._tag === "Failure");
     }),
   );
 });
