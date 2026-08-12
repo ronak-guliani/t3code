@@ -915,7 +915,7 @@ describe("incremental orchestration updates", () => {
     );
     expect(selectSidebarThreadsAcrossEnvironments(stopped)[0]).toMatchObject({
       session: { orchestrationStatus: "idle", activeTurnId: undefined },
-      latestTurn: { turnId, state: "interrupted", completedAt: "2026-02-27T00:00:03.000Z" },
+      latestTurn: { turnId, state: "completed", completedAt: "2026-02-27T00:00:03.000Z" },
     });
   });
 
@@ -1734,6 +1734,48 @@ describe("incremental orchestration updates", () => {
     const resolved = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, thread.id));
     expect(resolved?.latestTurn?.state).toBe("interrupted");
     expect(resolved?.latestTurn?.completedAt).toBe("2026-02-27T00:30:00.000Z");
+    expect(resolved?.session?.activeTurnId).toBeUndefined();
+  });
+
+  it("settles an unfinished latest turn as completed when session becomes ready", () => {
+    const thread = makeThread({
+      session: {
+        provider: ProviderDriverKind.make("codex"),
+        status: "running",
+        orchestrationStatus: "running",
+        activeTurnId: TurnId.make("turn-1"),
+        createdAt: "2026-02-27T00:00:00.000Z",
+        updatedAt: "2026-02-27T00:00:00.000Z",
+      },
+      latestTurn: {
+        turnId: TurnId.make("turn-1"),
+        state: "running",
+        requestedAt: "2026-02-27T00:00:00.000Z",
+        startedAt: "2026-02-27T00:00:00.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+    });
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-02-27T00:01:00.000Z",
+        },
+      }),
+      localEnvironmentId,
+    );
+
+    const resolved = selectThreadByRef(next, scopeThreadRef(localEnvironmentId, thread.id));
+    expect(resolved?.latestTurn?.state).toBe("completed");
+    expect(resolved?.latestTurn?.completedAt).toBe("2026-02-27T00:01:00.000Z");
     expect(resolved?.session?.activeTurnId).toBeUndefined();
   });
 

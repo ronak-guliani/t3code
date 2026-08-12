@@ -27,10 +27,35 @@ function makeEnvironmentState(overrides: {
   readonly title?: string;
   readonly completedAt?: string;
   readonly activeTurnId?: TurnId | null;
+  readonly turnState?: "completed" | "interrupted" | "error" | "running";
+  readonly sessionStatus?: "running" | "ready" | "idle" | "interrupted" | "stopped" | "error";
   readonly hasPendingQueuedTurn?: boolean;
 }): EnvironmentState {
   const nextThreadId = overrides.threadId ?? threadId;
   const turnId = overrides.turnId ?? TurnId.make("turn-1");
+  const sessionStatus = overrides.sessionStatus;
+  const legacySessionStatus =
+    sessionStatus === "error"
+      ? ("error" as const)
+      : sessionStatus === "running"
+        ? ("running" as const)
+        : sessionStatus === "stopped" || sessionStatus === "idle"
+          ? ("closed" as const)
+          : ("ready" as const);
+  const session =
+    overrides.activeTurnId !== undefined || sessionStatus !== undefined
+      ? {
+          provider,
+          providerInstanceId,
+          // Legacy UI status collapses interrupted→ready; notifications must
+          // key off orchestrationStatus instead.
+          status: legacySessionStatus,
+          orchestrationStatus: sessionStatus ?? ("running" as const),
+          ...(overrides.activeTurnId != null ? { activeTurnId: overrides.activeTurnId } : {}),
+          createdAt: "2026-06-10T00:00:00.000Z",
+          updatedAt: "2026-06-10T00:01:00.000Z",
+        }
+      : null;
   return {
     projectIds: [projectId],
     projectById: {},
@@ -60,24 +85,13 @@ function makeEnvironmentState(overrides: {
         parentThreadId: null,
         title: overrides.title ?? "Existing completed thread",
         interactionMode: "default",
-        session:
-          overrides.activeTurnId !== undefined
-            ? {
-                provider,
-                providerInstanceId,
-                status: "running",
-                orchestrationStatus: "running",
-                activeTurnId: overrides.activeTurnId ?? undefined,
-                createdAt: "2026-06-10T00:00:00.000Z",
-                updatedAt: "2026-06-10T00:01:00.000Z",
-              }
-            : null,
+        session,
         createdAt: "2026-06-10T00:00:00.000Z",
         archivedAt: null,
         updatedAt: "2026-06-10T00:01:00.000Z",
         latestTurn: {
           turnId,
-          state: "completed",
+          state: overrides.turnState ?? "completed",
           requestedAt: "2026-06-10T00:00:00.000Z",
           startedAt: "2026-06-10T00:00:01.000Z",
           completedAt: overrides.completedAt ?? "2026-06-10T00:01:00.000Z",
@@ -254,6 +268,88 @@ describe("collectThreadCompletionNotifications", () => {
         threadId: "thread-handoff",
         turnId: "turn-handoff-boundary",
         title: "Chat completed",
+      },
+    ]);
+  });
+
+  it("treats an interrupted turn with a ready session as a completed chat", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const requests = collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({
+          bootstrapComplete: true,
+          threadId: ThreadId.make("thread-ready-interrupt"),
+          turnId: TurnId.make("turn-ready-interrupt"),
+          title: "Finished successfully",
+          completedAt: "2026-06-10T00:04:00.000Z",
+          turnState: "interrupted",
+          sessionStatus: "ready",
+        }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    expect(requests).toMatchObject([
+      {
+        kind: "thread-turn-completed",
+        threadId: "thread-ready-interrupt",
+        turnId: "turn-ready-interrupt",
+        title: "Chat completed",
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("still notifies a true interrupt when the session is interrupted", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const requests = collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({
+          bootstrapComplete: true,
+          threadId: ThreadId.make("thread-true-interrupt"),
+          turnId: TurnId.make("turn-true-interrupt"),
+          title: "Stopped mid-turn",
+          completedAt: "2026-06-10T00:05:00.000Z",
+          turnState: "interrupted",
+          sessionStatus: "interrupted",
+        }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    expect(requests).toMatchObject([
+      {
+        kind: "thread-turn-completed",
+        threadId: "thread-true-interrupt",
+        turnId: "turn-true-interrupt",
+        title: "Chat interrupted",
+        status: "interrupted",
       },
     ]);
   });

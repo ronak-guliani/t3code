@@ -2741,6 +2741,109 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-latest-turn-ses
       }),
     );
 
+    it.effect(
+      "settles a running projected turn as completed when the provider session becomes ready",
+      () =>
+        Effect.gen(function* () {
+          const projectionPipeline = yield* OrchestrationProjectionPipeline;
+          const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
+          const threadId = ThreadId.make("thread-ready-provider-turn");
+          const turnId = TurnId.make("turn-ready-provider-turn");
+          const startedAt = "2026-08-03T08:00:00.000Z";
+          const completedAt = "2026-08-03T08:01:00.000Z";
+
+          const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+            eventStore
+              .append(event)
+              .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+          yield* appendAndProject({
+            type: "thread.created",
+            eventId: EventId.make("evt-ready-provider-thread-created"),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: startedAt,
+            commandId: CommandId.make("cmd-ready-provider-thread-created"),
+            causationEventId: null,
+            correlationId: CorrelationId.make("cmd-ready-provider-thread-created"),
+            metadata: {},
+            payload: {
+              threadId,
+              projectId: ProjectId.make("project-session-resume"),
+              title: "Ready provider turn",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("copilot"),
+                model: "auto",
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              pendingRuntimeMode: null,
+              branch: null,
+              worktreePath: null,
+              createdAt: startedAt,
+              updatedAt: startedAt,
+            },
+          });
+          yield* appendAndProject({
+            type: "thread.session-set",
+            eventId: EventId.make("evt-ready-provider-session-running"),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: startedAt,
+            commandId: CommandId.make("cmd-ready-provider-session-running"),
+            causationEventId: null,
+            correlationId: CorrelationId.make("cmd-ready-provider-session-running"),
+            metadata: {},
+            payload: {
+              threadId,
+              session: {
+                threadId,
+                status: "running",
+                providerName: "copilot",
+                runtimeMode: "full-access",
+                activeTurnId: turnId,
+                lastError: null,
+                updatedAt: startedAt,
+              },
+            },
+          });
+          yield* appendAndProject({
+            type: "thread.session-set",
+            eventId: EventId.make("evt-ready-provider-session-ready"),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: completedAt,
+            commandId: CommandId.make("cmd-ready-provider-session-ready"),
+            causationEventId: null,
+            correlationId: CorrelationId.make("cmd-ready-provider-session-ready"),
+            metadata: {},
+            payload: {
+              threadId,
+              session: {
+                threadId,
+                status: "ready",
+                providerName: "copilot",
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: null,
+                updatedAt: completedAt,
+              },
+            },
+          });
+
+          const rows = yield* sql<{
+            readonly state: string;
+            readonly completedAt: string | null;
+          }>`
+          SELECT state, completed_at AS "completedAt"
+          FROM projection_turns
+          WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+        `;
+          assert.deepEqual(rows, [{ state: "completed", completedAt }]);
+        }),
+    );
+
     it.effect("preserves session resume cursor when later lifecycle updates omit it", () =>
       Effect.gen(function* () {
         const projectionPipeline = yield* OrchestrationProjectionPipeline;

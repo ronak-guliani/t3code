@@ -218,10 +218,19 @@ function latestTurnFromSessionUpdate(
   }
 
   if (latestTurn?.state === "running" || (latestTurn?.startedAt && !latestTurn.completedAt)) {
+    // Successful turn.completed clears activeTurnId and sets session ready/idle
+    // before checkpoint projection; do not label those interrupted or the
+    // sidebar/notify path will flash "Chat interrupted".
+    const state =
+      session.status === "error"
+        ? ("error" as const)
+        : session.status === "ready" || session.status === "idle"
+          ? ("completed" as const)
+          : ("interrupted" as const);
     return buildLatestTurn({
       previous: latestTurn,
       turnId: latestTurn.turnId,
-      state: session.status === "error" ? "error" : "interrupted",
+      state,
       requestedAt: latestTurn.requestedAt,
       startedAt: latestTurn.startedAt ?? session.updatedAt,
       completedAt: session.updatedAt,

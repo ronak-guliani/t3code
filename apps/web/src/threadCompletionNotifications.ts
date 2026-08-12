@@ -42,7 +42,14 @@ export function collectThreadCompletionNotifications(
           return [];
         }
 
-        const status = notificationStatusFromTurnState(latestTurn.state);
+        // Successful turns can briefly (or, on older projections, durably) land as
+        // interrupted while the session is already ready/idle after turn.completed.
+        // Prefer completed for that combination so users are not notified of a
+        // false interrupt.
+        const status = notificationStatusFromTurnState(
+          latestTurn.state,
+          summary.session?.orchestrationStatus,
+        );
         if (!status) {
           return [];
         }
@@ -146,6 +153,7 @@ export function collectStaleActiveTurnToastRequests(input: {
 
 export function notificationStatusFromTurnState(
   state: string,
+  sessionStatus?: string | null,
 ): DesktopThreadCompletionNotificationStatus | null {
   switch (state) {
     case "completed":
@@ -153,6 +161,9 @@ export function notificationStatusFromTurnState(
     case "error":
       return "failed";
     case "interrupted":
+      if (sessionStatus === "ready" || sessionStatus === "idle") {
+        return "completed";
+      }
       return "interrupted";
     default:
       return null;

@@ -75,6 +75,24 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
+/**
+ * When a session leaves `running`, settle any still-running projected turn.
+ * Successful completions clear `activeTurnId` and set session `ready`/`idle`
+ * before the checkpoint/turn-diff event arrives — those must not be labeled
+ * interrupted or completion notifications fire as "Chat interrupted".
+ */
+function terminalTurnStateFromSessionStatus(status: string): "completed" | "interrupted" | "error" {
+  switch (status) {
+    case "error":
+      return "error";
+    case "ready":
+    case "idle":
+      return "completed";
+    default:
+      return "interrupted";
+  }
+}
+
 interface ProjectorDefinition {
   readonly name: ProjectorName;
   readonly apply: (
@@ -918,7 +936,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           ) {
             yield* projectionTurnRepository.upsertByTurnId({
               ...latestTurn.value,
-              state: event.payload.session.status === "error" ? "error" : "interrupted",
+              state: terminalTurnStateFromSessionStatus(event.payload.session.status),
               completedAt: event.payload.session.updatedAt,
             });
           }
@@ -1185,7 +1203,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isSome(existingTurn) && existingTurn.value.state === "running") {
             yield* projectionTurnRepository.upsertByTurnId({
               ...existingTurn.value,
-              state: event.payload.session.status === "error" ? "error" : "interrupted",
+              state: terminalTurnStateFromSessionStatus(event.payload.session.status),
               completedAt: existingTurn.value.completedAt ?? event.occurredAt,
               startedAt: existingTurn.value.startedAt ?? event.occurredAt,
               requestedAt: existingTurn.value.requestedAt ?? event.occurredAt,

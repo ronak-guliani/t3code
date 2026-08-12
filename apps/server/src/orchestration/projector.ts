@@ -85,9 +85,17 @@ function latestTurnFromSession(
   }
 
   if (thread.latestTurn?.state === "running") {
+    // Successful completions clear the active turn and set session ready/idle
+    // before checkpoint projection; do not label those interrupted.
+    const state =
+      session.status === "error"
+        ? ("error" as const)
+        : session.status === "ready" || session.status === "idle"
+          ? ("completed" as const)
+          : ("interrupted" as const);
     return {
       ...thread.latestTurn,
-      state: session.status === "error" ? "error" : "interrupted",
+      state,
       completedAt: session.updatedAt,
     };
   }
