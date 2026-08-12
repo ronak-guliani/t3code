@@ -37,7 +37,8 @@ function blockersSummary(monitor: PullRequestMonitorRecord | null | undefined): 
 }
 
 /**
- * Observe-only control strip. Monitoring is server-owned; this UI only starts/stops/status.
+ * Observe-only control strip plus feedback audit. Monitoring is server-owned;
+ * this UI only starts/stops/status and surfaces durable feedback/delivery state.
  */
 export function PullRequestMonitorStrip(props: {
   readonly environmentId: EnvironmentId;
@@ -54,8 +55,28 @@ export function PullRequestMonitorStrip(props: {
   const stop = useAtomCommand(pullRequestEnvironment.monitorsStop, { reportFailure: false });
 
   const monitor = statusQuery.data?.monitor ?? null;
+  const openFeedback = statusQuery.data?.openFeedback ?? [];
+  const recentDeliveries = statusQuery.data?.recentDeliveries ?? [];
+  const recentReports = statusQuery.data?.recentReports ?? [];
   const active = monitor?.enabled === true;
   const summary = useMemo(() => blockersSummary(monitor), [monitor]);
+  const feedbackSummary = useMemo(() => {
+    if (openFeedback.length === 0) return null;
+    return openFeedback
+      .slice(0, 3)
+      .map((item) => `${item.kind}${item.disposition ? ` (${item.disposition})` : ""}`)
+      .join(" · ");
+  }, [openFeedback]);
+  const deliverySummary = useMemo(() => {
+    const latest = recentDeliveries[0];
+    if (!latest) return null;
+    return `Last delivery: ${latest.status}${latest.lastError ? ` — ${latest.lastError}` : ""}`;
+  }, [recentDeliveries]);
+  const reportSummary = useMemo(() => {
+    const latest = recentReports[0];
+    if (!latest) return null;
+    return `Last report: ${latest.disposition}${latest.note ? ` — ${latest.note}` : ""}`;
+  }, [recentReports]);
 
   const onStart = useCallback(async () => {
     try {
@@ -111,6 +132,11 @@ export function PullRequestMonitorStrip(props: {
               server-owned
             </span>
           ) : null}
+          {openFeedback.length > 0 ? (
+            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] text-amber-700 dark:text-amber-300">
+              {openFeedback.length} open feedback
+            </span>
+          ) : null}
         </div>
         {summary ? (
           <p className="mt-0.5 truncate text-muted-foreground" title={summary}>
@@ -120,20 +146,37 @@ export function PullRequestMonitorStrip(props: {
           <p className="mt-0.5 truncate text-destructive" title={monitor.lastError}>
             {monitor.lastError}
           </p>
-        ) : (
-          <p className="mt-0.5 text-muted-foreground">
-            Polls checks, reviews, and threads. Merge stays human-controlled.
+        ) : null}
+        {feedbackSummary ? (
+          <p className="mt-0.5 truncate text-muted-foreground" title={feedbackSummary}>
+            Feedback: {feedbackSummary}
           </p>
-        )}
+        ) : null}
+        {deliverySummary ? (
+          <p className="mt-0.5 truncate text-muted-foreground" title={deliverySummary}>
+            {deliverySummary}
+          </p>
+        ) : null}
+        {reportSummary ? (
+          <p className="mt-0.5 truncate text-muted-foreground" title={reportSummary}>
+            {reportSummary}
+          </p>
+        ) : null}
       </div>
       {active ? (
-        <Button size="sm" variant="outline" className="h-7 gap-1" onClick={() => void onStop()}>
-          <PauseIcon className="size-3" />
+        <Button type="button" size="sm" variant="ghost" className="h-7 gap-1 px-2" onClick={onStop}>
+          <PauseIcon className="size-3.5" />
           Stop
         </Button>
       ) : (
-        <Button size="sm" variant="outline" className="h-7 gap-1" onClick={() => void onStart()}>
-          <PlayIcon className="size-3" />
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1 px-2"
+          onClick={onStart}
+        >
+          <PlayIcon className="size-3.5" />
           Monitor
         </Button>
       )}

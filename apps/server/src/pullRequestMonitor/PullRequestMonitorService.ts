@@ -10,6 +10,10 @@ import {
   type PullRequestMonitorStatusInput,
   type PullRequestMonitorStatusResult,
   type PullRequestMonitorStopInput,
+  type PullRequestMonitorReportInput,
+  type PullRequestMonitorReportResult,
+  type PullRequestMonitorContextInput,
+  type PullRequestMonitorContextResult,
   type PullRequestRef,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -33,6 +37,7 @@ import {
 } from "./pollSchedule.ts";
 import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 import { computeReadiness } from "./readiness.ts";
+import { PullRequestMonitorFeedbackService } from "./PullRequestMonitorFeedbackService.ts";
 
 function isoNow() {
   return Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
@@ -72,6 +77,12 @@ export class PullRequestMonitorService extends Context.Service<
       input: PullRequestMonitorListInput,
     ) => Stream.Stream<PullRequestMonitorListResult, PullRequestMonitorError>;
     readonly pollOnce: Effect.Effect<void>;
+    readonly context: (
+      input: PullRequestMonitorContextInput,
+    ) => Effect.Effect<PullRequestMonitorContextResult, PullRequestMonitorError>;
+    readonly report: (
+      input: PullRequestMonitorReportInput,
+    ) => Effect.Effect<PullRequestMonitorReportResult, PullRequestMonitorError>;
   }
 >()("t3/pullRequestMonitor/PullRequestMonitorService") {}
 
@@ -80,6 +91,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const store = yield* PullRequestMonitorStore.make;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const feedback = yield* PullRequestMonitorFeedbackService;
     const crypto = yield* Crypto.Crypto;
     const ownerId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const changes = yield* PubSub.sliding<void>(1);
@@ -119,13 +131,26 @@ export const layer = Layer.effect(
           Effect.catchTag("PullRequestMonitorError", () => Effect.succeed(null)),
         );
         if (!monitor) {
-          return { monitor: null, latestSnapshot: null, recentEvents: [] };
+          return {
+            monitor: null,
+            latestSnapshot: null,
+            recentEvents: [],
+            openFeedback: [],
+            recentDeliveries: [],
+            recentReports: [],
+          };
         }
         const latest = yield* store.latestSnapshot(monitor.id);
+        const openFeedback = yield* feedback.listOpenItems(monitor.id);
+        const recentDeliveries = yield* feedback.listDeliveries(monitor.id);
+        const recentReports = yield* feedback.listReports(monitor.id);
         return {
           monitor,
           latestSnapshot: latest?.snapshot ?? null,
           recentEvents: latest?.events ?? [],
+          openFeedback,
+          recentDeliveries,
+          recentReports,
         };
       });
 
@@ -237,7 +262,7 @@ export const layer = Layer.effect(
             nextPollAt: cooldownUntil,
             updatedAt: now,
           };
-          yield* store.update(deferred);
+          yield* store.updatePollState(deferred);
           return;
         }
 
@@ -286,7 +311,7 @@ export const layer = Layer.effect(
             nextPollAt: addMs(now, delay),
             updatedAt: now,
           };
-          yield* store.update(failed);
+          yield* store.updatePollState(failed);
           yield* store.releaseLease(monitor.canonicalKey, ownerId);
           yield* notify;
           return;
@@ -324,6 +349,8 @@ export const layer = Layer.effect(
         };
 
         const snapshotId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        // Persist observed snapshot, then ingest feedback before advancing the cursor so a
+        // transient ingest failure cannot permanently drop actionable events.
         yield* store.saveSnapshot({
           snapshotId,
           monitorId: monitor.id,
@@ -331,7 +358,17 @@ export const layer = Layer.effect(
           readiness,
           events: actionableEvents,
         });
-        yield* store.update(updated, nextCursor);
+        if (actionableEvents.length > 0) {
+          yield* feedback.ingestSnapshot({
+            monitor: updated,
+            snapshot,
+            readiness,
+            events: actionableEvents,
+          });
+          yield* store.updatePollState(updated, nextCursor);
+        } else {
+          yield* store.updatePollState(updated, nextCursor);
+        }
         yield* store.releaseLease(monitor.canonicalKey, ownerId);
         yield* notify;
       }).pipe(
@@ -344,7 +381,7 @@ export const layer = Layer.effect(
               failureCount,
               hadActionableEvents: false,
             });
-            yield* store.update({
+            yield* store.updatePollState({
               ...monitor,
               status: "error",
               lastError: String(cause).slice(0, 1000),
@@ -383,6 +420,37 @@ export const layer = Layer.effect(
       Effect.interruptible,
     );
 
+    const requestRecheck = (monitor: PullRequestMonitorRecord) =>
+      Effect.gen(function* () {
+        const now = yield* isoNow();
+        yield* store.scheduleRecheck({
+          monitorId: monitor.id,
+          nextPollAt: now,
+          updatedAt: now,
+        });
+      });
+
+    const context = (input: PullRequestMonitorContextInput) =>
+      feedback.context({
+        ...input,
+        resolveMonitor: () =>
+          resolveMonitor({
+            ...(input.monitorId === undefined ? {} : { monitorId: input.monitorId }),
+            ...(input.reference === undefined ? {} : { reference: input.reference }),
+          }).pipe(Effect.catchTag("PullRequestMonitorError", () => Effect.succeed(null))),
+      });
+
+    const report = (input: PullRequestMonitorReportInput) =>
+      feedback.report({
+        ...input,
+        resolveMonitor: () =>
+          resolveMonitor({
+            ...(input.monitorId === undefined ? {} : { monitorId: input.monitorId }),
+            ...(input.reference === undefined ? {} : { reference: input.reference }),
+          }),
+        requestRecheck,
+      });
+
     return PullRequestMonitorService.of({
       start,
       stop,
@@ -394,6 +462,8 @@ export const layer = Layer.effect(
           Stream.fromPubSub(changes).pipe(Stream.mapEffect(() => list(input))),
         ),
       pollOnce,
+      context,
+      report,
     });
   }),
 );

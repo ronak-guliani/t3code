@@ -176,5 +176,16 @@ export function createPullRequestEnvironmentAtoms<R, E>(
       tag: WS_METHODS.pullRequestMonitorsList,
       staleTimeMs: 5_000,
     }),
+    monitorsContext: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:pull-request-monitors:context",
+      tag: WS_METHODS.pullRequestMonitorsContext,
+      staleTimeMs: 5_000,
+    }),
+    monitorsReport: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pull-request-monitors:report",
+      tag: WS_METHODS.pullRequestMonitorsReport,
+      scheduler: commandScheduler,
+      concurrency: serialPerEnvironment,
+    }),
   };
 }

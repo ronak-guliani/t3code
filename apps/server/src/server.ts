@@ -25,6 +25,7 @@ import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
@@ -418,8 +419,14 @@ const PullRequestServiceLive = PullRequestService.layer.pipe(
   Layer.provide(VcsProcess.layer),
 );
 
+const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceLayer.pipe(
+  Layer.provide(PullRequestServiceLive),
+  // ThreadManagementService remains required and is satisfied by orchestration V2 runtime.
+);
+
 const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(PullRequestServiceLive),
+  Layer.provide(PullRequestMonitorFeedbackServiceLive),
 );
 
 export const makeRoutesLayer = Layer.mergeAll(

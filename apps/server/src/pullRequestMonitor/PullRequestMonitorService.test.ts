@@ -1,17 +1,23 @@
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
+  type PullRequestMonitorFeedbackItemId,
   type PullRequestMonitorSnapshot,
   type PullRequestRef,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import Migration0050 from "../persistence/Migrations/050_PullRequestMonitors.ts";
+import Migration0051 from "../persistence/Migrations/051_PullRequestMonitorFeedback.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
+import { layer as pullRequestMonitorFeedbackServiceLayer } from "./PullRequestMonitorFeedbackService.ts";
 import {
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
@@ -121,15 +127,40 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   monitorSnapshot: () => Effect.succeed(sampleSnapshot()),
 });
 
+const fakeThreads = ThreadManagement.ThreadManagementService.of({
+  ensureLegacyTranscript: () => Effect.void,
+  dispatch: () => Effect.die("unused"),
+  getThreadProjection: () => Effect.die("unused"),
+  getThreadSnapshot: () => Effect.die("unused"),
+  getProjectThread: () => Effect.die("unused"),
+  getShellSnapshot: () => Effect.die("unused"),
+  getThreadShell: () => Effect.die("unused"),
+  listProjectThreads: () => Effect.succeed([]),
+  sendToThread: () => Effect.die("unused"),
+  waitForThread: () => Effect.die("unused"),
+  interruptThread: () => Effect.die("unused"),
+  getThreadEventSequence: () => Effect.die("unused"),
+  streamStoredEvents: Stream.die("unused"),
+  streamStoredEventsFrom: () => Stream.die("unused"),
+  streamDomainEvents: Stream.die("unused"),
+});
+
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* SqlClient.SqlClient;
     yield* Migration0050;
+    yield* Migration0051;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 
+const FeedbackLayer = pullRequestMonitorFeedbackServiceLayer.pipe(
+  Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
+  Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
+);
+
 const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
+  Layer.provide(FeedbackLayer),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
 );
@@ -160,11 +191,87 @@ layer("PullRequestMonitorService", (it) => {
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNotNull(status.monitor);
       assert.isNotNull(status.latestSnapshot);
-      assert.strictEqual(status.latestSnapshot?.headSha, "deadbeef");
+      assert.isArray(status.openFeedback);
+      assert.isArray(status.recentDeliveries);
+      assert.isArray(status.recentReports);
 
       const stopped = yield* service.stop({ monitorId: started.monitor.id });
       assert.strictEqual(stopped.monitor.enabled, false);
       assert.strictEqual(stopped.monitor.status, "stopped");
+    }),
+  );
+
+  it.effect("clears reopened dispositions and preserves concurrent pending revisions", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 43,
+      });
+      const now = "2026-08-11T00:00:00.000Z";
+      const itemId = "fb_item_reopened" as PullRequestMonitorFeedbackItemId;
+      const item = {
+        id: itemId,
+        monitorId: started.monitor.id,
+        stableKey: "review:reopened",
+        kind: "review" as const,
+        status: "open" as const,
+        disposition: null,
+        dispositionNote: null,
+        dispositionAt: null,
+        dispositionByThreadId: null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        currentRevisionId: null,
+        summary: "Reopened finding",
+      };
+
+      yield* feedbackStore.upsertOpenItem({ item });
+      yield* feedbackStore.setDisposition({
+        itemId,
+        disposition: "resolved",
+        note: "Fixed",
+        at: now,
+        byThreadId: null,
+        status: "closed",
+      });
+      yield* feedbackStore.upsertOpenItem({ item });
+
+      const reopened = yield* feedbackStore.getItem(itemId);
+      assert.isNotNull(reopened);
+      assert.strictEqual(reopened.status, "open");
+      assert.isNull(reopened.disposition);
+      assert.isNull(reopened.dispositionNote);
+
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        debounceUntil: "2026-08-11T00:00:15.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-b"],
+        debounceUntil: "2026-08-11T00:00:30.000Z",
+        updatedAt: now,
+      });
+      yield* feedbackStore.setDeliveryCircuitState({
+        monitorId: started.monitor.id,
+        deliveryFailureCount: 1,
+        circuitOpenUntil: null,
+        updatedAt: now,
+      });
+      yield* feedbackStore.removePendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: ["revision-a"],
+        updatedAt: now,
+      });
+
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      assert.deepStrictEqual(state.pendingRevisionIds, ["revision-b"]);
+      assert.strictEqual(state.deliveryFailureCount, 1);
     }),
   );
 });

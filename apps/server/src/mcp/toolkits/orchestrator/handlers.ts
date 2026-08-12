@@ -1,8 +1,38 @@
-import { OrchestratorToolkit } from "./tools.ts";
+import { PullRequestMonitorError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
+import { PullRequestMonitorService } from "../../../pullRequestMonitor/PullRequestMonitorService.ts";
+import { OrchestratorToolkit } from "./tools.ts";
+
+const invokerProjectId = Effect.gen(function* () {
+  const scope = yield* McpInvocationContext;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const projection = yield* threads.getThreadProjection(scope.threadId).pipe(
+    Effect.mapError(
+      (cause) =>
+        new PullRequestMonitorError({
+          message: "Could not resolve invoking thread project scope.",
+          cause,
+        }),
+    ),
+  );
+  return projection.thread.projectId;
+});
+
+const assertMonitorInInvokerProject = Effect.fn("mcp.assertMonitorInInvokerProject")(function* (
+  monitorProjectId: string | null | undefined,
+) {
+  if (monitorProjectId == null) return;
+  const projectId = yield* invokerProjectId;
+  if (projectId !== monitorProjectId) {
+    return yield* new PullRequestMonitorError({
+      message: "PR monitor is outside this thread project scope.",
+    });
+  }
+});
 
 const handlers = {
   orchestrator_capabilities: () =>
@@ -108,6 +138,36 @@ const handlers = {
       const scope = yield* McpInvocationContext;
       const service = yield* OrchestratorMcpService;
       return yield* service.interruptThread(scope, input);
+    }),
+  t3_pr_monitor_context: (input) =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const projectId = yield* invokerProjectId;
+      const result = yield* monitors.context(input);
+      if (result.monitor !== null && result.monitor.projectId !== projectId) {
+        return {
+          monitor: null,
+          latestSnapshot: null,
+          items: [],
+          recentDeliveries: [],
+          recentReports: [],
+        };
+      }
+      return result;
+    }),
+  t3_pr_monitor_report: (input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext;
+      const monitors = yield* PullRequestMonitorService;
+      const status = yield* monitors.status({
+        ...(input.monitorId === undefined ? {} : { monitorId: input.monitorId }),
+        ...(input.reference === undefined ? {} : { reference: input.reference }),
+      });
+      yield* assertMonitorInInvokerProject(status.monitor?.projectId);
+      return yield* monitors.report({
+        ...input,
+        reporterThreadId: input.reporterThreadId ?? scope.threadId,
+      });
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 

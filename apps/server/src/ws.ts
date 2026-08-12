@@ -1530,6 +1530,18 @@ const makeWsRpcLayer = (
             pullRequestMonitors.subscribeList(input),
             { "rpc.aggregate": "pull-request-monitors" },
           ),
+        [WS_METHODS.pullRequestMonitorsContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsContext,
+            pullRequestMonitors.context(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsReport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsReport,
+            pullRequestMonitors.report(input),
+            { "rpc.aggregate": "pull-request-monitors" },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
