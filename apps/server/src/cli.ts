@@ -2094,6 +2094,10 @@ const chatSendCommand = Command.make("send", {
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Prompt text.")),
+  crossThreadSource: Flag.string("cross-thread-source").pipe(
+    Flag.optional,
+    Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
+  ),
 }).pipe(
   Command.withDescription("Send a prompt to an existing chat."),
   Command.withHandler((flags) =>
@@ -2111,6 +2115,9 @@ const chatSendCommand = Command.make("send", {
             attachments: [],
           },
           ...(Option.isSome(modelSelection) ? { modelSelection: modelSelection.value } : {}),
+          ...(Option.isSome(flags.crossThreadSource)
+            ? { crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value) }
+            : {}),
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: new Date().toISOString(),
@@ -2136,6 +2143,10 @@ const chatNewCommand = Command.make("new", {
   interactionMode: interactionModeFlag,
   branch: Flag.string("branch").pipe(Flag.optional),
   worktree: Flag.string("worktree").pipe(Flag.optional),
+  crossThreadSource: Flag.string("cross-thread-source").pipe(
+    Flag.optional,
+    Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
+  ),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Prompt text.")),
 }).pipe(
   Command.withDescription("Create a chat and send the first prompt."),
@@ -2185,6 +2196,9 @@ const chatNewCommand = Command.make("new", {
               text: flags.prompt,
               attachments: [],
             },
+            ...(Option.isSome(flags.crossThreadSource)
+              ? { crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value) }
+              : {}),
             modelSelection,
             titleSeed: flags.title,
             runtimeMode: flags.runtimeMode,

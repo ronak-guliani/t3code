@@ -175,6 +175,31 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-message-id="message-continuation"');
   });
 
+  it("renders cross-thread provenance inside a user message bubble", () => {
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...buildUserTimelineEntry("Investigate this."),
+            message: {
+              ...buildUserTimelineEntry("Investigate this.").message,
+              origin: {
+                kind: "cross-thread",
+                sourceThreadId: ThreadId.make("source-thread"),
+                sourceMessageId: MessageId.make("source-message"),
+                sourceThreadTitle: "Source chat",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("From Source chat");
+    expect(markup).toContain("Source chat unavailable");
+  });
+
   it("renders model and usage metadata below assistant responses", () => {
     const turnId = TurnId.make("turn-usage");
     const markup = renderToStaticMarkup(

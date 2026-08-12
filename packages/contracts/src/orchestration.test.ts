@@ -5,8 +5,10 @@ import { Effect, Schema } from "effect";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  ClientOrchestrationCommand,
   DiffState,
   ModelSelection,
+  MessageOrigin,
   OrchestrationCommand,
   OrchestrationCheckpointSummary,
   OrchestrationEvent,
@@ -37,6 +39,8 @@ const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateComma
 const decodeProjectCreatedPayload = Schema.decodeUnknownEffect(ProjectCreatedPayload);
 const decodeProjectMetaUpdatedPayload = Schema.decodeUnknownEffect(ProjectMetaUpdatedPayload);
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+const decodeMessageOrigin = Schema.decodeUnknownEffect(MessageOrigin);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
@@ -713,6 +717,53 @@ it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
     assert.deepStrictEqual(parsed.sourceProposedPlan, {
       threadId: "thread-1",
       planId: "plan-1",
+    });
+  }),
+);
+
+it.effect("does not accept cross-thread provenance from clients", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.turn.start",
+      commandId: "cmd-cross-thread",
+      threadId: "thread-child",
+      message: {
+        messageId: "message-child",
+        role: "user",
+        text: "Investigate the failure.",
+        attachments: [],
+      },
+      origin: {
+        kind: "cross-thread",
+        sourceThreadId: "forged-thread",
+        sourceMessageId: "forged-message",
+        sourceThreadTitle: "Forged title",
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    if (parsed.type !== "thread.turn.start") {
+      assert.fail(`expected thread.turn.start, got ${parsed.type}`);
+    }
+    assert.strictEqual("crossThreadSourceThreadId" in parsed, false);
+    assert.strictEqual("origin" in parsed, false);
+  }),
+);
+
+it.effect("decodes cross-thread message provenance with trimmed source metadata", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeMessageOrigin({
+      kind: "cross-thread",
+      sourceThreadId: " thread-source ",
+      sourceMessageId: " message-source ",
+      sourceThreadTitle: " Source thread ",
+    });
+    assert.deepStrictEqual(parsed, {
+      kind: "cross-thread",
+      sourceThreadId: "thread-source",
+      sourceMessageId: "message-source",
+      sourceThreadTitle: "Source thread",
     });
   }),
 );

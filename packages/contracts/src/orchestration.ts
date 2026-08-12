@@ -240,7 +240,15 @@ export const WorkspaceHandoffOrigin = Schema.Struct({
 });
 export type WorkspaceHandoffOrigin = typeof WorkspaceHandoffOrigin.Type;
 
-export const MessageOrigin = WorkspaceHandoffOrigin;
+export const CrossThreadOrigin = Schema.Struct({
+  kind: Schema.Literal("cross-thread"),
+  sourceThreadId: ThreadId,
+  sourceMessageId: MessageId,
+  sourceThreadTitle: TrimmedNonEmptyString,
+});
+export type CrossThreadOrigin = typeof CrossThreadOrigin.Type;
+
+export const MessageOrigin = Schema.Union([WorkspaceHandoffOrigin, CrossThreadOrigin]);
 export type MessageOrigin = typeof MessageOrigin.Type;
 
 export const OrchestrationMessage = Schema.Struct({
@@ -331,6 +339,7 @@ export const OrchestrationSession = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   activeTurnId: Schema.NullOr(TurnId),
+  activeMessageId: Schema.optional(MessageId),
   resumeCursor: Schema.optional(Schema.Unknown),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   updatedAt: IsoDateTime,
@@ -753,6 +762,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
 });
 
