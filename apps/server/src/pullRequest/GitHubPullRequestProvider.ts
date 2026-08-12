@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/contracts";
 
 import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
+import { fetchGitHubPullRequestMonitorSnapshot } from "./GitHubPullRequestMonitorSnapshot.ts";
 import {
   PullRequestProviderError,
   type ProviderChangeRequestActivity,
@@ -358,6 +359,14 @@ export const make = Effect.gen(function* () {
           resolved: input.resolved,
         })
         .pipe(Effect.mapError(fail("setThreadResolution"))),
+
+    monitorSnapshot: (input) =>
+      fetchGitHubPullRequestMonitorSnapshot({
+        cwd: input.cwd,
+        host: input.host,
+        repository: input.repository,
+        number: input.number,
+      }),
   };
 
   return provider;
