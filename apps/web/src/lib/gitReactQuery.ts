@@ -2,6 +2,7 @@ import {
   type EnvironmentId,
   type GitActionProgressEvent,
   type GitStackedAction,
+  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -170,6 +171,8 @@ export function gitRunStackedActionMutationOptions(input: {
       commitMessage,
       featureBranch,
       filePaths,
+      projectId,
+      threadId,
       onProgress,
     }: {
       actionId: string;
@@ -177,6 +180,8 @@ export function gitRunStackedActionMutationOptions(input: {
       commitMessage?: string;
       featureBranch?: boolean;
       filePaths?: string[];
+      projectId?: ProjectId;
+      threadId?: ThreadId;
       onProgress?: (event: GitActionProgressEvent) => void;
     }) => {
       if (!input.cwd || !input.environmentId) throw new Error("Git action is unavailable.");
@@ -188,6 +193,8 @@ export function gitRunStackedActionMutationOptions(input: {
           ...(commitMessage ? { commitMessage } : {}),
           ...(featureBranch ? { featureBranch: true } : {}),
           ...(filePaths && filePaths.length > 0 ? { filePaths } : {}),
+          ...(projectId ? { projectId } : {}),
+          ...(threadId ? { threadId } : {}),
         },
         ...(onProgress ? [{ onProgress }] : []),
       );

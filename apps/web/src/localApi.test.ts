@@ -106,6 +106,17 @@ const rpcClientMock = {
     reviewerCandidates: vi.fn(),
     requestReviewers: vi.fn(),
   },
+  pullRequestMonitors: {
+    start: vi.fn(),
+    stop: vi.fn(),
+    status: vi.fn(),
+    list: vi.fn(),
+    context: vi.fn(),
+    report: vi.fn(),
+    transfer: vi.fn(),
+    submitFindings: vi.fn(),
+    launchFallback: vi.fn(),
+  },
   workflow: {
     run: vi.fn(),
   },

@@ -5,7 +5,6 @@ import type {
   PullRequestDetail,
   PullRequestDiffSide,
   PullRequestRef,
-  PullRequestReviewCommentDraft,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
 } from "@t3tools/contracts";
@@ -59,6 +58,7 @@ import {
   PullRequestDiffStat,
   PullRequestStateGlyph,
 } from "./pullRequestPresentation";
+import { PullRequestMonitorStrip } from "./PullRequestMonitorStrip";
 
 type DetailTab = "summary" | "conversation" | "code";
 type PullRequestDetailView = PullRequestDetail & PullRequestActivity;
@@ -781,6 +781,9 @@ export function PullRequestDetailPanel({
           ))}
         </nav>
       </header>
+      <div className="border-b border-border px-4 py-2">
+        <PullRequestMonitorStrip environmentId={environmentId} reference={reference} />
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeTab === "summary" ? (
           <div className="space-y-5 p-4">

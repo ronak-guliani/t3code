@@ -317,12 +317,11 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     new PullRequestProviderError({
       provider: "github",
       operation: "monitorSnapshot",
-      reason:
-        error.detail.includes("required but not available on PATH")
-          ? "missing-tool"
-          : error.detail.includes("not authenticated")
-            ? "unauthenticated"
-            : "failed",
+      reason: error.detail.includes("required but not available on PATH")
+        ? "missing-tool"
+        : error.detail.includes("not authenticated")
+          ? "unauthenticated"
+          : "failed",
       detail: error.detail,
       cause: error,
     });

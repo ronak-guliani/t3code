@@ -104,6 +104,8 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequestProviderRegistry.ts";
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
+import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
+import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -207,6 +209,15 @@ const PullRequestLayerLive = PullRequestServiceLive.pipe(
   Layer.provideMerge(PullRequestProviderRegistryLive),
   // monitorSnapshot reads the host via GitHubCli outside the PR CLI wrapper.
   Layer.provideMerge(GitHubCliLive),
+);
+
+const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceLayer.pipe(
+  Layer.provide(PullRequestLayerLive),
+);
+
+const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
+  Layer.provide(PullRequestLayerLive),
+  Layer.provide(PullRequestMonitorFeedbackServiceLive),
 );
 
 // The MCP credential registry and the automation broker are runtime services:
@@ -320,6 +331,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(PullRequestLayerLive),
+  Layer.provideMerge(PullRequestMonitorServiceLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
@@ -348,6 +360,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
+).pipe(
   Layer.provideMerge(ServerEnvironmentLive),
   Layer.provideMerge(PreviewAutomationLayerLive),
   Layer.provideMerge(AuthLayerLive),

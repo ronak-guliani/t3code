@@ -2,9 +2,14 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { GitHubCli } from "../git/Services/GitHubCli.ts";
 import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
 import * as GitHubPullRequestProvider from "./GitHubPullRequestProvider.ts";
 import type { GitHubPullRequestActivity } from "./gitHubPullRequestJson.ts";
+
+const unusedGitHubCli = Layer.succeed(GitHubCli, {
+  execute: () => Effect.die("GitHubCli.execute should not be called"),
+} as unknown as GitHubCli["Service"]);
 
 const pullRequestActivity: GitHubPullRequestActivity = {
   author: null,
@@ -27,18 +32,21 @@ it.effect("reports a strict comment-count lower bound when review-thread loading
   Effect.gen(function* () {
     const provider = yield* GitHubPullRequestProvider.make.pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
-          getPullRequestActivity: () => Effect.succeed(pullRequestActivity),
-          listReviewThreadComments: () =>
-            Effect.fail(
-              new GitHubPullRequestCli.GitHubPullRequestReadError({
-                command: "gh",
-                cwd: "/workspace/web",
-                operation: "listReviewThreadComments",
-                cause: new Error("GitHub GraphQL unavailable"),
-              }),
-            ),
-        }),
+        Layer.mergeAll(
+          unusedGitHubCli,
+          Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+            getPullRequestActivity: () => Effect.succeed(pullRequestActivity),
+            listReviewThreadComments: () =>
+              Effect.fail(
+                new GitHubPullRequestCli.GitHubPullRequestReadError({
+                  command: "gh",
+                  cwd: "/workspace/web",
+                  operation: "listReviewThreadComments",
+                  cause: new Error("GitHub GraphQL unavailable"),
+                }),
+              ),
+          }),
+        ),
       ),
     );
 
@@ -59,24 +67,27 @@ it.effect("reports a strict comment-count lower bound when review-thread loading
   Effect.gen(function* () {
     const provider = yield* GitHubPullRequestProvider.make.pipe(
       Effect.provide(
-        Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
-          getPullRequestActivity: () => Effect.succeed(pullRequestActivity),
-          listReviewThreadComments: () =>
-            Effect.succeed({
-              comments: [],
-              reviewThreads: [],
-              commentCount: 0,
-              truncated: true,
-              reviewers: [],
-              avatarsByLogin: new Map<string, string>(),
-              commitStats: new Map<
-                string,
-                { readonly additions: number; readonly deletions: number }
-              >(),
-              commits: [],
-              viewer: { canUpdate: true, didAuthor: false },
-            }),
-        }),
+        Layer.mergeAll(
+          unusedGitHubCli,
+          Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+            getPullRequestActivity: () => Effect.succeed(pullRequestActivity),
+            listReviewThreadComments: () =>
+              Effect.succeed({
+                comments: [],
+                reviewThreads: [],
+                commentCount: 0,
+                truncated: true,
+                reviewers: [],
+                avatarsByLogin: new Map<string, string>(),
+                commitStats: new Map<
+                  string,
+                  { readonly additions: number; readonly deletions: number }
+                >(),
+                commits: [],
+                viewer: { canUpdate: true, didAuthor: false },
+              }),
+          }),
+        ),
       ),
     );
 
