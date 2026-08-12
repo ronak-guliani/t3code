@@ -782,6 +782,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
 });
 

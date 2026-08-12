@@ -721,7 +721,7 @@ it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
   }),
 );
 
-it.effect("does not accept cross-thread provenance from clients", () =>
+it.effect("accepts a cross-thread source id but not derived provenance from clients", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeClientOrchestrationCommand({
       type: "thread.turn.start",
@@ -739,6 +739,7 @@ it.effect("does not accept cross-thread provenance from clients", () =>
         sourceMessageId: "forged-message",
         sourceThreadTitle: "Forged title",
       },
+      crossThreadSourceThreadId: " thread-source ",
       runtimeMode: "approval-required",
       interactionMode: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -746,7 +747,7 @@ it.effect("does not accept cross-thread provenance from clients", () =>
     if (parsed.type !== "thread.turn.start") {
       assert.fail(`expected thread.turn.start, got ${parsed.type}`);
     }
-    assert.strictEqual("crossThreadSourceThreadId" in parsed, false);
+    assert.strictEqual(parsed.crossThreadSourceThreadId, "thread-source");
     assert.strictEqual("origin" in parsed, false);
   }),
 );
