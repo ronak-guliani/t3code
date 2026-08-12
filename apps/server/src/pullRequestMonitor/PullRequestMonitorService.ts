@@ -32,6 +32,7 @@ import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { diffPullRequestMonitorSnapshot, emptyCursor } from "./monitorDiff.ts";
 import {
   HOST_COOLDOWN_MS,
@@ -102,10 +103,23 @@ export const layer = Layer.effect(
     const store = yield* PullRequestMonitorStore.make;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const feedback = yield* PullRequestMonitorFeedbackService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
     const crypto = yield* Crypto.Crypto;
     const ownerId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const changes = yield* PubSub.sliding<void>(1);
     const notify = PubSub.publish(changes, undefined).pipe(Effect.asVoid);
+
+    const requireProjectThread = (input: {
+      projectId: PullRequestMonitorRecord["projectId"];
+      threadId: ThreadId;
+    }) =>
+      threads.getProjectThread(input).pipe(
+        Effect.mapError((cause) =>
+          monitorError("Target thread is missing, deleted, or outside this monitor project.", {
+            cause,
+          }),
+        ),
+      );
 
     const resolveMonitor = (input: {
       readonly monitorId?: PullRequestMonitorId | undefined;
@@ -194,10 +208,33 @@ export const layer = Layer.effect(
         const now = yield* isoNow();
 
         if (existing) {
+          if (existing.projectId !== input.projectId) {
+            return yield* monitorError(
+              "This pull request is already monitored by another project.",
+              { monitorId: existing.id },
+            );
+          }
+          const nextOwner = input.ownerThreadId ?? existing.ownerThreadId;
+          if (nextOwner !== existing.ownerThreadId) {
+            if (nextOwner === null) {
+              return yield* monitorError("Cannot clear monitor ownership through start().", {
+                monitorId: existing.id,
+              });
+            }
+            yield* requireProjectThread({ projectId: existing.projectId, threadId: nextOwner });
+            yield* store.transferOwnershipAtomic({
+              monitorId: existing.id,
+              ownerThreadId: nextOwner,
+              updatedAt: now,
+              eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+              toThreadId: nextOwner,
+              reason: "start-owner-associate",
+            });
+          }
           const resumed: PullRequestMonitorRecord = {
             ...existing,
             projectId: input.projectId,
-            ownerThreadId: input.ownerThreadId ?? existing.ownerThreadId,
+            ownerThreadId: nextOwner,
             linkedReviewThreadId: existing.linkedReviewThreadId ?? null,
             status: existing.status === "terminal" ? "monitoring" : "monitoring",
             enabled: true,
@@ -206,7 +243,7 @@ export const layer = Layer.effect(
             updatedAt: now,
             stoppedAt: null,
           };
-          yield* store.update(resumed);
+          yield* store.updatePollState(resumed);
           yield* notify;
           // Kick an immediate observe pass for the resumed monitor.
           yield* pollMonitor(resumed).pipe(Effect.ignore);
@@ -257,7 +294,7 @@ export const layer = Layer.effect(
           updatedAt: now,
           stoppedAt: now,
         };
-        yield* store.update(stopped);
+        yield* store.updatePollState(stopped);
         yield* store.releaseLease(monitor.canonicalKey, ownerId);
         yield* notify;
         return { monitor: stopped };
@@ -469,22 +506,21 @@ export const layer = Layer.effect(
         if (monitor.ownerThreadId === input.toThreadId) {
           return { monitor };
         }
+        yield* requireProjectThread({ projectId: monitor.projectId, threadId: input.toThreadId });
         // Never allow two concurrent modifying owners: transfer replaces the single owner.
         const now = yield* isoNow();
-        const fromThreadId = monitor.ownerThreadId;
         const updated = {
           ...monitor,
           ownerThreadId: input.toThreadId,
           updatedAt: now,
         };
-        yield* store.update(updated);
-        yield* store.recordOwnershipEvent({
-          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+        yield* store.transferOwnershipAtomic({
           monitorId: monitor.id,
-          fromThreadId,
+          ownerThreadId: input.toThreadId,
+          updatedAt: now,
+          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
           toThreadId: input.toThreadId,
           reason: input.reason ?? "transfer",
-          createdAt: now,
         });
         yield* notify;
         return { monitor: updated };
@@ -507,25 +543,32 @@ export const layer = Layer.effect(
 
         const ownerThreadId =
           input.ownerThreadId ?? monitorRecord.ownerThreadId ?? (null as ThreadId | null);
+        yield* requireProjectThread({
+          projectId: monitorRecord.projectId,
+          threadId: input.reviewThreadId,
+        });
+        if (ownerThreadId !== null) {
+          yield* requireProjectThread({
+            projectId: monitorRecord.projectId,
+            threadId: ownerThreadId,
+          });
+        }
         const now = yield* isoNow();
-        const previousOwner = monitorRecord.ownerThreadId;
         const updated = {
           ...monitorRecord,
           linkedReviewThreadId: input.reviewThreadId,
           ownerThreadId,
           updatedAt: now,
         };
-        yield* store.update(updated);
-        if (previousOwner !== ownerThreadId || previousOwner === null) {
-          yield* store.recordOwnershipEvent({
-            eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
-            monitorId: updated.id,
-            fromThreadId: previousOwner,
-            toThreadId: ownerThreadId,
-            reason: input.summary?.slice(0, 500) ?? "review-handoff",
-            createdAt: now,
-          });
-        }
+        yield* store.transferOwnershipAtomic({
+          monitorId: updated.id,
+          ownerThreadId,
+          linkedReviewThreadId: input.reviewThreadId,
+          updatedAt: now,
+          eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+          toThreadId: ownerThreadId,
+          reason: input.summary?.slice(0, 500) ?? "review-handoff",
+        });
         yield* notify;
         return {
           monitor: updated,

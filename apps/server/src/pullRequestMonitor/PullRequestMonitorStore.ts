@@ -178,6 +178,15 @@ export interface PullRequestMonitorStoreApi {
     readonly nextPollAt: string;
     readonly updatedAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly transferOwnershipAtomic: (input: {
+    readonly monitorId: PullRequestMonitorId;
+    readonly ownerThreadId: string | null;
+    readonly linkedReviewThreadId?: string | null;
+    readonly updatedAt: string;
+    readonly eventId: string;
+    readonly toThreadId: string | null;
+    readonly reason: string;
+  }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly getCursor: (
     id: PullRequestMonitorId,
   ) => Effect.Effect<PullRequestMonitorCursor, PullRequestMonitorError>;
@@ -453,6 +462,53 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  const transferOwnershipAtomic: PullRequestMonitorStoreApi["transferOwnershipAtomic"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const current = yield* sql<{ owner_thread_id: string | null }>`
+            SELECT owner_thread_id
+            FROM pull_request_monitors
+            WHERE monitor_id = ${input.monitorId}
+          `;
+          const fromThreadId = current[0]?.owner_thread_id ?? null;
+          if (input.linkedReviewThreadId === undefined) {
+            yield* sql`
+              UPDATE pull_request_monitors SET
+                owner_thread_id = ${input.ownerThreadId},
+                updated_at = ${input.updatedAt}
+              WHERE monitor_id = ${input.monitorId}
+            `;
+          } else {
+            yield* sql`
+              UPDATE pull_request_monitors SET
+                owner_thread_id = ${input.ownerThreadId},
+                linked_review_thread_id = ${input.linkedReviewThreadId},
+                updated_at = ${input.updatedAt}
+              WHERE monitor_id = ${input.monitorId}
+            `;
+          }
+          if (fromThreadId !== input.toThreadId) {
+            yield* sql`
+              INSERT INTO pull_request_monitor_ownership_events (
+                event_id, monitor_id, from_thread_id, to_thread_id, reason, created_at
+              ) VALUES (
+                ${input.eventId},
+                ${input.monitorId},
+                ${fromThreadId},
+                ${input.toThreadId},
+                ${input.reason},
+                ${input.updatedAt}
+              )
+            `;
+          }
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) => storeError("Failed to transfer monitor ownership.", cause)),
+        Effect.asVoid,
+      );
+
   const getCursor: PullRequestMonitorStoreApi["getCursor"] = (id) =>
     sql<{ cursor_json: string | null }>`
       SELECT cursor_json FROM pull_request_monitors WHERE monitor_id = ${id}
@@ -633,6 +689,7 @@ export const make = Effect.gen(function* () {
     update,
     updatePollState,
     scheduleRecheck,
+    transferOwnershipAtomic,
     getCursor,
     saveSnapshot,
     latestSnapshot,

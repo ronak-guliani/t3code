@@ -31,17 +31,31 @@ import {
   PullRequestMonitorError,
   PullRequestMonitorReportInput,
   PullRequestMonitorReportResult,
-  PullRequestMonitorSubmitFindingsInput,
   PullRequestMonitorSubmitFindingsResult,
+  PullRequestRef,
+  ThreadId,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestratorMcpService } from "../../OrchestratorMcpService.ts";
+import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import { PullRequestMonitorService } from "../../../pullRequestMonitor/PullRequestMonitorService.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext, OrchestratorMcpService];
-const monitorDependencies = [McpInvocationContext.McpInvocationContext, PullRequestMonitorService];
+const monitorDependencies = [
+  McpInvocationContext.McpInvocationContext,
+  PullRequestMonitorService,
+  ThreadManagement.ThreadManagementService,
+];
+
+const McpPrMonitorSubmitFindingsInput = Schema.Struct({
+  reference: PullRequestRef,
+  ownerThreadId: Schema.optional(ThreadId),
+  summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+  startMonitoring: Schema.optional(Schema.Boolean),
+});
 
 export const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
@@ -254,8 +268,8 @@ export const PrMonitorContextTool = Tool.make("t3_pr_monitor_context", {
 
 export const PrMonitorSubmitFindingsTool = Tool.make("t3_pr_monitor_submit_findings", {
   description:
-    "Handoff structured review findings for a PR: link this review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass.",
-  parameters: PullRequestMonitorSubmitFindingsInput,
+    "Handoff structured review findings for a PR: link this invoking review thread to the owner thread, optionally start monitoring, and never claim concurrent modifying ownership. Use after finishing a review pass.",
+  parameters: McpPrMonitorSubmitFindingsInput,
   success: PullRequestMonitorSubmitFindingsResult,
   failure: PullRequestMonitorError,
   failureMode: "return",

@@ -2142,7 +2142,7 @@ export function GeneralSettingsPanel() {
         ) : null}
 
         <SettingsRow
-          title="Auto-monitor created pull requests"
+          {...searchableSetting("auto-monitor-created-pull-requests")}
           description="When a thread creates a PR, associate ownership and start server-owned monitoring for that thread."
           resetAction={
             settings.autoMonitorPullRequestsOnCreate !==

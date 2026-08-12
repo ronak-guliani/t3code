@@ -38,6 +38,9 @@ T3 Code works with the platforms your team already uses:
 **Stay on top of open reviews**
 
 - See if your current branch already has an open PR/MR
+- When **Settings → General → Auto-monitor created pull requests** is enabled, T3 Code associates a
+  newly created pull request with its thread and monitors it for review feedback
+- The pull request monitor shows the owner thread and any linked review thread
 - Open several reviews from the **Pull requests** page as tabs in the right panel
 - While working in a thread, open linked reviews in the same compact right-panel tabs without
   leaving the conversation

@@ -173,9 +173,11 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext;
       const monitors = yield* PullRequestMonitorService;
+      const status = yield* monitors.status({ reference: input.reference });
+      yield* assertMonitorInInvokerProject(status.monitor?.projectId ?? input.reference.projectId);
       return yield* monitors.submitFindings({
         ...input,
-        reviewThreadId: input.reviewThreadId ?? scope.threadId,
+        reviewThreadId: scope.threadId,
       });
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];

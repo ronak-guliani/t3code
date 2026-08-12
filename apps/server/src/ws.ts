@@ -1817,10 +1817,10 @@ const makeWsRpcLayer = (
                           input.projectId !== undefined &&
                           input.threadId !== undefined
                         ) {
-                          const settings = yield* serverSettings.getSettings.pipe(
-                            Effect.catch(() => Effect.succeed(null)),
-                          );
-                          const enabled = settings?.autoMonitorPullRequestsOnCreate ?? true;
+                          const settingsResult = yield* Effect.result(serverSettings.getSettings);
+                          const enabled =
+                            Result.isSuccess(settingsResult) &&
+                            settingsResult.success.autoMonitorPullRequestsOnCreate === true;
                           const repository = (() => {
                             const url = "url" in result.pr ? result.pr.url : undefined;
                             if (typeof url !== "string") return null;
@@ -1841,10 +1841,7 @@ const makeWsRpcLayer = (
                                 number: result.pr.number,
                                 ownerThreadId: input.threadId,
                               })
-                              .pipe(
-                                Effect.ignore({ log: true }),
-                                Effect.forkDetach({ startImmediately: true }),
-                              );
+                              .pipe(Effect.ignore({ log: true }));
                           }
                         }
                         yield* refreshGitStatus(input.cwd);

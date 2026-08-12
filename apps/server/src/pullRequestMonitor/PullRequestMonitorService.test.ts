@@ -129,12 +129,37 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   monitorSnapshot: () => Effect.succeed(sampleSnapshot()),
 });
 
+const knownThreads = new Set<string>();
+
+function seedThread(threadId: ThreadId) {
+  knownThreads.add(threadId);
+}
+
 const fakeThreads = ThreadManagement.ThreadManagementService.of({
   ensureLegacyTranscript: () => Effect.void,
   dispatch: () => Effect.die("unused"),
   getThreadProjection: () => Effect.die("unused"),
   getThreadSnapshot: () => Effect.die("unused"),
-  getProjectThread: () => Effect.die("unused"),
+  getProjectThread: (input) => {
+    if (!knownThreads.has(input.threadId)) {
+      return Effect.fail(
+        new ThreadManagement.ThreadManagementThreadNotFoundError({
+          projectId: input.projectId,
+          threadId: input.threadId,
+        }),
+      );
+    }
+    return Effect.succeed({
+      thread: {
+        id: input.threadId,
+        projectId: input.projectId,
+        archivedAt: null,
+        deletedAt: null,
+      },
+      runs: [],
+      messages: [],
+    } as never);
+  },
   getShellSnapshot: () => Effect.die("unused"),
   getThreadShell: () => Effect.die("unused"),
   listProjectThreads: () => Effect.succeed([]),
@@ -164,6 +189,7 @@ const FeedbackLayer = pullRequestMonitorFeedbackServiceLayer.pipe(
 const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
   Layer.provide(FeedbackLayer),
+  Layer.provide(Layer.succeed(ThreadManagement.ThreadManagementService, fakeThreads)),
   Layer.provideMerge(MigratedSql),
   Layer.provideMerge(NodeCrypto.layer),
 );
@@ -283,6 +309,8 @@ layer("PullRequestMonitorService", (it) => {
       const service = yield* PullRequestMonitorService;
       const ownerA = ThreadId.make("thr_owner_a");
       const ownerB = ThreadId.make("thr_owner_b");
+      seedThread(ownerA);
+      seedThread(ownerB);
       const started = yield* service.start({
         projectId,
         repository: "acme/app",
@@ -307,6 +335,8 @@ layer("PullRequestMonitorService", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const owner = ThreadId.make("thr_owner_main");
       const review = ThreadId.make("thr_review_1");
+      seedThread(owner);
+      seedThread(review);
       const result = yield* service.submitFindings({
         reference: {
           projectId,
@@ -344,6 +374,9 @@ layer("PullRequestMonitorService", (it) => {
       const ownerA = ThreadId.make("thr_owner_audit_a");
       const ownerB = ThreadId.make("thr_owner_audit_b");
       const review = ThreadId.make("thr_review_audit");
+      seedThread(ownerA);
+      seedThread(ownerB);
+      seedThread(review);
       const started = yield* service.start({
         projectId,
         repository: "acme/app",
@@ -372,6 +405,28 @@ layer("PullRequestMonitorService", (it) => {
         ORDER BY created_at
       `;
       assert.deepEqual(events, [{ from_thread_id: ownerA, to_thread_id: ownerB }]);
+    }),
+  );
+
+  it.effect("rejects ownership transfer to a missing project thread", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("thr_owner_valid");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 46,
+        ownerThreadId: owner,
+      });
+
+      const result = yield* Effect.result(
+        service.transferOwnership({
+          monitorId: started.monitor.id,
+          toThreadId: ThreadId.make("thr_owner_missing"),
+        }),
+      );
+      assert.isTrue(result._tag === "Failure");
     }),
   );
 });

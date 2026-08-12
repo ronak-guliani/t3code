@@ -330,6 +330,8 @@ export function useSelectedThreadGitActions() {
             ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
             ...(input.featureBranch ? { featureBranch: input.featureBranch } : {}),
             ...(input.filePaths?.length ? { filePaths: [...input.filePaths] } : {}),
+            ...(selectedThreadProject?.id ? { projectId: selectedThreadProject.id } : {}),
+            ...(thread.id ? { threadId: thread.id } : {}),
           });
           if (AsyncResult.isFailure(result)) {
             return result;
@@ -367,6 +369,7 @@ export function useSelectedThreadGitActions() {
       runStackedAction,
       refreshSelectedThreadGitStatus,
       runSelectedThreadGitMutation,
+      selectedThreadProject?.id,
       selectedThreadWorktreePath,
       syncSelectedThreadBranchState,
     ],

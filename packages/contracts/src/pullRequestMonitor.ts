@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -200,7 +201,9 @@ export const PullRequestMonitorRecord = Schema.Struct({
   number: PositiveInt,
   projectId: ProjectId,
   ownerThreadId: Schema.NullOr(ThreadId),
-  linkedReviewThreadId: Schema.NullOr(ThreadId),
+  linkedReviewThreadId: Schema.NullOr(ThreadId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   status: PullRequestMonitorLifecycleStatus,
   enabled: Schema.Boolean,
   readiness: Schema.NullOr(PullRequestMonitorReadiness),
