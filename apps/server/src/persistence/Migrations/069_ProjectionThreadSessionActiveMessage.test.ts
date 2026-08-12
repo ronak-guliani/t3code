@@ -21,5 +21,23 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
         assert.isTrue(columns.some((column) => column.name === "active_message_id"));
       }),
     );
+
+    it.effect("repairs a divergent ledger that skipped projection core creation", () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 68 });
+        yield* sql`DROP TABLE projection_thread_sessions`;
+
+        const migration = yield* Effect.promise(
+          () => import("./069_ProjectionThreadSessionActiveMessage.ts"),
+        );
+        yield* migration.default;
+
+        const columns = yield* sql<{ readonly name: string }>`
+          PRAGMA table_info(projection_thread_sessions)
+        `;
+        assert.isTrue(columns.some((column) => column.name === "active_message_id"));
+      }),
+    );
   },
 );

@@ -2098,6 +2098,7 @@ const chatSendCommand = Command.make("send", {
     Flag.optional,
     Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
   ),
+  crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
 }).pipe(
   Command.withDescription("Send a prompt to an existing chat."),
   Command.withHandler((flags) =>
@@ -2116,7 +2117,10 @@ const chatSendCommand = Command.make("send", {
           },
           ...(Option.isSome(modelSelection) ? { modelSelection: modelSelection.value } : {}),
           ...(Option.isSome(flags.crossThreadSource)
-            ? { crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value) }
+            ? {
+                crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
+              }
             : {}),
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
@@ -2147,6 +2151,7 @@ const chatNewCommand = Command.make("new", {
     Flag.optional,
     Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
   ),
+  crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Prompt text.")),
 }).pipe(
   Command.withDescription("Create a chat and send the first prompt."),
@@ -2197,7 +2202,10 @@ const chatNewCommand = Command.make("new", {
               attachments: [],
             },
             ...(Option.isSome(flags.crossThreadSource)
-              ? { crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value) }
+              ? {
+                  crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                  crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
+                }
               : {}),
             modelSelection,
             titleSeed: flags.title,

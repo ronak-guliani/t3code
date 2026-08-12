@@ -9,6 +9,9 @@ import { Effect } from "effect";
 import type { ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { killProcessTree } from "@t3tools/shared/processTree";
+import { ThreadId } from "@t3tools/contracts";
+
+import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
 
 type JsonRpcId = string | number | null;
 
@@ -664,6 +667,8 @@ async function createNestedThreadTool(
     options.threadId,
     "--cross-thread-source",
     options.threadId,
+    "--cross-thread-capability",
+    issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
     "--provider",
     options.providerInstanceId,
     "--model",
@@ -699,6 +704,8 @@ async function sendToThreadTool(
     prompt,
     "--cross-thread-source",
     options.threadId,
+    "--cross-thread-capability",
+    issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
     ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
   ]);
   return result.stdout.trim();

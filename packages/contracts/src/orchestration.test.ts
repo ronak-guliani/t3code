@@ -740,6 +740,7 @@ it.effect("accepts a cross-thread source id but not derived provenance from clie
         sourceThreadTitle: "Forged title",
       },
       crossThreadSourceThreadId: " thread-source ",
+      crossThreadDispatchCapability: "capability",
       runtimeMode: "approval-required",
       interactionMode: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
@@ -748,6 +749,7 @@ it.effect("accepts a cross-thread source id but not derived provenance from clie
       assert.fail(`expected thread.turn.start, got ${parsed.type}`);
     }
     assert.strictEqual(parsed.crossThreadSourceThreadId, "thread-source");
+    assert.strictEqual(parsed.crossThreadDispatchCapability, "capability");
     assert.strictEqual("origin" in parsed, false);
   }),
 );

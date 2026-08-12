@@ -5,6 +5,11 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { LegendListRef } from "@legendapp/list/react";
 import { MessagesTimeline } from "./MessagesTimeline";
 
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => vi.fn(),
+}));
+
 vi.mock("@legendapp/list/react", async () => {
   const React = await import("react");
 
