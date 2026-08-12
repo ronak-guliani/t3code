@@ -452,6 +452,15 @@ code {
   scrollbar-color: transparent transparent;
 }
 
+.is-scrolling {
+  scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
+}
+
+.dark.is-scrolling,
+.dark .is-scrolling {
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
