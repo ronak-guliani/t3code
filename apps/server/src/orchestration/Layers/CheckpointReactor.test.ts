@@ -450,6 +450,7 @@ describe("CheckpointReactor", () => {
     return {
       engine,
       provider,
+      checkpointStore,
       cwd,
       drain,
     };
@@ -1277,29 +1278,21 @@ describe("CheckpointReactor", () => {
     expect(thread.checkpoints[0]?.assistantMessageId).toBeNull();
   });
 
-  it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {
+  it("captures fallback pre-turn baseline from project workspace root when worktree is unset", async () => {
     const harness = await createHarness({
       hasSession: false,
       seedFilesystemCheckpoints: false,
       threadWorktreePath: null,
     });
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-for-baseline"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: MessageId.make("message-user-1"),
-          role: "user",
-          text: "start turn",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: new Date().toISOString(),
-      }),
-    );
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-for-fallback-baseline"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId: ThreadId.make("thread-1"),
+      turnId: asTurnId("turn-fallback-baseline"),
+    });
 
     await waitForGitRefExists(
       harness.cwd,
@@ -1320,23 +1313,11 @@ describe("CheckpointReactor", () => {
     const baselineRef = checkpointBaselineRefForThreadTurn(threadId, 1);
 
     await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-before-provider-edit"),
-        threadId,
-        message: {
-          messageId: MessageId.make("message-before-provider-edit"),
-          role: "user",
-          text: "start turn",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: new Date().toISOString(),
+      harness.checkpointStore.captureCheckpoint({
+        cwd: harness.cwd,
+        checkpointRef: baselineRef,
       }),
     );
-    await waitForGitFileAtRef(harness.cwd, baselineRef, "README.md", "v1\n");
-    await harness.drain();
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "provider edit\n", "utf8");
     harness.provider.emit({
@@ -1359,24 +1340,12 @@ describe("CheckpointReactor", () => {
     const handoffCwd = `${harness.cwd}-handoff`;
     tempDirs.push(handoffCwd);
 
-    fs.writeFileSync(path.join(harness.cwd, "README.md"), "pre-handoff\n", "utf8");
     await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-before-handoff"),
-        threadId,
-        message: {
-          messageId: MessageId.make("message-before-handoff"),
-          role: "user",
-          text: "start before handoff",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: new Date().toISOString(),
+      harness.checkpointStore.captureCheckpoint({
+        cwd: harness.cwd,
+        checkpointRef: baselineRef,
       }),
     );
-    await waitForGitFileAtRef(harness.cwd, baselineRef, "README.md", "pre-handoff\n");
 
     runGit(harness.cwd, ["worktree", "add", "-b", "handoff", handoffCwd, "HEAD"]);
     await Effect.runPromise(
@@ -1647,6 +1616,7 @@ describe("CheckpointReactor", () => {
       threadId: ThreadId.make("thread-1"),
       numTurns: 1,
     });
+    await harness.drain();
     expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),

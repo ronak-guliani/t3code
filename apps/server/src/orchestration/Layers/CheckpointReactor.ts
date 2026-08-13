@@ -680,67 +680,6 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const ensurePreTurnBaselineFromDomainTurnStart = Effect.fn(
-    "ensurePreTurnBaselineFromDomainTurnStart",
-  )(function* (
-    event: Extract<
-      OrchestrationEvent,
-      { type: "thread.turn-start-requested" | "thread.message-sent" }
-    >,
-  ) {
-    if (event.type === "thread.message-sent") {
-      if (
-        event.payload.role !== "user" ||
-        event.payload.streaming ||
-        event.payload.turnId !== null
-      ) {
-        return;
-      }
-    }
-
-    const threadId = event.payload.threadId;
-    const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
-    if (!thread) {
-      return;
-    }
-    if (thread.session?.activeTurnId) {
-      return;
-    }
-
-    const checkpointCwd = yield* resolveCheckpointCwd({
-      threadId,
-      thread,
-      projects: readModel.projects,
-      preferSessionRuntime: false,
-    });
-    if (!checkpointCwd) {
-      return;
-    }
-
-    const baselineTurnCount = latestCapturedCheckpointTurnCount(thread.checkpoints) + 1;
-    const baselineCheckpointRef = checkpointBaselineRefForThreadTurn(threadId, baselineTurnCount);
-    const baselineMatchesWorkspace = yield* checkpointStore.checkpointRefMatchesWorkspace({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
-    if (baselineMatchesWorkspace) {
-      return;
-    }
-
-    yield* checkpointStore.captureCheckpoint({
-      cwd: checkpointCwd,
-      checkpointRef: baselineCheckpointRef,
-    });
-    yield* receiptBus.publish({
-      type: "checkpoint.baseline.captured",
-      threadId,
-      checkpointTurnCount: baselineTurnCount,
-      checkpointRef: baselineCheckpointRef,
-      createdAt: event.occurredAt,
-    });
-  });
-
   const handleRevertRequested = Effect.fn("handleRevertRequested")(function* (
     event: Extract<OrchestrationEvent, { type: "thread.checkpoint-revert-requested" }>,
   ) {
@@ -836,6 +775,7 @@ const make = Effect.gen(function* () {
       checkpointRef: revertGuardRef,
     });
 
+    let providerRolledBack = false;
     let revertCommitted = false;
     yield* Effect.gen(function* () {
       const restored = yield* checkpointStore.restoreCheckpoint({
@@ -856,6 +796,7 @@ const make = Effect.gen(function* () {
           numTurns: rolledBackTurns,
         });
       }
+      providerRolledBack = true;
 
       yield* orchestrationEngine.dispatch({
         type: "thread.revert.complete",
@@ -891,7 +832,7 @@ const make = Effect.gen(function* () {
         );
     }).pipe(
       Effect.onError(() =>
-        revertCommitted
+        providerRolledBack || revertCommitted
           ? Effect.void
           : checkpointStore
               .restoreCheckpoint({
@@ -910,11 +851,6 @@ const make = Effect.gen(function* () {
   });
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {
-    if (event.type === "thread.turn-start-requested" || event.type === "thread.message-sent") {
-      yield* ensurePreTurnBaselineFromDomainTurnStart(event);
-      return;
-    }
-
     if (event.type === "thread.checkpoint-revert-requested") {
       yield* handleRevertRequested(event).pipe(
         Effect.catch((error) =>
@@ -998,8 +934,6 @@ const make = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         if (
-          event.type !== "thread.turn-start-requested" &&
-          event.type !== "thread.message-sent" &&
           event.type !== "thread.checkpoint-revert-requested" &&
           event.type !== "thread.turn-diff-completed"
         ) {
