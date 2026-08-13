@@ -640,6 +640,7 @@ const make = Effect.gen(function* () {
       const baselineMatchesWorkspace = yield* checkpointStore.checkpointRefMatchesWorkspace({
         cwd: checkpointCwd,
         checkpointRef: baselineCheckpointRef,
+        compareContents: false,
       });
       if (baselineMatchesWorkspace) {
         return;

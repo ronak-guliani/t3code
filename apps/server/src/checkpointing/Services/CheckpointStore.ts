@@ -24,6 +24,7 @@ export interface CaptureCheckpointInput {
 export interface CheckpointRefMatchesWorkspaceInput {
   readonly cwd: string;
   readonly checkpointRef: CheckpointRef;
+  readonly compareContents?: boolean;
 }
 
 export interface RestoreCheckpointInput {
@@ -77,8 +78,10 @@ export interface CheckpointStoreShape {
   ) => Effect.Effect<boolean, CheckpointStoreError>;
 
   /**
-   * Check whether a checkpoint ref matches the current worktree path, HEAD, and full workspace
-   * contents, including staged, unstaged, and untracked files.
+   * Check whether a checkpoint ref matches the current worktree path and HEAD.
+   *
+   * By default, also compares full workspace contents, including staged,
+   * unstaged, and untracked files.
    */
   readonly checkpointRefMatchesWorkspace: (
     input: CheckpointRefMatchesWorkspaceInput,

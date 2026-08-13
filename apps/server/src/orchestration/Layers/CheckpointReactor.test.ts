@@ -1314,6 +1314,44 @@ describe("CheckpointReactor", () => {
     ).toBe("v1\n");
   });
 
+  it("preserves the pre-send baseline when turn.started arrives after provider edits", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const threadId = ThreadId.make("thread-1");
+    const baselineRef = checkpointBaselineRefForThreadTurn(threadId, 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-before-provider-edit"),
+        threadId,
+        message: {
+          messageId: MessageId.make("message-before-provider-edit"),
+          role: "user",
+          text: "start turn",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await waitForGitFileAtRef(harness.cwd, baselineRef, "README.md", "v1\n");
+    await harness.drain();
+
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "provider edit\n", "utf8");
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.make("evt-turn-started-after-provider-edit"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: new Date().toISOString(),
+      threadId,
+      turnId: asTurnId("turn-after-provider-edit"),
+    });
+    await harness.drain();
+
+    expect(gitShowFileAtRef(harness.cwd, baselineRef, "README.md")).toBe("v1\n");
+  });
+
   it("re-baselines a shared checkpoint ref after workspace handoff", async () => {
     const harness = await createHarness({ seedFilesystemCheckpoints: false });
     const threadId = ThreadId.make("thread-1");
@@ -1638,6 +1676,8 @@ describe("CheckpointReactor", () => {
       );
     }
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "uncommitted before revert\n", "utf8");
+    runGit(harness.cwd, ["add", "README.md"]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "unstaged before revert\n", "utf8");
 
     await Effect.runPromise(
       harness.engine.dispatch({
@@ -1652,8 +1692,9 @@ describe("CheckpointReactor", () => {
     const thread = await waitForThread(harness.engine, (entry) =>
       entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
     );
+    expect(runGit(harness.cwd, ["show", ":README.md"])).toBe("uncommitted before revert\n");
     expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe(
-      "uncommitted before revert\n",
+      "unstaged before revert\n",
     );
     expect(thread.checkpoints).toHaveLength(2);
     expect(
