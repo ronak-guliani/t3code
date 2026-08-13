@@ -56,7 +56,11 @@ import {
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationViewportTimeoutError,
 } from "./previewAutomationErrors";
-import { previewAutomationOpenNeedsOverlay } from "./previewAutomationOpenReadiness";
+import {
+  previewAutomationDefaultViewport,
+  previewAutomationOpenNeedsOverlay,
+  shouldPresentPreview,
+} from "./previewAutomationOpenReadiness";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
 import {
@@ -76,6 +80,16 @@ import {
   withCurrentPreviewRuntime,
   waitForNavigationReadiness,
 } from "./previewNavigationReadiness";
+
+const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
+
+const waitForPreviewPresentation = async (runtimeTabId: string): Promise<void> => {
+  const deadline = Date.now() + PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS;
+  while (Date.now() <= deadline) {
+    if (useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible) return;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
+  }
+};
 
 const waitForDesktopOverlay = async (
   threadRef: ScopedThreadRef,
@@ -426,7 +440,34 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               activeSnapshot = snapshot;
               tabId = activeTabId;
             }
-            if (input.open ?? input.show ?? true) {
+            const activeRuntimeTabId = previewRuntimeTabId(
+              threadRef,
+              readThreadPreviewState(threadRef).serverEpoch,
+              activeTabId,
+            );
+            if (activeSnapshot) {
+              const defaultViewport = previewAutomationDefaultViewport(
+                reusedExistingTab,
+                activeSnapshot,
+              );
+              if (defaultViewport) {
+                const resizeResult = await resize({
+                  environmentId,
+                  input: {
+                    threadId: request.threadId,
+                    tabId: activeTabId,
+                    viewport: defaultViewport,
+                  },
+                });
+                if (resizeResult._tag === "Failure") {
+                  return raiseAtomCommandFailure(resizeResult);
+                }
+                activeSnapshot = resizeResult.value;
+                updatePreviewServerSnapshot(threadRef, resizeResult.value);
+              }
+            }
+            const shouldPresent = shouldPresentPreview(input);
+            if (shouldPresent) {
               useRightPanelStore.getState().openBrowser(threadRef, activeTabId);
             }
             if (activeSnapshot && previewAutomationOpenNeedsOverlay(input, activeSnapshot)) {
@@ -434,27 +475,24 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 threadRef,
                 request.requestId,
                 activeTabId,
-                previewRuntimeTabId(
-                  threadRef,
-                  readThreadPreviewState(threadRef).serverEpoch,
-                  activeTabId,
-                ),
+                activeRuntimeTabId,
                 request.operation,
                 request.timeoutMs,
               );
             }
+            if (shouldPresent) {
+              // React commits the thread-bound surface asynchronously. Settle
+              // briefly so active-thread opens report visible=true.
+              await waitForPreviewPresentation(activeRuntimeTabId);
+            }
             if (reusedExistingTab && resolvedInputUrl && previewBridge) {
-              const openRuntimeTabId = previewRuntimeTabId(
-                threadRef,
-                readThreadPreviewState(threadRef).serverEpoch,
-                activeTabId,
-              );
-              await previewBridge.navigate(openRuntimeTabId, resolvedInputUrl);
+              assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
+              await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
               await waitForNavigationReadiness(
                 threadRef,
                 request.requestId,
                 activeTabId,
-                openRuntimeTabId,
+                activeRuntimeTabId,
                 request.operation,
                 "load",
                 request.timeoutMs,

@@ -52,7 +52,7 @@ it("normalizes empty successful notification responses to accepted", () => {
 
 it("returns an actionable expired-session response without an OAuth challenge", () => {
   expect(McpHttpServer.invalidMcpCredentialResponse.status).toBe(401);
-  expect(McpHttpServer.invalidMcpCredentialResponse.headers["www-authenticate"]).toBeUndefined();
+  expect(McpHttpServer.invalidMcpCredentialResponse.headers["www-authenticate"]).toBe("Bearer");
   expect(McpHttpServer.invalidMcpCredentialBody).toEqual({
     error: "invalid_mcp_credential",
     message:
