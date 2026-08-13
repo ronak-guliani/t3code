@@ -130,6 +130,29 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         ).toBe(false);
       }),
     );
+
+    it.effect("rejects a baseline when dirty workspace contents change without moving HEAD", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const checkpointRef = checkpointRefForThreadTurn(
+          ThreadId.make("thread-checkpoint-store-dirty-workspace"),
+          0,
+        );
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef });
+        yield* writeTextFile(path.join(tmp, "README.md"), "# dirty\n");
+        yield* writeTextFile(path.join(tmp, "untracked.md"), "untracked\n");
+
+        expect(
+          yield* checkpointStore.checkpointRefMatchesWorkspace({
+            cwd: tmp,
+            checkpointRef,
+          }),
+        ).toBe(false);
+      }),
+    );
   });
 
   describe("diffCheckpoints", () => {
