@@ -57,8 +57,10 @@ import {
   PreviewAutomationViewportTimeoutError,
 } from "./previewAutomationErrors";
 import {
+  PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS,
   previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
+  previewPresentationSettleDecision,
   shouldPresentPreview,
 } from "./previewAutomationOpenReadiness";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
@@ -81,12 +83,17 @@ import {
   waitForNavigationReadiness,
 } from "./previewNavigationReadiness";
 
-const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
-
 const waitForPreviewPresentation = async (runtimeTabId: string): Promise<void> => {
-  const deadline = Date.now() + PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS;
-  while (Date.now() <= deadline) {
-    if (useBrowserSurfaceStore.getState().byTabId[runtimeTabId]?.visible) return;
+  const startedAt = Date.now();
+  for (;;) {
+    const presentation = useBrowserSurfaceStore.getState().byTabId[runtimeTabId];
+    const decision = previewPresentationSettleDecision({
+      visible: presentation?.visible ?? false,
+      claimed: presentation?.owner != null,
+      elapsedMs: Date.now() - startedAt,
+      timeoutMs: PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS,
+    });
+    if (decision === "done") return;
     await new Promise<void>((resolve) => window.setTimeout(resolve, 16));
   }
 };

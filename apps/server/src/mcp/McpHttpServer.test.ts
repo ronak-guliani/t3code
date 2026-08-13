@@ -50,7 +50,7 @@ it("normalizes empty successful notification responses to accepted", () => {
   expect(resultResponse.status).toBe(200);
 });
 
-it("returns an actionable expired-session response without an OAuth challenge", () => {
+it("returns an actionable expired-session response with a Bearer challenge", () => {
   expect(McpHttpServer.invalidMcpCredentialResponse.status).toBe(401);
   expect(McpHttpServer.invalidMcpCredentialResponse.headers["www-authenticate"]).toBe("Bearer");
   expect(McpHttpServer.invalidMcpCredentialBody).toEqual({

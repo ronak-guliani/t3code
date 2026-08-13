@@ -351,6 +351,8 @@ interface PictureInPictureSession {
   readonly webContentsId: number;
   readonly ready: Deferred.Deferred<void, PreviewManagerError>;
   readonly initializationScope: Scope.Closeable;
+  /** Mutable last applied ratio; lives on the session so release cannot race a shared map reinsert. */
+  aspectRatio: number | undefined;
 }
 
 const APP_FORWARDED_SHORTCUTS: ReadonlyArray<{
@@ -450,7 +452,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const pictureInPictureSessionsRef = yield* SynchronizedRef.make<
     ReadonlyMap<string, PictureInPictureSession>
   >(new Map());
-  const pictureInPictureAspectRatiosRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const pictureInPictureMutationSemaphore = yield* Semaphore.make(1);
   const closingTabIdsRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   const tabLifecycleLocks = new Map<
@@ -804,14 +805,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       > => {
         const existing = sessions.get(wc.id);
         if (existing) return Effect.succeed([existing, sessions] as const);
-        if (wc.isDevToolsOpened()) {
+        // Optional calls: test doubles may omit these; treat missing as closed/free.
+        if (wc.isDevToolsOpened?.()) {
           return Effect.fail(
             new PreviewAutomationDevToolsOpenError({
               webContentsId: wc.id,
             }),
           );
         }
-        if (wc.debugger.isAttached()) {
+        if (wc.debugger.isAttached?.()) {
           return Effect.fail(
             new PreviewAutomationDebuggerAttachedError({
               webContentsId: wc.id,
@@ -1597,7 +1599,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       return yield* new PreviewTabNotFoundError({ tabId });
     }
     const { state: registered, pendingUrl } = registration.value;
-    runFork(restoreControlSession(tabId, wc));
+    // Already holding the tab lifecycle lock — restore inline so guest swaps
+    // cannot interleave, and so color-scheme re-apply finishes before return.
+    yield* restoreControlSessionEffect(tabId, wc);
     yield* emit(tabId, registered);
     yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
       wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
@@ -1898,11 +1902,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   });
 
   // Re-establish the control session after a detach, restoring any
-  // color-scheme override the tab carries. The scheme is read after the
-  // session attaches so a concurrent setColorScheme is not overwritten with
-  // a stale snapshot. Re-check webContents identity so a guest swap mid-restore
-  // does not leave the debugger attached to a replaced contents.
-  const restoreControlSession = (tabId: string, wc: Electron.WebContents) =>
+  // color-scheme override the tab carries. Callers that are not already under
+  // withTabLifecycleLock must use restoreControlSession (locked). Register
+  // uses restoreControlSessionEffect while holding the lock. The scheme is read
+  // after the session attaches so a concurrent setColorScheme is not overwritten
+  // with a stale snapshot. Re-check webContents identity so a guest swap
+  // mid-restore does not leave the debugger attached to a replaced contents.
+  const restoreControlSessionEffect = (tabId: string, wc: Electron.WebContents) =>
     Effect.gen(function* () {
       const beforeAttach = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
       if (beforeAttach?.webContentsId !== wc.id) return;
@@ -1916,6 +1922,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* applyColorScheme(tabId, wc, afterAttach.colorScheme);
       }
     }).pipe(Effect.ignore);
+
+  const restoreControlSession = (tabId: string, wc: Electron.WebContents) =>
+    withTabLifecycleLock(tabId, restoreControlSessionEffect(tabId, wc));
 
   const setColorScheme = Effect.fn("PreviewManager.setColorScheme")(function* (
     tabId: string,
@@ -2084,10 +2093,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       if (session && !session.window.isDestroyed() && session.webContentsId === wc.id) {
         deliveries.push(
           Effect.gen(function* () {
-            const previousAspectRatio = (yield* Ref.get(pictureInPictureAspectRatiosRef)).get(
-              tabId,
-            );
+            const live = (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId);
+            if (live !== session || session.window.isDestroyed()) return;
+
             const aspectRatio = frame.width / frame.height;
+            const previousAspectRatio = session.aspectRatio;
             if (
               previousAspectRatio === undefined ||
               Math.abs(previousAspectRatio - aspectRatio) > PICTURE_IN_PICTURE_ASPECT_RATIO_EPSILON
@@ -2099,6 +2109,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   webContentsId: wc.id,
                 },
                 () => {
+                  if (session.window.isDestroyed()) return;
                   const contentSize = fitPictureInPictureContentSize(
                     session.window.getContentSize(),
                     aspectRatio,
@@ -2108,11 +2119,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   session.window.setAspectRatio(aspectRatio);
                 },
               );
-              yield* Ref.update(pictureInPictureAspectRatiosRef, (aspectRatios) =>
-                replaceMap(aspectRatios, (copy) => {
-                  copy.set(tabId, aspectRatio);
-                }),
-              );
+              // Bind ratio to this session object only while it remains current.
+              if (
+                (yield* SynchronizedRef.get(pictureInPictureSessionsRef)).get(tabId) === session
+              ) {
+                session.aspectRatio = aspectRatio;
+              }
             }
             yield* attempt(
               {
@@ -2121,6 +2133,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 webContentsId: wc.id,
               },
               () => {
+                if (
+                  session.window.isDestroyed() ||
+                  // Session identity is checked again before send so a release
+                  // mid-delivery cannot push frames into a closed window.
+                  session.window.webContents.isDestroyed()
+                ) {
+                  return;
+                }
                 session.window.webContents.send("desktop:preview-pip-frame", frame);
               },
             );
@@ -2208,11 +2228,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (!removed) return;
     yield* Deferred.interrupt(expected.ready);
     yield* Scope.close(expected.initializationScope, Exit.void).pipe(Effect.ignore);
-    yield* Ref.update(pictureInPictureAspectRatiosRef, (aspectRatios) =>
-      replaceMap(aspectRatios, (copy) => {
-        copy.delete(tabId);
-      }),
-    );
     yield* stopFrameCapture(tabId, "picture-in-picture");
     if ((yield* SynchronizedRef.get(tabsRef)).has(tabId)) {
       yield* update(tabId, { pictureInPicture: false });
@@ -2305,6 +2320,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               webContentsId: wc.id,
               ready,
               initializationScope,
+              aspectRatio: undefined,
             };
             yield* attempt(
               { operation: "pictureInPicture.configure", tabId, webContentsId: wc.id },

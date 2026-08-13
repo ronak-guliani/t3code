@@ -3,8 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_PREVIEW_AUTOMATION_VIEWPORT,
+  PREVIEW_PRESENTATION_CLAIM_GRACE_MS,
+  PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS,
   previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
+  previewPresentationSettleDecision,
   shouldPresentPreview,
 } from "./previewAutomationOpenReadiness";
 
@@ -75,5 +78,49 @@ describe("preview automation open readiness", () => {
         viewport: { _tag: "freeform", width: 900, height: 600 },
       }),
     ).toBeNull();
+  });
+
+  it("stops presentation settle once the surface is visible", () => {
+    expect(
+      previewPresentationSettleDecision({
+        visible: true,
+        claimed: true,
+        elapsedMs: 0,
+      }),
+    ).toBe("done");
+  });
+
+  it("does not burn the full settle budget when no surface claims the tab", () => {
+    expect(
+      previewPresentationSettleDecision({
+        visible: false,
+        claimed: false,
+        elapsedMs: PREVIEW_PRESENTATION_CLAIM_GRACE_MS,
+      }),
+    ).toBe("done");
+    expect(
+      previewPresentationSettleDecision({
+        visible: false,
+        claimed: false,
+        elapsedMs: PREVIEW_PRESENTATION_CLAIM_GRACE_MS - 1,
+      }),
+    ).toBe("continue");
+  });
+
+  it("keeps waiting for a claimed surface until visible or timeout", () => {
+    expect(
+      previewPresentationSettleDecision({
+        visible: false,
+        claimed: true,
+        elapsedMs: PREVIEW_PRESENTATION_CLAIM_GRACE_MS,
+      }),
+    ).toBe("continue");
+    expect(
+      previewPresentationSettleDecision({
+        visible: false,
+        claimed: true,
+        elapsedMs: PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS,
+      }),
+    ).toBe("done");
   });
 });
