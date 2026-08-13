@@ -861,6 +861,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       prStatus.colorClass,
                     )}
                     style={{ fontSize: "var(--app-sidebar-font-size)" }}
+                    // Pinned rows put dnd-kit listeners on the parent <li>; without
+                    // this guard a slight move while clicking starts a drag.
+                    onPointerDown={stopPropagationOnPointerDown}
                     onClick={handleOpenPrSelected}
                   >
                     #{prStatus.number}
