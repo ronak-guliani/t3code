@@ -611,8 +611,8 @@ const make = Effect.gen(function* () {
         if (!pullRequest) {
           return false;
         }
-        // Terminal states are durable; only re-resolve unknown/open rows.
-        return pullRequest.state === null || pullRequest.state === "open";
+        // Merged PRs cannot transition back; closed PRs can be reopened.
+        return pullRequest.state !== "merged";
       });
 
       yield* Effect.forEach(
