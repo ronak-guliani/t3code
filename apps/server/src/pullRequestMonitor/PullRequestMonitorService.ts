@@ -1,6 +1,5 @@
 import {
   CommandId,
-  formatPullRequestMonitorCanonicalKey,
   MessageId,
   PullRequestMonitorError,
   PullRequestMonitorId,
@@ -42,12 +41,14 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { formatPullRequestMonitorCanonicalKey } from "./canonicalKey.ts";
 import { diffPullRequestMonitorSnapshot, emptyCursor } from "./monitorDiff.ts";
 import {
   abandonFallbackThread,
-  launchFallbackThread,
+  createFallbackThread,
   requireProjectThread as requireProjectThreadV1,
   resolveOwnerAvailability,
+  startFallbackTurn,
   waitForThreadWorktree,
 } from "./v1ThreadBridge.ts";
 import {
@@ -280,13 +281,18 @@ export const layer = Layer.effect(
             updatedAt: now,
             stoppedAt: null,
           };
-          // Poll-only fields + enablement; never rewrite ownership here.
-          yield* store.updatePollState(resumed);
+          // Explicit resume may re-enable after stop; poll commits cannot.
+          yield* store.updatePollState(resumed, undefined, { allowReenable: true });
           yield* notify;
           // Kick an immediate observe pass for the resumed monitor.
           yield* pollMonitor(resumed).pipe(Effect.ignore);
           const fresh = yield* store.getById(resumed.id);
           return { monitor: fresh ?? resumed };
+        }
+
+        const ownerThreadId = input.ownerThreadId ?? null;
+        if (ownerThreadId !== null) {
+          yield* requireProjectThread({ projectId: input.projectId, threadId: ownerThreadId });
         }
 
         const id = PullRequestMonitorId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
@@ -298,7 +304,7 @@ export const layer = Layer.effect(
           repository: detail.repository,
           number: detail.number,
           projectId: input.projectId,
-          ownerThreadId: input.ownerThreadId ?? null,
+          ownerThreadId,
           linkedReviewThreadId: null,
           status: "monitoring",
           enabled: true,
@@ -874,8 +880,10 @@ export const layer = Layer.effect(
             readinessSummary: formatBlockersSummary(readiness),
           });
 
-          const launchResult = yield* Effect.result(
-            launchFallbackThread({
+          // Create the thread first (no turn). Claim exclusive ownership, then start
+          // the maintenance turn so two modifiers can never race on the same PR.
+          const createResult = yield* Effect.result(
+            createFallbackThread({
               commandId,
               projectId: monitor.projectId,
               title: `PR maintenance ${monitor.repository}#${monitor.number}`,
@@ -889,16 +897,14 @@ export const layer = Layer.effect(
                 baseBranch: snapshot.baseBranch,
                 headBranch: snapshot.headBranch,
               },
-              messageId,
-              prompt,
             }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
           );
 
-          if (Result.isFailure(launchResult)) {
+          if (Result.isFailure(createResult)) {
             const message =
-              launchResult.failure instanceof Error
-                ? launchResult.failure.message
-                : String(launchResult.failure);
+              createResult.failure instanceof Error
+                ? createResult.failure.message
+                : String(createResult.failure);
             yield* store.recordFallbackLaunch({
               launchId: attemptId,
               monitorId: monitor.id,
@@ -910,14 +916,14 @@ export const layer = Layer.effect(
               createdAt: now,
             });
             return yield* Effect.fail(
-              monitorError(`Fallback thread launch failed: ${message.slice(0, 300)}`, {
+              monitorError(`Fallback thread create failed: ${message.slice(0, 300)}`, {
                 monitorId: monitor.id,
-                cause: launchResult.failure,
+                cause: createResult.failure,
               }),
             );
           }
 
-          const fallbackThreadId = launchResult.success.threadId;
+          const fallbackThreadId = createResult.success.threadId;
           const prepared = yield* waitForPreparedWorktree(fallbackThreadId);
           if (!prepared) {
             yield* abandonFallback({
@@ -972,6 +978,39 @@ export const layer = Layer.effect(
               monitorError("Ownership changed during fallback launch; abandoned prepared thread.", {
                 monitorId: monitor.id,
               }),
+            );
+          }
+
+          const turnResult = yield* Effect.result(
+            startFallbackTurn({
+              threadId: fallbackThreadId,
+              commandId: CommandId.make(`${commandIdValue}:turn`),
+              messageId,
+              text: prompt,
+            }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
+          );
+          if (Result.isFailure(turnResult)) {
+            // Ownership already transferred; leave the thread for the operator and surface the error.
+            const message =
+              turnResult.failure instanceof Error
+                ? turnResult.failure.message
+                : String(turnResult.failure);
+            yield* store.recordFallbackLaunch({
+              launchId: attemptId,
+              monitorId: monitor.id,
+              commandId: commandIdValue,
+              threadId: fallbackThreadId,
+              reason,
+              status: "failed",
+              error: `Ownership transferred but turn start failed: ${message.slice(0, 800)}`,
+              createdAt: now,
+            });
+            yield* notify;
+            return yield* Effect.fail(
+              monitorError(
+                `Fallback ownership transferred but turn start failed: ${message.slice(0, 300)}`,
+                { monitorId: monitor.id, cause: turnResult.failure },
+              ),
             );
           }
 

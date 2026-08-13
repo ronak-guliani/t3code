@@ -7,12 +7,12 @@ import {
   type PullRequestMonitorReadiness,
   type PullRequestMonitorRecord,
   type PullRequestMonitorSnapshot,
-  formatPullRequestMonitorCanonicalKey,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { formatPullRequestMonitorCanonicalKey } from "./canonicalKey.ts";
 import { emptyCursor, type PullRequestMonitorCursor } from "./monitorDiff.ts";
 import { MAX_RETAINED_SNAPSHOTS } from "./pollSchedule.ts";
 
@@ -175,10 +175,13 @@ export interface PullRequestMonitorStoreApi {
   /**
    * Poll/lifecycle fields only — never rewrites ownership or review-link metadata,
    * so concurrent transfer/handoff cannot be clobbered by an in-flight poll.
+   * Poll commits with `enabled: true` refuse to overwrite a concurrent stop unless
+   * `allowReenable` is set (explicit start/resume).
    */
   readonly updatePollState: (
     record: PullRequestMonitorRecord,
     cursor?: PullRequestMonitorCursor,
+    options?: { readonly allowReenable?: boolean },
   ) => Effect.Effect<void, PullRequestMonitorError>;
   /** Narrow recheck schedule bump that cannot overwrite concurrent poll/ownership writes. */
   readonly scheduleRecheck: (input: {
@@ -440,43 +443,55 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
-  const updatePollState: PullRequestMonitorStoreApi["updatePollState"] = (record, cursor) =>
-    (cursor
-      ? sql`
-          UPDATE pull_request_monitors SET
-            status = ${record.status},
-            enabled = ${record.enabled ? 1 : 0},
-            readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
-            head_sha = ${record.headSha},
-            source_revision = ${record.sourceRevision},
-            cursor_json = ${encodeUnknownJson(cursor)},
-            last_polled_at = ${record.lastPolledAt},
-            next_poll_at = ${record.nextPollAt},
-            last_error = ${record.lastError},
-            poll_failure_count = ${record.pollFailureCount},
-            updated_at = ${record.updatedAt},
-            stopped_at = ${record.stoppedAt}
-          WHERE monitor_id = ${record.id}
-        `
-      : sql`
-          UPDATE pull_request_monitors SET
-            status = ${record.status},
-            enabled = ${record.enabled ? 1 : 0},
-            readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
-            head_sha = ${record.headSha},
-            source_revision = ${record.sourceRevision},
-            last_polled_at = ${record.lastPolledAt},
-            next_poll_at = ${record.nextPollAt},
-            last_error = ${record.lastError},
-            poll_failure_count = ${record.pollFailureCount},
-            updated_at = ${record.updatedAt},
-            stopped_at = ${record.stoppedAt}
-          WHERE monitor_id = ${record.id}
-        `
+  const updatePollState: PullRequestMonitorStoreApi["updatePollState"] = (
+    record,
+    cursor,
+    options,
+  ) => {
+    // When continuing monitoring, refuse to clobber a concurrent stop().
+    // Intentional disables (stop/terminal) always apply; start/resume may re-enable.
+    const enabledGuard =
+      record.enabled && options?.allowReenable !== true ? sql`AND enabled = 1` : sql``;
+    return (
+      cursor
+        ? sql`
+            UPDATE pull_request_monitors SET
+              status = ${record.status},
+              enabled = ${record.enabled ? 1 : 0},
+              readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
+              head_sha = ${record.headSha},
+              source_revision = ${record.sourceRevision},
+              cursor_json = ${encodeUnknownJson(cursor)},
+              last_polled_at = ${record.lastPolledAt},
+              next_poll_at = ${record.nextPollAt},
+              last_error = ${record.lastError},
+              poll_failure_count = ${record.pollFailureCount},
+              updated_at = ${record.updatedAt},
+              stopped_at = ${record.stoppedAt}
+            WHERE monitor_id = ${record.id}
+            ${enabledGuard}
+          `
+        : sql`
+            UPDATE pull_request_monitors SET
+              status = ${record.status},
+              enabled = ${record.enabled ? 1 : 0},
+              readiness_json = ${record.readiness ? encodeUnknownJson(record.readiness) : null},
+              head_sha = ${record.headSha},
+              source_revision = ${record.sourceRevision},
+              last_polled_at = ${record.lastPolledAt},
+              next_poll_at = ${record.nextPollAt},
+              last_error = ${record.lastError},
+              poll_failure_count = ${record.pollFailureCount},
+              updated_at = ${record.updatedAt},
+              stopped_at = ${record.stoppedAt}
+            WHERE monitor_id = ${record.id}
+            ${enabledGuard}
+          `
     ).pipe(
       Effect.mapError((cause) => storeError("Failed to update monitor poll state.", cause)),
       Effect.asVoid,
     );
+  };
 
   const scheduleRecheck: PullRequestMonitorStoreApi["scheduleRecheck"] = (input) =>
     sql`
@@ -681,7 +696,9 @@ export const make = Effect.gen(function* () {
         WHERE canonical_key = ${input.canonicalKey}
       `;
       const row = existing[0];
-      if (row && row.expires_at > input.nowIso && row.owner_id !== input.ownerId) {
+      // Reject every unexpired lease, including same-process ownerId. This is a
+      // single poll-attempt claim, not a renewable process lock.
+      if (row && row.expires_at > input.nowIso) {
         return false;
       }
       const generation = (row?.generation ?? 0) + 1;
@@ -697,13 +714,12 @@ export const make = Effect.gen(function* () {
           acquired_at = excluded.acquired_at,
           expires_at = excluded.expires_at
         WHERE pull_request_monitor_leases.expires_at <= ${input.nowIso}
-           OR pull_request_monitor_leases.owner_id = ${input.ownerId}
       `;
-      const confirm = yield* sql<{ owner_id: string }>`
-        SELECT owner_id FROM pull_request_monitor_leases
+      const confirm = yield* sql<{ owner_id: string; expires_at: string }>`
+        SELECT owner_id, expires_at FROM pull_request_monitor_leases
         WHERE canonical_key = ${input.canonicalKey}
       `;
-      return confirm[0]?.owner_id === input.ownerId;
+      return confirm[0]?.owner_id === input.ownerId && confirm[0]?.expires_at === input.expiresAt;
     }).pipe(Effect.mapError((cause) => storeError("Failed to acquire monitor lease.", cause)));
 
   const releaseLease: PullRequestMonitorStoreApi["releaseLease"] = (canonicalKey, ownerId) =>

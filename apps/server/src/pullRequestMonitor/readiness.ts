@@ -58,13 +58,12 @@ export function computeReadiness(
     }
   }
 
+  // Readiness considers every currently unresolved thread. Baseline/start timing
+  // only gates notification generation in the diff path, not merge readiness.
+  void previousThreadVersions;
+  void monitoringStartedAt;
   for (const thread of snapshot.reviewThreads) {
-    const previous = previousThreadVersions[thread.id];
-    const changedSinceStart =
-      monitoringStartedAt === undefined ||
-      thread.updatedAt > monitoringStartedAt ||
-      (previous?.resolved === true && !thread.resolved);
-    if (!thread.resolved && changedSinceStart) {
+    if (!thread.resolved) {
       blockers.push({ kind: "unresolved-thread", detail: thread.id });
     }
   }

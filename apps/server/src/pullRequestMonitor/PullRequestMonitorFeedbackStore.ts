@@ -152,6 +152,9 @@ export interface PullRequestMonitorFeedbackStoreApi {
   readonly insertRevision: (
     revision: Omit<PullRequestMonitorFeedbackRevision, "payload"> & { readonly payload: unknown },
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly listRevisionsByIds: (
+    revisionIds: ReadonlyArray<PullRequestMonitorFeedbackRevisionId | string>,
+  ) => Effect.Effect<ReadonlyArray<PullRequestMonitorFeedbackRevision>, PullRequestMonitorError>;
   readonly getItem: (
     itemId: PullRequestMonitorFeedbackItemId,
   ) => Effect.Effect<PullRequestMonitorFeedbackItem | null, PullRequestMonitorError>;
@@ -326,6 +329,52 @@ export const PullRequestMonitorFeedbackStore = {
           ),
           Effect.mapError((cause) => storeError("Failed to attach feedback revision.", cause)),
         );
+
+    const listRevisionsByIds: PullRequestMonitorFeedbackStoreApi["listRevisionsByIds"] = (
+      revisionIds,
+    ) => {
+      if (revisionIds.length === 0) {
+        return Effect.succeed([]);
+      }
+      const idsJson = JSON.stringify([...revisionIds]);
+      return sql<{
+        readonly revision_id: string;
+        readonly item_id: string;
+        readonly revision_number: number;
+        readonly payload_json: string;
+        readonly source_revision: string;
+        readonly head_sha: string;
+        readonly created_at: string;
+        readonly summary: string | null;
+      }>`
+        SELECT revision_id, item_id, revision_number, payload_json, source_revision, head_sha, created_at, summary
+        FROM pull_request_monitor_feedback_revisions
+        WHERE revision_id IN (SELECT value FROM json_each(${idsJson}))
+        ORDER BY created_at ASC
+      `.pipe(
+        Effect.map((rows) =>
+          rows.map((row) => {
+            let payload: unknown = null;
+            try {
+              payload = JSON.parse(row.payload_json) as unknown;
+            } catch {
+              payload = { raw: row.payload_json.slice(0, 500) };
+            }
+            return {
+              id: row.revision_id as PullRequestMonitorFeedbackRevisionId,
+              itemId: row.item_id as PullRequestMonitorFeedbackItemId,
+              revisionNumber: row.revision_number,
+              sourceRevision: row.source_revision,
+              headSha: row.head_sha,
+              createdAt: row.created_at,
+              summary: (row.summary ?? "").slice(0, 500),
+              payload,
+            } satisfies PullRequestMonitorFeedbackRevision;
+          }),
+        ),
+        Effect.mapError((cause) => storeError("Failed to load feedback revisions.", cause)),
+      );
+    };
 
     const setDisposition: PullRequestMonitorFeedbackStoreApi["setDisposition"] = (input) =>
       sql`
@@ -601,6 +650,7 @@ export const PullRequestMonitorFeedbackStore = {
     return {
       upsertOpenItem,
       insertRevision,
+      listRevisionsByIds,
       getItem,
       listItems,
       setDisposition,

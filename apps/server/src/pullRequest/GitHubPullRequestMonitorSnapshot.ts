@@ -70,12 +70,14 @@ const MonitorPageSchema = Schema.Struct({
               nodes: Schema.Array(ReviewSchema),
               pageInfo: Schema.Struct({
                 hasNextPage: Schema.Boolean,
+                hasPreviousPage: Schema.Boolean,
               }),
             }),
             reviewThreads: Schema.Struct({
               nodes: Schema.Array(ThreadSchema),
               pageInfo: Schema.Struct({
                 hasNextPage: Schema.Boolean,
+                hasPreviousPage: Schema.Boolean,
               }),
             }),
           }),
@@ -164,7 +166,7 @@ query($owner: String!, $name: String!, $number: Int!) {
           commit { oid }
           body
         }
-        pageInfo { hasNextPage }
+        pageInfo { hasNextPage hasPreviousPage }
       }
       reviewThreads(last: 100) {
         nodes {
@@ -182,7 +184,7 @@ query($owner: String!, $name: String!, $number: Int!) {
             }
           }
         }
-        pageInfo { hasNextPage }
+        pageInfo { hasNextPage hasPreviousPage }
       }
     }
   }
@@ -362,87 +364,95 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   const headSha = pullRequest.headRefOid;
   const [ownerName, repoName] = [owner, name];
 
-  const issueCommentsRaw = yield* github
-    .execute({
-      cwd: input.cwd,
-      args: [
-        "api",
-        "--hostname",
-        input.host,
-        "-H",
-        "Accept: application/vnd.github+json",
-        `repos/${ownerName}/${repoName}/issues/${input.number}/comments?per_page=100`,
+  // Independent host reads — run concurrently so poll latency is max, not sum.
+  const [issueCommentsDecoded, checkRunsDecoded, statusesDecoded, compareDecoded] =
+    yield* Effect.all(
+      [
+        github
+          .execute({
+            cwd: input.cwd,
+            args: [
+              "api",
+              "--hostname",
+              input.host,
+              "-H",
+              "Accept: application/vnd.github+json",
+              `repos/${ownerName}/${repoName}/issues/${input.number}/comments?per_page=100`,
+            ],
+          })
+          .pipe(
+            Effect.mapError(mapCliError),
+            Effect.flatMap((raw) =>
+              decodeOrFail(IssueCommentsSchema, raw.stdout, "monitorSnapshot.issueComments"),
+            ),
+          ),
+        github
+          .execute({
+            cwd: input.cwd,
+            args: [
+              "api",
+              "--hostname",
+              input.host,
+              "-H",
+              "Accept: application/vnd.github+json",
+              `repos/${ownerName}/${repoName}/commits/${headSha}/check-runs?per_page=100`,
+            ],
+          })
+          .pipe(
+            Effect.mapError(mapCliError),
+            Effect.flatMap((raw) =>
+              decodeOrFail(CheckRunsSchema, raw.stdout, "monitorSnapshot.checkRuns"),
+            ),
+          ),
+        github
+          .execute({
+            cwd: input.cwd,
+            args: [
+              "api",
+              "--hostname",
+              input.host,
+              "-H",
+              "Accept: application/vnd.github+json",
+              `repos/${ownerName}/${repoName}/commits/${headSha}/status`,
+            ],
+          })
+          .pipe(
+            Effect.mapError(mapCliError),
+            Effect.orElseSucceed(() => ({ stdout: "{}" })),
+            Effect.flatMap((raw) =>
+              decodeOrFail(
+                StatusesSchema,
+                raw.stdout === "" ? "{}" : raw.stdout,
+                "monitorSnapshot.statuses",
+              ).pipe(Effect.orElseSucceed(() => ({ statuses: [] as const, sha: headSha }))),
+            ),
+          ),
+        github
+          .execute({
+            cwd: input.cwd,
+            args: [
+              "api",
+              "--hostname",
+              input.host,
+              "-H",
+              "Accept: application/vnd.github+json",
+              `repos/${ownerName}/${repoName}/compare/${encodeURIComponent(pullRequest.baseRefName)}...${headSha}`,
+            ],
+          })
+          .pipe(
+            Effect.mapError(mapCliError),
+            Effect.orElseSucceed(() => ({ stdout: "{}" })),
+            Effect.flatMap((raw) =>
+              decodeOrFail(
+                CompareSchema,
+                raw.stdout === "" ? "{}" : raw.stdout,
+                "monitorSnapshot.compare",
+              ).pipe(Effect.orElseSucceed(() => ({ behind_by: undefined }))),
+            ),
+          ),
       ],
-    })
-    .pipe(Effect.mapError(mapCliError));
-  const issueCommentsDecoded = yield* decodeOrFail(
-    IssueCommentsSchema,
-    issueCommentsRaw.stdout,
-    "monitorSnapshot.issueComments",
-  );
-
-  const checkRunsRaw = yield* github
-    .execute({
-      cwd: input.cwd,
-      args: [
-        "api",
-        "--hostname",
-        input.host,
-        "-H",
-        "Accept: application/vnd.github+json",
-        `repos/${ownerName}/${repoName}/commits/${headSha}/check-runs?per_page=100`,
-      ],
-    })
-    .pipe(Effect.mapError(mapCliError));
-  const checkRunsDecoded = yield* decodeOrFail(
-    CheckRunsSchema,
-    checkRunsRaw.stdout,
-    "monitorSnapshot.checkRuns",
-  );
-
-  const statusesRaw = yield* github
-    .execute({
-      cwd: input.cwd,
-      args: [
-        "api",
-        "--hostname",
-        input.host,
-        "-H",
-        "Accept: application/vnd.github+json",
-        `repos/${ownerName}/${repoName}/commits/${headSha}/status`,
-      ],
-    })
-    .pipe(
-      Effect.mapError(mapCliError),
-      Effect.orElseSucceed(() => ({ stdout: "{}" })),
+      { concurrency: "unbounded" },
     );
-  const statusesDecoded = yield* decodeOrFail(
-    StatusesSchema,
-    statusesRaw.stdout === "" ? "{}" : statusesRaw.stdout,
-    "monitorSnapshot.statuses",
-  ).pipe(Effect.orElseSucceed(() => ({ statuses: [] as const, sha: headSha })));
-
-  const compareRaw = yield* github
-    .execute({
-      cwd: input.cwd,
-      args: [
-        "api",
-        "--hostname",
-        input.host,
-        "-H",
-        "Accept: application/vnd.github+json",
-        `repos/${ownerName}/${repoName}/compare/${encodeURIComponent(pullRequest.baseRefName)}...${headSha}`,
-      ],
-    })
-    .pipe(
-      Effect.mapError(mapCliError),
-      Effect.orElseSucceed(() => ({ stdout: "{}" })),
-    );
-  const compareDecoded = yield* decodeOrFail(
-    CompareSchema,
-    compareRaw.stdout === "" ? "{}" : compareRaw.stdout,
-    "monitorSnapshot.compare",
-  ).pipe(Effect.orElseSucceed(() => ({ behind_by: undefined })));
 
   const reviews: PullRequestMonitorReview[] = pullRequest.reviews.nodes.map((review) => ({
     id: review.id,
@@ -531,8 +541,12 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     fetchedAt,
     sourceRevision,
     completeness: {
-      reviewsComplete: !pullRequest.reviews.pageInfo.hasNextPage,
-      reviewThreadsComplete: !pullRequest.reviewThreads.pageInfo.hasNextPage,
+      // `last: 100` walks backward; older omitted pages surface as hasPreviousPage.
+      reviewsComplete:
+        !pullRequest.reviews.pageInfo.hasNextPage && !pullRequest.reviews.pageInfo.hasPreviousPage,
+      reviewThreadsComplete:
+        !pullRequest.reviewThreads.pageInfo.hasNextPage &&
+        !pullRequest.reviewThreads.pageInfo.hasPreviousPage,
       issueCommentsComplete: issueCommentsDecoded.length < 100,
       checksComplete: checkRunsDecoded.check_runs.length < 100,
       // GitHub check-runs endpoint is observed checks, not branch protection required set.

@@ -133,17 +133,26 @@ export function buildWakePrompt(input: {
   readonly repository: string;
   readonly deliveryId: string;
   readonly events: ReadonlyArray<PullRequestMonitorActionableEvent>;
+  /** Fallback lines when event payloads are incomplete. */
+  readonly revisionSummaries?: ReadonlyArray<string>;
   readonly snapshot: PullRequestMonitorSnapshot;
   readonly readiness: PullRequestMonitorReadiness;
 }): string {
   const eventLines =
-    input.events.length === 0
-      ? "- (batched feedback revisions; inspect context tool for details)"
-      : input.events.map((event) => formatEvent(event, input.snapshot)).join("\n");
+    input.events.length > 0
+      ? input.events.map((event) => formatEvent(event, input.snapshot)).join("\n")
+      : (input.revisionSummaries ?? [])
+          .map((summary) => `- ${excerpt(summary)}`)
+          .slice(0, 12)
+          .join("\n");
+  const activityBlock =
+    eventLines.length > 0
+      ? eventLines
+      : "- (batched feedback revisions; no recoverable event payloads)";
 
-  return `New activity on ${input.repository}#${input.prNumber} (PR monitor delivery ${input.deliveryId}).
+  const body = `New activity on ${input.repository}#${input.prNumber} (PR monitor delivery ${input.deliveryId}).
 
-${eventLines}
+${activityBlock}
 
 Status:
 ${formatBlockersSummary(input.readiness)}
@@ -157,5 +166,6 @@ Policy:
 - For CI failures: compare against ${input.snapshot.baseBranch}; re-run suspected flakes; if the same real failure repeats, ask the user rather than guessing.
 - Never force-push, destroy history, or merge without explicit human approval.
 - Merge stays human-controlled.
-- Use t3_pr_monitor_context for full typed feedback context and t3_pr_monitor_report for dispositions.`;
+- Prefer typed monitor context/report tools when available; otherwise use the durable summaries above.`;
+  return body.length > 3_500 ? `${body.slice(0, 3_499)}…` : body;
 }

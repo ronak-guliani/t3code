@@ -30,9 +30,6 @@ export const PullRequestMonitorCanonicalKey = Schema.Struct({
 });
 export type PullRequestMonitorCanonicalKey = typeof PullRequestMonitorCanonicalKey.Type;
 
-export const formatPullRequestMonitorCanonicalKey = (key: PullRequestMonitorCanonicalKey): string =>
-  `${key.provider}:${key.host}:${key.repository}#${key.number}`;
-
 export const PullRequestMonitorLifecycleStatus = Schema.Literals([
   "monitoring",
   "ready",

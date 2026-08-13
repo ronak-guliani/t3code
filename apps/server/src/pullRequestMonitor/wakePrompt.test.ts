@@ -54,8 +54,23 @@ describe("wakePrompt", () => {
       readiness,
     });
     expect(prompt).toContain("acme/app#12");
-    expect(prompt).toContain("t3_pr_monitor_report");
+    expect(prompt).toContain("Check");
+    expect(prompt).toContain("untrusted data");
     expect(prompt.length).toBeLessThan(4_000);
+  });
+
+  it("falls back to revision summaries when events are empty", () => {
+    const prompt = buildWakePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      deliveryId: "del_2",
+      events: [],
+      revisionSummaries: ["check-failed: ci", "new-review-comment: thr_1"],
+      snapshot,
+      readiness,
+    });
+    expect(prompt).toContain("check-failed: ci");
+    expect(prompt).toContain("new-review-comment");
   });
 
   it("builds a bounded fallback maintenance prompt", () => {

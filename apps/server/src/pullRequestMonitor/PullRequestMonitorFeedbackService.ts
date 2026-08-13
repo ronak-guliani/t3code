@@ -370,17 +370,38 @@ export const layer = Layer.effect(
           blockers: [{ kind: "checks-missing" as const }],
         };
 
-        // Reconstruct a minimal event list from revision payloads is optional; wake with empty events uses context tool.
+        // Reconstruct bounded events from durable revision payloads so the wake
+        // prompt is useful even while MCP context tools are deferred on main.
+        const revisions = yield* feedbackStore.listRevisionsByIds(delivery.revisionIds);
+        const events: Array<PullRequestMonitorActionableEvent> = [];
+        const revisionSummaries: string[] = [];
+        for (const revision of revisions) {
+          revisionSummaries.push(revision.summary);
+          const payload = revision.payload;
+          if (
+            payload &&
+            typeof payload === "object" &&
+            "event" in payload &&
+            payload.event &&
+            typeof payload.event === "object" &&
+            "kind" in payload.event &&
+            typeof (payload.event as { kind: unknown }).kind === "string"
+          ) {
+            events.push(payload.event as PullRequestMonitorActionableEvent);
+          }
+        }
+
         const prompt = buildWakePrompt({
           prNumber: monitor.number,
           repository: monitor.repository,
           deliveryId: delivery.id,
-          events: [],
+          events,
+          revisionSummaries,
           snapshot,
           readiness,
         });
 
-        // V1: thread.turn.start queues behind an active turn via the engine/decider.
+        // V1: durable queue behind any active turn; QueuedTurnReactor drains later.
         const sendResult = yield* Effect.result(
           sendQueuedTurn({
             threadId: ownerThreadId,
@@ -433,7 +454,7 @@ export const layer = Layer.effect(
             deliveryId: delivery.id,
             commandId: delivery.commandId,
             messageId: delivery.messageId,
-            deliveredVia: "thread.turn.start",
+            deliveredVia: "thread.queued-turn.create",
           }),
         });
         yield* feedbackStore.setDeliveryCircuitState({

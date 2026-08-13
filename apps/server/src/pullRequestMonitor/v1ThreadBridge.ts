@@ -1,13 +1,15 @@
 /**
  * V1 orchestration adapters for PR monitoring (main has no orchestration-v2).
- * Delivery uses thread.turn.start (queued when a turn is active). Fallback uses
- * bootstrap createThread with a prepared worktree path.
+ * Delivery uses thread.queued-turn.create so remediation never steers an active
+ * turn; QueuedTurnReactor drains when the thread is free. Fallback creates the
+ * thread first, then starts a turn after ownership is claimed by the caller.
  */
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   MessageId,
+  QueuedTurnId,
   type ModelSelection,
   type ProjectId,
   ThreadId,
@@ -20,6 +22,7 @@ import * as crypto from "node:crypto";
 
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+
 export type OwnerAvailability =
   | { readonly kind: "available" }
   | { readonly kind: "unavailable"; readonly reason: "owner-missing" | "owner-unavailable" }
@@ -105,7 +108,87 @@ export const requireProjectThread = (input: {
     };
   });
 
+/**
+ * Durably queue remediation behind any active turn. QueuedTurnReactor dispatches
+ * when the thread is free; never call thread.turn.start for feedback delivery.
+ */
 export const sendQueuedTurn = (input: {
+  readonly threadId: ThreadId;
+  readonly commandId: CommandId;
+  readonly messageId: MessageId;
+  readonly text: string;
+}): Effect.Effect<void, unknown, OrchestrationEngineService> =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    const now = yield* Effect.map(DateTime.now, (d) => DateTime.formatIso(DateTime.toUtc(d)));
+    // Deterministic queued-turn id from delivery command id for logical exactly-once.
+    const queuedTurnId = QueuedTurnId.make(`prm-q:${input.commandId}`);
+    yield* engine.dispatch({
+      type: "thread.queued-turn.create",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      queuedTurnId,
+      message: {
+        messageId: input.messageId,
+        role: "user",
+        text: input.text,
+        attachments: [],
+      },
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: now,
+    });
+  });
+
+/**
+ * Create the fallback thread with a prepared worktree. Does not start a turn —
+ * callers claim ownership first, then call startFallbackTurn.
+ */
+export const createFallbackThread = (input: {
+  readonly projectId: ProjectId;
+  readonly commandId: CommandId;
+  readonly title: string;
+  readonly modelSelection: ModelSelection;
+  readonly worktreePath: string;
+  readonly branch: string | null;
+  readonly pullRequest: {
+    readonly number: number;
+    readonly title: string;
+    readonly url: string;
+    readonly baseBranch: string;
+    readonly headBranch: string;
+  };
+}): Effect.Effect<{ readonly threadId: ThreadId }, unknown, OrchestrationEngineService> =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    const now = yield* Effect.map(DateTime.now, (d) => DateTime.formatIso(DateTime.toUtc(d)));
+    const threadId = ThreadId.make(crypto.randomUUID());
+    yield* engine.dispatch({
+      type: "thread.create",
+      commandId: input.commandId,
+      threadId,
+      projectId: input.projectId,
+      title: input.title,
+      modelSelection: input.modelSelection,
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: input.branch,
+      worktreePath: input.worktreePath,
+      pullRequest: {
+        number: input.pullRequest.number,
+        title: input.pullRequest.title,
+        url: input.pullRequest.url,
+        baseBranch: input.pullRequest.baseBranch,
+        headBranch: input.pullRequest.headBranch,
+        state: "open",
+      },
+      createdAt: now,
+    });
+    return { threadId };
+  });
+
+/** Start the first maintenance turn after ownership has been claimed. */
+export const startFallbackTurn = (input: {
   readonly threadId: ThreadId;
   readonly commandId: CommandId;
   readonly messageId: MessageId;
@@ -128,64 +211,6 @@ export const sendQueuedTurn = (input: {
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
       createdAt: now,
     });
-  });
-
-export const launchFallbackThread = (input: {
-  readonly projectId: ProjectId;
-  readonly commandId: CommandId;
-  readonly messageId: MessageId;
-  readonly title: string;
-  readonly modelSelection: ModelSelection;
-  readonly worktreePath: string;
-  readonly branch: string | null;
-  readonly pullRequest: {
-    readonly number: number;
-    readonly title: string;
-    readonly url: string;
-    readonly baseBranch: string;
-    readonly headBranch: string;
-  };
-  readonly prompt: string;
-}): Effect.Effect<{ readonly threadId: ThreadId }, unknown, OrchestrationEngineService> =>
-  Effect.gen(function* () {
-    const engine = yield* OrchestrationEngineService;
-    const now = yield* Effect.map(DateTime.now, (d) => DateTime.formatIso(DateTime.toUtc(d)));
-    const threadId = ThreadId.make(crypto.randomUUID());
-    yield* engine.dispatch({
-      type: "thread.turn.start",
-      commandId: input.commandId,
-      threadId,
-      message: {
-        messageId: input.messageId,
-        role: "user",
-        text: input.prompt,
-        attachments: [],
-      },
-      runtimeMode: DEFAULT_RUNTIME_MODE,
-      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-      createdAt: now,
-      bootstrap: {
-        createThread: {
-          projectId: input.projectId,
-          title: input.title,
-          modelSelection: input.modelSelection,
-          runtimeMode: DEFAULT_RUNTIME_MODE,
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          branch: input.branch,
-          worktreePath: input.worktreePath,
-          pullRequest: {
-            number: input.pullRequest.number,
-            title: input.pullRequest.title,
-            url: input.pullRequest.url,
-            baseBranch: input.pullRequest.baseBranch,
-            headBranch: input.pullRequest.headBranch,
-            state: "open",
-          },
-          createdAt: now,
-        },
-      },
-    } as never);
-    return { threadId };
   });
 
 export const waitForThreadWorktree = (

@@ -485,6 +485,8 @@ export function pullRequestMonitorStatusQueryOptions(input: {
   return queryOptions({
     queryKey: pullRequestQueryKeys.monitorStatus(input.environmentId, input.reference),
     staleTime: PULL_REQUEST_STALE_TIME_MS,
+    // Server owns monitor truth; keep the strip fresh while the panel is open.
+    refetchInterval: 15_000,
     queryFn: async () => {
       const api = await ensureEnvironmentApi(input.environmentId);
       return api.pullRequestMonitors.status(statusInput);

@@ -182,7 +182,12 @@ const fakeProjections = {
 } as unknown as ProjectionSnapshotQuery["Service"];
 
 const fakeEngine = {
-  dispatch: (command: { type: string; threadId?: ThreadId; bootstrap?: unknown }) =>
+  dispatch: (command: {
+    type: string;
+    threadId?: ThreadId;
+    worktreePath?: string | null;
+    bootstrap?: unknown;
+  }) =>
     Effect.sync(() => {
       const entry: { type: string; threadId?: ThreadId } = { type: command.type };
       if (command.threadId !== undefined) entry.threadId = command.threadId;
@@ -190,9 +195,12 @@ const fakeEngine = {
       if (command.type === "thread.archive" && command.threadId) {
         abandonedThreadIds.push(command.threadId);
       }
-      if (command.type === "thread.turn.start" && command.bootstrap && command.threadId) {
+      // Fallback creates the thread first, claims ownership, then starts a turn.
+      if (command.type === "thread.create" && command.threadId) {
         const path =
-          launchWorktreePath === null ? null : `${launchWorktreePath}-${command.threadId}`;
+          launchWorktreePath === null
+            ? null
+            : (command.worktreePath ?? `${launchWorktreePath}-${command.threadId}`);
         launchedFallbackIds.push(command.threadId);
         seedThread(command.threadId, path);
       }
