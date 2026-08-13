@@ -777,6 +777,7 @@ const make = Effect.gen(function* () {
 
     let providerRolledBack = false;
     let revertCommitted = false;
+    let guardRestored = false;
     yield* Effect.gen(function* () {
       const restored = yield* checkpointStore.restoreCheckpoint({
         cwd: sessionRuntime.value.cwd,
@@ -795,8 +796,8 @@ const make = Effect.gen(function* () {
           threadId: sessionRuntime.value.threadId,
           numTurns: rolledBackTurns,
         });
+        providerRolledBack = true;
       }
-      providerRolledBack = true;
 
       yield* orchestrationEngine.dispatch({
         type: "thread.revert.complete",
@@ -839,13 +840,30 @@ const make = Effect.gen(function* () {
                 cwd: sessionRuntime.value.cwd,
                 checkpointRef: revertGuardRef,
               })
-              .pipe(Effect.asVoid),
+              .pipe(
+                Effect.flatMap((restored) =>
+                  restored
+                    ? Effect.sync(() => {
+                        guardRestored = true;
+                      })
+                    : Effect.fail(
+                        new CheckpointInvariantError({
+                          operation: "CheckpointReactor.handleRevertRequested",
+                          detail: "Failed to restore the pre-revert workspace guard.",
+                        }),
+                      ),
+                ),
+              ),
       ),
       Effect.ensuring(
-        checkpointStore.deleteCheckpointRefs({
-          cwd: sessionRuntime.value.cwd,
-          checkpointRefs: [revertGuardRef],
-        }),
+        Effect.suspend(() =>
+          revertCommitted || guardRestored
+            ? checkpointStore.deleteCheckpointRefs({
+                cwd: sessionRuntime.value.cwd,
+                checkpointRefs: [revertGuardRef],
+              })
+            : Effect.void,
+        ),
       ),
     );
   });
