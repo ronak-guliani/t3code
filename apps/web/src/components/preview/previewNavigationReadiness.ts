@@ -3,6 +3,11 @@ import {
   type PreviewAutomationRequest,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
+import {
+  isNetworkIdleSample,
+  NETWORK_IDLE_SAMPLE_EXPRESSION,
+  resolveNetworkIdleQuietMs,
+} from "@t3tools/shared/previewNetworkIdle";
 
 import { isCurrentPreviewRuntimeTab } from "~/browser/previewRuntimeTabId";
 import { readThreadPreviewState } from "~/previewStateStore";
@@ -58,12 +63,14 @@ export async function waitForNavigationReadiness(
   readiness: PreviewAutomationNavigateInput["readiness"],
   timeoutMs: number,
 ): Promise<void> {
-  const targetReadiness = readiness ?? "load";
+  const requestedReadiness = readiness ?? "load";
   const bridge = previewBridge;
   if (!bridge) return;
   assertPreviewRuntimeCurrent(threadRef, tabId, runtimeTabId, { operation, requestId });
-  if (targetReadiness === "none") return;
+  if (requestedReadiness === "none") return;
+  const targetReadiness = requestedReadiness;
   const deadline = Date.now() + timeoutMs;
+  const quietMs = resolveNetworkIdleQuietMs();
   while (Date.now() <= deadline) {
     if (targetReadiness === "domContentLoaded") {
       const readyState = await withCurrentPreviewRuntime(
@@ -77,6 +84,52 @@ export async function waitForNavigationReadiness(
           }),
       );
       if (readyState === "interactive" || readyState === "complete") return;
+    } else if (targetReadiness === "networkIdle") {
+      const status = await withCurrentPreviewRuntime(
+        threadRef,
+        tabId,
+        runtimeTabId,
+        { operation, requestId },
+        () => bridge.automation.status(runtimeTabId),
+      );
+      const sample = await withCurrentPreviewRuntime(
+        threadRef,
+        tabId,
+        runtimeTabId,
+        { operation, requestId },
+        () =>
+          bridge.automation.evaluate(runtimeTabId, {
+            expression: NETWORK_IDLE_SAMPLE_EXPRESSION,
+          }),
+      );
+      const parsed =
+        typeof sample === "object" && sample !== null
+          ? (sample as {
+              readyState?: unknown;
+              msSinceLastResource?: unknown;
+              nowMs?: unknown;
+            })
+          : null;
+      if (
+        parsed &&
+        typeof parsed.readyState === "string" &&
+        (parsed.msSinceLastResource === null || typeof parsed.msSinceLastResource === "number") &&
+        typeof parsed.nowMs === "number" &&
+        isNetworkIdleSample(
+          {
+            readyState: parsed.readyState,
+            loadingFlag: Boolean(status.available && status.loading),
+            msSinceLastResource:
+              typeof parsed.msSinceLastResource === "number" || parsed.msSinceLastResource === null
+                ? parsed.msSinceLastResource
+                : null,
+            nowMs: parsed.nowMs,
+          },
+          quietMs,
+        )
+      ) {
+        return;
+      }
     } else {
       const status = await withCurrentPreviewRuntime(
         threadRef,

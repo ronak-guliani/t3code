@@ -240,9 +240,34 @@ const classifyResponseError = (
         ...remoteDiagnostics,
       });
     case "PreviewAutomationInvalidSelectorError": {
+      const detail =
+        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const remoteSelectorKind =
+        detail &&
+        "selectorKind" in detail &&
+        (detail.selectorKind === "locator" || detail.selectorKind === "selector")
+          ? detail.selectorKind
+          : undefined;
+      const remoteSelectorLength =
+        detail &&
+        "selectorLength" in detail &&
+        typeof detail.selectorLength === "number" &&
+        Number.isInteger(detail.selectorLength) &&
+        detail.selectorLength >= 0
+          ? detail.selectorLength
+          : undefined;
+      const candidateLocators =
+        detail && "candidateLocators" in detail && Array.isArray(detail.candidateLocators)
+          ? detail.candidateLocators.filter(
+              (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+            )
+          : undefined;
       return new PreviewAutomationInvalidSelectorError({
         ...context,
         ...remoteDiagnostics,
+        ...(remoteSelectorKind === undefined ? {} : { selectorKind: remoteSelectorKind }),
+        ...(remoteSelectorLength === undefined ? {} : { selectorLength: remoteSelectorLength }),
+        ...(candidateLocators && candidateLocators.length > 0 ? { candidateLocators } : {}),
       });
     }
     case "PreviewAutomationTargetNotEditableError": {
@@ -264,6 +289,12 @@ const classifyResponseError = (
         detail.selectorLength >= 0
           ? detail.selectorLength
           : undefined;
+      const candidateLocators =
+        detail && "candidateLocators" in detail && Array.isArray(detail.candidateLocators)
+          ? detail.candidateLocators.filter(
+              (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+            )
+          : undefined;
       return new PreviewAutomationTargetNotEditableError({
         ...context,
         ...remoteDiagnostics,
@@ -273,6 +304,7 @@ const classifyResponseError = (
         ...(remoteSelectorLength === undefined && context.selectorLength === undefined
           ? {}
           : { selectorLength: remoteSelectorLength ?? context.selectorLength }),
+        ...(candidateLocators && candidateLocators.length > 0 ? { candidateLocators } : {}),
       });
     }
     case "PreviewAutomationResultTooLargeError": {

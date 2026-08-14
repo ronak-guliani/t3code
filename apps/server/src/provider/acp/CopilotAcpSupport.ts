@@ -42,7 +42,7 @@ export const COPILOT_LEGACY_PLAN_MODE_ID = "https://github.com/github/copilot-cl
 
 export const COPILOT_WORKSPACE_INSTRUCTIONS = `# T3 Code tools
 
-- MCP boundary: \`t3-code\` is the collaborative browser automation server. Use the canonical browser tools there: \`preview_open\`, \`preview_status\`, \`preview_navigate\`, \`preview_snapshot\`, \`preview_click\`, \`preview_type\`, and the related \`preview_*\` tools.
+- MCP boundary: \`t3-code\` is the collaborative browser automation server. Use the canonical browser tools there: \`preview_open\`, \`preview_open_and_snapshot\`, \`preview_tabs\`, \`preview_status\`, \`preview_navigate\`, \`preview_snapshot\`, \`preview_click\`, \`preview_type\`, and the related \`preview_*\` tools.
 - MCP boundary: \`t3-tools\` is the workspace, terminal, skills, web, memory, handoff, nested-thread, cross-thread, and PR-association server.
 - Never use the legacy \`t3-tools\` preview stubs (\`preview_screenshot\`, \`preview_click\`, \`preview_type\`, \`preview_annotate\`) when \`t3-code\` is available.
 - If a \`t3-code\` browser tool fails with \`401\` and \`www-authenticate: Bearer\`, its per-session MCP credential is invalid or expired. Restart the chat/session to reconnect browser automation.

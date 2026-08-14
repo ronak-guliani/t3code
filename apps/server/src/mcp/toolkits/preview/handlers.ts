@@ -8,6 +8,7 @@ import type {
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
+  PreviewAutomationTabsResult,
   PreviewTabId,
 } from "@t3tools/contracts";
 
@@ -64,8 +65,26 @@ const invokeTargeted = <A>(
 
 const handlers = {
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
+  preview_tabs: (input) => invokeTargeted<PreviewAutomationTabsResult>("listTabs", input ?? {}),
   preview_open: (input) =>
     invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+  preview_open_and_snapshot: (input) => {
+    const normalized = normalizePreviewOpenInput({
+      ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
+      ...(input.url === undefined ? {} : { url: input.url }),
+      ...(input.open === undefined ? {} : { open: input.open }),
+      ...(input.show === undefined ? {} : { show: input.show }),
+      ...(input.reuseExistingTab === undefined ? {} : { reuseExistingTab: input.reuseExistingTab }),
+    });
+    return invokeTargeted<PreviewAutomationSnapshot>(
+      "openAndSnapshot",
+      {
+        ...input,
+        ...normalized,
+      },
+      input.timeoutMs,
+    );
+  },
   preview_navigate: (input) =>
     invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
   preview_resize: (input) =>
@@ -89,12 +108,13 @@ const handlers = {
     invokeTargeted<PreviewAutomationRecordingArtifact>("recordingStop", input ?? {}),
 } satisfies Parameters<typeof PreviewToolkit.toLayer>[0];
 
-const { preview_snapshot, ...standardHandlers } = handlers;
+const { preview_snapshot, preview_open_and_snapshot, ...standardHandlers } = handlers;
 
 export const PreviewStandardToolkitHandlersLive = PreviewStandardToolkit.toLayer(standardHandlers);
 
 export const PreviewSnapshotToolkitHandlersLive = PreviewSnapshotToolkit.toLayer({
   preview_snapshot,
+  preview_open_and_snapshot,
 });
 
 export const PreviewToolkitHandlersLive = PreviewToolkit.toLayer(handlers);

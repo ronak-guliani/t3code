@@ -7,11 +7,14 @@ import {
   PREVIEW_AUTOMATION_OPERATIONS,
   type EnvironmentId,
   type PreviewAutomationNavigateInput,
+  type PreviewAutomationOpenAndSnapshotInput,
   type PreviewAutomationOpenInput,
   type PreviewAutomationResizeInput,
   type PreviewAutomationResizeResult,
   type PreviewAutomationSetColorSchemeInput,
   type PreviewAutomationSetColorSchemeResult,
+  type PreviewAutomationSnapshotInput,
+  type PreviewAutomationTabsResult,
   type PreviewAutomationHost as PreviewAutomationHostState,
   type PreviewAutomationRequest,
   type PreviewAutomationStatus,
@@ -63,6 +66,7 @@ import {
   previewPresentationSettleDecision,
   shouldPresentPreview,
 } from "./previewAutomationOpenReadiness";
+import { resolveSnapshotBudgets } from "./previewSnapshotBudgets";
 import { createPreviewAutomationRequestConsumerAtom } from "./previewAutomationRequestConsumer";
 import { createPreviewAutomationClientId } from "./previewAutomationClientId";
 import {
@@ -614,9 +618,186 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               colorScheme: input.colorScheme,
             } satisfies PreviewAutomationSetColorSchemeResult;
           }
+          case "listTabs": {
+            const stateNow = readThreadPreviewState(threadRef);
+            const surfaces = useBrowserSurfaceStore.getState().byTabId;
+            const tabs = Object.values(stateNow.sessions).map((session) => {
+              const runtimeTabId = previewRuntimeTabId(
+                threadRef,
+                stateNow.serverEpoch,
+                session.tabId,
+              );
+              const presentation = surfaces[runtimeTabId];
+              const nav = session.navStatus;
+              return {
+                tabId: session.tabId,
+                url: nav._tag === "Idle" ? null : nav.url,
+                title: nav._tag === "Idle" ? null : nav.title,
+                active: stateNow.activeTabId === session.tabId,
+                loading: nav._tag === "Loading",
+                visible: presentation?.visible ?? false,
+              };
+            });
+            return {
+              tabs,
+              activeTabId: stateNow.activeTabId,
+            } satisfies PreviewAutomationTabsResult;
+          }
           case "snapshot": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.snapshot(ready.runtimeTabId);
+            const input = (request.input ?? {}) as PreviewAutomationSnapshotInput;
+            return await ready.bridge.automation.snapshot(
+              ready.runtimeTabId,
+              resolveSnapshotBudgets(input),
+            );
+          }
+          case "openAndSnapshot": {
+            const input = request.input as PreviewAutomationOpenAndSnapshotInput;
+            const openInput: PreviewAutomationOpenInput = {
+              ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
+              ...(input.url === undefined ? {} : { url: input.url }),
+              ...(input.open === undefined ? {} : { open: input.open }),
+              ...(input.show === undefined ? {} : { show: input.show }),
+              ...(input.reuseExistingTab === undefined
+                ? {}
+                : { reuseExistingTab: input.reuseExistingTab }),
+            };
+            const resolvedInputUrl = openInput.url
+              ? resolveBrowserNavigationTarget(environmentId, {
+                  kind: "url",
+                  url: openInput.url,
+                }).resolvedUrl
+              : input.target
+                ? resolveBrowserNavigationTarget(environmentId, input.target).resolvedUrl
+                : undefined;
+            let activeTabId = resolvePreviewAutomationOpenTab(
+              state,
+              request.tabId,
+              openInput.reuseExistingTab ?? true,
+            );
+            let activeSnapshot = activeTabId
+              ? (state.sessions[activeTabId] ?? state.snapshot ?? undefined)
+              : undefined;
+            const reusedExistingTab = activeTabId !== null;
+            tabId = activeTabId;
+            if (!activeTabId) {
+              const result = await open({
+                environmentId,
+                input: {
+                  threadId: request.threadId,
+                  ...(resolvedInputUrl ? { url: resolvedInputUrl } : {}),
+                },
+              });
+              if (result._tag === "Failure") {
+                return raiseAtomCommandFailure(result);
+              }
+              const snapshot = result.value;
+              applyPreviewServerSnapshot(threadRef, snapshot);
+              activeTabId = snapshot.tabId;
+              activeSnapshot = snapshot;
+              tabId = activeTabId;
+            }
+            const activeRuntimeTabId = previewRuntimeTabId(
+              threadRef,
+              readThreadPreviewState(threadRef).serverEpoch,
+              activeTabId,
+            );
+            if (activeSnapshot) {
+              const defaultViewport = previewAutomationDefaultViewport(
+                reusedExistingTab,
+                activeSnapshot,
+              );
+              if (defaultViewport) {
+                const resizeResult = await resize({
+                  environmentId,
+                  input: {
+                    threadId: request.threadId,
+                    tabId: activeTabId,
+                    viewport: defaultViewport,
+                  },
+                });
+                if (resizeResult._tag === "Failure") {
+                  return raiseAtomCommandFailure(resizeResult);
+                }
+                activeSnapshot = resizeResult.value;
+                updatePreviewServerSnapshot(threadRef, resizeResult.value);
+              }
+            }
+            const shouldPresent = shouldPresentPreview(openInput);
+            if (shouldPresent) {
+              useRightPanelStore.getState().openBrowser(threadRef, activeTabId);
+            }
+            if (activeSnapshot && previewAutomationOpenNeedsOverlay(openInput, activeSnapshot)) {
+              await waitForDesktopOverlay(
+                threadRef,
+                request.requestId,
+                activeTabId,
+                activeRuntimeTabId,
+                request.operation,
+                request.timeoutMs,
+              );
+            }
+            if (shouldPresent) {
+              await waitForPreviewPresentation(activeRuntimeTabId);
+            }
+            const shouldNavigate =
+              Boolean(resolvedInputUrl) &&
+              (Boolean(input.target) || Boolean(reusedExistingTab) || Boolean(openInput.url));
+            if (shouldNavigate && previewBridge && resolvedInputUrl) {
+              assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
+              await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
+              await waitForNavigationReadiness(
+                threadRef,
+                request.requestId,
+                activeTabId,
+                activeRuntimeTabId,
+                request.operation,
+                input.readiness ?? "load",
+                input.timeoutMs ?? request.timeoutMs,
+              );
+            } else if (input.readiness && input.readiness !== "none" && previewBridge) {
+              await waitForNavigationReadiness(
+                threadRef,
+                request.requestId,
+                activeTabId,
+                activeRuntimeTabId,
+                request.operation,
+                input.readiness,
+                input.timeoutMs ?? request.timeoutMs,
+              );
+            }
+            const bridge = previewBridge;
+            if (!bridge) {
+              throw new PreviewAutomationTargetUnavailableError({
+                requestId: request.requestId,
+                operation: request.operation,
+                environmentId,
+                threadId: request.threadId,
+                tabId: activeTabId,
+                bridgeAvailable: false,
+              });
+            }
+            await waitForDesktopOverlay(
+              threadRef,
+              request.requestId,
+              activeTabId,
+              activeRuntimeTabId,
+              request.operation,
+              request.timeoutMs,
+            );
+            const snapshotInput = resolveSnapshotBudgets({
+              includeConsole: input.includeConsole,
+              includeNetwork: input.includeNetwork,
+              includeAccessibilityTree: input.includeAccessibilityTree,
+              consoleMode: input.consoleMode,
+              networkMode: input.networkMode,
+              maxVisibleText: input.maxVisibleText,
+              maxInteractiveElements: input.maxInteractiveElements,
+              maxScreenshotEdge: input.maxScreenshotEdge,
+              maxConsoleEntries: input.maxConsoleEntries,
+              maxNetworkEntries: input.maxNetworkEntries,
+            });
+            return await bridge.automation.snapshot(activeRuntimeTabId, snapshotInput);
           }
           case "click": {
             const ready = await requireReadyTab();

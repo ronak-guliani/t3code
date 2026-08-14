@@ -54,6 +54,7 @@ import {
   type PreviewAutomationResponse,
   PreviewAutomationScrollInput,
   type PreviewAutomationSnapshot,
+  PreviewAutomationSnapshotInput,
   type PreviewAutomationStatus,
   type PreviewAutomationStreamEvent,
   PreviewAutomationTypeInput,
@@ -732,6 +733,11 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
   input: PreviewAutomationWaitForInput,
 });
 
+export const DesktopPreviewAutomationSnapshotInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  input: Schema.optional(PreviewAutomationSnapshotInput),
+});
+
 export interface DesktopPreviewBridge {
   createTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -791,7 +797,10 @@ export interface DesktopPreviewBridge {
   };
   automation: {
     status: (tabId: string) => Promise<PreviewAutomationStatus>;
-    snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
+    snapshot: (
+      tabId: string,
+      input?: PreviewAutomationSnapshotInput,
+    ) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
     press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
