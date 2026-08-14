@@ -83,6 +83,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { CHAT_NEW_WORKSPACE_CLEANUP_SAFE } from "./cliProtocol.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
 import { getAutoBootstrapDefaultModelSelection } from "./serverRuntimeStartup.ts";
 import { readPersistedServerRuntimeState } from "./serverRuntimeState.ts";
@@ -96,6 +97,7 @@ import {
   dispatchRawOrchestrationCommand,
   fetchLiveOrchestrationShellSnapshot,
   getLiveOrchestrationShellSnapshot,
+  isDefinitiveCommandRejectionError,
   printJson,
   readJsonPayload,
   runReconnectingStream,
@@ -1593,6 +1595,10 @@ const serverCommand = Command.make("server").pipe(
 const chatListCommand = Command.make("list", {
   ...liveTargetFlags,
   project: Flag.string("project").pipe(Flag.optional),
+  parent: Flag.string("parent").pipe(
+    Flag.optional,
+    Flag.withDescription("Parent thread id or title."),
+  ),
 }).pipe(
   Command.withDescription("List active chats."),
   Command.withHandler((flags) =>
@@ -1601,8 +1607,18 @@ const chatListCommand = Command.make("list", {
       const project = Option.isSome(flags.project)
         ? yield* findProjectForCli(snapshot, flags.project.value)
         : null;
-      const threads = activeThreadsOf(snapshot).filter((thread) =>
-        project === null ? true : thread.projectId === project.id,
+      const parent = Option.isSome(flags.parent)
+        ? yield* findThreadForCli(snapshot, flags.parent.value)
+        : null;
+      if (project !== null && parent !== null && parent.projectId !== project.id) {
+        return yield* Effect.fail(
+          new Error(`Parent thread '${parent.id}' belongs to a different project.`),
+        );
+      }
+      const threads = activeThreadsOf(snapshot).filter(
+        (thread) =>
+          (project === null || thread.projectId === project.id) &&
+          (parent === null || thread.parentThreadId === parent.id),
       );
       yield* printJson(threads.map(threadSummary));
     }),
@@ -2094,6 +2110,11 @@ const chatSendCommand = Command.make("send", {
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Prompt text.")),
+  crossThreadSource: Flag.string("cross-thread-source").pipe(
+    Flag.optional,
+    Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
+  ),
+  crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
 }).pipe(
   Command.withDescription("Send a prompt to an existing chat."),
   Command.withHandler((flags) =>
@@ -2111,6 +2132,12 @@ const chatSendCommand = Command.make("send", {
             attachments: [],
           },
           ...(Option.isSome(modelSelection) ? { modelSelection: modelSelection.value } : {}),
+          ...(Option.isSome(flags.crossThreadSource)
+            ? {
+                crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
+              }
+            : {}),
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: new Date().toISOString(),
@@ -2136,11 +2163,18 @@ const chatNewCommand = Command.make("new", {
   interactionMode: interactionModeFlag,
   branch: Flag.string("branch").pipe(Flag.optional),
   worktree: Flag.string("worktree").pipe(Flag.optional),
+  crossThreadSource: Flag.string("cross-thread-source").pipe(
+    Flag.optional,
+    Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
+  ),
+  crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
+  workspaceCleanupToken: Flag.string("workspace-cleanup-token").pipe(Flag.optional),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Prompt text.")),
 }).pipe(
   Command.withDescription("Create a chat and send the first prompt."),
-  Command.withHandler((flags) =>
-    withLiveOrchestrationClient(flags, ({ getSnapshot, dispatch }) =>
+  Command.withHandler((flags) => {
+    let workspaceCleanupSafe = true;
+    return withLiveOrchestrationClient(flags, ({ getSnapshot, dispatch }) =>
       Effect.gen(function* () {
         const snapshot = yield* getSnapshot;
         const project = yield* findProjectForCli(snapshot, flags.project);
@@ -2158,22 +2192,30 @@ const chatNewCommand = Command.make("new", {
           resolveDefaultModelSelectionForProject(project),
         );
         const createdAt = new Date().toISOString();
-        const createResult = yield* dispatch({
-          type: "thread.create",
-          commandId: CommandId.make(crypto.randomUUID()),
-          threadId,
-          projectId: project.id,
-          parentThreadId: parent?.id ?? null,
-          title: flags.title,
-          modelSelection,
-          runtimeMode: flags.runtimeMode,
-          interactionMode: flags.interactionMode,
-          branch: Option.getOrUndefined(flags.branch) ?? null,
-          worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
-          createdAt,
-        });
-        // Keep `chat new` atomic: if starting the first turn fails, roll back the
-        // freshly created (empty) thread so we never leak a half-created chat.
+        workspaceCleanupSafe = false;
+        const createExit = yield* Effect.exit(
+          dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId,
+            projectId: project.id,
+            parentThreadId: parent?.id ?? null,
+            title: flags.title,
+            modelSelection,
+            runtimeMode: flags.runtimeMode,
+            interactionMode: flags.interactionMode,
+            branch: Option.getOrUndefined(flags.branch) ?? null,
+            worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
+            createdAt,
+          }),
+        );
+        if (Exit.isFailure(createExit)) {
+          const failure = Cause.findErrorOption(createExit.cause);
+          workspaceCleanupSafe =
+            Option.isSome(failure) && isDefinitiveCommandRejectionError(failure.value);
+          return yield* Effect.failCause(createExit.cause);
+        }
+        const createResult = createExit.value;
         const turnExit = yield* Effect.exit(
           dispatch({
             type: "thread.turn.start",
@@ -2185,6 +2227,12 @@ const chatNewCommand = Command.make("new", {
               text: flags.prompt,
               attachments: [],
             },
+            ...(Option.isSome(flags.crossThreadSource)
+              ? {
+                  crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                  crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
+                }
+              : {}),
             modelSelection,
             titleSeed: flags.title,
             runtimeMode: flags.runtimeMode,
@@ -2194,19 +2242,39 @@ const chatNewCommand = Command.make("new", {
         );
         if (Exit.isFailure(turnExit)) {
           if (!Cause.hasInterruptsOnly(turnExit.cause)) {
-            yield* dispatch({
-              type: "thread.delete",
-              commandId: CommandId.make(crypto.randomUUID()),
-              threadId,
-            }).pipe(Effect.ignore);
+            const deleteExit = yield* Effect.exit(
+              dispatch({
+                type: "thread.delete",
+                commandId: CommandId.make(crypto.randomUUID()),
+                threadId,
+                cleanupWorktree: Option.isSome(flags.worktree),
+              }),
+            );
+            if (Exit.isFailure(deleteExit)) {
+              yield* Effect.logWarning("failed to schedule nested thread rollback", {
+                threadId,
+                cause: Cause.pretty(deleteExit.cause),
+              });
+            }
           }
           return yield* Effect.failCause(turnExit.cause);
         }
         const turnResult = turnExit.value;
         yield* printJson({ threadId, createResult, turnResult });
       }),
-    ),
-  ),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        workspaceCleanupSafe && Option.isSome(flags.workspaceCleanupToken)
+          ? Effect.fail(
+              new Error(
+                `${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${flags.workspaceCleanupToken.value} ${Cause.pretty(cause)}`,
+                { cause },
+              ),
+            )
+          : Effect.failCause(cause),
+      ),
+    );
+  }),
 );
 
 const chatStreamCommand = Command.make("stream", {

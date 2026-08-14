@@ -716,7 +716,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     [props.isExpanded, threadKey, toggleThreadExpanded],
   );
   const rowButtonRender = useMemo(() => <div role="button" tabIndex={0} />, []);
-  const threadIndent = props.depth > 0 ? props.depth * 18 : 0;
+  const threadIndent = props.depth > 0 ? `${(props.depth * 18) / 11}em` : undefined;
   const canArchive = virtualAgentRun ? virtualAgentRun.status !== "running" : !isThreadRunning;
 
   // A running agent run can neither be pinned, opened as a PR, nor archived, so
@@ -785,14 +785,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         className={`${resolveThreadRowClassName({
           isActive,
           isSelected,
-        })} relative isolate px-1.5`}
+        })} relative isolate h-[var(--app-sidebar-legacy-row-height)] px-[var(--app-sidebar-legacy-row-padding-x)]`}
         onClick={handleRowClick}
         onKeyDown={handleRowKeyDown}
         onContextMenu={handleRowContextMenu}
       >
         <span
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left leading-tight"
-          style={threadIndent > 0 ? { paddingLeft: threadIndent } : undefined}
+          className="flex min-w-0 flex-1 items-center gap-[var(--app-sidebar-row-inline-gap)] text-left leading-tight"
+          style={threadIndent ? { paddingLeft: threadIndent } : undefined}
         >
           {/* Every row reserves the same leading slot so titles share one left
               edge whether or not the thread currently has a status. */}
@@ -814,29 +814,63 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               onClick={handleRenameInputClick}
             />
           ) : (
-            <Tooltip>
-              <TooltipTrigger
-                render={
+            // Title + optional PR share one flex-1 slot so the #N mark sits
+            // immediately after the truncated title instead of drifting to the
+            // trailing icon cluster.
+            <span className="flex min-w-0 flex-1 items-center gap-[var(--app-sidebar-row-line-gap)]">
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      className="min-w-0 truncate font-medium text-foreground/90"
+                      style={{ fontSize: "var(--app-sidebar-font-size)" }}
+                      data-testid={`thread-title-${thread.id}`}
+                    >
+                      {thread.title}
+                    </span>
+                  }
+                />
+                {/* Project, worktree, PR and last-active moved off the row and
+                    into this tooltip — the row keeps title and status only. */}
+                <ThreadDetailsTooltip
+                  environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
+                  projectCwd={threadProjectCwd ?? props.projectCwd ?? null}
+                  projectName={projectName ?? "Unknown project"}
+                  providerEntry={null}
+                  terminalProcessCount={runningTerminalIds.length}
+                  thread={thread}
+                />
+              </Tooltip>
+              {prStatus ? (
+                <>
                   <span
-                    className="min-w-0 flex-1 truncate font-medium text-foreground/90"
+                    aria-hidden="true"
+                    className="shrink-0 text-muted-foreground/55"
                     style={{ fontSize: "var(--app-sidebar-font-size)" }}
-                    data-testid={`thread-title-${thread.id}`}
                   >
-                    {thread.title}
+                    ·
                   </span>
-                }
-              />
-              {/* Project, worktree, PR and last-active moved off the row and
-                  into this tooltip — the row keeps title and status only. */}
-              <ThreadDetailsTooltip
-                environmentLabel={isRemoteThread ? (threadEnvironmentLabel ?? "Remote") : null}
-                projectCwd={threadProjectCwd ?? props.projectCwd ?? null}
-                projectName={projectName ?? "Unknown project"}
-                providerEntry={null}
-                terminalProcessCount={runningTerminalIds.length}
-                thread={thread}
-              />
-            </Tooltip>
+                  <button
+                    type="button"
+                    data-thread-selection-safe
+                    data-testid={`thread-pr-link-${thread.id}`}
+                    aria-label={prStatus.tooltip}
+                    title={prStatus.tooltip}
+                    className={cn(
+                      "shrink-0 cursor-pointer font-mono tabular-nums outline-hidden transition-colors hover:underline focus-visible:ring-1 focus-visible:ring-ring",
+                      prStatus.colorClass,
+                    )}
+                    style={{ fontSize: "var(--app-sidebar-font-size)" }}
+                    // Pinned rows put dnd-kit listeners on the parent <li>; without
+                    // this guard a slight move while clicking starts a drag.
+                    onPointerDown={stopPropagationOnPointerDown}
+                    onClick={handleOpenPrSelected}
+                  >
+                    #{prStatus.number}
+                  </button>
+                </>
+              ) : null}
+            </span>
           )}
           {discoveredPorts.length > 0 ? (
             <Tooltip>
@@ -3096,18 +3130,20 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
       >
         <button
           type="button"
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left outline-none"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 p-0 text-left leading-tight outline-none"
           onClick={() => props.onNavigate(draftId)}
         >
+          <span aria-hidden="true" className="size-3.5 shrink-0" />
           <span className="min-w-0 flex-1 truncate text-[length:var(--app-sidebar-font-size)] text-foreground/90">
             {preview}
           </span>
           <span
-            className={`shrink-0 text-xs ${
+            className={`shrink-0 ${
               hasPendingTurn || isPromoting
                 ? "font-medium text-sky-600 dark:text-sky-400"
                 : "text-muted-foreground/50"
             }`}
+            style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
           >
             {hasPendingTurn || isPromoting ? "Working" : "Draft"}
           </span>

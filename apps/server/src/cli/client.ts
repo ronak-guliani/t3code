@@ -33,7 +33,7 @@ import { AuthControlPlaneRuntimeLive } from "../auth/Layers/AuthControlPlane.ts"
 import { AuthControlPlane } from "../auth/Services/AuthControlPlane.ts";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
-import { readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { inspectPersistedServerRuntimeState, runtimePidIsAlive } from "../serverRuntimeState.ts";
 
 export interface CliLiveTargetFlags {
   readonly url: Option.Option<string>;
@@ -62,6 +62,7 @@ export class CliLiveTargetError extends Schema.TaggedErrorClass<CliLiveTargetErr
 export class CliRpcError extends Schema.TaggedErrorClass<CliRpcError>()("CliRpcError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Unknown),
+  definitiveCommandRejection: Schema.optional(Schema.Boolean),
 }) {}
 
 export const isDefinitiveCommandRejectionResponse = (body: string): boolean => {
@@ -88,6 +89,8 @@ const decodeDispatchResult = HttpClientResponse.schemaBodyJson(DispatchResult);
 const decodeWsToken = HttpClientResponse.schemaBodyJson(AuthWebSocketTokenResult);
 const makeWsRpcClient = RpcClient.make(WsRpcGroup);
 const isCliRpcError = Schema.is(CliRpcError);
+export const isDefinitiveCommandRejectionError = (error: unknown): boolean =>
+  isCliRpcError(error) && error.definitiveCommandRejection === true;
 const isCliLiveTargetError = Schema.is(CliLiveTargetError);
 const isCliPayloadError = Schema.is(CliPayloadError);
 
@@ -170,7 +173,7 @@ const parseJsonPayload = (raw: string, source: string) =>
   });
 
 const resolveCliBaseDir = (baseDir: Option.Option<string>) =>
-  resolveBaseDir(Option.getOrUndefined(baseDir));
+  resolveBaseDir(Option.getOrUndefined(baseDir) ?? process.env.T3CODE_HOME);
 
 export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
   Effect.gen(function* () {
@@ -184,16 +187,27 @@ export const resolveLiveTarget = (flags: CliLiveTargetFlags) =>
 
     const baseDir = yield* resolveCliBaseDir(flags.baseDir);
     const paths = yield* deriveServerPaths(baseDir, undefined);
-    const runtimeState = yield* readPersistedServerRuntimeState(paths.serverRuntimeStatePath);
-    if (Option.isNone(runtimeState)) {
+    const runtimeState = yield* inspectPersistedServerRuntimeState(paths.serverRuntimeStatePath);
+    if (runtimeState._tag === "Missing") {
       return yield* new CliLiveTargetError({
         message:
           "No running T3 server found. Start one with `t3 serve`, or pass --url and --token.",
       });
     }
+    if (runtimeState._tag === "Invalid") {
+      return yield* new CliLiveTargetError({
+        message: `Invalid or unreadable T3 server runtime state at '${paths.serverRuntimeStatePath}'. Remove it and restart T3, or pass --url and --token.`,
+        cause: runtimeState.cause,
+      });
+    }
+    if (!runtimePidIsAlive(runtimeState.state.pid)) {
+      return yield* new CliLiveTargetError({
+        message: `Stale T3 server runtime state at '${paths.serverRuntimeStatePath}' belongs to stopped process ${String(runtimeState.state.pid)}. Remove it and restart T3, or pass --url and --token.`,
+      });
+    }
 
     return {
-      origin: yield* normalizeHttpOrigin(runtimeState.value.origin),
+      origin: yield* normalizeHttpOrigin(runtimeState.state.origin),
       token: Option.getOrUndefined(flags.token),
       baseDir,
     };
@@ -349,11 +363,13 @@ const dispatchCommand = (
         if (response.status < 200 || response.status >= 300) {
           const responseBody = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
           const responseDetail = responseBody.trim().slice(0, 1_000);
-          const rejectionMarker = isDefinitiveCommandRejectionResponse(responseBody)
+          const definitiveCommandRejection = isDefinitiveCommandRejectionResponse(responseBody);
+          const rejectionMarker = definitiveCommandRejection
             ? "ORCHESTRATION_COMMAND_REJECTED: "
             : "";
           return yield* new CliRpcError({
             message: `${rejectionMarker}Failed to dispatch orchestration command: HTTP ${response.status}.${responseDetail.length > 0 ? ` ${responseDetail}` : ""}`,
+            definitiveCommandRejection,
           });
         }
         return yield* decodeDispatchResult(response).pipe(

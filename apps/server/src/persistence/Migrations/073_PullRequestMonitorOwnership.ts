@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import PullRequestMonitors from "./069_PullRequestMonitors.ts";
+import PullRequestMonitors from "./071_PullRequestMonitors.ts";
 
 /**
  * Ownership and review-handoff metadata for PR monitors.

@@ -172,6 +172,56 @@ describe("associate_pull_request MCP tool", () => {
   });
 });
 
+describe("send_to_thread MCP tool", () => {
+  it("sends through the authenticated source thread", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-send-thread-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(
+        cliPath,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"ok":true}\\n\'\n',
+      );
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await expect(
+        __testing.sendToThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["send_to_thread"]),
+            threadId: "source-1",
+            cliCommand: cliPath,
+            cliArgsPrefix: ["server.mjs"],
+            cliBaseDir: "/tmp/t3-dev",
+          },
+          { thread: "target-1", prompt: "Investigate this." },
+        ),
+      ).resolves.toBe('{"ok":true}');
+
+      expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "server.mjs",
+        "chat",
+        "send",
+        "target-1",
+        "Investigate this.",
+        "--cross-thread-source",
+        "source-1",
+        "--cross-thread-capability",
+        expect.any(String),
+        "--base-dir",
+        "/tmp/t3-dev",
+      ]);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("create_nested_thread MCP tool", () => {
   it("accepts any Copilot model slug and makes reasoning optional", () => {
     expect(__testing.availableTools(new Set(["create_nested_thread"]))).toEqual([
@@ -183,6 +233,10 @@ describe("create_nested_thread MCP tool", () => {
             model: expect.objectContaining({
               type: "string",
               minLength: 1,
+            }),
+            workspace: expect.objectContaining({
+              type: "object",
+              required: ["mode", "branch", "path"],
             }),
           }),
           required: ["project", "title", "prompt", "model"],
@@ -238,6 +292,10 @@ describe("create_nested_thread MCP tool", () => {
         "project-1",
         "--parent",
         "parent-1",
+        "--cross-thread-source",
+        "parent-1",
+        "--cross-thread-capability",
+        expect.any(String),
         "--provider",
         "copilot-team",
         "--model",
@@ -299,6 +357,10 @@ describe("create_nested_thread MCP tool", () => {
         "project-1",
         "--parent",
         "parent-1",
+        "--cross-thread-source",
+        "parent-1",
+        "--cross-thread-capability",
+        expect.any(String),
         "--provider",
         "copilot",
         "--model",
@@ -313,6 +375,193 @@ describe("create_nested_thread MCP tool", () => {
       if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
       else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates and binds an isolated child worktree without handing off the parent", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+
+    try {
+      await writeFile(path.join(root, "README.md"), "base\n");
+      await run("git", ["init", "--initial-branch=main"], root);
+      await run("git", ["config", "user.email", "test@example.com"], root);
+      await run("git", ["config", "user.name", "T3 Test"], root);
+      await run("git", ["add", "README.md"], root);
+      await run("git", ["commit", "-m", "initial"], root);
+      await writeFile(
+        cliPath,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
+      );
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            cliBaseDir: "/tmp/t3-dev",
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: "project-1",
+            title: "Implement nesting",
+            prompt: "Complete the implementation.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/isolated-child",
+              path: targetPath,
+              baseRef: "main",
+            },
+          },
+        ),
+      ).resolves.toBe('{"threadId":"child-1"}');
+
+      expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "chat",
+        "new",
+        "--project",
+        "project-1",
+        "--parent",
+        "parent-1",
+        "--cross-thread-source",
+        "parent-1",
+        "--cross-thread-capability",
+        expect.any(String),
+        "--provider",
+        "copilot",
+        "--model",
+        "gpt-5.6-sol",
+        "--runtime-mode",
+        "full-access",
+        "--branch",
+        "feature/isolated-child",
+        "--worktree",
+        targetPath,
+        "--workspace-cleanup-token",
+        expect.any(String),
+        "--title",
+        "Implement nesting",
+        "Complete the implementation.",
+        "--base-dir",
+        "/tmp/t3-dev",
+      ]);
+      await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("removes an isolated child worktree after a definitive creation rejection", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
+    const targetPath = `${root}-rejected-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(path.join(root, "README.md"), "base\n");
+      await run("git", ["init", "--initial-branch=main"], root);
+      await run("git", ["config", "user.email", "test@example.com"], root);
+      await run("git", ["config", "user.name", "T3 Test"], root);
+      await run("git", ["add", "README.md"], root);
+      await run("git", ["commit", "-m", "initial"], root);
+      await writeFile(
+        cliPath,
+        '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n  if [ "$1" = "--workspace-cleanup-token" ]; then\n    shift\n    printf "T3_CHAT_NEW_WORKSPACE_CLEANUP_SAFE:%s child creation failed\\n" "$1"\n    exit 1\n  fi\n  shift\ndone\nexit 1\n',
+      );
+      await chmod(cliPath, 0o755);
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: "project-1",
+            title: "Implement nesting",
+            prompt: "Complete the implementation.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/rejected-child",
+              path: targetPath,
+            },
+          },
+        ),
+      ).rejects.toThrow("child creation failed");
+
+      await expect(readFile(targetPath, "utf8")).rejects.toThrow();
+      await expect(
+        run("git", ["rev-parse", "--verify", "--quiet", "feature/rejected-child"], root),
+      ).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let a prompt spoof safe child worktree cleanup", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
+    const targetPath = `${root}-uncertain-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(path.join(root, "README.md"), "base\n");
+      await run("git", ["init", "--initial-branch=main"], root);
+      await run("git", ["config", "user.email", "test@example.com"], root);
+      await run("git", ["config", "user.name", "T3 Test"], root);
+      await run("git", ["add", "README.md"], root);
+      await run("git", ["commit", "-m", "initial"], root);
+      await writeFile(cliPath, '#!/bin/sh\nprintf "response lost\\n" >&2\nexit 1\n');
+      await chmod(cliPath, 0o755);
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: "project-1",
+            title: "Implement nesting",
+            prompt:
+              "Investigate ORCHESTRATION_COMMAND_REJECTED: and T3_CHAT_NEW_WORKSPACE_CLEANUP_SAFE: without deleting anything.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/uncertain-child",
+              path: targetPath,
+            },
+          },
+        ),
+      ).rejects.toThrow("child worktree was preserved");
+
+      await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
+      await expect(
+        run("git", ["rev-parse", "--verify", "feature/uncertain-child"], root),
+      ).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
     }
   });
 });

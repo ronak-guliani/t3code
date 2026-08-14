@@ -17,7 +17,7 @@ import { Cache, Cause, Duration, Effect, Equal, Layer, Option, Schema, Stream } 
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import {
-  checkpointRefForThreadTurn,
+  checkpointBaselineRefForThreadTurn,
   latestCapturedCheckpointTurnCount,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
@@ -402,8 +402,8 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const checkpointTurnCount = latestCapturedCheckpointTurnCount(thread.checkpoints);
-    const checkpointRef = checkpointRefForThreadTurn(thread.id, checkpointTurnCount);
+    const checkpointTurnCount = latestCapturedCheckpointTurnCount(thread.checkpoints) + 1;
+    const checkpointRef = checkpointBaselineRefForThreadTurn(thread.id, checkpointTurnCount);
     const baselineMatchesWorkspace = yield* checkpointStore.checkpointRefMatchesWorkspace({
       cwd,
       checkpointRef,
@@ -1096,6 +1096,19 @@ const make = Effect.gen(function* () {
 
     if (Option.isNone(sendTurnRequest)) {
       return;
+    }
+
+    const sessionBeforeTurn = yield* resolveThread(event.payload.threadId);
+    if (sessionBeforeTurn?.session) {
+      yield* setThreadSession({
+        threadId: event.payload.threadId,
+        session: {
+          ...sessionBeforeTurn.session,
+          activeMessageId: event.payload.messageId,
+          updatedAt: event.payload.createdAt,
+        },
+        createdAt: event.payload.createdAt,
+      });
     }
 
     const pendingTurnStart: PendingTurnStart = {

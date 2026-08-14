@@ -70,10 +70,13 @@ import Migration0065 from "./Migrations/065_AuthPairingLinkScopes.ts";
 import Migration0066 from "./Migrations/066_ProjectionThreadsPullRequest.ts";
 import Migration0067 from "./Migrations/067_BackfillReviewThreadPullRequests.ts";
 import Migration0068 from "./Migrations/068_RepairReviewThreadPullRequestState.ts";
-import Migration0069 from "./Migrations/069_PullRequestMonitors.ts";
-import Migration0070 from "./Migrations/070_PullRequestMonitorFeedback.ts";
-import Migration0071 from "./Migrations/071_PullRequestMonitorOwnership.ts";
-import Migration0072 from "./Migrations/072_PullRequestMonitorFallback.ts";
+import Migration0069 from "./Migrations/069_ProjectionThreadSessionActiveMessage.ts";
+import Migration0070 from "./Migrations/070_RepairSkippedRoleAuthTables.ts";
+import Migration0071 from "./Migrations/071_PullRequestMonitors.ts";
+import Migration0072 from "./Migrations/072_PullRequestMonitorFeedback.ts";
+import Migration0073 from "./Migrations/073_PullRequestMonitorOwnership.ts";
+import Migration0074 from "./Migrations/074_PullRequestMonitorFallback.ts";
+import Migration0075 from "./Migrations/075_RepairSkippedPullRequestMonitorLedger.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -143,10 +146,13 @@ export const migrationEntries = [
   [66, "ProjectionThreadsPullRequest", Migration0066],
   [67, "BackfillReviewThreadPullRequests", Migration0067],
   [68, "RepairReviewThreadPullRequestState", Migration0068],
-  [69, "PullRequestMonitors", Migration0069],
-  [70, "PullRequestMonitorFeedback", Migration0070],
-  [71, "PullRequestMonitorOwnership", Migration0071],
-  [72, "PullRequestMonitorFallback", Migration0072],
+  [69, "ProjectionThreadSessionActiveMessage", Migration0069],
+  [70, "RepairSkippedRoleAuthTables", Migration0070],
+  [71, "PullRequestMonitors", Migration0071],
+  [72, "PullRequestMonitorFeedback", Migration0072],
+  [73, "PullRequestMonitorOwnership", Migration0073],
+  [74, "PullRequestMonitorFallback", Migration0074],
+  [75, "RepairSkippedPullRequestMonitorLedger", Migration0075],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

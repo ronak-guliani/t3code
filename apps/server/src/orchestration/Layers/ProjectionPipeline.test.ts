@@ -173,6 +173,143 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("skips shell-summary history scans for assistant messages and routine activity", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-shell-summary-skip");
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-shell-summary-skip-1"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-shell-summary-skip"),
+        occurredAt: "2026-08-13T20:00:00.000Z",
+        commandId: CommandId.make("cmd-shell-summary-skip-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-shell-summary-skip-1"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-shell-summary-skip"),
+          title: "Project Shell Summary Skip",
+          workspaceRoot: "/tmp/project-shell-summary-skip",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: "2026-08-13T20:00:00.000Z",
+          updatedAt: "2026-08-13T20:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-shell-summary-skip-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-13T20:00:01.000Z",
+        commandId: CommandId.make("cmd-shell-summary-skip-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-shell-summary-skip-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-shell-summary-skip"),
+          title: "Thread Shell Summary Skip",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-08-13T20:00:01.000Z",
+          updatedAt: "2026-08-13T20:00:01.000Z",
+        },
+      });
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES (
+          'activity-invalid-history',
+          ${threadId},
+          NULL,
+          'error',
+          'provider.turn.start.failed',
+          'Invalid historical payload',
+          '{',
+          NULL,
+          '2026-08-13T20:00:01.500Z'
+        )
+      `;
+
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-shell-summary-skip-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-13T20:00:02.000Z",
+        commandId: CommandId.make("cmd-shell-summary-skip-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-shell-summary-skip-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-shell-summary-skip"),
+          role: "assistant",
+          text: "streamed response",
+          turnId: null,
+          streaming: true,
+          createdAt: "2026-08-13T20:00:02.000Z",
+          updatedAt: "2026-08-13T20:00:02.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-shell-summary-skip-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-08-13T20:00:03.000Z",
+        commandId: CommandId.make("cmd-shell-summary-skip-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-shell-summary-skip-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-shell-summary-skip"),
+            tone: "error",
+            kind: "provider.turn.start.failed",
+            summary: "Provider turn start failed",
+            payload: { detail: "network unavailable" },
+            turnId: null,
+            createdAt: "2026-08-13T20:00:03.000Z",
+          },
+        },
+      });
+
+      const rows = yield* sql<{ readonly updatedAt: string }>`
+        SELECT updated_at AS "updatedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(rows, [{ updatedAt: "2026-08-13T20:00:03.000Z" }]);
+    }),
+  );
+
   it.effect("distinguishes an explicit null PR from omitted legacy review metadata", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -2843,6 +2980,81 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-latest-turn-ses
         `;
 
         assert.deepEqual(JSON.parse(rows[0]?.resumeCursor ?? "null"), resumeCursor);
+      }),
+    );
+
+    it.effect("preserves the active message when active-turn lifecycle updates omit it", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-active-message-preserve");
+        const turnId = TurnId.make("turn-active-message-preserve");
+        const messageId = MessageId.make("message-active-message-preserve");
+
+        const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+          eventStore
+            .append(event)
+            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-active-message-initial"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-08-12T20:00:00.000Z",
+          commandId: CommandId.make("cmd-active-message-initial"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-active-message-initial"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "copilot",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+              runtimeMode: "full-access",
+              activeTurnId: turnId,
+              activeMessageId: messageId,
+              lastError: null,
+              updatedAt: "2026-08-12T20:00:00.000Z",
+            },
+          },
+        });
+
+        yield* appendAndProject({
+          type: "thread.session-set",
+          eventId: EventId.make("evt-active-message-lifecycle"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-08-12T20:00:01.000Z",
+          commandId: CommandId.make("cmd-active-message-lifecycle"),
+          causationEventId: null,
+          correlationId: CorrelationId.make("cmd-active-message-lifecycle"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "running",
+              providerName: "copilot",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+              runtimeMode: "full-access",
+              activeTurnId: turnId,
+              lastError: null,
+              updatedAt: "2026-08-12T20:00:01.000Z",
+            },
+          },
+        });
+
+        const rows = yield* sql<{ readonly activeMessageId: string | null }>`
+          SELECT active_message_id AS "activeMessageId"
+          FROM projection_thread_sessions
+          WHERE thread_id = ${threadId}
+        `;
+
+        assert.deepEqual(rows, [{ activeMessageId: messageId }]);
       }),
     );
   },

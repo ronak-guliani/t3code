@@ -16,10 +16,10 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { GitManager } from "../git/Services/GitManager.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import Migration0069 from "../persistence/Migrations/069_PullRequestMonitors.ts";
-import Migration0070 from "../persistence/Migrations/070_PullRequestMonitorFeedback.ts";
-import Migration0071 from "../persistence/Migrations/071_PullRequestMonitorOwnership.ts";
-import Migration0072 from "../persistence/Migrations/072_PullRequestMonitorFallback.ts";
+import MigrationMonitors from "../persistence/Migrations/071_PullRequestMonitors.ts";
+import MigrationFeedback from "../persistence/Migrations/072_PullRequestMonitorFeedback.ts";
+import MigrationOwnership from "../persistence/Migrations/073_PullRequestMonitorOwnership.ts";
+import MigrationFallback from "../persistence/Migrations/074_PullRequestMonitorFallback.ts";
 import * as NodeSqliteClient from "../persistence/NodeSqliteClient.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -247,10 +247,10 @@ const fakeSettings = {
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
     yield* SqlClient.SqlClient;
-    yield* Migration0069;
-    yield* Migration0070;
-    yield* Migration0071;
-    yield* Migration0072;
+    yield* MigrationMonitors;
+    yield* MigrationFeedback;
+    yield* MigrationOwnership;
+    yield* MigrationFallback;
   }),
 ).pipe(Layer.provideMerge(NodeSqliteClient.layerMemory()));
 

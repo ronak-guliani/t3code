@@ -42,7 +42,14 @@ export const COPILOT_LEGACY_PLAN_MODE_ID = "https://github.com/github/copilot-cl
 
 export const COPILOT_WORKSPACE_INSTRUCTIONS = `# T3 Code tools
 
+- MCP boundary: \`t3-code\` is the collaborative browser automation server. Use the canonical browser tools there: \`preview_open\`, \`preview_status\`, \`preview_navigate\`, \`preview_snapshot\`, \`preview_click\`, \`preview_type\`, and the related \`preview_*\` tools.
+- MCP boundary: \`t3-tools\` is the workspace, terminal, skills, web, memory, handoff, nested-thread, cross-thread, and PR-association server.
+- Never use the legacy \`t3-tools\` preview stubs (\`preview_screenshot\`, \`preview_click\`, \`preview_type\`, \`preview_annotate\`) when \`t3-code\` is available.
+- If a \`t3-code\` browser tool fails with \`401\` and \`www-authenticate: Bearer\`, its per-session MCP credential is invalid or expired. Restart the chat/session to reconnect browser automation.
+- \`t3-tools\` uses this T3 process's bearer token for its local loopback HTTP MCP server.
 - NEVER run \`git worktree add\` or \`git worktree move\` through a terminal or shell tool.
+- When delegating work, call \`create_nested_thread\` before any workspace operation. If the child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread.
+- Workspace handoff tools affect only the calling thread. Never call them to prepare a workspace for a future delegated thread.
 - When a task needs a new isolated checkout, call the \`create_isolated_workspace\` tool instead.
 - When a task needs to use an existing worktree, call the \`switch_workspace\` tool instead.
 - After either workspace tool succeeds, end the current turn. T3 Code will restart the provider in the bound workspace and continue the task automatically.
@@ -74,10 +81,6 @@ const COPILOT_MCP_TOOLSETS = [
   "web_search",
   "web_extract",
   "memory",
-  "preview_screenshot",
-  "preview_click",
-  "preview_type",
-  "preview_annotate",
   "create_isolated_workspace",
   "switch_workspace",
   "associate_pull_request",
@@ -128,18 +131,19 @@ export function buildCopilotAcpSpawnInput(
   const instructionsDirs = customInstructionsDir
     ? Array.from(new Set([...(configuredInstructionsDirs ?? []), customInstructionsDir]))
     : configuredInstructionsDirs;
+  const t3Home = environment.T3CODE_HOME?.trim();
+  const spawnEnvironment = {
+    ...(instructionsDirs && instructionsDirs.length > 0
+      ? { COPILOT_CUSTOM_INSTRUCTIONS_DIRS: instructionsDirs.join(",") }
+      : {}),
+    ...(t3Home ? { T3CODE_HOME: t3Home } : {}),
+  };
 
   return {
     command: copilotSettings?.binaryPath || "copilot",
     args: ["--acp", ...buildCopilotRuntimeModeArgs(runtimeMode)],
     cwd,
-    ...(instructionsDirs && instructionsDirs.length > 0
-      ? {
-          env: {
-            COPILOT_CUSTOM_INSTRUCTIONS_DIRS: instructionsDirs.join(","),
-          },
-        }
-      : {}),
+    ...(Object.keys(spawnEnvironment).length > 0 ? { env: spawnEnvironment } : {}),
   };
 }
 
@@ -193,6 +197,7 @@ export function buildCopilotMcpServerOptions(
   toolsetNames.add("create_isolated_workspace");
   toolsetNames.add("switch_workspace");
   toolsetNames.add("create_nested_thread");
+  toolsetNames.add("send_to_thread");
   toolsetNames.add("associate_pull_request");
   return {
     cwd,

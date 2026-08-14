@@ -66,6 +66,7 @@ describe("buildCopilotAcpSpawnInput", () => {
     expect(
       buildCopilotAcpSpawnInput(undefined, "/tmp/project", "full-access", "/tmp/t3-instructions", {
         COPILOT_CUSTOM_INSTRUCTIONS_DIRS: "/tmp/user-instructions,/tmp/t3-instructions",
+        T3CODE_HOME: "/tmp/t3-dev",
       }),
     ).toEqual({
       command: "copilot",
@@ -73,6 +74,7 @@ describe("buildCopilotAcpSpawnInput", () => {
       cwd: "/tmp/project",
       env: {
         COPILOT_CUSTOM_INSTRUCTIONS_DIRS: "/tmp/user-instructions,/tmp/t3-instructions",
+        T3CODE_HOME: "/tmp/t3-dev",
       },
     });
   });
@@ -94,8 +96,20 @@ describe("buildCopilotAcpSpawnInput", () => {
         "NEVER run `git worktree add` or `git worktree move`",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`git worktree remove` is allowed");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`t3-code`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`t3-tools`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_open`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_snapshot`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("Restart the chat/session");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`www-authenticate: Bearer`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`create_isolated_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`switch_workspace`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "call `create_nested_thread` before any workspace operation",
+      );
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "Never call them to prepare a workspace for a future delegated thread",
+      );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`associate_pull_request`");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -121,6 +135,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "send_to_thread",
           "associate_pull_request",
         ]),
         threadId: "thread-1",
@@ -149,6 +164,43 @@ describe("buildCopilotAcpSpawnInput", () => {
       ]);
     });
 
+    it("keeps legacy t3-tools preview stubs out of the default Copilot MCP toolsets", () => {
+      expect(
+        buildCopilotMcpServerOptions(
+          "/tmp/project",
+          "thread-1",
+          ProviderInstanceId.make("copilot-team"),
+          "/tmp/t3-dev",
+          "approval-required",
+          {
+            T3_COPILOT_ACP_ENABLE_MCP: "1",
+          },
+          {
+            execPath: "/usr/bin/node",
+            entryPath: "/app/bin.mjs",
+          },
+        ).toolsets,
+      ).toEqual(
+        new Set([
+          "terminal",
+          "read_file",
+          "write_file",
+          "search_files",
+          "skill_view",
+          "skills_list",
+          "skill_manage",
+          "web_search",
+          "web_extract",
+          "memory",
+          "create_isolated_workspace",
+          "switch_workspace",
+          "associate_pull_request",
+          "create_nested_thread",
+          "send_to_thread",
+        ]),
+      );
+    });
+
     it("builds env-gated T3 MCP HTTP server options", () => {
       expect(
         buildCopilotMcpServerOptions(
@@ -171,6 +223,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "send_to_thread",
           "associate_pull_request",
         ]),
         threadId: "thread-1",
