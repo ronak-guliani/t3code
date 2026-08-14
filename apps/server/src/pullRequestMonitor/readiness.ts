@@ -4,16 +4,32 @@ import type {
   PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
 
-import type { PullRequestMonitorCursor } from "./monitorDiff.ts";
+/**
+ * Durable monitor state that blocks merge readiness independently of provider state:
+ * feedback nobody dispositioned, claims nothing verified, escalations, and wakes that
+ * never reached the owner.
+ */
+export interface PullRequestMonitorFeedbackReadiness {
+  readonly openCount: number;
+  readonly verifyingCount: number;
+  readonly needsHumanCount: number;
+  readonly pendingDeliveryCount: number;
+}
+
+export const emptyFeedbackReadiness: PullRequestMonitorFeedbackReadiness = {
+  openCount: 0,
+  verifyingCount: 0,
+  needsHumanCount: 0,
+  pendingDeliveryCount: 0,
+};
 
 /**
- * Deterministic server readiness. `ready-to-merge` requires known required-check coverage;
- * otherwise a green board is only `no-known-blockers`.
+ * Deterministic server readiness. `ready-to-merge` requires evidence that every merge policy
+ * input was actually observed; anything less is only `no-known-blockers`.
  */
 export function computeReadiness(
   snapshot: PullRequestMonitorSnapshot,
-  previousThreadVersions: PullRequestMonitorCursor["threadVersions"] = {},
-  monitoringStartedAt?: string,
+  feedback: PullRequestMonitorFeedbackReadiness = emptyFeedbackReadiness,
 ): PullRequestMonitorReadiness {
   const blockers: PullRequestMonitorBlocker[] = [];
 
@@ -34,11 +50,13 @@ export function computeReadiness(
   for (const check of currentChecks) {
     if (check.status === "pending") {
       blockers.push({ kind: "check-pending", detail: check.name });
+    } else if (check.status === "cancelled") {
+      // A cancelled run never proved success; it must be re-run before merge.
+      blockers.push({ kind: "check-cancelled", detail: check.name });
     } else if (
       check.status !== "success" &&
       check.status !== "neutral" &&
-      check.status !== "skipped" &&
-      check.status !== "cancelled"
+      check.status !== "skipped"
     ) {
       blockers.push({ kind: "check-failed", detail: check.name });
     }
@@ -58,10 +76,8 @@ export function computeReadiness(
     }
   }
 
-  // Readiness considers every currently unresolved thread. Baseline/start timing
-  // only gates notification generation in the diff path, not merge readiness.
-  void previousThreadVersions;
-  void monitoringStartedAt;
+  // Readiness considers every currently unresolved thread, regardless of when monitoring
+  // started; baseline timing only gates notification generation in the diff path.
   for (const thread of snapshot.reviewThreads) {
     if (!thread.resolved) {
       blockers.push({ kind: "unresolved-thread", detail: thread.id });
@@ -72,9 +88,28 @@ export function computeReadiness(
     blockers.push({ kind: "behind-base", detail: String(snapshot.behindBaseBy) });
   }
 
+  if (feedback.openCount > 0) {
+    blockers.push({ kind: "feedback-open", detail: String(feedback.openCount) });
+  }
+  if (feedback.verifyingCount > 0) {
+    blockers.push({ kind: "feedback-unverified", detail: String(feedback.verifyingCount) });
+  }
+  if (feedback.needsHumanCount > 0) {
+    blockers.push({ kind: "feedback-needs-human", detail: String(feedback.needsHumanCount) });
+  }
+  if (feedback.pendingDeliveryCount > 0) {
+    blockers.push({
+      kind: "feedback-delivery-pending",
+      detail: String(feedback.pendingDeliveryCount),
+    });
+  }
+
+  // Only claim "ready to merge" when the policy inputs themselves were fully observed.
   const evidenceSupportsReadyLabel =
     snapshot.completeness.requiredChecksKnown &&
     snapshot.completeness.checksComplete &&
+    snapshot.completeness.reviewsComplete &&
+    snapshot.completeness.reviewThreadsComplete &&
     currentChecks.length > 0;
 
   if (blockers.length > 0) {

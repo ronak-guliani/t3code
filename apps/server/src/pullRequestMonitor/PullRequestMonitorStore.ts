@@ -36,7 +36,7 @@ const decodeCursor = Schema.decodeUnknownEffect(
         Schema.String,
         Schema.Struct({
           runId: Schema.String,
-          outcome: Schema.Literals(["success", "failure", "pending"]),
+          outcome: Schema.Literals(["success", "failure", "pending", "cancelled"]),
         }),
       ),
       behindBase: Schema.Boolean,
@@ -143,6 +143,40 @@ function rowToRecord(
   });
 }
 
+export interface PullRequestMonitorPollLease {
+  readonly canonicalKey: string;
+  readonly ownerId: string;
+  readonly generation: number;
+  readonly expiresAt: string;
+}
+
+export interface PullRequestMonitorFallbackLaunchRecord {
+  readonly launchId: string;
+  readonly commandId: string;
+  readonly threadId: string | null;
+  readonly reason: string;
+  readonly status: PullRequestMonitorFallbackLaunchStatus;
+  readonly error: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/**
+ * Fallback launch stages. Intent (`claimed`) is durable before any worktree or thread
+ * side effect, so a crash can always be reconciled back to a terminal stage.
+ */
+export type PullRequestMonitorFallbackLaunchStatus =
+  | "claimed"
+  | "worktree-ready"
+  | "thread-created"
+  | "owned"
+  | "launched"
+  | "failed"
+  | "abandoned";
+
+export const FALLBACK_LAUNCH_TERMINAL_STATUSES: ReadonlySet<PullRequestMonitorFallbackLaunchStatus> =
+  new Set(["launched", "failed", "abandoned"]);
+
 export interface PullRequestMonitorStoreApi {
   readonly canonicalKey: (key: PullRequestMonitorCanonicalKey) => string;
   readonly getById: (
@@ -176,12 +210,17 @@ export interface PullRequestMonitorStoreApi {
    * Poll/lifecycle fields only — never rewrites ownership or review-link metadata,
    * so concurrent transfer/handoff cannot be clobbered by an in-flight poll.
    * Poll commits with `enabled: true` refuse to overwrite a concurrent stop unless
-   * `allowReenable` is set (explicit start/resume).
+   * `allowReenable` is set (explicit start/resume). A `lease` fences the write to the
+   * generation that observed the state, so a superseded poll can never commit.
    */
   readonly updatePollState: (
     record: PullRequestMonitorRecord,
     cursor?: PullRequestMonitorCursor,
-    options?: { readonly allowReenable?: boolean },
+    options?: {
+      readonly allowReenable?: boolean;
+      readonly lease?: PullRequestMonitorPollLease;
+      readonly nowIso?: string;
+    },
   ) => Effect.Effect<void, PullRequestMonitorError>;
   /** Narrow recheck schedule bump that cannot overwrite concurrent poll/ownership writes. */
   readonly scheduleRecheck: (input: {
@@ -210,6 +249,30 @@ export interface PullRequestMonitorStoreApi {
     readonly readiness: PullRequestMonitorReadiness;
     readonly events: ReadonlyArray<PullRequestMonitorActionableEvent>;
   }) => Effect.Effect<void, PullRequestMonitorError>;
+  /**
+   * One transaction for everything a poll observed: snapshot audit row, feedback
+   * ingestion, and the poll state/cursor advance. Fenced by the poll lease, so an
+   * expired or superseded generation writes nothing at all. Returns false when the
+   * fence was lost, meaning the cursor did not advance and the work will be retried.
+   */
+  readonly commitPollObservation: <Feedback>(input: {
+    readonly lease: PullRequestMonitorPollLease;
+    readonly nowIso: string;
+    readonly cursor: PullRequestMonitorCursor;
+    readonly snapshotId: string;
+    readonly snapshot: PullRequestMonitorSnapshot;
+    readonly events: ReadonlyArray<PullRequestMonitorActionableEvent>;
+    /** Feedback reconciliation + ingestion, executed inside the same transaction. */
+    readonly ingest: Effect.Effect<Feedback, PullRequestMonitorError>;
+    /** Builds the committed record from post-ingest durable state. */
+    readonly finalize: (feedback: Feedback) => {
+      readonly record: PullRequestMonitorRecord;
+      readonly readiness: PullRequestMonitorReadiness;
+    };
+  }) => Effect.Effect<
+    { readonly committed: boolean; readonly record: PullRequestMonitorRecord | null },
+    PullRequestMonitorError
+  >;
   readonly latestSnapshot: (monitorId: PullRequestMonitorId) => Effect.Effect<
     {
       readonly snapshot: PullRequestMonitorSnapshot;
@@ -217,15 +280,24 @@ export interface PullRequestMonitorStoreApi {
     } | null,
     PullRequestMonitorError
   >;
+  /**
+   * Claims one poll attempt. Every unexpired lease is rejected, including one held by
+   * this process: the lease represents an attempt, not a renewable process lock. The
+   * returned generation fences every write the attempt makes.
+   */
   readonly tryAcquireLease: (input: {
     readonly canonicalKey: string;
     readonly ownerId: string;
     readonly nowIso: string;
     readonly expiresAt: string;
-  }) => Effect.Effect<boolean, PullRequestMonitorError>;
+  }) => Effect.Effect<PullRequestMonitorPollLease | null, PullRequestMonitorError>;
+  /** True while this exact generation still holds an unexpired lease. */
+  readonly holdsLease: (
+    lease: PullRequestMonitorPollLease,
+    nowIso: string,
+  ) => Effect.Effect<boolean, PullRequestMonitorError>;
   readonly releaseLease: (
-    canonicalKey: string,
-    ownerId: string,
+    lease: PullRequestMonitorPollLease,
   ) => Effect.Effect<void, PullRequestMonitorError>;
   readonly getHostCooldownUntil: (
     hostKey: string,
@@ -245,24 +317,25 @@ export interface PullRequestMonitorStoreApi {
     readonly reason: string;
     readonly createdAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
-  readonly latestFallbackLaunch: (monitorId: PullRequestMonitorId) => Effect.Effect<
-    {
-      readonly launchId: string;
-      readonly commandId: string;
-      readonly threadId: string | null;
-      readonly reason: string;
-      readonly status: string;
-      readonly createdAt: string;
-    } | null,
+  readonly latestFallbackLaunch: (
+    monitorId: PullRequestMonitorId,
+  ) => Effect.Effect<PullRequestMonitorFallbackLaunchRecord | null, PullRequestMonitorError>;
+  /** Non-terminal launches older than the cutoff, for crash recovery. */
+  readonly listStaleFallbackLaunches: (input: {
+    readonly olderThan: string;
+    readonly limit: number;
+  }) => Effect.Effect<
+    ReadonlyArray<PullRequestMonitorFallbackLaunchRecord & { readonly monitorId: string }>,
     PullRequestMonitorError
   >;
+  /** Durable launch intent; upsert so each stage transition is recorded on one row. */
   readonly recordFallbackLaunch: (input: {
     readonly launchId: string;
     readonly monitorId: PullRequestMonitorId;
     readonly commandId: string;
     readonly threadId: string | null;
     readonly reason: string;
-    readonly status: string;
+    readonly status: PullRequestMonitorFallbackLaunchStatus;
     readonly error: string | null;
     readonly createdAt: string;
   }) => Effect.Effect<void, PullRequestMonitorError>;
@@ -452,6 +525,17 @@ export const make = Effect.gen(function* () {
     // Intentional disables (stop/terminal) always apply; start/resume may re-enable.
     const enabledGuard =
       record.enabled && options?.allowReenable !== true ? sql`AND enabled = 1` : sql``;
+    const lease = options?.lease;
+    // Fence poll commits: only the generation that observed the snapshot may write it.
+    const fenceGuard = lease
+      ? sql`AND EXISTS (
+            SELECT 1 FROM pull_request_monitor_leases
+            WHERE canonical_key = ${lease.canonicalKey}
+              AND owner_id = ${lease.ownerId}
+              AND generation = ${lease.generation}
+              AND expires_at > ${options?.nowIso ?? record.updatedAt}
+          )`
+      : sql``;
     return (
       cursor
         ? sql`
@@ -470,6 +554,7 @@ export const make = Effect.gen(function* () {
               stopped_at = ${record.stoppedAt}
             WHERE monitor_id = ${record.id}
             ${enabledGuard}
+            ${fenceGuard}
           `
         : sql`
             UPDATE pull_request_monitors SET
@@ -486,6 +571,7 @@ export const make = Effect.gen(function* () {
               stopped_at = ${record.stoppedAt}
             WHERE monitor_id = ${record.id}
             ${enabledGuard}
+            ${fenceGuard}
           `
     ).pipe(
       Effect.mapError((cause) => storeError("Failed to update monitor poll state.", cause)),
@@ -657,6 +743,38 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  const commitPollObservation: PullRequestMonitorStoreApi["commitPollObservation"] = (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const held = yield* holdsLease(input.lease, input.nowIso);
+          if (!held) return { committed: false, record: null };
+          // Ingestion and the cursor advance commit together: a failed ingest rolls the
+          // cursor back, so an actionable event can never be observed and then dropped.
+          const feedback = yield* input.ingest;
+          const { record, readiness } = input.finalize(feedback);
+          yield* saveSnapshot({
+            snapshotId: input.snapshotId,
+            monitorId: record.id,
+            snapshot: input.snapshot,
+            readiness,
+            events: input.events,
+          });
+          yield* updatePollState(record, input.cursor, {
+            lease: input.lease,
+            nowIso: input.nowIso,
+          });
+          return { committed: true, record };
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) =>
+          isPullRequestMonitorError(cause)
+            ? cause
+            : storeError("Failed to commit monitor poll observation.", cause),
+        ),
+      );
+
   const latestSnapshot: PullRequestMonitorStoreApi["latestSnapshot"] = (monitorId) =>
     sql<SnapshotRow>`
       SELECT * FROM pull_request_monitor_snapshots
@@ -699,7 +817,7 @@ export const make = Effect.gen(function* () {
       // Reject every unexpired lease, including same-process ownerId. This is a
       // single poll-attempt claim, not a renewable process lock.
       if (row && row.expires_at > input.nowIso) {
-        return false;
+        return null;
       }
       const generation = (row?.generation ?? 0) + 1;
       yield* sql`
@@ -715,17 +833,40 @@ export const make = Effect.gen(function* () {
           expires_at = excluded.expires_at
         WHERE pull_request_monitor_leases.expires_at <= ${input.nowIso}
       `;
-      const confirm = yield* sql<{ owner_id: string; expires_at: string }>`
-        SELECT owner_id, expires_at FROM pull_request_monitor_leases
+      const confirm = yield* sql<{ owner_id: string; generation: number; expires_at: string }>`
+        SELECT owner_id, generation, expires_at FROM pull_request_monitor_leases
         WHERE canonical_key = ${input.canonicalKey}
       `;
-      return confirm[0]?.owner_id === input.ownerId && confirm[0]?.expires_at === input.expiresAt;
+      const held = confirm[0];
+      if (!held || held.owner_id !== input.ownerId || held.expires_at !== input.expiresAt) {
+        return null;
+      }
+      return {
+        canonicalKey: input.canonicalKey,
+        ownerId: input.ownerId,
+        generation: held.generation,
+        expiresAt: held.expires_at,
+      } satisfies PullRequestMonitorPollLease;
     }).pipe(Effect.mapError((cause) => storeError("Failed to acquire monitor lease.", cause)));
 
-  const releaseLease: PullRequestMonitorStoreApi["releaseLease"] = (canonicalKey, ownerId) =>
+  const holdsLease: PullRequestMonitorStoreApi["holdsLease"] = (lease, nowIso) =>
+    sql<{ readonly held: number }>`
+      SELECT COUNT(*) AS held FROM pull_request_monitor_leases
+      WHERE canonical_key = ${lease.canonicalKey}
+        AND owner_id = ${lease.ownerId}
+        AND generation = ${lease.generation}
+        AND expires_at > ${nowIso}
+    `.pipe(
+      Effect.map((rows) => (rows[0]?.held ?? 0) > 0),
+      Effect.mapError((cause) => storeError("Failed to verify monitor lease.", cause)),
+    );
+
+  const releaseLease: PullRequestMonitorStoreApi["releaseLease"] = (lease) =>
     sql`
       DELETE FROM pull_request_monitor_leases
-      WHERE canonical_key = ${canonicalKey} AND owner_id = ${ownerId}
+      WHERE canonical_key = ${lease.canonicalKey}
+        AND owner_id = ${lease.ownerId}
+        AND generation = ${lease.generation}
     `.pipe(
       Effect.mapError((cause) => storeError("Failed to release lease.", cause)),
       Effect.asVoid,
@@ -776,6 +917,26 @@ export const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
+  const fallbackLaunchRow = (row: {
+    launch_id: string;
+    command_id: string;
+    thread_id: string | null;
+    reason: string;
+    status: string;
+    error: string | null;
+    created_at: string;
+    updated_at: string | null;
+  }): PullRequestMonitorFallbackLaunchRecord => ({
+    launchId: row.launch_id,
+    commandId: row.command_id,
+    threadId: row.thread_id,
+    reason: row.reason,
+    status: row.status as PullRequestMonitorFallbackLaunchStatus,
+    error: row.error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
+  });
+
   const latestFallbackLaunch: PullRequestMonitorStoreApi["latestFallbackLaunch"] = (monitorId) =>
     sql<{
       launch_id: string;
@@ -783,33 +944,51 @@ export const make = Effect.gen(function* () {
       thread_id: string | null;
       reason: string;
       status: string;
+      error: string | null;
       created_at: string;
+      updated_at: string | null;
     }>`
-      SELECT launch_id, command_id, thread_id, reason, status, created_at
+      SELECT launch_id, command_id, thread_id, reason, status, error, created_at, updated_at
       FROM pull_request_monitor_fallback_launches
       WHERE monitor_id = ${monitorId}
       ORDER BY created_at DESC
       LIMIT 1
     `.pipe(
-      Effect.map((rows) => {
-        const row = rows[0];
-        if (!row) return null;
-        return {
-          launchId: row.launch_id,
-          commandId: row.command_id,
-          threadId: row.thread_id,
-          reason: row.reason,
-          status: row.status,
-          createdAt: row.created_at,
-        };
-      }),
+      Effect.map((rows) => (rows[0] ? fallbackLaunchRow(rows[0]) : null)),
       Effect.mapError((cause) => storeError("Failed to load fallback launch.", cause)),
+    );
+
+  const listStaleFallbackLaunches: PullRequestMonitorStoreApi["listStaleFallbackLaunches"] = (
+    input,
+  ) =>
+    sql<{
+      launch_id: string;
+      monitor_id: string;
+      command_id: string;
+      thread_id: string | null;
+      reason: string;
+      status: string;
+      error: string | null;
+      created_at: string;
+      updated_at: string | null;
+    }>`
+      SELECT launch_id, monitor_id, command_id, thread_id, reason, status, error, created_at, updated_at
+      FROM pull_request_monitor_fallback_launches
+      WHERE status NOT IN ('launched', 'failed', 'abandoned')
+        AND COALESCE(updated_at, created_at) <= ${input.olderThan}
+      ORDER BY COALESCE(updated_at, created_at) ASC
+      LIMIT ${input.limit}
+    `.pipe(
+      Effect.map((rows) =>
+        rows.map((row) => ({ ...fallbackLaunchRow(row), monitorId: row.monitor_id })),
+      ),
+      Effect.mapError((cause) => storeError("Failed to list stale fallback launches.", cause)),
     );
 
   const recordFallbackLaunch: PullRequestMonitorStoreApi["recordFallbackLaunch"] = (input) =>
     sql`
       INSERT INTO pull_request_monitor_fallback_launches (
-        launch_id, monitor_id, command_id, thread_id, reason, status, error, created_at
+        launch_id, monitor_id, command_id, thread_id, reason, status, error, created_at, updated_at
       ) VALUES (
         ${input.launchId},
         ${input.monitorId},
@@ -818,8 +997,14 @@ export const make = Effect.gen(function* () {
         ${input.reason},
         ${input.status},
         ${input.error},
+        ${input.createdAt},
         ${input.createdAt}
       )
+      ON CONFLICT(launch_id) DO UPDATE SET
+        thread_id = COALESCE(excluded.thread_id, pull_request_monitor_fallback_launches.thread_id),
+        status = excluded.status,
+        error = excluded.error,
+        updated_at = excluded.updated_at
     `.pipe(
       Effect.mapError((cause) => storeError("Failed to record fallback launch.", cause)),
       Effect.asVoid,
@@ -839,13 +1024,16 @@ export const make = Effect.gen(function* () {
     transferOwnershipAtomic,
     getCursor,
     saveSnapshot,
+    commitPollObservation,
     latestSnapshot,
     tryAcquireLease,
+    holdsLease,
     releaseLease,
     getHostCooldownUntil,
     setHostCooldown,
     recordOwnershipEvent,
     latestFallbackLaunch,
+    listStaleFallbackLaunches,
     recordFallbackLaunch,
   } satisfies PullRequestMonitorStoreApi;
 });

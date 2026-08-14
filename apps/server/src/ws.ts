@@ -169,6 +169,7 @@ import { respondToAuthError } from "./auth/http.ts";
 import { expandHomePath } from "./pathExpansion.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -2131,18 +2132,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                           const enabled =
                             Result.isSuccess(settingsResult) &&
                             settingsResult.success.autoMonitorPullRequestsOnCreate === true;
-                          const repository = (() => {
-                            const url = result.pr.url;
-                            if (typeof url !== "string") return null;
-                            try {
-                              const path = new URL(url).pathname.replace(/^\/+/, "");
-                              const parts = path.split("/");
-                              if (parts.length >= 2) return `${parts[0]}/${parts[1]}`;
-                            } catch {
-                              return null;
-                            }
-                            return null;
-                          })();
+                          const repository = repositoryFromPullRequestUrl(result.pr.url);
                           if (enabled && repository) {
                             yield* withPullRequestMonitors((service) =>
                               service.start({

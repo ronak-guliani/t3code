@@ -95,8 +95,6 @@ describe("computeReadiness", () => {
           },
         ],
       }),
-      {},
-      "2026-08-11T00:30:00.000Z",
     );
     expect(result.ready).toBe(false);
     expect(result.label).toBe("blocked");
@@ -104,5 +102,56 @@ describe("computeReadiness", () => {
       "changes-requested",
       "unresolved-thread",
     ]);
+  });
+
+  it("blocks on cancelled checks: a cancelled run never proved success", () => {
+    const result = computeReadiness(
+      snapshot({
+        checkRuns: [
+          {
+            id: "c1",
+            name: "build",
+            status: "cancelled",
+            headSha: "abc123",
+            url: null,
+            description: null,
+          },
+        ],
+      }),
+    );
+    expect(result.ready).toBe(false);
+    expect(result.blockers.map((blocker) => blocker.kind)).toEqual(["check-cancelled"]);
+  });
+
+  it("blocks on durable feedback, delivery, and remediation state", () => {
+    const result = computeReadiness(snapshot(), {
+      openCount: 2,
+      verifyingCount: 1,
+      needsHumanCount: 1,
+      pendingDeliveryCount: 3,
+    });
+    expect(result.ready).toBe(false);
+    expect(result.blockers.map((blocker) => blocker.kind).sort()).toEqual([
+      "feedback-delivery-pending",
+      "feedback-needs-human",
+      "feedback-open",
+      "feedback-unverified",
+    ]);
+  });
+
+  it("downgrades to no-known-blockers when review evidence is incomplete", () => {
+    const result = computeReadiness(
+      snapshot({
+        completeness: {
+          reviewsComplete: false,
+          reviewThreadsComplete: true,
+          issueCommentsComplete: true,
+          checksComplete: true,
+          requiredChecksKnown: true,
+        },
+      }),
+    );
+    expect(result.ready).toBe(true);
+    expect(result.label).toBe("no-known-blockers");
   });
 });

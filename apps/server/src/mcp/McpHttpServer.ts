@@ -22,6 +22,8 @@ import {
   PreviewSnapshotToolkit,
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
+import { PullRequestMonitorToolkitHandlersLive } from "./toolkits/pullRequestMonitor/handlers.ts";
+import { PullRequestMonitorToolkit } from "./toolkits/pullRequestMonitor/tools.ts";
 
 export const invalidMcpCredentialBody = {
   error: "invalid_mcp_credential",
@@ -218,10 +220,21 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewSnapshotRegistrationLive,
 );
 
+/**
+ * Durable pull request monitor tools. Their thread identity comes from the same per-session
+ * credential the transport already resolves, so agents cannot address another chat's monitor.
+ */
+export const PullRequestMonitorToolkitRegistrationLive = McpServer.toolkit(
+  PullRequestMonitorToolkit,
+).pipe(Layer.provide(PullRequestMonitorToolkitHandlersLive));
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
   path: "/mcp",
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(Layer.provideMerge(McpTransportLive));
+export const layer = Layer.mergeAll(
+  PreviewToolkitRegistrationLive,
+  PullRequestMonitorToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive));

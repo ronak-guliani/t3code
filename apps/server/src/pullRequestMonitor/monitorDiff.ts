@@ -13,20 +13,19 @@ export interface PullRequestMonitorCursor {
   >;
   readonly issueCommentVersions: Readonly<Record<string, string>>;
   readonly checkRuns: Readonly<
-    Record<string, { readonly runId: string; readonly outcome: "success" | "failure" | "pending" }>
+    Record<string, { readonly runId: string; readonly outcome: PullRequestMonitorCheckOutcome }>
   >;
   readonly behindBase: boolean;
   readonly sourceRevision: string;
 }
 
-const checkOutcome = (check: PullRequestMonitorCheckRun): "success" | "failure" | "pending" => {
+/** A cancelled run is tracked separately: it never proved success, but it is not a failure to fix. */
+export type PullRequestMonitorCheckOutcome = "success" | "failure" | "pending" | "cancelled";
+
+export const checkOutcome = (check: PullRequestMonitorCheckRun): PullRequestMonitorCheckOutcome => {
   if (check.status === "pending") return "pending";
-  if (
-    check.status === "success" ||
-    check.status === "neutral" ||
-    check.status === "skipped" ||
-    check.status === "cancelled"
-  ) {
+  if (check.status === "cancelled") return "cancelled";
+  if (check.status === "success" || check.status === "neutral" || check.status === "skipped") {
     return "success";
   }
   return "failure";
@@ -106,6 +105,8 @@ export function diffPullRequestMonitorSnapshot(
   }
 
   for (const comment of snapshot.issueComments) {
+    // Our own comments are output, not feedback; they must never wake the owner.
+    if (comment.authoredByViewer) continue;
     const previousUpdatedAt = previousCursor.issueCommentVersions[comment.id];
     if (!previousUpdatedAt || previousUpdatedAt !== comment.updatedAt) {
       actionableEvents.push({

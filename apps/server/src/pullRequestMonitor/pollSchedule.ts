@@ -20,25 +20,29 @@ export function jitterMs(baseMs: number, unitSample: number, ratio = 0.2): numbe
   return baseMs + Math.floor(unit * (spread * 2 + 1)) - spread;
 }
 
-export const nextPollDelayMs = (input: {
+export interface PollDelayInput {
   readonly readiness: PullRequestMonitorReadiness | null;
   readonly failureCount: number;
   readonly hadActionableEvents: boolean;
-}): Effect.Effect<number> =>
-  Effect.gen(function* () {
-    const unit = yield* Random.next;
-    if (input.failureCount > 0) {
-      const exp = Math.min(
-        POLL_ERROR_MAX_MS,
-        POLL_ERROR_BASE_MS * 2 ** Math.min(input.failureCount, 6),
-      );
-      return jitterMs(exp, unit);
-    }
-    if (input.readiness?.ready) {
-      return jitterMs(POLL_READY_MS, unit);
-    }
-    if (input.hadActionableEvents || (input.readiness?.blockers.length ?? 0) > 0) {
-      return jitterMs(POLL_ACTIVE_MS, unit);
-    }
-    return jitterMs(POLL_BASE_MS, unit);
-  });
+}
+
+/** Pure cadence so a poll commit can compute its next schedule inside a transaction. */
+export function pollDelayMs(input: PollDelayInput, unitSample: number): number {
+  if (input.failureCount > 0) {
+    const exp = Math.min(
+      POLL_ERROR_MAX_MS,
+      POLL_ERROR_BASE_MS * 2 ** Math.min(input.failureCount, 6),
+    );
+    return jitterMs(exp, unitSample);
+  }
+  if (input.readiness?.ready) {
+    return jitterMs(POLL_READY_MS, unitSample);
+  }
+  if (input.hadActionableEvents || (input.readiness?.blockers.length ?? 0) > 0) {
+    return jitterMs(POLL_ACTIVE_MS, unitSample);
+  }
+  return jitterMs(POLL_BASE_MS, unitSample);
+}
+
+export const nextPollDelayMs = (input: PollDelayInput): Effect.Effect<number> =>
+  Effect.map(Random.next, (unit) => pollDelayMs(input, unit));

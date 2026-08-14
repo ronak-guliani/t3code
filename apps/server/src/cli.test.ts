@@ -1184,6 +1184,36 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
     }),
   );
 
+  it.effect("rejects an unknown pr-monitor disposition before connecting", () =>
+    Effect.gen(function* () {
+      const error = yield* runCliWithRuntime([
+        "pr-monitor",
+        "report",
+        "chat-1",
+        "fb_item_1",
+        "maybe-later",
+      ]).pipe(Effect.flip);
+
+      assert.equal(String(error).includes("Invalid disposition"), true);
+    }),
+  );
+
+  it.effect("rejects malformed pr-monitor findings before connecting", () =>
+    Effect.gen(function* () {
+      const error = yield* runCliWithRuntime([
+        "pr-monitor",
+        "submit-findings",
+        "chat-1",
+        "acme/app",
+        "12",
+        "--findings",
+        JSON.stringify([{ title: "no detail" }]),
+      ]).pipe(Effect.flip);
+
+      assert.equal(String(error).includes("Invalid findings"), true);
+    }),
+  );
+
   it.effect("rejects invalid raw orchestration dispatch payloads before connecting", () =>
     Effect.gen(function* () {
       const error = yield* runCliWithRuntime(["orchestration", "dispatch", "--payload", "{}"]).pipe(

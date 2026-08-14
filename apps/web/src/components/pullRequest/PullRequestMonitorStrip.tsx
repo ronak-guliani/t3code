@@ -5,7 +5,14 @@ import type {
   PullRequestRef,
 } from "@t3tools/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ActivityIcon, LifeBuoyIcon, PauseIcon, PlayIcon, RadarIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  LifeBuoyIcon,
+  PauseIcon,
+  PlayIcon,
+  RadarIcon,
+  UserRoundIcon,
+} from "lucide-react";
 import { useMemo } from "react";
 
 import {
@@ -86,6 +93,15 @@ export function PullRequestMonitorStrip(props: {
   const recentReports = statusQuery.data?.recentReports ?? [];
   const active = monitor?.enabled === true;
   const showFallback = active && monitor?.ownerThreadId === null;
+  // Exactly one chat may modify a monitored PR; make that owner visible.
+  const ownership = useMemo(() => {
+    if (!monitor) return null;
+    const owner = monitor.ownerThreadId ? `Owner chat ${monitor.ownerThreadId}` : "No owner chat";
+    const review = monitor.linkedReviewThreadId
+      ? ` · Review chat ${monitor.linkedReviewThreadId}`
+      : "";
+    return `${owner}${review}`;
+  }, [monitor]);
   const summary = useMemo(() => blockersSummary(monitor), [monitor]);
   const feedbackSummary = useMemo(() => {
     if (openFeedback.length === 0) return null;
@@ -209,6 +225,12 @@ export function PullRequestMonitorStrip(props: {
           </Button>
         ) : null}
       </div>
+      {ownership ? (
+        <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <UserRoundIcon className="mt-0.5 size-3 shrink-0" />
+          <span className="min-w-0 truncate">{ownership}</span>
+        </div>
+      ) : null}
       {feedbackSummary || deliverySummary || recentReports.length > 0 ? (
         <div className="flex flex-col gap-0.5 border-t border-border/40 pt-2 text-xs text-muted-foreground">
           {feedbackSummary ? (

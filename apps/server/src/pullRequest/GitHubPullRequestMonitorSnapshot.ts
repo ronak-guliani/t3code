@@ -293,6 +293,58 @@ function sourceRevisionOf(parts: ReadonlyArray<string>): string {
   return NodeCrypto.createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32);
 }
 
+/** Bound how far back a single poll walks; deeper history stays "incomplete", never "resolved". */
+const ISSUE_COMMENT_PAGE_SIZE = 100;
+const MAX_ISSUE_COMMENT_PAGES = 10;
+const MAX_RETAINED_ISSUE_COMMENTS = 200;
+
+type IssueCommentPage = typeof IssueCommentsSchema.Type;
+
+/**
+ * Page issue comments explicitly: a single `per_page=100` read silently truncates busy PRs,
+ * which makes older feedback look resolved. The cursor is the page index, and the retained
+ * tail is bounded so one snapshot cannot grow without limit.
+ */
+const fetchIssueComments = Effect.fn("fetchGitHubPullRequestIssueComments")(function* (input: {
+  readonly github: typeof GitHubCli.Service;
+  readonly cwd: string;
+  readonly host: string;
+  readonly owner: string;
+  readonly repository: string;
+  readonly number: number;
+  readonly mapCliError: (error: GitHubCliError) => PullRequestProviderError;
+}) {
+  const collected: Array<IssueCommentPage[number]> = [];
+  let complete = false;
+  for (let page = 1; page <= MAX_ISSUE_COMMENT_PAGES; page++) {
+    const raw = yield* input.github
+      .execute({
+        cwd: input.cwd,
+        args: [
+          "api",
+          "--hostname",
+          input.host,
+          "-H",
+          "Accept: application/vnd.github+json",
+          `repos/${input.owner}/${input.repository}/issues/${input.number}/comments?per_page=${ISSUE_COMMENT_PAGE_SIZE}&page=${page}`,
+        ],
+      })
+      .pipe(Effect.mapError(input.mapCliError));
+    const decoded = yield* decodeOrFail(
+      IssueCommentsSchema,
+      raw.stdout === "" ? "[]" : raw.stdout,
+      "monitorSnapshot.issueComments",
+    );
+    collected.push(...decoded);
+    if (decoded.length < ISSUE_COMMENT_PAGE_SIZE) {
+      complete = true;
+      break;
+    }
+  }
+  const retained = collected.slice(-MAX_RETAINED_ISSUE_COMMENTS);
+  return { comments: retained, complete: complete && retained.length === collected.length };
+});
+
 export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   "fetchGitHubPullRequestMonitorSnapshot",
 )(function* (input: {
@@ -368,24 +420,15 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   const [issueCommentsDecoded, checkRunsDecoded, statusesDecoded, compareDecoded] =
     yield* Effect.all(
       [
-        github
-          .execute({
-            cwd: input.cwd,
-            args: [
-              "api",
-              "--hostname",
-              input.host,
-              "-H",
-              "Accept: application/vnd.github+json",
-              `repos/${ownerName}/${repoName}/issues/${input.number}/comments?per_page=100`,
-            ],
-          })
-          .pipe(
-            Effect.mapError(mapCliError),
-            Effect.flatMap((raw) =>
-              decodeOrFail(IssueCommentsSchema, raw.stdout, "monitorSnapshot.issueComments"),
-            ),
-          ),
+        fetchIssueComments({
+          github,
+          cwd: input.cwd,
+          host: input.host,
+          owner: ownerName,
+          repository: repoName,
+          number: input.number,
+          mapCliError,
+        }),
         github
           .execute({
             cwd: input.cwd,
@@ -481,13 +524,17 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     },
   );
 
-  const issueComments: PullRequestMonitorIssueComment[] = issueCommentsDecoded.map((comment) => ({
-    id: String(comment.id),
-    author: actorOf(comment.user ? { login: comment.user.login } : null, comment.user?.type),
-    createdAt: comment.created_at,
-    updatedAt: comment.updated_at,
-    bodyExcerpt: excerpt(comment.body),
-  }));
+  const viewerLogin = page.data.viewer.login;
+  const issueComments: PullRequestMonitorIssueComment[] = issueCommentsDecoded.comments.map(
+    (comment) => ({
+      id: String(comment.id),
+      author: actorOf(comment.user ? { login: comment.user.login } : null, comment.user?.type),
+      createdAt: comment.created_at,
+      updatedAt: comment.updated_at,
+      authoredByViewer: comment.user?.login === viewerLogin,
+      bodyExcerpt: excerpt(comment.body),
+    }),
+  );
 
   const checkRuns: PullRequestMonitorCheckRun[] = [
     ...checkRunsDecoded.check_runs.map((run) => ({
@@ -519,7 +566,9 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     ...reviewThreads.map(
       (thread) => `${thread.id}:${thread.updatedAt}:${thread.resolved ? "1" : "0"}`,
     ),
-    ...issueComments.map((comment) => `${comment.id}:${comment.updatedAt}`),
+    ...issueComments.map(
+      (comment) => `${comment.id}:${comment.updatedAt}:${comment.authoredByViewer ? "1" : "0"}`,
+    ),
     ...checkRuns.map((check) => `${check.id}:${check.status}:${check.headSha}`),
   ]);
 
@@ -547,7 +596,7 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
       reviewThreadsComplete:
         !pullRequest.reviewThreads.pageInfo.hasNextPage &&
         !pullRequest.reviewThreads.pageInfo.hasPreviousPage,
-      issueCommentsComplete: issueCommentsDecoded.length < 100,
+      issueCommentsComplete: issueCommentsDecoded.complete,
       checksComplete: checkRunsDecoded.check_runs.length < 100,
       // GitHub check-runs endpoint is observed checks, not branch protection required set.
       requiredChecksKnown: false,

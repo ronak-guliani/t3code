@@ -7,6 +7,7 @@ import {
   type PullRequestMonitorFeedbackDisposition,
   type PullRequestMonitorFeedbackItem,
   type PullRequestMonitorFeedbackItemId,
+  type PullRequestMonitorFeedbackItemStatus,
   type PullRequestMonitorFeedbackReport,
   type PullRequestMonitorFeedbackRevision,
   type PullRequestMonitorFeedbackRevisionId,
@@ -41,6 +42,7 @@ interface ItemRow {
   readonly last_seen_at: string;
   readonly current_revision_id: string | null;
   readonly summary: string | null;
+  readonly current_head_sha: string | null;
 }
 
 interface DeliveryRow {
@@ -102,6 +104,7 @@ function rowToItem(row: ItemRow): PullRequestMonitorFeedbackItem {
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     currentRevisionId: row.current_revision_id as PullRequestMonitorFeedbackRevisionId | null,
+    currentRevisionHeadSha: row.current_head_sha,
     summary: (row.summary ?? "").slice(0, 500),
   };
 }
@@ -144,14 +147,23 @@ function rowToReport(row: ReportRow): PullRequestMonitorFeedbackReport {
 
 export interface PullRequestMonitorFeedbackStoreApi {
   readonly upsertOpenItem: (input: {
-    readonly item: Omit<PullRequestMonitorFeedbackItem, "summary" | "currentRevisionId"> & {
+    readonly item: Omit<
+      PullRequestMonitorFeedbackItem,
+      "summary" | "currentRevisionId" | "currentRevisionHeadSha"
+    > & {
       readonly currentRevisionId: PullRequestMonitorFeedbackRevisionId | null;
       readonly summary: string;
     };
   }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly insertRevision: (
     revision: Omit<PullRequestMonitorFeedbackRevision, "payload"> & { readonly payload: unknown },
-  ) => Effect.Effect<void, PullRequestMonitorError>;
+  ) => Effect.Effect<boolean, PullRequestMonitorError>;
+  /** Source-content identity lookup; a hit means this observation was already ingested. */
+  readonly findRevisionByIdentity: (input: {
+    readonly itemId: PullRequestMonitorFeedbackItemId;
+    readonly sourceRevision: string;
+    readonly contentHash: string;
+  }) => Effect.Effect<PullRequestMonitorFeedbackRevisionId | null, PullRequestMonitorError>;
   readonly listRevisionsByIds: (
     revisionIds: ReadonlyArray<PullRequestMonitorFeedbackRevisionId | string>,
   ) => Effect.Effect<ReadonlyArray<PullRequestMonitorFeedbackRevision>, PullRequestMonitorError>;
@@ -168,7 +180,7 @@ export interface PullRequestMonitorFeedbackStoreApi {
     readonly note: string | null;
     readonly at: string;
     readonly byThreadId: ThreadId | null;
-    readonly status: "open" | "closed";
+    readonly status: PullRequestMonitorFeedbackItemStatus;
   }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly insertReport: (
     report: PullRequestMonitorFeedbackReport,
@@ -180,7 +192,7 @@ export interface PullRequestMonitorFeedbackStoreApi {
     readonly note: string | null;
     readonly at: string;
     readonly byThreadId: ThreadId | null;
-    readonly status: "open" | "closed";
+    readonly status: PullRequestMonitorFeedbackItemStatus;
     readonly report: PullRequestMonitorFeedbackReport;
   }) => Effect.Effect<void, PullRequestMonitorError>;
   readonly listReports: (input: {
@@ -247,7 +259,10 @@ export const PullRequestMonitorFeedbackStore = {
         SELECT i.*, (
           SELECT r.summary FROM pull_request_monitor_feedback_revisions r
           WHERE r.revision_id = i.current_revision_id
-        ) AS summary
+        ) AS summary, (
+          SELECT r.head_sha FROM pull_request_monitor_feedback_revisions r
+          WHERE r.revision_id = i.current_revision_id
+        ) AS current_head_sha
         FROM pull_request_monitor_feedback_items i
         WHERE i.item_id = ${itemId}
         LIMIT 1
@@ -263,7 +278,10 @@ export const PullRequestMonitorFeedbackStore = {
               SELECT i.*, (
                 SELECT r.summary FROM pull_request_monitor_feedback_revisions r
                 WHERE r.revision_id = i.current_revision_id
-              ) AS summary
+              ) AS summary, (
+                SELECT r.head_sha FROM pull_request_monitor_feedback_revisions r
+                WHERE r.revision_id = i.current_revision_id
+              ) AS current_head_sha
               FROM pull_request_monitor_feedback_items i
               WHERE i.monitor_id = ${input.monitorId}
               ORDER BY i.last_seen_at DESC
@@ -272,9 +290,12 @@ export const PullRequestMonitorFeedbackStore = {
               SELECT i.*, (
                 SELECT r.summary FROM pull_request_monitor_feedback_revisions r
                 WHERE r.revision_id = i.current_revision_id
-              ) AS summary
+              ) AS summary, (
+                SELECT r.head_sha FROM pull_request_monitor_feedback_revisions r
+                WHERE r.revision_id = i.current_revision_id
+              ) AS current_head_sha
               FROM pull_request_monitor_feedback_items i
-              WHERE i.monitor_id = ${input.monitorId} AND i.status = 'open'
+              WHERE i.monitor_id = ${input.monitorId} AND i.status <> 'closed'
               ORDER BY i.last_seen_at DESC
             `;
         return rows.map(rowToItem);
@@ -305,30 +326,59 @@ export const PullRequestMonitorFeedbackStore = {
         Effect.asVoid,
       );
 
+    const findRevisionByIdentity: PullRequestMonitorFeedbackStoreApi["findRevisionByIdentity"] = (
+      input,
+    ) =>
+      sql<{ readonly revision_id: string }>`
+        SELECT revision_id FROM pull_request_monitor_feedback_revisions
+        WHERE item_id = ${input.itemId}
+          AND source_revision = ${input.sourceRevision}
+          AND content_hash = ${input.contentHash}
+        LIMIT 1
+      `.pipe(
+        Effect.map(
+          (rows) =>
+            (rows[0]?.revision_id as PullRequestMonitorFeedbackRevisionId | undefined) ?? null,
+        ),
+        Effect.mapError((cause) => storeError("Failed to look up feedback revision.", cause)),
+      );
+
+    /**
+     * Replay-safe: identity is the observed source content, so re-ingesting the same
+     * observation is ignored rather than queued again as a new revision.
+     */
     const insertRevision: PullRequestMonitorFeedbackStoreApi["insertRevision"] = (revision) =>
-      sql`
-        INSERT INTO pull_request_monitor_feedback_revisions (
-          revision_id, item_id, revision_number, payload_json, source_revision, head_sha, created_at, summary
-        ) VALUES (
-          ${revision.id}, ${revision.itemId}, ${revision.revisionNumber},
-          ${JSON.stringify(revision.payload)}, ${revision.sourceRevision}, ${revision.headSha},
-          ${revision.createdAt}, ${revision.summary}
-        )
-      `
-        .pipe(
-          Effect.mapError((cause) => storeError("Failed to insert feedback revision.", cause)),
-          Effect.asVoid,
-        )
-        .pipe(
-          Effect.andThen(
-            sql`
-            UPDATE pull_request_monitor_feedback_items
-            SET current_revision_id = ${revision.id}, last_seen_at = ${revision.createdAt}
-            WHERE item_id = ${revision.itemId}
-          `.pipe(Effect.asVoid),
-          ),
-          Effect.mapError((cause) => storeError("Failed to attach feedback revision.", cause)),
-        );
+      Effect.gen(function* () {
+        const existing = yield* findRevisionByIdentity({
+          itemId: revision.itemId,
+          sourceRevision: revision.sourceRevision,
+          contentHash: revision.contentHash,
+        });
+        if (existing !== null) return false;
+        yield* sql`
+          INSERT INTO pull_request_monitor_feedback_revisions (
+            revision_id, item_id, revision_number, payload_json, source_revision, content_hash,
+            head_sha, created_at, summary
+          ) VALUES (
+            ${revision.id}, ${revision.itemId}, ${revision.revisionNumber},
+            ${JSON.stringify(revision.payload)}, ${revision.sourceRevision}, ${revision.contentHash},
+            ${revision.headSha}, ${revision.createdAt}, ${revision.summary}
+          )
+          ON CONFLICT DO NOTHING
+        `;
+        yield* sql`
+          UPDATE pull_request_monitor_feedback_items
+          SET current_revision_id = ${revision.id}, last_seen_at = ${revision.createdAt}
+          WHERE item_id = ${revision.itemId}
+        `;
+        return true;
+      }).pipe(
+        Effect.mapError((cause) =>
+          isPullRequestMonitorError(cause)
+            ? cause
+            : storeError("Failed to insert feedback revision.", cause),
+        ),
+      );
 
     const listRevisionsByIds: PullRequestMonitorFeedbackStoreApi["listRevisionsByIds"] = (
       revisionIds,
@@ -343,11 +393,12 @@ export const PullRequestMonitorFeedbackStore = {
         readonly revision_number: number;
         readonly payload_json: string;
         readonly source_revision: string;
+        readonly content_hash: string | null;
         readonly head_sha: string;
         readonly created_at: string;
         readonly summary: string | null;
       }>`
-        SELECT revision_id, item_id, revision_number, payload_json, source_revision, head_sha, created_at, summary
+        SELECT revision_id, item_id, revision_number, payload_json, source_revision, content_hash, head_sha, created_at, summary
         FROM pull_request_monitor_feedback_revisions
         WHERE revision_id IN (SELECT value FROM json_each(${idsJson}))
         ORDER BY created_at ASC
@@ -365,6 +416,7 @@ export const PullRequestMonitorFeedbackStore = {
               itemId: row.item_id as PullRequestMonitorFeedbackItemId,
               revisionNumber: row.revision_number,
               sourceRevision: row.source_revision,
+              contentHash: row.content_hash ?? row.revision_id,
               headSha: row.head_sha,
               createdAt: row.created_at,
               summary: (row.summary ?? "").slice(0, 500),
@@ -650,6 +702,7 @@ export const PullRequestMonitorFeedbackStore = {
     return {
       upsertOpenItem,
       insertRevision,
+      findRevisionByIdentity,
       listRevisionsByIds,
       getItem,
       listItems,

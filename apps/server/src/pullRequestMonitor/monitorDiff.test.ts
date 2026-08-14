@@ -117,4 +117,51 @@ describe("diffPullRequestMonitorSnapshot", () => {
     );
     expect(actionableEvents.some((event) => event.kind === "behind-base")).toBe(true);
   });
+
+  it("never wakes the owner for our own issue comments", () => {
+    const withSelfComment = snapshot({
+      issueComments: [
+        {
+          id: "ic-self",
+          author: { login: "me", kind: "user" },
+          createdAt: "2026-08-11T00:00:00.000Z",
+          updatedAt: "2026-08-11T00:00:00.000Z",
+          authoredByViewer: true,
+          bodyExcerpt: "pushed a fix",
+        },
+        {
+          id: "ic-other",
+          author: { login: "reviewer", kind: "user" },
+          createdAt: "2026-08-11T00:00:00.000Z",
+          updatedAt: "2026-08-11T00:00:00.000Z",
+          authoredByViewer: false,
+          bodyExcerpt: "still broken",
+        },
+      ],
+    });
+    const { actionableEvents, nextCursor } = diffPullRequestMonitorSnapshot(
+      emptyCursor(),
+      withSelfComment,
+    );
+    expect(actionableEvents.map((event) => event.sourceId)).toEqual(["ic-other"]);
+    // Self comments still advance the cursor so an edit of ours cannot resurface later.
+    expect(Object.keys(nextCursor.issueCommentVersions).sort()).toEqual(["ic-other", "ic-self"]);
+  });
+
+  it("records a cancelled check as its own outcome rather than success", () => {
+    const cancelled = snapshot({
+      checkRuns: [
+        {
+          id: "c1",
+          name: "ci",
+          status: "cancelled",
+          headSha: "abc123",
+          url: null,
+          description: null,
+        },
+      ],
+    });
+    const cursor = cursorFromSnapshot(cancelled);
+    expect(Object.values(cursor.checkRuns).map((entry) => entry.outcome)).toEqual(["cancelled"]);
+  });
 });

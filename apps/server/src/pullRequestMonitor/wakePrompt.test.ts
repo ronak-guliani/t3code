@@ -116,4 +116,46 @@ describe("wakePrompt", () => {
     });
     expect(prompt.length).toBeLessThan(4_000);
   });
+
+  it("only advertises monitor tools the target agent actually mounts", () => {
+    const withTools = buildWakePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      deliveryId: "del-1",
+      events: [],
+      revisionSummaries: ["check-failed: ci"],
+      snapshot,
+      readiness,
+      availableTools: ["pr_monitor_context", "pr_monitor_report"],
+    });
+    expect(withTools).toContain("pr_monitor_context");
+    expect(withTools).toContain("pr_monitor_report");
+
+    const withoutTools = buildWakePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      deliveryId: "del-1",
+      events: [],
+      revisionSummaries: ["check-failed: ci"],
+      snapshot,
+      readiness,
+      availableTools: [],
+    });
+    expect(withoutTools).not.toContain("pr_monitor_context");
+    expect(withoutTools).toContain("No monitor tools are mounted");
+
+    const fallback = buildFallbackMaintenancePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      url: "https://github.com/acme/app/pull/12",
+      headBranch: "feat/x",
+      headSha: "abc123",
+      reason: "owner-missing",
+      previousOwnerThreadId: null,
+      note: null,
+      readinessSummary: formatBlockersSummary(readiness),
+      availableTools: [],
+    });
+    expect(fallback).not.toContain("pr_monitor_report");
+  });
 });

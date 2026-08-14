@@ -53,9 +53,19 @@ export const PullRequestMonitorBlockerKind = Schema.Literals([
   "checks-missing",
   "check-pending",
   "check-failed",
+  /** A cancelled run never proved success; it blocks until it is re-run. */
+  "check-cancelled",
   "changes-requested",
   "unresolved-thread",
   "behind-base",
+  /** Durable monitor state: feedback the owner has not dispositioned yet. */
+  "feedback-open",
+  /** Feedback an agent claimed resolved that fresh provider state has not confirmed. */
+  "feedback-unverified",
+  /** Feedback escalated to a human. */
+  "feedback-needs-human",
+  /** A remediation wake is queued or retrying and has not reached the owner. */
+  "feedback-delivery-pending",
 ]);
 export type PullRequestMonitorBlockerKind = typeof PullRequestMonitorBlockerKind.Type;
 
@@ -116,6 +126,8 @@ export const PullRequestMonitorIssueComment = Schema.Struct({
   author: PullRequestMonitorActor,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  /** Self-authored comments are our own output and must never wake the owner. */
+  authoredByViewer: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   bodyExcerpt: Schema.String.check(Schema.isMaxLength(500)),
 });
 export type PullRequestMonitorIssueComment = typeof PullRequestMonitorIssueComment.Type;
@@ -177,6 +189,8 @@ export const PullRequestMonitorActionableEventKind = Schema.Literals([
   "check-failed",
   "behind-base",
   "state-changed",
+  /** Structured finding submitted by a review agent, not observed on the host. */
+  "review-finding",
 ]);
 export type PullRequestMonitorActionableEventKind =
   typeof PullRequestMonitorActionableEventKind.Type;
@@ -240,16 +254,39 @@ export const PullRequestMonitorListInput = Schema.Struct({
 });
 export type PullRequestMonitorListInput = typeof PullRequestMonitorListInput.Type;
 
-export const PullRequestMonitorFeedbackDisposition = Schema.Literals([
+/**
+ * Dispositions an agent or human may report. `resolved` is only a claim: it moves an item to
+ * `verifying` until fresh provider state confirms the finding is gone.
+ */
+export const PullRequestMonitorFeedbackReportDisposition = Schema.Literals([
   "accepted",
   "rejected",
   "resolved",
   "needs-human",
 ]);
+export type PullRequestMonitorFeedbackReportDisposition =
+  typeof PullRequestMonitorFeedbackReportDisposition.Type;
+
+/** Stored disposition, including the provider-derived outcomes only the server may write. */
+export const PullRequestMonitorFeedbackDisposition = Schema.Literals([
+  "accepted",
+  "rejected",
+  "resolved",
+  "needs-human",
+  /** Fresh provider state no longer reports the finding. */
+  "resolved-upstream",
+  /** The finding no longer applies to the current head/source revision. */
+  "superseded",
+]);
 export type PullRequestMonitorFeedbackDisposition =
   typeof PullRequestMonitorFeedbackDisposition.Type;
 
-export const PullRequestMonitorFeedbackItemStatus = Schema.Literals(["open", "closed"]);
+export const PullRequestMonitorFeedbackItemStatus = Schema.Literals([
+  "open",
+  /** An agent claimed resolution; awaiting provider confirmation. */
+  "verifying",
+  "closed",
+]);
 export type PullRequestMonitorFeedbackItemStatus = typeof PullRequestMonitorFeedbackItemStatus.Type;
 
 export const PullRequestMonitorFeedbackItemId = TrimmedNonEmptyString.pipe(
@@ -280,6 +317,10 @@ export const PullRequestMonitorFeedbackItem = Schema.Struct({
   firstSeenAt: IsoDateTime,
   lastSeenAt: IsoDateTime,
   currentRevisionId: Schema.NullOr(PullRequestMonitorFeedbackRevisionId),
+  /** Head the latest revision was observed against; evidence for verifying a claimed fix. */
+  currentRevisionHeadSha: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /** Bound payload excerpt from the latest revision. */
   summary: Schema.String.check(Schema.isMaxLength(500)),
 });
@@ -290,6 +331,8 @@ export const PullRequestMonitorFeedbackRevision = Schema.Struct({
   itemId: PullRequestMonitorFeedbackItemId,
   revisionNumber: PositiveInt,
   sourceRevision: TrimmedNonEmptyString,
+  /** Hash of the observed source payload; identity for replay-safe ingestion. */
+  contentHash: TrimmedNonEmptyString,
   headSha: TrimmedNonEmptyString,
   createdAt: IsoDateTime,
   summary: Schema.String.check(Schema.isMaxLength(500)),
@@ -338,7 +381,7 @@ export const PullRequestMonitorReportInput = Schema.Struct({
   monitorId: Schema.optional(PullRequestMonitorId),
   reference: Schema.optional(PullRequestRef),
   itemId: PullRequestMonitorFeedbackItemId,
-  disposition: PullRequestMonitorFeedbackDisposition,
+  disposition: PullRequestMonitorFeedbackReportDisposition,
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   reporterThreadId: Schema.optional(ThreadId),
 });
@@ -348,6 +391,8 @@ export const PullRequestMonitorReportResult = Schema.Struct({
   item: PullRequestMonitorFeedbackItem,
   report: PullRequestMonitorFeedbackReport,
   recheckRequested: Schema.Boolean,
+  /** True when the claim still needs fresh provider confirmation before it can close. */
+  awaitingVerification: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type PullRequestMonitorReportResult = typeof PullRequestMonitorReportResult.Type;
 
@@ -396,21 +441,50 @@ export const PullRequestMonitorTransferInput = Schema.Struct({
 });
 export type PullRequestMonitorTransferInput = typeof PullRequestMonitorTransferInput.Type;
 
+/**
+ * One structured review finding. Reviewers submit findings instead of prose so each one gets
+ * its own durable id, revision, and disposition trail.
+ */
+export const PullRequestMonitorFinding = Schema.Struct({
+  /** Reviewer-stable key; re-submitting the same key updates that finding instead of forking it. */
+  key: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  detail: Schema.String.check(Schema.isMaxLength(2_000)),
+  severity: Schema.Literals(["blocker", "major", "minor", "nit"]),
+  path: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(500))),
+  line: Schema.optional(PositiveInt),
+});
+export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
+
 export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,
   reviewThreadId: ThreadId,
   ownerThreadId: Schema.optional(ThreadId),
   summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   startMonitoring: Schema.optional(Schema.Boolean),
+  findings: Schema.optional(Schema.Array(PullRequestMonitorFinding)),
 });
 export type PullRequestMonitorSubmitFindingsInput =
   typeof PullRequestMonitorSubmitFindingsInput.Type;
+
+/** Durable identity assigned to each submitted finding. */
+export const PullRequestMonitorSubmittedFinding = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  itemId: PullRequestMonitorFeedbackItemId,
+  revisionId: PullRequestMonitorFeedbackRevisionId,
+  /** False when the identical finding was already recorded at this source revision. */
+  created: Schema.Boolean,
+});
+export type PullRequestMonitorSubmittedFinding = typeof PullRequestMonitorSubmittedFinding.Type;
 
 export const PullRequestMonitorSubmitFindingsResult = Schema.Struct({
   monitor: PullRequestMonitorRecord,
   linkedReviewThreadId: ThreadId,
   ownerThreadId: Schema.NullOr(ThreadId),
   monitoringStarted: Schema.Boolean,
+  findings: Schema.Array(PullRequestMonitorSubmittedFinding).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type PullRequestMonitorSubmitFindingsResult =
   typeof PullRequestMonitorSubmitFindingsResult.Type;

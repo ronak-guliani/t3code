@@ -17,6 +17,10 @@ import {
   ProjectScript,
   ProviderDriverKind,
   ProviderInstanceId,
+  PullRequestMonitorFeedbackItemId,
+  PullRequestMonitorFeedbackReportDisposition,
+  PullRequestMonitorFinding,
+  PullRequestMonitorId,
   QueuedTurnId,
   ThreadId,
   TurnId,
@@ -3590,6 +3594,248 @@ const gitCommand = Command.make("git").pipe(
   ]),
 );
 
+// --- pull request monitor -------------------------------------------------
+/** Decode one CLI argument against a schema so bad input fails before any network call. */
+const decodeCliPayload = <A>(schema: Schema.Codec<A, unknown>, raw: string, label: string) =>
+  Effect.gen(function* () {
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: () => raw,
+    }).pipe(Effect.orElseSucceed(() => raw as unknown));
+    return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
+      Effect.mapError((cause) => new CliPayloadError({ message: `Invalid ${label}.`, cause })),
+    );
+  });
+
+// Every command resolves identity from a chat, exactly like the MCP tools: the
+// project comes from the chat, never from a caller-supplied id.
+const prMonitorReferenceFlags = {
+  repository: Flag.string("repository").pipe(
+    Flag.withDescription("owner/name of the pull request repository."),
+    Flag.optional,
+  ),
+  number: Flag.integer("number").pipe(Flag.withDescription("Pull request number."), Flag.optional),
+  monitorId: Flag.string("monitor-id").pipe(
+    Flag.withDescription("Monitor id, when it is already known."),
+    Flag.optional,
+  ),
+};
+
+const prMonitorSelector = (
+  projectId: ProjectId,
+  flags: {
+    readonly monitorId: Option.Option<string>;
+    readonly repository: Option.Option<string>;
+    readonly number: Option.Option<number>;
+  },
+) => {
+  const repository = Option.getOrUndefined(flags.repository);
+  const number = Option.getOrUndefined(flags.number);
+  return {
+    ...(Option.isSome(flags.monitorId)
+      ? { monitorId: PullRequestMonitorId.make(flags.monitorId.value) }
+      : {}),
+    ...(repository !== undefined && number !== undefined
+      ? { reference: { projectId, repository, number } }
+      : {}),
+  };
+};
+
+const prMonitorListCommand = Command.make("list", {
+  ...liveTargetFlags,
+  project: Flag.string("project").pipe(
+    Flag.withDescription("Project id, title, or workspace root."),
+    Flag.optional,
+  ),
+  cwd: cwdFlag,
+  enabledOnly: Flag.boolean("enabled-only").pipe(Flag.withDefault(false)),
+}).pipe(
+  Command.withDescription("List durable pull request monitors for a project."),
+  Command.withHandler((flags) =>
+    withLiveSnapshotAndRpc(flags, ({ getSnapshot, client }) =>
+      Effect.gen(function* () {
+        const snapshot = yield* getSnapshot;
+        const project = yield* findProjectForCli(
+          snapshot,
+          Option.getOrUndefined(flags.project) ?? flags.cwd,
+        );
+        const result = yield* client[WS_METHODS.pullRequestMonitorsList]({
+          projectId: project.id,
+          enabledOnly: flags.enabledOnly,
+        });
+        yield* printJson(result);
+      }),
+    ),
+  ),
+);
+
+const prMonitorStatusCommand = Command.make("status", {
+  ...liveTargetFlags,
+  ...prMonitorReferenceFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+}).pipe(
+  Command.withDescription("Show durable monitor status for a chat's pull request."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      Effect.gen(function* () {
+        const result = yield* client[WS_METHODS.pullRequestMonitorsStatus](
+          prMonitorSelector(thread.projectId, flags),
+        );
+        yield* printJson(result);
+      }),
+    ),
+  ),
+);
+
+const prMonitorContextCommand = Command.make("context", {
+  ...liveTargetFlags,
+  ...prMonitorReferenceFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  includeClosed: Flag.boolean("include-closed").pipe(Flag.withDefault(false)),
+}).pipe(
+  Command.withDescription("Read the durable monitor feedback ledger for a chat."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      Effect.gen(function* () {
+        const result = yield* client[WS_METHODS.pullRequestMonitorsContext]({
+          ...prMonitorSelector(thread.projectId, flags),
+          includeClosed: flags.includeClosed,
+        });
+        yield* printJson(result);
+      }),
+    ),
+  ),
+);
+
+const prMonitorReportCommand = Command.make("report", {
+  ...liveTargetFlags,
+  ...prMonitorReferenceFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+  itemId: Argument.string("item-id").pipe(Argument.withDescription("Feedback item id.")),
+  disposition: Argument.string("disposition").pipe(
+    Argument.withDescription("accepted | rejected | resolved | needs-human"),
+  ),
+  note: Flag.string("note").pipe(Flag.optional),
+}).pipe(
+  Command.withDescription("Disposition one monitor finding as the given chat."),
+  Command.withHandler((flags) =>
+    // Validate before opening an authenticated session: bad input never reaches the server.
+    Effect.flatMap(
+      decodeCliPayload(
+        PullRequestMonitorFeedbackReportDisposition,
+        flags.disposition,
+        "disposition",
+      ),
+      (disposition) =>
+        withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+          Effect.gen(function* () {
+            const note = Option.getOrUndefined(flags.note);
+            const result = yield* client[WS_METHODS.pullRequestMonitorsReport]({
+              ...prMonitorSelector(thread.projectId, flags),
+              itemId: PullRequestMonitorFeedbackItemId.make(flags.itemId),
+              disposition,
+              ...(note === undefined ? {} : { note }),
+              reporterThreadId: thread.id,
+            });
+            yield* printJson(result);
+          }),
+        ),
+    ),
+  ),
+);
+
+const prMonitorSubmitFindingsCommand = Command.make("submit-findings", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(
+    Argument.withDescription("Review chat id or title; it becomes the linked review chat."),
+  ),
+  repository: Argument.string("repository").pipe(Argument.withDescription("owner/name.")),
+  number: Argument.integer("number").pipe(Argument.withDescription("Pull request number.")),
+  findings: Flag.string("findings").pipe(
+    Flag.withDescription("JSON array of findings: {title, detail, severity, path?, line?, key?}."),
+  ),
+  summary: Flag.string("summary").pipe(Flag.optional),
+}).pipe(
+  Command.withDescription("Hand structured review findings to a pull request's owner chat."),
+  Command.withHandler((flags) =>
+    Effect.flatMap(
+      decodeCliPayload(Schema.Array(PullRequestMonitorFinding), flags.findings, "findings"),
+      (findings) =>
+        withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+          Effect.gen(function* () {
+            const summary = Option.getOrUndefined(flags.summary);
+            const result = yield* client[WS_METHODS.pullRequestMonitorsSubmitFindings]({
+              reference: {
+                projectId: thread.projectId,
+                repository: flags.repository,
+                number: flags.number,
+              },
+              reviewThreadId: thread.id,
+              findings,
+              ...(summary === undefined ? {} : { summary }),
+            });
+            yield* printJson(result);
+          }),
+        ),
+    ),
+  ),
+);
+
+const prMonitorStartCommand = Command.make("start", {
+  ...liveTargetFlags,
+  chat: Argument.string("chat").pipe(
+    Argument.withDescription("Thread id or title; becomes the monitor owner."),
+  ),
+  repository: Argument.string("repository").pipe(Argument.withDescription("owner/name.")),
+  number: Argument.integer("number").pipe(Argument.withDescription("Pull request number.")),
+}).pipe(
+  Command.withDescription("Start durable monitoring for a pull request, owned by a chat."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      Effect.gen(function* () {
+        const result = yield* client[WS_METHODS.pullRequestMonitorsStart]({
+          projectId: thread.projectId,
+          repository: flags.repository,
+          number: flags.number,
+          ownerThreadId: thread.id,
+        });
+        yield* printJson(result);
+      }),
+    ),
+  ),
+);
+
+const prMonitorStopCommand = Command.make("stop", {
+  ...liveTargetFlags,
+  ...prMonitorReferenceFlags,
+  chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
+}).pipe(
+  Command.withDescription("Stop durable monitoring for a pull request."),
+  Command.withHandler((flags) =>
+    withThreadRpc(flags, flags.chat, ({ thread, client }) =>
+      Effect.gen(function* () {
+        const result = yield* client[WS_METHODS.pullRequestMonitorsStop](
+          prMonitorSelector(thread.projectId, flags),
+        );
+        yield* printJson(result);
+      }),
+    ),
+  ),
+);
+
+const prMonitorCommand = Command.make("pr-monitor").pipe(
+  Command.withDescription("Inspect and steer durable pull request monitors."),
+  Command.withSubcommands([
+    prMonitorListCommand,
+    prMonitorStatusCommand,
+    prMonitorContextCommand,
+    prMonitorReportCommand,
+    prMonitorSubmitFindingsCommand,
+    prMonitorStartCommand,
+    prMonitorStopCommand,
+  ]),
+);
+
 const reviewCommand = Command.make("review", {
   ...liveTargetFlags,
   ...modelSelectionFlags,
@@ -4937,6 +5183,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       authCommand,
       projectCommand,
       chatCommand,
+      prMonitorCommand,
       reviewCommand,
       approvalCommand,
       inputCommand,

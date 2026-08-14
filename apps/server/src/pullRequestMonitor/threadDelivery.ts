@@ -1,8 +1,10 @@
 /**
- * V1 orchestration adapters for PR monitoring (main has no orchestration-v2).
- * Delivery uses thread.queued-turn.create so remediation never steers an active
- * turn; QueuedTurnReactor drains when the thread is free. Fallback creates the
- * thread first, then starts a turn after ownership is claimed by the caller.
+ * Orchestration boundaries the PR monitor uses to reach threads.
+ *
+ * Delivery always goes through the durable queued-turn command so remediation never
+ * steers an active turn; QueuedTurnReactor dispatches it once the thread is idle.
+ * Fallback creates the thread first and starts its turn only after the caller has
+ * claimed exclusive ownership.
  */
 import {
   CommandId,
@@ -27,6 +29,62 @@ export type OwnerAvailability =
   | { readonly kind: "available" }
   | { readonly kind: "unavailable"; readonly reason: "owner-missing" | "owner-unavailable" }
   | { readonly kind: "unknown"; readonly cause: unknown };
+
+/**
+ * Whether a thread still has work in flight. A queued turn counts: the thread is
+ * scheduled to act, so taking ownership away from it would create a second modifier.
+ */
+export function threadShellIsBusy(shell: {
+  readonly latestTurn: { readonly state: string } | null;
+  readonly session: { readonly status: string; readonly activeTurnId: string | null } | null;
+  readonly hasPendingQueuedTurn?: boolean;
+}): boolean {
+  if (shell.latestTurn?.state === "running") return true;
+  if (shell.session?.status === "running" && shell.session.activeTurnId !== null) return true;
+  return shell.hasPendingQueuedTurn === true;
+}
+
+export type ThreadActivity =
+  | { readonly kind: "missing" }
+  | { readonly kind: "busy" }
+  | { readonly kind: "idle" }
+  | { readonly kind: "unknown"; readonly cause: unknown };
+
+/** Read-only activity probe used before any ownership takeover. */
+export const resolveThreadActivity = (
+  threadId: ThreadId,
+): Effect.Effect<ThreadActivity, never, ProjectionSnapshotQuery> =>
+  Effect.gen(function* () {
+    const projections = yield* ProjectionSnapshotQuery;
+    const result = yield* Effect.result(projections.getThreadShellById(threadId));
+    if (Result.isFailure(result)) {
+      return isMissingThreadFailure(result.failure)
+        ? ({ kind: "missing" } as const)
+        : ({ kind: "unknown", cause: result.failure } as const);
+    }
+    if (Option.isNone(result.success)) return { kind: "missing" } as const;
+    return threadShellIsBusy(result.success.value)
+      ? ({ kind: "busy" } as const)
+      : ({ kind: "idle" } as const);
+  });
+
+/** Interrupt a thread that must stop modifying a worktree before ownership moves. */
+export const interruptThreadTurn = (input: {
+  readonly threadId: ThreadId;
+  readonly commandId: CommandId;
+}): Effect.Effect<void, never, OrchestrationEngineService> =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    const now = yield* Effect.map(DateTime.now, (d) => DateTime.formatIso(DateTime.toUtc(d)));
+    yield* engine
+      .dispatch({
+        type: "thread.turn.interrupt",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        createdAt: now,
+      })
+      .pipe(Effect.ignore);
+  });
 
 export function isMissingThreadFailure(failure: unknown): boolean {
   let current: unknown = failure;
