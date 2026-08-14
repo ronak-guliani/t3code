@@ -947,10 +947,23 @@ export function projectEvent(
           }
 
           const tailActivity = thread.activities.at(-1);
-          const canAppendInOrder =
-            (tailActivity === undefined ||
-              compareThreadActivities(tailActivity, payload.activity) <= 0) &&
-            !thread.activities.some((entry) => entry.id === payload.activity.id);
+          let canAppendInOrder =
+            tailActivity === undefined ||
+            compareThreadActivities(tailActivity, payload.activity) <= 0;
+          if (canAppendInOrder) {
+            let previousActivity: OrchestrationThread["activities"][number] | undefined;
+            for (const activity of thread.activities) {
+              if (
+                activity.id === payload.activity.id ||
+                (previousActivity !== undefined &&
+                  compareThreadActivities(previousActivity, activity) > 0)
+              ) {
+                canAppendInOrder = false;
+                break;
+              }
+              previousActivity = activity;
+            }
+          }
 
           let activities: Array<OrchestrationThread["activities"][number]>;
           if (canAppendInOrder) {

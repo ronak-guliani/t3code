@@ -452,6 +452,58 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("falls back when restart-loaded activities are not comparator-sorted", async () => {
+    const createdAt = "2026-08-14T15:00:00.000Z";
+    const threadId = "thread-activity-restart-order";
+    const created = await createThreadModel(threadId, createdAt);
+    const initialEvents = [
+      makeActivityEvent({
+        eventSequence: 2,
+        threadId,
+        activityId: "activity-unsequenced",
+        createdAt: "2026-08-14T15:00:01.000Z",
+      }),
+      makeActivityEvent({
+        eventSequence: 3,
+        threadId,
+        activityId: "activity-sequence-1",
+        activitySequence: 1,
+        createdAt: "2026-08-14T15:00:00.000Z",
+      }),
+    ];
+    const projected = await initialEvents.reduce<Promise<typeof created>>(
+      (statePromise, event) =>
+        statePromise.then((state) => Effect.runPromise(projectEvent(state, event))),
+      Promise.resolve(created),
+    );
+    const restarted = {
+      ...projected,
+      threads: projected.threads.map((thread) => ({
+        ...thread,
+        activities: thread.activities.toReversed(),
+      })),
+    };
+
+    const afterAppend = await Effect.runPromise(
+      projectEvent(
+        restarted,
+        makeActivityEvent({
+          eventSequence: 4,
+          threadId,
+          activityId: "activity-sequence-2",
+          activitySequence: 2,
+          createdAt: "2026-08-14T15:00:02.000Z",
+        }),
+      ),
+    );
+
+    expect(afterAppend.threads[0]?.activities.map((activity) => activity.id)).toEqual([
+      "activity-unsequenced",
+      "activity-sequence-1",
+      "activity-sequence-2",
+    ]);
+  });
+
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = new Date().toISOString();
     const model = createEmptyReadModel(now);
