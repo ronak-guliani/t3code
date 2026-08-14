@@ -12,6 +12,7 @@ import { killProcessTree } from "@t3tools/shared/processTree";
 import { ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
+import { CHAT_NEW_WORKSPACE_CLEANUP_SAFE } from "./cliProtocol.ts";
 
 type JsonRpcId = string | number | null;
 
@@ -456,6 +457,19 @@ interface TerminalResult {
   readonly stderr: string;
 }
 
+class CommandExecutionError extends Error {
+  readonly result: TerminalResult;
+
+  constructor(command: string, args: ReadonlyArray<string>, result: TerminalResult) {
+    const detail =
+      [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n") ||
+      `exited with code ${result.code}`;
+    super(`${command} ${args.join(" ")} failed: ${detail}`);
+    this.name = "CommandExecutionError";
+    this.result = result;
+  }
+}
+
 async function runCommand(
   root: string,
   command: string,
@@ -464,10 +478,7 @@ async function runCommand(
   const output = await spawnCommand(root, command, args);
   const result = JSON.parse(output) as TerminalResult;
   if (result.code !== 0) {
-    const detail =
-      [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n") ||
-      `exited with code ${result.code}`;
-    throw new Error(`${command} ${args.join(" ")} failed: ${detail}`);
+    throw new CommandExecutionError(command, args, result);
   }
   return result;
 }
@@ -486,7 +497,16 @@ const toErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 const isDefinitiveCommandRejection = (error: unknown): boolean =>
-  toErrorMessage(error).includes("ORCHESTRATION_COMMAND_REJECTED:");
+  error instanceof CommandExecutionError &&
+  [error.result.stdout, error.result.stderr].some((output) =>
+    output.includes("ORCHESTRATION_COMMAND_REJECTED:"),
+  );
+
+const isSafeNestedThreadCleanup = (error: unknown, cleanupToken: string): boolean =>
+  error instanceof CommandExecutionError &&
+  [error.result.stdout, error.result.stderr].some((output) =>
+    output.includes(`${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${cleanupToken}`),
+  );
 
 interface IsolatedWorkspaceSpec {
   readonly branch: string;
@@ -677,6 +697,7 @@ async function createNestedThreadTool(
   }
 
   let workspace: IsolatedWorkspaceSpec | undefined;
+  const workspaceCleanupToken = randomUUID();
   if (args.workspace !== undefined) {
     if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
       throw new Error("create_nested_thread workspace must be an object");
@@ -708,7 +729,16 @@ async function createNestedThreadTool(
     ...(reasoning ? ["--reasoning", reasoning] : []),
     "--runtime-mode",
     options.runtimeMode,
-    ...(workspace ? ["--branch", workspace.branch, "--worktree", workspace.path] : []),
+    ...(workspace
+      ? [
+          "--branch",
+          workspace.branch,
+          "--worktree",
+          workspace.path,
+          "--workspace-cleanup-token",
+          workspaceCleanupToken,
+        ]
+      : []),
     "--title",
     title,
     prompt,
@@ -721,7 +751,7 @@ async function createNestedThreadTool(
     if (!workspace) {
       throw creationError;
     }
-    if (!isDefinitiveCommandRejection(creationError)) {
+    if (!isSafeNestedThreadCleanup(creationError, workspaceCleanupToken)) {
       throw new Error(
         `${toErrorMessage(creationError)}\nThe child worktree was preserved because the nested thread may have been created before the response was lost. Inspect child threads under '${options.threadId}' before removing '${workspace.path}'.`,
         {
