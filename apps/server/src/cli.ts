@@ -97,6 +97,7 @@ import {
   dispatchRawOrchestrationCommand,
   fetchLiveOrchestrationShellSnapshot,
   getLiveOrchestrationShellSnapshot,
+  isDefinitiveCommandRejectionError,
   printJson,
   readJsonPayload,
   runReconnectingStream,
@@ -2178,20 +2179,29 @@ const chatNewCommand = Command.make("new", {
         );
         const createdAt = new Date().toISOString();
         workspaceCleanupSafe = false;
-        const createResult = yield* dispatch({
-          type: "thread.create",
-          commandId: CommandId.make(crypto.randomUUID()),
-          threadId,
-          projectId: project.id,
-          parentThreadId: parent?.id ?? null,
-          title: flags.title,
-          modelSelection,
-          runtimeMode: flags.runtimeMode,
-          interactionMode: flags.interactionMode,
-          branch: Option.getOrUndefined(flags.branch) ?? null,
-          worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
-          createdAt,
-        });
+        const createExit = yield* Effect.exit(
+          dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(crypto.randomUUID()),
+            threadId,
+            projectId: project.id,
+            parentThreadId: parent?.id ?? null,
+            title: flags.title,
+            modelSelection,
+            runtimeMode: flags.runtimeMode,
+            interactionMode: flags.interactionMode,
+            branch: Option.getOrUndefined(flags.branch) ?? null,
+            worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
+            createdAt,
+          }),
+        );
+        if (Exit.isFailure(createExit)) {
+          const failure = Cause.findErrorOption(createExit.cause);
+          workspaceCleanupSafe =
+            Option.isSome(failure) && isDefinitiveCommandRejectionError(failure.value);
+          return yield* Effect.failCause(createExit.cause);
+        }
+        const createResult = createExit.value;
         const turnExit = yield* Effect.exit(
           dispatch({
             type: "thread.turn.start",
@@ -2223,9 +2233,15 @@ const chatNewCommand = Command.make("new", {
                 type: "thread.delete",
                 commandId: CommandId.make(crypto.randomUUID()),
                 threadId,
+                cleanupWorktree: Option.isSome(flags.worktree),
               }),
             );
-            workspaceCleanupSafe = Exit.isSuccess(deleteExit);
+            if (Exit.isFailure(deleteExit)) {
+              yield* Effect.logWarning("failed to schedule nested thread rollback", {
+                threadId,
+                cause: Cause.pretty(deleteExit.cause),
+              });
+            }
           }
           return yield* Effect.failCause(turnExit.cause);
         }
