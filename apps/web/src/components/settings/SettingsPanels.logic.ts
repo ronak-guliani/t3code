@@ -48,7 +48,10 @@ export function buildProviderInstanceUpdatePatch(input: {
 export interface ArchivedThreadGroup {
   readonly project: Pick<Project, "id" | "environmentId" | "name" | "cwd">;
   readonly threads: ReadonlyArray<
-    Pick<ThreadShell, "id" | "environmentId" | "projectId" | "title" | "archivedAt" | "createdAt">
+    Pick<
+      ThreadShell,
+      "id" | "environmentId" | "projectId" | "title" | "archivedAt" | "createdAt" | "worktreePath"
+    >
   >;
 }
 
@@ -75,6 +78,7 @@ export function buildArchivedThreadGroupsFromSnapshots(input: {
         title: thread.title,
         createdAt: thread.createdAt,
         archivedAt: thread.archivedAt,
+        worktreePath: thread.worktreePath,
       })),
     ),
   });

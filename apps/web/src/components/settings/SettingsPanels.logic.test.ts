@@ -154,7 +154,7 @@ describe("buildArchivedThreadGroups", () => {
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           branch: null,
-          worktreePath: null,
+          worktreePath: "/tmp/worktrees/thread-archived",
           latestTurn: null,
           createdAt: thread.createdAt,
           updatedAt: "2026-01-03T00:00:00.000Z",
@@ -181,6 +181,7 @@ describe("buildArchivedThreadGroups", () => {
       name: project.name,
     });
     expect(groups[0]?.threads.map((archivedThread) => archivedThread.id)).toEqual([thread.id]);
+    expect(groups[0]?.threads[0]?.worktreePath).toBe("/tmp/worktrees/thread-archived");
   });
 
   it("scopes archived threads by environment and project", () => {
