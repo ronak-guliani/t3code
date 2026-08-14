@@ -21,6 +21,7 @@ import { useTerminalStateStore } from "../terminalStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { useSettings } from "./useSettings";
+import { refreshArchivedThreadsForEnvironment } from "../archivedThreadsState";
 
 export function useThreadActions() {
   const sidebarThreadSortOrder = useSettings((settings) => settings.sidebarThreadSortOrder);
@@ -81,6 +82,7 @@ export function useThreadActions() {
         commandId: newCommandId(),
         threadId: threadRef.threadId,
       });
+      refreshArchivedThreadsForEnvironment(threadRef.environmentId);
 
       const currentRouteThreadRef = getCurrentRouteThreadRef();
       const currentRouteIsInArchivedSubtree =
@@ -102,6 +104,7 @@ export function useThreadActions() {
       commandId: newCommandId(),
       threadId: target.threadId,
     });
+    refreshArchivedThreadsForEnvironment(target.environmentId);
   }, []);
 
   const settleThread = useCallback(
@@ -190,14 +193,16 @@ export function useThreadActions() {
       const api = readEnvironmentApi(target.environmentId);
       if (!api) return;
       const resolved = resolveThreadTarget(target);
-      if (!resolved) return;
-      const { thread, threadRef } = resolved;
+      const thread = resolved?.thread;
+      const threadRef = target;
       const state = useStore.getState();
       const threads = selectThreadsForEnvironment(state, threadRef.environmentId);
-      const threadProject = selectProjectByRef(state, {
-        environmentId: threadRef.environmentId,
-        projectId: thread.projectId,
-      });
+      const threadProject = thread
+        ? selectProjectByRef(state, {
+            environmentId: threadRef.environmentId,
+            projectId: thread.projectId,
+          })
+        : undefined;
       const deletedIds =
         opts.deletedThreadKeys && opts.deletedThreadKeys.size > 0
           ? new Set<ThreadId>(
@@ -211,10 +216,9 @@ export function useThreadActions() {
         deletedIds && deletedIds.size > 0
           ? threads.filter((entry) => entry.id === threadRef.threadId || !deletedIds.has(entry.id))
           : threads;
-      const orphanedWorktreePath = getOrphanedWorktreePathForThread(
-        survivingThreads,
-        threadRef.threadId,
-      );
+      const orphanedWorktreePath = thread
+        ? getOrphanedWorktreePathForThread(survivingThreads, threadRef.threadId)
+        : null;
       const displayWorktreePath = orphanedWorktreePath
         ? formatWorktreePathForDisplay(orphanedWorktreePath)
         : null;
@@ -250,11 +254,14 @@ export function useThreadActions() {
         threadId: threadRef.threadId,
         cleanupWorktree: shouldDeleteWorktree,
       });
+      refreshArchivedThreadsForEnvironment(threadRef.environmentId);
       clearComposerDraftForThread(threadRef);
-      clearProjectDraftThreadById(
-        scopeProjectRef(threadRef.environmentId, thread.projectId),
-        threadRef,
-      );
+      if (thread) {
+        clearProjectDraftThreadById(
+          scopeProjectRef(threadRef.environmentId, thread.projectId),
+          threadRef,
+        );
+      }
       clearTerminalState(threadRef);
 
       if (shouldNavigateToFallback) {
@@ -296,13 +303,12 @@ export function useThreadActions() {
       if (!api) return;
       const localApi = readLocalApi();
       const resolved = resolveThreadTarget(target);
-      if (!resolved) return;
-      const { thread } = resolved;
+      const thread = resolved?.thread;
 
       if (confirmThreadDelete && localApi) {
         const confirmed = await localApi.dialogs.confirm(
           [
-            `Delete thread "${thread.title}"?`,
+            thread ? `Delete thread "${thread.title}"?` : "Delete this thread?",
             "This permanently clears conversation history for this thread.",
           ].join("\n"),
         );

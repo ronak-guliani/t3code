@@ -20,6 +20,7 @@ import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   type DesktopLocalRebuildState,
+  type EnvironmentId,
   type ModelSelection,
   ProviderDriverKind,
   type ProviderInstanceConfig,
@@ -57,6 +58,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { Equal } from "effect";
 import { APP_VERSION } from "../../branding";
+import { useArchivedThreadSnapshots } from "../../archivedThreadsState";
 import {
   canCheckForUpdate,
   getDesktopUpdateButtonTooltip,
@@ -85,11 +87,7 @@ import {
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { useShallow } from "zustand/react/shallow";
-import {
-  selectProjectsAcrossEnvironments,
-  selectThreadShellsAcrossEnvironments,
-  useStore,
-} from "../../store";
+import { useStore } from "../../store";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -105,7 +103,7 @@ import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { getDriverOption } from "./providerDriverMeta";
 import {
-  buildArchivedThreadGroups,
+  buildArchivedThreadGroupsFromSnapshots,
   buildProviderInstanceUpdatePatch,
   filterArchivedThreadGroups,
   runSequentiallySettled,
@@ -3001,8 +2999,10 @@ export function AgentWorkflowsSettingsPanel() {
 }
 
 export function ArchivedThreadsPanel() {
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const threads = useStore(useShallow(selectThreadShellsAcrossEnvironments));
+  const environmentIds = useStore(
+    useShallow((state) => Object.keys(state.environmentStateById) as EnvironmentId[]),
+  );
+  const { error, isLoading, refresh, snapshots } = useArchivedThreadSnapshots(environmentIds);
   const confirmThreadDelete = useSettings((settings) => settings.confirmThreadDelete);
   const { unarchiveThread, deleteThread, confirmAndDeleteThread } = useThreadActions();
   const [searchQuery, setSearchQuery] = useState("");
@@ -3010,8 +3010,8 @@ export function ArchivedThreadsPanel() {
     () => new Set(),
   );
   const archivedGroups = useMemo(() => {
-    return buildArchivedThreadGroups({ projects, threads });
-  }, [projects, threads]);
+    return buildArchivedThreadGroupsFromSnapshots({ snapshots });
+  }, [snapshots]);
   const filteredArchivedGroups = useMemo(
     () => filterArchivedThreadGroups(archivedGroups, searchQuery),
     [archivedGroups, searchQuery],
@@ -3174,7 +3174,34 @@ export function ArchivedThreadsPanel() {
 
   return (
     <SettingsPageContainer>
-      {archivedGroups.length === 0 ? (
+      {isLoading && archivedGroups.length === 0 ? (
+        <SettingsSection title="Archived threads">
+          <Empty className="min-h-88">
+            <EmptyMedia variant="icon">
+              <LoaderIcon className="animate-spin" />
+            </EmptyMedia>
+            <EmptyHeader>
+              <EmptyTitle>Loading archived threads</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
+        </SettingsSection>
+      ) : error && archivedGroups.length === 0 ? (
+        <SettingsSection title="Archived threads">
+          <Empty className="min-h-88">
+            <EmptyMedia variant="icon">
+              <ArchiveIcon />
+            </EmptyMedia>
+            <EmptyHeader>
+              <EmptyTitle>Could not load archived threads</EmptyTitle>
+              <EmptyDescription>{error}</EmptyDescription>
+            </EmptyHeader>
+            <Button variant="outline" size="sm" onClick={refresh}>
+              <RefreshCwIcon className="size-3.5" />
+              Retry
+            </Button>
+          </Empty>
+        </SettingsSection>
+      ) : archivedGroups.length === 0 ? (
         <SettingsSection title="Archived threads">
           <Empty className="min-h-88">
             <EmptyMedia variant="icon">

@@ -35,6 +35,23 @@ const baseRemoteStatus: GitStatusRemoteResult = {
 };
 
 describe("wsRpcClient", () => {
+  it("exposes the archived shell snapshot RPC", () => {
+    const transport = {
+      dispose: vi.fn(async () => undefined),
+      reconnect: vi.fn(async () => undefined),
+      request: vi.fn(),
+      requestStream: vi.fn(),
+      subscribe: vi.fn(() => () => undefined),
+    } satisfies Pick<
+      WsTransport,
+      "dispose" | "reconnect" | "request" | "requestStream" | "subscribe"
+    >;
+
+    const client = createWsRpcClient(transport as unknown as WsTransport);
+
+    expect(Reflect.get(client.orchestration, "getArchivedShellSnapshot")).toBeTypeOf("function");
+  });
+
   it("reduces git status stream events into flat status snapshots", () => {
     const subscribe = vi.fn(<TValue>(_connect: unknown, listener: (value: TValue) => void) => {
       for (const event of [
