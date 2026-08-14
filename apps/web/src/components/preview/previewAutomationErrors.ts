@@ -153,7 +153,29 @@ export class PreviewAutomationInvalidSelectorHostError extends Schema.TaggedErro
   }
 
   override get message(): string {
-    return `Preview automation ${this.operation} request ${this.requestId} could not resolve its target in tab ${this.tabId ?? "unassigned"}.`;
+    return `Preview automation ${this.operation} request ${this.requestId} received an invalid selector in tab ${this.tabId ?? "unassigned"}.`;
+  }
+}
+
+export class PreviewAutomationTargetNotFoundHostError extends Schema.TaggedErrorClass<PreviewAutomationTargetNotFoundHostError>()(
+  "PreviewAutomationTargetNotFoundHostError",
+  {
+    requestId: TrimmedNonEmptyString,
+    operation: PreviewAutomationOperation,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    tabId: Schema.NullOr(PreviewTabId),
+    selectorKind: Schema.optional(Schema.Literals(["locator", "selector"])),
+    selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    candidateLocators: Schema.optional(Schema.Array(Schema.String)),
+  },
+) {
+  get responseTag() {
+    return "PreviewAutomationTargetNotFoundError" as const;
+  }
+
+  override get message(): string {
+    return `Preview automation ${this.operation} request ${this.requestId} could not find its target in tab ${this.tabId ?? "unassigned"}.`;
   }
 }
 
@@ -212,20 +234,15 @@ const targetNotEditableDiagnostics = (
   };
 };
 
-const targetNotFoundDiagnostics = (
+const targetSelectorDiagnostics = (
   cause: unknown,
+  tag: "PreviewAutomationTargetNotFoundError" | "PreviewAutomationInvalidSelectorError",
 ): {
   readonly selectorKind?: "locator" | "selector";
   readonly selectorLength?: number;
   readonly candidateLocators?: string[];
 } | null => {
-  if (
-    typeof cause !== "object" ||
-    cause === null ||
-    !("_tag" in cause) ||
-    (cause._tag !== "PreviewAutomationTargetNotFoundError" &&
-      cause._tag !== "PreviewAutomationInvalidSelectorError")
-  ) {
+  if (typeof cause !== "object" || cause === null || !("_tag" in cause) || cause._tag !== tag) {
     return null;
   }
   const selectorKind = readSelectorKind(cause);
@@ -264,15 +281,29 @@ export class PreviewAutomationOperationError extends Schema.TaggedErrorClass<Pre
         ...notEditable,
       });
     }
-    const notFound = targetNotFoundDiagnostics(input.cause);
+    const notFound = targetSelectorDiagnostics(input.cause, "PreviewAutomationTargetNotFoundError");
     if (notFound) {
-      return new PreviewAutomationInvalidSelectorHostError({
+      return new PreviewAutomationTargetNotFoundHostError({
         requestId: input.requestId,
         operation: input.operation,
         environmentId: input.environmentId,
         threadId: input.threadId,
         tabId: input.tabId,
         ...notFound,
+      });
+    }
+    const invalidSelector = targetSelectorDiagnostics(
+      input.cause,
+      "PreviewAutomationInvalidSelectorError",
+    );
+    if (invalidSelector) {
+      return new PreviewAutomationInvalidSelectorHostError({
+        requestId: input.requestId,
+        operation: input.operation,
+        environmentId: input.environmentId,
+        threadId: input.threadId,
+        tabId: input.tabId,
+        ...invalidSelector,
       });
     }
     return new PreviewAutomationOperationError(input);
@@ -294,6 +325,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetNotEditableHostError,
+  PreviewAutomationTargetNotFoundHostError,
   PreviewAutomationInvalidSelectorHostError,
   PreviewAutomationOperationError,
 ]);

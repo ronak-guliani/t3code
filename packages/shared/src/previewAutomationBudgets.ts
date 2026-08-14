@@ -55,7 +55,12 @@ export function resolveSnapshotBudgets(
   };
 }
 
-const IMPORTANT_CONSOLE_LEVELS = new Set(["warn", "error", "assert"]);
+// CDP uses "warning"; some normalizers use "warn". Keep both.
+const IMPORTANT_CONSOLE_LEVELS = new Set(["warn", "warning", "error", "assert"]);
+
+const isConsoleErrorLevel = (level: string): boolean => level === "error" || level === "assert";
+
+const isConsoleWarningLevel = (level: string): boolean => level === "warn" || level === "warning";
 
 export function filterConsoleEntries(
   entries: ReadonlyArray<PreviewAutomationConsoleEntry>,
@@ -107,8 +112,8 @@ export function buildDiagnosticsSummary(input: {
   interactiveElementCount: number;
   visibleTextLength: number;
 }): string {
-  const errors = input.consoleEntries.filter((e) => e.level === "error" || e.level === "assert");
-  const warns = input.consoleEntries.filter((e) => e.level === "warn");
+  const errors = input.consoleEntries.filter((e) => isConsoleErrorLevel(e.level));
+  const warns = input.consoleEntries.filter((e) => isConsoleWarningLevel(e.level));
   const failedNet = input.networkEntries.filter(
     (e) => e.failed || (typeof e.status === "number" && e.status >= 400),
   );

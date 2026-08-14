@@ -140,7 +140,9 @@ export async function waitForNavigationReadiness(
       );
       if (status.available && !status.loading) return;
     }
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => {
+      globalThis.setTimeout(resolve, 50);
+    });
   }
   throw new PreviewAutomationNavigationTimeoutError({
     requestId,

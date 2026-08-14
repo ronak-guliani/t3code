@@ -18,11 +18,12 @@ describe("previewAutomationBudgets", () => {
     expect(budgets.maxInteractiveElements).toBe(80);
   });
 
-  it("filters console to important levels", () => {
+  it("filters console to important levels including CDP warning", () => {
     const entries = [
       { level: "log", text: "a", timestamp: "t1" },
       { level: "warn", text: "b", timestamp: "t2" },
-      { level: "error", text: "c", timestamp: "t3" },
+      { level: "warning", text: "c", timestamp: "t3" },
+      { level: "error", text: "d", timestamp: "t4" },
     ];
     expect(
       filterConsoleEntries(entries, {
@@ -30,7 +31,7 @@ describe("previewAutomationBudgets", () => {
         consoleMode: "important",
         maxConsoleEntries: 10,
       }).map((e) => e.level),
-    ).toEqual(["warn", "error"]);
+    ).toEqual(["warn", "warning", "error"]);
   });
 
   it("filters network to failed and 4xx+", () => {
@@ -77,6 +78,7 @@ describe("previewAutomationBudgets", () => {
         accessibilityTree: { huge: true },
         consoleEntries: [
           { level: "log", text: "noise", timestamp: "t0" },
+          { level: "warning", text: "careful", timestamp: "t0b" },
           { level: "error", text: "boom", timestamp: "t1" },
         ],
         networkEntries: [
@@ -100,9 +102,9 @@ describe("previewAutomationBudgets", () => {
     expect(snapshot.visibleText.length).toBe(10);
     expect(snapshot.interactiveElements).toHaveLength(2);
     expect(snapshot.accessibilityTree).toBeNull();
-    expect(snapshot.consoleEntries.map((e) => e.level)).toEqual(["error"]);
+    expect(snapshot.consoleEntries.map((e) => e.level)).toEqual(["warning", "error"]);
     expect(snapshot.networkEntries.map((e) => e.url)).toEqual(["/bad"]);
-    expect(snapshot.diagnosticsSummary).toContain("console: 1 error");
+    expect(snapshot.diagnosticsSummary).toContain("console: 1 error(s), 1 warn(s)");
     expect(snapshot.diagnosticsSummary).toContain("latestError: boom");
   });
 });

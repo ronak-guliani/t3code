@@ -2665,7 +2665,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         MAX_VISIBLE_TEXT_LENGTH,
         Math.max(budgets.maxVisibleText, 2_000),
       );
-      const captureMaxScreenshotEdge = Math.min(Math.max(budgets.maxScreenshotEdge, 320), 3840);
+      const captureMaxScreenshotEdge = Math.min(Math.max(1, budgets.maxScreenshotEdge), 3840);
 
       yield* Effect.all(
         [

@@ -740,29 +740,21 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             if (shouldPresent) {
               await waitForPreviewPresentation(activeRuntimeTabId);
             }
-            const shouldNavigate =
-              Boolean(resolvedInputUrl) &&
-              (Boolean(input.target) || Boolean(reusedExistingTab) || Boolean(openInput.url));
-            if (shouldNavigate && previewBridge && resolvedInputUrl) {
+            // New tabs already receive resolvedInputUrl via open(). Only navigate
+            // when reusing an existing tab to avoid duplicate loads/side effects.
+            if (reusedExistingTab && resolvedInputUrl && previewBridge) {
               assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
               await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
+            }
+            const readiness = input.readiness ?? (resolvedInputUrl !== undefined ? "load" : "none");
+            if (readiness !== "none" && previewBridge) {
               await waitForNavigationReadiness(
                 threadRef,
                 request.requestId,
                 activeTabId,
                 activeRuntimeTabId,
                 request.operation,
-                input.readiness ?? "load",
-                input.timeoutMs ?? request.timeoutMs,
-              );
-            } else if (input.readiness && input.readiness !== "none" && previewBridge) {
-              await waitForNavigationReadiness(
-                threadRef,
-                request.requestId,
-                activeTabId,
-                activeRuntimeTabId,
-                request.operation,
-                input.readiness,
+                readiness,
                 input.timeoutMs ?? request.timeoutMs,
               );
             }
