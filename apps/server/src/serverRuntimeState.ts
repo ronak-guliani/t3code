@@ -100,7 +100,7 @@ const fileErrorCode = (cause: unknown): string | undefined =>
     ? cause.code
     : undefined;
 
-const runtimePidIsAlive = (pid: number): boolean => {
+export const runtimePidIsAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;
