@@ -132,7 +132,11 @@ export function reconcileFeedbackItem(
     case "check-failed":
       return reconcileCheck(sourceId, options?.checkName ?? null, snapshot);
     case "behind-base":
-      return (snapshot.behindBaseBy ?? 0) > 0
+      // A failed compare proves nothing: never resolve a finding on evidence we did not read.
+      if (!snapshot.completeness.baseComparisonKnown || snapshot.behindBaseBy === null) {
+        return ACTIONABLE;
+      }
+      return snapshot.behindBaseBy > 0
         ? ACTIONABLE
         : { kind: "resolved-upstream", detail: "branch is no longer behind base" };
     case "review-finding": {

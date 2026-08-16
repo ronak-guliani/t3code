@@ -25,6 +25,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -61,7 +62,10 @@ import {
   pollDelayMs,
   POLL_CONCURRENCY,
 } from "./pollSchedule.ts";
-import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
+import {
+  PullRequestMonitorStore,
+  type PullRequestMonitorPollLease,
+} from "./PullRequestMonitorStore.ts";
 import { computeReadiness, type PullRequestMonitorFeedbackReadiness } from "./readiness.ts";
 import { PullRequestMonitorFeedbackService } from "./PullRequestMonitorFeedbackService.ts";
 import { monitorToolNamesForThread } from "./monitorTools.ts";
@@ -91,6 +95,12 @@ function monitorError(
     ...(input?.monitorId === undefined ? {} : { monitorId: input.monitorId }),
     ...(input?.cause === undefined ? {} : { cause: input.cause }),
   });
+}
+
+/** Failure text for durable monitor state; defects and typed errors read the same way. */
+function describeCause(cause: Cause.Cause<unknown>): string {
+  const squashed = Cause.squash(cause);
+  return squashed instanceof Error ? squashed.message : String(squashed);
 }
 
 export class PullRequestMonitorService extends Context.Service<
@@ -349,21 +359,171 @@ export const layer = Layer.effect(
         return { monitor: stopped };
       });
 
-    const pollMonitor = (monitor: PullRequestMonitorRecord): Effect.Effect<void> =>
+    /**
+     * Records an attempt failure under the exact generation that owns the attempt, at the
+     * clock as it stands now. A worker whose lease already expired — or was replaced by a
+     * newer attempt that succeeded — writes nothing.
+     */
+    const recordAttemptFailure = (input: {
+      readonly monitor: PullRequestMonitorRecord;
+      readonly lease: PullRequestMonitorPollLease;
+      readonly message: string;
+    }) =>
       Effect.gen(function* () {
         const now = yield* isoNow();
+        const failureCount = input.monitor.pollFailureCount + 1;
+        const delay = yield* nextPollDelayMs({
+          readiness: input.monitor.readiness,
+          failureCount,
+          hadActionableEvents: false,
+        });
+        yield* store.updatePollState(
+          {
+            ...input.monitor,
+            status: "error",
+            lastError: input.message.slice(0, 1000),
+            pollFailureCount: failureCount,
+            lastPolledAt: now,
+            nextPollAt: addMs(now, delay),
+            updatedAt: now,
+          },
+          undefined,
+          { lease: input.lease, nowIso: now },
+        );
+        yield* notify;
+      }).pipe(Effect.ignore);
+
+    /** One claimed attempt: every durable write it makes is fenced by `lease`. */
+    const runPollAttempt = (
+      monitor: PullRequestMonitorRecord,
+      lease: PullRequestMonitorPollLease,
+    ) =>
+      Effect.gen(function* () {
         const hostKey = `${monitor.provider}:${monitor.host}`;
-        const cooldownUntil = yield* store.getHostCooldownUntil(hostKey, now);
+        const startedAt = yield* isoNow();
+        const cooldownUntil = yield* store.getHostCooldownUntil(hostKey, startedAt);
         if (cooldownUntil) {
           const deferred: PullRequestMonitorRecord = {
             ...monitor,
             nextPollAt: cooldownUntil,
-            updatedAt: now,
+            updatedAt: startedAt,
           };
-          yield* store.updatePollState(deferred);
+          yield* store.updatePollState(deferred, undefined, { lease, nowIso: startedAt });
           return;
         }
 
+        const cursor = yield* store.getCursor(monitor.id);
+        const snapshotResult = yield* Effect.result(
+          pullRequests.monitorSnapshot({
+            projectId: monitor.projectId,
+            repository: monitor.repository,
+            number: monitor.number,
+          }),
+        );
+
+        if (Result.isFailure(snapshotResult)) {
+          const message =
+            snapshotResult.failure instanceof Error
+              ? snapshotResult.failure.message
+              : String(snapshotResult.failure);
+          if (/rate limit|secondary rate|403/i.test(message)) {
+            // Host cooldown is advisory and host-scoped, so it is recorded even when the
+            // attempt itself turns out to be fenced; it never touches monitor state.
+            const failedAt = yield* isoNow();
+            yield* store.setHostCooldown({
+              hostKey,
+              cooldownUntil: addMs(failedAt, HOST_COOLDOWN_MS),
+              reason: message.slice(0, 300),
+              nowIso: failedAt,
+            });
+          }
+          // Single fenced failure path: the handler below owns every error write.
+          return yield* monitorError(message, { monitorId: monitor.id });
+        }
+
+        const snapshot = snapshotResult.success;
+        const { actionableEvents, nextCursor } = diffPullRequestMonitorSnapshot(cursor, snapshot);
+        // Sampled before the transaction so the commit stays a pure function of state.
+        const delayJitter = yield* Random.next;
+
+        const finalize = (
+          feedbackReadiness: PullRequestMonitorFeedbackReadiness,
+          commitAt: string,
+        ) => {
+          const readiness = computeReadiness(snapshot, feedbackReadiness);
+          let status: PullRequestMonitorRecord["status"] = "monitoring";
+          if (snapshot.state !== "open") status = "terminal";
+          else if (readiness.ready) status = "ready";
+          // Ready PRs stay monitored slowly; terminal PRs stop polling.
+          const enabled = status !== "terminal";
+          const delay = pollDelayMs(
+            {
+              readiness,
+              failureCount: 0,
+              hadActionableEvents: actionableEvents.length > 0,
+            },
+            delayJitter,
+          );
+          const record: PullRequestMonitorRecord = {
+            ...monitor,
+            status,
+            enabled,
+            readiness,
+            headSha: snapshot.headSha,
+            sourceRevision: snapshot.sourceRevision,
+            lastPolledAt: commitAt,
+            nextPollAt: enabled ? addMs(commitAt, delay) : null,
+            lastError: null,
+            pollFailureCount: 0,
+            updatedAt: commitAt,
+            stoppedAt: enabled ? null : commitAt,
+          };
+          return { record, readiness };
+        };
+
+        const snapshotId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        // Snapshot audit, feedback reconciliation/ingestion, and the cursor advance are
+        // one fenced transaction: an observation is never half-recorded.
+        const commit = yield* store.commitPollObservation({
+          lease,
+          cursor: nextCursor,
+          snapshotId,
+          snapshot,
+          events: actionableEvents,
+          ingest: feedback.reconcileAndIngest({
+            monitor,
+            snapshot,
+            events: actionableEvents,
+          }),
+          finalize,
+        });
+        if (!commit.committed || commit.record === null) return;
+        const updated = commit.record;
+
+        // Auto fallback only when owner is explicitly missing/unavailable and there is work.
+        // Fail closed on settings/read errors and operational projection failures.
+        if (actionableEvents.length > 0 && snapshot.state === "open" && updated.enabled) {
+          const availability = yield* ownerAvailability(updated.ownerThreadId);
+          if (availability.kind === "unavailable") {
+            const settingsResult = yield* Effect.result(serverSettings.getSettings);
+            if (
+              Result.isSuccess(settingsResult) &&
+              settingsResult.success.autoLaunchPrMonitorFallback === true
+            ) {
+              yield* launchFallback({
+                monitorId: updated.id,
+                reason: availability.reason,
+              }).pipe(Effect.ignore);
+            }
+          }
+        }
+
+        yield* notify;
+      });
+
+    const pollMonitor = (monitor: PullRequestMonitorRecord): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const now = yield* isoNow();
         // One attempt, one fence. Every write below carries this generation so a
         // superseded or expired attempt cannot commit stale observations.
         const attemptId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
@@ -375,146 +535,21 @@ export const layer = Layer.effect(
         });
         if (!lease) return;
 
-        yield* Effect.gen(function* () {
-          const cursor = yield* store.getCursor(monitor.id);
-          const snapshotResult = yield* Effect.result(
-            pullRequests.monitorSnapshot({
-              projectId: monitor.projectId,
-              repository: monitor.repository,
-              number: monitor.number,
-            }),
-          );
-
-          if (Result.isFailure(snapshotResult)) {
-            const failureCount = monitor.pollFailureCount + 1;
-            const delay = yield* nextPollDelayMs({
-              readiness: monitor.readiness,
-              failureCount,
-              hadActionableEvents: false,
-            });
-            const message =
-              snapshotResult.failure instanceof Error
-                ? snapshotResult.failure.message
-                : String(snapshotResult.failure);
-            if (/rate limit|secondary rate|403/i.test(message)) {
-              yield* store.setHostCooldown({
-                hostKey,
-                cooldownUntil: addMs(now, HOST_COOLDOWN_MS),
-                reason: message.slice(0, 300),
-                nowIso: now,
-              });
-            }
-            const failed: PullRequestMonitorRecord = {
-              ...monitor,
-              status: "error",
-              lastError: message.slice(0, 1000),
-              pollFailureCount: failureCount,
-              lastPolledAt: now,
-              nextPollAt: addMs(now, delay),
-              updatedAt: now,
-            };
-            yield* store.updatePollState(failed, undefined, { lease, nowIso: now });
-            yield* notify;
-            return;
-          }
-
-          const snapshot = snapshotResult.success;
-          const { actionableEvents, nextCursor } = diffPullRequestMonitorSnapshot(cursor, snapshot);
-          // Sampled before the transaction so the commit stays a pure function of state.
-          const delayJitter = yield* Random.next;
-
-          const finalize = (feedbackReadiness: PullRequestMonitorFeedbackReadiness) => {
-            const readiness = computeReadiness(snapshot, feedbackReadiness);
-            let status: PullRequestMonitorRecord["status"] = "monitoring";
-            if (snapshot.state !== "open") status = "terminal";
-            else if (readiness.ready) status = "ready";
-            // Ready PRs stay monitored slowly; terminal PRs stop polling.
-            const enabled = status !== "terminal";
-            const delay = pollDelayMs(
-              {
-                readiness,
-                failureCount: 0,
-                hadActionableEvents: actionableEvents.length > 0,
-              },
-              delayJitter,
-            );
-            const record: PullRequestMonitorRecord = {
-              ...monitor,
-              status,
-              enabled,
-              readiness,
-              headSha: snapshot.headSha,
-              sourceRevision: snapshot.sourceRevision,
-              lastPolledAt: now,
-              nextPollAt: enabled ? addMs(now, delay) : null,
-              lastError: null,
-              pollFailureCount: 0,
-              updatedAt: now,
-              stoppedAt: enabled ? null : now,
-            };
-            return { record, readiness };
-          };
-
-          const snapshotId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
-          // Snapshot audit, feedback reconciliation/ingestion, and the cursor advance are
-          // one fenced transaction: an observation is never half-recorded.
-          const commit = yield* store.commitPollObservation({
-            lease,
-            nowIso: now,
-            cursor: nextCursor,
-            snapshotId,
-            snapshot,
-            events: actionableEvents,
-            ingest: feedback.reconcileAndIngest({
-              monitor,
-              snapshot,
-              events: actionableEvents,
-            }),
-            finalize,
-          });
-          if (!commit.committed || commit.record === null) return;
-          const updated = commit.record;
-
-          // Auto fallback only when owner is explicitly missing/unavailable and there is work.
-          // Fail closed on settings/read errors and operational projection failures.
-          if (actionableEvents.length > 0 && snapshot.state === "open" && updated.enabled) {
-            const availability = yield* ownerAvailability(updated.ownerThreadId);
-            if (availability.kind === "unavailable") {
-              const settingsResult = yield* Effect.result(serverSettings.getSettings);
-              if (
-                Result.isSuccess(settingsResult) &&
-                settingsResult.success.autoLaunchPrMonitorFallback === true
-              ) {
-                yield* launchFallback({
-                  monitorId: updated.id,
-                  reason: availability.reason,
-                }).pipe(Effect.ignore);
-              }
-            }
-          }
-
-          yield* notify;
-        }).pipe(Effect.ensuring(store.releaseLease(lease).pipe(Effect.ignore)));
+        yield* runPollAttempt(monitor, lease).pipe(
+          // The failure handler belongs to the attempt: it runs while this generation's
+          // lease row still exists, and its write is fenced by that generation.
+          Effect.catchCause((cause) =>
+            recordAttemptFailure({ monitor, lease, message: describeCause(cause) }),
+          ),
+          Effect.ensuring(store.releaseLease(lease).pipe(Effect.ignore)),
+        );
       }).pipe(
+        // Nothing was claimed, so this attempt has no authority over monitor state; a
+        // newer attempt's result must never be clobbered by a failure that predates it.
         Effect.catchCause((cause) =>
-          Effect.gen(function* () {
-            const now = yield* isoNow();
-            const failureCount = monitor.pollFailureCount + 1;
-            const delay = yield* nextPollDelayMs({
-              readiness: monitor.readiness,
-              failureCount,
-              hadActionableEvents: false,
-            });
-            yield* store.updatePollState({
-              ...monitor,
-              status: "error",
-              lastError: String(cause).slice(0, 1000),
-              pollFailureCount: failureCount,
-              lastPolledAt: now,
-              nextPollAt: addMs(now, delay),
-              updatedAt: now,
-            });
-            yield* notify;
+          Effect.logWarning("pull request monitor poll could not start an attempt", {
+            monitorId: monitor.id,
+            cause: describeCause(cause),
           }).pipe(Effect.ignore),
         ),
       );

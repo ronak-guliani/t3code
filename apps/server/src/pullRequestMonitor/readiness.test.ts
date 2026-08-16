@@ -26,6 +26,7 @@ function snapshot(overrides: Partial<PullRequestMonitorSnapshot> = {}): PullRequ
       issueCommentsComplete: true,
       checksComplete: true,
       requiredChecksKnown: true,
+      baseComparisonKnown: true,
     },
     reviews: [],
     reviewThreads: [],
@@ -61,6 +62,7 @@ describe("computeReadiness", () => {
           issueCommentsComplete: true,
           checksComplete: true,
           requiredChecksKnown: false,
+          baseComparisonKnown: true,
         },
       }),
     );
@@ -148,10 +150,40 @@ describe("computeReadiness", () => {
           issueCommentsComplete: true,
           checksComplete: true,
           requiredChecksKnown: true,
+          baseComparisonKnown: true,
         },
       }),
     );
     expect(result.ready).toBe(true);
     expect(result.label).toBe("no-known-blockers");
+  });
+
+  it("cannot claim ready-to-merge when the base comparison failed", () => {
+    const result = computeReadiness(
+      snapshot({
+        behindBaseBy: null,
+        completeness: {
+          reviewsComplete: true,
+          reviewThreadsComplete: true,
+          issueCommentsComplete: true,
+          checksComplete: true,
+          requiredChecksKnown: true,
+          baseComparisonKnown: false,
+        },
+      }),
+    );
+    // Unknown up-to-date status is not a blocker, but it is not evidence either.
+    expect(result.ready).toBe(true);
+    expect(result.label).toBe("no-known-blockers");
+    expect(result.blockers).toEqual([]);
+  });
+
+  it("claims ready-to-merge only with an observed, zero-distance base", () => {
+    const exact = computeReadiness(snapshot({ behindBaseBy: 0 }));
+    expect(exact).toEqual({ ready: true, label: "ready-to-merge", blockers: [] });
+
+    const behind = computeReadiness(snapshot({ behindBaseBy: 3 }));
+    expect(behind.ready).toBe(false);
+    expect(behind.blockers).toEqual([{ kind: "behind-base", detail: "3" }]);
   });
 });

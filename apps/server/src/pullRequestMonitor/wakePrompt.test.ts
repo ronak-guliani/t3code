@@ -29,6 +29,7 @@ const snapshot = {
     issueCommentsComplete: true,
     checksComplete: true,
     requiredChecksKnown: false,
+    baseComparisonKnown: true,
   },
   reviews: [],
   reviewThreads: [],

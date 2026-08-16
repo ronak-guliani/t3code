@@ -36,7 +36,7 @@ const ThreadCommentSchema = Schema.Struct({
   author: Schema.NullOr(ActorSchema),
   body: Schema.optional(Schema.String),
   path: Schema.NullOr(Schema.String),
-  line: Schema.NullOr(Schema.Number),
+  line: Schema.NullOr(Schema.Finite),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   viewerDidAuthor: Schema.optional(Schema.Boolean),
@@ -89,7 +89,7 @@ const MonitorPageSchema = Schema.Struct({
 
 const IssueCommentsSchema = Schema.Array(
   Schema.Struct({
-    id: Schema.Union([Schema.Number, Schema.String]),
+    id: Schema.Union([Schema.Finite, Schema.String]),
     user: Schema.NullOr(
       Schema.Struct({
         login: Schema.String,
@@ -103,10 +103,10 @@ const IssueCommentsSchema = Schema.Array(
 );
 
 const CheckRunsSchema = Schema.Struct({
-  total_count: Schema.Number,
+  total_count: Schema.Finite,
   check_runs: Schema.Array(
     Schema.Struct({
-      id: Schema.Number,
+      id: Schema.Finite,
       name: Schema.String,
       status: Schema.String,
       conclusion: Schema.NullOr(Schema.String),
@@ -128,7 +128,7 @@ const StatusesSchema = Schema.Struct({
   statuses: Schema.optional(
     Schema.Array(
       Schema.Struct({
-        id: Schema.Number,
+        id: Schema.Finite,
         context: Schema.String,
         state: Schema.String,
         description: Schema.NullOr(Schema.String),
@@ -140,7 +140,7 @@ const StatusesSchema = Schema.Struct({
 });
 
 const CompareSchema = Schema.Struct({
-  behind_by: Schema.optional(Schema.Number),
+  behind_by: Schema.optional(Schema.Finite),
 });
 
 const MONITOR_GRAPHQL = `
@@ -293,17 +293,65 @@ function sourceRevisionOf(parts: ReadonlyArray<string>): string {
   return NodeCrypto.createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 32);
 }
 
-/** Bound how far back a single poll walks; deeper history stays "incomplete", never "resolved". */
+/**
+ * Bound how far back a single poll walks; deeper history stays "incomplete", never
+ * "resolved". The newest comments matter most, so the walk starts at the last page.
+ */
 const ISSUE_COMMENT_PAGE_SIZE = 100;
-const MAX_ISSUE_COMMENT_PAGES = 10;
+const MAX_ISSUE_COMMENT_REQUESTS = 10;
 const MAX_RETAINED_ISSUE_COMMENTS = 200;
 
 type IssueCommentPage = typeof IssueCommentsSchema.Type;
+type IssueComment = IssueCommentPage[number];
+
+/** `link: <...page=7>; rel="next", <...page=42>; rel="last"` */
+function linkPage(header: string | null, rel: string): number | null {
+  if (header === null) return null;
+  for (const part of header.split(",")) {
+    const match = /<([^>]+)>\s*;\s*rel="([^"]+)"/.exec(part);
+    if (!match || match[2] !== rel) continue;
+    try {
+      const page = Number(new URL(match[1] ?? "").searchParams.get("page"));
+      return Number.isSafeInteger(page) && page > 0 ? page : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** `gh api --include` prints the status line and headers, a blank line, then the body. */
+function splitIncludedResponse(stdout: string): {
+  readonly link: string | null;
+  readonly body: string;
+} {
+  if (!stdout.startsWith("HTTP/")) return { link: null, body: stdout };
+  const separator = stdout.search(/\r?\n\r?\n/);
+  if (separator < 0) return { link: null, body: "" };
+  const header = stdout
+    .slice(0, separator)
+    .split(/\r?\n/)
+    .find((line) => line.toLowerCase().startsWith("link:"));
+  return {
+    link: header === undefined ? null : header.slice(header.indexOf(":") + 1).trim(),
+    body: stdout.slice(separator).replace(/^\r?\n\r?\n/, ""),
+  };
+}
+
+function compareIssueComments(left: IssueComment, right: IssueComment): number {
+  if (left.created_at !== right.created_at) return left.created_at < right.created_at ? -1 : 1;
+  const leftId = Number(left.id);
+  const rightId = Number(right.id);
+  if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
+  return String(left.id) < String(right.id) ? -1 : String(left.id) > String(right.id) ? 1 : 0;
+}
 
 /**
- * Page issue comments explicitly: a single `per_page=100` read silently truncates busy PRs,
- * which makes older feedback look resolved. The cursor is the page index, and the retained
- * tail is bounded so one snapshot cannot grow without limit.
+ * Page issue comments newest-first: a busy pull request can have far more history than one
+ * poll may read, and walking pages 1..N forward permanently hides everything appended past
+ * the budget. `Link` metadata locates the last page, `rel="next"` follows comments appended
+ * after that discovery, and older pages backfill with whatever budget is left. Anything the
+ * walk could not reach leaves `complete` false, so absence never reads as resolution.
  */
 const fetchIssueComments = Effect.fn("fetchGitHubPullRequestIssueComments")(function* (input: {
   readonly github: typeof GitHubCli.Service;
@@ -314,35 +362,77 @@ const fetchIssueComments = Effect.fn("fetchGitHubPullRequestIssueComments")(func
   readonly number: number;
   readonly mapCliError: (error: GitHubCliError) => PullRequestProviderError;
 }) {
-  const collected: Array<IssueCommentPage[number]> = [];
-  let complete = false;
-  for (let page = 1; page <= MAX_ISSUE_COMMENT_PAGES; page++) {
-    const raw = yield* input.github
-      .execute({
-        cwd: input.cwd,
-        args: [
-          "api",
-          "--hostname",
-          input.host,
-          "-H",
-          "Accept: application/vnd.github+json",
-          `repos/${input.owner}/${input.repository}/issues/${input.number}/comments?per_page=${ISSUE_COMMENT_PAGE_SIZE}&page=${page}`,
-        ],
-      })
-      .pipe(Effect.mapError(input.mapCliError));
-    const decoded = yield* decodeOrFail(
-      IssueCommentsSchema,
-      raw.stdout === "" ? "[]" : raw.stdout,
-      "monitorSnapshot.issueComments",
-    );
-    collected.push(...decoded);
-    if (decoded.length < ISSUE_COMMENT_PAGE_SIZE) {
-      complete = true;
+  const byId = new Map<string, IssueComment>();
+  const fetched = new Set<number>();
+  let requests = 0;
+
+  const readPage = (page: number) =>
+    Effect.gen(function* () {
+      const raw = yield* input.github
+        .execute({
+          cwd: input.cwd,
+          args: [
+            "api",
+            "--include",
+            "--hostname",
+            input.host,
+            "-H",
+            "Accept: application/vnd.github+json",
+            `repos/${input.owner}/${input.repository}/issues/${input.number}/comments?per_page=${ISSUE_COMMENT_PAGE_SIZE}&page=${page}`,
+          ],
+        })
+        .pipe(Effect.mapError(input.mapCliError));
+      const { link, body } = splitIncludedResponse(raw.stdout);
+      const decoded = yield* decodeOrFail(
+        IssueCommentsSchema,
+        body.trim() === "" ? "[]" : body,
+        "monitorSnapshot.issueComments",
+      );
+      for (const comment of decoded) {
+        const id = String(comment.id);
+        const previous = byId.get(id);
+        // Overlapping reads are expected while the list shifts; the newest edit wins.
+        if (previous === undefined || previous.updated_at <= comment.updated_at) {
+          byId.set(id, comment);
+        }
+      }
+      fetched.add(page);
+      return {
+        last: linkPage(link, "last"),
+        // Hosts that omit Link metadata still page by full-page length.
+        next:
+          linkPage(link, "next") ?? (decoded.length === ISSUE_COMMENT_PAGE_SIZE ? page + 1 : null),
+      };
+    });
+
+  const first = yield* readPage(1);
+  requests += 1;
+  let cursor = first.last !== null && first.last > 1 ? first.last : first.next;
+  let unreadNewer = false;
+  while (cursor !== null && !fetched.has(cursor)) {
+    if (requests >= MAX_ISSUE_COMMENT_REQUESTS) {
+      unreadNewer = true;
       break;
     }
+    const page = yield* readPage(cursor);
+    requests += 1;
+    cursor = page.next;
   }
+
+  const newest = Math.max(...fetched);
+  for (let page = newest - 1; page >= 2; page--) {
+    if (requests >= MAX_ISSUE_COMMENT_REQUESTS) break;
+    if (fetched.has(page)) continue;
+    yield* readPage(page);
+    requests += 1;
+  }
+
+  const collected = [...byId.values()].sort(compareIssueComments);
   const retained = collected.slice(-MAX_RETAINED_ISSUE_COMMENTS);
-  return { comments: retained, complete: complete && retained.length === collected.length };
+  return {
+    comments: retained,
+    complete: !unreadNewer && fetched.size === newest && retained.length === collected.length,
+  };
 });
 
 export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
@@ -357,14 +447,12 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   const [owner, ...rest] = input.repository.split("/");
   const name = rest.join("/");
   if (!owner || !name) {
-    return yield* Effect.fail(
-      new PullRequestProviderError({
-        provider: "github",
-        operation: "monitorSnapshot",
-        reason: "failed",
-        detail: `Invalid repository identity: ${input.repository}`,
-      }),
-    );
+    return yield* new PullRequestProviderError({
+      provider: "github",
+      operation: "monitorSnapshot",
+      reason: "failed",
+      detail: `Invalid repository identity: ${input.repository}`,
+    });
   }
 
   const mapCliError = (error: GitHubCliError) =>
@@ -403,14 +491,12 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   const page = yield* decodeOrFail(MonitorPageSchema, pageRaw.stdout, "monitorSnapshot.graphql");
   const pullRequest = page.data.repository?.pullRequest;
   if (!pullRequest) {
-    return yield* Effect.fail(
-      new PullRequestProviderError({
-        provider: "github",
-        operation: "monitorSnapshot",
-        reason: "failed",
-        detail: `Pull request #${input.number} was not found on ${input.repository}.`,
-      }),
-    );
+    return yield* new PullRequestProviderError({
+      provider: "github",
+      operation: "monitorSnapshot",
+      reason: "failed",
+      detail: `Pull request #${input.number} was not found on ${input.repository}.`,
+    });
   }
 
   const headSha = pullRequest.headRefOid;
@@ -484,14 +570,19 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
           })
           .pipe(
             Effect.mapError(mapCliError),
-            Effect.orElseSucceed(() => ({ stdout: "{}" })),
             Effect.flatMap((raw) =>
               decodeOrFail(
                 CompareSchema,
                 raw.stdout === "" ? "{}" : raw.stdout,
                 "monitorSnapshot.compare",
-              ).pipe(Effect.orElseSucceed(() => ({ behind_by: undefined }))),
+              ),
             ),
+            Effect.map((compare) => ({
+              behindBy:
+                typeof compare.behind_by === "number" ? Math.max(0, compare.behind_by) : null,
+            })),
+            // A failed or unreadable compare is "unknown", never "up to date".
+            Effect.orElseSucceed(() => ({ behindBy: null as number | null })),
           ),
       ],
       { concurrency: "unbounded" },
@@ -583,8 +674,7 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     baseBranch: pullRequest.baseRefName,
     headBranch: pullRequest.headRefName,
     mergeability: mergeabilityOf(pullRequest.mergeable),
-    behindBaseBy:
-      typeof compareDecoded.behind_by === "number" ? Math.max(0, compareDecoded.behind_by) : null,
+    behindBaseBy: compareDecoded.behindBy,
     titleExcerpt: excerpt(pullRequest.title, 200),
     url: pullRequest.url,
     fetchedAt,
@@ -600,6 +690,8 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
       checksComplete: checkRunsDecoded.check_runs.length < 100,
       // GitHub check-runs endpoint is observed checks, not branch protection required set.
       requiredChecksKnown: false,
+      // A compare that failed leaves the base distance unknown, not zero.
+      baseComparisonKnown: compareDecoded.behindBy !== null,
     },
     reviews,
     reviewThreads,

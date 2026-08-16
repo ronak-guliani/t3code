@@ -152,6 +152,11 @@ export const PullRequestMonitorCompleteness = Schema.Struct({
   issueCommentsComplete: Schema.Boolean,
   checksComplete: Schema.Boolean,
   requiredChecksKnown: Schema.Boolean,
+  /**
+   * Whether the base comparison was actually read. A failed compare leaves `behindBaseBy`
+   * null, which is "unknown", not "up to date"; older snapshots decode as unknown.
+   */
+  baseComparisonKnown: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
 export type PullRequestMonitorCompleteness = typeof PullRequestMonitorCompleteness.Type;
 

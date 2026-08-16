@@ -1625,12 +1625,10 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const project = yield* requireProject(input);
       if (project.api.monitorSnapshot === undefined) {
-        return yield* Effect.fail(
-          new PullRequestOperationError({
-            operation: "monitorSnapshot",
-            detail: "This host cannot provide a monitoring snapshot for a change request.",
-          }),
-        );
+        return yield* new PullRequestOperationError({
+          operation: "monitorSnapshot",
+          detail: "This host cannot provide a monitoring snapshot for a change request.",
+        });
       }
       return yield* project.api
         .monitorSnapshot({

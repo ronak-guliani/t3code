@@ -26,6 +26,7 @@ function snapshot(overrides: Partial<PullRequestMonitorSnapshot> = {}): PullRequ
       issueCommentsComplete: true,
       checksComplete: true,
       requiredChecksKnown: true,
+      baseComparisonKnown: true,
     },
     reviews: [],
     reviewThreads: [],
@@ -89,6 +90,7 @@ describe("reconcileFeedbackItem", () => {
           issueCommentsComplete: false,
           checksComplete: true,
           requiredChecksKnown: true,
+          baseComparisonKnown: true,
         },
       }),
     );
@@ -171,6 +173,30 @@ describe("reconcileFeedbackItem", () => {
     );
     // An unclaimed finding is never closed by a push alone.
     expect(reconcileFeedbackItem(item, snapshot(), {}).kind).toBe("actionable");
+  });
+
+  it("never resolves behind-base on a failed comparison", () => {
+    const unknown = reconcileFeedbackItem(
+      { kind: "behind-base", stableKey: "behind-base:na" },
+      snapshot({
+        behindBaseBy: null,
+        completeness: {
+          reviewsComplete: true,
+          reviewThreadsComplete: true,
+          issueCommentsComplete: true,
+          checksComplete: true,
+          requiredChecksKnown: true,
+          baseComparisonKnown: false,
+        },
+      }),
+    );
+    expect(unknown.kind).toBe("actionable");
+
+    const observed = reconcileFeedbackItem(
+      { kind: "behind-base", stableKey: "behind-base:na" },
+      snapshot({ behindBaseBy: 0 }),
+    );
+    expect(observed.kind).toBe("resolved-upstream");
   });
 
   it("reads the source id out of a stable key", () => {

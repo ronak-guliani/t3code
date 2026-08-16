@@ -3,15 +3,19 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   PullRequestMonitorError,
+  PullRequestOperationError,
   ThreadId,
   type ModelSelection,
   type PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { TestClock } from "effect/testing";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 
 import { GitManager } from "../git/Services/GitManager.ts";
@@ -35,9 +39,20 @@ import {
   PullRequestMonitorService,
 } from "./PullRequestMonitorService.ts";
 import { emptyCursor } from "./monitorDiff.ts";
+import { LEASE_TTL_MS } from "./pollSchedule.ts";
+import { emptyFeedbackReadiness } from "./readiness.ts";
 import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 
 const projectId = ProjectId.make("proj_monitor_1");
+
+/** Same clock the monitor writes with, so lease fixtures line up with commit time. */
+const isoNow = Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
+
+function addMs(iso: string, ms: number): string {
+  return DateTime.formatIso(
+    DateTime.toUtc(DateTime.add(DateTime.makeUnsafe(iso), { milliseconds: ms })),
+  );
+}
 
 function sampleSnapshot(
   overrides: Partial<PullRequestMonitorSnapshot> = {},
@@ -64,6 +79,7 @@ function sampleSnapshot(
       issueCommentsComplete: true,
       checksComplete: true,
       requiredChecksKnown: true,
+      baseComparisonKnown: true,
     },
     reviews: [],
     reviewThreads: [],
@@ -136,11 +152,20 @@ const fakePullRequests = PullRequestService.PullRequestService.of({
   reviewerCandidates: () => Effect.die("unused"),
   requestReviewers: () => Effect.die("unused"),
   invalidate: () => Effect.void,
-  monitorSnapshot: () => Effect.succeed(currentSnapshot),
+  monitorSnapshot: () =>
+    Effect.gen(function* () {
+      const snapshot = currentSnapshot;
+      // Runs while the poll attempt is in flight: the seam where a slow provider read
+      // can outlive the attempt's lease.
+      yield* monitorSnapshotHook;
+      return snapshot;
+    }),
 });
 
 /** Fresh provider state the monitor re-reads before every delivery. */
 let currentSnapshot: PullRequestMonitorSnapshot = sampleSnapshot();
+/** Injected mid-read behaviour; tests reset it to `Effect.void` after one use. */
+let monitorSnapshotHook: Effect.Effect<void, PullRequestOperationError> = Effect.void;
 
 const knownThreads = new Map<
   string,
@@ -839,7 +864,6 @@ layer("PullRequestMonitorService", (it) => {
       // The superseded generation cannot commit: its write is fenced out.
       const stale = yield* store.commitPollObservation({
         lease: lease!,
-        nowIso: afterExpiry,
         cursor: emptyCursor(),
         snapshotId: "snap-stale",
         snapshot: sampleSnapshot(),
@@ -866,6 +890,205 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("fences a poll whose provider read outlived the attempt lease", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const store = yield* PullRequestMonitorStore.make;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const sql = yield* SqlClient.SqlClient;
+
+      currentSnapshot = sampleSnapshot({
+        sourceRevision: "rev-fenced",
+        reviewThreads: [
+          {
+            id: "thread-fenced",
+            author: { login: "reviewer", kind: "user" },
+            path: "a.ts",
+            line: 1,
+            createdAt: "1970-01-01T00:00:00.000Z",
+            updatedAt: "1970-01-01T00:00:00.000Z",
+            resolved: false,
+            latestCommentByViewer: false,
+            bodyExcerpt: "please fix",
+          },
+        ],
+      });
+      // The provider read itself outlives the TTL the attempt was granted.
+      monitorSnapshotHook = Effect.gen(function* () {
+        monitorSnapshotHook = Effect.void;
+        currentSnapshot = sampleSnapshot();
+        // Park the scheduler so the only writers in this race are the two workers.
+        yield* sql`UPDATE pull_request_monitors SET next_poll_at = '2099-01-01T00:00:00.000Z'`.pipe(
+          Effect.orDie,
+        );
+        yield* TestClock.adjust(Duration.millis(LEASE_TTL_MS + 1_000));
+      });
+
+      const started = yield* monitors.start({ projectId, repository: "acme/app", number: 69 });
+
+      // An expired attempt commits nothing: no state, snapshot, cursor, or feedback.
+      const record = yield* store.getById(started.monitor.id);
+      assert.strictEqual(record?.status, "monitoring");
+      assert.isNull(record?.lastPolledAt ?? null);
+      assert.isNull(record?.readiness ?? null);
+      assert.isNull(record?.lastError ?? null);
+      const cursor = yield* store.getCursor(started.monitor.id);
+      assert.notStrictEqual(cursor.sourceRevision, "rev-fenced");
+      assert.isNull(yield* store.latestSnapshot(started.monitor.id));
+      const items = yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      });
+      assert.deepStrictEqual(items, []);
+
+      // The lease really was free: the worker that claims it next is the one that writes.
+      const now = yield* isoNow;
+      const lease = yield* store.tryAcquireLease({
+        canonicalKey: started.monitor.canonicalKey,
+        ownerId: "worker-next",
+        nowIso: now,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      assert.isNotNull(lease);
+      const commit = yield* store.commitPollObservation({
+        lease: lease!,
+        cursor: { ...emptyCursor(), sourceRevision: "rev-worker-next" },
+        snapshotId: "snap-worker-next",
+        snapshot: sampleSnapshot({
+          sourceRevision: "rev-worker-next",
+          fetchedAt: "2026-08-12T00:00:00.000Z",
+        }),
+        events: [],
+        ingest: Effect.succeed(emptyFeedbackReadiness),
+        finalize: (_feedback, commitAt) => ({
+          record: { ...started.monitor, lastPolledAt: commitAt, updatedAt: commitAt },
+          readiness: { ready: true, label: "no-known-blockers" as const, blockers: [] },
+        }),
+      });
+      assert.isTrue(commit.committed);
+      const latest = yield* store.latestSnapshot(started.monitor.id);
+      assert.strictEqual(latest?.snapshot.sourceRevision, "rev-worker-next");
+      yield* store.releaseLease(lease!);
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("a poll failing after its lease expired cannot clobber a newer poll", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const store = yield* PullRequestMonitorStore.make;
+      const sql = yield* SqlClient.SqlClient;
+      const reference = { projectId, repository: "acme/app", number: 70 } as const;
+
+      currentSnapshot = sampleSnapshot({ sourceRevision: "rev-healthy" });
+      const started = yield* monitors.start(reference);
+      assert.isNull(started.monitor.lastError);
+
+      // A crash after the lease expired, while a newer worker already committed.
+      monitorSnapshotHook = Effect.gen(function* () {
+        monitorSnapshotHook = Effect.void;
+        yield* sql`UPDATE pull_request_monitors SET next_poll_at = '2099-01-01T00:00:00.000Z'`.pipe(
+          Effect.orDie,
+        );
+        yield* TestClock.adjust(Duration.millis(LEASE_TTL_MS + 1_000));
+        const now = yield* isoNow;
+        const newer = yield* store
+          .tryAcquireLease({
+            canonicalKey: started.monitor.canonicalKey,
+            ownerId: "worker-newer",
+            nowIso: now,
+            expiresAt: addMs(now, LEASE_TTL_MS),
+          })
+          .pipe(Effect.orDie);
+        assert.isNotNull(newer);
+        const commit = yield* store
+          .commitPollObservation({
+            lease: newer!,
+            cursor: { ...emptyCursor(), sourceRevision: "rev-newer" },
+            snapshotId: "snap-newer",
+            snapshot: sampleSnapshot({
+              sourceRevision: "rev-newer",
+              fetchedAt: "2026-08-12T00:00:00.000Z",
+            }),
+            events: [],
+            ingest: Effect.succeed(emptyFeedbackReadiness),
+            finalize: (_feedback, commitAt) => ({
+              record: {
+                ...started.monitor,
+                status: "monitoring" as const,
+                lastError: null,
+                pollFailureCount: 0,
+                lastPolledAt: commitAt,
+                nextPollAt: "2099-01-01T00:00:00.000Z",
+                updatedAt: commitAt,
+              },
+              readiness: { ready: true, label: "no-known-blockers" as const, blockers: [] },
+            }),
+          })
+          .pipe(Effect.orDie);
+        assert.isTrue(commit.committed);
+        yield* store.releaseLease(newer!).pipe(Effect.orDie);
+        return yield* Effect.die(new Error("stale worker crashed"));
+      });
+      yield* monitors.start(reference);
+
+      const afterDefect = yield* store.getById(started.monitor.id);
+      assert.strictEqual(afterDefect?.status, "monitoring");
+      assert.isNull(afterDefect?.lastError ?? null);
+      assert.strictEqual(afterDefect?.pollFailureCount, 0);
+      assert.strictEqual(
+        (yield* store.latestSnapshot(started.monitor.id))?.snapshot.sourceRevision,
+        "rev-newer",
+      );
+
+      // Typed provider failures are fenced by the same expiry, with no newer writer.
+      monitorSnapshotHook = Effect.gen(function* () {
+        monitorSnapshotHook = Effect.void;
+        yield* sql`UPDATE pull_request_monitors SET next_poll_at = '2099-01-01T00:00:00.000Z'`.pipe(
+          Effect.orDie,
+        );
+        yield* TestClock.adjust(Duration.millis(LEASE_TTL_MS + 1_000));
+        return yield* new PullRequestOperationError({
+          operation: "monitorSnapshot",
+          detail: "host unreachable after a long read",
+        });
+      });
+      yield* monitors.start(reference);
+
+      const afterFailure = yield* store.getById(started.monitor.id);
+      assert.notStrictEqual(afterFailure?.status, "error");
+      assert.isNull(afterFailure?.lastError ?? null);
+      assert.strictEqual(afterFailure?.pollFailureCount, 0);
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("a poll that cannot claim the lease leaves monitor state untouched", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const store = yield* PullRequestMonitorStore.make;
+      const reference = { projectId, repository: "acme/app", number: 71 } as const;
+      const started = yield* monitors.start(reference);
+      const before = yield* store.getById(started.monitor.id);
+
+      const now = yield* isoNow;
+      const held = yield* store.tryAcquireLease({
+        canonicalKey: started.monitor.canonicalKey,
+        ownerId: "worker-holding",
+        nowIso: now,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      assert.isNotNull(held);
+
+      yield* monitors.start(reference);
+      const after = yield* store.getById(started.monitor.id);
+      assert.strictEqual(after?.lastPolledAt ?? null, before?.lastPolledAt ?? null);
+      assert.isNull(after?.lastError ?? null);
+      assert.strictEqual(after?.pollFailureCount, 0);
+      yield* store.releaseLease(held!);
+    }),
+  );
+
   it.effect("rolls the cursor back when ingestion fails mid-poll", () =>
     Effect.gen(function* () {
       const monitors = yield* PullRequestMonitorService;
@@ -888,7 +1111,6 @@ layer("PullRequestMonitorService", (it) => {
       const failed = yield* Effect.result(
         store.commitPollObservation({
           lease: lease!,
-          nowIso: now,
           cursor: { ...emptyCursor(), sourceRevision: "rev-next", headSha: "next-head" },
           snapshotId: "snap-atomic",
           snapshot: sampleSnapshot(),

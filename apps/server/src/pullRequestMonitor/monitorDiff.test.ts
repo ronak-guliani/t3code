@@ -26,6 +26,7 @@ function snapshot(overrides: Partial<PullRequestMonitorSnapshot> = {}): PullRequ
       issueCommentsComplete: true,
       checksComplete: true,
       requiredChecksKnown: true,
+      baseComparisonKnown: true,
     },
     reviews: [],
     reviewThreads: [],

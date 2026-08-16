@@ -8,6 +8,8 @@ import {
   type PullRequestMonitorRecord,
   type PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
+import * as Data from "effect/Data";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -100,6 +102,17 @@ interface SnapshotRow {
 }
 
 const isPullRequestMonitorError = Schema.is(PullRequestMonitorError);
+
+/**
+ * Internal rollback signal: a fenced-out poll must undo everything it already wrote in
+ * the commit transaction, and `withTransaction` only rolls back on failure.
+ */
+class PollLeaseFenced extends Data.TaggedError("PullRequestMonitorPollLeaseFenced")<
+  Record<string, never>
+> {}
+
+/** Clock read inside the commit transaction; the caller's poll-start time is stale by then. */
+const isoNow = Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
 
 function storeError(message: string, cause?: unknown) {
   return new PullRequestMonitorError({ message, cause });
@@ -251,21 +264,25 @@ export interface PullRequestMonitorStoreApi {
   }) => Effect.Effect<void, PullRequestMonitorError>;
   /**
    * One transaction for everything a poll observed: snapshot audit row, feedback
-   * ingestion, and the poll state/cursor advance. Fenced by the poll lease, so an
-   * expired or superseded generation writes nothing at all. Returns false when the
-   * fence was lost, meaning the cursor did not advance and the work will be retried.
+   * ingestion, and the poll state/cursor advance. Lease validity is judged by the clock
+   * inside the transaction, never by the caller's poll-start time, because a slow
+   * provider read can outlive the TTL it was granted. An expired or superseded
+   * generation writes nothing at all — ingestion included — and reports `committed:
+   * false`, meaning the cursor did not advance and the work will be retried.
    */
   readonly commitPollObservation: <Feedback>(input: {
     readonly lease: PullRequestMonitorPollLease;
-    readonly nowIso: string;
     readonly cursor: PullRequestMonitorCursor;
     readonly snapshotId: string;
     readonly snapshot: PullRequestMonitorSnapshot;
     readonly events: ReadonlyArray<PullRequestMonitorActionableEvent>;
     /** Feedback reconciliation + ingestion, executed inside the same transaction. */
     readonly ingest: Effect.Effect<Feedback, PullRequestMonitorError>;
-    /** Builds the committed record from post-ingest durable state. */
-    readonly finalize: (feedback: Feedback) => {
+    /** Builds the committed record from post-ingest durable state and commit time. */
+    readonly finalize: (
+      feedback: Feedback,
+      commitAt: string,
+    ) => {
       readonly record: PullRequestMonitorRecord;
       readonly readiness: PullRequestMonitorReadiness;
     };
@@ -747,12 +764,22 @@ export const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          const held = yield* holdsLease(input.lease, input.nowIso);
-          if (!held) return { committed: false, record: null };
+          // Fresh transaction time, not the caller's poll-start time: a provider read
+          // that outlived the TTL must be fenced even though nobody replaced the lease.
+          const openedAt = yield* isoNow;
+          if (!(yield* holdsLease(input.lease, openedAt))) {
+            return yield* new PollLeaseFenced({});
+          }
           // Ingestion and the cursor advance commit together: a failed ingest rolls the
           // cursor back, so an actionable event can never be observed and then dropped.
           const feedback = yield* input.ingest;
-          const { record, readiness } = input.finalize(feedback);
+          // Ingestion is durable work of its own, so the fence is re-read against the
+          // clock as it stands at write time; losing it rolls the ingest back too.
+          const commitAt = yield* isoNow;
+          if (!(yield* holdsLease(input.lease, commitAt))) {
+            return yield* new PollLeaseFenced({});
+          }
+          const { record, readiness } = input.finalize(feedback, commitAt);
           yield* saveSnapshot({
             snapshotId: input.snapshotId,
             monitorId: record.id,
@@ -762,12 +789,15 @@ export const make = Effect.gen(function* () {
           });
           yield* updatePollState(record, input.cursor, {
             lease: input.lease,
-            nowIso: input.nowIso,
+            nowIso: commitAt,
           });
           return { committed: true, record };
         }),
       )
       .pipe(
+        Effect.catchTag("PullRequestMonitorPollLeaseFenced", () =>
+          Effect.succeed({ committed: false, record: null }),
+        ),
         Effect.mapError((cause) =>
           isPullRequestMonitorError(cause)
             ? cause

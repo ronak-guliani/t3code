@@ -105,11 +105,15 @@ export function computeReadiness(
   }
 
   // Only claim "ready to merge" when the policy inputs themselves were fully observed.
+  // A failed compare leaves `behindBaseBy` null: unknown up-to-date status is not a
+  // blocker, but it cannot support the exact claim either.
   const evidenceSupportsReadyLabel =
     snapshot.completeness.requiredChecksKnown &&
     snapshot.completeness.checksComplete &&
     snapshot.completeness.reviewsComplete &&
     snapshot.completeness.reviewThreadsComplete &&
+    snapshot.completeness.baseComparisonKnown &&
+    snapshot.behindBaseBy !== null &&
     currentChecks.length > 0;
 
   if (blockers.length > 0) {
