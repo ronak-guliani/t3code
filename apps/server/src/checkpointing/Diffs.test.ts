@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseTurnDiffFilesFromNumstat, parseTurnDiffFilesFromUnifiedDiff } from "./Diffs.ts";
+import {
+  parseTurnDiffFilesFromNumstat,
+  parseTurnDiffFilesFromUnifiedDiff,
+  parseTurnDiffFileStatusesFromNameStatus,
+} from "./Diffs.ts";
 
 describe("parseTurnDiffFilesFromUnifiedDiff", () => {
   it("returns empty list for empty diff", () => {
@@ -29,8 +33,20 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "a.txt", additions: 2, deletions: 1 },
-      { path: "src/b.ts", additions: 0, deletions: 2 },
+      {
+        path: "a.txt",
+        previousPath: null,
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+      },
+      {
+        path: "src/b.ts",
+        previousPath: null,
+        kind: "modified",
+        additions: 0,
+        deletions: 2,
+      },
     ]);
   });
 
@@ -44,7 +60,13 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "src/new.ts", additions: 0, deletions: 0 },
+      {
+        path: "src/new.ts",
+        previousPath: "src/old.ts",
+        kind: "renamed",
+        additions: 0,
+        deletions: 0,
+      },
     ]);
   });
 
@@ -62,7 +84,13 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\r\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "a.txt", additions: 2, deletions: 1 },
+      {
+        path: "a.txt",
+        previousPath: null,
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+      },
     ]);
   });
 });
@@ -72,8 +100,20 @@ describe("parseTurnDiffFilesFromNumstat", () => {
     const numstat = ["2\t1\tsrc/a.ts", "0\t3\tREADME.md", ""].join("\0");
 
     expect(parseTurnDiffFilesFromNumstat(numstat)).toEqual([
-      { path: "README.md", additions: 0, deletions: 3 },
-      { path: "src/a.ts", additions: 2, deletions: 1 },
+      {
+        path: "README.md",
+        previousPath: null,
+        kind: "modified",
+        additions: 0,
+        deletions: 3,
+      },
+      {
+        path: "src/a.ts",
+        previousPath: null,
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+      },
     ]);
   });
 
@@ -81,13 +121,50 @@ describe("parseTurnDiffFilesFromNumstat", () => {
     const numstat = ["1\t0\t", "src/old.ts", "src/new.ts", ""].join("\0");
 
     expect(parseTurnDiffFilesFromNumstat(numstat)).toEqual([
-      { path: "src/new.ts", additions: 1, deletions: 0 },
+      {
+        path: "src/new.ts",
+        previousPath: "src/old.ts",
+        kind: "renamed",
+        additions: 1,
+        deletions: 0,
+      },
     ]);
   });
 
   it("reports binary file counts as zero", () => {
     expect(parseTurnDiffFilesFromNumstat("-\t-\timage.png\0")).toEqual([
-      { path: "image.png", additions: 0, deletions: 0 },
+      {
+        path: "image.png",
+        previousPath: null,
+        kind: "modified",
+        additions: 0,
+        deletions: 0,
+      },
+    ]);
+  });
+});
+
+describe("parseTurnDiffFileStatusesFromNameStatus", () => {
+  it("preserves added, deleted, renamed, and copied file metadata", () => {
+    const nameStatus = [
+      "A",
+      "added.txt",
+      "D",
+      "deleted.txt",
+      "R100",
+      "old name.txt",
+      "new name.txt",
+      "C100",
+      "source.txt",
+      "copy.txt",
+      "",
+    ].join("\0");
+
+    expect(parseTurnDiffFileStatusesFromNameStatus(nameStatus)).toEqual([
+      { path: "added.txt", previousPath: null, kind: "added" },
+      { path: "copy.txt", previousPath: "source.txt", kind: "copied" },
+      { path: "deleted.txt", previousPath: null, kind: "deleted" },
+      { path: "new name.txt", previousPath: "old name.txt", kind: "renamed" },
     ]);
   });
 });

@@ -212,6 +212,77 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   });
 
   describe("diffCheckpoints", () => {
+    it.effect("honors ignoreWhitespace for whitespace-only changes", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-whitespace");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+        yield* writeTextFile(path.join(tmp, "README.md"), "#    test\n");
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: true,
+        });
+
+        expect(diff).toBe("");
+      }),
+    );
+
+    it.effect("excludes same-branch fast-forward pull changes", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-fast-forward");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+        const oldHead = yield* git(tmp, ["rev-parse", "HEAD"]);
+
+        yield* git(tmp, ["checkout", "-b", "upstream-branch"]);
+        yield* writeTextFile(path.join(tmp, "upstream.md"), "upstream\n");
+        yield* git(tmp, ["add", "upstream.md"]);
+        yield* git(tmp, ["commit", "-m", "upstream change"]);
+        const upstreamHead = yield* git(tmp, ["rev-parse", "HEAD"]);
+
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* git(tmp, ["branch", "-D", "upstream-branch"]);
+        yield* git(tmp, [
+          "update-ref",
+          "-m",
+          "pull: Fast-forward",
+          "refs/heads/thread-branch",
+          upstreamHead,
+          oldHead,
+        ]);
+        yield* git(tmp, ["read-tree", "--reset", "-u", upstreamHead]);
+        yield* writeTextFile(path.join(tmp, "README.md"), "# turn change\n");
+        yield* git(tmp, ["add", "README.md"]);
+        yield* git(tmp, ["commit", "-m", "turn change"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+# turn change");
+        expect(diff).not.toContain("upstream.md");
+        expect(diff).not.toContain("+upstream");
+      }),
+    );
+
     it.effect("excludes base movement that entered the workspace during the turn", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
@@ -552,6 +623,43 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   });
 
   describe("diffCheckpointFiles", () => {
+    it.effect("preserves rename metadata for paths with spaces", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-rename-summary");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: fromCheckpointRef,
+        });
+        yield* git(tmp, ["mv", "README.md", "renamed file.md"]);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: toCheckpointRef,
+        });
+
+        const files = yield* checkpointStore.diffCheckpointFiles({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(files).toEqual([
+          {
+            path: "renamed file.md",
+            previousPath: "README.md",
+            kind: "renamed",
+            additions: 0,
+            deletions: 0,
+          },
+        ]);
+      }),
+    );
+
     it.effect(
       "returns file summaries for checkpoint diffs whose patch exceeds the output limit",
       () =>
@@ -579,7 +687,15 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
             toCheckpointRef,
           });
 
-          expect(files).toEqual([{ path: "README.md", additions: 1, deletions: 1 }]);
+          expect(files).toEqual([
+            {
+              path: "README.md",
+              previousPath: null,
+              kind: "modified",
+              additions: 1,
+              deletions: 1,
+            },
+          ]);
         }),
     );
   });

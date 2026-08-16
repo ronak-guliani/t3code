@@ -52,6 +52,7 @@ describe("CheckpointDiffQueryLive", () => {
       readonly fromCheckpointRef: CheckpointRef;
       readonly toCheckpointRef: CheckpointRef;
       readonly cwd: string;
+      readonly ignoreWhitespace?: boolean;
       readonly paths?: ReadonlyArray<string>;
     }> = [];
 
@@ -75,12 +76,13 @@ describe("CheckpointDiffQueryLive", () => {
         }),
       checkpointRefMatchesWorkspace: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, paths }) =>
+      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace, paths }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
             fromCheckpointRef,
             toCheckpointRef,
             cwd,
+            ...(ignoreWhitespace !== undefined ? { ignoreWhitespace } : {}),
             ...(paths !== undefined ? { paths } : {}),
           });
           return "diff patch";
@@ -120,6 +122,7 @@ describe("CheckpointDiffQueryLive", () => {
           fromTurnCount: 0,
           toTurnCount: 1,
           scope: "snapshot",
+          ignoreWhitespace: true,
         });
       }).pipe(Effect.provide(layer)),
     );
@@ -131,6 +134,7 @@ describe("CheckpointDiffQueryLive", () => {
         cwd: "/tmp/workspace",
         fromCheckpointRef: expectedFromRef,
         toCheckpointRef,
+        ignoreWhitespace: true,
         paths: ["src/app.ts"],
       },
     ]);

@@ -195,6 +195,9 @@ const make = Effect.gen(function* () {
         fromCheckpointRef,
         toCheckpointRef,
         fallbackFromToHead: false,
+        ...(input.ignoreWhitespace === undefined
+          ? {}
+          : { ignoreWhitespace: input.ignoreWhitespace }),
         paths: diffPaths,
       });
 
@@ -223,6 +226,7 @@ const make = Effect.gen(function* () {
       fromTurnCount: 0,
       toTurnCount: input.toTurnCount,
       scope: "snapshot",
+      ...(input.ignoreWhitespace === undefined ? {} : { ignoreWhitespace: input.ignoreWhitespace }),
     }).pipe(Effect.map((result): OrchestrationGetFullThreadDiffResult => result));
 
   return {

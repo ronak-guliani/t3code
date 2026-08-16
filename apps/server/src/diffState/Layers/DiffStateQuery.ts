@@ -33,28 +33,8 @@ function summarizeFiles(files: ReadonlyArray<DiffFile>): DiffMetadata {
   };
 }
 
-function parseDiffHeaderPath(rawPath: string): string {
-  if (rawPath === "/dev/null") {
-    return rawPath;
-  }
-  if (rawPath.startsWith("a/") || rawPath.startsWith("b/")) {
-    return rawPath.slice(2);
-  }
-  return rawPath;
-}
-
 function parseDiffSectionPath(section: string): string | null {
-  const header = section.match(/^diff --git\s+(.+?)\s+(.+)$/m);
-  if (!header) {
-    return null;
-  }
-
-  const nextPath = parseDiffHeaderPath(header[2] ?? "");
-  if (nextPath !== "/dev/null") {
-    return nextPath;
-  }
-  const previousPath = parseDiffHeaderPath(header[1] ?? "");
-  return previousPath === "/dev/null" ? null : previousPath;
+  return parseTurnDiffFilesFromUnifiedDiff(section)[0]?.path ?? null;
 }
 
 function splitPatchByFile(patch: string): Map<string, string> {
@@ -137,6 +117,8 @@ function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
     if (!parsedFilesByPath.has(path)) {
       parsedFilesByPath.set(path, {
         path,
+        previousPath: null,
+        kind: "modified",
         additions: 0,
         deletions: 0,
       });
@@ -156,10 +138,12 @@ function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
         additions: changes.additions,
         deletions: changes.deletions,
       });
+      const kind =
+        section.includes("\ncopy from ") && section.includes("\ncopy to ") ? "copied" : file.kind;
       return {
         path: file.path,
-        previousPath: null,
-        status: "unknown",
+        previousPath: file.previousPath,
+        status: kind === "added" ? "new" : kind === "copied" ? "copied" : kind,
         additions: changes.additions,
         deletions: changes.deletions,
         hunks: [],

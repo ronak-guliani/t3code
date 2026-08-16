@@ -12,7 +12,7 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schedule, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { deriveTurnScopedCheckpointFiles } from "../../checkpointing/TurnScopedFiles.ts";
@@ -78,7 +78,8 @@ const serverCommandId = (tag: string): CommandId =>
 const toCheckpointFiles = (files: ReadonlyArray<CheckpointDiffFileSummary>) =>
   files.map((file) => ({
     path: file.path,
-    kind: "modified" as const,
+    ...(file.previousPath === null ? {} : { previousPath: file.previousPath }),
+    kind: file.kind,
     additions: file.additions,
     deletions: file.deletions,
   }));
@@ -799,13 +800,19 @@ const make = Effect.gen(function* () {
         providerRolledBack = true;
       }
 
-      yield* orchestrationEngine.dispatch({
-        type: "thread.revert.complete",
+      const revertCommand = {
+        type: "thread.revert.complete" as const,
         commandId: serverCommandId("checkpoint-revert-complete"),
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,
         createdAt: now,
-      });
+      };
+      yield* Effect.suspend(() => orchestrationEngine.dispatch(revertCommand)).pipe(
+        Effect.retry({
+          schedule: Schedule.spaced("100 millis"),
+          while: (error) => error._tag === "PersistenceSqlError",
+        }),
+      );
       revertCommitted = true;
 
       yield* workspaceEntries.invalidate(sessionRuntime.value.cwd).pipe(
