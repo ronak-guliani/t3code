@@ -33,75 +33,67 @@ function summarizeFiles(files: ReadonlyArray<DiffFile>): DiffMetadata {
   };
 }
 
-function parseDiffSectionPath(section: string): string | null {
-  return parseTurnDiffFilesFromUnifiedDiff(section)[0]?.path ?? null;
-}
-
-function splitPatchByFile(patch: string): Map<string, string> {
-  const sections = new Map<string, string>();
-  const starts = [...patch.matchAll(/^diff --git .+$/gm)].map((match) => match.index ?? 0);
-  for (let index = 0; index < starts.length; index += 1) {
-    const start = starts[index] ?? 0;
-    const end = starts[index + 1] ?? patch.length;
-    const section = patch.slice(start, end);
-    const filePath = parseDiffSectionPath(section);
-    if (filePath) {
-      sections.set(filePath, section);
-    }
-  }
-  return sections;
-}
-
 function classifyDiffSection(input: {
   readonly section: string;
   readonly additions: number;
   readonly deletions: number;
-}): { readonly size: DiffSize; readonly isBinary: boolean; readonly hasHiddenBidiChars: boolean } {
-  const isBinary =
-    input.section.includes("GIT binary patch") ||
-    input.section
-      .split("\n")
-      .some((line) => line.startsWith("Binary files ") && line.includes(" differ"));
+}): {
+  readonly size: DiffSize;
+  readonly isBinary: boolean;
+  readonly hasHiddenBidiChars: boolean;
+  readonly additions: number;
+  readonly deletions: number;
+} {
+  let hasBinaryFilesLine = false;
+  let hasVeryLongLine = false;
+  let additions = 0;
+  let deletions = 0;
+  let lineStart = 0;
+  while (lineStart < input.section.length) {
+    const newlineIndex = input.section.indexOf("\n", lineStart);
+    const lineEnd = newlineIndex === -1 ? input.section.length : newlineIndex;
+    hasVeryLongLine ||= lineEnd - lineStart > MAX_CHARACTERS_PER_LINE;
+    if (input.section.startsWith("+", lineStart) && !input.section.startsWith("+++", lineStart)) {
+      additions += 1;
+    } else if (
+      input.section.startsWith("-", lineStart) &&
+      !input.section.startsWith("---", lineStart)
+    ) {
+      deletions += 1;
+    }
+    if (!hasBinaryFilesLine && input.section.startsWith("Binary files ", lineStart)) {
+      const differIndex = input.section.indexOf(" differ", lineStart);
+      hasBinaryFilesLine = differIndex !== -1 && differIndex < lineEnd;
+    }
+    if (newlineIndex === -1) {
+      break;
+    }
+    lineStart = newlineIndex + 1;
+  }
+
+  const isBinary = input.section.includes("GIT binary patch") || hasBinaryFilesLine;
   const hasHiddenBidiChars = BIDI_CHARS.test(input.section);
-  const hasVeryLongLine = input.section
-    .split("\n")
-    .some((line) => line.length > MAX_CHARACTERS_PER_LINE);
+  const changes =
+    input.section.length === 0
+      ? { additions: input.additions, deletions: input.deletions }
+      : { additions, deletions };
 
   if (
     isBinary ||
     input.section.length > MAX_DIFF_SIZE ||
-    input.deletions > DELETION_LINE_RENDER_LIMIT
+    changes.deletions > DELETION_LINE_RENDER_LIMIT
   ) {
-    return { size: "unrenderable", isBinary, hasHiddenBidiChars };
+    return { size: "unrenderable", isBinary, hasHiddenBidiChars, ...changes };
   }
   if (
     input.section.length >= MAX_REASONABLE_DIFF_SIZE ||
     hasVeryLongLine ||
-    input.additions > DIFF_LINE_RENDER_LIMIT ||
-    input.deletions > DIFF_LINE_RENDER_LIMIT
+    changes.additions > DIFF_LINE_RENDER_LIMIT ||
+    changes.deletions > DIFF_LINE_RENDER_LIMIT
   ) {
-    return { size: "large", isBinary, hasHiddenBidiChars };
+    return { size: "large", isBinary, hasHiddenBidiChars, ...changes };
   }
-  return { size: "normal", isBinary, hasHiddenBidiChars };
-}
-
-function countUnifiedDiffSectionChanges(section: string): {
-  readonly additions: number;
-  readonly deletions: number;
-} {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of section.split("\n")) {
-    if (line.startsWith("+++") || line.startsWith("---")) {
-      continue;
-    }
-    if (line.startsWith("+")) {
-      additions += 1;
-    } else if (line.startsWith("-")) {
-      deletions += 1;
-    }
-  }
-  return { additions, deletions };
+  return { size: "normal", isBinary, hasHiddenBidiChars, ...changes };
 }
 
 function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
@@ -109,47 +101,24 @@ function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
     return [];
   }
 
-  const sectionsByPath = splitPatchByFile(patch);
-  const parsedFilesByPath = new Map(
-    parseTurnDiffFilesFromUnifiedDiff(patch).map((file) => [file.path, file] as const),
-  );
-  for (const path of sectionsByPath.keys()) {
-    if (!parsedFilesByPath.has(path)) {
-      parsedFilesByPath.set(path, {
-        path,
-        previousPath: null,
-        kind: "modified",
-        additions: 0,
-        deletions: 0,
-      });
-    }
-  }
-
-  return [...parsedFilesByPath.values()]
-    .toSorted((left, right) => left.path.localeCompare(right.path))
-    .map((file) => {
-      const section = sectionsByPath.get(file.path) ?? "";
-      const changes =
-        section.length > 0
-          ? countUnifiedDiffSectionChanges(section)
-          : { additions: file.additions, deletions: file.deletions };
-      const classification = classifyDiffSection({
-        section,
-        additions: changes.additions,
-        deletions: changes.deletions,
-      });
-      return {
-        path: file.path,
-        previousPath: file.previousPath,
-        status: file.kind === "added" ? "new" : file.kind === "copied" ? "copied" : file.kind,
-        additions: changes.additions,
-        deletions: changes.deletions,
-        hunks: [],
-        size: classification.size,
-        isBinary: classification.isBinary,
-        hasHiddenBidiChars: classification.hasHiddenBidiChars,
-      };
+  return parseTurnDiffFilesFromUnifiedDiff(patch).map((file) => {
+    const classification = classifyDiffSection({
+      section: file.section,
+      additions: file.additions,
+      deletions: file.deletions,
     });
+    return {
+      path: file.path,
+      previousPath: file.previousPath,
+      status: file.kind === "added" ? "new" : file.kind === "copied" ? "copied" : file.kind,
+      additions: classification.additions,
+      deletions: classification.deletions,
+      hunks: [],
+      size: classification.size,
+      isBinary: classification.isBinary,
+      hasHiddenBidiChars: classification.hasHiddenBidiChars,
+    };
+  });
 }
 
 function toReadyDiffState(input: {
