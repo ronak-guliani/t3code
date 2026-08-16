@@ -333,6 +333,14 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // When a thread creates a PR, associate ownership and start monitoring if enabled.
+  autoMonitorPullRequestsOnCreate: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  // When owner is missing/unavailable, launch a prepared fallback maintenance thread.
+  autoLaunchPrMonitorFallback: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 

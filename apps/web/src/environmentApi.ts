@@ -75,6 +75,17 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       reviewerCandidates: rpcClient.pullRequests.reviewerCandidates,
       requestReviewers: rpcClient.pullRequests.requestReviewers,
     },
+    pullRequestMonitors: {
+      start: rpcClient.pullRequestMonitors.start,
+      stop: rpcClient.pullRequestMonitors.stop,
+      status: rpcClient.pullRequestMonitors.status,
+      list: rpcClient.pullRequestMonitors.list,
+      context: rpcClient.pullRequestMonitors.context,
+      report: rpcClient.pullRequestMonitors.report,
+      transfer: rpcClient.pullRequestMonitors.transfer,
+      submitFindings: rpcClient.pullRequestMonitors.submitFindings,
+      launchFallback: rpcClient.pullRequestMonitors.launchFallback,
+    },
     workflow: {
       run: rpcClient.workflow.run,
     },

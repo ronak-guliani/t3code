@@ -37,4 +37,6 @@ export const make = Effect.map(GitHubPullRequestProvider.make, (provider) =>
 
 export const layer = Layer.effect(PullRequestProviderRegistry, make).pipe(
   Layer.provide(GitHubPullRequestCli.layer.pipe(Layer.provide(GitHubCliLive))),
+  // monitorSnapshot reads the host through GitHubCli directly, outside the PR CLI wrapper.
+  Layer.provide(GitHubCliLive),
 );

@@ -104,6 +104,9 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiRoutesLayer } from "./pullRequest/http.ts";
 import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequestProviderRegistry.ts";
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
+import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
+import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
+import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -205,6 +208,21 @@ const GitLayerLive = Layer.empty.pipe(
 
 const PullRequestLayerLive = PullRequestServiceLive.pipe(
   Layer.provideMerge(PullRequestProviderRegistryLive),
+);
+
+const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceLayer.pipe(
+  Layer.provide(PullRequestLayerLive),
+);
+
+const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
+  Layer.provide(PullRequestLayerLive),
+  Layer.provide(PullRequestMonitorFeedbackServiceLive),
+);
+
+// Associating a pull request with a chat is the ownership signal, so monitoring follows it.
+// provideMerge keeps one monitor service instance shared with the reactor.
+const PullRequestMonitorLayerLive = pullRequestMonitorAssociationReactorLayer.pipe(
+  Layer.provideMerge(PullRequestMonitorServiceLive),
 );
 
 // The MCP credential registry and the automation broker are runtime services:
@@ -318,6 +336,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(CheckpointingLayerLive),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(PullRequestLayerLive),
+  Layer.provideMerge(PullRequestMonitorLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
@@ -346,6 +365,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
+).pipe(
   Layer.provideMerge(ServerEnvironmentLive),
   Layer.provideMerge(PreviewAutomationLayerLive),
   Layer.provideMerge(AuthLayerLive),

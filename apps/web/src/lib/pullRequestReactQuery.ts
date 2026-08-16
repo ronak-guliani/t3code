@@ -16,6 +16,10 @@ import type {
   PullRequestSubmitReviewInput,
   PullRequestThreadReplyInput,
   PullRequestThreadResolutionInput,
+  PullRequestMonitorLaunchFallbackInput,
+  PullRequestMonitorStartInput,
+  PullRequestMonitorStatusInput,
+  PullRequestMonitorStopInput,
 } from "@t3tools/contracts";
 import { PullRequestDiffResult as PullRequestDiffResultSchema } from "@t3tools/contracts";
 import {
@@ -99,6 +103,15 @@ export const pullRequestQueryKeys = {
       reference.repository,
       reference.number,
     ] as const,
+  monitorStatus: (environmentId: EnvironmentId | null, reference: PullRequestRef) =>
+    [
+      "pull-requests",
+      environmentId ?? null,
+      "monitor-status",
+      reference.projectId,
+      reference.repository,
+      reference.number,
+    ] as const,
 };
 
 export const pullRequestMutationKeys = {
@@ -116,6 +129,12 @@ export const pullRequestMutationKeys = {
     ["pull-requests", "mutation", environmentId ?? null, "request-reviewers"] as const,
   invalidate: (environmentId: EnvironmentId | null) =>
     ["pull-requests", "mutation", environmentId ?? null, "invalidate"] as const,
+  monitorStart: (environmentId: EnvironmentId | null) =>
+    ["pull-requests", "mutation", environmentId ?? null, "monitor-start"] as const,
+  monitorStop: (environmentId: EnvironmentId | null) =>
+    ["pull-requests", "mutation", environmentId ?? null, "monitor-stop"] as const,
+  monitorLaunchFallback: (environmentId: EnvironmentId | null) =>
+    ["pull-requests", "mutation", environmentId ?? null, "monitor-fallback"] as const,
 };
 
 function requirePullRequestApi(environmentId: EnvironmentId | null) {
@@ -454,6 +473,93 @@ export function pullRequestInvalidateMutationOptions(input: {
           queryKey: [...pullRequestQueryKeys.environment(input.environmentId), "list-stats"],
         }),
       ]);
+    },
+  });
+}
+
+export function pullRequestMonitorStatusQueryOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly reference: PullRequestRef;
+}) {
+  const statusInput: PullRequestMonitorStatusInput = { reference: input.reference };
+  return queryOptions({
+    queryKey: pullRequestQueryKeys.monitorStatus(input.environmentId, input.reference),
+    staleTime: PULL_REQUEST_STALE_TIME_MS,
+    // Server owns monitor truth; keep the strip fresh while the panel is open.
+    refetchInterval: 15_000,
+    queryFn: async () => {
+      const api = await ensureEnvironmentApi(input.environmentId);
+      return api.pullRequestMonitors.status(statusInput);
+    },
+  });
+}
+
+function invalidateMonitorQueries(
+  queryClient: QueryClient,
+  environmentId: EnvironmentId,
+  reference: PullRequestRef,
+) {
+  return queryClient.invalidateQueries({
+    queryKey: pullRequestQueryKeys.monitorStatus(environmentId, reference),
+  });
+}
+
+export function pullRequestMonitorStartMutationOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: pullRequestMutationKeys.monitorStart(input.environmentId),
+    mutationFn: async (payload: PullRequestMonitorStartInput) => {
+      const api = await ensureEnvironmentApi(input.environmentId);
+      return api.pullRequestMonitors.start(payload);
+    },
+    onSuccess: async (result) => {
+      await invalidateMonitorQueries(input.queryClient, input.environmentId, {
+        projectId: result.monitor.projectId,
+        repository: result.monitor.repository,
+        number: result.monitor.number,
+      });
+    },
+  });
+}
+
+export function pullRequestMonitorStopMutationOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: pullRequestMutationKeys.monitorStop(input.environmentId),
+    mutationFn: async (payload: PullRequestMonitorStopInput) => {
+      const api = await ensureEnvironmentApi(input.environmentId);
+      return api.pullRequestMonitors.stop(payload);
+    },
+    onSuccess: async (result) => {
+      await invalidateMonitorQueries(input.queryClient, input.environmentId, {
+        projectId: result.monitor.projectId,
+        repository: result.monitor.repository,
+        number: result.monitor.number,
+      });
+    },
+  });
+}
+
+export function pullRequestMonitorLaunchFallbackMutationOptions(input: {
+  readonly environmentId: EnvironmentId;
+  readonly queryClient: QueryClient;
+}) {
+  return mutationOptions({
+    mutationKey: pullRequestMutationKeys.monitorLaunchFallback(input.environmentId),
+    mutationFn: async (payload: PullRequestMonitorLaunchFallbackInput) => {
+      const api = await ensureEnvironmentApi(input.environmentId);
+      return api.pullRequestMonitors.launchFallback(payload);
+    },
+    onSuccess: async (result) => {
+      await invalidateMonitorQueries(input.queryClient, input.environmentId, {
+        projectId: result.monitor.projectId,
+        repository: result.monitor.repository,
+        number: result.monitor.number,
+      });
     },
   });
 }

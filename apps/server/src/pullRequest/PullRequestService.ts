@@ -25,6 +25,7 @@ import {
   type PullRequestListResult,
   type PullRequestListStatsInput,
   type PullRequestListStatsResult,
+  type PullRequestMonitorSnapshot,
   type PullRequestProviderSummary,
   type PullRequestRef,
   type PullRequestReviewVerdict,
@@ -141,6 +142,12 @@ export class PullRequestService extends Context.Service<
       input: PullRequestReviewerRequestInput,
     ) => Effect.Effect<void, PullRequestError>;
     readonly invalidate: (input: PullRequestInvalidateInput) => Effect.Effect<void>;
+    /**
+     * Fresh host snapshot for durable monitoring. Never served from list/detail caches.
+     */
+    readonly monitorSnapshot: (
+      input: PullRequestRef,
+    ) => Effect.Effect<PullRequestMonitorSnapshot, PullRequestError>;
   }
 >()("t3/pullRequest/PullRequestService") {}
 
@@ -1614,6 +1621,25 @@ export const make = Effect.gen(function* () {
       bumpRefEpoch(input.reference);
     });
 
+  const monitorSnapshot: PullRequestService["Service"]["monitorSnapshot"] = (input) =>
+    Effect.gen(function* () {
+      const project = yield* requireProject(input);
+      if (project.api.monitorSnapshot === undefined) {
+        return yield* new PullRequestOperationError({
+          operation: "monitorSnapshot",
+          detail: "This host cannot provide a monitoring snapshot for a change request.",
+        });
+      }
+      return yield* project.api
+        .monitorSnapshot({
+          cwd: project.project.workspaceRoot,
+          repository: project.repository,
+          host: project.host,
+          number: input.number,
+        })
+        .pipe(Effect.mapError(toPullRequestError("monitorSnapshot")));
+    });
+
   // A mutation's own client re-reads right after it, and every other client's next read must
   // see the affected pull request. Only state-changing actions can move a row between listings
   // or change its order, so the conversation and reviewer writes leave those shared caches hot.
@@ -1647,6 +1673,7 @@ export const make = Effect.gen(function* () {
     reviewerCandidates,
     requestReviewers: invalidatedByMutation(requestReviewers),
     invalidate,
+    monitorSnapshot,
   });
 });
 

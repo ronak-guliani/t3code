@@ -9,6 +9,7 @@ import {
   Exit,
   Layer,
   Option,
+  Result,
   Queue,
   Ref,
   Schema,
@@ -27,6 +28,7 @@ import {
   type GitManagerServiceError,
   GitHubCliError,
   PullRequestUnavailableError,
+  PullRequestMonitorError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -167,9 +169,14 @@ import { respondToAuthError } from "./auth/http.ts";
 import { expandHomePath } from "./pathExpansion.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
+import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
+const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
+const isProjectSearchEntriesError = Schema.is(ProjectSearchEntriesError);
+const isProjectReadFileError = Schema.is(ProjectReadFileError);
 
 async function writeThreadMarkdownExportFile(input: {
   readonly directory: string;
@@ -273,6 +280,23 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
       const portDiscovery = yield* PortDiscovery;
       const previewAutomationBroker = yield* PreviewAutomationBroker;
       const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
+      const pullRequestMonitors = yield* Effect.serviceOption(
+        PullRequestMonitors.PullRequestMonitorService,
+      );
+      const withPullRequestMonitors = <A, E>(
+        f: (
+          service: PullRequestMonitors.PullRequestMonitorService["Service"],
+        ) => Effect.Effect<A, E>,
+      ): Effect.Effect<A, E | PullRequestMonitorError> =>
+        Option.match(pullRequestMonitors, {
+          onNone: () =>
+            Effect.fail(
+              new PullRequestMonitorError({
+                message: "Pull request monitoring is unavailable in this environment.",
+              }),
+            ),
+          onSome: f,
+        });
       const withPullRequests = <A, E>(
         operation: (
           service: PullRequestService.PullRequestService["Service"],
@@ -1149,7 +1173,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 return Effect.succeed(snapshot.value).pipe(Effect.map(projectThreadDetailSnapshot));
               }),
               Effect.mapError((cause) =>
-                cause instanceof OrchestrationGetSnapshotError
+                isOrchestrationGetSnapshotError(cause)
                   ? cause
                   : new OrchestrationGetSnapshotError({
                       message: `Failed to load thread ${input.threadId}`,
@@ -1622,7 +1646,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               });
             }).pipe(
               Effect.mapError((cause) =>
-                cause instanceof ProjectSearchEntriesError
+                isProjectSearchEntriesError(cause)
                   ? cause
                   : new ProjectSearchEntriesError({
                       message: `Failed to search workspace entries: ${cause.detail}`,
@@ -1752,7 +1776,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               });
             }).pipe(
               Effect.mapError((cause) => {
-                if (cause instanceof ProjectReadFileError) return cause;
+                if (isProjectReadFileError(cause)) return cause;
                 const message = isWorkspacePathOutsideRootError(cause)
                   ? "Workspace file path must stay within the project root."
                   : "Failed to read workspace file";
@@ -1991,6 +2015,69 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             withPullRequests((service) => service.requestReviewers(input)),
             { "rpc.aggregate": "pull-requests" },
           ),
+        [WS_METHODS.pullRequestMonitorsStart]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsStart,
+            withPullRequestMonitors((service) => service.start(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsStop]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsStop,
+            withPullRequestMonitors((service) => service.stop(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsStatus]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsStatus,
+            withPullRequestMonitors((service) => service.status(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsList,
+            withPullRequestMonitors((service) => service.list(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsSubscribe]: (input) =>
+          observeRpcStream(
+            WS_METHODS.pullRequestMonitorsSubscribe,
+            Stream.unwrap(
+              withPullRequestMonitors((service) => Effect.succeed(service.subscribeList(input))),
+            ),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsContext]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsContext,
+            withPullRequestMonitors((service) => service.context(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsReport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsReport,
+            withPullRequestMonitors((service) => service.report(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsTransfer]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsTransfer,
+            withPullRequestMonitors((service) => service.transferOwnership(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsSubmitFindings]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsSubmitFindings,
+            withPullRequestMonitors((service) => service.submitFindings(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+        [WS_METHODS.pullRequestMonitorsLaunchFallback]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.pullRequestMonitorsLaunchFallback,
+            withPullRequestMonitors((service) => service.launchFallback(input)),
+            { "rpc.aggregate": "pullRequestMonitors" },
+          ),
+
         [WS_METHODS.subscribeGitStatus]: (input) =>
           observeRpcStream(
             WS_METHODS.subscribeGitStatus,
@@ -2033,10 +2120,36 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 .pipe(
                   Effect.matchCauseEffect({
                     onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: () =>
-                      refreshGitStatus(input.cwd).pipe(
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
+                    onSuccess: (result) =>
+                      Effect.gen(function* () {
+                        const createdPrNumber = result.pr.number;
+                        const projectId = input.projectId;
+                        const threadId = input.threadId;
+                        if (
+                          result.pr.status === "created" &&
+                          typeof createdPrNumber === "number" &&
+                          projectId !== undefined &&
+                          threadId !== undefined
+                        ) {
+                          const settingsResult = yield* Effect.result(serverSettings.getSettings);
+                          const enabled =
+                            Result.isSuccess(settingsResult) &&
+                            settingsResult.success.autoMonitorPullRequestsOnCreate === true;
+                          const repository = repositoryFromPullRequestUrl(result.pr.url);
+                          if (enabled && repository) {
+                            yield* withPullRequestMonitors((service) =>
+                              service.start({
+                                projectId,
+                                repository,
+                                number: createdPrNumber,
+                                ownerThreadId: threadId,
+                              }),
+                            ).pipe(Effect.ignore({ log: true }));
+                          }
+                        }
+                        yield* refreshGitStatus(input.cwd);
+                        yield* Queue.end(queue);
+                      }).pipe(Effect.asVoid),
                   }),
                 ),
             ),
