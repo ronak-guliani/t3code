@@ -12,6 +12,7 @@ import type { EnvironmentState } from "./store";
 import {
   collectStaleActiveTurnToastRequests,
   collectThreadCompletionNotifications,
+  INTERRUPTED_NOTIFICATION_GRACE_MS,
 } from "./threadCompletionNotifications";
 
 const environmentId = EnvironmentId.make("environment-local");
@@ -26,6 +27,7 @@ function makeEnvironmentState(overrides: {
   readonly threadId?: ThreadId;
   readonly title?: string;
   readonly completedAt?: string;
+  readonly turnState?: "completed" | "error" | "interrupted" | "running";
   readonly activeTurnId?: TurnId | null;
   readonly hasPendingQueuedTurn?: boolean;
 }): EnvironmentState {
@@ -77,7 +79,7 @@ function makeEnvironmentState(overrides: {
         updatedAt: "2026-06-10T00:01:00.000Z",
         latestTurn: {
           turnId,
-          state: "completed",
+          state: overrides.turnState ?? "completed",
           requestedAt: "2026-06-10T00:00:00.000Z",
           startedAt: "2026-06-10T00:00:01.000Z",
           completedAt: overrides.completedAt ?? "2026-06-10T00:01:00.000Z",
@@ -100,6 +102,7 @@ function makeTracker() {
   return {
     notifiedTurnKeys: new Set<string>(),
     bootstrappedEnvironmentIds: new Set<string>(),
+    pendingInterruptedTurnKeys: new Map<string, number>(),
   };
 }
 
@@ -256,6 +259,162 @@ describe("collectThreadCompletionNotifications", () => {
         title: "Chat completed",
       },
     ]);
+  });
+
+  it("prefers a later successful completion over a transient interrupted projection", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const transientInterrupted = makeEnvironmentState({
+      bootstrapComplete: true,
+      threadId: ThreadId.make("thread-racy-completion"),
+      turnId: TurnId.make("turn-racy-completion"),
+      turnState: "interrupted",
+    });
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: { [environmentId]: transientInterrupted },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+        now: 1_000,
+      }),
+    ).toEqual([]);
+
+    const authoritativeCompletion = makeEnvironmentState({
+      bootstrapComplete: true,
+      threadId: ThreadId.make("thread-racy-completion"),
+      turnId: TurnId.make("turn-racy-completion"),
+      turnState: "completed",
+    });
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: { [environmentId]: authoritativeCompletion },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+        now: 1_001,
+      }),
+    ).toMatchObject([
+      {
+        threadId: "thread-racy-completion",
+        turnId: "turn-racy-completion",
+        title: "Chat completed",
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("notifies an interruption that remains authoritative past the grace period", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const interrupted = makeEnvironmentState({
+      bootstrapComplete: true,
+      threadId: ThreadId.make("thread-interrupted"),
+      turnId: TurnId.make("turn-interrupted"),
+      turnState: "interrupted",
+    });
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: { [environmentId]: interrupted },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+        now: 1_000,
+      }),
+    ).toEqual([]);
+
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: { [environmentId]: interrupted },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS,
+      }),
+    ).toMatchObject([
+      {
+        threadId: "thread-interrupted",
+        turnId: "turn-interrupted",
+        title: "Chat interrupted",
+        status: "interrupted",
+      },
+    ]);
+  });
+
+  it("cancels a pending interruption while a continuation is queued", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const interrupted = {
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({
+          bootstrapComplete: true,
+          threadId: ThreadId.make("thread-queued-interruption"),
+          turnId: TurnId.make("turn-queued-interruption"),
+          turnState: "interrupted",
+        }),
+      },
+      notificationMode: "all" as const,
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    };
+    collectThreadCompletionNotifications({ ...interrupted, now: 1_000 });
+
+    expect(
+      collectThreadCompletionNotifications({
+        ...interrupted,
+        environmentStateById: {
+          [environmentId]: makeEnvironmentState({
+            bootstrapComplete: true,
+            threadId: ThreadId.make("thread-queued-interruption"),
+            turnId: TurnId.make("turn-queued-interruption"),
+            turnState: "interrupted",
+            hasPendingQueuedTurn: true,
+          }),
+        },
+        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS,
+      }),
+    ).toEqual([]);
+    expect(tracker.pendingInterruptedTurnKeys).toEqual(new Map());
+
+    expect(
+      collectThreadCompletionNotifications({
+        ...interrupted,
+        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS + 1,
+      }),
+    ).toEqual([]);
+    expect(tracker.pendingInterruptedTurnKeys.size).toBe(1);
   });
 });
 
