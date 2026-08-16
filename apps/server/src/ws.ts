@@ -174,6 +174,9 @@ import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorSer
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
+const isOrchestrationGetSnapshotError = Schema.is(OrchestrationGetSnapshotError);
+const isProjectSearchEntriesError = Schema.is(ProjectSearchEntriesError);
+const isProjectReadFileError = Schema.is(ProjectReadFileError);
 
 async function writeThreadMarkdownExportFile(input: {
   readonly directory: string;
@@ -1170,7 +1173,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 return Effect.succeed(snapshot.value).pipe(Effect.map(projectThreadDetailSnapshot));
               }),
               Effect.mapError((cause) =>
-                cause instanceof OrchestrationGetSnapshotError
+                isOrchestrationGetSnapshotError(cause)
                   ? cause
                   : new OrchestrationGetSnapshotError({
                       message: `Failed to load thread ${input.threadId}`,
@@ -1643,7 +1646,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               });
             }).pipe(
               Effect.mapError((cause) =>
-                cause instanceof ProjectSearchEntriesError
+                isProjectSearchEntriesError(cause)
                   ? cause
                   : new ProjectSearchEntriesError({
                       message: `Failed to search workspace entries: ${cause.detail}`,
@@ -1773,7 +1776,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               });
             }).pipe(
               Effect.mapError((cause) => {
-                if (cause instanceof ProjectReadFileError) return cause;
+                if (isProjectReadFileError(cause)) return cause;
                 const message = isWorkspacePathOutsideRootError(cause)
                   ? "Workspace file path must stay within the project root."
                   : "Failed to read workspace file";
