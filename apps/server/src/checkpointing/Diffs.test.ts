@@ -39,6 +39,7 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
         kind: "modified",
         additions: 2,
         deletions: 1,
+        section: diff.slice(0, diff.indexOf("diff --git a/src/b.ts")),
       },
       {
         path: "src/b.ts",
@@ -46,6 +47,7 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
         kind: "modified",
         additions: 0,
         deletions: 2,
+        section: diff.slice(diff.indexOf("diff --git a/src/b.ts")),
       },
     ]);
   });
@@ -66,15 +68,55 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
         kind: "renamed",
         additions: 0,
         deletions: 0,
+        section: diff,
+      },
+    ]);
+  });
+
+  it("preserves added and deleted metadata", () => {
+    const deletedSection = [
+      "diff --git a/deleted.txt b/deleted.txt",
+      "deleted file mode 100644",
+      "--- a/deleted.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-deleted",
+    ].join("\n");
+    const addedSection = [
+      "diff --git a/new.txt b/new.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/new.txt",
+      "@@ -0,0 +1 @@",
+      "+added",
+    ].join("\n");
+    const diff = `${addedSection}\n${deletedSection}`;
+
+    expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
+      {
+        path: "deleted.txt",
+        previousPath: null,
+        kind: "deleted",
+        additions: 0,
+        deletions: 1,
+        section: deletedSection,
+      },
+      {
+        path: "new.txt",
+        previousPath: null,
+        kind: "added",
+        additions: 1,
+        deletions: 0,
+        section: `${addedSection}\n`,
       },
     ]);
   });
 
   it("classifies copy-only diffs", () => {
     const diff = [
-      "diff --git a/src/source.ts b/src/copied file.ts",
+      "diff --git a/src/source file.ts b/src/copied file.ts",
       "similarity index 100%",
-      "copy from src/source.ts",
+      "copy from src/source file.ts",
       "copy to src/copied file.ts",
       "",
     ].join("\n");
@@ -82,10 +124,11 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
       {
         path: "src/copied file.ts",
-        previousPath: "src/source.ts",
+        previousPath: "src/source file.ts",
         kind: "copied",
         additions: 0,
         deletions: 0,
+        section: diff,
       },
     ]);
   });
@@ -110,6 +153,7 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
         kind: "modified",
         additions: 2,
         deletions: 1,
+        section: diff,
       },
     ]);
   });
