@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 
 import { Effect, Layer, FileSystem, Path } from "effect";
 
-import { CheckpointInvariantError } from "../Errors.ts";
+import { CheckpointInvariantError, CheckpointRefUnavailableError } from "../Errors.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
@@ -593,12 +593,26 @@ const makeCheckpointStore = Effect.gen(function* () {
   const resolveDiffCommits = Effect.fn("resolveDiffCommits")(function* (input: {
     readonly cwd: string;
     readonly fromCheckpointRef: CheckpointRef;
+    readonly fallbackFromCheckpointRef?: CheckpointRef;
     readonly toCheckpointRef: CheckpointRef;
     readonly fallbackFromToHead?: boolean;
-    readonly operation: string;
   }) {
-    let fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
-    const toCommitOid = yield* resolveCheckpointCommit(input.cwd, input.toCheckpointRef);
+    const [primaryFromCommitOid, toCommitOid] = yield* Effect.all(
+      [
+        resolveCheckpointCommit(input.cwd, input.fromCheckpointRef),
+        resolveCheckpointCommit(input.cwd, input.toCheckpointRef),
+      ],
+      { concurrency: "unbounded" },
+    );
+    let fromCommitOid = primaryFromCommitOid;
+
+    if (
+      !fromCommitOid &&
+      input.fallbackFromCheckpointRef !== undefined &&
+      input.fallbackFromCheckpointRef !== input.fromCheckpointRef
+    ) {
+      fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fallbackFromCheckpointRef);
+    }
     const fromCheckpointExists = fromCommitOid !== null;
 
     if (!fromCommitOid && input.fallbackFromToHead === true) {
@@ -608,25 +622,42 @@ const makeCheckpointStore = Effect.gen(function* () {
       }
     }
 
-    if (!fromCommitOid || !toCommitOid) {
-      return yield* new GitCommandError({
-        operation: input.operation,
-        command: "git diff",
-        cwd: input.cwd,
-        detail: "Checkpoint ref is unavailable for diff operation.",
+    if (!fromCommitOid) {
+      return yield* new CheckpointRefUnavailableError({
+        endpoint: "from",
+      });
+    }
+    if (!toCommitOid) {
+      return yield* new CheckpointRefUnavailableError({
+        endpoint: "to",
       });
     }
 
-    if (fromCheckpointExists) {
-      const projectedFromOid = yield* projectFromCheckpointOntoBase({
-        cwd: input.cwd,
-        fromCommitOid,
-        toCommitOid,
-      }).pipe(Effect.catch(() => Effect.succeed(fromCommitOid)));
-      return { fromCommitOid: projectedFromOid, toCommitOid };
+    return { fromCommitOid, toCommitOid, fromCheckpointExists };
+  });
+
+  const projectDiffCommits = Effect.fn("projectDiffCommits")(function* (input: {
+    readonly cwd: string;
+    readonly fromCommitOid: string;
+    readonly toCommitOid: string;
+    readonly fromCheckpointExists: boolean;
+  }) {
+    if (!input.fromCheckpointExists) {
+      return {
+        fromCommitOid: input.fromCommitOid,
+        toCommitOid: input.toCommitOid,
+      };
     }
 
-    return { fromCommitOid, toCommitOid };
+    const projectedFromOid = yield* projectFromCheckpointOntoBase({
+      cwd: input.cwd,
+      fromCommitOid: input.fromCommitOid,
+      toCommitOid: input.toCommitOid,
+    }).pipe(Effect.catch(() => Effect.succeed(input.fromCommitOid)));
+    return {
+      fromCommitOid: projectedFromOid,
+      toCommitOid: input.toCommitOid,
+    };
   });
 
   const restoreCheckpoint: CheckpointStoreShape["restoreCheckpoint"] = Effect.fn(
@@ -688,11 +719,15 @@ const makeCheckpointStore = Effect.gen(function* () {
     function* (input) {
       const operation = "CheckpointStore.diffCheckpoints";
 
-      const { fromCommitOid, toCommitOid } = yield* resolveDiffCommits({ ...input, operation });
+      const resolvedCommits = yield* resolveDiffCommits(input);
       const paths = normalizeDiffPaths(input);
       if (input.paths !== undefined && (paths?.length ?? 0) === 0) {
         return "";
       }
+      const { fromCommitOid, toCommitOid } = yield* projectDiffCommits({
+        cwd: input.cwd,
+        ...resolvedCommits,
+      });
       const result = yield* git.execute({
         operation,
         cwd: input.cwd,
@@ -721,11 +756,15 @@ const makeCheckpointStore = Effect.gen(function* () {
   )(function* (input) {
     const operation = "CheckpointStore.diffCheckpointFiles";
 
-    const { fromCommitOid, toCommitOid } = yield* resolveDiffCommits({ ...input, operation });
+    const resolvedCommits = yield* resolveDiffCommits(input);
     const paths = normalizeDiffPaths(input);
     if (input.paths !== undefined && (paths?.length ?? 0) === 0) {
       return [];
     }
+    const { fromCommitOid, toCommitOid } = yield* projectDiffCommits({
+      cwd: input.cwd,
+      ...resolvedCommits,
+    });
 
     const pathArgs = paths !== undefined && paths.length > 0 ? ["--", ...paths] : [];
     const [numstatResult, nameStatusResult] = yield* Effect.all(
