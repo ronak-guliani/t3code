@@ -29,6 +29,7 @@ import {
   ChevronRightIcon,
   ChevronUpIcon,
   CircleAlertIcon,
+  CornerDownRightIcon,
   DiffIcon,
   EyeIcon,
   GitBranchIcon,
@@ -502,17 +503,17 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             (image) => !image.name.startsWith("preview-annotation-"),
           );
           return (
-            <div className="flex justify-end">
+            <div className="flex flex-col items-end">
+              {row.message.origin?.kind === "cross-thread" ? (
+                <CrossThreadProvenance origin={row.message.origin} />
+              ) : null}
               <div
                 className={cn(
                   "group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3",
                   row.message.origin?.kind === "cross-thread" &&
-                    "border-violet-400/55 bg-violet-500/5",
+                    "border-violet-400/30 bg-gradient-to-br from-violet-500/[0.07] via-violet-500/[0.02] to-transparent",
                 )}
               >
-                {row.message.origin?.kind === "cross-thread" ? (
-                  <CrossThreadProvenance origin={row.message.origin} />
-                ) : null}
                 {regularImages.length > 0 && (
                   <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
                     {regularImages.map(
@@ -806,10 +807,11 @@ function CrossThreadProvenance({
   if (!canNavigate) {
     return (
       <span
-        className="mb-2 inline-flex max-w-full items-center rounded-md border border-violet-400/30 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-700 dark:text-violet-300"
+        className="mb-1 mr-2 inline-flex max-w-[80%] items-center gap-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/40"
         title={`Source chat unavailable: ${sourceTitle}`}
       >
-        From {sourceTitle}
+        <CornerDownRightIcon className="size-2.5 shrink-0 text-violet-400/40" aria-hidden="true" />
+        <span className="truncate">{sourceTitle}</span>
       </span>
     );
   }
@@ -817,7 +819,7 @@ function CrossThreadProvenance({
   return (
     <button
       type="button"
-      className="mb-2 inline-flex max-w-full cursor-pointer items-center rounded-md border border-violet-400/40 bg-violet-500/10 px-2 py-1 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-500/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-500 dark:text-violet-300"
+      className="group/origin mb-1 mr-2 inline-flex max-w-[80%] cursor-pointer items-center gap-1 rounded text-[length:var(--app-status-line-font-size)] text-muted-foreground/45 transition-colors hover:text-muted-foreground/85 focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-violet-500/60"
       title={`Open source chat: ${sourceTitle}`}
       aria-label={`Open source chat ${sourceTitle} at the initiating message`}
       onClick={() => {
@@ -831,7 +833,13 @@ function CrossThreadProvenance({
         });
       }}
     >
-      <span className="truncate">From {sourceTitle}</span>
+      <CornerDownRightIcon
+        className="size-2.5 shrink-0 text-violet-400/50 transition-colors group-hover/origin:text-violet-400/90"
+        aria-hidden="true"
+      />
+      <span className="truncate decoration-current/30 underline-offset-2 group-hover/origin:underline">
+        {sourceTitle}
+      </span>
     </button>
   );
 }
