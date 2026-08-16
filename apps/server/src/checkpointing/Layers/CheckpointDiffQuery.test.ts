@@ -52,6 +52,7 @@ describe("CheckpointDiffQueryLive", () => {
       readonly fromCheckpointRef: CheckpointRef;
       readonly toCheckpointRef: CheckpointRef;
       readonly cwd: string;
+      readonly ignoreWhitespace?: boolean;
       readonly paths?: ReadonlyArray<string>;
     }> = [];
 
@@ -62,7 +63,15 @@ describe("CheckpointDiffQueryLive", () => {
       worktreePath: null,
       checkpointTurnCount: 1,
       checkpointRef: toCheckpointRef,
-      turnFiles: [{ path: "src/app.ts", kind: "modified", additions: 1, deletions: 0 }],
+      turnFiles: [
+        {
+          path: "src/new app.ts",
+          previousPath: "src/old app.ts",
+          kind: "renamed",
+          additions: 1,
+          deletions: 0,
+        },
+      ],
     });
 
     const checkpointStore: CheckpointStoreShape = {
@@ -75,12 +84,13 @@ describe("CheckpointDiffQueryLive", () => {
         }),
       checkpointRefMatchesWorkspace: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, paths }) =>
+      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, ignoreWhitespace, paths }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
             fromCheckpointRef,
             toCheckpointRef,
             cwd,
+            ...(ignoreWhitespace !== undefined ? { ignoreWhitespace } : {}),
             ...(paths !== undefined ? { paths } : {}),
           });
           return "diff patch";
@@ -120,6 +130,7 @@ describe("CheckpointDiffQueryLive", () => {
           fromTurnCount: 0,
           toTurnCount: 1,
           scope: "snapshot",
+          ignoreWhitespace: true,
         });
       }).pipe(Effect.provide(layer)),
     );
@@ -131,7 +142,8 @@ describe("CheckpointDiffQueryLive", () => {
         cwd: "/tmp/workspace",
         fromCheckpointRef: expectedFromRef,
         toCheckpointRef,
-        paths: ["src/app.ts"],
+        ignoreWhitespace: true,
+        paths: ["src/new app.ts", "src/old app.ts"],
       },
     ]);
     expect(result).toEqual({

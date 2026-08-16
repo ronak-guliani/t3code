@@ -171,7 +171,11 @@ const make = Effect.gen(function* () {
                     checkpoint.checkpointTurnCount <= input.toTurnCount,
                 )
                 .flatMap((checkpoint) => checkpoint.turnFiles)
-          ).map((file) => file.path),
+          ).flatMap((file) =>
+            file.previousPath === undefined || file.previousPath === null
+              ? [file.path]
+              : [file.path, file.previousPath],
+          ),
         ),
       );
       if (diffPaths.length === 0) {
@@ -195,6 +199,9 @@ const make = Effect.gen(function* () {
         fromCheckpointRef,
         toCheckpointRef,
         fallbackFromToHead: false,
+        ...(input.ignoreWhitespace === undefined
+          ? {}
+          : { ignoreWhitespace: input.ignoreWhitespace }),
         paths: diffPaths,
       });
 
@@ -223,6 +230,7 @@ const make = Effect.gen(function* () {
       fromTurnCount: 0,
       toTurnCount: input.toTurnCount,
       scope: "snapshot",
+      ...(input.ignoreWhitespace === undefined ? {} : { ignoreWhitespace: input.ignoreWhitespace }),
     }).pipe(Effect.map((result): OrchestrationGetFullThreadDiffResult => result));
 
   return {

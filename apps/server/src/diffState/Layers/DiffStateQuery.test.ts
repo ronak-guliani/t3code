@@ -68,7 +68,7 @@ describe("DiffStateQueryLive", () => {
       {
         path: "src/app.ts",
         previousPath: null,
-        status: "unknown",
+        status: "modified",
         additions: 2,
         deletions: 1,
         hunks: [],
@@ -114,6 +114,46 @@ describe("DiffStateQueryLive", () => {
     expect(result.snapshot.files[0]?.isBinary).toBe(true);
     expect(result.snapshot.files[0]?.size).toBe("unrenderable");
     expect(result.snapshot.metadata.unrenderableFiles).toBe(1);
+  });
+
+  it("preserves paths with spaces and rename metadata", async () => {
+    const layer = withCheckpointDiffQuery({
+      getTurnDiff: () =>
+        Effect.succeed({
+          threadId,
+          fromTurnCount: 0,
+          toTurnCount: 1,
+          diff: [
+            "diff --git a/src/old name.ts b/src/new name.ts",
+            "similarity index 100%",
+            "rename from src/old name.ts",
+            "rename to src/new name.ts",
+          ].join("\n"),
+        }),
+      getFullThreadDiff: () => Effect.die("getFullThreadDiff should not be called"),
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const query = yield* DiffStateQuery;
+        return yield* query.getTurnDiffState({
+          threadId,
+          fromTurnCount: 0,
+          toTurnCount: 1,
+          scope: "turn",
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result._tag).toBe("ready");
+    if (result._tag !== "ready") {
+      throw new Error("expected ready diff state");
+    }
+    expect(result.snapshot.files[0]).toMatchObject({
+      path: "src/new name.ts",
+      previousPath: "src/old name.ts",
+      status: "renamed",
+    });
   });
 
   it("classifies very long lines as large and detects hidden bidi chars", async () => {

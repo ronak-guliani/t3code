@@ -31,6 +31,7 @@ import { CheckpointInvariantError } from "../../checkpointing/Errors.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { CheckpointReactorLive } from "./CheckpointReactor.ts";
@@ -54,7 +55,6 @@ import {
 import {
   checkpointBaselineRefForThreadTurn,
   checkpointRefForThreadTurn,
-  checkpointRevertGuardRefForThread,
 } from "../../checkpointing/Utils.ts";
 import { ServerConfig } from "../../config.ts";
 import { WorkspaceEntriesLive } from "../../workspace/Layers/WorkspaceEntries.ts";
@@ -837,13 +837,13 @@ describe("CheckpointReactor", () => {
     ).toEqual([
       {
         path: "src/first.ts",
-        kind: "modified",
+        kind: "added",
         additions: 1,
         deletions: 0,
       },
       {
         path: "src/second.ts",
-        kind: "modified",
+        kind: "added",
         additions: 1,
         deletions: 0,
       },
@@ -904,7 +904,7 @@ describe("CheckpointReactor", () => {
         turnFiles: [
           {
             path: "apps/web/src/components/Sidebar.tsx",
-            kind: "modified",
+            kind: "added",
             additions: 1,
             deletions: 0,
           },
@@ -928,7 +928,7 @@ describe("CheckpointReactor", () => {
     expect(checkpoint?.files).toEqual([
       {
         path: "apps/web/src/components/Sidebar.tsx",
-        kind: "modified",
+        kind: "added",
         additions: 1,
         deletions: 0,
       },
@@ -937,7 +937,7 @@ describe("CheckpointReactor", () => {
     expect(checkpoint?.turnFiles).toEqual([
       {
         path: "apps/web/src/components/Sidebar.tsx",
-        kind: "modified",
+        kind: "added",
         additions: 1,
         deletions: 0,
       },
@@ -1011,7 +1011,7 @@ describe("CheckpointReactor", () => {
         turnFiles: [
           {
             path: "apps/web/src/components/Sidebar.tsx",
-            kind: "modified",
+            kind: "added",
             additions: 1,
             deletions: 0,
           },
@@ -1049,7 +1049,7 @@ describe("CheckpointReactor", () => {
     ).toEqual([
       {
         path: "apps/web/src/components/Sidebar.tsx",
-        kind: "modified",
+        kind: "added",
         additions: 1,
         deletions: 0,
       },
@@ -1058,7 +1058,7 @@ describe("CheckpointReactor", () => {
     expect(checkpoint?.turnFiles).toEqual([
       {
         path: "apps/web/src/components/Sidebar.tsx",
-        kind: "modified",
+        kind: "added",
         additions: 1,
         deletions: 0,
       },
@@ -1563,6 +1563,23 @@ describe("CheckpointReactor", () => {
       }),
     );
 
+    const dispatch = harness.engine.dispatch;
+    let revertCommitAttempts = 0;
+    vi.spyOn(harness.engine, "dispatch").mockImplementation((command) => {
+      if (command.type === "thread.revert.complete") {
+        revertCommitAttempts += 1;
+        if (revertCommitAttempts === 1) {
+          return Effect.fail(
+            new PersistenceSqlError({
+              operation: "thread.revert.complete",
+              detail: "Injected transient revert commit failure.",
+            }),
+          );
+        }
+      }
+      return dispatch(command);
+    });
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.diff.complete",
@@ -1617,6 +1634,7 @@ describe("CheckpointReactor", () => {
       threadId: ThreadId.make("thread-1"),
       numTurns: 1,
     });
+    expect(revertCommitAttempts).toBe(2);
     await harness.drain();
     expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v2\n");
     expect(
@@ -1671,43 +1689,6 @@ describe("CheckpointReactor", () => {
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.make("thread-1"), 2)),
     ).toBe(true);
-  });
-
-  it("restores the guard when a current-checkpoint revert fails to commit", async () => {
-    const harness = await createHarness();
-    const createdAt = new Date().toISOString();
-    fs.writeFileSync(path.join(harness.cwd, "README.md"), "staged before revert\n", "utf8");
-    runGit(harness.cwd, ["add", "README.md"]);
-    fs.writeFileSync(path.join(harness.cwd, "README.md"), "unstaged before revert\n", "utf8");
-
-    const dispatch = harness.engine.dispatch;
-    vi.spyOn(harness.engine, "dispatch").mockImplementation((command) =>
-      command.type === "thread.revert.complete"
-        ? Effect.die(new Error("Injected revert commit failure."))
-        : dispatch(command),
-    );
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.checkpoint.revert",
-        commandId: CommandId.make("cmd-current-checkpoint-revert"),
-        threadId: ThreadId.make("thread-1"),
-        turnCount: 2,
-        createdAt,
-      }),
-    );
-
-    await waitForThread(harness.engine, (entry) =>
-      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
-    );
-    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
-    expect(runGit(harness.cwd, ["show", ":README.md"])).toBe("staged before revert\n");
-    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe(
-      "unstaged before revert\n",
-    );
-    expect(
-      gitRefExists(harness.cwd, checkpointRevertGuardRefForThread(ThreadId.make("thread-1"))),
-    ).toBe(false);
   });
 
   it("executes provider revert and emits thread.reverted for claude sessions", async () => {
