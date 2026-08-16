@@ -400,16 +400,17 @@ const makeCheckpointStore = Effect.gen(function* () {
       if (!insideTurnWindow) {
         continue;
       }
-      if (expectFromBaseAfterPull) {
+      const subject = entry.slice(separatorIndex + 1);
+      const isPull = /^pull\b/.test(subject);
+      if (expectFromBaseAfterPull && !isPull) {
         fastForwardCandidate = null;
         expectFromBaseAfterPull = false;
       }
-      const subject = entry.slice(separatorIndex + 1);
       if (BASE_MOVING_REFLOG_OPERATIONS.test(subject)) {
         baseMoved = true;
       }
-      if (/^pull\b/.test(subject)) {
-        fastForwardCandidate = commit;
+      if (isPull) {
+        fastForwardCandidate ??= commit;
         expectFromBaseAfterPull = true;
       }
     }
@@ -545,7 +546,7 @@ const makeCheckpointStore = Effect.gen(function* () {
         fromBaseCommit,
         toBaseCommit,
       });
-      const projectedBaseCommit = newBaseCommit ?? baseMovement.fastForwardBaseCommit;
+      const projectedBaseCommit = baseMovement.fastForwardBaseCommit ?? newBaseCommit;
       if (projectedBaseCommit === null) {
         return input.fromCommitOid;
       }

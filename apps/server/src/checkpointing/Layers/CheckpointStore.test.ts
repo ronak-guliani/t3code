@@ -250,10 +250,15 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         const oldHead = yield* git(tmp, ["rev-parse", "HEAD"]);
 
         yield* git(tmp, ["checkout", "-b", "upstream-branch"]);
-        yield* writeTextFile(path.join(tmp, "upstream.md"), "upstream\n");
-        yield* git(tmp, ["add", "upstream.md"]);
-        yield* git(tmp, ["commit", "-m", "upstream change"]);
-        const upstreamHead = yield* git(tmp, ["rev-parse", "HEAD"]);
+        yield* writeTextFile(path.join(tmp, "upstream-b.md"), "upstream b\n");
+        yield* git(tmp, ["add", "upstream-b.md"]);
+        yield* git(tmp, ["commit", "-m", "upstream change b"]);
+        const upstreamHeadB = yield* git(tmp, ["rev-parse", "HEAD"]);
+        yield* git(tmp, ["branch", "older-upstream-tip", upstreamHeadB]);
+        yield* writeTextFile(path.join(tmp, "upstream-c.md"), "upstream c\n");
+        yield* git(tmp, ["add", "upstream-c.md"]);
+        yield* git(tmp, ["commit", "-m", "upstream change c"]);
+        const upstreamHeadC = yield* git(tmp, ["rev-parse", "HEAD"]);
 
         yield* git(tmp, ["checkout", "thread-branch"]);
         yield* git(tmp, ["branch", "-D", "upstream-branch"]);
@@ -262,10 +267,19 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
           "-m",
           "pull: Fast-forward",
           "refs/heads/thread-branch",
-          upstreamHead,
+          upstreamHeadB,
           oldHead,
         ]);
-        yield* git(tmp, ["read-tree", "--reset", "-u", upstreamHead]);
+        yield* git(tmp, ["read-tree", "--reset", "-u", upstreamHeadB]);
+        yield* git(tmp, [
+          "update-ref",
+          "-m",
+          "pull: Fast-forward",
+          "refs/heads/thread-branch",
+          upstreamHeadC,
+          upstreamHeadB,
+        ]);
+        yield* git(tmp, ["read-tree", "--reset", "-u", upstreamHeadC]);
         yield* writeTextFile(path.join(tmp, "README.md"), "# turn change\n");
         yield* git(tmp, ["add", "README.md"]);
         yield* git(tmp, ["commit", "-m", "turn change"]);
@@ -278,8 +292,10 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
         });
 
         expect(diff).toContain("+# turn change");
-        expect(diff).not.toContain("upstream.md");
-        expect(diff).not.toContain("+upstream");
+        expect(diff).not.toContain("upstream-b.md");
+        expect(diff).not.toContain("upstream-c.md");
+        expect(diff).not.toContain("+upstream b");
+        expect(diff).not.toContain("+upstream c");
       }),
     );
 

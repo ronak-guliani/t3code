@@ -3145,6 +3145,10 @@ describe("ProviderRuntimeIngestion", () => {
           "-old badge",
           "-version",
           "+sidebar",
+          "diff --git a/src/source.ts b/src/copied file.ts",
+          "similarity index 100%",
+          "copy from src/source.ts",
+          "copy to src/copied file.ts",
         ].join("\n"),
       },
     });
@@ -3206,13 +3210,23 @@ describe("ProviderRuntimeIngestion", () => {
     expect(checkpoint?.status).toBe("speculative");
     expect(checkpoint?.assistantMessageId).toBe("assistant:item-p1-assistant");
     expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
-    expect(checkpoint?.agentTouchedPaths).toEqual(["apps/web/src/components/Sidebar.tsx"]);
+    expect(checkpoint?.agentTouchedPaths).toEqual([
+      "apps/web/src/components/Sidebar.tsx",
+      "src/copied file.ts",
+    ]);
     expect(checkpoint?.turnFiles).toEqual([
       {
         path: "apps/web/src/components/Sidebar.tsx",
         kind: "modified",
         additions: 1,
         deletions: 2,
+      },
+      {
+        path: "src/copied file.ts",
+        previousPath: "src/source.ts",
+        kind: "copied",
+        additions: 0,
+        deletions: 0,
       },
     ]);
   });

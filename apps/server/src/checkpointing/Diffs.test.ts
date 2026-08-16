@@ -70,6 +70,26 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ]);
   });
 
+  it("classifies copy-only diffs", () => {
+    const diff = [
+      "diff --git a/src/source.ts b/src/copied file.ts",
+      "similarity index 100%",
+      "copy from src/source.ts",
+      "copy to src/copied file.ts",
+      "",
+    ].join("\n");
+
+    expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
+      {
+        path: "src/copied file.ts",
+        previousPath: "src/source.ts",
+        kind: "copied",
+        additions: 0,
+        deletions: 0,
+      },
+    ]);
+  });
+
   it("normalizes CRLF input before parsing", () => {
     const diff = [
       "diff --git a/a.txt b/a.txt",

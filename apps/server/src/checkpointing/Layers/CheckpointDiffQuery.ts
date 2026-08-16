@@ -171,7 +171,11 @@ const make = Effect.gen(function* () {
                     checkpoint.checkpointTurnCount <= input.toTurnCount,
                 )
                 .flatMap((checkpoint) => checkpoint.turnFiles)
-          ).map((file) => file.path),
+          ).flatMap((file) =>
+            file.previousPath === undefined || file.previousPath === null
+              ? [file.path]
+              : [file.path, file.previousPath],
+          ),
         ),
       );
       if (diffPaths.length === 0) {

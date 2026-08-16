@@ -138,12 +138,10 @@ function toDiffFiles(patch: string): ReadonlyArray<DiffFile> {
         additions: changes.additions,
         deletions: changes.deletions,
       });
-      const kind =
-        section.includes("\ncopy from ") && section.includes("\ncopy to ") ? "copied" : file.kind;
       return {
         path: file.path,
         previousPath: file.previousPath,
-        status: kind === "added" ? "new" : kind === "copied" ? "copied" : kind,
+        status: file.kind === "added" ? "new" : file.kind === "copied" ? "copied" : file.kind,
         additions: changes.additions,
         deletions: changes.deletions,
         hunks: [],

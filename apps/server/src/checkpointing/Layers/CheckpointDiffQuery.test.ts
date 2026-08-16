@@ -63,7 +63,15 @@ describe("CheckpointDiffQueryLive", () => {
       worktreePath: null,
       checkpointTurnCount: 1,
       checkpointRef: toCheckpointRef,
-      turnFiles: [{ path: "src/app.ts", kind: "modified", additions: 1, deletions: 0 }],
+      turnFiles: [
+        {
+          path: "src/new app.ts",
+          previousPath: "src/old app.ts",
+          kind: "renamed",
+          additions: 1,
+          deletions: 0,
+        },
+      ],
     });
 
     const checkpointStore: CheckpointStoreShape = {
@@ -135,7 +143,7 @@ describe("CheckpointDiffQueryLive", () => {
         fromCheckpointRef: expectedFromRef,
         toCheckpointRef,
         ignoreWhitespace: true,
-        paths: ["src/app.ts"],
+        paths: ["src/new app.ts", "src/old app.ts"],
       },
     ]);
     expect(result).toEqual({
