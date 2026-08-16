@@ -36,6 +36,7 @@ export interface RestoreCheckpointInput {
 export interface DiffCheckpointsInput {
   readonly cwd: string;
   readonly fromCheckpointRef: CheckpointRef;
+  readonly fallbackFromCheckpointRef?: CheckpointRef;
   readonly toCheckpointRef: CheckpointRef;
   readonly fallbackFromToHead?: boolean;
   readonly ignoreWhitespace?: boolean;
