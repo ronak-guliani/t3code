@@ -7,7 +7,7 @@ import {
   useLocation,
   useNavigate,
 } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
@@ -197,6 +197,8 @@ function ThreadCompletionNotificationCoordinator() {
   const notificationMode = useSettings((settings) => settings.threadCompletionNotifications);
   const notifiedTurnKeysRef = useRef(new Set<string>());
   const bootstrappedEnvironmentIdsRef = useRef(new Set<string>());
+  const pendingInterruptedTurnKeysRef = useRef(new Map<string, number>());
+  const [notificationTick, setNotificationTick] = useState(0);
 
   useEffect(() => {
     const api = readLocalApi();
@@ -229,6 +231,7 @@ function ThreadCompletionNotificationCoordinator() {
       tracker: {
         notifiedTurnKeys: notifiedTurnKeysRef.current,
         bootstrappedEnvironmentIds: bootstrappedEnvironmentIdsRef.current,
+        pendingInterruptedTurnKeys: pendingInterruptedTurnKeysRef.current,
       },
     });
     for (const request of requests) {
@@ -236,7 +239,16 @@ function ThreadCompletionNotificationCoordinator() {
         console.error("[THREAD_COMPLETION_NOTIFICATION] show failed", error);
       });
     }
-  }, [environmentStateById, notificationMode, pathname]);
+
+    if (pendingInterruptedTurnKeysRef.current.size > 0) {
+      const nextNotificationAt = Math.min(...pendingInterruptedTurnKeysRef.current.values());
+      const timeoutId = window.setTimeout(
+        () => setNotificationTick((tick) => tick + 1),
+        Math.max(0, nextNotificationAt - Date.now()),
+      );
+      return () => window.clearTimeout(timeoutId);
+    }
+  }, [environmentStateById, notificationMode, notificationTick, pathname]);
 
   return null;
 }

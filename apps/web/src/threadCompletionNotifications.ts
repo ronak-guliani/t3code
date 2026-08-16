@@ -19,7 +19,10 @@ export interface StaleActiveTurnToastRequest {
 export interface ThreadCompletionNotificationTracker {
   readonly notifiedTurnKeys: Set<string>;
   readonly bootstrappedEnvironmentIds: Set<string>;
+  readonly pendingInterruptedTurnKeys: Map<string, number>;
 }
+
+export const INTERRUPTED_NOTIFICATION_GRACE_MS = 1_000;
 
 export interface ThreadCompletionNotificationInput {
   readonly environmentStateById: Readonly<Record<string, EnvironmentState>>;
@@ -27,12 +30,15 @@ export interface ThreadCompletionNotificationInput {
   readonly activeThreadKey: string | null;
   readonly isDocumentFocused: boolean;
   readonly tracker: ThreadCompletionNotificationTracker;
+  readonly now?: number;
 }
 
 export function collectThreadCompletionNotifications(
   input: ThreadCompletionNotificationInput,
 ): DesktopNotificationRequest[] {
   const requests: DesktopNotificationRequest[] = [];
+  const now = input.now ?? Date.now();
+  const candidateTurnKeys = new Set<string>();
 
   for (const [environmentId, environmentState] of Object.entries(input.environmentStateById)) {
     const candidates = Object.values(environmentState.sidebarThreadSummaryById).flatMap(
@@ -63,6 +69,7 @@ export function collectThreadCompletionNotifications(
       ? !input.tracker.bootstrappedEnvironmentIds.has(environmentId)
       : true;
     for (const candidate of candidates) {
+      candidateTurnKeys.add(candidate.turnKey);
       if (input.tracker.notifiedTurnKeys.has(candidate.turnKey)) {
         continue;
       }
@@ -73,7 +80,6 @@ export function collectThreadCompletionNotifications(
         continue;
       }
 
-      input.tracker.notifiedTurnKeys.add(candidate.turnKey);
       if (
         isFirstCompletedBootstrap ||
         input.notificationMode === "off" ||
@@ -81,9 +87,27 @@ export function collectThreadCompletionNotifications(
           input.isDocumentFocused &&
           input.activeThreadKey === `${candidate.summary.environmentId}:${candidate.summary.id}`)
       ) {
+        input.tracker.pendingInterruptedTurnKeys.delete(candidate.turnKey);
+        input.tracker.notifiedTurnKeys.add(candidate.turnKey);
         continue;
       }
 
+      if (candidate.status === "interrupted") {
+        const notifyAfter = input.tracker.pendingInterruptedTurnKeys.get(candidate.turnKey);
+        if (notifyAfter === undefined) {
+          input.tracker.pendingInterruptedTurnKeys.set(
+            candidate.turnKey,
+            now + INTERRUPTED_NOTIFICATION_GRACE_MS,
+          );
+          continue;
+        }
+        if (now < notifyAfter) {
+          continue;
+        }
+      }
+
+      input.tracker.pendingInterruptedTurnKeys.delete(candidate.turnKey);
+      input.tracker.notifiedTurnKeys.add(candidate.turnKey);
       requests.push({
         kind: "thread-turn-completed",
         environmentId: candidate.summary.environmentId,
@@ -98,6 +122,12 @@ export function collectThreadCompletionNotifications(
 
     if (environmentState.bootstrapComplete) {
       input.tracker.bootstrappedEnvironmentIds.add(environmentId as EnvironmentId);
+    }
+  }
+
+  for (const turnKey of input.tracker.pendingInterruptedTurnKeys.keys()) {
+    if (!candidateTurnKeys.has(turnKey)) {
+      input.tracker.pendingInterruptedTurnKeys.delete(turnKey);
     }
   }
 
