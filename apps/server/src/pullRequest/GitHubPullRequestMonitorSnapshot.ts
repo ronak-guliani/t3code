@@ -23,6 +23,11 @@ const ActorSchema = Schema.Struct({
   __typename: Schema.optional(Schema.String),
 });
 
+const PageInfoSchema = Schema.Struct({
+  hasNextPage: Schema.Boolean,
+  endCursor: Schema.NullOr(Schema.String),
+});
+
 const ReviewSchema = Schema.Struct({
   id: Schema.String,
   author: Schema.NullOr(ActorSchema),
@@ -68,17 +73,32 @@ const MonitorPageSchema = Schema.Struct({
             url: Schema.String,
             reviews: Schema.Struct({
               nodes: Schema.Array(ReviewSchema),
-              pageInfo: Schema.Struct({
-                hasNextPage: Schema.Boolean,
-                hasPreviousPage: Schema.Boolean,
-              }),
+              pageInfo: PageInfoSchema,
             }),
             reviewThreads: Schema.Struct({
               nodes: Schema.Array(ThreadSchema),
-              pageInfo: Schema.Struct({
-                hasNextPage: Schema.Boolean,
-                hasPreviousPage: Schema.Boolean,
-              }),
+              pageInfo: PageInfoSchema,
+            }),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+const MonitorConnectionsPageSchema = Schema.Struct({
+  data: Schema.Struct({
+    repository: Schema.NullOr(
+      Schema.Struct({
+        pullRequest: Schema.NullOr(
+          Schema.Struct({
+            reviews: Schema.Struct({
+              nodes: Schema.Array(ReviewSchema),
+              pageInfo: PageInfoSchema,
+            }),
+            reviewThreads: Schema.Struct({
+              nodes: Schema.Array(ThreadSchema),
+              pageInfo: PageInfoSchema,
             }),
           }),
         ),
@@ -125,6 +145,7 @@ const CheckRunsSchema = Schema.Struct({
 });
 
 const StatusesSchema = Schema.Struct({
+  total_count: Schema.optional(Schema.Finite),
   statuses: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -139,12 +160,21 @@ const StatusesSchema = Schema.Struct({
   sha: Schema.optional(Schema.String),
 });
 
+const MAX_PAGES = 10;
+const PAGE_SIZE = 100;
+
 const CompareSchema = Schema.Struct({
   behind_by: Schema.optional(Schema.Finite),
 });
 
 const MONITOR_GRAPHQL = `
-query($owner: String!, $name: String!, $number: Int!) {
+query(
+  $owner: String!,
+  $name: String!,
+  $number: Int!,
+  $reviewsCursor: String,
+  $threadsCursor: String
+) {
   viewer { login }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -157,7 +187,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       headRefName
       title
       url
-      reviews(last: 100) {
+      reviews(first: 100, after: $reviewsCursor) {
         nodes {
           id
           author { login __typename }
@@ -166,9 +196,9 @@ query($owner: String!, $name: String!, $number: Int!) {
           commit { oid }
           body
         }
-        pageInfo { hasNextPage hasPreviousPage }
+        pageInfo { hasNextPage endCursor }
       }
-      reviewThreads(last: 100) {
+      reviewThreads(first: 100, after: $threadsCursor) {
         nodes {
           id
           isResolved
@@ -184,7 +214,51 @@ query($owner: String!, $name: String!, $number: Int!) {
             }
           }
         }
-        pageInfo { hasNextPage hasPreviousPage }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+`;
+
+const MONITOR_CONNECTIONS_GRAPHQL = `
+query(
+  $owner: String!,
+  $name: String!,
+  $number: Int!,
+  $reviewsCursor: String,
+  $threadsCursor: String
+) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(first: 100, after: $reviewsCursor) {
+        nodes {
+          id
+          author { login __typename }
+          state
+          submittedAt
+          commit { oid }
+          body
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+      reviewThreads(first: 100, after: $threadsCursor) {
+        nodes {
+          id
+          isResolved
+          comments(last: 20) {
+            nodes {
+              author { login __typename }
+              body
+              path
+              line
+              createdAt
+              updatedAt
+              viewerDidAuthor
+            }
+          }
+        }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
@@ -435,6 +509,10 @@ const fetchIssueComments = Effect.fn("fetchGitHubPullRequestIssueComments")(func
   };
 });
 
+function nextPageUrl(url: string, page: number): string {
+  return `${url}${url.includes("?") ? "&" : "?"}per_page=${PAGE_SIZE}&page=${page}`;
+}
+
 export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   "fetchGitHubPullRequestMonitorSnapshot",
 )(function* (input: {
@@ -502,6 +580,134 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
   const headSha = pullRequest.headRefOid;
   const [ownerName, repoName] = [owner, name];
 
+  const reviews = [...pullRequest.reviews.nodes];
+  const reviewThreads = [...pullRequest.reviewThreads.nodes];
+  let reviewsPageInfo = pullRequest.reviews.pageInfo;
+  let reviewThreadsPageInfo = pullRequest.reviewThreads.pageInfo;
+  let connectionPage = 1;
+  while (
+    connectionPage < MAX_PAGES &&
+    (reviewsPageInfo.hasNextPage || reviewThreadsPageInfo.hasNextPage)
+  ) {
+    const raw = yield* github
+      .execute({
+        cwd: input.cwd,
+        args: [
+          "api",
+          "graphql",
+          "--hostname",
+          input.host,
+          "-f",
+          `query=${MONITOR_CONNECTIONS_GRAPHQL}`,
+          "-F",
+          `owner=${owner}`,
+          "-F",
+          `name=${name}`,
+          "-F",
+          `number=${input.number}`,
+          "-F",
+          `reviewsCursor=${
+            reviewsPageInfo.hasNextPage && reviewsPageInfo.endCursor
+              ? reviewsPageInfo.endCursor
+              : "{null}"
+          }`,
+          "-F",
+          `threadsCursor=${
+            reviewThreadsPageInfo.hasNextPage && reviewThreadsPageInfo.endCursor
+              ? reviewThreadsPageInfo.endCursor
+              : "{null}"
+          }`,
+        ],
+      })
+      .pipe(Effect.mapError(mapCliError));
+    const decoded = yield* decodeOrFail(
+      MonitorConnectionsPageSchema,
+      raw.stdout,
+      "monitorSnapshot.graphql.connections",
+    );
+    const connections = decoded.data.repository?.pullRequest;
+    if (!connections) {
+      return yield* new PullRequestProviderError({
+        provider: "github",
+        operation: "monitorSnapshot.graphql.connections",
+        reason: "failed",
+        detail: `Pull request #${input.number} disappeared while paginating.`,
+      });
+    }
+    if (reviewsPageInfo.hasNextPage) reviews.push(...connections.reviews.nodes);
+    if (reviewThreadsPageInfo.hasNextPage) {
+      reviewThreads.push(...connections.reviewThreads.nodes);
+    }
+    reviewsPageInfo = reviewsPageInfo.hasNextPage ? connections.reviews.pageInfo : reviewsPageInfo;
+    reviewThreadsPageInfo = reviewThreadsPageInfo.hasNextPage
+      ? connections.reviewThreads.pageInfo
+      : reviewThreadsPageInfo;
+    connectionPage += 1;
+  }
+
+  const fetchCheckRuns = Effect.gen(function* () {
+    const all = [];
+    let totalCount = 0;
+    let pageNumber = 1;
+    for (; pageNumber <= MAX_PAGES; pageNumber += 1) {
+      const raw = yield* github
+        .execute({
+          cwd: input.cwd,
+          args: [
+            "api",
+            "--hostname",
+            input.host,
+            "-H",
+            "Accept: application/vnd.github+json",
+            nextPageUrl(`repos/${ownerName}/${repoName}/commits/${headSha}/check-runs`, pageNumber),
+          ],
+        })
+        .pipe(Effect.mapError(mapCliError));
+      const decoded = yield* decodeOrFail(CheckRunsSchema, raw.stdout, "monitorSnapshot.checkRuns");
+      totalCount = decoded.total_count;
+      all.push(...decoded.check_runs);
+      if (all.length >= totalCount || decoded.check_runs.length < PAGE_SIZE) break;
+    }
+    return {
+      total_count: totalCount,
+      check_runs: all,
+      complete: all.length >= totalCount,
+    };
+  });
+
+  const fetchStatuses = Effect.gen(function* () {
+    const all = [];
+    let sha: string | undefined;
+    let complete = false;
+    for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber += 1) {
+      const raw = yield* github
+        .execute({
+          cwd: input.cwd,
+          args: [
+            "api",
+            "--hostname",
+            input.host,
+            "-H",
+            "Accept: application/vnd.github+json",
+            nextPageUrl(`repos/${ownerName}/${repoName}/commits/${headSha}/status`, pageNumber),
+          ],
+        })
+        .pipe(Effect.mapError(mapCliError));
+      const decoded = yield* decodeOrFail(StatusesSchema, raw.stdout, "monitorSnapshot.statuses");
+      const statuses = decoded.statuses ?? [];
+      all.push(...statuses);
+      sha = decoded.sha ?? sha;
+      if (
+        (decoded.total_count !== undefined && all.length >= decoded.total_count) ||
+        statuses.length < PAGE_SIZE
+      ) {
+        complete = true;
+        break;
+      }
+    }
+    return { statuses: all, sha, complete };
+  });
+
   // Independent host reads — run concurrently so poll latency is max, not sum.
   const [issueCommentsDecoded, checkRunsDecoded, statusesDecoded, compareDecoded] =
     yield* Effect.all(
@@ -515,47 +721,8 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
           number: input.number,
           mapCliError,
         }),
-        github
-          .execute({
-            cwd: input.cwd,
-            args: [
-              "api",
-              "--hostname",
-              input.host,
-              "-H",
-              "Accept: application/vnd.github+json",
-              `repos/${ownerName}/${repoName}/commits/${headSha}/check-runs?per_page=100`,
-            ],
-          })
-          .pipe(
-            Effect.mapError(mapCliError),
-            Effect.flatMap((raw) =>
-              decodeOrFail(CheckRunsSchema, raw.stdout, "monitorSnapshot.checkRuns"),
-            ),
-          ),
-        github
-          .execute({
-            cwd: input.cwd,
-            args: [
-              "api",
-              "--hostname",
-              input.host,
-              "-H",
-              "Accept: application/vnd.github+json",
-              `repos/${ownerName}/${repoName}/commits/${headSha}/status`,
-            ],
-          })
-          .pipe(
-            Effect.mapError(mapCliError),
-            Effect.orElseSucceed(() => ({ stdout: "{}" })),
-            Effect.flatMap((raw) =>
-              decodeOrFail(
-                StatusesSchema,
-                raw.stdout === "" ? "{}" : raw.stdout,
-                "monitorSnapshot.statuses",
-              ).pipe(Effect.orElseSucceed(() => ({ statuses: [] as const, sha: headSha }))),
-            ),
-          ),
+        fetchCheckRuns,
+        fetchStatuses,
         github
           .execute({
             cwd: input.cwd,
@@ -588,7 +755,7 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
       { concurrency: "unbounded" },
     );
 
-  const reviews: PullRequestMonitorReview[] = pullRequest.reviews.nodes.map((review) => ({
+  const normalizedReviews: PullRequestMonitorReview[] = reviews.map((review) => ({
     id: review.id,
     author: actorOf(review.author),
     state: normalizeReviewState(review.state),
@@ -597,23 +764,21 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     bodyExcerpt: excerpt(review.body),
   }));
 
-  const reviewThreads: PullRequestMonitorReviewThread[] = pullRequest.reviewThreads.nodes.map(
-    (thread) => {
-      const latest = thread.comments.nodes.at(-1);
-      const first = thread.comments.nodes[0];
-      return {
-        id: thread.id,
-        author: actorOf(latest?.author ?? first?.author ?? null),
-        path: latest?.path ?? first?.path ?? null,
-        line: latest?.line ?? first?.line ?? null,
-        createdAt: first?.createdAt ?? latest?.createdAt ?? new Date(0).toISOString(),
-        updatedAt: latest?.updatedAt ?? first?.updatedAt ?? new Date(0).toISOString(),
-        resolved: thread.isResolved,
-        latestCommentByViewer: latest?.viewerDidAuthor === true,
-        bodyExcerpt: excerpt(latest?.body ?? first?.body),
-      };
-    },
-  );
+  const normalizedReviewThreads: PullRequestMonitorReviewThread[] = reviewThreads.map((thread) => {
+    const latest = thread.comments.nodes.at(-1);
+    const first = thread.comments.nodes[0];
+    return {
+      id: thread.id,
+      author: actorOf(latest?.author ?? first?.author ?? null),
+      path: latest?.path ?? first?.path ?? null,
+      line: latest?.line ?? first?.line ?? null,
+      createdAt: first?.createdAt ?? latest?.createdAt ?? new Date(0).toISOString(),
+      updatedAt: latest?.updatedAt ?? first?.updatedAt ?? new Date(0).toISOString(),
+      resolved: thread.isResolved,
+      latestCommentByViewer: latest?.viewerDidAuthor === true,
+      bodyExcerpt: excerpt(latest?.body ?? first?.body),
+    };
+  });
 
   const viewerLogin = page.data.viewer.login;
   const issueComments: PullRequestMonitorIssueComment[] = issueCommentsDecoded.comments.map(
@@ -653,8 +818,10 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     state,
     String(pullRequest.isDraft),
     pullRequest.mergeable,
-    ...reviews.map((review) => `${review.id}:${review.state}:${review.submittedAt ?? ""}`),
-    ...reviewThreads.map(
+    ...normalizedReviews.map(
+      (review) => `${review.id}:${review.state}:${review.submittedAt ?? ""}`,
+    ),
+    ...normalizedReviewThreads.map(
       (thread) => `${thread.id}:${thread.updatedAt}:${thread.resolved ? "1" : "0"}`,
     ),
     ...issueComments.map(
@@ -680,21 +847,17 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     fetchedAt,
     sourceRevision,
     completeness: {
-      // `last: 100` walks backward; older omitted pages surface as hasPreviousPage.
-      reviewsComplete:
-        !pullRequest.reviews.pageInfo.hasNextPage && !pullRequest.reviews.pageInfo.hasPreviousPage,
-      reviewThreadsComplete:
-        !pullRequest.reviewThreads.pageInfo.hasNextPage &&
-        !pullRequest.reviewThreads.pageInfo.hasPreviousPage,
+      reviewsComplete: !reviewsPageInfo.hasNextPage,
+      reviewThreadsComplete: !reviewThreadsPageInfo.hasNextPage,
       issueCommentsComplete: issueCommentsDecoded.complete,
-      checksComplete: checkRunsDecoded.check_runs.length < 100,
+      checksComplete: checkRunsDecoded.complete && statusesDecoded.complete,
       // GitHub check-runs endpoint is observed checks, not branch protection required set.
       requiredChecksKnown: false,
       // A compare that failed leaves the base distance unknown, not zero.
       baseComparisonKnown: compareDecoded.behindBy !== null,
     },
-    reviews,
-    reviewThreads,
+    reviews: normalizedReviews,
+    reviewThreads: normalizedReviewThreads,
     issueComments,
     checkRuns,
   };

@@ -1,4 +1,5 @@
 import { assert, it } from "@effect/vitest";
+import { GitHubCliError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -19,8 +20,71 @@ const graphqlResponse = JSON.stringify({
         headRefName: "feat/x",
         title: "Add monitor",
         url: "https://github.com/acme/app/pull/12",
-        reviews: { nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } },
-        reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } },
+        reviews: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        reviewThreads: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      },
+    },
+  },
+});
+
+const processResult = (stdout: string) => ({
+  stdout,
+  stderr: "",
+  code: 0,
+  signal: null,
+  timedOut: false,
+  stdoutTruncated: false,
+});
+
+const review = (id: string) => ({
+  id,
+  author: { login: "reviewer", __typename: "User" },
+  state: "CHANGES_REQUESTED",
+  submittedAt: "2026-08-16T00:00:00.000Z",
+  commit: { oid: "head" },
+  body: id,
+});
+
+const thread = (id: string) => ({
+  id,
+  isResolved: false,
+  comments: {
+    nodes: [
+      {
+        author: { login: "reviewer", __typename: "User" },
+        body: id,
+        path: "src/index.ts",
+        line: 1,
+        createdAt: "2026-08-16T00:00:00.000Z",
+        updatedAt: "2026-08-16T00:00:00.000Z",
+        viewerDidAuthor: false,
+      },
+    ],
+  },
+});
+
+const initialGraphql = JSON.stringify({
+  data: {
+    viewer: { login: "viewer" },
+    repository: {
+      pullRequest: {
+        state: "OPEN",
+        isDraft: false,
+        merged: false,
+        mergeable: "MERGEABLE",
+        headRefOid: "head",
+        baseRefName: "main",
+        headRefName: "feature",
+        title: "PR",
+        url: "https://github.com/acme/app/pull/1",
+        reviews: {
+          nodes: [review("review-1")],
+          pageInfo: { hasNextPage: true, endCursor: "review-cursor" },
+        },
+        reviewThreads: {
+          nodes: [thread("thread-1")],
+          pageInfo: { hasNextPage: true, endCursor: "thread-cursor" },
+        },
       },
     },
   },
@@ -77,7 +141,7 @@ const makeGitHubCli = (input: {
       if (target.includes("check-runs")) {
         return Effect.succeed({ stdout: JSON.stringify({ total_count: 0, check_runs: [] }) });
       }
-      if (target.endsWith("/status")) {
+      if (target.includes("/status?")) {
         return Effect.succeed({ stdout: JSON.stringify({ statuses: [], sha: "head-sha" }) });
       }
       return input.compare?.() ?? Effect.succeed({ stdout: JSON.stringify({ behind_by: 0 }) });
@@ -229,4 +293,139 @@ it.effect("treats a failed base comparison as unknown, never as up to date", () 
     assert.strictEqual(observed.behindBaseBy, 0);
     assert.isTrue(observed.completeness.baseComparisonKnown);
   }),
+);
+
+it.effect("paginates reviews, threads, check runs, and legacy statuses", () => {
+  const commands: string[] = [];
+  return Effect.gen(function* () {
+    const snapshot = yield* fetchGitHubPullRequestMonitorSnapshot({
+      cwd: "/workspace",
+      host: "github.com",
+      repository: "acme/app",
+      number: 1,
+    });
+
+    assert.deepStrictEqual(
+      snapshot.reviews.map(({ id }) => id),
+      ["review-1", "review-2"],
+    );
+    assert.deepStrictEqual(
+      snapshot.reviewThreads.map(({ id }) => id),
+      ["thread-1", "thread-2"],
+    );
+    assert.strictEqual(snapshot.checkRuns.length, 202);
+    assert.isTrue(snapshot.completeness.reviewsComplete);
+    assert.isTrue(snapshot.completeness.reviewThreadsComplete);
+    assert.isTrue(snapshot.completeness.checksComplete);
+    assert.isTrue(commands.some((command) => command.includes("check-runs?per_page=100&page=2")));
+    assert.isTrue(commands.some((command) => command.includes("/status?per_page=100&page=2")));
+  }).pipe(
+    Effect.provide(
+      Layer.mock(GitHubCli)({
+        execute: ({ args }) =>
+          Effect.sync(() => {
+            const command = args.join(" ");
+            commands.push(command);
+            if (command.includes("graphql") && command.includes("MONITOR_CONNECTIONS") === false) {
+              const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+              if (query.includes("viewer { login }")) return processResult(initialGraphql);
+              return processResult(
+                JSON.stringify({
+                  data: {
+                    repository: {
+                      pullRequest: {
+                        reviews: {
+                          nodes: [review("review-2")],
+                          pageInfo: { hasNextPage: false, endCursor: "review-end" },
+                        },
+                        reviewThreads: {
+                          nodes: [thread("thread-2")],
+                          pageInfo: { hasNextPage: false, endCursor: "thread-end" },
+                        },
+                      },
+                    },
+                  },
+                }),
+              );
+            }
+            if (command.includes("/issues/1/comments")) return processResult("[]");
+            if (command.includes("/compare/")) return processResult('{"behind_by":0}');
+            if (command.includes("check-runs")) {
+              const page = command.includes("page=2") ? 2 : 1;
+              const count = page === 1 ? 100 : 1;
+              return processResult(
+                JSON.stringify({
+                  total_count: 101,
+                  check_runs: Array.from({ length: count }, (_, index) => ({
+                    id: (page - 1) * 100 + index,
+                    name: `check-${page}-${index}`,
+                    status: "completed",
+                    conclusion: "success",
+                    head_sha: "head",
+                  })),
+                }),
+              );
+            }
+            const page = command.includes("page=2") ? 2 : 1;
+            const count = page === 1 ? 100 : 1;
+            return processResult(
+              JSON.stringify({
+                sha: "head",
+                statuses: Array.from({ length: count }, (_, index) => ({
+                  id: (page - 1) * 100 + index,
+                  context: `status-${page}-${index}`,
+                  state: "success",
+                  description: null,
+                  target_url: null,
+                })),
+              }),
+            );
+          }),
+      }),
+    ),
+  );
+});
+
+it.effect("propagates legacy status request failures", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.result(
+      fetchGitHubPullRequestMonitorSnapshot({
+        cwd: "/workspace",
+        host: "github.com",
+        repository: "acme/app",
+        number: 1,
+      }),
+    );
+    assert.isTrue(result._tag === "Failure");
+  }).pipe(
+    Effect.provide(
+      Layer.mock(GitHubCli)({
+        execute: ({ args }) => {
+          const command = args.join(" ");
+          if (command.includes("graphql")) {
+            return Effect.succeed(
+              processResult(
+                initialGraphql
+                  .replace('"hasNextPage":true', '"hasNextPage":false')
+                  .replace('"hasNextPage":true', '"hasNextPage":false'),
+              ),
+            );
+          }
+          if (command.includes("/status?")) {
+            return Effect.fail(
+              new GitHubCliError({
+                operation: "api",
+                detail: "not authenticated",
+              }),
+            );
+          }
+          if (command.includes("/issues/1/comments")) return Effect.succeed(processResult("[]"));
+          if (command.includes("/compare/")) {
+            return Effect.succeed(processResult('{"behind_by":0}'));
+          }
+          return Effect.succeed(processResult('{"total_count":0,"check_runs":[]}'));
+        },
+      }),
+    ),
+  ),
 );
