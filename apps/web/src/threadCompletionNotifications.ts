@@ -69,7 +69,6 @@ export function collectThreadCompletionNotifications(
       ? !input.tracker.bootstrappedEnvironmentIds.has(environmentId)
       : true;
     for (const candidate of candidates) {
-      candidateTurnKeys.add(candidate.turnKey);
       if (input.tracker.notifiedTurnKeys.has(candidate.turnKey)) {
         continue;
       }
@@ -80,6 +79,7 @@ export function collectThreadCompletionNotifications(
         continue;
       }
 
+      candidateTurnKeys.add(candidate.turnKey);
       if (
         isFirstCompletedBootstrap ||
         input.notificationMode === "off" ||

@@ -362,6 +362,60 @@ describe("collectThreadCompletionNotifications", () => {
       },
     ]);
   });
+
+  it("cancels a pending interruption while a continuation is queued", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const interrupted = {
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({
+          bootstrapComplete: true,
+          threadId: ThreadId.make("thread-queued-interruption"),
+          turnId: TurnId.make("turn-queued-interruption"),
+          turnState: "interrupted",
+        }),
+      },
+      notificationMode: "all" as const,
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    };
+    collectThreadCompletionNotifications({ ...interrupted, now: 1_000 });
+
+    expect(
+      collectThreadCompletionNotifications({
+        ...interrupted,
+        environmentStateById: {
+          [environmentId]: makeEnvironmentState({
+            bootstrapComplete: true,
+            threadId: ThreadId.make("thread-queued-interruption"),
+            turnId: TurnId.make("turn-queued-interruption"),
+            turnState: "interrupted",
+            hasPendingQueuedTurn: true,
+          }),
+        },
+        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS,
+      }),
+    ).toEqual([]);
+    expect(tracker.pendingInterruptedTurnKeys).toEqual(new Map());
+
+    expect(
+      collectThreadCompletionNotifications({
+        ...interrupted,
+        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS + 1,
+      }),
+    ).toEqual([]);
+    expect(tracker.pendingInterruptedTurnKeys.size).toBe(1);
+  });
 });
 
 describe("collectStaleActiveTurnToastRequests", () => {
