@@ -38,6 +38,7 @@ import {
   BrowserWindow,
   type BrowserWindow as BrowserWindowType,
   type Session,
+  type WebContents,
   clipboard,
   nativeImage,
   shell,
@@ -118,6 +119,25 @@ const MAX_ARTIFACT_SITE_SLUG_LENGTH = 80;
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+
+interface PreviewZoomScope {
+  readonly origin: string;
+  readonly session: Session;
+}
+
+const previewZoomScope = (wc: WebContents): PreviewZoomScope | null => {
+  if (wc.isDestroyed()) return null;
+  try {
+    const origin = new URL(wc.getURL()).origin;
+    return origin === "null" ? null : { origin, session: wc.session };
+  } catch {
+    return null;
+  }
+};
+
+const samePreviewZoomScope = (left: PreviewZoomScope, right: PreviewZoomScope): boolean =>
+  left.session === right.session && left.origin === right.origin;
+
 const DEFAULT_ANNOTATION_THEME: DesktopPreviewAnnotationTheme = {
   colorScheme: "light",
   radius: "0.625rem",
@@ -570,6 +590,41 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       { discard: true },
     );
   });
+
+  const tabIdsInZoomScope = (
+    tabs: ReadonlyMap<string, PreviewTabState>,
+    tabId: string,
+    wc: WebContents,
+  ): string[] => {
+    const scope = previewZoomScope(wc);
+    if (!scope) return [tabId];
+    const tabIds: string[] = [];
+    for (const [candidateTabId, candidate] of tabs) {
+      if (candidate.webContentsId === null) continue;
+      const candidateWebContents = webContents.fromId(candidate.webContentsId);
+      if (!candidateWebContents) continue;
+      const candidateScope = previewZoomScope(candidateWebContents);
+      if (candidateScope && samePreviewZoomScope(scope, candidateScope)) {
+        tabIds.push(candidateTabId);
+      }
+    }
+    return tabIds.includes(tabId) ? tabIds : [...tabIds, tabId];
+  };
+
+  const resolveZoomFactorForWebContents = (
+    tabs: ReadonlyMap<string, PreviewTabState>,
+    tabId: string,
+    wc: WebContents,
+  ): number => {
+    const current = tabs.get(tabId);
+    if (!current) return DEFAULT_ZOOM_FACTOR;
+    for (const scopedTabId of tabIdsInZoomScope(tabs, tabId, wc)) {
+      if (scopedTabId === tabId) continue;
+      const sibling = tabs.get(scopedTabId);
+      if (sibling) return sibling.zoomFactor;
+    }
+    return current.zoomFactor;
+  };
 
   const update = Effect.fn("PreviewManager.update")(function* (
     tabId: string,
@@ -1227,11 +1282,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       preserveLoadFailure: boolean,
     ) {
       if (wc.isDestroyed()) return;
-      const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      const tabs = yield* SynchronizedRef.get(tabsRef);
+      const currentTab = tabs.get(tabId);
+      const zoomFactor = resolveZoomFactorForWebContents(tabs, tabId, wc);
       if (currentTab) {
         yield* attempt(
           { operation: "syncWebContentsState.restoreZoomFactor", tabId, webContentsId: wc.id },
-          () => wc.setZoomFactor(currentTab.zoomFactor),
+          () => wc.setZoomFactor(zoomFactor),
         ).pipe(Effect.ignore);
       }
       const computedNavStatus = computeNavStatus(wc);
@@ -1255,6 +1312,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           navStatus,
           canGoBack,
           canGoForward,
+          zoomFactor,
           updatedAt,
         };
         return [
@@ -1519,9 +1577,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const attached = yield* Ref.get(attachedRef);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
     if (tab.webContentsId === webContentsId && attached.has(webContentsId)) {
+      const tabs = yield* SynchronizedRef.get(tabsRef);
+      const zoomFactor = resolveZoomFactorForWebContents(tabs, tabId, wc);
       yield* attempt({ operation: "registerWebview.restoreZoomFactor", tabId, webContentsId }, () =>
-        wc.setZoomFactor(tab.zoomFactor),
+        wc.setZoomFactor(zoomFactor),
       );
+      if (zoomFactor !== tab.zoomFactor) yield* update(tabId, { zoomFactor });
       yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
         wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
       );
@@ -1548,12 +1609,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ) {
       return yield* new PreviewTabNotFoundError({ tabId });
     }
-    const zoomFactor = yield* attempt(
-      { operation: "registerWebview.restoreZoomFactor", tabId, webContentsId },
-      () => {
-        wc.setZoomFactor(currentTab.zoomFactor);
-        return currentTab.zoomFactor;
-      },
+    const zoomFactor = resolveZoomFactorForWebContents(
+      yield* SynchronizedRef.get(tabsRef),
+      tabId,
+      wc,
+    );
+    yield* attempt({ operation: "registerWebview.restoreZoomFactor", tabId, webContentsId }, () =>
+      wc.setZoomFactor(zoomFactor),
     );
     const registeredAt = yield* currentIso;
     yield* attachListeners(tabId, wc);
@@ -1864,19 +1926,28 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     tabId: string,
     transform: (current: number) => number,
   ) {
-    const tab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+    const tabs = yield* SynchronizedRef.get(tabsRef);
+    const tab = tabs.get(tabId);
     if (!tab) return;
-    const next = transform(tab.zoomFactor);
-    if (Math.abs(next - tab.zoomFactor) < ZOOM_EPSILON) return;
+    const wc = tab.webContentsId === null ? null : webContents.fromId(tab.webContentsId);
+    const current = wc ? resolveZoomFactorForWebContents(tabs, tabId, wc) : tab.zoomFactor;
+    const next = transform(current);
+    if (Math.abs(next - current) < ZOOM_EPSILON) return;
     if (tab.webContentsId != null) {
-      const wc = webContents.fromId(tab.webContentsId);
       if (wc && !wc.isDestroyed()) {
         yield* attempt({ operation: "applyZoom", tabId, webContentsId: wc.id }, () =>
           wc.setZoomFactor(next),
         );
       }
     }
-    yield* update(tabId, { zoomFactor: next });
+    const scopedTabIds = wc ? tabIdsInZoomScope(tabs, tabId, wc) : [tabId];
+    yield* Effect.forEach(
+      scopedTabIds,
+      (scopedTabId) => update(scopedTabId, { zoomFactor: next }),
+      {
+        discard: true,
+      },
+    );
   });
 
   // Emulated media lives on the CDP debugger session, not the WebContents, so

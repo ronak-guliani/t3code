@@ -747,6 +747,80 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("keeps same-origin tabs in one shared zoom state", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const browserSession = {};
+        const listenersById = new Map<number, Map<string, (...args: unknown[]) => void>>();
+        const webviews = new Map<number, ReturnType<typeof makeWebview>>();
+        let effectiveZoom = 1;
+
+        function makeWebview(id: number) {
+          const listeners = new Map<string, (...args: unknown[]) => void>();
+          listenersById.set(id, listeners);
+          return {
+            id,
+            session: browserSession,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com/dashboard",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            getZoomFactor: () => effectiveZoom,
+            setZoomFactor: vi.fn((zoomFactor: number) => {
+              effectiveZoom = zoomFactor;
+            }),
+            on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+              listeners.set(event, listener);
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          };
+        }
+
+        webviews.set(41, makeWebview(41));
+        webviews.set(42, makeWebview(42));
+        fromId.mockImplementation(
+          (id?: number) => (id === undefined ? null : (webviews.get(id) ?? null)) as never,
+        );
+        const states = new Map<string, PreviewManager.PreviewTabState>();
+        yield* manager.subscribeStateChanges((tabId, state) =>
+          Effect.sync(() => {
+            states.set(tabId, state);
+          }),
+        );
+
+        yield* manager.createTab("tab_a");
+        yield* manager.registerWebview("tab_a", 41);
+        yield* manager.createTab("tab_b");
+        yield* manager.registerWebview("tab_b", 42);
+        yield* manager.zoomIn("tab_a");
+
+        expect(effectiveZoom).toBe(1.1);
+        expect(states.get("tab_a")?.zoomFactor).toBe(1.1);
+        expect(states.get("tab_b")?.zoomFactor).toBe(1.1);
+
+        effectiveZoom = 1.25;
+        listenersById.get(42)?.get("did-navigate")?.();
+        yield* Effect.yieldNow;
+
+        expect(effectiveZoom).toBe(1.1);
+        expect(states.get("tab_a")?.zoomFactor).toBe(1.1);
+        expect(states.get("tab_b")?.zoomFactor).toBe(1.1);
+      }),
+    ),
+  );
+
   effectIt.effect("emulates prefers-color-scheme and re-applies it across webview swaps", () =>
     withManager((manager) =>
       Effect.gen(function* () {
