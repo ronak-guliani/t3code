@@ -5,11 +5,15 @@ import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, PlatformError, Scope } from "effect";
 import { describe, expect } from "vitest";
 
-import { checkpointRefForThreadTurn } from "../Utils.ts";
+import { checkpointBaselineRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
 import { CheckpointStoreLive } from "./CheckpointStore.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
-import { GitCore } from "../../git/Services/GitCore.ts";
+import {
+  GitCore,
+  type ExecuteGitInput,
+  type ExecuteGitResult,
+} from "../../git/Services/GitCore.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import { ThreadId } from "@t3tools/contracts";
@@ -26,6 +30,16 @@ const CheckpointStoreTestLayer = CheckpointStoreLive.pipe(
   Layer.provide(NodeServices.layer),
 );
 const TestLayer = Layer.mergeAll(NodeServices.layer, GitCoreTestLayer, CheckpointStoreTestLayer);
+
+function executeGitResult(code: number, stdout = ""): ExecuteGitResult {
+  return {
+    code,
+    stdout,
+    stderr: "",
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  };
+}
 
 function makeTmpDir(
   prefix = "checkpoint-store-test-",
@@ -101,6 +115,73 @@ function replaceLine(contents: string, lineIndex: number, replacement: string): 
   lines[lineIndex] = replacement;
   return lines.join("\n");
 }
+
+describe("CheckpointStoreLive range resolution", () => {
+  it.effect("resolves preferred, fallback, and target checkpoint refs only once", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-checkpoint-store-range-resolution");
+      const preferredFromCheckpointRef = checkpointBaselineRefForThreadTurn(threadId, 1);
+      const fallbackFromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+      const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+      const executeInputs: Array<ExecuteGitInput> = [];
+      const gitCoreLayer = Layer.mock(GitCore)({
+        execute: (input) =>
+          Effect.sync(() => {
+            executeInputs.push(input);
+            const revision = input.args[3];
+            if (revision === `${preferredFromCheckpointRef}^{commit}`) {
+              return executeGitResult(1);
+            }
+            if (revision === `${fallbackFromCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "from-oid\n");
+            }
+            if (revision === `${toCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "to-oid\n");
+            }
+            if (revision === "from-oid^" || revision === "to-oid^") {
+              return executeGitResult(0, "base-oid\n");
+            }
+            if (input.args[0] === "diff") {
+              return executeGitResult(0, "diff --git a/README.md b/README.md\n+# changed\n");
+            }
+            throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
+          }),
+      });
+      const checkpointStoreLayer = CheckpointStoreLive.pipe(
+        Layer.provide(gitCoreLayer),
+        Layer.provide(NodeServices.layer),
+      );
+      const diff = yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        return yield* checkpointStore.diffCheckpoints({
+          cwd: "/tmp/workspace",
+          fromCheckpointRef: preferredFromCheckpointRef,
+          fallbackFromCheckpointRef,
+          toCheckpointRef,
+        });
+      }).pipe(Effect.provide(checkpointStoreLayer));
+
+      const checkpointRefLookups = executeInputs
+        .filter(
+          (input) =>
+            input.args[0] === "rev-parse" &&
+            input.args[1] === "--verify" &&
+            input.args[2] === "--quiet" &&
+            input.args[3]?.startsWith("refs/t3/checkpoints/") === true,
+        )
+        .map((input) => input.args[3]);
+
+      expect(checkpointRefLookups.toSorted()).toEqual(
+        [
+          `${preferredFromCheckpointRef}^{commit}`,
+          `${fallbackFromCheckpointRef}^{commit}`,
+          `${toCheckpointRef}^{commit}`,
+        ].toSorted(),
+      );
+      expect(diff).toContain("+# changed");
+    }),
+  );
+});
 
 it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   describe("checkpointRefMatchesWorkspace", () => {

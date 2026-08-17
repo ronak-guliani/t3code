@@ -9,6 +9,10 @@ export interface TurnDiffFileSummary {
   readonly deletions: number;
 }
 
+export interface ParsedTurnDiffFile extends TurnDiffFileSummary {
+  readonly section: string;
+}
+
 export interface TurnDiffFileStatus {
   readonly path: string;
   readonly previousPath: string | null;
@@ -29,25 +33,6 @@ function changeTypeToKind(changeType: ChangeTypes): TurnDiffFileSummary["kind"] 
   }
 }
 
-function copiedPathsFromUnifiedDiff(diff: string): ReadonlySet<string> {
-  const copiedPaths = new Set<string>();
-  const starts = [...diff.matchAll(/^diff --git .+$/gm)].map((match) => match.index ?? 0);
-  for (let index = 0; index < starts.length; index += 1) {
-    const start = starts[index] ?? 0;
-    const end = starts[index + 1] ?? diff.length;
-    const section = diff.slice(start, end);
-    if (!section.includes("\ncopy from ") || !section.includes("\ncopy to ")) {
-      continue;
-    }
-    for (const patch of parsePatchFiles(section)) {
-      for (const file of patch.files) {
-        copiedPaths.add(file.name);
-      }
-    }
-  }
-  return copiedPaths;
-}
-
 function parseNumstatCount(value: string | undefined): number {
   if (value === undefined || value === "-") {
     return 0;
@@ -56,25 +41,30 @@ function parseNumstatCount(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function parseTurnDiffFilesFromUnifiedDiff(
-  diff: string,
-): ReadonlyArray<TurnDiffFileSummary> {
+export function parseTurnDiffFilesFromUnifiedDiff(diff: string): ReadonlyArray<ParsedTurnDiffFile> {
   const normalized = diff.replace(/\r\n/g, "\n").trim();
   if (normalized.length === 0) {
     return [];
   }
 
-  const copiedPaths = copiedPathsFromUnifiedDiff(normalized);
-  const parsedPatches = parsePatchFiles(normalized);
-  const files = parsedPatches.flatMap((patch) =>
-    patch.files.map((file) => ({
+  const sectionStarts = [...diff.matchAll(/^diff --git .+$/gm)].map((match) => match.index ?? 0);
+  const parsedFiles = parsePatchFiles(normalized).flatMap((patch) => patch.files);
+  const files = parsedFiles.map((file, index) => {
+    const sectionStart = sectionStarts[index];
+    const section =
+      sectionStart === undefined
+        ? ""
+        : diff.slice(sectionStart, sectionStarts[index + 1] ?? diff.length);
+    const isCopied = section.includes("\ncopy from ") && section.includes("\ncopy to ");
+    return {
       path: file.name,
       previousPath: file.prevName ?? null,
-      kind: copiedPaths.has(file.name) ? ("copied" as const) : changeTypeToKind(file.type),
+      kind: isCopied ? ("copied" as const) : changeTypeToKind(file.type),
       additions: file.hunks.reduce((total, hunk) => total + hunk.additionLines, 0),
       deletions: file.hunks.reduce((total, hunk) => total + hunk.deletionLines, 0),
-    })),
-  );
+      section,
+    };
+  });
 
   return files.toSorted((left, right) => left.path.localeCompare(right.path));
 }
