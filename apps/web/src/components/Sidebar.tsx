@@ -116,6 +116,7 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import {
   buildThreadRouteParams,
   clearAgentRunRouteSearch,
+  clearThreadNavigationRouteSearch,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -2112,10 +2113,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          activeRouteThreadKey === scopedThreadKey(threadRef)
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
-    [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
+    [activeRouteThreadKey, clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
   const toggleThreadExpanded = useCallback(
     (threadKey: string, isExpanded: boolean) => {
@@ -2158,10 +2162,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
     [
+      activeRouteThreadKey,
       clearSelection,
       isMobile,
       rangeSelectTo,
@@ -3662,10 +3670,13 @@ export default function Sidebar() {
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          routeThreadKey === scopedThreadKey(threadRef)
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
-    [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
+    [clearSelection, isMobile, navigate, routeThreadKey, setOpenMobile, setSelectionAnchor],
   );
   const navigateToDraft = useCallback(
     (draftId: DraftId) => {

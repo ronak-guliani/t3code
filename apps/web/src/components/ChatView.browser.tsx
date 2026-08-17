@@ -7485,6 +7485,56 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps the diff panel scoped to the chat where it was opened", async () => {
+    const secondThreadId = ThreadId.make("thread-browser-test-second");
+    const snapshot = addThreadToSnapshot(
+      addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID),
+      secondThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await page.getByLabelText("Toggle diff panel").click();
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+
+      await page.getByTestId(`thread-row-${secondThreadId}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(secondThreadId),
+        "Route should switch to the second thread.",
+      );
+
+      const secondThreadKey = scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, secondThreadId));
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[secondThreadKey]).toBeUndefined();
+        expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
+      });
+
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch back to the first thread.",
+      );
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens a discovered localhost port from the Sidebar and focuses its thread", async () => {
     const secondaryThreadId = ThreadId.make("thread-secondary-project");
     const preview = createPreviewSnapshot("preview-discovered", THREAD_ID);

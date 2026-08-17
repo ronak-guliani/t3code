@@ -50,6 +50,7 @@ import {
 import {
   buildThreadRouteParams,
   clearAgentRunRouteSearch,
+  clearThreadNavigationRouteSearch,
   parseAgentRunRouteSearch,
   resolveThreadRouteRef,
 } from "../threadRoutes";
@@ -440,15 +441,23 @@ export default function SidebarV2() {
   const openThread = useCallback(
     (thread: SidebarThreadSummary) => {
       const target = resolveSidebarV2ThreadRouteTarget(thread);
+      const targetThreadRef = scopeThreadRef(thread.environmentId, target.threadId);
+      const clearSearch =
+        activeThreadKey === scopedThreadKey(targetThreadRef)
+          ? clearAgentRunRouteSearch
+          : clearThreadNavigationRouteSearch;
       void router.navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, target.threadId)),
+        params: buildThreadRouteParams(targetThreadRef),
         search: target.agentTaskId
-          ? (previous) => ({ ...previous, agent: target.agentTaskId ?? undefined })
-          : clearAgentRunRouteSearch,
+          ? (previous) => ({
+              ...clearSearch(previous),
+              agent: target.agentTaskId ?? undefined,
+            })
+          : clearSearch,
       });
     },
-    [router],
+    [activeThreadKey, router],
   );
   const handleDismissAgentRun = useCallback(
     (thread: SidebarThreadSummary) => {
