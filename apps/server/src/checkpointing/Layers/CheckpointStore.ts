@@ -11,7 +11,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { Effect, Layer, FileSystem, Path } from "effect";
+import { Cache, Data, Duration, Effect, Exit, Layer, FileSystem, Path } from "effect";
 
 import { CheckpointInvariantError, CheckpointRefUnavailableError } from "../Errors.ts";
 import { GitCommandError } from "@t3tools/contracts";
@@ -26,6 +26,16 @@ import {
 
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 const CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES = 10_000_000;
+const CHECKPOINT_DIFF_CACHE_CAPACITY = 128;
+const CHECKPOINT_DIFF_CACHE_TTL = Duration.seconds(30);
+
+class CheckpointDiffCacheKey extends Data.Class<{
+  readonly cwd: string;
+  readonly fromCommitOid: string;
+  readonly toCommitOid: string;
+  readonly ignoreWhitespace: boolean;
+  readonly paths: ReadonlyArray<string>;
+}> {}
 
 /**
  * Bounds the history walk used to separate turn-authored commits from base
@@ -48,6 +58,33 @@ const makeCheckpointStore = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const git = yield* GitCore;
+
+  const executeCheckpointDiff = Effect.fn("executeCheckpointDiff")((key: CheckpointDiffCacheKey) =>
+    git
+      .execute({
+        operation: "CheckpointStore.diffCheckpoints",
+        cwd: key.cwd,
+        args: [
+          "diff",
+          "--patch",
+          "--minimal",
+          "--no-color",
+          "--find-renames",
+          "--find-copies",
+          "--find-copies-harder",
+          ...(key.ignoreWhitespace ? ["--ignore-all-space"] : []),
+          key.fromCommitOid,
+          key.toCommitOid,
+          ...(key.paths.length > 0 ? ["--", ...key.paths] : []),
+        ],
+        maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+      })
+      .pipe(Effect.map((result) => result.stdout)),
+  );
+  const checkpointDiffCache = yield* Cache.makeWith(executeCheckpointDiff, {
+    capacity: CHECKPOINT_DIFF_CACHE_CAPACITY,
+    timeToLive: (exit) => (Exit.isSuccess(exit) ? CHECKPOINT_DIFF_CACHE_TTL : Duration.zero),
+  });
 
   const resolveHeadCommit = (cwd: string): Effect.Effect<string | null, GitCommandError> =>
     git
@@ -717,8 +754,6 @@ const makeCheckpointStore = Effect.gen(function* () {
 
   const diffCheckpoints: CheckpointStoreShape["diffCheckpoints"] = Effect.fn("diffCheckpoints")(
     function* (input) {
-      const operation = "CheckpointStore.diffCheckpoints";
-
       const resolvedCommits = yield* resolveDiffCommits(input);
       const paths = normalizeDiffPaths(input);
       if (input.paths !== undefined && (paths?.length ?? 0) === 0) {
@@ -728,26 +763,17 @@ const makeCheckpointStore = Effect.gen(function* () {
         cwd: input.cwd,
         ...resolvedCommits,
       });
-      const result = yield* git.execute({
-        operation,
+      const cacheKey = new CheckpointDiffCacheKey({
         cwd: input.cwd,
-        args: [
-          "diff",
-          "--patch",
-          "--minimal",
-          "--no-color",
-          "--find-renames",
-          "--find-copies",
-          "--find-copies-harder",
-          ...(input.ignoreWhitespace === true ? ["--ignore-all-space"] : []),
-          fromCommitOid,
-          toCommitOid,
-          ...(paths !== undefined && paths.length > 0 ? ["--", ...paths] : []),
-        ],
-        maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+        fromCommitOid,
+        toCommitOid,
+        ignoreWhitespace: input.ignoreWhitespace === true,
+        paths: paths ?? [],
       });
-
-      return result.stdout;
+      if (!resolvedCommits.fromCheckpointExists) {
+        return yield* executeCheckpointDiff(cacheKey);
+      }
+      return yield* Cache.get(checkpointDiffCache, cacheKey);
     },
   );
 

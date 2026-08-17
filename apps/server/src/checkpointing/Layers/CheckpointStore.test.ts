@@ -16,7 +16,7 @@ import {
 } from "../../git/Services/GitCore.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
-import { ThreadId } from "@t3tools/contracts";
+import { CheckpointRef, ThreadId } from "@t3tools/contracts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-checkpoint-store-test-",
@@ -179,6 +179,110 @@ describe("CheckpointStoreLive range resolution", () => {
         ].toSorted(),
       );
       expect(diff).toContain("+# changed");
+    }),
+  );
+});
+
+describe("CheckpointStoreLive diff cache", () => {
+  function makeDiffCacheTestLayer(options?: { readonly missingFromCheckpoint?: boolean }) {
+    let diffCalls = 0;
+    const gitCoreLayer = Layer.mock(GitCore)({
+      execute: (input) =>
+        Effect.sync(() => {
+          const revision = input.args[3];
+          if (revision?.endsWith("^{commit}") === true) {
+            if (revision === "HEAD^{commit}") {
+              return executeGitResult(0, "head-oid\n");
+            }
+            if (options?.missingFromCheckpoint === true && revision.includes("/from")) {
+              return executeGitResult(1);
+            }
+            return executeGitResult(0, revision.includes("/from") ? "from-oid\n" : "to-oid\n");
+          }
+          if (revision === "from-oid^" || revision === "to-oid^") {
+            return executeGitResult(0, "base-oid\n");
+          }
+          if (input.args[0] === "diff") {
+            diffCalls += 1;
+            return executeGitResult(0, `diff-${diffCalls}\n`);
+          }
+          throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
+        }),
+    });
+    return {
+      getDiffCalls: () => diffCalls,
+      layer: CheckpointStoreLive.pipe(
+        Layer.provide(gitCoreLayer),
+        Layer.provide(NodeServices.layer),
+      ),
+    };
+  }
+
+  it.effect("reuses an exact immutable checkpoint-pair diff", () =>
+    Effect.gen(function* () {
+      const test = makeDiffCacheTestLayer();
+      const input = {
+        cwd: "/tmp/workspace",
+        fromCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/from"),
+        toCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/to"),
+        paths: ["README.md"],
+      };
+
+      const [first, second] = yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        return [
+          yield* checkpointStore.diffCheckpoints(input),
+          yield* checkpointStore.diffCheckpoints({ ...input, paths: ["README.md"] }),
+        ];
+      }).pipe(Effect.provide(test.layer));
+
+      expect(first).toBe("diff-1\n");
+      expect(second).toBe(first);
+      expect(test.getDiffCalls()).toBe(1);
+    }),
+  );
+
+  it.effect("misses when an immutable checkpoint-pair cache key changes", () =>
+    Effect.gen(function* () {
+      const test = makeDiffCacheTestLayer();
+      const baseInput = {
+        cwd: "/tmp/workspace",
+        fromCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/from"),
+        toCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/to"),
+      };
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        yield* checkpointStore.diffCheckpoints(baseInput);
+        yield* checkpointStore.diffCheckpoints({ ...baseInput, ignoreWhitespace: true });
+        yield* checkpointStore.diffCheckpoints({ ...baseInput, paths: ["README.md"] });
+      }).pipe(Effect.provide(test.layer));
+
+      expect(test.getDiffCalls()).toBe(3);
+    }),
+  );
+
+  it.effect("does not cache diffs that fall back to the mutable workspace HEAD", () =>
+    Effect.gen(function* () {
+      const test = makeDiffCacheTestLayer({ missingFromCheckpoint: true });
+      const input = {
+        cwd: "/tmp/workspace",
+        fromCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/from"),
+        toCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/to"),
+        fallbackFromToHead: true,
+      };
+
+      const [first, second] = yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        return [
+          yield* checkpointStore.diffCheckpoints(input),
+          yield* checkpointStore.diffCheckpoints(input),
+        ];
+      }).pipe(Effect.provide(test.layer));
+
+      expect(first).toBe("diff-1\n");
+      expect(second).toBe("diff-2\n");
+      expect(test.getDiffCalls()).toBe(2);
     }),
   );
 });
