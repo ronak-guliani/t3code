@@ -205,6 +205,33 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Source chat unavailable");
   });
 
+  it("renders pull request monitor provenance above a user message bubble", () => {
+    const entry = buildUserTimelineEntry("Review new PR feedback.");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "pull-request-monitor",
+                repository: "acme/app",
+                number: 42,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("PR monitor");
+    expect(markup).toContain("acme/app#42");
+    expect(markup).toContain("Sent by pull request monitor");
+    expect(markup).toContain("border-sky-400/30");
+  });
+
   it("renders model and usage metadata below assistant responses", () => {
     const turnId = TurnId.make("turn-usage");
     const markup = renderToStaticMarkup(

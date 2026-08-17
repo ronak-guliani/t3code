@@ -175,6 +175,8 @@ export const sendQueuedTurn = (input: {
   readonly commandId: CommandId;
   readonly messageId: MessageId;
   readonly text: string;
+  readonly repository: string;
+  readonly pullRequestNumber: number;
 }): Effect.Effect<void, unknown, OrchestrationEngineService> =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
@@ -194,6 +196,11 @@ export const sendQueuedTurn = (input: {
       },
       runtimeMode: DEFAULT_RUNTIME_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      origin: {
+        kind: "pull-request-monitor",
+        repository: input.repository,
+        number: input.pullRequestNumber,
+      },
       createdAt: now,
     });
   });
@@ -251,6 +258,8 @@ export const startFallbackTurn = (input: {
   readonly commandId: CommandId;
   readonly messageId: MessageId;
   readonly text: string;
+  readonly repository: string;
+  readonly pullRequestNumber: number;
 }): Effect.Effect<void, unknown, OrchestrationEngineService> =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
@@ -267,6 +276,11 @@ export const startFallbackTurn = (input: {
       },
       runtimeMode: DEFAULT_RUNTIME_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      origin: {
+        kind: "pull-request-monitor",
+        repository: input.repository,
+        number: input.pullRequestNumber,
+      },
       createdAt: now,
     });
   });

@@ -38,6 +38,7 @@ import {
   HammerIcon,
   InfoIcon,
   PaintbrushIcon,
+  RadarIcon,
   type LucideIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -506,12 +507,16 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
+              ) : row.message.origin?.kind === "pull-request-monitor" ? (
+                <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}
               <div
                 className={cn(
                   "group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3",
                   row.message.origin?.kind === "cross-thread" &&
                     "border-violet-400/30 bg-gradient-to-br from-violet-500/[0.07] via-violet-500/[0.02] to-transparent",
+                  row.message.origin?.kind === "pull-request-monitor" &&
+                    "border-sky-400/30 bg-gradient-to-br from-sky-500/[0.07] via-sky-500/[0.02] to-transparent",
                 )}
               >
                 {regularImages.length > 0 && (
@@ -841,6 +846,24 @@ function CrossThreadProvenance({
         {sourceTitle}
       </span>
     </button>
+  );
+}
+
+function PullRequestMonitorProvenance({
+  origin,
+}: {
+  origin: Extract<NonNullable<TimelineMessage["origin"]>, { kind: "pull-request-monitor" }>;
+}) {
+  return (
+    <span
+      className="mb-1 mr-2 inline-flex max-w-[80%] items-center gap-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/45"
+      title={`Sent by pull request monitor for ${origin.repository}#${origin.number}`}
+    >
+      <RadarIcon className="size-2.5 shrink-0 text-sky-400/60" aria-hidden="true" />
+      <span className="truncate">
+        PR monitor · {origin.repository}#{origin.number}
+      </span>
+    </span>
   );
 }
 
