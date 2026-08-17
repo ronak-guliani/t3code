@@ -14,6 +14,7 @@ import {
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarDraftPreview,
+  resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarThreadGitCwd,
@@ -56,18 +57,6 @@ describe("shouldRenderSidebarDraft", () => {
     ).toBe(true);
   });
 
-  describe("resolveSidebarDraftPreview", () => {
-    it("keeps the submitted message visible after composer cleanup", () => {
-      expect(
-        resolveSidebarDraftPreview({
-          draftPrompt: null,
-          draftAttachmentCount: 0,
-          optimisticMessage: { text: "Implement the sidebar fix\nwith tests" },
-        }),
-      ).toBe("Implement the sidebar fix");
-    });
-  });
-
   it("hands off to the regular thread row once it is published", () => {
     expect(
       shouldRenderSidebarDraft({
@@ -76,6 +65,30 @@ describe("shouldRenderSidebarDraft", () => {
         serverThreadPublished: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveSidebarDraftPreview", () => {
+  it("keeps the submitted message visible after composer cleanup", () => {
+    expect(
+      resolveSidebarDraftPreview({
+        draftPrompt: null,
+        draftAttachmentCount: 0,
+        optimisticMessage: { text: "Implement the sidebar fix\nwith tests" },
+      }),
+    ).toBe("Implement the sidebar fix");
+  });
+});
+
+describe("resolveExistingThreadDraftPreview", () => {
+  it("returns the first non-empty line", () => {
+    expect(resolveExistingThreadDraftPreview("  follow up on this\nwith details ")).toBe(
+      "follow up on this",
+    );
+  });
+
+  it("hides empty prompts", () => {
+    expect(resolveExistingThreadDraftPreview(" \n ")).toBeNull();
   });
 });
 
