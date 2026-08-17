@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  EventId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -30,9 +31,26 @@ function makeEnvironmentState(overrides: {
   readonly turnState?: "completed" | "error" | "interrupted" | "running";
   readonly activeTurnId?: TurnId | null;
   readonly hasPendingQueuedTurn?: boolean;
+  readonly terminalActivityState?: "completed" | "failed" | "interrupted" | "cancelled";
 }): EnvironmentState {
   const nextThreadId = overrides.threadId ?? threadId;
   const turnId = overrides.turnId ?? TurnId.make("turn-1");
+  const insightActivitiesByThreadId: EnvironmentState["insightActivitiesByThreadId"] =
+    overrides.terminalActivityState === undefined
+      ? {}
+      : {
+          [nextThreadId]: [
+            {
+              id: EventId.make("terminal-activity"),
+              kind: "insights.turn.completed",
+              tone: "info",
+              summary: "Turn completed",
+              payload: { state: overrides.terminalActivityState },
+              turnId,
+              createdAt: overrides.completedAt ?? "2026-06-10T00:01:00.000Z",
+            },
+          ],
+        };
   return {
     projectIds: [projectId],
     projectById: {},
@@ -48,7 +66,7 @@ function makeEnvironmentState(overrides: {
     activityIdsByThreadId: {},
     activityByThreadId: {},
     activityContextByThreadId: {},
-    insightActivitiesByThreadId: {},
+    insightActivitiesByThreadId,
     proposedPlanIdsByThreadId: {},
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
@@ -311,6 +329,93 @@ describe("collectThreadCompletionNotifications", () => {
         turnId: "turn-racy-completion",
         title: "Chat completed",
         status: "completed",
+      },
+    ]);
+  });
+
+  it("prefers the provider terminal activity over a checkpoint-derived interruption", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const requests = collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({
+          bootstrapComplete: true,
+          threadId: ThreadId.make("thread-missing-checkpoint"),
+          turnId: TurnId.make("turn-missing-checkpoint"),
+          turnState: "interrupted",
+          terminalActivityState: "completed",
+        }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    expect(requests).toMatchObject([
+      {
+        threadId: "thread-missing-checkpoint",
+        turnId: "turn-missing-checkpoint",
+        title: "Chat completed",
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("preserves a genuine provider interruption over a stale completed shell state", () => {
+    const tracker = makeTracker();
+    collectThreadCompletionNotifications({
+      environmentStateById: {
+        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+      },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+    });
+
+    const interrupted = makeEnvironmentState({
+      bootstrapComplete: true,
+      threadId: ThreadId.make("thread-provider-interrupted"),
+      turnId: TurnId.make("turn-provider-interrupted"),
+      turnState: "completed",
+      terminalActivityState: "interrupted",
+    });
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: { [environmentId]: interrupted },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+        now: 1_000,
+      }),
+    ).toEqual([]);
+
+    expect(
+      collectThreadCompletionNotifications({
+        environmentStateById: { [environmentId]: interrupted },
+        notificationMode: "all",
+        activeThreadKey: null,
+        isDocumentFocused: false,
+        tracker,
+        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS,
+      }),
+    ).toMatchObject([
+      {
+        threadId: "thread-provider-interrupted",
+        turnId: "turn-provider-interrupted",
+        title: "Chat interrupted",
+        status: "interrupted",
       },
     ]);
   });
