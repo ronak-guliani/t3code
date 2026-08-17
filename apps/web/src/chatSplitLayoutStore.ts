@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+import { scopedThreadKey } from "@t3tools/client-runtime";
 import type { DiffRouteSearch } from "./diffRouteSearch";
 import {
   type ChatSplitFocusDirection,
@@ -72,9 +73,7 @@ interface ChatSplitLayoutStoreState {
 }
 
 function threadTargetKey(target: ThreadRouteTarget): string | null {
-  return target.kind === "server"
-    ? `${target.threadRef.environmentId}:${target.threadRef.threadId}`
-    : null;
+  return target.kind === "server" ? scopedThreadKey(target.threadRef) : null;
 }
 
 function createNodeId(): ChatSplitNodeId {
@@ -183,6 +182,14 @@ export const useChatSplitLayoutStore = create<ChatSplitLayoutStoreState>((set, g
       return {
         ...state,
         layout: nextLayout,
+        ...(targetKey && resolvedDiff !== undefined
+          ? {
+              diffByThreadKey: {
+                ...state.diffByThreadKey,
+                [targetKey]: sanitizeDiffRouteState(resolvedDiff),
+              },
+            }
+          : {}),
       };
     });
   },

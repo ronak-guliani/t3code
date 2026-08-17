@@ -49,6 +49,30 @@ describe("chatSplitLayoutStore", () => {
     expect(getFocusedLeaf(getActiveLayout())?.diff).toEqual({ diff: "1" });
   });
 
+  it("remembers diff state provided by the initial route", () => {
+    const environmentId = EnvironmentId.make("env-a");
+    const targetA = {
+      kind: "server" as const,
+      threadRef: {
+        environmentId,
+        threadId: ThreadId.make("thread-a"),
+      },
+    };
+    const targetB = {
+      kind: "server" as const,
+      threadRef: {
+        environmentId,
+        threadId: ThreadId.make("thread-b"),
+      },
+    };
+
+    useChatSplitLayoutStore.getState().syncRouteTarget(targetA, { diff: "1" });
+    useChatSplitLayoutStore.getState().syncRouteTarget(targetB, {});
+    useChatSplitLayoutStore.getState().syncRouteTarget(targetA, {});
+
+    expect(getFocusedLeaf(getActiveLayout())?.diff).toEqual({ diff: "1" });
+  });
+
   it("preserves same-environment split panes when route targets change", () => {
     const envA = EnvironmentId.make("env-a");
     const envB = EnvironmentId.make("env-b");
