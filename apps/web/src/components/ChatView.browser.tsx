@@ -7485,6 +7485,154 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps the diff panel scoped to the chat where it was opened", async () => {
+    const secondThreadId = ThreadId.make("thread-browser-test-second");
+    const snapshot = addThreadToSnapshot(
+      addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID),
+      secondThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await page.getByLabelText("Toggle diff panel").click();
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+
+      await page.getByTestId(`thread-row-${secondThreadId}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(secondThreadId),
+        "Route should switch to the second thread.",
+      );
+
+      const secondThreadKey = scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, secondThreadId));
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[secondThreadKey]).toBeUndefined();
+        expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
+      });
+
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch back to the first thread.",
+      );
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("clears another chat's diff state when opening its agent run", async () => {
+    const secondThreadId = ThreadId.make("thread-browser-test-agent-parent");
+    const agentTaskId = "agent-browser-test";
+    const virtualAgentThreadId = `agent-run:${secondThreadId}:${agentTaskId}`;
+    const snapshot = addThreadToSnapshot(
+      addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID),
+      secondThreadId,
+    );
+    const snapshotWithAgentRun: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === secondThreadId
+          ? {
+              ...thread,
+              activities: [
+                {
+                  id: EventId.make("activity-agent-browser-test"),
+                  tone: "info",
+                  kind: "task.started",
+                  summary: "Agent browser test",
+                  payload: {
+                    taskId: agentTaskId,
+                    taskType: "background-agent",
+                    name: "Agent browser test",
+                  },
+                  turnId: null,
+                  sequence: 1,
+                  createdAt: isoAt(1_000),
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: snapshotWithAgentRun,
+      initialPath: serverThreadPath(secondThreadId),
+    });
+
+    async function expectAgentRunWithoutDiff() {
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(secondThreadId),
+        "Route should switch to the agent run's parent thread.",
+      );
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.search).toMatchObject({
+          agent: agentTaskId,
+        });
+        expect(mounted.router.state.location.search.diff).toBeUndefined();
+      });
+    }
+
+    async function returnToDiffChat() {
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch back to the diff chat.",
+      );
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+    }
+
+    try {
+      await expect
+        .element(page.getByTestId(`thread-row-${virtualAgentThreadId}`))
+        .toBeInTheDocument();
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch to the diff chat.",
+      );
+      await page.getByLabelText("Toggle diff panel").click();
+      await page.getByTestId(`thread-row-${virtualAgentThreadId}`).click();
+      await expectAgentRunWithoutDiff();
+
+      await returnToDiffChat();
+
+      const agentRow = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(`[data-testid="thread-row-${virtualAgentThreadId}"]`),
+        "Unable to find the virtual agent row.",
+      );
+      agentRow.focus();
+      await userEvent.keyboard("{Enter}");
+      await expectAgentRunWithoutDiff();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("opens a discovered localhost port from the Sidebar and focuses its thread", async () => {
     const secondaryThreadId = ThreadId.make("thread-secondary-project");
     const preview = createPreviewSnapshot("preview-discovered", THREAD_ID);
