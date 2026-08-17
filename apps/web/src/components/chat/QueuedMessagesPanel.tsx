@@ -1,12 +1,16 @@
 import type { OrchestrationQueuedTurn, QueuedTurnId } from "@t3tools/contracts";
 import { Check, Pencil, Trash2, X } from "lucide-react";
-import { memo, useState } from "react";
+import { memo } from "react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>;
-  onUpdateQueuedTurn: (queuedTurnId: QueuedTurnId, text: string) => void;
+  editingQueuedTurnId: QueuedTurnId | null;
+  editingText: string;
+  onStartEditingQueuedTurn: (queuedTurn: OrchestrationQueuedTurn) => void;
+  onCancelEditingQueuedTurn: () => void;
+  onSaveEditingQueuedTurn: () => void;
   onDeleteQueuedTurn: (queuedTurnId: QueuedTurnId) => void;
 }
 
@@ -36,12 +40,13 @@ function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
 
 export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   queuedTurns,
-  onUpdateQueuedTurn,
+  editingQueuedTurnId,
+  editingText,
+  onStartEditingQueuedTurn,
+  onCancelEditingQueuedTurn,
+  onSaveEditingQueuedTurn,
   onDeleteQueuedTurn,
 }: QueuedMessagesPanelProps) {
-  const [editingId, setEditingId] = useState<QueuedTurnId | null>(null);
-  const [editingText, setEditingText] = useState("");
-
   // Labels track the real dispatch position: a hidden handoff continuation is
   // still queued ahead of the user's own messages and runs before them.
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
@@ -51,25 +56,11 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
     return null;
   }
 
-  const stopEditing = () => {
-    setEditingId(null);
-    setEditingText("");
-  };
-
-  const commitEdit = (queuedTurn: OrchestrationQueuedTurn) => {
-    const trimmed = editingText.trim();
-    if (trimmed.length === 0 && queuedTurn.message.attachments.length === 0) {
-      return;
-    }
-    onUpdateQueuedTurn(queuedTurn.id, editingText);
-    stopEditing();
-  };
-
   return (
     <div className="composer-input-font border-b border-border/55 px-3 py-2">
       <ul className="flex flex-col gap-0.5">
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
-          const isEditing = editingId === queuedTurn.id;
+          const isEditing = editingQueuedTurnId === queuedTurn.id;
           const isPaused = queuedTurn.failedAt !== null;
           const meta = attachmentLabel(queuedTurn);
           const label = queueIndex === 0 ? "Up next" : `Queued ${queueIndex + 1}`;
@@ -88,7 +79,12 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                       Editing queued message
                     </span>
                     <div className="flex items-center gap-1">
-                      <Button type="button" size="xs" variant="ghost" onClick={stopEditing}>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="ghost"
+                        onClick={onCancelEditingQueuedTurn}
+                      >
                         <X /> Cancel
                       </Button>
                       <Button
@@ -98,27 +94,12 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                           editingText.trim().length === 0 &&
                           queuedTurn.message.attachments.length === 0
                         }
-                        onClick={() => commitEdit(queuedTurn)}
+                        onClick={onSaveEditingQueuedTurn}
                       >
                         <Check /> Save
                       </Button>
                     </div>
                   </div>
-                  <textarea
-                    autoFocus
-                    value={editingText}
-                    onChange={(event) => setEditingText(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        stopEditing();
-                      } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                        event.preventDefault();
-                        commitEdit(queuedTurn);
-                      }
-                    }}
-                    className="min-h-10 w-full resize-y rounded-md bg-muted/45 px-2 py-1.5 text-foreground outline-none ring-ring/30 transition-shadow placeholder:text-muted-foreground/60 focus-visible:ring-2"
-                  />
                 </div>
               ) : (
                 <div className="flex items-center gap-2.5">
@@ -145,10 +126,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                       variant="ghost"
                       aria-label="Edit queued message"
                       title="Edit"
-                      onClick={() => {
-                        setEditingId(queuedTurn.id);
-                        setEditingText(queuedTurn.message.text);
-                      }}
+                      onClick={() => onStartEditingQueuedTurn(queuedTurn)}
                     >
                       <Pencil />
                     </Button>
