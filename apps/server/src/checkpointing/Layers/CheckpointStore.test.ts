@@ -181,6 +181,207 @@ describe("CheckpointStoreLive range resolution", () => {
       expect(diff).toContain("+# changed");
     }),
   );
+
+  it.effect("reuses base projection for the same immutable checkpoint pair", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-checkpoint-store-projection-cache-hit");
+      const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+      const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+      const executeInputs: Array<ExecuteGitInput> = [];
+      const gitCoreLayer = Layer.mock(GitCore)({
+        execute: (input) =>
+          Effect.sync(() => {
+            executeInputs.push(input);
+            const revision = input.args[3];
+            if (revision === `${fromCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "from-oid\n");
+            }
+            if (revision === `${toCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "to-oid\n");
+            }
+            if (revision === "from-oid^") {
+              return executeGitResult(0, "from-base\n");
+            }
+            if (revision === "to-oid^") {
+              return executeGitResult(0, "to-base\n");
+            }
+            if (input.args[0] === "reflog") {
+              return executeGitResult(
+                0,
+                "to-base rebase (finish): returning to refs/heads/thread\nfrom-base commit: before\n",
+              );
+            }
+            if (input.args[0] === "symbolic-ref") {
+              return executeGitResult(0, "thread\n");
+            }
+            if (input.args[0] === "for-each-ref") {
+              return executeGitResult(0, "foreign-tip\n");
+            }
+            if (input.args[0] === "rev-list" && input.args.includes("--parents")) {
+              return executeGitResult(0, "to-base from-base\nfrom-base root\n");
+            }
+            if (input.args[0] === "rev-list") {
+              return executeGitResult(0, "");
+            }
+            if (input.args[0] === "merge-base") {
+              return executeGitResult(0, "from-base\n");
+            }
+            if (input.args[0] === "merge-tree") {
+              return executeGitResult(0, "projected-tree\n");
+            }
+            if (input.args[0] === "diff") {
+              return executeGitResult(0, "diff\n");
+            }
+            throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
+          }),
+      });
+      const checkpointStoreLayer = CheckpointStoreLive.pipe(
+        Layer.provide(gitCoreLayer),
+        Layer.provide(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        const input = { cwd: "/tmp/workspace", fromCheckpointRef, toCheckpointRef };
+        yield* checkpointStore.diffCheckpoints(input);
+        yield* checkpointStore.diffCheckpointFiles(input);
+      }).pipe(Effect.provide(checkpointStoreLayer));
+
+      expect(executeInputs.filter((input) => input.args[0] === "reflog")).toHaveLength(1);
+      expect(executeInputs.filter((input) => input.args[0] === "merge-tree")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("computes base projection separately for different immutable pairs", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-checkpoint-store-projection-cache-miss");
+      const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+      const firstToCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+      const secondToCheckpointRef = checkpointRefForThreadTurn(threadId, 3);
+      const executeInputs: Array<ExecuteGitInput> = [];
+      const gitCoreLayer = Layer.mock(GitCore)({
+        execute: (input) =>
+          Effect.sync(() => {
+            executeInputs.push(input);
+            const revision = input.args[3];
+            if (revision === `${fromCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "from-oid\n");
+            }
+            if (revision === `${firstToCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "to-oid-1\n");
+            }
+            if (revision === `${secondToCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "to-oid-2\n");
+            }
+            if (revision === "from-oid^") {
+              return executeGitResult(0, "from-base\n");
+            }
+            if (revision === "to-oid-1^" || revision === "to-oid-2^") {
+              return executeGitResult(0, "to-base\n");
+            }
+            if (input.args[0] === "reflog") {
+              return executeGitResult(
+                0,
+                "to-base rebase (finish): returning to refs/heads/thread\nfrom-base commit: before\n",
+              );
+            }
+            if (input.args[0] === "symbolic-ref") {
+              return executeGitResult(0, "thread\n");
+            }
+            if (input.args[0] === "for-each-ref") {
+              return executeGitResult(0, "foreign-tip\n");
+            }
+            if (input.args[0] === "rev-list" && input.args.includes("--parents")) {
+              return executeGitResult(0, "to-base from-base\nfrom-base root\n");
+            }
+            if (input.args[0] === "rev-list") {
+              return executeGitResult(0, "");
+            }
+            if (input.args[0] === "merge-base") {
+              return executeGitResult(0, "from-base\n");
+            }
+            if (input.args[0] === "merge-tree") {
+              return executeGitResult(0, "projected-tree\n");
+            }
+            if (input.args[0] === "diff") {
+              return executeGitResult(0, "diff\n");
+            }
+            throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
+          }),
+      });
+      const checkpointStoreLayer = CheckpointStoreLive.pipe(
+        Layer.provide(gitCoreLayer),
+        Layer.provide(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        yield* checkpointStore.diffCheckpoints({
+          cwd: "/tmp/workspace",
+          fromCheckpointRef,
+          toCheckpointRef: firstToCheckpointRef,
+        });
+        yield* checkpointStore.diffCheckpoints({
+          cwd: "/tmp/workspace",
+          fromCheckpointRef,
+          toCheckpointRef: secondToCheckpointRef,
+        });
+      }).pipe(Effect.provide(checkpointStoreLayer));
+
+      expect(executeInputs.filter((input) => input.args[0] === "reflog")).toHaveLength(2);
+      expect(executeInputs.filter((input) => input.args[0] === "merge-tree")).toHaveLength(2);
+    }),
+  );
+
+  it.effect("re-resolves mutable HEAD fallbacks instead of caching them as checkpoint pairs", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-checkpoint-store-projection-workspace");
+      const missingFromCheckpointRef = checkpointBaselineRefForThreadTurn(threadId, 1);
+      const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+      const executeInputs: Array<ExecuteGitInput> = [];
+      let headLookupCount = 0;
+      const gitCoreLayer = Layer.mock(GitCore)({
+        execute: (input) =>
+          Effect.sync(() => {
+            executeInputs.push(input);
+            const revision = input.args[3];
+            if (revision === `${missingFromCheckpointRef}^{commit}`) {
+              return executeGitResult(1);
+            }
+            if (revision === `${toCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "to-oid\n");
+            }
+            if (input.args[0] === "rev-parse" && input.args.at(-1) === "HEAD^{commit}") {
+              headLookupCount += 1;
+              return executeGitResult(0, `workspace-head-${headLookupCount}\n`);
+            }
+            if (input.args[0] === "diff") {
+              return executeGitResult(0, "diff\n");
+            }
+            throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
+          }),
+      });
+      const checkpointStoreLayer = CheckpointStoreLive.pipe(
+        Layer.provide(gitCoreLayer),
+        Layer.provide(NodeServices.layer),
+      );
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        const input = {
+          cwd: "/tmp/workspace",
+          fromCheckpointRef: missingFromCheckpointRef,
+          toCheckpointRef,
+          fallbackFromToHead: true,
+        };
+        yield* checkpointStore.diffCheckpoints(input);
+        yield* checkpointStore.diffCheckpoints(input);
+      }).pipe(Effect.provide(checkpointStoreLayer));
+
+      expect(headLookupCount).toBe(2);
+      expect(executeInputs.filter((input) => input.args[0] === "reflog")).toHaveLength(0);
+    }),
+  );
 });
 
 it.layer(TestLayer)("CheckpointStoreLive", (it) => {
