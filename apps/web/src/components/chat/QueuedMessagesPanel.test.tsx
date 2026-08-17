@@ -39,7 +39,25 @@ function render(queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>) {
   return renderToStaticMarkup(
     <QueuedMessagesPanel
       queuedTurns={queuedTurns}
-      onUpdateQueuedTurn={() => {}}
+      editingQueuedTurnId={null}
+      editingText=""
+      onStartEditingQueuedTurn={() => {}}
+      onCancelEditingQueuedTurn={() => {}}
+      onSaveEditingQueuedTurn={() => {}}
+      onDeleteQueuedTurn={() => {}}
+    />,
+  );
+}
+
+function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
+  return renderToStaticMarkup(
+    <QueuedMessagesPanel
+      queuedTurns={[queuedTurn]}
+      editingQueuedTurnId={queuedTurn.id}
+      editingText={queuedTurn.message.text}
+      onStartEditingQueuedTurn={() => {}}
+      onCancelEditingQueuedTurn={() => {}}
+      onSaveEditingQueuedTurn={() => {}}
       onDeleteQueuedTurn={() => {}}
     />,
   );
@@ -73,5 +91,13 @@ describe("QueuedMessagesPanel", () => {
     expect(html).toContain("Continue in feature/handoff");
     expect(html).toContain("Paused");
     expect(html).toContain("Delete queued message");
+  });
+
+  it("shows edit actions without rendering a separate text box", () => {
+    const html = renderEditing(queuedTurn("q-1", "Run the tests"));
+
+    expect(html).toContain("Editing queued message");
+    expect(html).toContain("Save");
+    expect(html).not.toContain("<textarea");
   });
 });

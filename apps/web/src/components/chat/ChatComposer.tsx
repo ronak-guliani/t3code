@@ -758,6 +758,11 @@ export const ChatComposer = memo(
     const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
     const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
     const [isComposerFocused, setIsComposerFocused] = useState(false);
+    const [editingQueuedTurn, setEditingQueuedTurn] = useState<{
+      id: QueuedTurnId;
+      text: string;
+      hasAttachments: boolean;
+    } | null>(null);
     const isMobileViewport = useMediaQuery("max-sm");
     const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
 
@@ -790,6 +795,9 @@ export const ChatComposer = memo(
         }),
       [composerImages.length, composerTerminalContexts, prompt],
     );
+    const hasComposerSubmitContent = editingQueuedTurn
+      ? editingQueuedTurn.text.trim().length > 0 || editingQueuedTurn.hasAttachments
+      : composerSendState.hasSendableContent;
 
     // ------------------------------------------------------------------
     // Derived: composer trigger / menu
@@ -952,11 +960,11 @@ export const ChatComposer = memo(
       if (showPlanFollowUpPrompt) {
         return prompt.trim().length > 0 ? "plan:refine" : "plan:implement";
       }
-      return `idle:${composerSendState.hasSendableContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
+      return `idle:${hasComposerSubmitContent}:${isSendBusy}:${isConnecting}:${isPreparingWorktree}`;
     }, [
       activePendingIsResponding,
       activePendingProgress,
-      composerSendState.hasSendableContent,
+      hasComposerSubmitContent,
       isConnecting,
       isPreparingWorktree,
       isSendBusy,
@@ -1035,7 +1043,7 @@ export const ChatComposer = memo(
       [activePendingIsResponding, activePendingProgress, activePendingResolvedAnswers],
     );
     const collapsedComposerPrimaryActionDisabled =
-      isSendBusy || isConnecting || !composerSendState.hasSendableContent;
+      isSendBusy || isConnecting || !hasComposerSubmitContent;
     const collapsedComposerPrimaryActionLabel =
       phase === "running" ? "Queue message" : "Send message";
     const showMobilePendingAnswerActions =
@@ -1046,10 +1054,63 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     const setPrompt = useCallback(
       (nextPrompt: string) => {
+        if (editingQueuedTurn) {
+          setEditingQueuedTurn((current) => (current ? { ...current, text: nextPrompt } : null));
+          return;
+        }
         setComposerDraftPrompt(composerDraftTarget, nextPrompt);
       },
-      [composerDraftTarget, setComposerDraftPrompt],
+      [composerDraftTarget, editingQueuedTurn, setComposerDraftPrompt],
     );
+
+    const stopEditingQueuedTurn = useCallback(() => {
+      setEditingQueuedTurn(null);
+      promptRef.current = prompt;
+      const nextCursor = collapseExpandedComposerCursor(prompt, prompt.length);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(detectComposerTrigger(prompt, prompt.length));
+      window.requestAnimationFrame(() => {
+        composerEditorRef.current?.focusAt(nextCursor);
+      });
+    }, [prompt, promptRef]);
+
+    const abandonEditingQueuedTurn = useCallback(() => {
+      setEditingQueuedTurn(null);
+      promptRef.current = prompt;
+      const nextCursor = collapseExpandedComposerCursor(prompt, prompt.length);
+      setComposerCursor(nextCursor);
+      setComposerTrigger(detectComposerTrigger(prompt, prompt.length));
+    }, [prompt, promptRef]);
+
+    const startEditingQueuedTurn = useCallback(
+      (queuedTurn: OrchestrationQueuedTurn) => {
+        const nextText = queuedTurn.message.text;
+        setEditingQueuedTurn({
+          id: queuedTurn.id,
+          text: nextText,
+          hasAttachments: queuedTurn.message.attachments.length > 0,
+        });
+        promptRef.current = nextText;
+        const nextCursor = collapseExpandedComposerCursor(nextText, nextText.length);
+        setComposerCursor(nextCursor);
+        setComposerTrigger(detectComposerTrigger(nextText, nextText.length));
+        window.requestAnimationFrame(() => {
+          composerEditorRef.current?.focusAt(nextCursor);
+        });
+      },
+      [promptRef],
+    );
+
+    const saveEditingQueuedTurn = useCallback(() => {
+      if (
+        !editingQueuedTurn ||
+        (editingQueuedTurn.text.trim().length === 0 && !editingQueuedTurn.hasAttachments)
+      ) {
+        return;
+      }
+      onUpdateQueuedTurn(editingQueuedTurn.id, editingQueuedTurn.text);
+      stopEditingQueuedTurn();
+    }, [editingQueuedTurn, onUpdateQueuedTurn, stopEditingQueuedTurn]);
 
     const addComposerImage = useCallback(
       (image: ComposerImageAttachment) => {
@@ -1099,9 +1160,32 @@ export const ChatComposer = memo(
     // Sync refs back to parent
     // ------------------------------------------------------------------
     useEffect(() => {
+      if (editingQueuedTurn) {
+        return;
+      }
       promptRef.current = prompt;
       setComposerCursor((existing) => clampCollapsedComposerCursor(prompt, existing));
-    }, [prompt, promptRef]);
+    }, [editingQueuedTurn, prompt, promptRef]);
+
+    useEffect(() => {
+      if (
+        editingQueuedTurn &&
+        !queuedTurns.some((queuedTurn) => queuedTurn.id === editingQueuedTurn.id)
+      ) {
+        stopEditingQueuedTurn();
+      }
+    }, [editingQueuedTurn, queuedTurns, stopEditingQueuedTurn]);
+
+    useEffect(() => {
+      if (editingQueuedTurn && (activePendingApproval || pendingUserInputs.length > 0)) {
+        abandonEditingQueuedTurn();
+      }
+    }, [
+      abandonEditingQueuedTurn,
+      activePendingApproval,
+      editingQueuedTurn,
+      pendingUserInputs.length,
+    ]);
 
     useEffect(() => {
       composerImagesRef.current = composerImages;
@@ -1189,6 +1273,7 @@ export const ChatComposer = memo(
     // Reset compositor state on thread/draft change
     // ------------------------------------------------------------------
     useEffect(() => {
+      setEditingQueuedTurn(null);
       setComposerHighlightedItemId(null);
       setComposerCursor(
         collapseExpandedComposerCursor(promptRef.current, promptRef.current.length),
@@ -1349,6 +1434,15 @@ export const ChatComposer = memo(
           );
           return;
         }
+        if (editingQueuedTurn) {
+          promptRef.current = nextPrompt;
+          setEditingQueuedTurn((current) => (current ? { ...current, text: nextPrompt } : null));
+          setComposerCursor(nextCursor);
+          setComposerTrigger(
+            cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
+          );
+          return;
+        }
         promptRef.current = nextPrompt;
         setPrompt(nextPrompt);
         if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
@@ -1364,6 +1458,7 @@ export const ChatComposer = memo(
       },
       [
         activePendingProgress?.activeQuestion,
+        editingQueuedTurn,
         pendingUserInputs.length,
         onChangeActivePendingUserInputCustomAnswer,
         promptRef,
@@ -1595,12 +1690,25 @@ export const ChatComposer = memo(
 
     const submitComposer = useCallback(
       (event?: { preventDefault: () => void }) => {
+        if (editingQueuedTurn && !activePendingApproval && pendingUserInputs.length === 0) {
+          event?.preventDefault();
+          saveEditingQueuedTurn();
+          return;
+        }
         onSend(event);
         if (shouldBlurMobileComposerOnSubmit()) {
           blurMobileComposerAfterSend();
         }
       },
-      [blurMobileComposerAfterSend, onSend, shouldBlurMobileComposerOnSubmit],
+      [
+        blurMobileComposerAfterSend,
+        activePendingApproval,
+        editingQueuedTurn,
+        onSend,
+        pendingUserInputs.length,
+        saveEditingQueuedTurn,
+        shouldBlurMobileComposerOnSubmit,
+      ],
     );
 
     const expandMobileComposer = useCallback(() => {
@@ -1630,9 +1738,13 @@ export const ChatComposer = memo(
     // Callbacks: command key
     // ------------------------------------------------------------------
     const onComposerCommandKey = (
-      key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+      key: "ArrowDown" | "ArrowUp" | "Enter" | "Escape" | "Tab",
       event: KeyboardEvent,
     ) => {
+      if (key === "Escape" && editingQueuedTurn) {
+        stopEditingQueuedTurn();
+        return true;
+      }
       const { trigger } = resolveActiveComposerTrigger();
       const menuIsActive = composerMenuOpenRef.current || trigger !== null;
       if (menuIsActive) {
@@ -1663,6 +1775,7 @@ export const ChatComposer = memo(
     // ------------------------------------------------------------------
     const addComposerImages = (files: File[]) => {
       if (!activeThreadId || files.length === 0) return;
+      if (editingQueuedTurn) return;
       if (pendingUserInputs.length > 0) {
         toastManager.add({
           type: "error",
@@ -1946,10 +2059,10 @@ export const ChatComposer = memo(
             "group rounded-[22px] p-px transition-colors duration-200",
             composerProviderState.composerFrameClassName,
           )}
-          onDragEnter={onComposerDragEnter}
-          onDragOver={onComposerDragOver}
-          onDragLeave={onComposerDragLeave}
-          onDrop={onComposerDrop}
+          onDragEnter={editingQueuedTurn ? undefined : onComposerDragEnter}
+          onDragOver={editingQueuedTurn ? undefined : onComposerDragOver}
+          onDragLeave={editingQueuedTurn ? undefined : onComposerDragLeave}
+          onDrop={editingQueuedTurn ? undefined : onComposerDrop}
         >
           <div
             ref={composerSurfaceRef}
@@ -1981,7 +2094,11 @@ export const ChatComposer = memo(
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
                 queuedTurns={queuedTurns}
-                onUpdateQueuedTurn={onUpdateQueuedTurn}
+                editingQueuedTurnId={editingQueuedTurn?.id ?? null}
+                editingText={editingQueuedTurn?.text ?? ""}
+                onStartEditingQueuedTurn={startEditingQueuedTurn}
+                onCancelEditingQueuedTurn={stopEditingQueuedTurn}
+                onSaveEditingQueuedTurn={saveEditingQueuedTurn}
                 onDeleteQueuedTurn={onDeleteQueuedTurn}
               />
             )}
@@ -2087,6 +2204,7 @@ export const ChatComposer = memo(
 
               {!isComposerApprovalState &&
                 pendingUserInputs.length === 0 &&
+                !editingQueuedTurn &&
                 composerPreviewAnnotations.length > 0 && (
                   <ComposerPreviewAnnotationCards
                     annotations={composerPreviewAnnotations}
@@ -2104,6 +2222,7 @@ export const ChatComposer = memo(
 
               {!isComposerApprovalState &&
                 pendingUserInputs.length === 0 &&
+                !editingQueuedTurn &&
                 composerImages.length > 0 && (
                   <div className="mb-3 flex flex-wrap gap-2">
                     {composerImages
@@ -2183,11 +2302,11 @@ export const ChatComposer = memo(
                     ? ""
                     : activePendingProgress
                       ? activePendingProgress.customAnswer
-                      : prompt
+                      : (editingQueuedTurn?.text ?? prompt)
                 }
                 cursor={composerCursor}
                 terminalContexts={
-                  !isComposerApprovalState && pendingUserInputs.length === 0
+                  !isComposerApprovalState && pendingUserInputs.length === 0 && !editingQueuedTurn
                     ? composerTerminalContexts
                     : []
                 }
@@ -2195,17 +2314,19 @@ export const ChatComposer = memo(
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}
                 onCommandKeyDown={onComposerCommandKey}
-                onPaste={onComposerPaste}
+                onPaste={editingQueuedTurn ? (event) => event.preventDefault() : onComposerPaste}
                 placeholder={
                   isComposerApprovalState
                     ? (activePendingApproval?.detail ?? "Resolve this approval request to continue")
                     : activePendingProgress
                       ? "Type your own answer, or leave this blank to use the selected option"
-                      : showPlanFollowUpPrompt && activeProposedPlan
-                        ? "Add feedback to refine the plan, or leave this blank to implement it"
-                        : phase === "disconnected"
-                          ? "Ask for follow-up changes or attach images"
-                          : "Ask anything, @tag files/folders, $use skills, or / for commands"
+                      : editingQueuedTurn
+                        ? "Edit queued message"
+                        : showPlanFollowUpPrompt && activeProposedPlan
+                          ? "Add feedback to refine the plan, or leave this blank to implement it"
+                          : phase === "disconnected"
+                            ? "Ask for follow-up changes or attach images"
+                            : "Ask anything, @tag files/folders, $use skills, or / for commands"
                 }
                 disabled={isConnecting || isComposerApprovalState}
               />
@@ -2306,7 +2427,7 @@ export const ChatComposer = memo(
                     isSendBusy={isSendBusy}
                     isConnecting={isConnecting}
                     isPreparingWorktree={isPreparingWorktree}
-                    hasSendableContent={composerSendState.hasSendableContent}
+                    hasSendableContent={hasComposerSubmitContent}
                     preserveComposerFocusOnPointerDown={isMobileViewport}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}
