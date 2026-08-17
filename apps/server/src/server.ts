@@ -217,6 +217,7 @@ const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceL
 const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(PullRequestLayerLive),
   Layer.provide(PullRequestMonitorFeedbackServiceLive),
+  Layer.provideMerge(GitManagerLayerLive),
 );
 
 // Associating a pull request with a chat is the ownership signal, so monitoring follows it.

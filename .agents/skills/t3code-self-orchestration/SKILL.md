@@ -15,7 +15,13 @@ child's isolated worktree. Do not assemble those steps with terminal commands or
 
 ## Quick start
 
-If the MCP tool is deferred, load it with tool search, then call `create_nested_thread` with:
+If the MCP tool is deferred, you MUST use the tool-search API to load the `create_nested_thread`
+function definition from the `t3-tools` tool resource, then call the loaded function. Do not use
+MCP resources/list as an availability check: zero non-invokable resources does not mean the server
+exposes zero tools. Do not infer that the authenticated `t3-tools` server lacks the tool from the
+initially loaded tool list or resource count.
+
+Call `create_nested_thread` with:
 
 ```json
 {
