@@ -11,7 +11,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { Effect, Layer, FileSystem, Path } from "effect";
+import { Cache, Data, Duration, Effect, Exit, Layer, FileSystem, Path } from "effect";
 
 import { CheckpointInvariantError, CheckpointRefUnavailableError } from "../Errors.ts";
 import { GitCommandError } from "@t3tools/contracts";
@@ -33,9 +33,17 @@ const CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES = 10_000_000;
  * plain checkpoint-to-checkpoint diff.
  */
 const BASE_MOVEMENT_MAX_COMMITS = 1000;
+const BASE_PROJECTION_CACHE_MAX_ENTRIES = 128;
+const BASE_PROJECTION_CACHE_TTL = Duration.seconds(5);
 
 /** Reflog subjects for operations that move a workspace onto history it did not author. */
 const BASE_MOVING_REFLOG_OPERATIONS = /^(rebase|merge|pull)\b/;
+
+class BaseProjectionCacheKey extends Data.Class<{
+  readonly cwd: string;
+  readonly fromCommitOid: string;
+  readonly toCommitOid: string;
+}> {}
 
 function parseCommitOids(stdout: string): ReadonlyArray<string> {
   return stdout
@@ -515,78 +523,91 @@ const makeCheckpointStore = Effect.gen(function* () {
    * Returns the original checkpoint commit whenever the base did not move or
    * the projection cannot be computed cleanly.
    */
+  const resolveBaseProjection = Effect.fn("resolveBaseProjection")(function* (input: {
+    readonly cwd: string;
+    readonly fromCommitOid: string;
+    readonly toCommitOid: string;
+  }) {
+    const [fromBaseCommit, toBaseCommit] = yield* Effect.all(
+      [
+        resolveCommitParent(input.cwd, input.fromCommitOid),
+        resolveCommitParent(input.cwd, input.toCommitOid),
+      ],
+      { concurrency: "unbounded" },
+    );
+    if (fromBaseCommit === null || toBaseCommit === null || fromBaseCommit === toBaseCommit) {
+      return input.fromCommitOid;
+    }
+
+    const baseMovement = yield* resolveBaseMovement({
+      cwd: input.cwd,
+      fromBaseCommit,
+      toBaseCommit,
+    });
+    if (!baseMovement.baseMoved) {
+      return input.fromCommitOid;
+    }
+
+    const newBaseCommit = yield* resolveForeignBaseCommit({
+      cwd: input.cwd,
+      fromBaseCommit,
+      toBaseCommit,
+    });
+    const projectedBaseCommit = baseMovement.fastForwardBaseCommit ?? newBaseCommit;
+    if (projectedBaseCommit === null) {
+      return input.fromCommitOid;
+    }
+
+    // A rebase leaves `fromBaseCommit` off the new base's history, so it is not
+    // a usable merge base: replaying against it would revert earlier turns' work
+    // out of the projection. Their common ancestor is equivalent when the base
+    // only moved forward, and correct when it was rewritten.
+    const mergeBaseResult = yield* git.execute({
+      operation: "CheckpointStore.resolveProjectionMergeBase",
+      cwd: input.cwd,
+      args: ["merge-base", projectedBaseCommit, fromBaseCommit],
+      allowNonZeroExit: true,
+    });
+    if (mergeBaseResult.code !== 0) {
+      return input.fromCommitOid;
+    }
+    const mergeBaseCommit = mergeBaseResult.stdout.trim();
+    if (mergeBaseCommit.length === 0) {
+      return input.fromCommitOid;
+    }
+
+    const mergeResult = yield* git.execute({
+      operation: "CheckpointStore.projectFromCheckpointOntoBase",
+      cwd: input.cwd,
+      args: [
+        "merge-tree",
+        "--write-tree",
+        `--merge-base=${mergeBaseCommit}`,
+        projectedBaseCommit,
+        input.fromCommitOid,
+      ],
+      allowNonZeroExit: true,
+      maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+    });
+    if (mergeResult.code !== 0) {
+      return input.fromCommitOid;
+    }
+    const treeOid = mergeResult.stdout.split("\n")[0]?.trim() ?? "";
+    return treeOid.length > 0 ? treeOid : input.fromCommitOid;
+  });
+
+  const baseProjectionCache = yield* Cache.makeWith(resolveBaseProjection, {
+    capacity: BASE_PROJECTION_CACHE_MAX_ENTRIES,
+    timeToLive: (exit) => (Exit.isSuccess(exit) ? BASE_PROJECTION_CACHE_TTL : Duration.zero),
+  });
+
   const projectFromCheckpointOntoBase = Effect.fn("projectFromCheckpointOntoBase")(
     function* (input: {
       readonly cwd: string;
       readonly fromCommitOid: string;
       readonly toCommitOid: string;
     }) {
-      const [fromBaseCommit, toBaseCommit] = yield* Effect.all(
-        [
-          resolveCommitParent(input.cwd, input.fromCommitOid),
-          resolveCommitParent(input.cwd, input.toCommitOid),
-        ],
-        { concurrency: "unbounded" },
-      );
-      if (fromBaseCommit === null || toBaseCommit === null || fromBaseCommit === toBaseCommit) {
-        return input.fromCommitOid;
-      }
-
-      const baseMovement = yield* resolveBaseMovement({
-        cwd: input.cwd,
-        fromBaseCommit,
-        toBaseCommit,
-      });
-      if (!baseMovement.baseMoved) {
-        return input.fromCommitOid;
-      }
-
-      const newBaseCommit = yield* resolveForeignBaseCommit({
-        cwd: input.cwd,
-        fromBaseCommit,
-        toBaseCommit,
-      });
-      const projectedBaseCommit = baseMovement.fastForwardBaseCommit ?? newBaseCommit;
-      if (projectedBaseCommit === null) {
-        return input.fromCommitOid;
-      }
-
-      // A rebase leaves `fromBaseCommit` off the new base's history, so it is not
-      // a usable merge base: replaying against it would revert earlier turns' work
-      // out of the projection. Their common ancestor is equivalent when the base
-      // only moved forward, and correct when it was rewritten.
-      const mergeBaseResult = yield* git.execute({
-        operation: "CheckpointStore.resolveProjectionMergeBase",
-        cwd: input.cwd,
-        args: ["merge-base", projectedBaseCommit, fromBaseCommit],
-        allowNonZeroExit: true,
-      });
-      if (mergeBaseResult.code !== 0) {
-        return input.fromCommitOid;
-      }
-      const mergeBaseCommit = mergeBaseResult.stdout.trim();
-      if (mergeBaseCommit.length === 0) {
-        return input.fromCommitOid;
-      }
-
-      const mergeResult = yield* git.execute({
-        operation: "CheckpointStore.projectFromCheckpointOntoBase",
-        cwd: input.cwd,
-        args: [
-          "merge-tree",
-          "--write-tree",
-          `--merge-base=${mergeBaseCommit}`,
-          projectedBaseCommit,
-          input.fromCommitOid,
-        ],
-        allowNonZeroExit: true,
-        maxOutputBytes: CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
-      });
-      if (mergeResult.code !== 0) {
-        return input.fromCommitOid;
-      }
-      const treeOid = mergeResult.stdout.split("\n")[0]?.trim() ?? "";
-      return treeOid.length > 0 ? treeOid : input.fromCommitOid;
+      return yield* Cache.get(baseProjectionCache, new BaseProjectionCacheKey(input));
     },
   );
 
