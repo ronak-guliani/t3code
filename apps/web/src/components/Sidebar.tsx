@@ -448,8 +448,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const pendingTurn = usePendingTurnStore(
     (state) => state.pendingByThreadKey[pendingTurnKey] ?? null,
   );
-  const composerPrompt = useComposerDraftStore(
-    (state) => state.draftsByThreadKey[threadKey]?.prompt ?? null,
+  const composerPrompt = useComposerDraftStore((state) =>
+    virtualAgentRun ? null : (state.draftsByThreadKey[threadKey]?.prompt ?? null),
   );
   const composerDraftPreview = isActive ? null : resolveExistingThreadDraftPreview(composerPrompt);
   const effectiveThreadStatus = resolveSidebarThreadRowStatus({
