@@ -1,3 +1,5 @@
+import * as Path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,7 +21,7 @@ describe("enableV8CompileCache", () => {
 describe("resolveCompileCacheDir", () => {
   it("namespaces the cache directory by app name under the provided base dir", () => {
     expect(resolveCompileCacheDir("t3code-backend", "/data/user")).toBe(
-      "/data/user/t3code-backend-v8-compile-cache",
+      Path.join("/data/user", "t3code-backend-v8-compile-cache"),
     );
   });
 

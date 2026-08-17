@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import * as Clock from "effect/Clock";
 import type {
   RelayClientInstallProgressEvent,
@@ -204,7 +205,11 @@ export const makeCloudflaredRelayClient = Effect.fn("cloudflared.make")(function
   ) {
     const info = yield* fileSystem.stat(executablePath).pipe(Effect.option);
     if (Option.isNone(info) || info.value.type !== "File") return false;
-    return platform === "win32" || (info.value.mode & 0o111) !== 0;
+    // POSIX mode bits only carry real meaning on the actual filesystem the
+    // process runs on. `platform` may be injected (e.g. by tests simulating a
+    // different target platform), so it must not decide whether mode bits are
+    // trustworthy here; that depends on the real host OS.
+    return NodeOS.platform() === "win32" || (info.value.mode & 0o111) !== 0;
   });
 
   const resolvePathExecutable = Effect.gen(function* () {
