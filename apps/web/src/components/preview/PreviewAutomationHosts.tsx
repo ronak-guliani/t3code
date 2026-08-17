@@ -13,6 +13,8 @@ import {
   type PreviewAutomationResizeResult,
   type PreviewAutomationSetColorSchemeInput,
   type PreviewAutomationSetColorSchemeResult,
+  type PreviewAutomationOpenAndSnapshotResult,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationSnapshotInput,
   type PreviewAutomationTabsResult,
   type PreviewAutomationHost as PreviewAutomationHostState,
@@ -646,10 +648,14 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           case "snapshot": {
             const ready = await requireReadyTab();
             const input = (request.input ?? {}) as PreviewAutomationSnapshotInput;
-            return await ready.bridge.automation.snapshot(
+            const snapshot = await ready.bridge.automation.snapshot(
               ready.runtimeTabId,
               resolveSnapshotBudgets(input),
             );
+            return {
+              ...snapshot,
+              tabId: ready.tabId,
+            } satisfies PreviewAutomationSnapshot;
           }
           case "openAndSnapshot": {
             const input = request.input as PreviewAutomationOpenAndSnapshotInput;
@@ -789,7 +795,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               maxConsoleEntries: input.maxConsoleEntries,
               maxNetworkEntries: input.maxNetworkEntries,
             });
-            return await bridge.automation.snapshot(activeRuntimeTabId, snapshotInput);
+            const snapshot = await bridge.automation.snapshot(activeRuntimeTabId, snapshotInput);
+            return {
+              ...snapshot,
+              tabId: activeTabId,
+            } satisfies PreviewAutomationOpenAndSnapshotResult;
           }
           case "click": {
             const ready = await requireReadyTab();

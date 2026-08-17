@@ -5,6 +5,7 @@ import {
   PreviewAutomationListTabsInput,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenAndSnapshotInput,
+  PreviewAutomationOpenAndSnapshotResult,
   PreviewAutomationOpenInput,
   PreviewAutomationPressInput,
   PreviewAutomationRecordingArtifact,
@@ -130,9 +131,9 @@ export const PreviewSnapshotTool = readonlyBrowserTool(
 export const PreviewOpenAndSnapshotTool = safeBrowserTool(
   Tool.make("preview_open_and_snapshot", {
     description:
-      "Open or reuse a collaborative browser tab, optionally navigate (url or environment-port target), wait for readiness, and return a snapshot in one step. Prefer this over separate open+navigate+snapshot when starting work on a page.",
+      "Open or reuse a collaborative browser tab, optionally navigate (url or environment-port target), wait for readiness, and return a snapshot (including tabId) in one step. Prefer this over separate open+navigate+snapshot when starting work on a page. The returned tabId becomes the agent session's current tab for later untargeted preview tools.",
     parameters: PreviewAutomationOpenAndSnapshotInput,
-    success: PreviewAutomationSnapshot,
+    success: PreviewAutomationOpenAndSnapshotResult,
     failure: PreviewAutomationError,
     dependencies,
   }).annotate(Tool.Title, "Open browser and snapshot"),

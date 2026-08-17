@@ -6,6 +6,7 @@ import type {
   PreviewAutomationRecordingStatus,
   PreviewAutomationResizeResult,
   PreviewAutomationSetColorSchemeResult,
+  PreviewAutomationOpenAndSnapshotResult,
   PreviewAutomationSnapshot,
   PreviewAutomationStatus,
   PreviewAutomationTabsResult,
@@ -76,7 +77,7 @@ const handlers = {
       ...(input.show === undefined ? {} : { show: input.show }),
       ...(input.reuseExistingTab === undefined ? {} : { reuseExistingTab: input.reuseExistingTab }),
     });
-    return invokeTargeted<PreviewAutomationSnapshot>(
+    return invokeTargeted<PreviewAutomationOpenAndSnapshotResult>(
       "openAndSnapshot",
       {
         ...input,

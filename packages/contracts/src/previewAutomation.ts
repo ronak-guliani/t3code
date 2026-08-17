@@ -542,7 +542,7 @@ export const PreviewAutomationActionEvent = Schema.Struct({
 });
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
-export const PreviewAutomationSnapshot = Schema.Struct({
+const PreviewAutomationSnapshotBodyFields = {
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
@@ -560,8 +560,25 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   }),
   /** Optional compact diagnostic summary for model context. */
   diagnosticsSummary: Schema.optional(Schema.String),
+};
+
+export const PreviewAutomationSnapshot = Schema.Struct({
+  /**
+   * Server tab id when known. Hosts should set this so the broker can pin the
+   * agent session's current tab after snapshot/openAndSnapshot.
+   */
+  tabId: Schema.optional(PreviewTabId),
+  ...PreviewAutomationSnapshotBodyFields,
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
+
+/** openAndSnapshot always returns the opened/reused server tab id. */
+export const PreviewAutomationOpenAndSnapshotResult = Schema.Struct({
+  tabId: PreviewTabId,
+  ...PreviewAutomationSnapshotBodyFields,
+});
+export type PreviewAutomationOpenAndSnapshotResult =
+  typeof PreviewAutomationOpenAndSnapshotResult.Type;
 
 export const DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT = 8_000;
 export const DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS = 80;
