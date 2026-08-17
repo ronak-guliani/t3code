@@ -650,14 +650,15 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("mirrors Electron's effective zoom across registration and navigation", () =>
+  effectIt.effect("preserves tab-owned zoom across registration and navigation", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         let effectiveZoom = 0.9;
-        let zoomReadable = true;
         let url = "https://example.com";
         const listeners = new Map<string, (...args: unknown[]) => void>();
-        const setZoomFactor = vi.fn();
+        const setZoomFactor = vi.fn((zoomFactor: number) => {
+          effectiveZoom = zoomFactor;
+        });
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -665,10 +666,7 @@ describe("PreviewManager", () => {
           getURL: () => url,
           getTitle: () => "Example",
           isLoading: () => false,
-          getZoomFactor: () => {
-            if (!zoomReadable) throw new Error("zoom unavailable");
-            return effectiveZoom;
-          },
+          getZoomFactor: () => effectiveZoom,
           setZoomFactor,
           on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
             listeners.set(event, listener);
@@ -696,18 +694,15 @@ describe("PreviewManager", () => {
         yield* manager.createTab("tab_zoom");
         yield* manager.registerWebview("tab_zoom", 42);
 
-        expect(states.at(-1)?.zoomFactor).toBe(0.9);
-        expect(setZoomFactor).not.toHaveBeenCalled();
+        expect(states.at(-1)?.zoomFactor).toBe(1);
+        expect(setZoomFactor).toHaveBeenCalledWith(1);
+
+        yield* manager.zoomIn("tab_zoom");
+        expect(states.at(-1)?.zoomFactor).toBe(1.1);
+        expect(effectiveZoom).toBe(1.1);
 
         effectiveZoom = 1.25;
-        listeners.get("did-navigate")?.();
-        yield* Effect.yieldNow;
-
-        expect(states.at(-1)?.zoomFactor).toBe(1.25);
-        expect(setZoomFactor).not.toHaveBeenCalled();
-
-        zoomReadable = false;
-        url = "https://example.com/after-zoom-read-failed";
+        url = "https://example.com/next-origin";
         listeners.get("did-navigate")?.();
         yield* Effect.yieldNow;
 
@@ -716,7 +711,8 @@ describe("PreviewManager", () => {
           url,
           title: "Example",
         });
-        expect(states.at(-1)?.zoomFactor).toBe(1.25);
+        expect(states.at(-1)?.zoomFactor).toBe(1.1);
+        expect(effectiveZoom).toBe(1.1);
 
         const replacementSetZoomFactor = vi.fn();
         fromId.mockReturnValue({
@@ -745,8 +741,8 @@ describe("PreviewManager", () => {
 
         yield* manager.registerWebview("tab_zoom", 43);
 
-        expect(replacementSetZoomFactor).toHaveBeenCalledWith(1.25);
-        expect(states.at(-1)?.zoomFactor).toBe(1.25);
+        expect(replacementSetZoomFactor).toHaveBeenCalledWith(1.1);
+        expect(states.at(-1)?.zoomFactor).toBe(1.1);
       }),
     ),
   );

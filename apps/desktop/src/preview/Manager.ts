@@ -1227,10 +1227,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       preserveLoadFailure: boolean,
     ) {
       if (wc.isDestroyed()) return;
-      const zoomFactor = yield* attempt(
-        { operation: "syncWebContentsState.getZoomFactor", tabId, webContentsId: wc.id },
-        () => wc.getZoomFactor(),
-      ).pipe(Effect.option);
+      const currentTab = (yield* SynchronizedRef.get(tabsRef)).get(tabId);
+      if (currentTab) {
+        yield* attempt(
+          { operation: "syncWebContentsState.restoreZoomFactor", tabId, webContentsId: wc.id },
+          () => wc.setZoomFactor(currentTab.zoomFactor),
+        ).pipe(Effect.ignore);
+      }
       const computedNavStatus = computeNavStatus(wc);
       const canGoBack = wc.navigationHistory.canGoBack();
       const canGoForward = wc.navigationHistory.canGoForward();
@@ -1252,7 +1255,6 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           navStatus,
           canGoBack,
           canGoForward,
-          ...(Option.isSome(zoomFactor) ? { zoomFactor: zoomFactor.value } : {}),
           updatedAt,
         };
         return [
@@ -1517,11 +1519,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const attached = yield* Ref.get(attachedRef);
     const annotationTheme = yield* Ref.get(annotationThemeRef);
     if (tab.webContentsId === webContentsId && attached.has(webContentsId)) {
-      const zoomFactor = yield* attempt(
-        { operation: "registerWebview.getZoomFactor", tabId, webContentsId },
-        () => wc.getZoomFactor(),
+      yield* attempt({ operation: "registerWebview.restoreZoomFactor", tabId, webContentsId }, () =>
+        wc.setZoomFactor(tab.zoomFactor),
       );
-      yield* update(tabId, { zoomFactor });
       yield* attempt({ operation: "registerWebview.sendTheme", tabId, webContentsId }, () =>
         wc.send(ANNOTATION_THEME_CHANNEL, annotationTheme),
       );
@@ -1548,18 +1548,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ) {
       return yield* new PreviewTabNotFoundError({ tabId });
     }
-    const zoomFactor =
-      replacedWebContentsId !== null
-        ? yield* attempt(
-            { operation: "registerWebview.restoreZoomFactor", tabId, webContentsId },
-            () => {
-              wc.setZoomFactor(currentTab.zoomFactor);
-              return currentTab.zoomFactor;
-            },
-          )
-        : yield* attempt({ operation: "registerWebview.getZoomFactor", tabId, webContentsId }, () =>
-            wc.getZoomFactor(),
-          );
+    const zoomFactor = yield* attempt(
+      { operation: "registerWebview.restoreZoomFactor", tabId, webContentsId },
+      () => {
+        wc.setZoomFactor(currentTab.zoomFactor);
+        return currentTab.zoomFactor;
+      },
+    );
     const registeredAt = yield* currentIso;
     yield* attachListeners(tabId, wc);
     const registration = yield* SynchronizedRef.modifyEffect(tabsRef, (tabs) =>

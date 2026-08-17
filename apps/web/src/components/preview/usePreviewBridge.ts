@@ -14,6 +14,7 @@ import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { previewBridge } from "./previewBridge";
+import { dispatchPreviewInteraction } from "./previewInteractionBus";
 
 /**
  * Mirrors low-latency desktop state into the store and reflects navigation
@@ -41,6 +42,9 @@ export function usePreviewBridge(input: {
     lastDesktopNavStatus.current = null;
     const unsubscribe = bridge.onStateChange((changedTabId, state) => {
       if (changedTabId !== runtimeTabId) return;
+      if (state.controller === "human") {
+        dispatchPreviewInteraction(runtimeTabId);
+      }
       if (shouldClearBrowserPointer(lastDesktopNavStatus.current, state.navStatus)) {
         clearBrowserPointer(runtimeTabId);
       }
