@@ -292,7 +292,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           totalBindings: bindings.length,
         });
       }
-      yield* Ref.set(startupSweepPending, false);
+      if (activeSessionsByThreadId !== null) {
+        yield* Ref.set(startupSweepPending, false);
+      }
     });
 
     const start: ProviderSessionReaperShape["start"] = () =>

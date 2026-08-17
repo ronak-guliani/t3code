@@ -523,8 +523,21 @@ describe("ProviderSessionReaper", () => {
     const threadId = ThreadId.make("thread-reaper-live-session-loss");
     const turnId = TurnId.make("turn-reaper-live-session-loss");
     const now = new Date().toISOString();
+    const activeSession: ProviderSession = {
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      status: "running",
+      runtimeMode: "full-access",
+      threadId,
+      activeTurnId: turnId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    let listSessionsCallCount = 0;
     const harness = await createHarness({
-      sweepIntervalMs: 10,
+      sweepIntervalMs: 100,
+      listSessionsImplementation: () =>
+        Effect.succeed(listSessionsCallCount++ === 0 ? [activeSession] : []),
       readModel: makeReadModel([
         {
           id: threadId,
@@ -561,15 +574,11 @@ describe("ProviderSessionReaper", () => {
     const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
-    await waitFor(() => harness.dispatchedCommands.length >= 2);
+    await waitFor(() => harness.dispatchedCommands.length === 1);
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    scope = null;
 
     expect(harness.dispatchedCommands[0]).toMatchObject({
-      type: "thread.session.set",
-      session: {
-        lastError: null,
-      },
-    });
-    expect(harness.dispatchedCommands[1]).toMatchObject({
       type: "thread.session.set",
       session: {
         lastError: "Provider session is no longer active.",
@@ -879,12 +888,17 @@ describe("ProviderSessionReaper", () => {
     });
   });
 
-  it("does not clear active turns when live session listing fails", async () => {
+  it("keeps startup recovery pending when live session listing initially fails", async () => {
     const threadId = ThreadId.make("thread-reaper-list-failure-active-turn");
     const turnId = TurnId.make("turn-reaper-list-failure-active");
     const now = new Date().toISOString();
+    let listSessionsCallCount = 0;
     const harness = await createHarness({
-      listSessionsImplementation: () => Effect.die(new Error("simulated list failure")),
+      sweepIntervalMs: 100,
+      listSessionsImplementation: () =>
+        listSessionsCallCount++ === 0
+          ? Effect.die(new Error("simulated list failure"))
+          : Effect.succeed([]),
       readModel: makeReadModel([
         {
           id: threadId,
@@ -925,6 +939,17 @@ describe("ProviderSessionReaper", () => {
 
     expect(harness.stopSession).not.toHaveBeenCalled();
     expect(harness.dispatchedCommands).toHaveLength(0);
+    await waitFor(() => harness.dispatchedCommands.length === 1);
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    scope = null;
+    expect(harness.dispatchedCommands[0]).toMatchObject({
+      type: "thread.session.set",
+      session: {
+        status: "interrupted",
+        activeTurnId: null,
+        lastError: null,
+      },
+    });
     const remaining = await runtime!.runPromise(repository.getByThreadId({ threadId }));
     expect(Option.isSome(remaining)).toBe(true);
   });
