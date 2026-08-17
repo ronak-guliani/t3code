@@ -17,7 +17,8 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
-const PROVIDER_SESSION_INACTIVE_ERROR = "Provider session is no longer active.";
+const LEGACY_RESTART_PROVIDER_SESSION_ERROR = "Provider session is no longer active.";
+const PROVIDER_SESSION_LOST_ERROR = "Provider session was lost unexpectedly.";
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -155,7 +156,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           isStartupSweep &&
           thread?.session?.status === "interrupted" &&
           thread.session.activeTurnId === null &&
-          thread.session.lastError === PROVIDER_SESSION_INACTIVE_ERROR
+          thread.session.lastError === LEGACY_RESTART_PROVIDER_SESSION_ERROR
         ) {
           const updatedAt = new Date().toISOString();
           yield* orchestrationEngine.dispatch({
@@ -218,7 +219,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
                 ...thread.session,
                 status: "interrupted",
                 activeTurnId: null,
-                lastError: isStartupSweep ? null : PROVIDER_SESSION_INACTIVE_ERROR,
+                lastError: isStartupSweep ? null : PROVIDER_SESSION_LOST_ERROR,
                 updatedAt,
               },
               createdAt: updatedAt,

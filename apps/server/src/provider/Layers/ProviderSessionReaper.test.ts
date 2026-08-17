@@ -445,6 +445,52 @@ describe("ProviderSessionReaper", () => {
     });
   });
 
+  it("preserves genuine provider failure errors during startup repair", async () => {
+    const threadId = ThreadId.make("thread-reaper-genuine-provider-failure");
+    const now = new Date().toISOString();
+    const harness = await createHarness({
+      readModel: makeReadModel([
+        {
+          id: threadId,
+          session: {
+            threadId,
+            status: "interrupted",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: "Provider session was lost unexpectedly.",
+            updatedAt: now,
+          },
+        },
+      ]),
+    });
+    const repository = await runtime!.runPromise(Effect.service(ProviderSessionRuntimeRepository));
+
+    await runtime!.runPromise(
+      repository.upsert({
+        threadId,
+        providerName: "claudeAgent",
+        providerInstanceId: null,
+        adapterKey: "claudeAgent",
+        runtimeMode: "full-access",
+        status: "running",
+        lastSeenAt: now,
+        resumeCursor: {
+          opaque: "resume-genuine-provider-failure",
+        },
+        runtimePayload: null,
+      }),
+    );
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(reaper.start().pipe(Scope.provide(scope)));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.dispatchedCommands).toHaveLength(0);
+  });
+
   it("finalizes persisted streaming assistant messages when startup interrupts their turn", async () => {
     const threadId = ThreadId.make("thread-reaper-streaming-message");
     const turnId = TurnId.make("turn-reaper-streaming-message");
@@ -581,7 +627,7 @@ describe("ProviderSessionReaper", () => {
     expect(harness.dispatchedCommands[0]).toMatchObject({
       type: "thread.session.set",
       session: {
-        lastError: "Provider session is no longer active.",
+        lastError: "Provider session was lost unexpectedly.",
       },
     });
   });
