@@ -108,6 +108,12 @@ describe("buildCopilotAcpSpawnInput", () => {
         "call `create_nested_thread` before any workspace operation",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "MUST use the tool-search API to load the matching function definition",
+      );
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "zero non-invokable resources does not mean the server exposes zero tools",
+      );
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
         "Never call them to prepare a workspace for a future delegated thread",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`associate_pull_request`");

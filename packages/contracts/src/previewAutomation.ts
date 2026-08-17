@@ -43,6 +43,8 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
+  "listTabs",
+  "openAndSnapshot",
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -159,13 +161,13 @@ export const PreviewAutomationNavigateInput = Schema.Struct({
       "Environment-relative target. Prefer {kind:'environment-port',port:5173} for a dev server in the current environment.",
   }),
   readiness: Schema.optional(
-    Schema.Literals(["load", "domContentLoaded", "none"]).annotate({
+    Schema.Literals(["load", "domContentLoaded", "networkIdle", "none"]).annotate({
       description:
-        "Readiness milestone before returning. 'load' waits for loading to stop (default), 'domContentLoaded' waits for an interactive document, and 'none' returns immediately.",
+        "Readiness milestone before returning. 'load' waits for loading to stop (default), 'domContentLoaded' waits for an interactive document, 'networkIdle' waits until network has been quiet briefly (SPAs may never fully idle), and 'none' returns immediately.",
     }),
   ).annotate({
     description:
-      "Readiness milestone before returning. 'load' is the default; use 'none' only when a later wait call will verify the page.",
+      "Readiness milestone before returning. 'load' is the default; use 'networkIdle' when XHR/fetch matter; use 'none' only when a later wait call will verify the page. SPAs with polling may never reach networkIdle.",
   }),
   timeoutMs: OptionalTimeoutMs,
 })
@@ -181,6 +183,19 @@ export const PreviewAutomationNavigateInput = Schema.Struct({
       "Navigates the active browser tab. Provide exactly one of url or target; for most public pages use url.",
   });
 export type PreviewAutomationNavigateInput = typeof PreviewAutomationNavigateInput.Type;
+
+export const PreviewAutomationReadiness = Schema.Literals([
+  "load",
+  "domContentLoaded",
+  "networkIdle",
+  "none",
+]);
+export type PreviewAutomationReadiness = typeof PreviewAutomationReadiness.Type;
+
+/** Default quiet window for networkIdle readiness. */
+export const PREVIEW_NETWORK_IDLE_DEFAULT_MS = 500;
+/** Hard cap for networkIdle quiet window. */
+export const PREVIEW_NETWORK_IDLE_MAX_MS = 5_000;
 
 export const PreviewAutomationResizeInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -527,7 +542,7 @@ export const PreviewAutomationActionEvent = Schema.Struct({
 });
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
-export const PreviewAutomationSnapshot = Schema.Struct({
+const PreviewAutomationSnapshotBodyFields = {
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,
@@ -543,8 +558,200 @@ export const PreviewAutomationSnapshot = Schema.Struct({
     width: Schema.Int,
     height: Schema.Int,
   }),
+  /** Optional compact diagnostic summary for model context. */
+  diagnosticsSummary: Schema.optional(Schema.String),
+};
+
+export const PreviewAutomationSnapshot = Schema.Struct({
+  /**
+   * Server tab id when known. Hosts should set this so the broker can pin the
+   * agent session's current tab after snapshot/openAndSnapshot.
+   */
+  tabId: Schema.optional(PreviewTabId),
+  ...PreviewAutomationSnapshotBodyFields,
 });
 export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
+
+/** openAndSnapshot always returns the opened/reused server tab id. */
+export const PreviewAutomationOpenAndSnapshotResult = Schema.Struct({
+  tabId: PreviewTabId,
+  ...PreviewAutomationSnapshotBodyFields,
+});
+export type PreviewAutomationOpenAndSnapshotResult =
+  typeof PreviewAutomationOpenAndSnapshotResult.Type;
+
+export const DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT = 8_000;
+export const DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS = 80;
+export const DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE = 1280;
+export const DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES = 40;
+export const DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES = 40;
+export const DEFAULT_LOCATOR_CANDIDATE_LIMIT = 5;
+
+const OptionalPositiveInt = (description: string, maximum: number) =>
+  Schema.optional(
+    Schema.Int.check(Schema.isGreaterThan(0))
+      .check(Schema.isLessThanOrEqualTo(maximum))
+      .annotate({ description }),
+  ).annotate({ description });
+
+export const PreviewAutomationSnapshotInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  includeConsole: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Include console entries. Defaults to true (errors/warnings preferred when reducing).",
+    }),
+  ),
+  includeNetwork: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Include network entries. Defaults to true (failed requests preferred when reducing).",
+    }),
+  ),
+  includeAccessibilityTree: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Include the full accessibility tree. Defaults to false because trees are large.",
+    }),
+  ),
+  consoleMode: Schema.optional(
+    Schema.Literals(["important", "all"]).annotate({
+      description:
+        "important (default) keeps warn/error/assert; all keeps the full recent buffer (still capped).",
+    }),
+  ),
+  networkMode: Schema.optional(
+    Schema.Literals(["failed", "all"]).annotate({
+      description:
+        "failed (default) keeps failed requests; all keeps recent requests (still capped).",
+    }),
+  ),
+  maxVisibleText: OptionalPositiveInt(
+    `Max characters of visible text. Defaults to ${DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT}.`,
+    20_000,
+  ),
+  maxInteractiveElements: OptionalPositiveInt(
+    `Max interactive elements. Defaults to ${DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS}.`,
+    200,
+  ),
+  maxScreenshotEdge: OptionalPositiveInt(
+    `Max screenshot width/height edge in CSS pixels before downscale. Defaults to ${DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE}.`,
+    3840,
+  ),
+  maxConsoleEntries: OptionalPositiveInt(
+    `Max console entries returned. Defaults to ${DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES}.`,
+    200,
+  ),
+  maxNetworkEntries: OptionalPositiveInt(
+    `Max network entries returned. Defaults to ${DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES}.`,
+    200,
+  ),
+}).annotate({
+  description:
+    "Inspect a collaborative browser tab. Budgets default to context-safe sizes; set includeAccessibilityTree=true only when needed.",
+});
+export type PreviewAutomationSnapshotInput = typeof PreviewAutomationSnapshotInput.Type;
+
+export const PreviewAutomationTabInfo = Schema.Struct({
+  tabId: PreviewTabId,
+  url: Schema.NullOr(Schema.String),
+  title: Schema.NullOr(Schema.String),
+  active: Schema.Boolean,
+  loading: Schema.Boolean,
+  visible: Schema.optional(Schema.Boolean),
+});
+export type PreviewAutomationTabInfo = typeof PreviewAutomationTabInfo.Type;
+
+export const PreviewAutomationTabsResult = Schema.Struct({
+  tabs: Schema.Array(PreviewAutomationTabInfo),
+  activeTabId: Schema.NullOr(PreviewTabId),
+});
+export type PreviewAutomationTabsResult = typeof PreviewAutomationTabsResult.Type;
+
+export const PreviewAutomationListTabsInput = Schema.Struct({}).annotate({
+  description:
+    "Lists collaborative browser tabs for the current thread. Use preview_open({ tabId }) or pass tabId on other tools to target one.",
+});
+export type PreviewAutomationListTabsInput = typeof PreviewAutomationListTabsInput.Type;
+
+export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  url: Schema.optional(BoundedUrl).annotate({
+    description: `Optional initial page URL. ${URL_GUIDANCE} Omit to open a blank tab (or pass target instead).`,
+  }),
+  target: Schema.optional(
+    BrowserNavigationTarget.annotate({
+      description:
+        "Optional environment-relative navigate target after open. Prefer when targeting a local dev port; mutually exclusive with url.",
+    }),
+  ),
+  open: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Whether to reveal the browser panel to the human. Defaults to true. Set false for background-only automation.",
+    }),
+  ),
+  show: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "Deprecated alias for open.",
+    }),
+  ),
+  reuseExistingTab: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Reuse tabId when supplied, otherwise this agent session's current tab. Defaults to true; set false to create a new tab.",
+    }),
+  ),
+  readiness: Schema.optional(
+    Schema.Literals(["load", "domContentLoaded", "networkIdle", "none"]).annotate({
+      description:
+        "Readiness after open/navigate before snapshot. Defaults to load when a URL/target is provided, otherwise none.",
+    }),
+  ),
+  timeoutMs: OptionalTimeoutMs,
+  includeConsole: Schema.optional(Schema.Boolean),
+  includeNetwork: Schema.optional(Schema.Boolean),
+  includeAccessibilityTree: Schema.optional(Schema.Boolean),
+  consoleMode: Schema.optional(Schema.Literals(["important", "all"])),
+  networkMode: Schema.optional(Schema.Literals(["failed", "all"])),
+  maxVisibleText: OptionalPositiveInt(
+    `Max characters of visible text. Defaults to ${DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT}.`,
+    20_000,
+  ),
+  maxInteractiveElements: OptionalPositiveInt(
+    `Max interactive elements. Defaults to ${DEFAULT_SNAPSHOT_MAX_INTERACTIVE_ELEMENTS}.`,
+    200,
+  ),
+  maxScreenshotEdge: OptionalPositiveInt(
+    `Max screenshot edge. Defaults to ${DEFAULT_SNAPSHOT_MAX_SCREENSHOT_EDGE}.`,
+    3840,
+  ),
+  maxConsoleEntries: OptionalPositiveInt(
+    `Max console entries. Defaults to ${DEFAULT_SNAPSHOT_MAX_CONSOLE_ENTRIES}.`,
+    200,
+  ),
+  maxNetworkEntries: OptionalPositiveInt(
+    `Max network entries. Defaults to ${DEFAULT_SNAPSHOT_MAX_NETWORK_ENTRIES}.`,
+    200,
+  ),
+})
+  .check(
+    Schema.makeFilter((input) => {
+      if (input.tabId !== undefined && input.reuseExistingTab === false) {
+        return "tabId cannot be combined with reuseExistingTab=false.";
+      }
+      if (input.url !== undefined && input.target !== undefined) {
+        return "Provide at most one of url or target.";
+      }
+      return true;
+    }),
+  )
+  .annotate({
+    description:
+      "Open or reuse a collaborative browser tab, optionally navigate, wait for readiness, and return a snapshot in one step.",
+  });
+export type PreviewAutomationOpenAndSnapshotInput =
+  typeof PreviewAutomationOpenAndSnapshotInput.Type;
 
 export const PreviewAutomationRecordingStatus = Schema.Struct({
   tabId: PreviewTabId,
@@ -786,6 +993,7 @@ export class PreviewAutomationInvalidSelectorError extends Schema.TaggedErrorCla
     ...PreviewAutomationRemoteDiagnosticFields,
     selectorKind: Schema.optional(Schema.Literals(["locator", "selector"])),
     selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    candidateLocators: Schema.optional(Schema.Array(Schema.String)),
   },
 ) {
   override get message(): string {
@@ -796,6 +1004,24 @@ export class PreviewAutomationInvalidSelectorError extends Schema.TaggedErrorCla
   }
 }
 
+export class PreviewAutomationTargetNotFoundError extends Schema.TaggedErrorClass<PreviewAutomationTargetNotFoundError>()(
+  "PreviewAutomationTargetNotFoundError",
+  {
+    ...PreviewAutomationRequestErrorFields,
+    ...PreviewAutomationRemoteDiagnosticFields,
+    selectorKind: Schema.optional(Schema.Literals(["locator", "selector"])),
+    selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    candidateLocators: Schema.optional(Schema.Array(Schema.String)),
+  },
+) {
+  override get message(): string {
+    if (this.selectorKind !== undefined && this.selectorLength !== undefined) {
+      return `Preview automation ${this.operation} could not find ${this.selectorKind} (${this.selectorLength} characters).`;
+    }
+    return `Preview automation ${this.operation} could not find the requested target.`;
+  }
+}
+
 export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorClass<PreviewAutomationTargetNotEditableError>()(
   "PreviewAutomationTargetNotEditableError",
   {
@@ -803,6 +1029,7 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
     ...PreviewAutomationRemoteDiagnosticFields,
     selectorKind: Schema.optional(Schema.Literals(["focused-element", "locator", "selector"])),
     selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+    candidateLocators: Schema.optional(Schema.Array(Schema.String)),
   },
 ) {
   override get message(): string {
@@ -882,6 +1109,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationControlInterruptedError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
+  PreviewAutomationTargetNotFoundError,
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationResultTooLargeError,
   PreviewAutomationClientDisconnectedError,

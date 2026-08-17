@@ -42,11 +42,12 @@ export const COPILOT_LEGACY_PLAN_MODE_ID = "https://github.com/github/copilot-cl
 
 export const COPILOT_WORKSPACE_INSTRUCTIONS = `# T3 Code tools
 
-- MCP boundary: \`t3-code\` is the collaborative browser automation server. Use the canonical browser tools there: \`preview_open\`, \`preview_status\`, \`preview_navigate\`, \`preview_snapshot\`, \`preview_click\`, \`preview_type\`, and the related \`preview_*\` tools.
+- MCP boundary: \`t3-code\` is the collaborative browser automation server. Use the canonical browser tools there: \`preview_open\`, \`preview_open_and_snapshot\`, \`preview_tabs\`, \`preview_status\`, \`preview_navigate\`, \`preview_snapshot\`, \`preview_click\`, \`preview_type\`, and the related \`preview_*\` tools.
 - MCP boundary: \`t3-tools\` is the workspace, terminal, skills, web, memory, handoff, nested-thread, cross-thread, and PR-association server.
 - Never use the legacy \`t3-tools\` preview stubs (\`preview_screenshot\`, \`preview_click\`, \`preview_type\`, \`preview_annotate\`) when \`t3-code\` is available.
 - If a \`t3-code\` browser tool fails with \`401\` and \`www-authenticate: Bearer\`, its per-session MCP credential is invalid or expired. Restart the chat/session to reconnect browser automation.
 - \`t3-tools\` uses this T3 process's bearer token for its local loopback HTTP MCP server.
+- MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load the matching function definition (search the \`t3-tools\` tool resource with query \`create_nested_thread\`), then call the loaded function. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing based only on the initially loaded tools or resources.
 - NEVER run \`git worktree add\` or \`git worktree move\` through a terminal or shell tool.
 - When delegating work, call \`create_nested_thread\` before any workspace operation. If the child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread.
 - Workspace handoff tools affect only the calling thread. Never call them to prepare a workspace for a future delegated thread.

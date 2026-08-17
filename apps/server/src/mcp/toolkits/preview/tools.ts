@@ -2,7 +2,10 @@ import {
   PreviewAutomationClickInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
+  PreviewAutomationListTabsInput,
   PreviewAutomationNavigateInput,
+  PreviewAutomationOpenAndSnapshotInput,
+  PreviewAutomationOpenAndSnapshotResult,
   PreviewAutomationOpenInput,
   PreviewAutomationPressInput,
   PreviewAutomationRecordingArtifact,
@@ -13,8 +16,10 @@ import {
   PreviewAutomationSetColorSchemeInput,
   PreviewAutomationSetColorSchemeResult,
   PreviewAutomationSnapshot,
+  PreviewAutomationSnapshotInput,
   PreviewAutomationStatus,
   PreviewAutomationTabTargetInput,
+  PreviewAutomationTabsResult,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
@@ -101,15 +106,37 @@ export const PreviewSetAppearanceTool = safeBrowserTool(
     .annotate(Tool.Idempotent, true),
 );
 
+export const PreviewTabsTool = readonlyBrowserTool(
+  Tool.make("preview_tabs", {
+    description:
+      "List collaborative browser tabs for the current thread, including active/loading/visible state. Use tabId on other preview tools to target one.",
+    parameters: PreviewAutomationListTabsInput,
+    success: PreviewAutomationTabsResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "List browser tabs"),
+);
+
 export const PreviewSnapshotTool = readonlyBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics, action history, and a PNG screenshot.",
-    parameters: PreviewAutomationTabTargetInput,
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab; omit it to use this agent session's current tab. Returns page state, semantic elements, diagnostics summary, action history, and a PNG screenshot. Budgets default to context-safe sizes; set includeAccessibilityTree=true only when needed.",
+    parameters: PreviewAutomationSnapshotInput,
     success: PreviewAutomationSnapshot,
     failure: PreviewAutomationError,
     dependencies,
   }).annotate(Tool.Title, "Inspect browser page"),
+);
+
+export const PreviewOpenAndSnapshotTool = safeBrowserTool(
+  Tool.make("preview_open_and_snapshot", {
+    description:
+      "Open or reuse a collaborative browser tab, optionally navigate (url or environment-port target), wait for readiness, and return a snapshot (including tabId) in one step. Prefer this over separate open+navigate+snapshot when starting work on a page. The returned tabId becomes the agent session's current tab for later untargeted preview tools.",
+    parameters: PreviewAutomationOpenAndSnapshotInput,
+    success: PreviewAutomationOpenAndSnapshotResult,
+    failure: PreviewAutomationError,
+    dependencies,
+  }).annotate(Tool.Title, "Open browser and snapshot"),
 );
 
 export const PreviewClickTool = browserTool(
@@ -201,7 +228,9 @@ export const PreviewRecordingStopTool = safeBrowserTool(
 
 export const PreviewToolkit = Toolkit.make(
   PreviewStatusTool,
+  PreviewTabsTool,
   PreviewOpenTool,
+  PreviewOpenAndSnapshotTool,
   PreviewNavigateTool,
   PreviewResizeTool,
   PreviewSetAppearanceTool,
@@ -218,6 +247,7 @@ export const PreviewToolkit = Toolkit.make(
 
 export const PreviewStandardToolkit = Toolkit.make(
   PreviewStatusTool,
+  PreviewTabsTool,
   PreviewOpenTool,
   PreviewNavigateTool,
   PreviewResizeTool,
@@ -232,4 +262,4 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewRecordingStopTool,
 );
 
-export const PreviewSnapshotToolkit = Toolkit.make(PreviewSnapshotTool);
+export const PreviewSnapshotToolkit = Toolkit.make(PreviewSnapshotTool, PreviewOpenAndSnapshotTool);

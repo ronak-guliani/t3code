@@ -180,7 +180,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('data-message-id="message-continuation"');
   });
 
-  it("renders cross-thread provenance inside a user message bubble", () => {
+  it("renders cross-thread provenance above a user message bubble", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -201,7 +201,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("From Source chat");
+    expect(markup).toContain("Source chat");
     expect(markup).toContain("Source chat unavailable");
   });
 
