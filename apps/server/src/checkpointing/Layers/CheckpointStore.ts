@@ -27,6 +27,9 @@ import {
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 const CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES = 10_000_000;
 const CHECKPOINT_DIFF_CACHE_CAPACITY = 128;
+const CHECKPOINT_DIFF_CACHE_MAX_STRING_BYTES = 32 * 1024 * 1024;
+const CHECKPOINT_DIFF_CACHE_MAX_ENTRY_STRING_BYTES =
+  CHECKPOINT_DIFF_CACHE_MAX_STRING_BYTES / CHECKPOINT_DIFF_CACHE_CAPACITY;
 const CHECKPOINT_DIFF_CACHE_TTL = Duration.seconds(30);
 
 class CheckpointDiffCacheKey extends Data.Class<{
@@ -83,7 +86,10 @@ const makeCheckpointStore = Effect.gen(function* () {
   );
   const checkpointDiffCache = yield* Cache.makeWith(executeCheckpointDiff, {
     capacity: CHECKPOINT_DIFF_CACHE_CAPACITY,
-    timeToLive: (exit) => (Exit.isSuccess(exit) ? CHECKPOINT_DIFF_CACHE_TTL : Duration.zero),
+    timeToLive: (exit) =>
+      Exit.isSuccess(exit) && exit.value.length * 2 <= CHECKPOINT_DIFF_CACHE_MAX_ENTRY_STRING_BYTES
+        ? CHECKPOINT_DIFF_CACHE_TTL
+        : Duration.zero,
   });
 
   const resolveHeadCommit = (cwd: string): Effect.Effect<string | null, GitCommandError> =>

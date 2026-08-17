@@ -184,7 +184,10 @@ describe("CheckpointStoreLive range resolution", () => {
 });
 
 describe("CheckpointStoreLive diff cache", () => {
-  function makeDiffCacheTestLayer(options?: { readonly missingFromCheckpoint?: boolean }) {
+  function makeDiffCacheTestLayer(options?: {
+    readonly diffResult?: string;
+    readonly missingFromCheckpoint?: boolean;
+  }) {
     let diffCalls = 0;
     const gitCoreLayer = Layer.mock(GitCore)({
       execute: (input) =>
@@ -204,7 +207,7 @@ describe("CheckpointStoreLive diff cache", () => {
           }
           if (input.args[0] === "diff") {
             diffCalls += 1;
-            return executeGitResult(0, `diff-${diffCalls}\n`);
+            return executeGitResult(0, options?.diffResult ?? `diff-${diffCalls}\n`);
           }
           throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
         }),
@@ -282,6 +285,26 @@ describe("CheckpointStoreLive diff cache", () => {
 
       expect(first).toBe("diff-1\n");
       expect(second).toBe("diff-2\n");
+      expect(test.getDiffCalls()).toBe(2);
+    }),
+  );
+
+  it.effect("does not retain diff results that exceed the per-entry byte budget", () =>
+    Effect.gen(function* () {
+      const largeDiff = "x".repeat(129 * 1024);
+      const test = makeDiffCacheTestLayer({ diffResult: largeDiff });
+      const input = {
+        cwd: "/tmp/workspace",
+        fromCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/from"),
+        toCheckpointRef: CheckpointRef.make("refs/t3/checkpoints/to"),
+      };
+
+      yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        yield* checkpointStore.diffCheckpoints(input);
+        yield* checkpointStore.diffCheckpoints(input);
+      }).pipe(Effect.provide(test.layer));
+
       expect(test.getDiffCalls()).toBe(2);
     }),
   );
