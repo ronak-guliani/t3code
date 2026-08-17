@@ -7,26 +7,16 @@ import * as Stream from "effect/Stream";
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { repositoryFromPullRequestUrl } from "./canonicalKey.ts";
 import { PullRequestMonitorService } from "./PullRequestMonitorService.ts";
+
+export { repositoryFromPullRequestUrl } from "./canonicalKey.ts";
 
 interface AssociatedPullRequest {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
   readonly repository: string;
   readonly number: number;
-}
-
-/** `https://host/owner/name/pull/123` → `owner/name`. */
-export function repositoryFromPullRequestUrl(url: string | null | undefined): string | null {
-  if (typeof url !== "string" || url.length === 0) return null;
-  try {
-    const segments = new URL(url).pathname.replace(/^\/+/, "").split("/");
-    const owner = segments[0];
-    const name = segments[1];
-    return owner && name ? `${owner}/${name}` : null;
-  } catch {
-    return null;
-  }
 }
 
 /**

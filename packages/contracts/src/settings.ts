@@ -485,6 +485,8 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
     }),
   ),
+  autoMonitorPullRequestsOnCreate: Schema.optionalKey(Schema.Boolean),
+  autoLaunchPrMonitorFallback: Schema.optionalKey(Schema.Boolean),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
