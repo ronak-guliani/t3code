@@ -1,5 +1,5 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   readThreadPreviewState: vi.fn(),
@@ -25,7 +25,10 @@ vi.mock("./previewBridge", () => ({
 
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 
-import { PreviewAutomationTargetUnavailableError } from "./previewAutomationErrors";
+import {
+  PreviewAutomationNavigationTimeoutError,
+  PreviewAutomationTargetUnavailableError,
+} from "./previewAutomationErrors";
 import {
   withCurrentPreviewRuntime,
   waitForNavigationReadiness,
@@ -38,6 +41,12 @@ describe("waitForNavigationReadiness", () => {
   };
   const tabId = "tab_1";
   const runtimeTabId = previewRuntimeTabId(threadRef, "epoch-1", tabId);
+
+  beforeEach(() => {
+    mocks.readThreadPreviewState.mockReset();
+    mocks.evaluate.mockReset();
+    mocks.status.mockReset();
+  });
 
   it("rejects a replaced runtime target even when readiness polling is disabled", async () => {
     mocks.readThreadPreviewState.mockReturnValue({
@@ -113,5 +122,116 @@ describe("waitForNavigationReadiness", () => {
     resolve?.({ available: true, loading: false });
 
     await expect(statusPromise).rejects.toBeInstanceOf(PreviewAutomationTargetUnavailableError);
+  });
+
+  it("resolves networkIdle when the page is complete and quiet", async () => {
+    mocks.readThreadPreviewState.mockReturnValue({
+      serverEpoch: "epoch-1",
+      sessions: { [tabId]: { tabId } },
+    });
+    mocks.status.mockResolvedValue({ available: true, loading: false });
+    mocks.evaluate.mockResolvedValue({
+      readyState: "complete",
+      msSinceLastResource: 600,
+      nowMs: 1_000,
+    });
+
+    await expect(
+      waitForNavigationReadiness(
+        threadRef,
+        "request-network-idle-ok",
+        tabId,
+        runtimeTabId,
+        "navigate",
+        "networkIdle",
+        500,
+      ),
+    ).resolves.toBeUndefined();
+    expect(mocks.status).toHaveBeenCalled();
+    expect(mocks.evaluate).toHaveBeenCalled();
+  });
+
+  it("keeps polling networkIdle while recent network activity exists", async () => {
+    mocks.readThreadPreviewState.mockReturnValue({
+      serverEpoch: "epoch-1",
+      sessions: { [tabId]: { tabId } },
+    });
+    mocks.status.mockResolvedValue({ available: true, loading: false });
+    mocks.evaluate
+      .mockResolvedValueOnce({
+        readyState: "complete",
+        msSinceLastResource: 50,
+        nowMs: 1_000,
+      })
+      .mockResolvedValueOnce({
+        readyState: "complete",
+        msSinceLastResource: 700,
+        nowMs: 1_200,
+      });
+
+    await expect(
+      waitForNavigationReadiness(
+        threadRef,
+        "request-network-idle-poll",
+        tabId,
+        runtimeTabId,
+        "navigate",
+        "networkIdle",
+        1_000,
+      ),
+    ).resolves.toBeUndefined();
+    expect(mocks.evaluate).toHaveBeenCalledTimes(2);
+  });
+
+  it("times out networkIdle when the page never quiets", async () => {
+    mocks.readThreadPreviewState.mockReturnValue({
+      serverEpoch: "epoch-1",
+      sessions: { [tabId]: { tabId } },
+    });
+    mocks.status.mockResolvedValue({ available: true, loading: true });
+    mocks.evaluate.mockResolvedValue({
+      readyState: "interactive",
+      msSinceLastResource: 10,
+      nowMs: 100,
+    });
+
+    await expect(
+      waitForNavigationReadiness(
+        threadRef,
+        "request-network-idle-timeout",
+        tabId,
+        runtimeTabId,
+        "navigate",
+        "networkIdle",
+        120,
+      ),
+    ).rejects.toBeInstanceOf(PreviewAutomationNavigationTimeoutError);
+  });
+
+  it("rejects networkIdle when the runtime is replaced between status and evaluate", async () => {
+    mocks.readThreadPreviewState
+      .mockReturnValueOnce({ serverEpoch: "epoch-1", sessions: { [tabId]: { tabId } } }) // initial assert
+      .mockReturnValueOnce({ serverEpoch: "epoch-1", sessions: { [tabId]: { tabId } } }) // status before
+      .mockReturnValueOnce({ serverEpoch: "epoch-1", sessions: { [tabId]: { tabId } } }) // status after
+      .mockReturnValueOnce({ serverEpoch: "epoch-1", sessions: { [tabId]: { tabId } } }) // evaluate before
+      .mockReturnValueOnce({ serverEpoch: "epoch-2", sessions: { [tabId]: { tabId } } }); // evaluate after
+    mocks.status.mockResolvedValue({ available: true, loading: false });
+    mocks.evaluate.mockResolvedValue({
+      readyState: "complete",
+      msSinceLastResource: 900,
+      nowMs: 1_000,
+    });
+
+    await expect(
+      waitForNavigationReadiness(
+        threadRef,
+        "request-network-idle-replaced",
+        tabId,
+        runtimeTabId,
+        "navigate",
+        "networkIdle",
+        500,
+      ),
+    ).rejects.toBeInstanceOf(PreviewAutomationTargetUnavailableError);
   });
 });

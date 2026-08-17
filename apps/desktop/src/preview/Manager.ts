@@ -22,10 +22,16 @@ import type {
   PreviewAutomationNetworkEntry,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
+  PreviewAutomationSnapshotInput,
   PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
+import {
+  applySnapshotBudgets,
+  candidateLocatorsFromElements,
+  resolveSnapshotBudgets,
+} from "@t3tools/shared/previewAutomationBudgets";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import {
@@ -98,7 +104,6 @@ export interface PreviewTabState {
 const MAX_EVALUATION_BYTES = 64_000;
 const MAX_VISIBLE_TEXT_LENGTH = 20_000;
 const MAX_INTERACTIVE_ELEMENTS = 200;
-const MAX_SCREENSHOT_WIDTH = 1280;
 const RECORDING_FRAME_INTERVAL_MS = Math.ceil(1_000 / 12);
 const RECORDING_JPEG_QUALITY = 80;
 const RECORDING_MAX_FRAME_WIDTH = 1600;
@@ -2575,22 +2580,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         };
   });
 
-  const captureAutomationSnapshot = Effect.fn("PreviewManager.captureAutomationSnapshot")(
-    function* (tabId: string, wc: Electron.WebContents, send: SendCommand) {
-      yield* Effect.all([send("Runtime.enable"), send("Accessibility.enable")], {
-        concurrency: 2,
-        discard: true,
-      });
-      const page = yield* evaluateWithDebugger<{
-        url: string;
-        title: string;
-        loading: boolean;
-        visibleText: string;
-        interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
-      }>(
-        tabId,
-        send,
-        `(() => {
+  const collectInteractiveElementsScript = (
+    maxElements: number,
+    maxVisibleText: number,
+  ) => `(() => {
           const selectorFor = (element) => {
             if (element.id) return "#" + CSS.escape(element.id);
             for (const attribute of ["data-testid", "name"]) {
@@ -2620,7 +2613,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           };
           const elements = Array.from(document.querySelectorAll(
             "a[href],button,input,textarea,select,[role],[tabindex]"
-          )).filter(visible).slice(0, ${MAX_INTERACTIVE_ELEMENTS}).map((element) => {
+          )).filter(visible).slice(0, ${maxElements}).map((element) => {
             const rect = element.getBoundingClientRect();
             return {
               tag: element.tagName.toLowerCase(),
@@ -2637,33 +2630,90 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             url: location.href,
             title: document.title,
             loading: document.readyState !== "complete",
-            visibleText: (document.body?.innerText || "").slice(0, ${MAX_VISIBLE_TEXT_LENGTH}),
+            visibleText: (document.body?.innerText || "").slice(0, ${maxVisibleText}),
             interactiveElements: elements
           };
-        })()`,
-        true,
+        })()`;
+
+  const collectLocatorCandidates = Effect.fn("PreviewManager.collectLocatorCandidates")(function* (
+    tabId: string,
+    send: SendCommand,
+  ) {
+    const page = yield* evaluateWithDebugger<{
+      interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
+    }>(tabId, send, collectInteractiveElementsScript(40, 0), true).pipe(
+      Effect.catch(() => Effect.succeed({ interactiveElements: [] })),
+    );
+    return candidateLocatorsFromElements(page.interactiveElements);
+  });
+
+  const captureAutomationSnapshot = Effect.fn("PreviewManager.captureAutomationSnapshot")(
+    function* (
+      tabId: string,
+      wc: Electron.WebContents,
+      send: SendCommand,
+      input?: PreviewAutomationSnapshotInput,
+    ) {
+      const budgets = resolveSnapshotBudgets(input ?? {});
+      // Capture a bit more raw content than the final budget so host-side filters
+      // still have material to prioritize (console/network modes).
+      const captureMaxElements = Math.min(
+        MAX_INTERACTIVE_ELEMENTS,
+        Math.max(budgets.maxInteractiveElements, 40),
       );
-      const [accessibility, sourceImage, diagnostics, timelines] = yield* Effect.all([
-        send("Accessibility.getFullAXTree"),
-        attemptPromise(
-          {
-            operation: "automationSnapshot.capturePage",
-            tabId,
-            webContentsId: wc.id,
-          },
-          () => wc.capturePage(),
-        ),
-        Ref.get(diagnosticsRef),
-        Ref.get(actionTimelineRef),
-      ]);
+      const captureMaxText = Math.min(
+        MAX_VISIBLE_TEXT_LENGTH,
+        Math.max(budgets.maxVisibleText, 2_000),
+      );
+      const captureMaxScreenshotEdge = Math.min(Math.max(1, budgets.maxScreenshotEdge), 3840);
+
+      yield* Effect.all(
+        [
+          send("Runtime.enable"),
+          ...(budgets.includeAccessibilityTree ? [send("Accessibility.enable")] : []),
+        ],
+        {
+          concurrency: 2,
+          discard: true,
+        },
+      );
+      const page = yield* evaluateWithDebugger<{
+        url: string;
+        title: string;
+        loading: boolean;
+        visibleText: string;
+        interactiveElements: PreviewAutomationSnapshot["interactiveElements"];
+      }>(tabId, send, collectInteractiveElementsScript(captureMaxElements, captureMaxText), true);
+
+      const [accessibility, sourceImage, diagnostics, timelines] = yield* Effect.all(
+        [
+          budgets.includeAccessibilityTree
+            ? send("Accessibility.getFullAXTree")
+            : Effect.succeed(null),
+          attemptPromise(
+            {
+              operation: "automationSnapshot.capturePage",
+              tabId,
+              webContentsId: wc.id,
+            },
+            () => wc.capturePage(),
+          ),
+          Ref.get(diagnosticsRef),
+          Ref.get(actionTimelineRef),
+        ],
+        { concurrency: 4 },
+      );
       const sourceSize = sourceImage.getSize();
+      const longestEdge = Math.max(sourceSize.width, sourceSize.height);
       const image =
-        sourceSize.width > MAX_SCREENSHOT_WIDTH
-          ? sourceImage.resize({ width: MAX_SCREENSHOT_WIDTH })
+        longestEdge > captureMaxScreenshotEdge
+          ? sourceSize.width >= sourceSize.height
+            ? sourceImage.resize({ width: captureMaxScreenshotEdge })
+            : sourceImage.resize({ height: captureMaxScreenshotEdge })
           : sourceImage;
       const size = image.getSize();
       const browserDiagnostics = diagnostics.get(wc.id);
-      return {
+      const raw: PreviewAutomationSnapshot = {
         ...page,
         accessibilityTree: accessibility,
         consoleEntries: [...(browserDiagnostics?.consoleEntries ?? [])],
@@ -2676,15 +2726,17 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           height: size.height,
         },
       };
+      return applySnapshotBudgets(raw, budgets);
     },
   );
 
   const automationSnapshot = Effect.fn("PreviewManager.automationSnapshot")(function* (
     tabId: string,
+    input?: PreviewAutomationSnapshotInput,
   ) {
     const wc = yield* requireWebContents(tabId);
     return yield* withControlSession(tabId, wc, "snapshot", (send) =>
-      captureAutomationSnapshot(tabId, wc, send),
+      captureAutomationSnapshot(tabId, wc, send, input),
     );
   });
 
@@ -2735,10 +2787,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     }
     if ("notFound" in point) {
+      const candidateLocators = yield* collectLocatorCandidates(tabId, send);
       return yield* new PreviewAutomationTargetNotFoundError({
         operation: "click",
         tabId,
         ...automationSelectorDiagnostics(input),
+        ...(candidateLocators.length > 0 ? { candidateLocators } : {}),
       });
     }
     return point;
@@ -2913,16 +2967,20 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     }
     if ("notFound" in result) {
+      const candidateLocators = yield* collectLocatorCandidates(tabId, send);
       return yield* new PreviewAutomationTargetNotFoundError({
         operation: "type",
         tabId,
         ...automationSelectorDiagnostics(input),
+        ...(candidateLocators.length > 0 ? { candidateLocators } : {}),
       });
     }
     if ("notEditable" in result) {
+      const candidateLocators = yield* collectLocatorCandidates(tabId, send);
       return yield* new PreviewAutomationTargetNotEditableError({
         tabId,
         ...automationSelectorDiagnostics(input),
+        ...(candidateLocators.length > 0 ? { candidateLocators } : {}),
       });
     }
   });
@@ -3048,10 +3106,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       });
     }
     if ("notFound" in result) {
+      const candidateLocators = yield* collectLocatorCandidates(tabId, send);
       return yield* new PreviewAutomationTargetNotFoundError({
         operation: "scroll",
         tabId,
         ...automationSelectorDiagnostics(input),
+        ...(candidateLocators.length > 0 ? { candidateLocators } : {}),
       });
     }
   });
@@ -3387,6 +3447,7 @@ export class PreviewAutomationTargetNotFoundError extends Schema.TaggedErrorClas
     tabId: Schema.String,
     selectorKind: PreviewAutomationSelectorKind,
     selectorLength: Schema.optionalKey(Schema.Number),
+    candidateLocators: Schema.optionalKey(Schema.Array(Schema.String)),
   },
 ) {
   override get message(): string {
@@ -3401,6 +3462,7 @@ export class PreviewAutomationTargetNotEditableError extends Schema.TaggedErrorC
     tabId: Schema.String,
     selectorKind: PreviewAutomationSelectorKind,
     selectorLength: Schema.optionalKey(Schema.Number),
+    candidateLocators: Schema.optionalKey(Schema.Array(Schema.String)),
   },
 ) {
   override get message(): string {
@@ -3582,6 +3644,7 @@ export class PreviewManager extends Context.Service<
     ) => Effect.Effect<PreviewAutomationStatus, PreviewManagerError>;
     readonly automationSnapshot: (
       tabId: string,
+      input?: PreviewAutomationSnapshotInput,
     ) => Effect.Effect<PreviewAutomationSnapshot, PreviewManagerError>;
     readonly automationClick: (
       tabId: string,
