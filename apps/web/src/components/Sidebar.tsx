@@ -116,6 +116,7 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import {
   buildThreadRouteParams,
   clearAgentRunRouteSearch,
+  clearThreadNavigationRouteSearch,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -349,6 +350,7 @@ interface SidebarThreadRowProps {
   threadProjectCwd: string | null;
   threadProjectName: string | null;
   orderedProjectThreadKeys: readonly string[];
+  activeRouteThreadKey: string | null;
   isActive: boolean;
   jumpLabel: string | null;
   appSettingsConfirmThreadArchive: boolean;
@@ -399,6 +401,7 @@ interface SidebarThreadRowProps {
 const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
   const {
     orderedProjectThreadKeys,
+    activeRouteThreadKey,
     isActive,
     jumpLabel,
     appSettingsConfirmThreadArchive,
@@ -516,10 +519,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       if (virtualAgentRun) {
         event.preventDefault();
         clearSelection();
+        const clearSearch =
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch;
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
-          search: (previous) => ({ ...previous, agent: virtualAgentRun.taskId }),
+          search: (previous) => ({
+            ...clearSearch(previous),
+            agent: virtualAgentRun.taskId,
+          }),
         });
         return;
       }
@@ -537,6 +547,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       handleThreadClick(event, threadRef, orderedProjectThreadKeys);
     },
     [
+      activeRouteThreadKey,
       handleThreadClick,
       handleParentThreadSelected,
       clearSelection,
@@ -558,16 +569,23 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       if (virtualAgentRun) {
+        const clearSearch =
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch;
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
-          search: (previous) => ({ ...previous, agent: virtualAgentRun.taskId }),
+          search: (previous) => ({
+            ...clearSearch(previous),
+            agent: virtualAgentRun.taskId,
+          }),
         });
         return;
       }
       navigateToThread(threadRef);
     },
-    [navigate, navigateToThread, threadRef, virtualAgentRun],
+    [activeRouteThreadKey, navigate, navigateToThread, threadKey, threadRef, virtualAgentRun],
   );
   const handleRowContextMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -1154,6 +1172,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
         threadProjectCwd: threadProject?.cwd ?? null,
         threadProjectName: threadProject?.name ?? null,
         orderedProjectThreadKeys,
+        activeRouteThreadKey,
         isActive:
           activeRouteThreadKey === routeThreadKey &&
           (virtualAgentRun ? activeAgentId === virtualAgentRun.taskId : !activeAgentId),
@@ -2112,10 +2131,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          activeRouteThreadKey === scopedThreadKey(threadRef)
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
-    [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
+    [activeRouteThreadKey, clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
   const toggleThreadExpanded = useCallback(
     (threadKey: string, isExpanded: boolean) => {
@@ -2158,10 +2180,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
     [
+      activeRouteThreadKey,
       clearSelection,
       isMobile,
       rangeSelectTo,
@@ -3662,10 +3688,13 @@ export default function Sidebar() {
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          routeThreadKey === scopedThreadKey(threadRef)
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
-    [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
+    [clearSelection, isMobile, navigate, routeThreadKey, setOpenMobile, setSelectionAnchor],
   );
   const navigateToDraft = useCallback(
     (draftId: DraftId) => {

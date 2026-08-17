@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { DraftId } from "./composerDraftStore";
+import { mergeDiffRouteSearch } from "./diffRouteSearch";
 
 export type ThreadRouteTarget =
   | {
@@ -39,6 +40,10 @@ export function clearAgentRunRouteSearch<T extends Record<string, unknown>>(
 ): Omit<T, "agent"> & AgentRunRouteSearch {
   const { agent: _agent, ...rest } = search;
   return { ...rest, agent: undefined };
+}
+
+export function clearThreadNavigationRouteSearch<T extends Record<string, unknown>>(search: T) {
+  return mergeDiffRouteSearch(clearAgentRunRouteSearch(search), {});
 }
 
 export function buildThreadRouteParams(ref: ScopedThreadRef): {
