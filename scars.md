@@ -4,6 +4,7 @@
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
+- Startup reaping is expected restart recovery, not a provider failure: interrupt orphaned active turns without `lastError`, finalize persisted streaming assistant messages before clearing `session.activeTurnId`, and repair legacy errors only through a value that live provider failures no longer persist.
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
 - Bound thread activity reads before decoding payloads; page legacy `NULL` sequences by timestamp and ID.
