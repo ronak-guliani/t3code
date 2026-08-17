@@ -18,6 +18,7 @@ import {
   PreviewStandardToolkitHandlersLive,
 } from "./toolkits/preview/handlers.ts";
 import {
+  PreviewOpenAndSnapshotTool,
   PreviewSnapshotTool,
   PreviewSnapshotToolkit,
   PreviewStandardToolkit,
@@ -131,80 +132,90 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }).pipe(Effect.as(result));
 };
 
-const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot")(function* () {
-  const server = yield* McpServer.McpServer;
-  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-  const built = yield* PreviewSnapshotToolkit;
-  const tool = PreviewSnapshotTool;
-  yield* server.addTool({
-    tool: new McpSchema.Tool({
-      name: tool.name,
-      description: Tool.getDescription(tool),
-      inputSchema: Tool.getJsonSchema(tool),
-      annotations: {
-        ...Context.getOption(tool.annotations, Tool.Title).pipe(
-          Option.map((title) => ({ title })),
-          Option.getOrUndefined,
-        ),
-        readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
-        destructiveHint: Context.get(tool.annotations, Tool.Destructive),
-        idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
-        openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+const encodePreviewSnapshotResult = (encodedResult: unknown) => {
+  const snapshot = encodedResult as {
+    readonly screenshot: {
+      readonly mimeType: "image/png";
+      readonly data: string;
+      readonly width: number;
+      readonly height: number;
+    };
+    readonly [key: string]: unknown;
+  };
+  const { screenshot, ...page } = snapshot;
+  const metadata = {
+    ...page,
+    screenshot: {
+      mimeType: screenshot.mimeType,
+      width: screenshot.width,
+      height: screenshot.height,
+    },
+  };
+  return new McpSchema.CallToolResult({
+    isError: false,
+    structuredContent: metadata,
+    content: [
+      { type: "text", text: JSON.stringify(metadata) },
+      {
+        type: "image",
+        data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
+        mimeType: screenshot.mimeType,
       },
-    }),
-    annotations: tool.annotations,
-    handle: (payload) =>
-      Effect.withFiber((fiber) => {
-        const invocation = Context.getUnsafe(
-          fiber.context,
-          McpInvocationContext.McpInvocationContext,
-        );
-        return built.handle("preview_snapshot", payload).pipe(
-          Stream.unwrap,
-          Stream.run(Sink.last()),
-          Effect.flatMap(Effect.fromOption),
-          Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.matchCauseEffect({
-            onFailure: previewSnapshotFailure,
-            onSuccess: ({ encodedResult }) => {
-              const snapshot = encodedResult as {
-                readonly screenshot: {
-                  readonly mimeType: "image/png";
-                  readonly data: string;
-                  readonly width: number;
-                  readonly height: number;
-                };
-                readonly [key: string]: unknown;
-              };
-              const { screenshot, ...page } = snapshot;
-              const metadata = {
-                ...page,
-                screenshot: {
-                  mimeType: screenshot.mimeType,
-                  width: screenshot.width,
-                  height: screenshot.height,
-                },
-              };
-              return Effect.succeed(
-                new McpSchema.CallToolResult({
-                  isError: false,
-                  structuredContent: metadata,
-                  content: [
-                    { type: "text", text: JSON.stringify(metadata) },
-                    {
-                      type: "image",
-                      data: new Uint8Array(Buffer.from(screenshot.data, "base64")),
-                      mimeType: screenshot.mimeType,
-                    },
-                  ],
-                }),
-              );
-            },
-          }),
-        );
-      }),
+    ],
   });
+};
+
+const registerPreviewSnapshotTool = Effect.fn("McpHttpServer.registerPreviewSnapshotTool")(
+  function* (
+    tool: typeof PreviewSnapshotTool | typeof PreviewOpenAndSnapshotTool,
+    handleName: "preview_snapshot" | "preview_open_and_snapshot",
+  ) {
+    const server = yield* McpServer.McpServer;
+    const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const built = yield* PreviewSnapshotToolkit;
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: tool.name,
+        description: Tool.getDescription(tool),
+        inputSchema: Tool.getJsonSchema(tool),
+        annotations: {
+          ...Context.getOption(tool.annotations, Tool.Title).pipe(
+            Option.map((title) => ({ title })),
+            Option.getOrUndefined,
+          ),
+          readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+          destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+          idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+          openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+        },
+      }),
+      annotations: tool.annotations,
+      handle: (payload) =>
+        Effect.withFiber((fiber) => {
+          const invocation = Context.getUnsafe(
+            fiber.context,
+            McpInvocationContext.McpInvocationContext,
+          );
+          return built.handle(handleName, payload).pipe(
+            Stream.unwrap,
+            Stream.run(Sink.last()),
+            Effect.flatMap(Effect.fromOption),
+            Effect.provideService(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.matchCauseEffect({
+              onFailure: previewSnapshotFailure,
+              onSuccess: ({ encodedResult }) =>
+                Effect.succeed(encodePreviewSnapshotResult(encodedResult)),
+            }),
+          );
+        }),
+    });
+  },
+);
+
+const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot")(function* () {
+  yield* registerPreviewSnapshotTool(PreviewSnapshotTool, "preview_snapshot");
+  yield* registerPreviewSnapshotTool(PreviewOpenAndSnapshotTool, "preview_open_and_snapshot");
 });
 
 const PreviewStandardToolkitRegistrationLive = McpServer.toolkit(PreviewStandardToolkit).pipe(
