@@ -11,7 +11,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { it, assert } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 
 import * as AcpSchema from "./_generated/schema.gen.ts";
 import * as AcpProtocol from "./protocol.ts";
@@ -59,10 +58,9 @@ const makeHandle = (env?: Record<string, string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const path = yield* Path.Path;
-    const spawn = resolveWindowsSpawn("bun");
-    const command = ChildProcess.make(spawn.command, ["run", yield* mockPeerPath], {
+    const command = ChildProcess.make(process.execPath, [yield* mockPeerPath], {
       cwd: path.join(import.meta.dirname, ".."),
-      shell: spawn.shell,
+      shell: false,
       ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     return yield* spawner.spawn(command);

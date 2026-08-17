@@ -7,7 +7,6 @@ import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { resolveWindowsSpawn } from "@t3tools/shared/shell";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
@@ -21,10 +20,9 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
-      const spawn = resolveWindowsSpawn("bun");
-      const command = ChildProcess.make(spawn.command, ["run", yield* mockPeerPath], {
+      const command = ChildProcess.make(process.execPath, [yield* mockPeerPath], {
         cwd: path.join(import.meta.dirname, ".."),
-        shell: spawn.shell,
+        shell: false,
       });
       return yield* spawner.spawn(command);
     });
@@ -128,12 +126,11 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const scope = yield* Scope.make();
-      const spawn = resolveWindowsSpawn("bun");
       const clientLayer = CodexClient.layerCommand({
-        command: spawn.command,
-        args: ["run", yield* mockPeerPath],
+        command: process.execPath,
+        args: [yield* mockPeerPath],
         cwd: path.join(import.meta.dirname, ".."),
-        shell: spawn.shell,
+        shell: false,
       });
       const context = yield* Layer.buildWithScope(clientLayer, scope);
 
