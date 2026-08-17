@@ -1,5 +1,11 @@
 import { Schema, SchemaTransformation } from "effect";
-import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  NonNegativeInt,
+  PositiveInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ReviewChangesScope } from "./agentWorkflows.ts";
 import { ReviewSnapshot } from "./reviewSchemas.ts";
 
@@ -141,6 +147,9 @@ export const GitRunStackedActionInput = Schema.Struct({
   filePaths: Schema.optional(
     Schema.Array(TrimmedNonEmptyStringSchema).check(Schema.isMinLength(1)),
   ),
+  /** When set with threadId, created PRs can auto-associate monitor ownership. */
+  projectId: Schema.optional(ProjectId),
+  threadId: Schema.optional(ThreadId),
 });
 export type GitRunStackedActionInput = typeof GitRunStackedActionInput.Type;
 

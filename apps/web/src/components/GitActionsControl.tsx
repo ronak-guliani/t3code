@@ -782,6 +782,8 @@ export default function GitActionsControl({
       ...(commitMessage ? { commitMessage } : {}),
       ...(featureBranch ? { featureBranch } : {}),
       ...(filePaths ? { filePaths } : {}),
+      ...(activeServerThread?.projectId ? { projectId: activeServerThread.projectId } : {}),
+      ...(activeThreadRef?.threadId ? { threadId: activeThreadRef.threadId } : {}),
       onProgress: applyProgressEvent,
     });
 

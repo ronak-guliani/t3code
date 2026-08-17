@@ -13,13 +13,16 @@ import { randomUUID } from "node:crypto";
 
 import { Effect, Layer, FileSystem, Path } from "effect";
 
-import { CheckpointInvariantError } from "../Errors.ts";
+import { CheckpointInvariantError, CheckpointRefUnavailableError } from "../Errors.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@t3tools/contracts";
 import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
-import { parseTurnDiffFilesFromNumstat } from "../Diffs.ts";
+import {
+  parseTurnDiffFilesFromNumstat,
+  parseTurnDiffFileStatusesFromNameStatus,
+} from "../Diffs.ts";
 
 const CHECKPOINT_DIFF_MAX_OUTPUT_BYTES = 10_000_000;
 const CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES = 10_000_000;
@@ -351,7 +354,7 @@ const makeCheckpointStore = Effect.gen(function* () {
    * captured in a different worktree, therefore reports no movement and leaves
    * the plain checkpoint-to-checkpoint diff in place.
    */
-  const hasBaseMovingOperation = Effect.fn("hasBaseMovingOperation")(function* (input: {
+  const resolveBaseMovement = Effect.fn("resolveBaseMovement")(function* (input: {
     readonly cwd: string;
     readonly fromBaseCommit: string;
     readonly toBaseCommit: string;
@@ -370,11 +373,13 @@ const makeCheckpointStore = Effect.gen(function* () {
       allowNonZeroExit: true,
     });
     if (reflogResult.code !== 0) {
-      return false;
+      return { baseMoved: false, fastForwardBaseCommit: null };
     }
 
     let insideTurnWindow = false;
     let baseMoved = false;
+    let fastForwardCandidate: string | null = null;
+    let expectFromBaseAfterPull = false;
     for (const entry of reflogResult.stdout.split("\n")) {
       const separatorIndex = entry.indexOf(" ");
       if (separatorIndex === -1) {
@@ -386,13 +391,30 @@ const makeCheckpointStore = Effect.gen(function* () {
         insideTurnWindow = commit === input.toBaseCommit;
       }
       if (commit === input.fromBaseCommit) {
-        return insideTurnWindow && baseMoved;
+        return {
+          baseMoved: insideTurnWindow && baseMoved,
+          fastForwardBaseCommit:
+            insideTurnWindow && expectFromBaseAfterPull ? fastForwardCandidate : null,
+        };
       }
-      if (insideTurnWindow && BASE_MOVING_REFLOG_OPERATIONS.test(entry.slice(separatorIndex + 1))) {
+      if (!insideTurnWindow) {
+        continue;
+      }
+      const subject = entry.slice(separatorIndex + 1);
+      const isPull = /^pull\b/.test(subject);
+      if (expectFromBaseAfterPull && !isPull) {
+        fastForwardCandidate = null;
+        expectFromBaseAfterPull = false;
+      }
+      if (BASE_MOVING_REFLOG_OPERATIONS.test(subject)) {
         baseMoved = true;
       }
+      if (isPull) {
+        fastForwardCandidate ??= commit;
+        expectFromBaseAfterPull = true;
+      }
     }
-    return false;
+    return { baseMoved: false, fastForwardBaseCommit: null };
   });
 
   /**
@@ -510,12 +532,12 @@ const makeCheckpointStore = Effect.gen(function* () {
         return input.fromCommitOid;
       }
 
-      const baseMoved = yield* hasBaseMovingOperation({
+      const baseMovement = yield* resolveBaseMovement({
         cwd: input.cwd,
         fromBaseCommit,
         toBaseCommit,
       });
-      if (!baseMoved) {
+      if (!baseMovement.baseMoved) {
         return input.fromCommitOid;
       }
 
@@ -524,7 +546,8 @@ const makeCheckpointStore = Effect.gen(function* () {
         fromBaseCommit,
         toBaseCommit,
       });
-      if (newBaseCommit === null) {
+      const projectedBaseCommit = baseMovement.fastForwardBaseCommit ?? newBaseCommit;
+      if (projectedBaseCommit === null) {
         return input.fromCommitOid;
       }
 
@@ -535,7 +558,7 @@ const makeCheckpointStore = Effect.gen(function* () {
       const mergeBaseResult = yield* git.execute({
         operation: "CheckpointStore.resolveProjectionMergeBase",
         cwd: input.cwd,
-        args: ["merge-base", newBaseCommit, fromBaseCommit],
+        args: ["merge-base", projectedBaseCommit, fromBaseCommit],
         allowNonZeroExit: true,
       });
       if (mergeBaseResult.code !== 0) {
@@ -553,7 +576,7 @@ const makeCheckpointStore = Effect.gen(function* () {
           "merge-tree",
           "--write-tree",
           `--merge-base=${mergeBaseCommit}`,
-          newBaseCommit,
+          projectedBaseCommit,
           input.fromCommitOid,
         ],
         allowNonZeroExit: true,
@@ -570,12 +593,26 @@ const makeCheckpointStore = Effect.gen(function* () {
   const resolveDiffCommits = Effect.fn("resolveDiffCommits")(function* (input: {
     readonly cwd: string;
     readonly fromCheckpointRef: CheckpointRef;
+    readonly fallbackFromCheckpointRef?: CheckpointRef;
     readonly toCheckpointRef: CheckpointRef;
     readonly fallbackFromToHead?: boolean;
-    readonly operation: string;
   }) {
-    let fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
-    const toCommitOid = yield* resolveCheckpointCommit(input.cwd, input.toCheckpointRef);
+    const [primaryFromCommitOid, toCommitOid] = yield* Effect.all(
+      [
+        resolveCheckpointCommit(input.cwd, input.fromCheckpointRef),
+        resolveCheckpointCommit(input.cwd, input.toCheckpointRef),
+      ],
+      { concurrency: "unbounded" },
+    );
+    let fromCommitOid = primaryFromCommitOid;
+
+    if (
+      !fromCommitOid &&
+      input.fallbackFromCheckpointRef !== undefined &&
+      input.fallbackFromCheckpointRef !== input.fromCheckpointRef
+    ) {
+      fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fallbackFromCheckpointRef);
+    }
     const fromCheckpointExists = fromCommitOid !== null;
 
     if (!fromCommitOid && input.fallbackFromToHead === true) {
@@ -585,25 +622,42 @@ const makeCheckpointStore = Effect.gen(function* () {
       }
     }
 
-    if (!fromCommitOid || !toCommitOid) {
-      return yield* new GitCommandError({
-        operation: input.operation,
-        command: "git diff",
-        cwd: input.cwd,
-        detail: "Checkpoint ref is unavailable for diff operation.",
+    if (!fromCommitOid) {
+      return yield* new CheckpointRefUnavailableError({
+        endpoint: "from",
+      });
+    }
+    if (!toCommitOid) {
+      return yield* new CheckpointRefUnavailableError({
+        endpoint: "to",
       });
     }
 
-    if (fromCheckpointExists) {
-      const projectedFromOid = yield* projectFromCheckpointOntoBase({
-        cwd: input.cwd,
-        fromCommitOid,
-        toCommitOid,
-      }).pipe(Effect.catch(() => Effect.succeed(fromCommitOid)));
-      return { fromCommitOid: projectedFromOid, toCommitOid };
+    return { fromCommitOid, toCommitOid, fromCheckpointExists };
+  });
+
+  const projectDiffCommits = Effect.fn("projectDiffCommits")(function* (input: {
+    readonly cwd: string;
+    readonly fromCommitOid: string;
+    readonly toCommitOid: string;
+    readonly fromCheckpointExists: boolean;
+  }) {
+    if (!input.fromCheckpointExists) {
+      return {
+        fromCommitOid: input.fromCommitOid,
+        toCommitOid: input.toCommitOid,
+      };
     }
 
-    return { fromCommitOid, toCommitOid };
+    const projectedFromOid = yield* projectFromCheckpointOntoBase({
+      cwd: input.cwd,
+      fromCommitOid: input.fromCommitOid,
+      toCommitOid: input.toCommitOid,
+    }).pipe(Effect.catch(() => Effect.succeed(input.fromCommitOid)));
+    return {
+      fromCommitOid: projectedFromOid,
+      toCommitOid: input.toCommitOid,
+    };
   });
 
   const restoreCheckpoint: CheckpointStoreShape["restoreCheckpoint"] = Effect.fn(
@@ -665,11 +719,15 @@ const makeCheckpointStore = Effect.gen(function* () {
     function* (input) {
       const operation = "CheckpointStore.diffCheckpoints";
 
-      const { fromCommitOid, toCommitOid } = yield* resolveDiffCommits({ ...input, operation });
+      const resolvedCommits = yield* resolveDiffCommits(input);
       const paths = normalizeDiffPaths(input);
       if (input.paths !== undefined && (paths?.length ?? 0) === 0) {
         return "";
       }
+      const { fromCommitOid, toCommitOid } = yield* projectDiffCommits({
+        cwd: input.cwd,
+        ...resolvedCommits,
+      });
       const result = yield* git.execute({
         operation,
         cwd: input.cwd,
@@ -678,6 +736,10 @@ const makeCheckpointStore = Effect.gen(function* () {
           "--patch",
           "--minimal",
           "--no-color",
+          "--find-renames",
+          "--find-copies",
+          "--find-copies-harder",
+          ...(input.ignoreWhitespace === true ? ["--ignore-all-space"] : []),
           fromCommitOid,
           toCommitOid,
           ...(paths !== undefined && paths.length > 0 ? ["--", ...paths] : []),
@@ -694,27 +756,66 @@ const makeCheckpointStore = Effect.gen(function* () {
   )(function* (input) {
     const operation = "CheckpointStore.diffCheckpointFiles";
 
-    const { fromCommitOid, toCommitOid } = yield* resolveDiffCommits({ ...input, operation });
+    const resolvedCommits = yield* resolveDiffCommits(input);
     const paths = normalizeDiffPaths(input);
     if (input.paths !== undefined && (paths?.length ?? 0) === 0) {
       return [];
     }
-
-    const result = yield* git.execute({
-      operation,
+    const { fromCommitOid, toCommitOid } = yield* projectDiffCommits({
       cwd: input.cwd,
-      args: [
-        "diff",
-        "--numstat",
-        "-z",
-        fromCommitOid,
-        toCommitOid,
-        ...(paths !== undefined && paths.length > 0 ? ["--", ...paths] : []),
-      ],
-      maxOutputBytes: CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES,
+      ...resolvedCommits,
     });
 
-    return parseTurnDiffFilesFromNumstat(result.stdout);
+    const pathArgs = paths !== undefined && paths.length > 0 ? ["--", ...paths] : [];
+    const [numstatResult, nameStatusResult] = yield* Effect.all(
+      [
+        git.execute({
+          operation,
+          cwd: input.cwd,
+          args: [
+            "diff",
+            "--numstat",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--find-copies-harder",
+            fromCommitOid,
+            toCommitOid,
+            ...pathArgs,
+          ],
+          maxOutputBytes: CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES,
+        }),
+        git.execute({
+          operation,
+          cwd: input.cwd,
+          args: [
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--find-copies",
+            "--find-copies-harder",
+            fromCommitOid,
+            toCommitOid,
+            ...pathArgs,
+          ],
+          maxOutputBytes: CHECKPOINT_DIFF_NUMSTAT_MAX_OUTPUT_BYTES,
+        }),
+      ],
+      { concurrency: "unbounded" },
+    );
+
+    const statsByPath = new Map(
+      parseTurnDiffFilesFromNumstat(numstatResult.stdout).map((file) => [file.path, file] as const),
+    );
+    return parseTurnDiffFileStatusesFromNameStatus(nameStatusResult.stdout).map((file) => {
+      const stats = statsByPath.get(file.path);
+      return {
+        ...file,
+        additions: stats?.additions ?? 0,
+        deletions: stats?.deletions ?? 0,
+      };
+    });
   });
 
   const deleteCheckpointRefs: CheckpointStoreShape["deleteCheckpointRefs"] = Effect.fn(

@@ -121,6 +121,24 @@ import type {
   PullRequestThreadReplyInput,
   PullRequestThreadResolutionInput,
 } from "./pullRequest.ts";
+import type {
+  PullRequestMonitorContextInput,
+  PullRequestMonitorContextResult,
+  PullRequestMonitorLaunchFallbackInput,
+  PullRequestMonitorLaunchFallbackResult,
+  PullRequestMonitorListInput,
+  PullRequestMonitorListResult,
+  PullRequestMonitorMutationResult,
+  PullRequestMonitorReportInput,
+  PullRequestMonitorReportResult,
+  PullRequestMonitorStartInput,
+  PullRequestMonitorStatusInput,
+  PullRequestMonitorStatusResult,
+  PullRequestMonitorStopInput,
+  PullRequestMonitorSubmitFindingsInput,
+  PullRequestMonitorSubmitFindingsResult,
+  PullRequestMonitorTransferInput,
+} from "./pullRequestMonitor.ts";
 import { ServerSettings, type ClientSettings, type ServerSettingsPatch } from "./settings.ts";
 import { Schema } from "effect";
 
@@ -1009,6 +1027,21 @@ export interface EnvironmentApi {
     invalidate: (input: PullRequestInvalidateInput) => Promise<void>;
     reviewerCandidates: (input: PullRequestRef) => Promise<PullRequestReviewerCandidateList>;
     requestReviewers: (input: PullRequestReviewerRequestInput) => Promise<void>;
+  };
+  pullRequestMonitors: {
+    start: (input: PullRequestMonitorStartInput) => Promise<PullRequestMonitorMutationResult>;
+    stop: (input: PullRequestMonitorStopInput) => Promise<PullRequestMonitorMutationResult>;
+    status: (input: PullRequestMonitorStatusInput) => Promise<PullRequestMonitorStatusResult>;
+    list: (input: PullRequestMonitorListInput) => Promise<PullRequestMonitorListResult>;
+    context: (input: PullRequestMonitorContextInput) => Promise<PullRequestMonitorContextResult>;
+    report: (input: PullRequestMonitorReportInput) => Promise<PullRequestMonitorReportResult>;
+    transfer: (input: PullRequestMonitorTransferInput) => Promise<PullRequestMonitorMutationResult>;
+    submitFindings: (
+      input: PullRequestMonitorSubmitFindingsInput,
+    ) => Promise<PullRequestMonitorSubmitFindingsResult>;
+    launchFallback: (
+      input: PullRequestMonitorLaunchFallbackInput,
+    ) => Promise<PullRequestMonitorLaunchFallbackResult>;
   };
   server: {
     exportThreadMarkdown: (

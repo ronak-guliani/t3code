@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseTurnDiffFilesFromNumstat, parseTurnDiffFilesFromUnifiedDiff } from "./Diffs.ts";
+import {
+  parseTurnDiffFilesFromNumstat,
+  parseTurnDiffFilesFromUnifiedDiff,
+  parseTurnDiffFileStatusesFromNameStatus,
+} from "./Diffs.ts";
 
 describe("parseTurnDiffFilesFromUnifiedDiff", () => {
   it("returns empty list for empty diff", () => {
@@ -29,8 +33,22 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "a.txt", additions: 2, deletions: 1 },
-      { path: "src/b.ts", additions: 0, deletions: 2 },
+      {
+        path: "a.txt",
+        previousPath: null,
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+        section: diff.slice(0, diff.indexOf("diff --git a/src/b.ts")),
+      },
+      {
+        path: "src/b.ts",
+        previousPath: null,
+        kind: "modified",
+        additions: 0,
+        deletions: 2,
+        section: diff.slice(diff.indexOf("diff --git a/src/b.ts")),
+      },
     ]);
   });
 
@@ -44,7 +62,74 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "src/new.ts", additions: 0, deletions: 0 },
+      {
+        path: "src/new.ts",
+        previousPath: "src/old.ts",
+        kind: "renamed",
+        additions: 0,
+        deletions: 0,
+        section: diff,
+      },
+    ]);
+  });
+
+  it("preserves added and deleted metadata", () => {
+    const deletedSection = [
+      "diff --git a/deleted.txt b/deleted.txt",
+      "deleted file mode 100644",
+      "--- a/deleted.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-deleted",
+    ].join("\n");
+    const addedSection = [
+      "diff --git a/new.txt b/new.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/new.txt",
+      "@@ -0,0 +1 @@",
+      "+added",
+    ].join("\n");
+    const diff = `${addedSection}\n${deletedSection}`;
+
+    expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
+      {
+        path: "deleted.txt",
+        previousPath: null,
+        kind: "deleted",
+        additions: 0,
+        deletions: 1,
+        section: deletedSection,
+      },
+      {
+        path: "new.txt",
+        previousPath: null,
+        kind: "added",
+        additions: 1,
+        deletions: 0,
+        section: `${addedSection}\n`,
+      },
+    ]);
+  });
+
+  it("classifies copy-only diffs", () => {
+    const diff = [
+      "diff --git a/src/source file.ts b/src/copied file.ts",
+      "similarity index 100%",
+      "copy from src/source file.ts",
+      "copy to src/copied file.ts",
+      "",
+    ].join("\n");
+
+    expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
+      {
+        path: "src/copied file.ts",
+        previousPath: "src/source file.ts",
+        kind: "copied",
+        additions: 0,
+        deletions: 0,
+        section: diff,
+      },
     ]);
   });
 
@@ -62,7 +147,14 @@ describe("parseTurnDiffFilesFromUnifiedDiff", () => {
     ].join("\r\n");
 
     expect(parseTurnDiffFilesFromUnifiedDiff(diff)).toEqual([
-      { path: "a.txt", additions: 2, deletions: 1 },
+      {
+        path: "a.txt",
+        previousPath: null,
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+        section: diff,
+      },
     ]);
   });
 });
@@ -72,8 +164,20 @@ describe("parseTurnDiffFilesFromNumstat", () => {
     const numstat = ["2\t1\tsrc/a.ts", "0\t3\tREADME.md", ""].join("\0");
 
     expect(parseTurnDiffFilesFromNumstat(numstat)).toEqual([
-      { path: "README.md", additions: 0, deletions: 3 },
-      { path: "src/a.ts", additions: 2, deletions: 1 },
+      {
+        path: "README.md",
+        previousPath: null,
+        kind: "modified",
+        additions: 0,
+        deletions: 3,
+      },
+      {
+        path: "src/a.ts",
+        previousPath: null,
+        kind: "modified",
+        additions: 2,
+        deletions: 1,
+      },
     ]);
   });
 
@@ -81,13 +185,50 @@ describe("parseTurnDiffFilesFromNumstat", () => {
     const numstat = ["1\t0\t", "src/old.ts", "src/new.ts", ""].join("\0");
 
     expect(parseTurnDiffFilesFromNumstat(numstat)).toEqual([
-      { path: "src/new.ts", additions: 1, deletions: 0 },
+      {
+        path: "src/new.ts",
+        previousPath: "src/old.ts",
+        kind: "renamed",
+        additions: 1,
+        deletions: 0,
+      },
     ]);
   });
 
   it("reports binary file counts as zero", () => {
     expect(parseTurnDiffFilesFromNumstat("-\t-\timage.png\0")).toEqual([
-      { path: "image.png", additions: 0, deletions: 0 },
+      {
+        path: "image.png",
+        previousPath: null,
+        kind: "modified",
+        additions: 0,
+        deletions: 0,
+      },
+    ]);
+  });
+});
+
+describe("parseTurnDiffFileStatusesFromNameStatus", () => {
+  it("preserves added, deleted, renamed, and copied file metadata", () => {
+    const nameStatus = [
+      "A",
+      "added.txt",
+      "D",
+      "deleted.txt",
+      "R100",
+      "old name.txt",
+      "new name.txt",
+      "C100",
+      "source.txt",
+      "copy.txt",
+      "",
+    ].join("\0");
+
+    expect(parseTurnDiffFileStatusesFromNameStatus(nameStatus)).toEqual([
+      { path: "added.txt", previousPath: null, kind: "added" },
+      { path: "copy.txt", previousPath: "source.txt", kind: "copied" },
+      { path: "deleted.txt", previousPath: null, kind: "deleted" },
+      { path: "new name.txt", previousPath: "old name.txt", kind: "renamed" },
     ]);
   });
 });

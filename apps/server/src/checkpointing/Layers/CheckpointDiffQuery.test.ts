@@ -47,11 +47,12 @@ describe("CheckpointDiffQueryLive", () => {
     const projectId = ProjectId.make("project-1");
     const threadId = ThreadId.make("thread-1");
     const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
-    const hasCheckpointRefCalls: Array<CheckpointRef> = [];
     const diffCheckpointsCalls: Array<{
       readonly fromCheckpointRef: CheckpointRef;
+      readonly fallbackFromCheckpointRef?: CheckpointRef;
       readonly toCheckpointRef: CheckpointRef;
       readonly cwd: string;
+      readonly ignoreWhitespace?: boolean;
       readonly paths?: ReadonlyArray<string>;
     }> = [];
 
@@ -62,25 +63,39 @@ describe("CheckpointDiffQueryLive", () => {
       worktreePath: null,
       checkpointTurnCount: 1,
       checkpointRef: toCheckpointRef,
-      turnFiles: [{ path: "src/app.ts", kind: "modified", additions: 1, deletions: 0 }],
+      turnFiles: [
+        {
+          path: "src/new app.ts",
+          previousPath: "src/old app.ts",
+          kind: "renamed",
+          additions: 1,
+          deletions: 0,
+        },
+      ],
     });
 
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
       captureCheckpoint: () => Effect.void,
-      hasCheckpointRef: ({ checkpointRef }) =>
-        Effect.sync(() => {
-          hasCheckpointRefCalls.push(checkpointRef);
-          return true;
-        }),
+      hasCheckpointRef: () =>
+        Effect.die("CheckpointDiffQuery should not preflight checkpoint refs"),
       checkpointRefMatchesWorkspace: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, paths }) =>
+      diffCheckpoints: ({
+        fromCheckpointRef,
+        fallbackFromCheckpointRef,
+        toCheckpointRef,
+        cwd,
+        ignoreWhitespace,
+        paths,
+      }) =>
         Effect.sync(() => {
           diffCheckpointsCalls.push({
             fromCheckpointRef,
+            ...(fallbackFromCheckpointRef !== undefined ? { fallbackFromCheckpointRef } : {}),
             toCheckpointRef,
             cwd,
+            ...(ignoreWhitespace !== undefined ? { ignoreWhitespace } : {}),
             ...(paths !== undefined ? { paths } : {}),
           });
           return "diff patch";
@@ -120,18 +135,20 @@ describe("CheckpointDiffQueryLive", () => {
           fromTurnCount: 0,
           toTurnCount: 1,
           scope: "snapshot",
+          ignoreWhitespace: true,
         });
       }).pipe(Effect.provide(layer)),
     );
 
     const expectedFromRef = checkpointBaselineRefForThreadTurn(threadId, 1);
-    expect(hasCheckpointRefCalls).toEqual([expectedFromRef, toCheckpointRef]);
     expect(diffCheckpointsCalls).toEqual([
       {
         cwd: "/tmp/workspace",
         fromCheckpointRef: expectedFromRef,
+        fallbackFromCheckpointRef: checkpointRefForThreadTurn(threadId, 0),
         toCheckpointRef,
-        paths: ["src/app.ts"],
+        ignoreWhitespace: true,
+        paths: ["src/new app.ts", "src/old app.ts"],
       },
     ]);
     expect(result).toEqual({
@@ -208,7 +225,7 @@ describe("CheckpointDiffQueryLive", () => {
     expect(result.diff).toBe("turn diff patch");
   });
 
-  it("returns an empty turn-scoped diff without invoking git when no turn files exist", async () => {
+  it("passes an empty path range through checkpoint resolution without preflight ref checks", async () => {
     const projectId = ProjectId.make("project-1");
     const threadId = ThreadId.make("thread-1");
     const threadCheckpointContext = makeThreadCheckpointContext({
@@ -220,17 +237,18 @@ describe("CheckpointDiffQueryLive", () => {
       checkpointRef: checkpointRefForThreadTurn(threadId, 1),
       turnFiles: [],
     });
-    let diffCalled = false;
+    const diffPaths: Array<ReadonlyArray<string> | undefined> = [];
     const checkpointStore: CheckpointStoreShape = {
       isGitRepository: () => Effect.succeed(true),
       captureCheckpoint: () => Effect.void,
-      hasCheckpointRef: () => Effect.succeed(true),
+      hasCheckpointRef: () =>
+        Effect.die("CheckpointDiffQuery should not preflight checkpoint refs"),
       checkpointRefMatchesWorkspace: () => Effect.succeed(true),
       restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: () =>
+      diffCheckpoints: ({ paths }) =>
         Effect.sync(() => {
-          diffCalled = true;
-          return "unexpected";
+          diffPaths.push(paths);
+          return "";
         }),
       diffCheckpointFiles: () => Effect.succeed([]),
       deleteCheckpointRefs: () => Effect.void,
@@ -269,7 +287,7 @@ describe("CheckpointDiffQueryLive", () => {
       }).pipe(Effect.provide(layer)),
     );
 
-    expect(diffCalled).toBe(false);
+    expect(diffPaths).toEqual([[]]);
     expect(result.diff).toBe("");
   });
 

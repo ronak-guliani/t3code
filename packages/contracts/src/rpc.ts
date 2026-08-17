@@ -3,7 +3,11 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { OpenError, OpenInEditorInput, RevealInFileManagerInput } from "./editor.ts";
-import { AuthAccessStreamEvent, EnvironmentRpcAuthorization } from "./auth.ts";
+import {
+  AuthAccessStreamEvent,
+  EnvironmentAuthorizationError,
+  EnvironmentRpcAuthorization,
+} from "./auth.ts";
 import {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
@@ -197,6 +201,25 @@ import {
   PullRequestThreadResolutionInput,
   PullRequestUnavailableError,
 } from "./pullRequest.ts";
+import {
+  PullRequestMonitorContextInput,
+  PullRequestMonitorContextResult,
+  PullRequestMonitorError,
+  PullRequestMonitorLaunchFallbackInput,
+  PullRequestMonitorLaunchFallbackResult,
+  PullRequestMonitorListInput,
+  PullRequestMonitorListResult,
+  PullRequestMonitorMutationResult,
+  PullRequestMonitorReportInput,
+  PullRequestMonitorReportResult,
+  PullRequestMonitorStartInput,
+  PullRequestMonitorStatusInput,
+  PullRequestMonitorStatusResult,
+  PullRequestMonitorStopInput,
+  PullRequestMonitorSubmitFindingsInput,
+  PullRequestMonitorSubmitFindingsResult,
+  PullRequestMonitorTransferInput,
+} from "./pullRequestMonitor.ts";
 import { WorkflowRunError, WorkflowRunResult } from "./agentWorkflows.ts";
 import { WorkflowRunInput } from "./workflowRuntime.ts";
 
@@ -315,6 +338,16 @@ export const WS_METHODS = {
   pullRequestsInvalidate: "pullRequests.invalidate",
   pullRequestsReviewerCandidates: "pullRequests.reviewerCandidates",
   pullRequestsRequestReviewers: "pullRequests.requestReviewers",
+  pullRequestMonitorsStart: "pullRequestMonitors.start",
+  pullRequestMonitorsStop: "pullRequestMonitors.stop",
+  pullRequestMonitorsStatus: "pullRequestMonitors.status",
+  pullRequestMonitorsList: "pullRequestMonitors.list",
+  pullRequestMonitorsSubscribe: "pullRequestMonitors.subscribe",
+  pullRequestMonitorsContext: "pullRequestMonitors.context",
+  pullRequestMonitorsReport: "pullRequestMonitors.report",
+  pullRequestMonitorsTransfer: "pullRequestMonitors.transfer",
+  pullRequestMonitorsSubmitFindings: "pullRequestMonitors.submitFindings",
+  pullRequestMonitorsLaunchFallback: "pullRequestMonitors.launchFallback",
 
   // Streaming subscriptions
   subscribeGitStatus: "subscribeGitStatus",
@@ -580,6 +613,73 @@ export const WsPullRequestsRequestReviewersRpc = Rpc.make(WS_METHODS.pullRequest
   success: Schema.Void,
   error: PullRequestRpcError,
 });
+
+export const WsPullRequestMonitorsStartRpc = Rpc.make(WS_METHODS.pullRequestMonitorsStart, {
+  payload: PullRequestMonitorStartInput,
+  success: PullRequestMonitorMutationResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsStopRpc = Rpc.make(WS_METHODS.pullRequestMonitorsStop, {
+  payload: PullRequestMonitorStopInput,
+  success: PullRequestMonitorMutationResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsStatusRpc = Rpc.make(WS_METHODS.pullRequestMonitorsStatus, {
+  payload: PullRequestMonitorStatusInput,
+  success: PullRequestMonitorStatusResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsListRpc = Rpc.make(WS_METHODS.pullRequestMonitorsList, {
+  payload: PullRequestMonitorListInput,
+  success: PullRequestMonitorListResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsSubscribeRpc = Rpc.make(WS_METHODS.pullRequestMonitorsSubscribe, {
+  payload: PullRequestMonitorListInput,
+  success: PullRequestMonitorListResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsPullRequestMonitorsContextRpc = Rpc.make(WS_METHODS.pullRequestMonitorsContext, {
+  payload: PullRequestMonitorContextInput,
+  success: PullRequestMonitorContextResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsReportRpc = Rpc.make(WS_METHODS.pullRequestMonitorsReport, {
+  payload: PullRequestMonitorReportInput,
+  success: PullRequestMonitorReportResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsTransferRpc = Rpc.make(WS_METHODS.pullRequestMonitorsTransfer, {
+  payload: PullRequestMonitorTransferInput,
+  success: PullRequestMonitorMutationResult,
+  error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+});
+
+export const WsPullRequestMonitorsSubmitFindingsRpc = Rpc.make(
+  WS_METHODS.pullRequestMonitorsSubmitFindings,
+  {
+    payload: PullRequestMonitorSubmitFindingsInput,
+    success: PullRequestMonitorSubmitFindingsResult,
+    error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+  },
+);
+
+export const WsPullRequestMonitorsLaunchFallbackRpc = Rpc.make(
+  WS_METHODS.pullRequestMonitorsLaunchFallback,
+  {
+    payload: PullRequestMonitorLaunchFallbackInput,
+    success: PullRequestMonitorLaunchFallbackResult,
+    error: Schema.Union([PullRequestMonitorError, EnvironmentAuthorizationError]),
+  },
+);
 
 export const WsSubscribeDiscoveredLocalServersRpc = Rpc.make(
   WS_METHODS.subscribeDiscoveredLocalServers,
@@ -1070,6 +1170,16 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsInvalidateRpc,
   WsPullRequestsReviewerCandidatesRpc,
   WsPullRequestsRequestReviewersRpc,
+  WsPullRequestMonitorsStartRpc,
+  WsPullRequestMonitorsStopRpc,
+  WsPullRequestMonitorsStatusRpc,
+  WsPullRequestMonitorsListRpc,
+  WsPullRequestMonitorsSubscribeRpc,
+  WsPullRequestMonitorsContextRpc,
+  WsPullRequestMonitorsReportRpc,
+  WsPullRequestMonitorsTransferRpc,
+  WsPullRequestMonitorsSubmitFindingsRpc,
+  WsPullRequestMonitorsLaunchFallbackRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsSubscribeGitStatusRpc,
   WsGitPullRpc,

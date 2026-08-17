@@ -64,6 +64,7 @@
           "session": null,
           "latestUserMessageAt": null,
           "hasPendingApprovals": false,
+          "hasPendingQueuedTurn": false,
           "hasPendingUserInput": false,
           "hasActionableProposedPlan": false
         }

@@ -348,6 +348,7 @@ export type OrchestrationSession = typeof OrchestrationSession.Type;
 
 export const OrchestrationCheckpointFile = Schema.Struct({
   path: TrimmedNonEmptyString,
+  previousPath: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   kind: TrimmedNonEmptyString,
   additions: NonNegativeInt,
   deletions: NonNegativeInt,

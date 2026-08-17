@@ -258,6 +258,7 @@ function createMockEnvironmentApi(input: {
     preview: {} as EnvironmentApi["preview"],
     git: {} as EnvironmentApi["git"],
     pullRequests: {} as EnvironmentApi["pullRequests"],
+    pullRequestMonitors: {} as EnvironmentApi["pullRequestMonitors"],
     workflow: {
       run: (() => {
         throw new Error("Not implemented in browser test.");

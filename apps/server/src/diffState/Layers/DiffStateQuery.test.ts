@@ -68,7 +68,7 @@ describe("DiffStateQueryLive", () => {
       {
         path: "src/app.ts",
         previousPath: null,
-        status: "unknown",
+        status: "modified",
         additions: 2,
         deletions: 1,
         hunks: [],
@@ -87,9 +87,9 @@ describe("DiffStateQueryLive", () => {
           fromTurnCount: 0,
           toTurnCount: 1,
           diff: [
-            "diff --git a/assets/icon.png b/assets/icon.png",
+            "diff --git a/assets/binary icon.png b/assets/binary icon.png",
             "index 1111111..2222222 100644",
-            "Binary files a/assets/icon.png and b/assets/icon.png differ",
+            "Binary files a/assets/binary icon.png and b/assets/binary icon.png differ",
           ].join("\n"),
         }),
       getFullThreadDiff: () => Effect.die("getFullThreadDiff should not be called"),
@@ -111,9 +111,93 @@ describe("DiffStateQueryLive", () => {
     if (result._tag !== "ready") {
       throw new Error("expected ready diff state");
     }
-    expect(result.snapshot.files[0]?.isBinary).toBe(true);
-    expect(result.snapshot.files[0]?.size).toBe("unrenderable");
+    expect(result.snapshot.files[0]).toMatchObject({
+      path: "assets/binary icon.png",
+      additions: 0,
+      deletions: 0,
+      isBinary: true,
+      size: "unrenderable",
+    });
     expect(result.snapshot.metadata.unrenderableFiles).toBe(1);
+  });
+
+  it("preserves copy and rename metadata, paths with spaces, and line counts", async () => {
+    const layer = withCheckpointDiffQuery({
+      getTurnDiff: () =>
+        Effect.succeed({
+          threadId,
+          fromTurnCount: 0,
+          toTurnCount: 1,
+          diff: [
+            "diff --git a/src/old name.ts b/src/new name.ts",
+            "similarity index 80%",
+            "rename from src/old name.ts",
+            "rename to src/new name.ts",
+            "--- a/src/old name.ts",
+            "+++ b/src/new name.ts",
+            "@@ -1 +1 @@",
+            "-old",
+            "+renamed",
+            "diff --git a/src/source file.ts b/src/copied file.ts",
+            "similarity index 75%",
+            "copy from src/source file.ts",
+            "copy to src/copied file.ts",
+            "--- a/src/source file.ts",
+            "+++ b/src/copied file.ts",
+            "@@ -1 +1,3 @@",
+            " original",
+            "+copy one",
+            "+copy two",
+          ].join("\n"),
+        }),
+      getFullThreadDiff: () => Effect.die("getFullThreadDiff should not be called"),
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const query = yield* DiffStateQuery;
+        return yield* query.getTurnDiffState({
+          threadId,
+          fromTurnCount: 0,
+          toTurnCount: 1,
+          scope: "turn",
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result._tag).toBe("ready");
+    if (result._tag !== "ready") {
+      throw new Error("expected ready diff state");
+    }
+    expect(result.snapshot.files).toEqual([
+      {
+        path: "src/copied file.ts",
+        previousPath: "src/source file.ts",
+        status: "copied",
+        additions: 2,
+        deletions: 0,
+        hunks: [],
+        isBinary: false,
+        size: "normal",
+        hasHiddenBidiChars: false,
+      },
+      {
+        path: "src/new name.ts",
+        previousPath: "src/old name.ts",
+        status: "renamed",
+        additions: 1,
+        deletions: 1,
+        hunks: [],
+        isBinary: false,
+        size: "normal",
+        hasHiddenBidiChars: false,
+      },
+    ]);
+    expect(result.snapshot.metadata).toMatchObject({
+      filesChanged: 2,
+      totalAdditions: 3,
+      totalDeletions: 1,
+    });
   });
 
   it("classifies very long lines as large and detects hidden bidi chars", async () => {

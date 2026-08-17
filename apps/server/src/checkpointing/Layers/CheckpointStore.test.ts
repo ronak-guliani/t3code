@@ -5,11 +5,15 @@ import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, PlatformError, Scope } from "effect";
 import { describe, expect } from "vitest";
 
-import { checkpointRefForThreadTurn } from "../Utils.ts";
+import { checkpointBaselineRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
 import { CheckpointStoreLive } from "./CheckpointStore.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
 import { GitCoreLive } from "../../git/Layers/GitCore.ts";
-import { GitCore } from "../../git/Services/GitCore.ts";
+import {
+  GitCore,
+  type ExecuteGitInput,
+  type ExecuteGitResult,
+} from "../../git/Services/GitCore.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import { ThreadId } from "@t3tools/contracts";
@@ -26,6 +30,16 @@ const CheckpointStoreTestLayer = CheckpointStoreLive.pipe(
   Layer.provide(NodeServices.layer),
 );
 const TestLayer = Layer.mergeAll(NodeServices.layer, GitCoreTestLayer, CheckpointStoreTestLayer);
+
+function executeGitResult(code: number, stdout = ""): ExecuteGitResult {
+  return {
+    code,
+    stdout,
+    stderr: "",
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  };
+}
 
 function makeTmpDir(
   prefix = "checkpoint-store-test-",
@@ -101,6 +115,73 @@ function replaceLine(contents: string, lineIndex: number, replacement: string): 
   lines[lineIndex] = replacement;
   return lines.join("\n");
 }
+
+describe("CheckpointStoreLive range resolution", () => {
+  it.effect("resolves preferred, fallback, and target checkpoint refs only once", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-checkpoint-store-range-resolution");
+      const preferredFromCheckpointRef = checkpointBaselineRefForThreadTurn(threadId, 1);
+      const fallbackFromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+      const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+      const executeInputs: Array<ExecuteGitInput> = [];
+      const gitCoreLayer = Layer.mock(GitCore)({
+        execute: (input) =>
+          Effect.sync(() => {
+            executeInputs.push(input);
+            const revision = input.args[3];
+            if (revision === `${preferredFromCheckpointRef}^{commit}`) {
+              return executeGitResult(1);
+            }
+            if (revision === `${fallbackFromCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "from-oid\n");
+            }
+            if (revision === `${toCheckpointRef}^{commit}`) {
+              return executeGitResult(0, "to-oid\n");
+            }
+            if (revision === "from-oid^" || revision === "to-oid^") {
+              return executeGitResult(0, "base-oid\n");
+            }
+            if (input.args[0] === "diff") {
+              return executeGitResult(0, "diff --git a/README.md b/README.md\n+# changed\n");
+            }
+            throw new Error(`Unexpected Git command: ${input.args.join(" ")}`);
+          }),
+      });
+      const checkpointStoreLayer = CheckpointStoreLive.pipe(
+        Layer.provide(gitCoreLayer),
+        Layer.provide(NodeServices.layer),
+      );
+      const diff = yield* Effect.gen(function* () {
+        const checkpointStore = yield* CheckpointStore;
+        return yield* checkpointStore.diffCheckpoints({
+          cwd: "/tmp/workspace",
+          fromCheckpointRef: preferredFromCheckpointRef,
+          fallbackFromCheckpointRef,
+          toCheckpointRef,
+        });
+      }).pipe(Effect.provide(checkpointStoreLayer));
+
+      const checkpointRefLookups = executeInputs
+        .filter(
+          (input) =>
+            input.args[0] === "rev-parse" &&
+            input.args[1] === "--verify" &&
+            input.args[2] === "--quiet" &&
+            input.args[3]?.startsWith("refs/t3/checkpoints/") === true,
+        )
+        .map((input) => input.args[3]);
+
+      expect(checkpointRefLookups.toSorted()).toEqual(
+        [
+          `${preferredFromCheckpointRef}^{commit}`,
+          `${fallbackFromCheckpointRef}^{commit}`,
+          `${toCheckpointRef}^{commit}`,
+        ].toSorted(),
+      );
+      expect(diff).toContain("+# changed");
+    }),
+  );
+});
 
 it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   describe("checkpointRefMatchesWorkspace", () => {
@@ -212,6 +293,93 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   });
 
   describe("diffCheckpoints", () => {
+    it.effect("honors ignoreWhitespace for whitespace-only changes", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-whitespace");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+        yield* writeTextFile(path.join(tmp, "README.md"), "#    test\n");
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: true,
+        });
+
+        expect(diff).toBe("");
+      }),
+    );
+
+    it.effect("excludes same-branch fast-forward pull changes", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-fast-forward");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 2);
+
+        yield* git(tmp, ["checkout", "-b", "thread-branch"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: fromCheckpointRef });
+        const oldHead = yield* git(tmp, ["rev-parse", "HEAD"]);
+
+        yield* git(tmp, ["checkout", "-b", "upstream-branch"]);
+        yield* writeTextFile(path.join(tmp, "upstream-b.md"), "upstream b\n");
+        yield* git(tmp, ["add", "upstream-b.md"]);
+        yield* git(tmp, ["commit", "-m", "upstream change b"]);
+        const upstreamHeadB = yield* git(tmp, ["rev-parse", "HEAD"]);
+        yield* git(tmp, ["branch", "older-upstream-tip", upstreamHeadB]);
+        yield* writeTextFile(path.join(tmp, "upstream-c.md"), "upstream c\n");
+        yield* git(tmp, ["add", "upstream-c.md"]);
+        yield* git(tmp, ["commit", "-m", "upstream change c"]);
+        const upstreamHeadC = yield* git(tmp, ["rev-parse", "HEAD"]);
+
+        yield* git(tmp, ["checkout", "thread-branch"]);
+        yield* git(tmp, ["branch", "-D", "upstream-branch"]);
+        yield* git(tmp, [
+          "update-ref",
+          "-m",
+          "pull: Fast-forward",
+          "refs/heads/thread-branch",
+          upstreamHeadB,
+          oldHead,
+        ]);
+        yield* git(tmp, ["read-tree", "--reset", "-u", upstreamHeadB]);
+        yield* git(tmp, [
+          "update-ref",
+          "-m",
+          "pull: Fast-forward",
+          "refs/heads/thread-branch",
+          upstreamHeadC,
+          upstreamHeadB,
+        ]);
+        yield* git(tmp, ["read-tree", "--reset", "-u", upstreamHeadC]);
+        yield* writeTextFile(path.join(tmp, "README.md"), "# turn change\n");
+        yield* git(tmp, ["add", "README.md"]);
+        yield* git(tmp, ["commit", "-m", "turn change"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: toCheckpointRef });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(diff).toContain("+# turn change");
+        expect(diff).not.toContain("upstream-b.md");
+        expect(diff).not.toContain("upstream-c.md");
+        expect(diff).not.toContain("+upstream b");
+        expect(diff).not.toContain("+upstream c");
+      }),
+    );
+
     it.effect("excludes base movement that entered the workspace during the turn", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();
@@ -552,6 +720,43 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
   });
 
   describe("diffCheckpointFiles", () => {
+    it.effect("preserves rename metadata for paths with spaces", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        yield* initRepoWithCommit(tmp);
+        const checkpointStore = yield* CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-rename-summary");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: fromCheckpointRef,
+        });
+        yield* git(tmp, ["mv", "README.md", "renamed file.md"]);
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: toCheckpointRef,
+        });
+
+        const files = yield* checkpointStore.diffCheckpointFiles({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+        });
+
+        expect(files).toEqual([
+          {
+            path: "renamed file.md",
+            previousPath: "README.md",
+            kind: "renamed",
+            additions: 0,
+            deletions: 0,
+          },
+        ]);
+      }),
+    );
+
     it.effect(
       "returns file summaries for checkpoint diffs whose patch exceeds the output limit",
       () =>
@@ -579,7 +784,15 @@ it.layer(TestLayer)("CheckpointStoreLive", (it) => {
             toCheckpointRef,
           });
 
-          expect(files).toEqual([{ path: "README.md", additions: 1, deletions: 1 }]);
+          expect(files).toEqual([
+            {
+              path: "README.md",
+              previousPath: null,
+              kind: "modified",
+              additions: 1,
+              deletions: 1,
+            },
+          ]);
         }),
     );
   });

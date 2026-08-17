@@ -14,6 +14,7 @@ import type {
   PullRequestMergeCapabilities,
   PullRequestMergeMethod,
   PullRequestMergeability,
+  PullRequestMonitorSnapshot,
   PullRequestReviewCommentDraft,
   PullRequestReviewThread,
   PullRequestReviewVerdict,
@@ -370,4 +371,12 @@ export interface PullRequestProviderApi {
       readonly resolved: boolean;
     },
   ) => Effect.Effect<void, PullRequestProviderError>;
+
+  /**
+   * Fresh monitoring snapshot for durable server-owned PR monitors.
+   * Must not reuse UI list/detail caches — callers expect host-fresh correctness-critical data.
+   */
+  readonly monitorSnapshot?: (
+    input: ProviderRepositoryRef & { readonly number: number },
+  ) => Effect.Effect<PullRequestMonitorSnapshot, PullRequestProviderError>;
 }

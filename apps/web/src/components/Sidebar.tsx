@@ -3126,11 +3126,11 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
         className={`${resolveThreadRowClassName({
           isActive: props.isActive,
           isSelected: false,
-        })} group/draft relative isolate flex h-7 w-full items-center rounded-md px-1.5`}
+        })} group/draft relative isolate flex h-[var(--app-sidebar-legacy-row-height)] w-full items-center rounded-md px-[var(--app-sidebar-legacy-row-padding-x)]`}
       >
         <button
           type="button"
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 p-0 text-left leading-tight outline-none"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-[var(--app-sidebar-row-inline-gap)] p-0 text-left leading-tight outline-none"
           onClick={() => props.onNavigate(draftId)}
         >
           <span aria-hidden="true" className="size-3.5 shrink-0" />

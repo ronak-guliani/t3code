@@ -186,10 +186,13 @@ function parseProviderTurnDiffFiles(
     if (normalizedPath === null || seen.has(normalizedPath)) {
       continue;
     }
+    const normalizedPreviousPath =
+      file.previousPath === null ? null : normalizeChangedFilePath(file.previousPath, { cwd });
     seen.add(normalizedPath);
     result.push({
       path: normalizedPath,
-      kind: "modified",
+      ...(normalizedPreviousPath === null ? {} : { previousPath: normalizedPreviousPath }),
+      kind: file.kind,
       additions: file.additions,
       deletions: file.deletions,
     });

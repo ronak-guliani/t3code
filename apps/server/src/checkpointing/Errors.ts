@@ -35,9 +35,24 @@ export class CheckpointInvariantError extends Schema.TaggedErrorClass<Checkpoint
   }
 }
 
+/**
+ * CheckpointRefUnavailableError - A filesystem checkpoint range endpoint does not exist.
+ */
+export class CheckpointRefUnavailableError extends Schema.TaggedErrorClass<CheckpointRefUnavailableError>()(
+  "CheckpointRefUnavailableError",
+  {
+    endpoint: Schema.Literals(["from", "to"]),
+  },
+) {
+  override get message(): string {
+    return `Checkpoint ${this.endpoint} ref is unavailable.`;
+  }
+}
+
 export type CheckpointStoreError =
   | GitCommandError
   | CheckpointInvariantError
+  | CheckpointRefUnavailableError
   | CheckpointUnavailableError;
 
 export type CheckpointServiceError = CheckpointStoreError | ProjectionRepositoryError;

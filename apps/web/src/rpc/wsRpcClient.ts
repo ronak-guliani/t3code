@@ -149,6 +149,17 @@ export interface WsRpcClient {
     readonly reviewerCandidates: RpcUnaryMethod<typeof WS_METHODS.pullRequestsReviewerCandidates>;
     readonly requestReviewers: RpcUnaryMethod<typeof WS_METHODS.pullRequestsRequestReviewers>;
   };
+  readonly pullRequestMonitors: {
+    readonly start: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsStart>;
+    readonly stop: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsStop>;
+    readonly status: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsStatus>;
+    readonly list: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsList>;
+    readonly context: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsContext>;
+    readonly report: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsReport>;
+    readonly transfer: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsTransfer>;
+    readonly submitFindings: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsSubmitFindings>;
+    readonly launchFallback: RpcUnaryMethod<typeof WS_METHODS.pullRequestMonitorsLaunchFallback>;
+  };
   readonly workflow: {
     readonly run: RpcUnaryMethod<typeof WS_METHODS.workflowRun>;
   };
@@ -363,6 +374,26 @@ export function createWsRpcClient(transport: WsTransport): WsRpcClient {
         transport.request((client) => client[WS_METHODS.pullRequestsReviewerCandidates](input)),
       requestReviewers: (input) =>
         transport.request((client) => client[WS_METHODS.pullRequestsRequestReviewers](input)),
+    },
+    pullRequestMonitors: {
+      start: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsStart](input)),
+      stop: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsStop](input)),
+      status: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsStatus](input)),
+      list: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsList](input)),
+      context: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsContext](input)),
+      report: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsReport](input)),
+      transfer: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsTransfer](input)),
+      submitFindings: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsSubmitFindings](input)),
+      launchFallback: (input) =>
+        transport.request((client) => client[WS_METHODS.pullRequestMonitorsLaunchFallback](input)),
     },
     workflow: {
       run: (input) => transport.request((client) => client[WS_METHODS.workflowRun](input)),

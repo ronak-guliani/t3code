@@ -5,7 +5,9 @@ import type {
   PullRequestViewerPermissions,
 } from "@t3tools/contracts";
 
+import { GitHubCli } from "../git/Services/GitHubCli.ts";
 import * as GitHubPullRequestCli from "./GitHubPullRequestCli.ts";
+import { fetchGitHubPullRequestMonitorSnapshot } from "./GitHubPullRequestMonitorSnapshot.ts";
 import {
   PullRequestProviderError,
   type ProviderChangeRequestActivity,
@@ -107,6 +109,7 @@ export function loginAvatarUrl(login: string, host: string): string | null {
 
 export const make = Effect.gen(function* () {
   const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+  const github = yield* GitHubCli;
 
   const fail = (operation: string) => (error: GitHubPullRequestCli.GitHubPullRequestCliError) =>
     new PullRequestProviderError({
@@ -358,6 +361,14 @@ export const make = Effect.gen(function* () {
           resolved: input.resolved,
         })
         .pipe(Effect.mapError(fail("setThreadResolution"))),
+
+    monitorSnapshot: (input) =>
+      fetchGitHubPullRequestMonitorSnapshot({
+        cwd: input.cwd,
+        host: input.host,
+        repository: input.repository,
+        number: input.number,
+      }).pipe(Effect.provideService(GitHubCli, github)),
   };
 
   return provider;

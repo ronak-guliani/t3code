@@ -36,13 +36,17 @@ export interface RestoreCheckpointInput {
 export interface DiffCheckpointsInput {
   readonly cwd: string;
   readonly fromCheckpointRef: CheckpointRef;
+  readonly fallbackFromCheckpointRef?: CheckpointRef;
   readonly toCheckpointRef: CheckpointRef;
   readonly fallbackFromToHead?: boolean;
+  readonly ignoreWhitespace?: boolean;
   readonly paths?: ReadonlyArray<string>;
 }
 
 export interface CheckpointDiffFileSummary {
   readonly path: string;
+  readonly previousPath: string | null;
+  readonly kind: "added" | "modified" | "deleted" | "renamed" | "copied";
   readonly additions: number;
   readonly deletions: number;
 }
