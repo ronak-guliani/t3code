@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -68,16 +69,20 @@ function mockSpawnerLayer(
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
+  platform: NodeJS.Platform = "linux",
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const childProcess = command as unknown as {
-        readonly command: string;
-        readonly args: ReadonlyArray<string>;
-      };
-      return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
-    }),
+  return Layer.mergeAll(
+    Layer.succeed(HostProcessPlatform, platform),
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const childProcess = command as unknown as {
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+        };
+        return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
+      }),
+    ),
   );
 }
 
@@ -184,6 +189,16 @@ describe("tailscale", () => {
         tailnetIpv4Addresses: ["100.90.1.2"],
       });
     });
+  });
+
+  it.effect("uses the executable suffix required by Windows direct spawning", () => {
+    const layer = mockSpawnerLayer((command, args) => {
+      assert.equal(command, "tailscale.exe");
+      assert.deepEqual(args, ["status", "--json"]);
+      return { stdout: tailscaleStatusWithSingleIpJson };
+    }, "win32");
+
+    return readTailscaleStatus.pipe(Effect.provide(layer));
   });
 
   it.effect("preserves tailscale spawn failures as causes", () => {
