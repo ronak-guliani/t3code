@@ -38,6 +38,7 @@
 - Cross-thread dispatch must carry the source thread ID through the client HTTP schema while deriving message provenance server-side; projection session upserts must preserve an omitted active message while the same turn remains active.
 - System-authored user turns need explicit server-only message provenance at creation; never infer UI indicators from message ID prefixes or prompt text.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
+- Nested-thread creation outcomes must distinguish definitive rejection from ambiguous commit state and report cleanup explicitly; preflight branch/path collisions for clear guidance, but keep `git worktree add` as the transactional authority.
 - A workspace handoff must atomically persist the new branch/worktree and ensure a dispatchable queued continuation; reuse an existing user-queued turn instead of appending duplicate work.
 - Workspace handoff retries must reuse a durable orchestration command ID. If every response is lost, preserve the created worktree because the binding may already have committed; only roll back after a definitive server rejection, and surface cleanup failures.
 - Local desktop flavors must never use Official's `~/.t3` home. If a divergent build replaces role auth tables with scope-only tables, append a repair above the latest auth migration; replaying an earlier repair is impossible once the ledger high-water mark has passed it.
