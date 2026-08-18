@@ -282,7 +282,9 @@ describe("create_nested_thread MCP tool", () => {
             reasoning: "high",
           },
         ),
-      ).resolves.toBe('{"threadId":"child-1"}');
+      ).resolves.toBe(
+        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
+      );
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "server.mjs",
@@ -348,7 +350,9 @@ describe("create_nested_thread MCP tool", () => {
             model: "claude-opus-5",
           },
         ),
-      ).resolves.toBe('{"threadId":"child-1"}');
+      ).resolves.toBe(
+        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
+      );
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "chat",
@@ -423,7 +427,9 @@ describe("create_nested_thread MCP tool", () => {
             },
           },
         ),
-      ).resolves.toBe('{"threadId":"child-1"}');
+      ).resolves.toBe(
+        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
+      );
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "chat",
@@ -509,6 +515,96 @@ describe("create_nested_thread MCP tool", () => {
       await expect(
         run("git", ["rev-parse", "--verify", "--quiet", "feature/rejected-child"], root),
       ).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an occupied child worktree path before launching the CLI", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
+    const targetPath = `${root}-occupied-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(path.join(root, "README.md"), "base\n");
+      await run("git", ["init", "--initial-branch=main"], root);
+      await run("git", ["config", "user.email", "test@example.com"], root);
+      await run("git", ["config", "user.name", "T3 Test"], root);
+      await run("git", ["add", "README.md"], root);
+      await run("git", ["commit", "-m", "initial"], root);
+      await mkdir(targetPath);
+      await writeFile(cliPath, '#!/bin/sh\nprintf "CLI should not run\\n" >&2\nexit 1\n');
+      await chmod(cliPath, 0o755);
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Implement nesting",
+            prompt: "Complete the implementation.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/occupied-child",
+              path: targetPath,
+            },
+          },
+        ),
+      ).rejects.toThrow(/"status":"failed".*"retryable":true.*Workspace path is already occupied/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an existing child branch before launching the CLI", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
+    const targetPath = `${root}-branch-collision-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(path.join(root, "README.md"), "base\n");
+      await run("git", ["init", "--initial-branch=main"], root);
+      await run("git", ["config", "user.email", "test@example.com"], root);
+      await run("git", ["config", "user.name", "T3 Test"], root);
+      await run("git", ["add", "README.md"], root);
+      await run("git", ["commit", "-m", "initial"], root);
+      await run("git", ["branch", "feature/existing-child"], root);
+      await writeFile(cliPath, '#!/bin/sh\nprintf "CLI should not run\\n" >&2\nexit 1\n');
+      await chmod(cliPath, 0o755);
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Implement nesting",
+            prompt: "Complete the implementation.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/existing-child",
+              path: targetPath,
+            },
+          },
+        ),
+      ).rejects.toThrow(/"status":"failed".*"retryable":true.*Workspace branch already exists/);
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });

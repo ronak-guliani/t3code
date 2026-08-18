@@ -1,5 +1,5 @@
 import { type OrchestrationShellSnapshot, type OrchestrationThread } from "@t3tools/contracts";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, FileSystem } from "effect";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
 import {
   withLiveOrchestrationClient,
@@ -25,6 +25,14 @@ export const normalizeWorkspaceRootForProjectCommand = Effect.fn(
 )(function* (workspaceRoot: string) {
   const workspacePaths = yield* WorkspacePaths;
   return yield* workspacePaths.normalizeWorkspaceRoot(workspaceRoot);
+});
+
+const canonicalizeWorkspaceRootForProjectLookup = Effect.fn(
+  "canonicalizeWorkspaceRootForProjectLookup",
+)(function* (workspaceRoot: string) {
+  const normalized = yield* normalizeWorkspaceRootForProjectCommand(workspaceRoot);
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.realPath(normalized).pipe(Effect.orElseSucceed(() => normalized));
 });
 
 const isNotDeleted = (value: object): boolean =>
@@ -77,16 +85,60 @@ export const findProjectForCli = Effect.fn("findProjectForCli")(function* (
   if (byId) return byId;
 
   const normalizedWorkspaceRootResult = yield* Effect.exit(
-    normalizeWorkspaceRootForProjectCommand(trimmed),
+    canonicalizeWorkspaceRootForProjectLookup(trimmed),
   );
   const normalizedWorkspaceRoot = Exit.isSuccess(normalizedWorkspaceRootResult)
     ? normalizedWorkspaceRootResult.value
     : null;
-  const byWorkspace =
-    normalizedWorkspaceRoot === null
-      ? undefined
-      : activeProjects.find((project) => project.workspaceRoot === normalizedWorkspaceRoot);
-  if (byWorkspace) return byWorkspace;
+  if (normalizedWorkspaceRoot !== null) {
+    const workspaceMatches = yield* Effect.forEach(
+      activeProjects,
+      (project) =>
+        canonicalizeWorkspaceRootForProjectLookup(project.workspaceRoot).pipe(
+          Effect.map((workspaceRoot) => ({ project, workspaceRoot })),
+          Effect.catch(() => Effect.succeed(null)),
+        ),
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map((projects) =>
+        projects.filter(
+          (
+            candidate,
+          ): candidate is {
+            readonly project: ActiveProject;
+            readonly workspaceRoot: string;
+          } => candidate !== null && candidate.workspaceRoot === normalizedWorkspaceRoot,
+        ),
+      ),
+    );
+    if (workspaceMatches.length === 1) return workspaceMatches[0]!.project;
+    if (workspaceMatches.length > 1) {
+      return yield* Effect.fail(
+        new Error(
+          `Multiple active projects resolve to workspace '${normalizedWorkspaceRoot}'. Use the project id instead.`,
+        ),
+      );
+    }
+
+    const matchingThreads = yield* Effect.forEach(
+      activeThreadsOf(snapshot),
+      (thread) =>
+        thread.worktreePath === null
+          ? Effect.succeed(null)
+          : canonicalizeWorkspaceRootForProjectLookup(thread.worktreePath).pipe(
+              Effect.map((worktreePath) =>
+                worktreePath === normalizedWorkspaceRoot ? thread : null,
+              ),
+              Effect.catch(() => Effect.succeed(null)),
+            ),
+      { concurrency: "unbounded" },
+    );
+    const matchingThread = matchingThreads.find((thread) => thread !== null);
+    if (matchingThread) {
+      const project = activeProjects.find((candidate) => candidate.id === matchingThread.projectId);
+      if (project) return project;
+    }
+  }
 
   const byTitle = activeProjects.filter((project) => project.title === trimmed);
   if (byTitle.length === 1) return byTitle[0]!;

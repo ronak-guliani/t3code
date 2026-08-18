@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createInterface } from "node:readline";
 import * as fs from "node:fs/promises";
@@ -508,10 +508,32 @@ const isSafeNestedThreadCleanup = (error: unknown, cleanupToken: string): boolea
     output.includes(`${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${cleanupToken}`),
   );
 
+const hasSafeNestedThreadCleanupSignal = (error: unknown): boolean =>
+  error instanceof CommandExecutionError &&
+  [error.result.stdout, error.result.stderr].some((output) =>
+    output.includes(CHAT_NEW_WORKSPACE_CLEANUP_SAFE),
+  );
+
 interface IsolatedWorkspaceSpec {
   readonly branch: string;
   readonly path: string;
   readonly baseRef: string | undefined;
+}
+
+interface NestedThreadCreationOutcome {
+  readonly status: "created" | "failed" | "ambiguous";
+  readonly threadId: string | null;
+  readonly retryable: boolean;
+  readonly creationCommitted: boolean | null;
+  readonly cleanupPerformed: boolean;
+  readonly error?: string;
+}
+
+class WorkspacePreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspacePreflightError";
+  }
 }
 
 function parseIsolatedWorkspaceSpec(
@@ -529,12 +551,41 @@ function parseIsolatedWorkspaceSpec(
   };
 }
 
+async function preflightGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<void> {
+  const [pathStat, branchCheck, worktreeList] = await Promise.all([
+    fs.stat(workspace.path).catch(() => null),
+    spawnCommand(cwd, "git", ["show-ref", "--verify", "--quiet", `refs/heads/${workspace.branch}`]),
+    runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
+  ]);
+  if (pathStat !== null) {
+    throw new WorkspacePreflightError(
+      `Workspace path is already occupied: ${workspace.path}. Choose an unused absolute path or remove the stale worktree first.`,
+    );
+  }
+  const branchResult = JSON.parse(branchCheck) as TerminalResult;
+  if (branchResult.code === 0) {
+    throw new WorkspacePreflightError(
+      `Workspace branch already exists: ${workspace.branch}. Choose a new branch or remove the stale branch first.`,
+    );
+  }
+  const occupiedPaths = worktreeList.stdout
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => path.resolve(line.slice("worktree ".length)));
+  if (occupiedPaths.includes(path.resolve(workspace.path))) {
+    throw new WorkspacePreflightError(
+      `Workspace path is already registered as a Git worktree: ${workspace.path}. Remove or prune the stale worktree first.`,
+    );
+  }
+}
+
 async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<string> {
   const baseRef =
     workspace.baseRef ?? (await runCommand(cwd, "git", ["branch", "--show-current"])).stdout.trim();
   if (!baseRef) {
     throw new Error("Could not determine the current branch; pass baseRef explicitly.");
   }
+
   await runCommand(cwd, "git", [
     "worktree",
     "add",
@@ -672,7 +723,7 @@ async function switchWorkspaceTool(
   });
 }
 
-async function createNestedThreadTool(
+async function createNestedThreadToolImpl(
   options: McpServeOptions,
   args: Record<string, unknown>,
 ): Promise<string> {
@@ -707,6 +758,7 @@ async function createNestedThreadTool(
       throw new Error("create_nested_thread workspace mode must be 'isolated'");
     }
     workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
+    await preflightGitWorktree(options.cwd, workspace);
     await createGitWorktree(options.cwd, workspace);
   }
 
@@ -769,7 +821,44 @@ async function createNestedThreadTool(
     }
     throw creationError;
   }
-  return result.stdout.trim();
+  const resultBody = JSON.parse(result.stdout.trim()) as { readonly threadId?: unknown };
+  const threadId = typeof resultBody.threadId === "string" ? resultBody.threadId : null;
+  return JSON.stringify({
+    status: "created",
+    threadId,
+    retryable: false,
+    creationCommitted: true,
+    cleanupPerformed: false,
+  } satisfies NestedThreadCreationOutcome);
+}
+
+async function createNestedThreadTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  try {
+    return await createNestedThreadToolImpl(options, args);
+  } catch (error) {
+    const workspaceInput =
+      args.workspace && typeof args.workspace === "object" && !Array.isArray(args.workspace)
+        ? asRecord(args.workspace)
+        : undefined;
+    const workspaceRequested = workspaceInput !== undefined;
+    const safeCleanupPerformed = workspaceRequested && hasSafeNestedThreadCleanupSignal(error);
+    const definitiveRejection =
+      error instanceof WorkspacePreflightError ||
+      isDefinitiveCommandRejection(error) ||
+      safeCleanupPerformed;
+    const outcome = {
+      status: definitiveRejection ? "failed" : "ambiguous",
+      threadId: null,
+      retryable: error instanceof WorkspacePreflightError,
+      creationCommitted: definitiveRejection ? false : null,
+      cleanupPerformed: safeCleanupPerformed,
+      error: toErrorMessage(error),
+    } satisfies NestedThreadCreationOutcome;
+    throw new Error(JSON.stringify(outcome), { cause: error });
+  }
 }
 
 async function sendToThreadTool(
@@ -957,7 +1046,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. When the child needs an isolated checkout, pass workspace here so T3 creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Create and start a helper thread nested under the current T3 thread. Returns a structured outcome with status, threadId, retryable, creationCommitted, and cleanupPerformed. When the child needs an isolated checkout, pass workspace here so T3 preflights branch/path collisions, then creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1019,6 +1108,12 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
 
 function availableTools(toolsets: ReadonlySet<string>): ReadonlyArray<McpTool> {
   return ALL_TOOLS.filter((tool) => toolsets.has(tool.name));
+}
+
+export function fingerprintMcpToolContract(toolsets: ReadonlySet<string>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(availableTools(toolsets)))
+    .digest("hex");
 }
 
 async function callTool(options: McpServeOptions, name: string, args: Record<string, unknown>) {

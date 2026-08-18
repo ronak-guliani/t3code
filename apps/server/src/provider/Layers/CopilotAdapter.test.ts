@@ -21,7 +21,11 @@ import { ServerEnvironment } from "../../environment/Services/ServerEnvironment.
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
-import { COPILOT_PLAN_MODE_ID, COPILOT_WORKSPACE_INSTRUCTIONS } from "../acp/CopilotAcpSupport.ts";
+import {
+  buildCopilotSessionContractFingerprint,
+  COPILOT_PLAN_MODE_ID,
+  COPILOT_WORKSPACE_INSTRUCTIONS,
+} from "../acp/CopilotAcpSupport.ts";
 import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
 import { makeCopilotAdapterLive } from "./CopilotAdapter.ts";
 
@@ -30,6 +34,7 @@ const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts")
 const bunExe = "bun";
 const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 const COPILOT_INSTANCE_ID = ProviderInstanceId.make("copilot");
+const COPILOT_SESSION_CONTRACT_FINGERPRINT = buildCopilotSessionContractFingerprint();
 
 const isolateCopilotHome = Effect.fn("isolateCopilotHome")(function* () {
   const previousHome = process.env.HOME;
@@ -163,6 +168,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       assert.deepStrictEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "mock-session-1",
+        contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
       });
 
       yield* adapter.sendTurn({
@@ -531,6 +537,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         resumeCursor: {
           schemaVersion: 1,
           sessionId: "mock-session-1",
+          contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
         },
       });
 
@@ -547,6 +554,49 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       assert.deepEqual(assistantDeltas, ["fresh answer"]);
       assert.notInclude(assistantDeltas, "stale history");
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("starts a fresh ACP session when the saved tool contract is stale", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-stale-contract-thread");
+
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-stale-contract-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionId: "stale-session",
+          contractFingerprint: "stale-contract",
+        },
+      });
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (request) => request.method,
+      );
+      assert.notInclude(methods, "session/load");
+      assert.include(methods, "session/new");
+      assert.notEqual(
+        (session.resumeCursor as { contractFingerprint?: string }).contractFingerprint,
+        "stale-contract",
+      );
 
       yield* adapter.stopSession(threadId);
     }),
@@ -576,6 +626,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         resumeCursor: {
           schemaVersion: 1,
           sessionId: "mock-session-1",
+          contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
         },
       });
 
@@ -641,6 +692,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       assert.deepStrictEqual(forked.resumeCursor, {
         schemaVersion: 1,
         sessionId: "mock-session-fork",
+        contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
       });
       assert.isTrue(yield* adapter.hasSession(targetThreadId));
 

@@ -77,6 +77,7 @@ import {
 } from "../acp/CopilotAcpPermissions.ts";
 import {
   buildCopilotAcpSpawnInput,
+  buildCopilotSessionContractFingerprint,
   COPILOT_ACP_SHARED_RUNTIME_OPTIONS,
   makeCopilotAcpRuntime,
   prepareCopilotCustomInstructions,
@@ -328,10 +329,14 @@ function cloneCopilotTurns(
   }));
 }
 
-function parseCopilotResume(raw: unknown): { sessionId: string } | undefined {
+function parseCopilotResume(
+  raw: unknown,
+  expectedContractFingerprint: string,
+): { sessionId: string } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== COPILOT_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
+  if (raw.contractFingerprint !== expectedContractFingerprint) return undefined;
   return { sessionId: raw.sessionId.trim() };
 }
 
@@ -540,6 +545,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const serverConfig = yield* Effect.service(ServerConfig);
     const serverSettingsService = yield* ServerSettingsService;
     const customInstructionsDir = yield* prepareCopilotCustomInstructions(serverConfig.stateDir);
+    const sessionContractFingerprint = buildCopilotSessionContractFingerprint();
     // Owned by the adapter so warmed processes die with the provider instance.
     const prewarmPool = yield* makeCopilotSessionPrewarmPool();
     const nativeEventLogger =
@@ -1287,7 +1293,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
     const restartRuntimeInternal = (ctx: CopilotSessionContext) =>
       Effect.gen(function* () {
-        const resumeSessionId = parseCopilotResume(ctx.session.resumeCursor)?.sessionId;
+        const resumeSessionId = parseCopilotResume(
+          ctx.session.resumeCursor,
+          sessionContractFingerprint,
+        )?.sessionId;
         const cwd = ctx.session.cwd;
         if (!resumeSessionId) {
           return yield* new ProviderAdapterProcessError({
@@ -1342,6 +1351,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           resumeCursor: {
             schemaVersion: COPILOT_RESUME_VERSION,
             sessionId: runtime.started.sessionId,
+            contractFingerprint: sessionContractFingerprint,
           },
           updatedAt: yield* nowIso,
         };
@@ -1489,7 +1499,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           let ctx: CopilotSessionContext | undefined;
-          const resumeSessionId = parseCopilotResume(input.resumeCursor)?.sessionId;
+          const resumeSessionId = parseCopilotResume(
+            input.resumeCursor,
+            sessionContractFingerprint,
+          )?.sessionId;
           const runtime = yield* openRuntime({
             threadId: input.threadId,
             providerInstanceId,
@@ -1526,6 +1539,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             resumeCursor: {
               schemaVersion: COPILOT_RESUME_VERSION,
               sessionId: runtime.started.sessionId,
+              contractFingerprint: sessionContractFingerprint,
             },
             createdAt: now,
             updatedAt: now,
@@ -1651,7 +1665,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               detail: COPILOT_FORK_UNSUPPORTED_DETAIL,
             });
           }
-          const sourceSessionId = parseCopilotResume(sourceCtx.session.resumeCursor)?.sessionId;
+          const sourceSessionId = parseCopilotResume(
+            sourceCtx.session.resumeCursor,
+            sessionContractFingerprint,
+          )?.sessionId;
           if (!sourceSessionId) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
@@ -1688,6 +1705,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             resumeCursor: {
               schemaVersion: COPILOT_RESUME_VERSION,
               sessionId: forked.sessionId,
+              contractFingerprint: sessionContractFingerprint,
             },
             resumeFallback: "fail",
           });

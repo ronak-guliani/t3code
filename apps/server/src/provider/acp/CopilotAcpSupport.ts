@@ -1,4 +1,5 @@
 import * as nodePath from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   ThreadId,
@@ -14,7 +15,12 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import type { CopilotPrewarmPoolShape } from "./CopilotSessionPrewarmPool.ts";
-import { startMcpHttpServer, type McpHttpServer, type McpServeOptions } from "../../mcpServer.ts";
+import {
+  fingerprintMcpToolContract,
+  startMcpHttpServer,
+  type McpHttpServer,
+  type McpServeOptions,
+} from "../../mcpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import type { McpProviderSessionConfig } from "../../mcp/McpSessionRegistry.ts";
 import {
@@ -47,7 +53,7 @@ export const COPILOT_WORKSPACE_INSTRUCTIONS = `# T3 Code tools
 - Never use the legacy \`t3-tools\` preview stubs (\`preview_screenshot\`, \`preview_click\`, \`preview_type\`, \`preview_annotate\`) when \`t3-code\` is available.
 - If a \`t3-code\` browser tool fails with \`401\` and \`www-authenticate: Bearer\`, its per-session MCP credential is invalid or expired. Restart the chat/session to reconnect browser automation.
 - \`t3-tools\` uses this T3 process's bearer token for its local loopback HTTP MCP server.
-- MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load the matching function definition (search the \`t3-tools\` tool resource with query \`create_nested_thread\`), then call the loaded function. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing based only on the initially loaded tools or resources.
+- MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load that exact function definition, then call it. For a new workspace for the current thread, search \`t3-tools\` for \`create_isolated_workspace\`; for delegation, search for \`create_nested_thread\`. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing based only on the initially loaded tools or resources.
 - NEVER run \`git worktree add\` or \`git worktree move\` through a terminal or shell tool.
 - When delegating work, call \`create_nested_thread\` before any workspace operation. If the child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread.
 - Workspace handoff tools affect only the calling thread. Never call them to prepare a workspace for a future delegated thread.
@@ -210,6 +216,25 @@ export function buildCopilotMcpServerOptions(
     ...(commandArgsPrefix.length > 0 ? { cliArgsPrefix: commandArgsPrefix } : {}),
     ...(cliBaseDir ? { cliBaseDir } : {}),
   };
+}
+
+export function buildCopilotSessionContractFingerprint(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const options = buildCopilotMcpServerOptions(
+    "/",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    env,
+    { execPath: process.execPath, entryPath: undefined },
+  );
+  return createHash("sha256")
+    .update(COPILOT_WORKSPACE_INSTRUCTIONS)
+    .update(fingerprintMcpToolContract(options.toolsets))
+    .update("t3-tools\nt3-code")
+    .digest("hex");
 }
 
 export function buildCopilotMcpServers(
