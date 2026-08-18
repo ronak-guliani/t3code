@@ -8,6 +8,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationQueuedTurn,
   type OrchestrationReadModel,
+  PullRequestMonitorError,
   PullRequestOperationError,
   type PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import { PullRequestMonitorFeedbackService } from "../../pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { QueuedTurnReactor } from "../Services/QueuedTurnReactor.ts";
 import { QueuedTurnReactorLive } from "./QueuedTurnReactor.ts";
@@ -142,7 +144,11 @@ function pullRequestLayer(
 async function runReactor(
   readModelInput: OrchestrationReadModel,
   snapshot: PullRequestMonitorSnapshot,
-  options?: { readonly snapshotError?: PullRequestOperationError },
+  options?: {
+    readonly snapshotError?: PullRequestOperationError;
+    readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
+    readonly retryQueuedDeliveryError?: PullRequestMonitorError;
+  },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
   const commands: OrchestrationCommand[] = [];
@@ -190,9 +196,28 @@ async function runReactor(
     withWorktreeLock: (effect) => effect,
     streamDomainEvents: Stream.never,
   });
+  const feedbackLayer = Layer.succeed(
+    PullRequestMonitorFeedbackService,
+    PullRequestMonitorFeedbackService.of({
+      reconcileAndIngest: () => Effect.die("unused"),
+      readinessSummary: () => Effect.die("unused"),
+      ingestFindings: () => Effect.die("unused"),
+      flushDueDeliveries: Effect.die("unused"),
+      retryQueuedDelivery: ({ deliveryId }) =>
+        options?.retryQueuedDeliveryError === undefined
+          ? Effect.sync(() => options?.onRetryQueuedDelivery?.(deliveryId))
+          : Effect.fail(options.retryQueuedDeliveryError),
+      context: () => Effect.die("unused"),
+      report: () => Effect.die("unused"),
+      listOpenItems: () => Effect.die("unused"),
+      listDeliveries: () => Effect.die("unused"),
+      listReports: () => Effect.die("unused"),
+    }),
+  );
   const layer = QueuedTurnReactorLive.pipe(
     Layer.provide(engineLayer),
     Layer.provide(pullRequestLayer(snapshot, options?.snapshotError)),
+    Layer.provide(feedbackLayer),
   );
 
   await Effect.runPromise(
@@ -379,7 +404,8 @@ describe("QueuedTurnReactor", () => {
     });
   });
 
-  it("suppresses a monitor turn after bounded revalidation failures", async () => {
+  it("returns a monitor delivery to durable retry before deleting its queued turn", async () => {
+    const retriedDeliveries: string[] = [];
     const commands = await runReactor(
       queuedReadModel({
         origin: {
@@ -389,6 +415,7 @@ describe("QueuedTurnReactor", () => {
           headSha: "head-current",
           sourceRevision: "revision-old",
           events: [{ kind: "behind-base" }],
+          deliveryId: "delivery-1",
           revalidationAttemptCount: 2,
         },
       }),
@@ -398,14 +425,45 @@ describe("QueuedTurnReactor", () => {
           operation: "monitorSnapshot",
           detail: "provider unavailable",
         }),
+        onRetryQueuedDelivery: (deliveryId) => retriedDeliveries.push(deliveryId),
       },
     );
 
+    expect(retriedDeliveries).toEqual(["delivery-1"]);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
       type: "thread.queued-turn.delete",
       threadId,
       queuedTurnId,
     });
+  });
+
+  it("keeps the queued turn when durable retry cannot be recorded", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: {
+          kind: "pull-request-monitor",
+          repository: "acme/app",
+          number: 42,
+          headSha: "head-current",
+          sourceRevision: "revision-old",
+          events: [{ kind: "behind-base" }],
+          deliveryId: "delivery-1",
+          revalidationAttemptCount: 2,
+        },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        snapshotError: new PullRequestOperationError({
+          operation: "monitorSnapshot",
+          detail: "provider unavailable",
+        }),
+        retryQueuedDeliveryError: new PullRequestMonitorError({
+          message: "delivery store unavailable",
+        }),
+      },
+    );
+
+    expect(commands).toEqual([]);
   });
 });

@@ -234,6 +234,9 @@ export interface PullRequestMonitorFeedbackStoreApi {
       readonly receiptJson: string | null;
     },
   ) => Effect.Effect<void, PullRequestMonitorError>;
+  readonly getDelivery: (
+    deliveryId: PullRequestMonitorFeedbackDeliveryId,
+  ) => Effect.Effect<PullRequestMonitorFeedbackDelivery | null, PullRequestMonitorError>;
   readonly getDeliveryByBatchKey: (
     batchKey: string,
   ) => Effect.Effect<PullRequestMonitorFeedbackDelivery | null, PullRequestMonitorError>;
@@ -641,6 +644,18 @@ export const PullRequestMonitorFeedbackStore = {
         Effect.asVoid,
       );
 
+    const getDelivery: PullRequestMonitorFeedbackStoreApi["getDelivery"] = (deliveryId) =>
+      sql<DeliveryRow>`
+        SELECT * FROM pull_request_monitor_feedback_deliveries
+        WHERE delivery_id = ${deliveryId}
+        LIMIT 1
+      `.pipe(
+        Effect.flatMap((rows) => (rows[0] ? rowToDelivery(rows[0]) : Effect.succeed(null))),
+        Effect.mapError((cause) =>
+          isPullRequestMonitorError(cause) ? cause : storeError("Failed to load delivery.", cause),
+        ),
+      );
+
     const getDeliveryByBatchKey: PullRequestMonitorFeedbackStoreApi["getDeliveryByBatchKey"] = (
       batchKey,
     ) =>
@@ -716,6 +731,7 @@ export const PullRequestMonitorFeedbackStore = {
       setDeliveryCircuitState,
       insertDelivery,
       updateDelivery,
+      getDelivery,
       getDeliveryByBatchKey,
       listDeliveries,
       listDueDeliveries,

@@ -1,4 +1,10 @@
-import { CommandId, QueuedTurnId, ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
+import {
+  CommandId,
+  PullRequestMonitorFeedbackDeliveryId,
+  QueuedTurnId,
+  ThreadId,
+  type OrchestrationEvent,
+} from "@t3tools/contracts";
 import { Cause, Duration, Effect, Layer, Result, Stream } from "effect";
 
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -6,6 +12,7 @@ import {
   feedbackStableKeyOf,
   reconcileFeedbackItem,
 } from "../../pullRequestMonitor/feedbackReconciliation.ts";
+import { PullRequestMonitorFeedbackService } from "../../pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { computeReadiness } from "../../pullRequestMonitor/readiness.ts";
 import { buildWakePrompt } from "../../pullRequestMonitor/wakePrompt.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -26,6 +33,7 @@ function threadIdForEvent(event: OrchestrationEvent): ThreadId | null {
 const makeQueuedTurnReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const pullRequests = yield* PullRequestService;
+  const monitorFeedback = yield* PullRequestMonitorFeedbackService;
   const drainingThreadIds = new Set<string>();
 
   const failQueuedTurn = (input: {
@@ -88,6 +96,19 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
             cause: snapshotResult.failure,
           });
           if (attemptCount >= MAX_MONITOR_REVALIDATION_ATTEMPTS) {
+            if (origin.deliveryId === undefined) {
+              yield* Effect.logWarning("queued PR monitor turn has no durable delivery to retry", {
+                threadId,
+                queuedTurnId: nextQueuedTurn.id,
+                repository: origin.repository,
+                pullRequestNumber: origin.number,
+              });
+              return;
+            }
+            yield* monitorFeedback.retryQueuedDelivery({
+              deliveryId: PullRequestMonitorFeedbackDeliveryId.make(origin.deliveryId),
+              reason: "Queued dispatch revalidation failed repeatedly.",
+            });
             yield* orchestrationEngine.dispatch({
               type: "thread.queued-turn.delete",
               commandId: serverCommandId("queued-turn.delete-monitor-revalidation-failed"),

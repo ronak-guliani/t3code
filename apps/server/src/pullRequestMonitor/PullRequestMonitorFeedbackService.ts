@@ -54,6 +54,7 @@ export const FEEDBACK_DEBOUNCE_MS = 15_000;
 export const DELIVERY_CIRCUIT_THRESHOLD = 5;
 export const DELIVERY_CIRCUIT_COOLDOWN_MS = 15 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 8;
+const QUEUED_DELIVERY_RETRY_MS = 20_000;
 
 function isoNow() {
   return Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
@@ -155,6 +156,14 @@ export class PullRequestMonitorFeedbackService extends Context.Service<
       readonly findings: ReadonlyArray<PullRequestMonitorFinding>;
     }) => Effect.Effect<ReadonlyArray<PullRequestMonitorSubmittedFinding>, PullRequestMonitorError>;
     readonly flushDueDeliveries: Effect.Effect<void>;
+    /**
+     * Return a delivery to the durable retry loop after its queued turn could not be safely
+     * dispatched. Callers may delete the queue entry only after this succeeds.
+     */
+    readonly retryQueuedDelivery: (input: {
+      readonly deliveryId: PullRequestMonitorFeedbackDeliveryId;
+      readonly reason: string;
+    }) => Effect.Effect<void, PullRequestMonitorError>;
     readonly context: (
       input: PullRequestMonitorContextInput & {
         readonly resolveMonitor: () => Effect.Effect<
@@ -841,6 +850,24 @@ export const layer = Layer.effect(
       Effect.ignore,
     );
 
+    const retryQueuedDelivery: (typeof PullRequestMonitorFeedbackService.Service)["retryQueuedDelivery"] =
+      (input) =>
+        Effect.gen(function* () {
+          const delivery = yield* feedbackStore.getDelivery(input.deliveryId);
+          if (!delivery) {
+            return yield* monitorError(`Feedback delivery '${input.deliveryId}' was not found.`);
+          }
+          const now = yield* isoNow();
+          yield* feedbackStore.updateDelivery({
+            ...delivery,
+            status: "failed",
+            lastError: input.reason.slice(0, 1_000),
+            nextAttemptAt: addMs(now, QUEUED_DELIVERY_RETRY_MS),
+            deliveredAt: null,
+            receiptJson: null,
+          });
+        });
+
     // Background flusher for debounce maturity + retries.
     yield* flushDueDeliveries.pipe(
       Effect.andThen(Effect.sleep(Duration.seconds(5))),
@@ -933,6 +960,7 @@ export const layer = Layer.effect(
       readinessSummary: summarize,
       ingestFindings,
       flushDueDeliveries,
+      retryQueuedDelivery,
       context,
       report,
       listOpenItems,
