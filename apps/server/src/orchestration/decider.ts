@@ -1047,7 +1047,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       const origin =
         command.crossThreadSourceThreadId === undefined
-          ? undefined
+          ? command.origin
           : yield* deriveCrossThreadOrigin({
               command,
               sourceThreadId: command.crossThreadSourceThreadId,
@@ -1155,6 +1155,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(command.sourceProposedPlan !== undefined
           ? { sourceProposedPlan: command.sourceProposedPlan }
           : {}),
+        ...(command.origin !== undefined ? { origin: command.origin } : {}),
         createdAt: command.createdAt,
         updatedAt: command.createdAt,
         failedAt: null,

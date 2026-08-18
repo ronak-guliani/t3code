@@ -1124,6 +1124,8 @@ export const layer = Layer.effect(
               commandId: CommandId.make(`${commandIdValue}:turn`),
               messageId,
               text: prompt,
+              repository: monitor.repository,
+              pullRequestNumber: monitor.number,
             }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
           );
           if (Result.isFailure(turnResult)) {
