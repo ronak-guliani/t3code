@@ -175,15 +175,21 @@ const knownThreads = new Map<
     worktreePath: string | null;
     archivedAt: string | null;
     busy: boolean;
+    pullRequest: { number: number; url: string } | null;
   }
 >();
 
-function seedThread(threadId: ThreadId, worktreePath: string | null = "/tmp/wt") {
+function seedThread(
+  threadId: ThreadId,
+  worktreePath: string | null = "/tmp/wt",
+  pullRequest: { number: number; url: string } | null = null,
+) {
   knownThreads.set(threadId, {
     projectId,
     worktreePath,
     archivedAt: null,
     busy: false,
+    pullRequest,
   });
 }
 
@@ -229,7 +235,7 @@ const fakeEngine = {
         id,
         projectId: thread.projectId,
         title: `Chat ${id}`,
-        pullRequest: null,
+        pullRequest: thread.pullRequest,
         archivedAt: thread.archivedAt,
         deletedAt: null,
       })),
@@ -421,6 +427,63 @@ layer("PullRequestMonitorService", (it) => {
       });
       assert.strictEqual(transferred.monitor.ownerThreadId, ownerB);
       assert.isNull(transferred.monitor.linkedReviewThreadId);
+    }),
+  );
+
+  it.effect("requires browser-selected owners to be actively associated with the PR", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const associated = ThreadId.make("associated-owner");
+      const unrelated = ThreadId.make("unrelated-owner");
+      const archived = ThreadId.make("archived-owner");
+      seedThread(associated, "/tmp/associated", {
+        number: 1044,
+        url: "https://github.com/acme/app/pull/1044",
+      });
+      seedThread(unrelated, "/tmp/unrelated", {
+        number: 45,
+        url: "https://github.com/acme/app/pull/45",
+      });
+      seedThread(archived, "/tmp/archived", {
+        number: 1044,
+        url: "https://github.com/acme/app/pull/1044",
+      });
+      const archivedRow = knownThreads.get(archived)!;
+      knownThreads.set(archived, {
+        ...archivedRow,
+        archivedAt: "2026-08-17T00:00:00.000Z",
+      });
+
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1044,
+        ownerThreadId: associated,
+        requireAssociatedOwner: true,
+      });
+      assert.strictEqual(started.monitor.ownerThreadId, associated);
+
+      const unrelatedResult = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1044,
+          ownerThreadId: unrelated,
+          requireAssociatedOwner: true,
+        }),
+      );
+      assert.strictEqual(unrelatedResult._tag, "Failure");
+
+      const archivedResult = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1044,
+          ownerThreadId: archived,
+          requireAssociatedOwner: true,
+        }),
+      );
+      assert.strictEqual(archivedResult._tag, "Failure");
     }),
   );
 
@@ -1287,6 +1350,7 @@ layer("PullRequestMonitorService", (it) => {
         worktreePath: "/tmp/wt",
         archivedAt: null,
         busy: true,
+        pullRequest: null,
       });
 
       const live = sampleSnapshot({
@@ -1438,6 +1502,7 @@ layer("PullRequestMonitorService", (it) => {
         worktreePath: "/tmp/wt",
         archivedAt: "2026-08-11T00:00:00.000Z",
         busy: true,
+        pullRequest: null,
       });
       dispatchedCommands.length = 0;
 

@@ -257,10 +257,19 @@ export function PullRequestMonitorStrip(props: {
                 })
                 .then(async () => {
                   if (ownerSelection === MAINTENANCE_CHAT) {
-                    await launchFallback.mutateAsync({
-                      reference: props.reference,
-                      reason: "owner-missing",
-                    });
+                    try {
+                      await launchFallback.mutateAsync({
+                        reference: props.reference,
+                        reason: "owner-missing",
+                      });
+                    } catch (error: unknown) {
+                      toastManager.add({
+                        type: "error",
+                        title: "Monitoring started without a maintenance chat",
+                        description: error instanceof Error ? error.message : String(error),
+                      });
+                      return;
+                    }
                   }
                   toastManager.add({
                     type: "success",
