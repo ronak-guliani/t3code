@@ -116,6 +116,32 @@ describe("associationOwnerThreadId", () => {
     ).toBe("owner");
   });
 
+  it("preserves an explicitly transferred owner for inherited descendants and siblings", () => {
+    const threads = [
+      thread({ id: "root", pullRequest }),
+      thread({ id: "explicit-owner", parentThreadId: "root", pullRequest }),
+      thread({ id: "grandchild", parentThreadId: "explicit-owner", pullRequest }),
+      thread({ id: "sibling-worker", parentThreadId: "root", pullRequest }),
+    ];
+    for (const [threadId, parentThreadId] of [
+      ["grandchild", "explicit-owner"],
+      ["sibling-worker", "root"],
+    ] as const) {
+      const association = associationFromEvent(
+        event("thread.created", {
+          threadId,
+          projectId: "proj_1",
+          parentThreadId,
+          pullRequest,
+        }),
+      );
+      expect(association).not.toBeNull();
+      expect(
+        associationOwnerThreadId(threads, association!, projectId, ThreadId.make("explicit-owner")),
+      ).toBe("explicit-owner");
+    }
+  });
+
   it("still treats an explicit metadata association as an ownership transfer", () => {
     const association = associationFromEvent(
       event("thread.meta-updated", {
