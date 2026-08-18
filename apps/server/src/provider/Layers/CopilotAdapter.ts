@@ -45,6 +45,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   ProviderAdapterProcessError,
@@ -77,6 +78,7 @@ import {
 } from "../acp/CopilotAcpPermissions.ts";
 import {
   buildCopilotAcpSpawnInput,
+  buildCopilotSessionContractFingerprint,
   COPILOT_ACP_SHARED_RUNTIME_OPTIONS,
   makeCopilotAcpRuntime,
   prepareCopilotCustomInstructions,
@@ -328,11 +330,21 @@ function cloneCopilotTurns(
   }));
 }
 
-function parseCopilotResume(raw: unknown): { sessionId: string } | undefined {
+function parseCopilotResumeSessionId(raw: unknown): string | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== COPILOT_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
-  return { sessionId: raw.sessionId.trim() };
+  return raw.sessionId.trim();
+}
+
+function parseCopilotResume(
+  raw: unknown,
+  expectedContractFingerprint: string,
+): { sessionId: string } | undefined {
+  const sessionId = parseCopilotResumeSessionId(raw);
+  if (!sessionId || !isRecord(raw)) return undefined;
+  if (raw.contractFingerprint !== expectedContractFingerprint) return undefined;
+  return { sessionId };
 }
 
 function textOrFallback(value: string | null | undefined, fallback: string): string {
@@ -540,6 +552,15 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const serverConfig = yield* Effect.service(ServerConfig);
     const serverSettingsService = yield* ServerSettingsService;
     const customInstructionsDir = yield* prepareCopilotCustomInstructions(serverConfig.stateDir);
+    const getSessionContractFingerprint = (
+      threadId: ThreadId,
+      providerInstanceId: ProviderInstanceId,
+    ) =>
+      McpSessionRegistry.readActiveMcpProviderSession(threadId, providerInstanceId).pipe(
+        Effect.map((providerSession) =>
+          buildCopilotSessionContractFingerprint(process.env, providerSession !== undefined),
+        ),
+      );
     // Owned by the adapter so warmed processes die with the provider instance.
     const prewarmPool = yield* makeCopilotSessionPrewarmPool();
     const nativeEventLogger =
@@ -1287,9 +1308,17 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
 
     const restartRuntimeInternal = (ctx: CopilotSessionContext) =>
       Effect.gen(function* () {
-        const resumeSessionId = parseCopilotResume(ctx.session.resumeCursor)?.sessionId;
+        const sessionContractFingerprint = yield* getSessionContractFingerprint(
+          ctx.threadId,
+          ctx.providerInstanceId,
+        );
+        const savedSessionId = parseCopilotResumeSessionId(ctx.session.resumeCursor);
+        const resumeSessionId = parseCopilotResume(
+          ctx.session.resumeCursor,
+          sessionContractFingerprint,
+        )?.sessionId;
         const cwd = ctx.session.cwd;
-        if (!resumeSessionId) {
+        if (!savedSessionId) {
           return yield* new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId: ctx.threadId,
@@ -1313,7 +1342,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           copilotSettings: ctx.copilotSettings,
           pendingApprovals: ctx.pendingApprovals,
           pendingUserInputs: ctx.pendingUserInputs,
-          resumeSessionId,
+          ...(resumeSessionId ? { resumeSessionId } : {}),
           getCurrentTurnId: () => ctx.activeTurnId,
           onSessionEvent: (event) => processBackgroundAgentEvent(ctx, event),
           onFatalCopilotError: (turnId, message) => {
@@ -1342,6 +1371,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           resumeCursor: {
             schemaVersion: COPILOT_RESUME_VERSION,
             sessionId: runtime.started.sessionId,
+            contractFingerprint: sessionContractFingerprint,
           },
           updatedAt: yield* nowIso,
         };
@@ -1489,7 +1519,14 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
           const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           let ctx: CopilotSessionContext | undefined;
-          const resumeSessionId = parseCopilotResume(input.resumeCursor)?.sessionId;
+          const sessionContractFingerprint = yield* getSessionContractFingerprint(
+            input.threadId,
+            providerInstanceId,
+          );
+          const resumeSessionId = parseCopilotResume(
+            input.resumeCursor,
+            sessionContractFingerprint,
+          )?.sessionId;
           const runtime = yield* openRuntime({
             threadId: input.threadId,
             providerInstanceId,
@@ -1526,6 +1563,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             resumeCursor: {
               schemaVersion: COPILOT_RESUME_VERSION,
               sessionId: runtime.started.sessionId,
+              contractFingerprint: sessionContractFingerprint,
             },
             createdAt: now,
             updatedAt: now,
@@ -1651,7 +1689,13 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
               detail: COPILOT_FORK_UNSUPPORTED_DETAIL,
             });
           }
-          const sourceSessionId = parseCopilotResume(sourceCtx.session.resumeCursor)?.sessionId;
+          const sourceSessionId = parseCopilotResume(
+            sourceCtx.session.resumeCursor,
+            yield* getSessionContractFingerprint(
+              input.sourceThreadId,
+              sourceCtx.providerInstanceId,
+            ),
+          )?.sessionId;
           if (!sourceSessionId) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
@@ -1672,6 +1716,12 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           const forked = yield* sourceCtx.acp
             .forkSession({ cwd, mcpServers: [] })
             .pipe(Effect.mapError((cause) => mapCopilotForkAcpError(input.sourceThreadId, cause)));
+          const targetProviderInstanceId =
+            input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER);
+          const targetSessionContractFingerprint = yield* getSessionContractFingerprint(
+            input.threadId,
+            targetProviderInstanceId,
+          );
 
           return yield* startSessionInternal({
             threadId: input.threadId,
@@ -1688,6 +1738,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             resumeCursor: {
               schemaVersion: COPILOT_RESUME_VERSION,
               sessionId: forked.sessionId,
+              contractFingerprint: targetSessionContractFingerprint,
             },
             resumeFallback: "fail",
           });
