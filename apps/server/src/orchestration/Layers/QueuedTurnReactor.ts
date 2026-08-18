@@ -62,6 +62,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
 
       const origin = nextQueuedTurn.origin;
       if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
+        const observedHeadSha = origin.headSha;
         const now = new Date();
         if (
           origin.nextRevalidationAt !== undefined &&
@@ -123,7 +124,10 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
               reconcileFeedbackItem(
                 { kind: event.kind, stableKey: feedbackStableKeyOf(event) },
                 snapshot,
-                { checkName: event.kind === "check-failed" ? (event.detail ?? null) : null },
+                {
+                  checkName: event.kind === "check-failed" ? (event.detail ?? null) : null,
+                  observedHeadSha,
+                },
               ).kind === "actionable",
           ) ?? [];
         if (

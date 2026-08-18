@@ -243,6 +243,41 @@ describe("QueuedTurnReactor", () => {
     });
   });
 
+  it("suppresses a failed check from an older head while its rerun is pending", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: {
+          kind: "pull-request-monitor",
+          repository: "acme/app",
+          number: 42,
+          headSha: "head-old",
+          sourceRevision: "revision-old",
+          events: [{ kind: "check-failed", sourceId: "check-old", detail: "Windows Smoke" }],
+        },
+      }),
+      {
+        ...monitorSnapshot("head-new", "revision-new"),
+        checkRuns: [
+          {
+            id: "check-new",
+            name: "Windows Smoke",
+            status: "pending",
+            headSha: "head-new",
+            url: null,
+            description: null,
+          },
+        ],
+      },
+    );
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.queued-turn.delete",
+      threadId,
+      queuedTurnId,
+    });
+  });
+
   it("filters resolved findings and refreshes the prompt before dispatch", async () => {
     const commands = await runReactor(
       queuedReadModel({
