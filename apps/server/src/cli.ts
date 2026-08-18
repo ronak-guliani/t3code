@@ -2057,6 +2057,7 @@ const chatAssociatePrCommand = Command.make("associate-pr", {
             commandId: CommandId.make(crypto.randomUUID()),
             threadId: thread.id,
             pullRequest: resolved.pullRequest,
+            pullRequestOwnership: "transfer",
           });
           yield* printJson({ pullRequest: resolved.pullRequest, result });
         }),

@@ -12,9 +12,11 @@ import { PullRequestMonitorService } from "./PullRequestMonitorService.ts";
 
 export { repositoryFromPullRequestUrl } from "./canonicalKey.ts";
 
-interface AssociatedPullRequest {
+export interface AssociatedPullRequest {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
+  readonly parentThreadId: ThreadId | null;
+  readonly ownershipMode: "preserve" | "transfer";
   readonly repository: string;
   readonly number: number;
 }
@@ -30,7 +32,9 @@ export function associationFromEvent(event: OrchestrationEvent): AssociatedPullR
   const payload = event.payload as {
     readonly threadId?: unknown;
     readonly projectId?: unknown;
+    readonly parentThreadId?: unknown;
     readonly pullRequest?: { readonly number?: unknown; readonly url?: unknown } | null;
+    readonly pullRequestOwnership?: unknown;
   };
   const pullRequest = payload.pullRequest;
   if (!pullRequest || typeof pullRequest.number !== "number") return null;
@@ -44,9 +48,71 @@ export function associationFromEvent(event: OrchestrationEvent): AssociatedPullR
   return {
     threadId,
     projectId: projectId ?? ("" as ProjectId),
+    parentThreadId:
+      event.type === "thread.created" && typeof payload.parentThreadId === "string"
+        ? (payload.parentThreadId as ThreadId)
+        : null,
+    ownershipMode:
+      event.type === "thread.created"
+        ? typeof payload.parentThreadId === "string"
+          ? "preserve"
+          : "transfer"
+        : payload.pullRequestOwnership === "transfer"
+          ? "transfer"
+          : "preserve",
     repository,
     number: pullRequest.number,
   };
+}
+
+/**
+ * Workflow/review children inherit their parent's PR metadata when they are created.
+ * That inherited metadata keeps the highest active associated ancestor as owner; a later
+ * explicit metadata association still transfers ownership to the selected chat.
+ */
+export function associationOwnerThreadId(
+  threads: ReadonlyArray<{
+    readonly id: ThreadId;
+    readonly projectId: ProjectId;
+    readonly parentThreadId?: ThreadId | null;
+    readonly pullRequest?: { readonly number: number; readonly url: string } | null;
+    readonly archivedAt: string | null;
+    readonly deletedAt: string | null;
+  }>,
+  association: AssociatedPullRequest,
+  projectId: ProjectId,
+): ThreadId {
+  if (association.ownershipMode === "transfer") {
+    return association.threadId;
+  }
+
+  const isActiveAssociatedThread = (threadId: ThreadId) => {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    return (
+      thread !== undefined &&
+      thread.projectId === projectId &&
+      thread.archivedAt === null &&
+      thread.deletedAt === null &&
+      thread.pullRequest?.number === association.number &&
+      repositoryFromPullRequestUrl(thread.pullRequest.url) === association.repository
+    );
+  };
+  let ownerThreadId = association.threadId;
+  let parentThreadId =
+    association.parentThreadId ??
+    threads.find((thread) => thread.id === association.threadId)?.parentThreadId ??
+    null;
+  const visited = new Set<string>([association.threadId]);
+  while (parentThreadId !== null && !visited.has(parentThreadId)) {
+    visited.add(parentThreadId);
+    const parent = threads.find((thread) => thread.id === parentThreadId);
+    if (!parent || !isActiveAssociatedThread(parent.id)) {
+      break;
+    }
+    ownerThreadId = parent.id;
+    parentThreadId = parent.parentThreadId ?? null;
+  }
+  return ownerThreadId;
 }
 
 /**
@@ -67,20 +133,21 @@ const makeReactor = Effect.gen(function* () {
       if (Result.isFailure(settings) || settings.success.autoMonitorPullRequestsOnCreate !== true) {
         return;
       }
+      const readModel = yield* engine.getReadModel();
       const projectId =
         association.projectId.length > 0
           ? association.projectId
-          : yield* Effect.map(engine.getReadModel(), (readModel) => {
-              const thread = readModel.threads.find((entry) => entry.id === association.threadId);
-              return (thread?.projectId ?? null) as ProjectId | null;
-            });
+          : ((readModel.threads.find((entry) => entry.id === association.threadId)?.projectId ??
+              null) as ProjectId | null);
       if (projectId === null || projectId.length === 0) return;
       yield* monitors
         .start({
           projectId,
           repository: association.repository,
           number: association.number,
-          ownerThreadId: association.threadId,
+          ownerThreadId: associationOwnerThreadId(readModel.threads, association, projectId),
+          requireAssociatedOwner: true,
+          ...(association.ownershipMode === "preserve" ? { ownerMode: "preserve" as const } : {}),
         })
         .pipe(
           Effect.catchCause((cause) =>

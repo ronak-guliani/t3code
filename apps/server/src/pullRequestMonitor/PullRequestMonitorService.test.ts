@@ -513,6 +513,167 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("preserves an existing owner when started with an inherited fallback", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const explicitOwner = ThreadId.make("owner-explicit");
+      const inheritedOwner = ThreadId.make("owner-inherited");
+      seedThread(explicitOwner);
+      seedThread(inheritedOwner);
+      yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: explicitOwner,
+      });
+
+      const preserved = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: inheritedOwner,
+        ownerMode: "preserve",
+      });
+
+      assert.strictEqual(preserved.monitor.ownerThreadId, explicitOwner);
+    }),
+  );
+
+  it.effect("atomically claims an ownerless monitor with an inherited fallback", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const inheritedOwner = ThreadId.make("owner-inherited-claim");
+      seedThread(inheritedOwner);
+      yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1046,
+        ownerMode: "observe-only",
+      });
+
+      const claimed = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1046,
+        ownerThreadId: inheritedOwner,
+        ownerMode: "preserve",
+      });
+
+      assert.strictEqual(claimed.monitor.ownerThreadId, inheritedOwner);
+    }),
+  );
+
+  it.effect("rejects an invalid inherited fallback before claiming an ownerless monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const missingOwner = ThreadId.make("owner-inherited-missing");
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1049,
+        ownerMode: "observe-only",
+      });
+
+      const result = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1049,
+          ownerThreadId: missingOwner,
+          ownerMode: "preserve",
+        }),
+      );
+      const status = yield* service.status({ monitorId: started.monitor.id });
+
+      assert.strictEqual(result._tag, "Failure");
+      assert.isNull(status.monitor?.ownerThreadId);
+    }),
+  );
+
+  it.effect("retains a concurrent explicit transfer over an inherited claim", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const inheritedOwner = ThreadId.make("owner-inherited-race");
+      const explicitOwner = ThreadId.make("owner-explicit-race");
+      seedThread(inheritedOwner);
+      seedThread(explicitOwner);
+      yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1047,
+        ownerMode: "observe-only",
+      });
+      yield* sql`
+        CREATE TRIGGER preserve_owner_race
+        AFTER UPDATE OF enabled ON pull_request_monitors
+        WHEN NEW.number = 1047 AND NEW.owner_thread_id IS NULL
+        BEGIN
+          UPDATE pull_request_monitors
+          SET owner_thread_id = 'owner-explicit-race'
+          WHERE monitor_id = NEW.monitor_id;
+        END
+      `;
+
+      const preserved = yield* service
+        .start({
+          projectId,
+          repository: "acme/app",
+          number: 1047,
+          ownerThreadId: inheritedOwner,
+          ownerMode: "preserve",
+        })
+        .pipe(Effect.ensuring(sql`DROP TRIGGER preserve_owner_race`.pipe(Effect.orDie)));
+
+      assert.strictEqual(preserved.monitor.ownerThreadId, explicitOwner);
+    }),
+  );
+
+  it.effect("does not mutate ownership when the existing monitor lookup fails", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const explicitOwner = ThreadId.make("owner-before-read-failure");
+      const inheritedOwner = ThreadId.make("owner-after-read-failure");
+      seedThread(explicitOwner);
+      seedThread(inheritedOwner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1048,
+        ownerThreadId: explicitOwner,
+      });
+      yield* sql`
+        UPDATE pull_request_monitors
+        SET readiness_json = '{'
+        WHERE monitor_id = ${started.monitor.id}
+      `;
+
+      const result = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1048,
+          ownerThreadId: inheritedOwner,
+          ownerMode: "preserve",
+        }),
+      );
+      const rows = yield* sql<{ owner_thread_id: string | null }>`
+        SELECT owner_thread_id
+        FROM pull_request_monitors
+        WHERE monitor_id = ${started.monitor.id}
+      `;
+      yield* sql`
+        UPDATE pull_request_monitors
+        SET readiness_json = NULL
+        WHERE monitor_id = ${started.monitor.id}
+      `;
+
+      assert.strictEqual(result._tag, "Failure");
+      assert.strictEqual(rows[0]?.owner_thread_id, explicitOwner);
+    }),
+  );
+
   it.effect("submitFindings links review thread without dual owners", () =>
     Effect.gen(function* () {
       const service = yield* PullRequestMonitorService;
