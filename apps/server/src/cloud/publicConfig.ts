@@ -1,6 +1,10 @@
+import {
+  connectLoopbackRedirectUri,
+  CONNECT_OAUTH_SCOPES,
+  DEFAULT_HOSTED_APP_URL,
+} from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
-import { CONNECT_OAUTH_SCOPES, DEFAULT_HOSTED_APP_URL } from "@t3tools/shared/connectAuth";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -15,7 +19,7 @@ declare const __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_URL__: string | undefined;
 declare const __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_DATASET__: string | undefined;
 declare const __T3CODE_BUILD_RELAY_CLIENT_OTLP_TRACES_TOKEN__: string | undefined;
 
-const CLOUD_CLI_OAUTH_REDIRECT_URI = "http://127.0.0.1:34338/callback";
+const CLOUD_CLI_OAUTH_LOOPBACK_PORT = 34338;
 const CLOUD_CLI_OAUTH_SCOPES = CONNECT_OAUTH_SCOPES;
 
 function validateRelayUrl(value: string) {
@@ -142,9 +146,9 @@ function makePublicValueConfig(name: string, fallback: string) {
 }
 
 export interface CloudCliOAuthConfig {
-  readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
   readonly clientId: string;
+  readonly loopbackPort: number;
   readonly redirectUri: string;
   readonly scopes: typeof CLOUD_CLI_OAUTH_SCOPES;
 }
@@ -180,10 +184,10 @@ export function makeCloudCliOAuthConfig({
         Effect.map(
           (clerkFrontendApiUrl) =>
             ({
-              authorizationEndpoint: `${clerkFrontendApiUrl}/oauth/authorize`,
               tokenEndpoint: `${clerkFrontendApiUrl}/oauth/token`,
               clientId,
-              redirectUri: CLOUD_CLI_OAUTH_REDIRECT_URI,
+              loopbackPort: CLOUD_CLI_OAUTH_LOOPBACK_PORT,
+              redirectUri: connectLoopbackRedirectUri(CLOUD_CLI_OAUTH_LOOPBACK_PORT),
               scopes: CLOUD_CLI_OAUTH_SCOPES,
             }) satisfies CloudCliOAuthConfig,
         ),

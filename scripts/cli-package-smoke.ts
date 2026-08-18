@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,16 +8,23 @@ import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverDir = resolve(repoRoot, "apps/server");
+const webDir = resolve(repoRoot, "apps/web");
 const serverManifestPath = resolve(serverDir, "package.json");
 let tempDir: string | undefined;
 let originalManifest: string | undefined;
 
-function run(command: string, args: ReadonlyArray<string>, cwd: string) {
+function run(
+  command: string,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env: Readonly<Record<string, string>> = {},
+) {
   return execFileSync(command, args, {
     cwd,
     encoding: "utf8",
     env: {
       ...process.env,
+      ...env,
       npm_config_ignore_scripts: "true",
       npm_config_update_notifier: "false",
     },
@@ -30,10 +37,44 @@ function assertContains(output: string, value: string) {
   }
 }
 
+function readJavaScriptFiles(directory: string): string {
+  return readdirSync(directory, { withFileTypes: true })
+    .map((entry) => {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) return readJavaScriptFiles(path);
+      return entry.isFile() && entry.name.endsWith(".js") ? readFileSync(path, "utf8") : "";
+    })
+    .join("\n");
+}
+
 try {
   originalManifest = readFileSync(serverManifestPath, "utf8");
   tempDir = mkdtempSync(join(repoRoot, "t3-cli-package-smoke-"));
-  run(process.execPath, ["apps/server/scripts/cli.ts", "build"], repoRoot);
+  const embeddedPublicConfig = {
+    T3CODE_RELAY_URL: "https://release-smoke-relay.example.test",
+    T3CODE_CLERK_PUBLISHABLE_KEY: "pk_test_Y2xlcmsuZXhhbXBsZS50ZXN0JA==",
+    T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: "release-smoke-oauth-client",
+    T3CODE_HOSTED_APP_URL: "https://release-smoke-hosted.example.test",
+  };
+  run(process.execPath, ["--run", "build"], webDir, embeddedPublicConfig);
+  const webBundle = readJavaScriptFiles(resolve(webDir, "dist"));
+  for (const value of [
+    embeddedPublicConfig.T3CODE_CLERK_PUBLISHABLE_KEY,
+    embeddedPublicConfig.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID,
+    embeddedPublicConfig.T3CODE_HOSTED_APP_URL,
+  ]) {
+    assertContains(webBundle, value);
+  }
+
+  run(process.execPath, ["apps/server/scripts/cli.ts", "build"], repoRoot, embeddedPublicConfig);
+  const bundle = readFileSync(resolve(serverDir, "dist/bin.mjs"), "utf8");
+  for (const value of [
+    embeddedPublicConfig.T3CODE_RELAY_URL,
+    embeddedPublicConfig.T3CODE_CLERK_PUBLISHABLE_KEY,
+    embeddedPublicConfig.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID,
+  ]) {
+    assertContains(bundle, value);
+  }
   const manifest = JSON.parse(originalManifest) as {
     readonly dependencies: Record<string, string>;
   };

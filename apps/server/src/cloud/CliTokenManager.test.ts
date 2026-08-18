@@ -16,6 +16,22 @@ import * as CliTokenManager from "./CliTokenManager.ts";
 const idToken = (claims: Readonly<Record<string, string>>) =>
   `header.${Encoding.encodeBase64Url(new TextEncoder().encode(JSON.stringify(claims)))}.signature`;
 
+it("routes loopback authorization through the hosted app", () => {
+  const url = new URL(
+    CliTokenManager.buildLoopbackAuthorizationUrl({
+      hostedAppUrl: "https://app.example.test",
+      loopbackPort: 34338,
+      state: "loopback-state",
+      challenge: "pkce-challenge",
+    }),
+  );
+
+  assert.equal(url.origin, "https://app.example.test");
+  assert.equal(url.pathname, "/connect");
+  assert.equal(url.search, "");
+  assert.equal(url.hash, "#state=loopback-state&challenge=pkce-challenge&port=34338");
+});
+
 function memorySecretStore() {
   const values = new Map<string, Uint8Array>();
   return ServerSecretStore.ServerSecretStore.of({
@@ -66,9 +82,9 @@ it.effect(
             assert.equal(valid.status, 200);
             const token = yield* CliTokenManager.exchangeOAuthToken(
               {
-                authorizationEndpoint: "https://clerk.example.test/oauth/authorize",
                 tokenEndpoint: "https://clerk.example.test/oauth/token",
                 clientId: "oauth-client",
+                loopbackPort: 34338,
                 redirectUri: "http://127.0.0.1:34338/callback",
                 scopes: ["openid", "profile", "email"],
               },
