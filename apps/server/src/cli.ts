@@ -525,12 +525,6 @@ const runWithAuthControlPlane = <A, E>(
     );
   });
 
-type ProjectMutationTarget = {
-  readonly id: ProjectId;
-  readonly title: string;
-  readonly workspaceRoot: string;
-};
-
 type ProjectCommandExecutionMode = "live" | "offline";
 type ProjectCliDispatchCommand = Extract<
   ClientOrchestrationCommand,
@@ -603,49 +597,6 @@ const resolveProjectTitle = Effect.fn("resolveProjectTitle")(function* (
   const path = yield* Path.Path;
   const basename = path.basename(workspaceRoot).trim();
   return basename.length > 0 ? basename : "project";
-});
-
-const findActiveProjectTarget = Effect.fn("findActiveProjectTarget")(function* (input: {
-  readonly snapshot: CliSnapshot;
-  readonly identifier: string;
-}) {
-  const trimmedIdentifier = input.identifier.trim();
-  if (trimmedIdentifier.length === 0) {
-    return yield* Effect.fail(new Error("Project identifier cannot be empty."));
-  }
-
-  const activeProjects = activeProjectsOf(input.snapshot);
-  const exactIdMatch = activeProjects.find((project) => project.id === trimmedIdentifier);
-  if (exactIdMatch) {
-    return {
-      id: exactIdMatch.id,
-      title: exactIdMatch.title,
-      workspaceRoot: exactIdMatch.workspaceRoot,
-    } satisfies ProjectMutationTarget;
-  }
-
-  const normalizedWorkspaceRootResult = yield* Effect.exit(
-    normalizeWorkspaceRootForProjectCommand(trimmedIdentifier),
-  );
-  const normalizedWorkspaceRoot = Exit.isSuccess(normalizedWorkspaceRootResult)
-    ? normalizedWorkspaceRootResult.value
-    : null;
-
-  const exactWorkspaceMatch =
-    normalizedWorkspaceRoot === null
-      ? undefined
-      : activeProjects.find((project) => project.workspaceRoot === normalizedWorkspaceRoot);
-
-  const resolved = exactWorkspaceMatch;
-  if (!resolved) {
-    return yield* Effect.fail(new Error(`No active project found for '${trimmedIdentifier}'.`));
-  }
-
-  return {
-    id: resolved.id,
-    title: resolved.title,
-    workspaceRoot: resolved.workspaceRoot,
-  } satisfies ProjectMutationTarget;
 });
 
 const dispatchLiveOrchestrationCommand = (
@@ -1301,7 +1252,7 @@ const projectRemoveCommand = Command.make("remove", {
   ...projectLocationFlags,
   offline: offlineFlag,
   project: Argument.string("project").pipe(
-    Argument.withDescription("Project id or workspace root to remove."),
+    Argument.withDescription("Project id, title, or workspace root to remove."),
   ),
 }).pipe(
   Command.withDescription("Remove a project."),
@@ -1317,10 +1268,7 @@ const projectRemoveCommand = Command.make("remove", {
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
       }) {
-        const project = yield* findActiveProjectTarget({
-          snapshot,
-          identifier: flags.project,
-        });
+        const project = yield* findProjectForCli(snapshot, flags.project);
         yield* dispatch({
           type: "project.delete",
           commandId: CommandId.make(crypto.randomUUID()),
@@ -1337,7 +1285,7 @@ const projectRenameCommand = Command.make("rename", {
   ...projectLocationFlags,
   offline: offlineFlag,
   project: Argument.string("project").pipe(
-    Argument.withDescription("Project id or workspace root to rename."),
+    Argument.withDescription("Project id, title, or workspace root to rename."),
   ),
   title: Argument.string("title").pipe(Argument.withDescription("New project title.")),
 }).pipe(
@@ -1354,10 +1302,7 @@ const projectRenameCommand = Command.make("rename", {
           command: ProjectCliDispatchCommand,
         ) => Effect.Effect<void, Error, FileSystem.FileSystem | HttpClient.HttpClient | Path.Path>;
       }) {
-        const project = yield* findActiveProjectTarget({
-          snapshot,
-          identifier: flags.project,
-        });
+        const project = yield* findProjectForCli(snapshot, flags.project);
         const nextTitle = yield* resolveProjectTitle(project.workspaceRoot, flags.title);
         if (nextTitle === project.title) {
           return `Project ${project.id} is already named ${nextTitle}.`;

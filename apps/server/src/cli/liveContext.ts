@@ -1,5 +1,6 @@
 import { type OrchestrationShellSnapshot, type OrchestrationThread } from "@t3tools/contracts";
-import { Effect, Exit, FileSystem } from "effect";
+import { Effect, Exit } from "effect";
+import { canonicalizeWorktreePath, resolveGitWorktreeRoot } from "../git/worktreePaths.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
 import {
   withLiveOrchestrationClient,
@@ -31,9 +32,38 @@ const canonicalizeWorkspaceRootForProjectLookup = Effect.fn(
   "canonicalizeWorkspaceRootForProjectLookup",
 )(function* (workspaceRoot: string) {
   const normalized = yield* normalizeWorkspaceRootForProjectCommand(workspaceRoot);
-  const fileSystem = yield* FileSystem.FileSystem;
-  return yield* fileSystem.realPath(normalized).pipe(Effect.orElseSucceed(() => normalized));
+  return yield* Effect.promise(() => canonicalizeWorktreePath(normalized));
 });
+
+const resolveWorkspacePathsForProjectLookup = Effect.fn("resolveWorkspacePathsForProjectLookup")(
+  function* (workspaceRoot: string) {
+    const canonicalPath = yield* canonicalizeWorkspaceRootForProjectLookup(workspaceRoot);
+    const gitWorktreeRoot = yield* Effect.promise(() => resolveGitWorktreeRoot(canonicalPath));
+    return new Set(gitWorktreeRoot === null ? [canonicalPath] : [canonicalPath, gitWorktreeRoot]);
+  },
+);
+
+const isExplicitFilesystemPath = (value: string): boolean =>
+  value === "." ||
+  value === ".." ||
+  value === "~" ||
+  value.startsWith("./") ||
+  value.startsWith("../") ||
+  value.startsWith("~/") ||
+  value.startsWith(".\\") ||
+  value.startsWith("..\\") ||
+  value.startsWith("~\\") ||
+  value.startsWith("/") ||
+  /^[A-Za-z]:[\\/]/.test(value) ||
+  value.includes("/") ||
+  value.includes("\\");
+
+const ambiguousProjectError = (identifier: string, projectIds: Iterable<string>): Error => {
+  const candidates = [...projectIds].toSorted((left, right) => left.localeCompare(right));
+  return new Error(
+    `Project selector '${identifier}' is ambiguous. Candidate project ids: ${candidates.join(", ")}. Use a project id instead.`,
+  );
+};
 
 const isNotDeleted = (value: object): boolean =>
   !("deletedAt" in value) || value.deletedAt === null;
@@ -84,80 +114,45 @@ export const findProjectForCli = Effect.fn("findProjectForCli")(function* (
   const byId = activeProjects.find((project) => project.id === trimmed);
   if (byId) return byId;
 
-  const normalizedWorkspaceRootResult = yield* Effect.exit(
-    canonicalizeWorkspaceRootForProjectLookup(trimmed),
+  const projectsById = new Map(activeProjects.map((project) => [project.id, project]));
+  const matches = new Map(
+    activeProjects
+      .filter((project) => project.title === trimmed)
+      .map((project) => [project.id, project] as const),
   );
-  const normalizedWorkspaceRoot = Exit.isSuccess(normalizedWorkspaceRootResult)
-    ? normalizedWorkspaceRootResult.value
-    : null;
-  if (normalizedWorkspaceRoot !== null) {
-    const workspaceMatches = yield* Effect.forEach(
-      activeProjects,
-      (project) =>
-        canonicalizeWorkspaceRootForProjectLookup(project.workspaceRoot).pipe(
-          Effect.map((workspaceRoot) => ({ project, workspaceRoot })),
-          Effect.catch(() => Effect.succeed(null)),
+  const resolvedPaths = yield* Effect.exit(resolveWorkspacePathsForProjectLookup(trimmed));
+
+  if (Exit.isSuccess(resolvedPaths)) {
+    const ownedPaths = [
+      ...activeProjects.map((project) => ({
+        project,
+        path: project.workspaceRoot,
+      })),
+      ...activeThreadsOf(snapshot).flatMap((thread) => {
+        const project = projectsById.get(thread.projectId);
+        return project === undefined || thread.worktreePath === null
+          ? []
+          : [{ project, path: thread.worktreePath }];
+      }),
+    ];
+    const pathMatches = yield* Effect.forEach(
+      ownedPaths,
+      ({ project, path }) =>
+        Effect.promise(() => canonicalizeWorktreePath(path)).pipe(
+          Effect.map((canonicalPath) => (resolvedPaths.value.has(canonicalPath) ? project : null)),
         ),
-      { concurrency: "unbounded" },
-    ).pipe(
-      Effect.map((projects) =>
-        projects.filter(
-          (
-            candidate,
-          ): candidate is {
-            readonly project: ActiveProject;
-            readonly workspaceRoot: string;
-          } => candidate !== null && candidate.workspaceRoot === normalizedWorkspaceRoot,
-        ),
-      ),
+      { concurrency: 16 },
     );
-    if (workspaceMatches.length === 1) return workspaceMatches[0]!.project;
-    if (workspaceMatches.length > 1) {
-      return yield* Effect.fail(
-        new Error(
-          `Multiple active projects resolve to workspace '${normalizedWorkspaceRoot}'. Use the project id instead.`,
-        ),
-      );
+    for (const project of pathMatches) {
+      if (project !== null) matches.set(project.id, project);
     }
-    const matchingThreads = yield* Effect.forEach(
-      activeThreadsOf(snapshot),
-      (thread) =>
-        thread.worktreePath === null
-          ? Effect.succeed(null)
-          : canonicalizeWorkspaceRootForProjectLookup(thread.worktreePath).pipe(
-              Effect.map((worktreePath) =>
-                worktreePath === normalizedWorkspaceRoot ? thread : null,
-              ),
-              Effect.catch(() => Effect.succeed(null)),
-            ),
-      { concurrency: "unbounded" },
-    );
-    const matchingProjectIds = new Set(
-      matchingThreads
-        .filter((thread) => thread !== null)
-        .map((thread) => thread.projectId)
-        .filter((projectId) => activeProjects.some((project) => project.id === projectId)),
-    );
-    if (matchingProjectIds.size === 1) {
-      const projectId = matchingProjectIds.values().next().value;
-      const project = activeProjects.find((candidate) => candidate.id === projectId);
-      if (project) return project;
-    }
-    if (matchingProjectIds.size > 1) {
-      return yield* Effect.fail(
-        new Error(
-          `Multiple active projects contain worktree '${normalizedWorkspaceRoot}'. Use the project id instead.`,
-        ),
-      );
-    }
+  } else if (matches.size === 0 && isExplicitFilesystemPath(trimmed)) {
+    return yield* Effect.failCause(resolvedPaths.cause);
   }
 
-  const byTitle = activeProjects.filter((project) => project.title === trimmed);
-  if (byTitle.length === 1) return byTitle[0]!;
-  if (byTitle.length > 1) {
-    return yield* Effect.fail(
-      new Error(`Multiple active projects are named '${trimmed}'. Use the project id instead.`),
-    );
+  if (matches.size === 1) return matches.values().next().value!;
+  if (matches.size > 1) {
+    return yield* Effect.fail(ambiguousProjectError(trimmed, matches.keys()));
   }
 
   return yield* Effect.fail(new Error(`No active project found for '${trimmed}'.`));
