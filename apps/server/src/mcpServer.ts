@@ -508,10 +508,39 @@ const isSafeNestedThreadCleanup = (error: unknown, cleanupToken: string): boolea
     output.includes(`${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${cleanupToken}`),
   );
 
+const hasSafeNestedThreadCleanupSignal = (error: unknown): boolean =>
+  error instanceof CommandExecutionError &&
+  [error.result.stdout, error.result.stderr].some((output) =>
+    output.includes(CHAT_NEW_WORKSPACE_CLEANUP_SAFE),
+  );
+
 interface IsolatedWorkspaceSpec {
   readonly branch: string;
   readonly path: string;
   readonly baseRef: string | undefined;
+}
+
+interface NestedThreadCreationOutcome {
+  readonly status: "created" | "failed" | "ambiguous";
+  readonly threadId: string | null;
+  readonly retryable: boolean;
+  readonly creationCommitted: boolean | null;
+  readonly cleanupPerformed: boolean;
+  readonly error?: string;
+}
+
+class WorkspacePreflightError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspacePreflightError";
+  }
+}
+
+class NestedThreadValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NestedThreadValidationError";
+  }
 }
 
 function parseIsolatedWorkspaceSpec(
@@ -535,6 +564,7 @@ async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec):
   if (!baseRef) {
     throw new Error("Could not determine the current branch; pass baseRef explicitly.");
   }
+
   await runCommand(cwd, "git", [
     "worktree",
     "add",
@@ -544,6 +574,34 @@ async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec):
     baseRef,
   ]);
   return baseRef;
+}
+
+async function preflightGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<void> {
+  const [pathStat, branchCheck, worktreeList] = await Promise.all([
+    fs.stat(workspace.path).catch(() => null),
+    spawnCommand(cwd, "git", ["show-ref", "--verify", "--quiet", `refs/heads/${workspace.branch}`]),
+    runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
+  ]);
+  if (pathStat !== null) {
+    throw new WorkspacePreflightError(
+      `Workspace path is already occupied: ${workspace.path}. Choose an unused absolute path or remove the stale worktree first.`,
+    );
+  }
+  const branchResult = JSON.parse(branchCheck) as TerminalResult;
+  if (branchResult.code === 0) {
+    throw new WorkspacePreflightError(
+      `Workspace branch already exists: ${workspace.branch}. Choose a new branch or remove the stale branch first.`,
+    );
+  }
+  const occupiedPaths = worktreeList.stdout
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => path.resolve(line.slice("worktree ".length)));
+  if (occupiedPaths.includes(path.resolve(workspace.path))) {
+    throw new WorkspacePreflightError(
+      `Workspace path is already registered as a Git worktree: ${workspace.path}. Remove or prune the stale worktree first.`,
+    );
+  }
 }
 
 async function recordThreadWorkspaceBinding(
@@ -672,41 +730,58 @@ async function switchWorkspaceTool(
   });
 }
 
-async function createNestedThreadTool(
+async function createNestedThreadToolImpl(
   options: McpServeOptions,
   args: Record<string, unknown>,
 ): Promise<string> {
   if (!options.threadId) {
-    throw new Error("create_nested_thread is only available from a T3 provider session");
+    throw new NestedThreadValidationError(
+      "create_nested_thread is only available from a T3 provider session",
+    );
   }
   const project = asString(args.project)?.trim();
   const title = asString(args.title)?.trim();
   const prompt = asString(args.prompt)?.trim();
   const model = asString(args.model)?.trim();
   const reasoning = asString(args.reasoning)?.trim();
-  if (!project) throw new Error("create_nested_thread requires a non-empty project");
-  if (!title) throw new Error("create_nested_thread requires a non-empty title");
-  if (!prompt) throw new Error("create_nested_thread requires a non-empty prompt");
-  if (!model) throw new Error("create_nested_thread requires a non-empty model");
+  if (!project)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty project");
+  if (!title)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty title");
+  if (!prompt)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty prompt");
+  if (!model)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty model");
 
   if (!options.runtimeMode) {
-    throw new Error("create_nested_thread requires an authenticated parent runtime mode");
+    throw new NestedThreadValidationError(
+      "create_nested_thread requires an authenticated parent runtime mode",
+    );
   }
   if (!options.providerInstanceId) {
-    throw new Error("create_nested_thread requires an authenticated parent provider instance");
+    throw new NestedThreadValidationError(
+      "create_nested_thread requires an authenticated parent provider instance",
+    );
   }
 
   let workspace: IsolatedWorkspaceSpec | undefined;
   const workspaceCleanupToken = randomUUID();
   if (args.workspace !== undefined) {
     if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
-      throw new Error("create_nested_thread workspace must be an object");
+      throw new NestedThreadValidationError("create_nested_thread workspace must be an object");
     }
     const workspaceInput = asRecord(args.workspace);
     if (asString(workspaceInput.mode) !== "isolated") {
-      throw new Error("create_nested_thread workspace mode must be 'isolated'");
+      throw new NestedThreadValidationError(
+        "create_nested_thread workspace mode must be 'isolated'",
+      );
     }
-    workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
+    try {
+      workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
+    } catch (error) {
+      throw new NestedThreadValidationError(toErrorMessage(error));
+    }
+    await preflightGitWorktree(options.cwd, workspace);
     await createGitWorktree(options.cwd, workspace);
   }
 
@@ -769,7 +844,47 @@ async function createNestedThreadTool(
     }
     throw creationError;
   }
-  return result.stdout.trim();
+  const resultBody = JSON.parse(result.stdout.trim()) as { readonly threadId?: unknown };
+  const threadId = typeof resultBody.threadId === "string" ? resultBody.threadId : null;
+  return JSON.stringify({
+    status: "created",
+    threadId,
+    retryable: false,
+    creationCommitted: true,
+    cleanupPerformed: false,
+  } satisfies NestedThreadCreationOutcome);
+}
+
+async function createNestedThreadTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  try {
+    return await createNestedThreadToolImpl(options, args);
+  } catch (error) {
+    const workspaceRequested =
+      args.workspace !== undefined &&
+      args.workspace !== null &&
+      typeof args.workspace === "object" &&
+      !Array.isArray(args.workspace);
+    const safeCleanupPerformed = workspaceRequested && hasSafeNestedThreadCleanupSignal(error);
+    const definitiveRejection =
+      error instanceof NestedThreadValidationError ||
+      error instanceof WorkspacePreflightError ||
+      isDefinitiveCommandRejection(error) ||
+      safeCleanupPerformed;
+    throw new Error(
+      JSON.stringify({
+        status: definitiveRejection ? "failed" : "ambiguous",
+        threadId: null,
+        retryable: error instanceof WorkspacePreflightError,
+        creationCommitted: definitiveRejection ? false : null,
+        cleanupPerformed: safeCleanupPerformed,
+        error: toErrorMessage(error),
+      } satisfies NestedThreadCreationOutcome),
+      { cause: error },
+    );
+  }
 }
 
 async function sendToThreadTool(
@@ -957,7 +1072,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. When the child needs an isolated checkout, pass workspace here so T3 creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Create and start a helper thread nested under the current T3 thread. Returns a structured outcome with status, threadId, retryable, creationCommitted, and cleanupPerformed. When the child needs an isolated checkout, pass workspace here so T3 preflights branch/path collisions, then creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: {
