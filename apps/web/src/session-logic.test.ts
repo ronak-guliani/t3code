@@ -628,6 +628,36 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("preserves a child lifecycle action for clickable parent notifications", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "child-completed",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+          payload: {
+            action: {
+              label: "View result",
+              url: "https://app.example/environment/thread",
+            },
+          },
+        }),
+      ],
+      TurnId.make("parent-latest-turn"),
+    );
+
+    expect(entries).toMatchObject([
+      {
+        label: "Release assistant completed",
+        action: {
+          label: "View result",
+          url: "https://app.example/environment/thread",
+        },
+      },
+    ]);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -115,6 +115,26 @@ describe("hasUnseenCompletion", () => {
       }),
     ).toBe(true);
   });
+
+  it("returns true when a child lifecycle notification arrived after the parent visit", () => {
+    expect(
+      hasUnseenCompletion({
+        latestTurn: null,
+        latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false after the parent has visited the latest child notification", () => {
+    expect(
+      hasUnseenCompletion({
+        latestTurn: null,
+        latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
+        lastVisitedAt: "2026-03-09T10:05:00.000Z",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("resolveSidebarThreadGitCwd", () => {

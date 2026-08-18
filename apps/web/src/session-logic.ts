@@ -65,6 +65,10 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   isComplete?: boolean;
   agentRun?: AgentRun;
+  action?: {
+    label: string;
+    url: string;
+  };
 }
 
 export interface AgentRun {
@@ -611,7 +615,13 @@ export function deriveWorkLogEntries(
   const agentRuns = deriveAgentRuns(ordered, latestTurnId);
   const agentActivityIds = new Set(agentRuns.flatMap((run) => run.activityIds));
   const entries = ordered
-    .filter((activity) => (latestTurnId ? activity.turnId === latestTurnId : true))
+    .filter((activity) =>
+      activity.kind.startsWith("child.lifecycle.")
+        ? true
+        : latestTurnId
+          ? activity.turnId === latestTurnId
+          : true,
+    )
     .filter((activity) => !agentActivityIds.has(activity.id))
     .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => activity.kind !== "task.started")
@@ -784,6 +794,16 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const action =
+    payload?.action &&
+    typeof payload.action === "object" &&
+    typeof (payload.action as Record<string, unknown>).label === "string" &&
+    typeof (payload.action as Record<string, unknown>).url === "string"
+      ? {
+          label: (payload.action as Record<string, unknown>).label as string,
+          url: (payload.action as Record<string, unknown>).url as string,
+        }
+      : null;
   if (detail) {
     entry.detail = detail;
   }
@@ -804,6 +824,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   }
   if (requestKind) {
     entry.requestKind = requestKind;
+  }
+  if (action) {
+    entry.action = action;
   }
   if (toolCallId) {
     entry.toolCallId = toolCallId;

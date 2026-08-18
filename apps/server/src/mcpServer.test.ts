@@ -257,7 +257,7 @@ describe("create_nested_thread MCP tool", () => {
     try {
       await writeFile(
         cliPath,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1","threadUrl":"https://app.example/env/child-1"}\\n\'\n',
       );
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
@@ -283,7 +283,7 @@ describe("create_nested_thread MCP tool", () => {
           },
         ),
       ).resolves.toBe(
-        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
+        '{"status":"created","threadId":"child-1","threadUrl":"https://app.example/env/child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
       );
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
@@ -328,7 +328,7 @@ describe("create_nested_thread MCP tool", () => {
     try {
       await writeFile(
         cliPath,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1","threadUrl":"https://app.example/env/child-1"}\\n\'\n',
       );
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
@@ -351,7 +351,7 @@ describe("create_nested_thread MCP tool", () => {
           },
         ),
       ).resolves.toBe(
-        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
+        '{"status":"created","threadId":"child-1","threadUrl":"https://app.example/env/child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
       );
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
@@ -398,7 +398,7 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["commit", "-m", "initial"], root);
       await writeFile(
         cliPath,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1","threadUrl":"https://app.example/env/child-1"}\\n\'\n',
       );
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
@@ -428,7 +428,7 @@ describe("create_nested_thread MCP tool", () => {
           },
         ),
       ).resolves.toBe(
-        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
+        '{"status":"created","threadId":"child-1","threadUrl":"https://app.example/env/child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
       );
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([

@@ -401,6 +401,7 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     latestUserMessageAt: thread.latestUserMessageAt,
+    latestChildNotificationAt: thread.latestChildNotificationAt ?? null,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
@@ -543,6 +544,7 @@ function sidebarThreadSummariesEqual(
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
+    left.latestChildNotificationAt === right.latestChildNotificationAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
@@ -2232,69 +2234,81 @@ function applyEnvironmentOrchestrationEvent(
       });
 
     case "thread.activity-appended":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const nextActivity = { ...event.payload.activity };
-        const tailActivity = thread.activities.at(-1);
-        let canAppendInOrder =
-          tailActivity === undefined || compareActivities(tailActivity, nextActivity) <= 0;
-        if (canAppendInOrder) {
-          let previousActivity: Thread["activities"][number] | undefined;
-          for (const activity of thread.activities) {
-            if (
-              activity.id === nextActivity.id ||
-              (previousActivity !== undefined && compareActivities(previousActivity, activity) > 0)
-            ) {
-              canAppendInOrder = false;
-              break;
-            }
-            previousActivity = activity;
-          }
-        }
-
-        let activities: Thread["activities"];
-        let evictedCurrentTurnActivity = false;
-        const activeTurnId = thread.latestTurn?.turnId;
-        let exceededActivityLimit: boolean;
-        if (canAppendInOrder) {
-          const retainedActivityStart = Math.max(
-            0,
-            thread.activities.length + 1 - MAX_THREAD_ACTIVITIES,
-          );
-          if (activeTurnId !== undefined) {
-            for (let index = 0; index < retainedActivityStart; index += 1) {
-              if (thread.activities[index]?.turnId === activeTurnId) {
-                evictedCurrentTurnActivity = true;
+    case "thread.child-lifecycle-notified":
+      return updateThreadState(
+        state,
+        event.type === "thread.activity-appended"
+          ? event.payload.threadId
+          : event.payload.parentThreadId,
+        (thread) => {
+          const nextActivity = {
+            ...(event.type === "thread.activity-appended"
+              ? event.payload.activity
+              : event.payload.notification),
+          };
+          const tailActivity = thread.activities.at(-1);
+          let canAppendInOrder =
+            tailActivity === undefined || compareActivities(tailActivity, nextActivity) <= 0;
+          if (canAppendInOrder) {
+            let previousActivity: Thread["activities"][number] | undefined;
+            for (const activity of thread.activities) {
+              if (
+                activity.id === nextActivity.id ||
+                (previousActivity !== undefined &&
+                  compareActivities(previousActivity, activity) > 0)
+              ) {
+                canAppendInOrder = false;
                 break;
               }
+              previousActivity = activity;
             }
           }
-          activities = thread.activities.slice(retainedActivityStart);
-          activities.push(nextActivity);
-          exceededActivityLimit = thread.activities.length + 1 > MAX_THREAD_ACTIVITIES;
-        } else {
-          const allActivities = [
-            ...thread.activities.filter((activity) => activity.id !== nextActivity.id),
-            nextActivity,
-          ].toSorted(compareActivities);
-          const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
-          evictedCurrentTurnActivity =
-            activeTurnId !== undefined &&
-            allActivities
-              .slice(0, retainedActivityStart)
-              .some((activity) => activity.turnId === activeTurnId);
-          activities = allActivities.slice(retainedActivityStart);
-          exceededActivityLimit = allActivities.length > MAX_THREAD_ACTIVITIES;
-        }
 
-        return {
-          ...thread,
-          activities,
-          hasMoreActivities: (thread.hasMoreActivities ?? false) || exceededActivityLimit,
-          hasMoreCurrentTurnActivities:
-            (thread.hasMoreCurrentTurnActivities ?? false) || evictedCurrentTurnActivity,
-          updatedAt: event.occurredAt,
-        };
-      });
+          let activities: Thread["activities"];
+          let evictedCurrentTurnActivity = false;
+          const activeTurnId = thread.latestTurn?.turnId;
+          let exceededActivityLimit: boolean;
+          if (canAppendInOrder) {
+            const retainedActivityStart = Math.max(
+              0,
+              thread.activities.length + 1 - MAX_THREAD_ACTIVITIES,
+            );
+            if (activeTurnId !== undefined) {
+              for (let index = 0; index < retainedActivityStart; index += 1) {
+                if (thread.activities[index]?.turnId === activeTurnId) {
+                  evictedCurrentTurnActivity = true;
+                  break;
+                }
+              }
+            }
+            activities = thread.activities.slice(retainedActivityStart);
+            activities.push(nextActivity);
+            exceededActivityLimit = thread.activities.length + 1 > MAX_THREAD_ACTIVITIES;
+          } else {
+            const allActivities = [
+              ...thread.activities.filter((activity) => activity.id !== nextActivity.id),
+              nextActivity,
+            ].toSorted(compareActivities);
+            const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
+            evictedCurrentTurnActivity =
+              activeTurnId !== undefined &&
+              allActivities
+                .slice(0, retainedActivityStart)
+                .some((activity) => activity.turnId === activeTurnId);
+            activities = allActivities.slice(retainedActivityStart);
+            exceededActivityLimit = allActivities.length > MAX_THREAD_ACTIVITIES;
+          }
+
+          return {
+            ...thread,
+            activities,
+            hasMoreActivities: (thread.hasMoreActivities ?? false) || exceededActivityLimit,
+            hasMoreCurrentTurnActivities:
+              (thread.hasMoreCurrentTurnActivities ?? false) || evictedCurrentTurnActivity,
+            updatedAt: event.occurredAt,
+          };
+        },
+      );
 
     case "thread.queued-turn-created":
       return updateThreadState(state, event.payload.threadId, (thread) => ({

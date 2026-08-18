@@ -1,10 +1,14 @@
 import {
+  CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadUrl,
+  TurnId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
@@ -17,6 +21,9 @@ import { createEmptyReadModel, projectEvent } from "./projector.ts";
 const commandId = CommandId.make("cmd-lifecycle");
 const projectId = ProjectId.make("project-lifecycle");
 const threadId = ThreadId.make("thread-lifecycle");
+const parentThreadId = ThreadId.make("parent-lifecycle");
+const childThreadId = ThreadId.make("child-lifecycle");
+const childThreadUrl = ThreadUrl.make("https://app.example/env/child-lifecycle");
 
 async function lifecycleReadModel(): Promise<OrchestrationReadModel> {
   const now = "2026-07-30T00:00:00.000Z";
@@ -54,7 +61,235 @@ async function lifecycleReadModel(): Promise<OrchestrationReadModel> {
   );
 }
 
+async function nestedLifecycleReadModel(): Promise<OrchestrationReadModel> {
+  const now = "2026-07-30T00:00:00.000Z";
+  const createThread = (
+    sequence: number,
+    id: typeof parentThreadId,
+    parentId: typeof parentThreadId | null,
+    title: string,
+  ) => ({
+    sequence,
+    eventId: EventId.make(`event-${id}`),
+    aggregateKind: "thread" as const,
+    aggregateId: id,
+    type: "thread.created" as const,
+    occurredAt: now,
+    commandId,
+    causationEventId: null,
+    correlationId: commandId,
+    metadata: {},
+    payload: {
+      threadId: id,
+      projectId,
+      parentThreadId: parentId,
+      ...(parentId !== null ? { threadUrl: childThreadUrl } : {}),
+      title,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      runtimeMode: "approval-required" as const,
+      pendingRuntimeMode: null,
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  let model = createEmptyReadModel(now);
+  model = await Effect.runPromise(
+    projectEvent(model, createThread(1, parentThreadId, null, "Parent thread")),
+  );
+  return Effect.runPromise(
+    projectEvent(model, createThread(2, childThreadId, parentThreadId, "Release assistant")),
+  );
+}
+
+function eventsOf(
+  result: ReturnType<typeof decideOrchestrationCommand> extends Effect.Effect<
+    infer A,
+    unknown,
+    unknown
+  >
+    ? A
+    : never,
+) {
+  return Array.isArray(result) ? result : [result];
+}
+
 describe("decider thread lifecycle", () => {
+  it("routes every child lifecycle notification to its parent with a canonical action", async () => {
+    const readModel = await nestedLifecycleReadModel();
+    const at = "2026-07-30T01:00:00.000Z";
+    const commands: ReadonlyArray<readonly [string, OrchestrationCommand, string]> = [
+      [
+        "started",
+        {
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-started"),
+          threadId: childThreadId,
+          threadUrl: childThreadUrl,
+          message: {
+            messageId: MessageId.make("message-started"),
+            role: "user",
+            text: "Start",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          titleSeed: "Start",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: at,
+        },
+        childThreadUrl,
+      ],
+      ...(["ready", "missing", "error"] as const).map((status, index) => {
+        const lifecycle =
+          status === "ready" ? "completed" : status === "missing" ? "blocked" : "failed";
+        return [
+          lifecycle,
+          {
+            type: "thread.turn.diff.complete",
+            commandId: CommandId.make(`cmd-${lifecycle}`),
+            threadId: childThreadId,
+            threadUrl: childThreadUrl,
+            turnId: TurnId.make(`turn-${lifecycle}`),
+            completedAt: at,
+            checkpointRef: CheckpointRef.make(`checkpoint-${lifecycle}`),
+            status,
+            files: [],
+            agentTouchedPaths: [],
+            turnFiles: [],
+            checkpointTurnCount: index + 1,
+            createdAt: at,
+          } satisfies OrchestrationCommand,
+          childThreadUrl,
+        ] as const;
+      }),
+      ...(["approval.requested", "user-input.requested"] as const).map((kind) => {
+        const lifecycle = kind === "approval.requested" ? "approval-required" : "input-required";
+        return [
+          lifecycle,
+          {
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-${lifecycle}`),
+            threadId: childThreadId,
+            threadUrl: childThreadUrl,
+            activity: {
+              id: EventId.make(`activity-${lifecycle}`),
+              tone: "approval",
+              kind,
+              summary: "Action required",
+              payload: { requestId: `request-${lifecycle}` },
+              turnId: TurnId.make(`turn-${lifecycle}`),
+              createdAt: at,
+            },
+            createdAt: at,
+          } satisfies OrchestrationCommand,
+          childThreadUrl,
+        ] as const;
+      }),
+      [
+        "pr-created",
+        {
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-pr-created"),
+          threadId: childThreadId,
+          threadUrl: childThreadUrl,
+          pullRequest: {
+            number: 42,
+            title: "Release",
+            url: "https://github.com/acme/app/pull/42",
+            baseBranch: "main",
+            headBranch: "release",
+            state: "open",
+          },
+        },
+        "https://github.com/acme/app/pull/42",
+      ],
+    ];
+
+    for (const [lifecycle, command, actionUrl] of commands) {
+      const result = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
+      const notification = eventsOf(result).find(
+        (event) => event.type === "thread.child-lifecycle-notified",
+      );
+      expect(notification).toMatchObject({
+        aggregateId: parentThreadId,
+        payload: {
+          parentThreadId,
+          childThreadId,
+          lifecycle,
+          threadUrl: childThreadUrl,
+          action: { url: actionUrl },
+          notification: {
+            payload: {
+              childThreadId,
+              lifecycle,
+              threadUrl: childThreadUrl,
+              action: { url: actionUrl },
+            },
+          },
+        },
+      });
+    }
+  });
+
+  it("deduplicates a retried semantic child lifecycle notification after replay", async () => {
+    let readModel = await nestedLifecycleReadModel();
+    const command = {
+      type: "thread.activity.append",
+      commandId: CommandId.make("cmd-approval-first"),
+      threadId: childThreadId,
+      threadUrl: childThreadUrl,
+      activity: {
+        id: EventId.make("activity-approval-first"),
+        tone: "approval",
+        kind: "approval.requested",
+        summary: "Approval required",
+        payload: { requestId: "approval-42" },
+        turnId: TurnId.make("turn-approval"),
+        createdAt: "2026-07-30T01:00:00.000Z",
+      },
+      createdAt: "2026-07-30T01:00:00.000Z",
+    } satisfies OrchestrationCommand;
+    const first = eventsOf(
+      await Effect.runPromise(decideOrchestrationCommand({ command, readModel })),
+    );
+    const persistedNotification = first.find(
+      (event) => event.type === "thread.child-lifecycle-notified",
+    );
+    expect(persistedNotification).toBeDefined();
+    readModel = await Effect.runPromise(
+      projectEvent(readModel, { ...persistedNotification!, sequence: 3 }),
+    );
+
+    const retried = eventsOf(
+      await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            ...command,
+            commandId: CommandId.make("cmd-approval-retry"),
+            activity: {
+              ...command.activity,
+              id: EventId.make("activity-approval-retry"),
+            },
+          },
+          readModel,
+        }),
+      ),
+    );
+
+    expect(
+      retried.filter((event) => event.type === "thread.child-lifecycle-notified"),
+    ).toHaveLength(0);
+  });
+
   it("propagates explicit pull request ownership transfer intent", async () => {
     const readModel = await lifecycleReadModel();
     const updated = await Effect.runPromise(

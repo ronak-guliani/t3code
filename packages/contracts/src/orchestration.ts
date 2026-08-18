@@ -14,6 +14,7 @@ import {
   ProviderItemId,
   QueuedTurnId,
   ThreadId,
+  ThreadUrl,
   TrimmedNonEmptyString,
   TrimmedString,
   TurnId,
@@ -424,6 +425,33 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const ChildThreadLifecycle = Schema.Literals([
+  "started",
+  "blocked",
+  "approval-required",
+  "input-required",
+  "failed",
+  "completed",
+  "pr-created",
+]);
+export type ChildThreadLifecycle = typeof ChildThreadLifecycle.Type;
+
+export const ChildThreadLifecycleNotification = Schema.Struct({
+  parentThreadId: ThreadId,
+  childThreadId: ThreadId,
+  childTitle: TrimmedNonEmptyString,
+  threadUrl: ThreadUrl,
+  lifecycle: ChildThreadLifecycle,
+  dedupeKey: TrimmedNonEmptyString,
+  action: Schema.Struct({
+    label: TrimmedNonEmptyString,
+    url: TrimmedNonEmptyString,
+  }),
+  notification: OrchestrationThreadActivity,
+  createdAt: IsoDateTime,
+});
+export type ChildThreadLifecycleNotification = typeof ChildThreadLifecycleNotification.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -447,6 +475,7 @@ export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+  threadUrl: Schema.optionalKey(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -525,6 +554,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+  threadUrl: Schema.optionalKey(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -545,6 +575,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  latestChildNotificationAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
@@ -625,6 +656,7 @@ const ThreadCreateCommand = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  threadUrl: Schema.optional(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -694,6 +726,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
+  threadUrl: Schema.optional(ThreadUrl),
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -777,6 +810,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
+  threadUrl: Schema.optional(ThreadUrl),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -1096,6 +1130,7 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.diff.complete"),
   commandId: CommandId,
   threadId: ThreadId,
+  threadUrl: Schema.optional(ThreadUrl),
   turnId: TurnId,
   completedAt: IsoDateTime,
   checkpointRef: CheckpointRef,
@@ -1114,6 +1149,7 @@ const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
   threadId: ThreadId,
+  threadUrl: Schema.optional(ThreadUrl),
   activity: OrchestrationThreadActivity,
   createdAt: IsoDateTime,
 });
@@ -1186,6 +1222,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.child-lifecycle-notified",
   "workflow.run-requested",
   "workflow.artifact-created",
   "workflow.node-worker-started",
@@ -1228,6 +1265,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+  threadUrl: Schema.optionalKey(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1471,6 +1509,8 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadChildLifecycleNotifiedPayload = ChildThreadLifecycleNotification;
+
 export const WorkflowRunRequestedPayload = Schema.Struct({
   run: WorkflowRun,
   definition: WorkflowDefinition,
@@ -1698,6 +1738,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-lifecycle-notified"),
+    payload: ThreadChildLifecycleNotifiedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1988,6 +2033,7 @@ export type ProjectionPendingApprovalDecision = typeof ProjectionPendingApproval
 
 export const DispatchResult = Schema.Struct({
   sequence: NonNegativeInt,
+  threadUrl: Schema.optionalKey(ThreadUrl),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 

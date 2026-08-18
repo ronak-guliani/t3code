@@ -638,6 +638,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             parentThreadId: event.payload.parentThreadId ?? null,
+            threadUrl: event.payload.threadUrl ?? null,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -660,6 +661,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             snoozedUntil: null,
             snoozedAt: null,
             latestUserMessageAt: null,
+            latestChildNotificationAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
@@ -945,6 +947,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.child-lifecycle-notified": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.parentThreadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const latestChildNotificationAt =
+            existingRow.value.latestChildNotificationAt !== null &&
+            existingRow.value.latestChildNotificationAt > event.payload.createdAt
+              ? existingRow.value.latestChildNotificationAt
+              : event.payload.createdAt;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            latestChildNotificationAt,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
         case "thread.session-set": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1168,6 +1190,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { sequence: event.payload.activity.sequence }
               : {}),
             createdAt: event.payload.activity.createdAt,
+          });
+          return;
+        case "thread.child-lifecycle-notified":
+          yield* projectionThreadActivityRepository.upsert({
+            activityId: event.payload.notification.id,
+            threadId: event.payload.parentThreadId,
+            turnId: event.payload.notification.turnId,
+            tone: event.payload.notification.tone,
+            kind: event.payload.notification.kind,
+            summary: event.payload.notification.summary,
+            payload: event.payload.notification.payload,
+            sequence: event.sequence,
+            createdAt: event.payload.notification.createdAt,
           });
           return;
 

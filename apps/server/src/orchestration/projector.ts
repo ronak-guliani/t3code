@@ -15,6 +15,7 @@ import {
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadChildLifecycleNotifiedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDecoupledPayload,
@@ -214,6 +215,38 @@ function compareThreadActivities(
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
+function appendThreadActivity(
+  thread: OrchestrationThread,
+  activity: OrchestrationThread["activities"][number],
+): Array<OrchestrationThread["activities"][number]> {
+  const tailActivity = thread.activities.at(-1);
+  let canAppendInOrder =
+    tailActivity === undefined || compareThreadActivities(tailActivity, activity) <= 0;
+  if (canAppendInOrder) {
+    let previousActivity: OrchestrationThread["activities"][number] | undefined;
+    for (const existingActivity of thread.activities) {
+      if (
+        existingActivity.id === activity.id ||
+        (previousActivity !== undefined &&
+          compareThreadActivities(previousActivity, existingActivity) > 0)
+      ) {
+        canAppendInOrder = false;
+        break;
+      }
+      previousActivity = existingActivity;
+    }
+  }
+
+  if (canAppendInOrder) {
+    const activities = thread.activities.slice(1 - MAX_THREAD_ACTIVITIES);
+    activities.push(activity);
+    return activities;
+  }
+  return [...thread.activities.filter((entry) => entry.id !== activity.id), activity]
+    .toSorted(compareThreadActivities)
+    .slice(-MAX_THREAD_ACTIVITIES);
+}
+
 export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
@@ -317,6 +350,7 @@ export function projectEvent(
             ...(payload.parentThreadId !== undefined
               ? { parentThreadId: payload.parentThreadId }
               : {}),
+            ...(payload.threadUrl !== undefined ? { threadUrl: payload.threadUrl } : {}),
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
@@ -947,42 +981,32 @@ export function projectEvent(
             return nextBase;
           }
 
-          const tailActivity = thread.activities.at(-1);
-          let canAppendInOrder =
-            tailActivity === undefined ||
-            compareThreadActivities(tailActivity, payload.activity) <= 0;
-          if (canAppendInOrder) {
-            let previousActivity: OrchestrationThread["activities"][number] | undefined;
-            for (const activity of thread.activities) {
-              if (
-                activity.id === payload.activity.id ||
-                (previousActivity !== undefined &&
-                  compareThreadActivities(previousActivity, activity) > 0)
-              ) {
-                canAppendInOrder = false;
-                break;
-              }
-              previousActivity = activity;
-            }
-          }
-
-          let activities: Array<OrchestrationThread["activities"][number]>;
-          if (canAppendInOrder) {
-            activities = thread.activities.slice(1 - MAX_THREAD_ACTIVITIES);
-            activities.push(payload.activity);
-          } else {
-            activities = [
-              ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-              payload.activity,
-            ]
-              .toSorted(compareThreadActivities)
-              .slice(-MAX_THREAD_ACTIVITIES);
-          }
-
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              activities,
+              activities: appendThreadActivity(thread, payload.activity),
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.child-lifecycle-notified":
+      return decodeForEvent(
+        ThreadChildLifecycleNotifiedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const parent = nextBase.threads.find((entry) => entry.id === payload.parentThreadId);
+          if (!parent) {
+            return nextBase;
+          }
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.parentThreadId, {
+              activities: appendThreadActivity(parent, payload.notification),
               updatedAt: event.occurredAt,
             }),
           };

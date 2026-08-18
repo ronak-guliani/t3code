@@ -191,6 +191,7 @@ export interface SidebarThreadSummary {
   worktreePath: string | null;
   pullRequest?: GitPullRequestAssociation | null;
   latestUserMessageAt: string | null;
+  latestChildNotificationAt?: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasActionableProposedPlan: boolean;

@@ -1,7 +1,7 @@
 import {
-  type EnvironmentId,
+  EnvironmentId,
   type MessageId,
-  type ThreadId,
+  ThreadId,
   type TurnDiffScope,
   type TurnId,
 } from "@t3tools/contracts";
@@ -1509,6 +1509,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { canExpandCommand = false, workEntry, workspaceRoot } = props;
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
+  const navigate = useNavigate();
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
   }
@@ -1528,6 +1529,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const CommandToggleIcon = isCommandExpanded ? ChevronDownIcon : ChevronRightIcon;
   const expandableCommand = canExpandCommand ? fullCommand : null;
+  const actionTarget =
+    workEntry.action && typeof window !== "undefined"
+      ? resolveLifecycleActionTarget(workEntry.action.url, window.location.href)
+      : null;
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1602,6 +1607,28 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
+        {workEntry.action ? (
+          <a
+            href={workEntry.action.url}
+            {...(actionTarget?.kind === "external"
+              ? { target: "_blank", rel: "noopener noreferrer" }
+              : {})}
+            onClick={(event) => {
+              if (actionTarget?.kind !== "thread") return;
+              event.preventDefault();
+              void navigate({
+                to: "/$environmentId/$threadId",
+                params: {
+                  environmentId: actionTarget.environmentId,
+                  threadId: actionTarget.threadId,
+                },
+              });
+            }}
+            className="shrink-0 text-[0.9em] font-medium text-primary hover:underline"
+          >
+            {workEntry.action.label}
+          </a>
+        ) : null}
       </div>
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">
@@ -1627,6 +1654,37 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     </div>
   );
 });
+
+function resolveLifecycleActionTarget(
+  actionUrl: string,
+  currentUrl: string,
+):
+  | { readonly kind: "external" }
+  | {
+      readonly kind: "thread";
+      readonly environmentId: EnvironmentId;
+      readonly threadId: ThreadId;
+    }
+  | null {
+  try {
+    const current = new URL(currentUrl);
+    const target = new URL(actionUrl, current);
+    if (target.origin !== current.origin) {
+      return { kind: "external" };
+    }
+    const segments = target.pathname.split("/").filter(Boolean);
+    if (segments.length !== 2) {
+      return null;
+    }
+    return {
+      kind: "thread",
+      environmentId: EnvironmentId.make(decodeURIComponent(segments[0]!)),
+      threadId: ThreadId.make(decodeURIComponent(segments[1]!)),
+    };
+  } catch {
+    return null;
+  }
+}
 
 const AgentRunRow = memo(function AgentRunRow({
   agentRun,

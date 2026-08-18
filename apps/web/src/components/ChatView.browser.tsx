@@ -533,6 +533,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     session: thread.session,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
+    latestChildNotificationAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,

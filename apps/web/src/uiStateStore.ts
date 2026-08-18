@@ -115,6 +115,7 @@ export interface SyncThreadInput {
   key: string;
   seedVisitedAt?: string | undefined;
   latestTurnCompletedAt?: string | null | undefined;
+  latestChildNotificationAt?: string | null | undefined;
 }
 
 const initialState: UiState = {
@@ -609,23 +610,32 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
   for (const thread of threads) {
     const existingVisitedAt = nextThreadLastVisitedAtById[thread.key];
     if (existingVisitedAt !== undefined) {
-      const latestTurnCompletedAt = thread.latestTurnCompletedAt;
-      if (existingVisitedAt === thread.seedVisitedAt && latestTurnCompletedAt) {
+      const latestNotificationAt = [thread.latestTurnCompletedAt, thread.latestChildNotificationAt]
+        .filter((value): value is string => Boolean(value))
+        .reduce<string | undefined>((latest, value) => {
+          if (latest === undefined) return value;
+          return Date.parse(value) > Date.parse(latest) ? value : latest;
+        }, undefined);
+      if (existingVisitedAt === thread.seedVisitedAt && latestNotificationAt) {
         const existingVisitedAtMs = Date.parse(existingVisitedAt);
-        const latestTurnCompletedAtMs = Date.parse(latestTurnCompletedAt);
+        const latestNotificationAtMs = Date.parse(latestNotificationAt);
         if (
           Number.isFinite(existingVisitedAtMs) &&
-          Number.isFinite(latestTurnCompletedAtMs) &&
-          latestTurnCompletedAtMs > existingVisitedAtMs
+          Number.isFinite(latestNotificationAtMs) &&
+          latestNotificationAtMs > existingVisitedAtMs
         ) {
-          nextThreadLastVisitedAtById[thread.key] = latestTurnCompletedAt;
+          nextThreadLastVisitedAtById[thread.key] = latestNotificationAt;
         }
       }
       continue;
     }
     let seedVisitedAt: string | undefined;
     let seedVisitedAtMs = Number.NEGATIVE_INFINITY;
-    for (const candidate of [thread.seedVisitedAt, thread.latestTurnCompletedAt]) {
+    for (const candidate of [
+      thread.seedVisitedAt,
+      thread.latestTurnCompletedAt,
+      thread.latestChildNotificationAt,
+    ]) {
       if (!candidate) {
         continue;
       }

@@ -76,7 +76,8 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready";
+    | "Plan Ready"
+    | "Child update";
   readonly colorClass: string;
   readonly dotClass: string;
   readonly pulse: boolean;
@@ -126,6 +127,13 @@ const THREAD_STATUSES = {
     pulse: false,
     presentation: "corner-badge",
   },
+  childUpdate: {
+    label: "Child update",
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: false,
+    presentation: "corner-badge",
+  },
 } as const satisfies Record<string, ThreadStatusPill>;
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
@@ -135,6 +143,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Connecting: 3,
   "Plan Ready": 2,
   Completed: 1,
+  "Child update": 1,
 };
 
 type ThreadStatusInput = Pick<
@@ -144,6 +153,7 @@ type ThreadStatusInput = Pick<
   | "hasPendingUserInput"
   | "hasPendingQueuedTurn"
   | "interactionMode"
+  | "latestChildNotificationAt"
   | "latestTurn"
   | "session"
   | "virtualAgentRun"
@@ -234,19 +244,36 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(
-  thread: Pick<SidebarThreadSummary, "latestTurn"> & {
-    lastVisitedAt?: string | null | undefined;
-  },
-): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
+export function hasUnseenCompletion(thread: {
+  latestTurn: SidebarThreadSummary["latestTurn"];
+  latestChildNotificationAt?: string | null | undefined;
+  lastVisitedAt?: string | null | undefined;
+}): boolean {
+  const latestNotificationAt = [thread.latestTurn?.completedAt, thread.latestChildNotificationAt]
+    .filter((value): value is string => Boolean(value))
+    .reduce<number | null>((latest, value) => {
+      const timestamp = Date.parse(value);
+      if (Number.isNaN(timestamp)) return latest;
+      return latest === null ? timestamp : Math.max(latest, timestamp);
+    }, null);
+  if (latestNotificationAt === null) return false;
   if (!thread.lastVisitedAt) return true;
 
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  return latestNotificationAt > lastVisitedAt;
+}
+
+function hasUnseenChildNotification(thread: {
+  latestChildNotificationAt?: string | null | undefined;
+  lastVisitedAt?: string | null | undefined;
+}): boolean {
+  if (!thread.latestChildNotificationAt) return false;
+  const notificationAt = Date.parse(thread.latestChildNotificationAt);
+  if (Number.isNaN(notificationAt)) return false;
+  if (!thread.lastVisitedAt) return true;
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  return Number.isNaN(lastVisitedAt) || notificationAt > lastVisitedAt;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -490,7 +517,22 @@ export function resolveThreadStatusPill(input: {
     return THREAD_STATUSES.planReady;
   }
 
-  if (hasUnseenCompletion({ latestTurn: thread.latestTurn, lastVisitedAt: input.lastVisitedAt })) {
+  if (
+    hasUnseenChildNotification({
+      latestChildNotificationAt: thread.latestChildNotificationAt,
+      lastVisitedAt: input.lastVisitedAt,
+    })
+  ) {
+    return THREAD_STATUSES.childUpdate;
+  }
+
+  if (
+    hasUnseenCompletion({
+      latestTurn: thread.latestTurn,
+      latestChildNotificationAt: thread.latestChildNotificationAt,
+      lastVisitedAt: input.lastVisitedAt,
+    })
+  ) {
     return THREAD_STATUSES.completed;
   }
 

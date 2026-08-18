@@ -90,6 +90,7 @@ import {
 import {
   selectExistingThreadKeys,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectWorkflowRunsForParentThread,
   useStore,
 } from "../store";
@@ -845,12 +846,20 @@ function ChatViewBody(
       [routeKind, routeThreadRef],
     ),
   );
+  const serverThreadSummary = useStore(
+    useMemo(
+      () => (state) =>
+        selectSidebarThreadSummaryByRef(state, routeKind === "server" ? routeThreadRef : null),
+      [routeKind, routeThreadRef],
+    ),
+  );
   const chatTimelineSectionRef = useRef<ChatTimelineSectionHandle | null>(null);
   const setStoreThreadError = useStore((store) => store.setError);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
   );
+  const latestChildNotificationAt = serverThreadSummary?.latestChildNotificationAt;
   const settings = useSettings();
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
@@ -1311,6 +1320,19 @@ function ChatViewBody(
     serverThread?.environmentId,
     serverThread?.id,
   ]);
+
+  useEffect(() => {
+    if (!serverThread || !latestChildNotificationAt) return;
+    const notificationAt = Date.parse(latestChildNotificationAt);
+    if (Number.isNaN(notificationAt)) return;
+    const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
+    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= notificationAt) return;
+
+    markThreadVisited(
+      scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
+      latestChildNotificationAt,
+    );
+  }, [activeThreadLastVisitedAt, latestChildNotificationAt, markThreadVisited, serverThread]);
 
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =

@@ -35,6 +35,10 @@ const DONE_BADGE_ICON = (
   </span>
 );
 
+const CHILD_UPDATE_BADGE_ICON = (
+  <span className="inline-flex size-1.5 shrink-0 rounded-full bg-sky-500 dark:bg-sky-400" />
+);
+
 /**
  * Self-ticking elapsed label shared by sidebar v1 badges and v2 status rows.
  * Only this span re-renders each second — not the parent row.
@@ -238,6 +242,12 @@ const CORNER_BADGE_SPECS: Record<ThreadStatusPill["label"], CornerBadgeSpec | nu
     text: "Done",
     icon: DONE_BADGE_ICON,
     toneClass: "text-emerald-500 dark:text-emerald-400",
+    showElapsed: false,
+  },
+  "Child update": {
+    text: "Child update",
+    icon: CHILD_UPDATE_BADGE_ICON,
+    toneClass: "text-sky-500 dark:text-sky-400",
     showElapsed: false,
   },
   Connecting: null,

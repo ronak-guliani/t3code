@@ -7,6 +7,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  ThreadUrl,
   TurnId,
 } from "@t3tools/contracts";
 import type { OrchestrationThread } from "@t3tools/contracts";
@@ -496,6 +497,64 @@ describe("applyThreadDetailEvent", () => {
           "approval-resolved",
         ]);
         expect(resolved.thread.activityContext).toEqual([]);
+      }
+    });
+  });
+
+  describe("thread.child-lifecycle-notified", () => {
+    it("restores the parent activity on reconnect without duplicating a replayed event", () => {
+      const event = {
+        ...baseEventFields,
+        eventId: EventId.make("event-child-completed"),
+        sequence: 13,
+        occurredAt: "2026-04-01T12:00:00.000Z",
+        aggregateKind: "thread" as const,
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.child-lifecycle-notified" as const,
+        payload: {
+          parentThreadId: ThreadId.make("thread-1"),
+          childThreadId: ThreadId.make("thread-2"),
+          childTitle: "Release assistant",
+          threadUrl: ThreadUrl.make("https://app.example/env/thread-2"),
+          lifecycle: "completed" as const,
+          dedupeKey: "child:thread-2:completed:turn-2",
+          action: {
+            label: "View result",
+            url: "https://app.example/env/thread-2",
+          },
+          notification: {
+            id: EventId.make("event-child-completed"),
+            tone: "info" as const,
+            kind: "child.lifecycle.completed",
+            summary: "Release assistant completed",
+            payload: {
+              childThreadId: ThreadId.make("thread-2"),
+              lifecycle: "completed",
+              action: {
+                label: "View result",
+                url: "https://app.example/env/thread-2",
+              },
+            },
+            turnId: null,
+            createdAt: "2026-04-01T12:00:00.000Z",
+          },
+          createdAt: "2026-04-01T12:00:00.000Z",
+        },
+      };
+
+      const restored = applyThreadDetailEvent(baseThread, event);
+      expect(restored.kind).toBe("updated");
+      if (restored.kind !== "updated") return;
+      expect(restored.thread.activities).toHaveLength(1);
+      expect(restored.thread.activities[0]).toMatchObject({
+        kind: "child.lifecycle.completed",
+        summary: "Release assistant completed",
+      });
+
+      const replayed = applyThreadDetailEvent(restored.thread, event);
+      expect(replayed.kind).toBe("updated");
+      if (replayed.kind === "updated") {
+        expect(replayed.thread.activities).toHaveLength(1);
       }
     });
   });

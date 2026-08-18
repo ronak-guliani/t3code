@@ -525,6 +525,23 @@ describe("uiStateStore pure functions", () => {
     });
   });
 
+  it("syncThreads seeds a missing visit through a durable child notification on restart", () => {
+    const thread1 = ThreadId.make("thread-1");
+    const initialState = makeUiState();
+
+    const next = syncThreads(initialState, [
+      {
+        key: thread1,
+        seedVisitedAt: "2026-02-25T12:30:00.000Z",
+        latestChildNotificationAt: "2026-02-25T12:36:00.000Z",
+      },
+    ]);
+
+    expect(next.threadLastVisitedAtById).toEqual({
+      [thread1]: "2026-02-25T12:36:00.000Z",
+    });
+  });
+
   it("syncThreads repairs a persisted legacy seed that predates the latest completion", () => {
     const thread1 = ThreadId.make("thread-1");
     const legacySeed = "2026-02-25T12:30:00.000Z";

@@ -523,6 +523,7 @@ interface IsolatedWorkspaceSpec {
 interface NestedThreadCreationOutcome {
   readonly status: "created" | "failed" | "ambiguous";
   readonly threadId: string | null;
+  readonly threadUrl: string | null;
   readonly retryable: boolean;
   readonly creationCommitted: boolean | null;
   readonly cleanupPerformed: boolean;
@@ -858,11 +859,16 @@ async function createNestedThreadToolImpl(
     }
     throw creationError;
   }
-  const resultBody = JSON.parse(result.stdout.trim()) as { readonly threadId?: unknown };
+  const resultBody = JSON.parse(result.stdout.trim()) as {
+    readonly threadId?: unknown;
+    readonly threadUrl?: unknown;
+  };
   const threadId = typeof resultBody.threadId === "string" ? resultBody.threadId : null;
+  const threadUrl = typeof resultBody.threadUrl === "string" ? resultBody.threadUrl : null;
   return JSON.stringify({
     status: "created",
     threadId,
+    threadUrl,
     retryable: false,
     creationCommitted: true,
     cleanupPerformed: false,
@@ -891,6 +897,7 @@ async function createNestedThreadTool(
       JSON.stringify({
         status: definitiveRejection ? "failed" : "ambiguous",
         threadId: null,
+        threadUrl: null,
         retryable: error instanceof WorkspacePreflightError,
         creationCommitted: definitiveRejection ? false : null,
         cleanupPerformed: safeCleanupPerformed,
@@ -1086,7 +1093,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. Returns a structured outcome with status, threadId, retryable, creationCommitted, and cleanupPerformed. When the child needs an isolated checkout, pass workspace here so T3 preflights branch/path collisions, then creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Create and start a helper thread nested under the current T3 thread. Returns a structured outcome with status, threadId, threadUrl, retryable, creationCommitted, and cleanupPerformed. When the child needs an isolated checkout, pass workspace here so T3 preflights branch/path collisions, then creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: {

@@ -523,11 +523,16 @@ export function applyThreadDetailEvent(
     }
 
     // ── Activities ──────────────────────────────────────────────────
-    case "thread.activity-appended": {
+    case "thread.activity-appended":
+    case "thread.child-lifecycle-notified": {
+      const activity =
+        event.type === "thread.activity-appended"
+          ? event.payload.activity
+          : event.payload.notification;
       const activities = pipe(
         thread.activities,
-        Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.filter((entry) => entry.id !== activity.id),
+        Arr.append(activity),
         Arr.sort(activityOrder),
       );
 

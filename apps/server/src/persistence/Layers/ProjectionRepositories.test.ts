@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import { ProjectId, ThreadId, ThreadUrl, ProviderInstanceId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -75,6 +75,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
       yield* threads.upsert({
         threadId: ThreadId.make("thread-null-options"),
         projectId: ProjectId.make("project-null-options"),
+        threadUrl: ThreadUrl.make("https://app.example/environment/thread-null-options"),
         title: "Null options thread",
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -95,6 +96,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         snoozedUntil: null,
         snoozedAt: null,
         latestUserMessageAt: null,
+        latestChildNotificationAt: "2026-03-24T00:05:00.000Z",
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,
         hasActionableProposedPlan: 0,
@@ -128,6 +130,14 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         instanceId: ProviderInstanceId.make("claudeAgent"),
         model: "claude-opus-4-6",
       });
+      assert.strictEqual(
+        Option.getOrNull(persisted)?.threadUrl,
+        "https://app.example/environment/thread-null-options",
+      );
+      assert.strictEqual(
+        Option.getOrNull(persisted)?.latestChildNotificationAt,
+        "2026-03-24T00:05:00.000Z",
+      );
     }),
   );
 });

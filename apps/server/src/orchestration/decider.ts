@@ -1,9 +1,13 @@
 // @ts-nocheck
 import type {
+  ChildThreadLifecycle,
   MessageId,
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
+  OrchestrationThread,
+  ThreadId,
+  ThreadUrl,
   TurnId,
 } from "@t3tools/contracts";
 import { Effect, Option } from "effect";
@@ -76,6 +80,131 @@ type PlannedOrchestrationEvent = Omit<OrchestrationEvent, "sequence">;
 type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
+
+const CHILD_LIFECYCLE_PRESENTATION: Record<
+  ChildThreadLifecycle,
+  {
+    readonly summarySuffix: string;
+    readonly actionLabel: string;
+    readonly tone: "info" | "approval" | "error";
+  }
+> = {
+  started: { summarySuffix: "started", actionLabel: "View child", tone: "info" },
+  blocked: { summarySuffix: "is blocked", actionLabel: "Review child", tone: "error" },
+  "approval-required": {
+    summarySuffix: "needs approval",
+    actionLabel: "Review approval",
+    tone: "approval",
+  },
+  "input-required": {
+    summarySuffix: "needs input",
+    actionLabel: "Provide input",
+    tone: "approval",
+  },
+  failed: { summarySuffix: "failed", actionLabel: "Review failure", tone: "error" },
+  completed: { summarySuffix: "completed", actionLabel: "View result", tone: "info" },
+  "pr-created": {
+    summarySuffix: "created a pull request",
+    actionLabel: "Open pull request",
+    tone: "info",
+  },
+};
+
+function childLifecycleDedupeKey(
+  childThreadId: ThreadId,
+  lifecycle: ChildThreadLifecycle,
+  sourceKey: string,
+): string {
+  return `child:${childThreadId}:${lifecycle}:${sourceKey}`;
+}
+
+function readActivityDedupeKey(activity: OrchestrationThread["activities"][number]): string | null {
+  if (typeof activity.payload !== "object" || activity.payload === null) {
+    return null;
+  }
+  const dedupeKey = (activity.payload as Record<string, unknown>).dedupeKey;
+  return typeof dedupeKey === "string" ? dedupeKey : null;
+}
+
+function appendChildLifecycleNotification(input: {
+  readonly readModel: OrchestrationReadModel;
+  readonly childThread: OrchestrationThread;
+  readonly threadUrl: ThreadUrl | undefined;
+  readonly sourceEvents: ReadonlyArray<PlannedOrchestrationEvent>;
+  readonly sourceEvent: PlannedOrchestrationEvent;
+  readonly lifecycle: ChildThreadLifecycle;
+  readonly sourceKey: string;
+  readonly createdAt: string;
+  readonly actionUrl?: string;
+}): DecideOrchestrationCommandResult {
+  const sourceResult =
+    input.sourceEvents.length === 1 ? input.sourceEvents[0]! : input.sourceEvents;
+  const parentThreadId = input.childThread.parentThreadId;
+  if (parentThreadId === null || parentThreadId === undefined || input.threadUrl === undefined) {
+    return sourceResult;
+  }
+  const parentThread = input.readModel.threads.find(
+    (thread) => thread.id === parentThreadId && thread.deletedAt === null,
+  );
+  if (!parentThread) {
+    return sourceResult;
+  }
+
+  const dedupeKey = childLifecycleDedupeKey(input.childThread.id, input.lifecycle, input.sourceKey);
+  if (parentThread.activities.some((activity) => readActivityDedupeKey(activity) === dedupeKey)) {
+    return sourceResult;
+  }
+
+  const presentation = CHILD_LIFECYCLE_PRESENTATION[input.lifecycle];
+  const eventBase = withEventBase({
+    aggregateKind: "thread",
+    aggregateId: parentThreadId,
+    occurredAt: input.createdAt,
+    commandId: input.sourceEvent.commandId!,
+  });
+  const notification = {
+    id: eventBase.eventId,
+    tone: presentation.tone,
+    kind: `child.lifecycle.${input.lifecycle}`,
+    summary: `${input.childThread.title} ${presentation.summarySuffix}`,
+    payload: {
+      parentThreadId,
+      childThreadId: input.childThread.id,
+      childTitle: input.childThread.title,
+      threadUrl: input.threadUrl,
+      lifecycle: input.lifecycle,
+      dedupeKey,
+      action: {
+        label: presentation.actionLabel,
+        url: input.actionUrl ?? input.threadUrl,
+      },
+    },
+    turnId: null,
+    createdAt: input.createdAt,
+  } as const;
+  return [
+    ...input.sourceEvents,
+    {
+      ...eventBase,
+      causationEventId: input.sourceEvent.eventId,
+      type: "thread.child-lifecycle-notified",
+      payload: {
+        parentThreadId,
+        childThreadId: input.childThread.id,
+        childTitle: input.childThread.title,
+        threadUrl: input.threadUrl,
+        lifecycle: input.lifecycle,
+        dedupeKey,
+        action: {
+          label: presentation.actionLabel,
+          url: input.actionUrl ?? input.threadUrl,
+        },
+        notification,
+        createdAt: input.createdAt,
+      },
+    },
+  ];
+}
 
 const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwner")(function* (
   readModel: OrchestrationReadModel,
@@ -447,6 +576,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           parentThreadId: command.parentThreadId ?? null,
+          ...(command.threadUrl !== undefined ? { threadUrl: command.threadUrl } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -798,7 +928,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.meta.update": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -827,7 +957,23 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: occurredAt,
         },
       };
-      return metaUpdatedEvent;
+      const isNewPullRequest =
+        command.pullRequest !== undefined &&
+        command.pullRequest !== null &&
+        command.pullRequest.url !== thread.pullRequest?.url;
+      return isNewPullRequest
+        ? appendChildLifecycleNotification({
+            readModel,
+            childThread: thread,
+            threadUrl: command.threadUrl ?? thread.threadUrl,
+            sourceEvents: [metaUpdatedEvent],
+            sourceEvent: metaUpdatedEvent,
+            lifecycle: "pr-created",
+            sourceKey: command.pullRequest.url,
+            createdAt: occurredAt,
+            actionUrl: command.pullRequest.url,
+          })
+        : metaUpdatedEvent;
     }
 
     case "thread.decouple": {
@@ -1132,7 +1278,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      return [userMessageEvent, turnStartRequestedEvent, ...lifecycleEvents];
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: targetThread,
+        threadUrl: command.threadUrl ?? targetThread.threadUrl,
+        sourceEvents: [userMessageEvent, turnStartRequestedEvent, ...lifecycleEvents],
+        sourceEvent: turnStartRequestedEvent,
+        lifecycle: "started",
+        sourceKey: command.message.messageId,
+        createdAt: command.createdAt,
+      });
     }
 
     case "thread.queued-turn.create": {
@@ -1613,12 +1768,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.diff.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const turnDiffCompletedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1639,6 +1794,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           completedAt: command.completedAt,
         },
       };
+      const lifecycle =
+        command.status === "ready"
+          ? "completed"
+          : command.status === "error"
+            ? "failed"
+            : command.status === "missing"
+              ? "blocked"
+              : null;
+      return lifecycle === null
+        ? turnDiffCompletedEvent
+        : appendChildLifecycleNotification({
+            readModel,
+            childThread: thread,
+            threadUrl: command.threadUrl ?? thread.threadUrl,
+            sourceEvents: [turnDiffCompletedEvent],
+            sourceEvent: turnDiffCompletedEvent,
+            lifecycle,
+            sourceKey: command.turnId,
+            createdAt: command.completedAt,
+          });
     }
 
     case "thread.revert.complete": {
@@ -1690,15 +1865,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           activity: command.activity,
         },
       };
+      const sourceEvents: PlannedOrchestrationEvent[] = [activityEvent];
       if (
-        !SETTLEMENT_WAKING_ACTIVITY_KINDS.has(command.activity.kind) ||
-        !threadHasSettlementOverride(thread)
+        SETTLEMENT_WAKING_ACTIVITY_KINDS.has(command.activity.kind) &&
+        threadHasSettlementOverride(thread)
       ) {
-        return activityEvent;
-      }
-      return [
-        activityEvent,
-        {
+        sourceEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
             aggregateId: command.threadId,
@@ -1711,8 +1883,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             reason: "activity",
             updatedAt: command.createdAt,
           },
-        },
-      ];
+        });
+      }
+
+      const lifecycle =
+        command.activity.kind === "approval.requested"
+          ? "approval-required"
+          : command.activity.kind === "user-input.requested"
+            ? "input-required"
+            : command.activity.kind === "provider.turn.start.failed"
+              ? "failed"
+              : null;
+      if (lifecycle === null) {
+        return sourceEvents;
+      }
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: thread,
+        threadUrl: command.threadUrl ?? thread.threadUrl,
+        sourceEvents,
+        sourceEvent: activityEvent,
+        lifecycle,
+        sourceKey:
+          requestId ?? command.activity.turnId ?? thread.latestTurn?.turnId ?? command.activity.id,
+        createdAt: command.createdAt,
+      });
     }
 
     case "workflow.run.request": {

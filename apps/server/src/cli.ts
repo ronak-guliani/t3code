@@ -1814,7 +1814,7 @@ const chatCreateCommand = Command.make("create", {
           worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
           createdAt: new Date().toISOString(),
         });
-        yield* printJson({ threadId, result });
+        yield* printJson({ threadId, threadUrl: result.threadUrl, result });
       }),
     ),
   ),
@@ -2265,7 +2265,12 @@ const chatNewCommand = Command.make("new", {
           return yield* Effect.failCause(turnExit.cause);
         }
         const turnResult = turnExit.value;
-        yield* printJson({ threadId, createResult, turnResult });
+        yield* printJson({
+          threadId,
+          threadUrl: createResult.threadUrl,
+          createResult,
+          turnResult,
+        });
       }),
     ).pipe(
       Effect.catchCause((cause) =>
