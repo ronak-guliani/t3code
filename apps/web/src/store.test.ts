@@ -2166,6 +2166,41 @@ describe("activity append ordering", () => {
       EventId.make("activity-completed"),
     ]);
   });
+
+  it("sorts an unsorted restored window before appending a later activity", () => {
+    const later = activityAppendedEvent({
+      sequence: 2,
+      id: "activity-later",
+      kind: "step",
+      turnId: "turn-1",
+      createdAt: "2026-08-17T12:00:02.000Z",
+    }).payload.activity;
+    const earlier = activityAppendedEvent({
+      sequence: 1,
+      id: "activity-earlier",
+      kind: "step",
+      turnId: "turn-1",
+      createdAt: "2026-08-17T12:00:01.000Z",
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [later, earlier] })),
+      activityAppendedEvent({
+        sequence: 3,
+        id: "activity-new-tail",
+        kind: "step",
+        turnId: "turn-1",
+        createdAt: "2026-08-17T12:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      EventId.make("activity-earlier"),
+      EventId.make("activity-later"),
+      EventId.make("activity-new-tail"),
+    ]);
+  });
 });
 
 describe("activity pagination state", () => {
