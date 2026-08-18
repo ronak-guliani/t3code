@@ -10,6 +10,9 @@ import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth
 
 const stateStorageKey = "t3code-connect-cli-auth-state";
 
+export const connectCliAuthStorageError =
+  "Your browser blocked session storage. Enable it for this site, then retry the connect request.";
+
 function trimNonEmpty(value: string | undefined): string | null {
   return value?.trim() || null;
 }
@@ -62,8 +65,8 @@ export function prepareConnectCliSignIn(
 ): {
   readonly forceRedirectUrl: string;
   readonly signUpForceRedirectUrl: string;
-} {
-  rememberConnectCliAuthState(request.state);
+} | null {
+  if (!storeConnectCliCallbackState(request)) return null;
   const redirectUrl = connectCliSignInRedirectUrl(request, fallbackUrl);
   return {
     forceRedirectUrl: redirectUrl,
@@ -71,11 +74,17 @@ export function prepareConnectCliSignIn(
   };
 }
 
-export function rememberConnectCliAuthState(state: string): void {
+export function storeConnectCliCallbackState(request: ConnectAuthorizeRequest): boolean {
+  const stored = rememberConnectCliAuthState(request.state);
+  return request.loopbackPort !== undefined || stored;
+}
+
+export function rememberConnectCliAuthState(state: string): boolean {
   try {
     window.sessionStorage.setItem(stateStorageKey, state);
+    return true;
   } catch {
-    // The callback will reject if storage is unavailable.
+    return false;
   }
 }
 

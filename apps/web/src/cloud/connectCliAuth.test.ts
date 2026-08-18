@@ -5,6 +5,7 @@ import {
   connectCliSignInRedirectUrl,
   isConnectCliAuthEnabled,
   prepareConnectCliSignIn,
+  storeConnectCliCallbackState,
 } from "./connectCliAuth";
 
 const TEST_PUBLISHABLE_KEY = `pk_test_${btoa("clerk.example.test$")}`;
@@ -72,8 +73,49 @@ describe("connectCliAuth", () => {
     );
 
     expect(stored.get("t3code-connect-cli-auth-state")).toBe("state-1");
+    expect(props).not.toBeNull();
+    if (!props) throw new Error("expected sign-in properties");
     expect(props.forceRedirectUrl).toBe(props.signUpForceRedirectUrl);
     expect(new URL(props.forceRedirectUrl).searchParams.get("state")).toBe("state-1");
+  });
+
+  it("blocks headless callbacks when state cannot be stored", () => {
+    vi.stubEnv("VITE_CLERK_PUBLISHABLE_KEY", TEST_PUBLISHABLE_KEY);
+    vi.stubEnv("VITE_CLERK_CLI_OAUTH_CLIENT_ID", "oauth-client");
+    vi.stubGlobal("window", {
+      sessionStorage: {
+        setItem: () => {
+          throw new Error("storage disabled");
+        },
+      },
+    });
+
+    const headlessRequest = {
+      state: "state-1",
+      challenge: "challenge-1",
+    } as const;
+    expect(
+      prepareConnectCliSignIn(headlessRequest, "https://hosted.example.test/connect"),
+    ).toBeNull();
+    expect(storeConnectCliCallbackState(headlessRequest)).toBe(false);
+  });
+
+  it("allows loopback callbacks when state cannot be stored", () => {
+    vi.stubGlobal("window", {
+      sessionStorage: {
+        setItem: () => {
+          throw new Error("storage disabled");
+        },
+      },
+    });
+
+    expect(
+      storeConnectCliCallbackState({
+        state: "state-1",
+        challenge: "challenge-1",
+        loopbackPort: 34338,
+      }),
+    ).toBe(true);
   });
 
   it("enables Clerk only on the configured hosted origin", () => {

@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   buildConnectCliAuthorizeUrl,
+  connectCliAuthStorageError,
   prepareConnectCliSignIn,
   readConnectCliAuthState,
-  rememberConnectCliAuthState,
+  storeConnectCliCallbackState,
 } from "../cloud/connectCliAuth";
 
 export function ConnectCliAuthorizeSurface() {
@@ -19,7 +20,12 @@ export function ConnectCliAuthorizeSurface() {
 
   const openSignIn = useCallback(() => {
     if (!request) return;
-    clerk.openSignIn(prepareConnectCliSignIn(request, window.location.href));
+    const signIn = prepareConnectCliSignIn(request, window.location.href);
+    if (!signIn) {
+      setError(connectCliAuthStorageError);
+      return;
+    }
+    clerk.openSignIn(signIn);
   }, [clerk, request]);
 
   useEffect(() => {
@@ -36,8 +42,11 @@ export function ConnectCliAuthorizeSurface() {
       setError("T3 Connect authorization is not configured for this hosted app.");
       return;
     }
+    if (!storeConnectCliCallbackState(request)) {
+      setError(connectCliAuthStorageError);
+      return;
+    }
     redirecting.current = true;
-    rememberConnectCliAuthState(request.state);
     window.location.assign(url);
   }, [isLoaded, isSignedIn, openSignIn, request]);
 
