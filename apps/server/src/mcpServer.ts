@@ -601,14 +601,28 @@ async function findExistingAncestor(targetPath: string): Promise<string> {
   }
 }
 
-async function findContainingGitRoot(targetPath: string): Promise<string | null> {
+async function findContainingGitRoot(
+  targetPath: string,
+): Promise<{ readonly path: string; readonly bare: boolean } | null> {
   let cursor = await findExistingAncestor(targetPath);
   while (true) {
     try {
       await fs.lstat(path.join(cursor, ".git"));
-      return cursor;
+      return { path: cursor, bare: false };
     } catch (error) {
       if (!isMissingPathError(error)) throw error;
+      const bareMarkers = await Promise.all(
+        ["HEAD", "config", "objects", "refs"].map(async (marker) => {
+          try {
+            await fs.lstat(path.join(cursor, marker));
+            return true;
+          } catch (markerError) {
+            if (isMissingPathError(markerError)) return false;
+            throw markerError;
+          }
+        }),
+      );
+      if (bareMarkers.every(Boolean)) return { path: cursor, bare: true };
       const parent = path.dirname(cursor);
       if (parent === cursor) return null;
       cursor = parent;
@@ -620,23 +634,29 @@ async function findContainingGitCommonDir(targetPath: string): Promise<string | 
   const gitRoot = await findContainingGitRoot(targetPath);
   if (gitRoot === null) return null;
   const result = JSON.parse(
-    await spawnCommand(gitRoot, "git", ["rev-parse", "--git-common-dir"]),
+    await spawnCommand(
+      gitRoot.path,
+      "git",
+      gitRoot.bare
+        ? ["--git-dir=.", "rev-parse", "--git-common-dir"]
+        : ["rev-parse", "--git-common-dir"],
+    ),
   ) as TerminalResult;
   if (result.code !== 0) {
     throw new WorkspaceConflictError(
       "WORKSPACE_PREFLIGHT_FAILED",
-      `Git repository ownership inspection failed for '${gitRoot}'. Resolve the repository error before retrying: ${result.stderr.trim() || `exit ${String(result.code)}`}`,
+      `Git repository ownership inspection failed for '${gitRoot.path}'. Resolve the repository error before retrying: ${result.stderr.trim() || `exit ${String(result.code)}`}`,
     );
   }
   const commonDir = result.stdout.trim();
   if (!commonDir) {
     throw new WorkspaceConflictError(
       "WORKSPACE_PREFLIGHT_FAILED",
-      `Git repository ownership inspection returned no common directory for '${gitRoot}'. Repair the repository before retrying.`,
+      `Git repository ownership inspection returned no common directory for '${gitRoot.path}'. Repair the repository before retrying.`,
     );
   }
   return await fs.realpath(
-    path.isAbsolute(commonDir) ? commonDir : path.resolve(gitRoot, commonDir),
+    path.isAbsolute(commonDir) ? commonDir : path.resolve(gitRoot.path, commonDir),
   );
 }
 
@@ -688,7 +708,11 @@ async function cleanupNestedWorkspace(
   }
 
   const afterWorktreeRemoval = await inspectWorkspaceSideEffects(options.cwd, workspace);
-  if (afterWorktreeRemoval.branchCreated && !afterWorktreeRemoval.worktreeRegistered) {
+  if (
+    afterWorktreeRemoval.branchCreated &&
+    !afterWorktreeRemoval.pathCreated &&
+    !afterWorktreeRemoval.worktreeRegistered
+  ) {
     try {
       await runCommand(options.cwd, "git", ["branch", "--delete", "--force", workspace.branch]);
     } catch (error) {
@@ -1707,6 +1731,7 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
 export const __testing = {
   associatePullRequestTool,
   availableTools,
+  cleanupNestedWorkspace,
   createIsolatedWorkspaceTool,
   createNestedThreadTool,
   sendToThreadTool,

@@ -1174,6 +1174,54 @@ describe("create_nested_thread MCP tool", () => {
     }
   });
 
+  it("rejects a child path inside a bare repository", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-bare-source-"));
+    const bare = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-bare-owner-"));
+    const targetPath = path.join(bare, "nested", "child-worktree");
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await run("git", ["init", "--bare"], bare);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Bare owner",
+            prompt: "Reject it.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/bare-owner",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        errorCode: "WORKSPACE_REPOSITORY_MISMATCH",
+        message: expect.stringContaining("different Git repository"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(bare, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when repository ownership inspection fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-inspection-source-"));
     const broken = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-inspection-broken-"));
@@ -1352,6 +1400,39 @@ describe("create_nested_thread MCP tool", () => {
         message: expect.stringContaining("simulated cleanup failure"),
       });
       await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the branch when cleanup finds an unregistered path", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-preserved-cleanup-"));
+    const targetPath = `${root}-child-worktree`;
+    const branch = "feature/preserved-cleanup";
+
+    try {
+      await initGitRepository(root);
+      await run("git", ["worktree", "add", "-b", branch, targetPath], root);
+      await run("git", ["worktree", "remove", "--force", targetPath], root);
+      await mkdir(targetPath);
+
+      await expect(
+        __testing.cleanupNestedWorkspace(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: "t3",
+          },
+          { branch, path: targetPath, baseRef: "main" },
+        ),
+      ).rejects.toThrow("exists without a matching Git worktree registration and was preserved");
+
+      await expect(
+        run("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], root),
+      ).resolves.toBeUndefined();
+      await expect(readFile(targetPath, "utf8")).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
