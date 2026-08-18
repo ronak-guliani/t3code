@@ -1,5 +1,4 @@
 import { assert, describe, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -71,7 +70,7 @@ function mockSpawnerLayer(
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
-  platform: NodeJS.Platform = "linux",
+  platform: NodeJS.Platform = process.platform,
 ) {
   return Layer.mergeAll(
     Layer.succeed(HostProcessPlatform, platform),
