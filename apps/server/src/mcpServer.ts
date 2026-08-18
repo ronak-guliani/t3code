@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createInterface } from "node:readline";
 import * as fs from "node:fs/promises";
@@ -1148,6 +1148,12 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
 
 function availableTools(toolsets: ReadonlySet<string>): ReadonlyArray<McpTool> {
   return ALL_TOOLS.filter((tool) => toolsets.has(tool.name));
+}
+
+export function fingerprintMcpToolContract(toolsets: ReadonlySet<string>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(availableTools(toolsets)))
+    .digest("hex");
 }
 
 async function callTool(options: McpServeOptions, name: string, args: Record<string, unknown>) {

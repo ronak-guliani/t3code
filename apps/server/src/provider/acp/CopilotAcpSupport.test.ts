@@ -17,6 +17,7 @@ import {
   buildCopilotAcpSpawnInput,
   buildCopilotMcpServerOptions,
   buildCopilotMcpServers,
+  buildCopilotSessionContractFingerprint,
   bindPrewarmedCopilotRuntime,
   isCopilotPlanModeId,
   logMissingCopilotMcpProviderSession,
@@ -108,7 +109,7 @@ describe("buildCopilotAcpSpawnInput", () => {
         "call `create_nested_thread` before any workspace operation",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "MUST use the tool-search API to load the matching function definition",
+        "search `t3-tools` for `create_isolated_workspace`",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
         "zero non-invokable resources does not mean the server exposes zero tools",
@@ -117,6 +118,13 @@ describe("buildCopilotAcpSpawnInput", () => {
         "Never call them to prepare a workspace for a future delegated thread",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`associate_pull_request`");
+      expect(buildCopilotSessionContractFingerprint({})).toMatch(/^[a-f0-9]{64}$/);
+      expect(buildCopilotSessionContractFingerprint({})).not.toBe(
+        buildCopilotSessionContractFingerprint({ T3_COPILOT_ACP_ENABLE_MCP: "1" }),
+      );
+      expect(buildCopilotSessionContractFingerprint({}, false)).not.toBe(
+        buildCopilotSessionContractFingerprint({}, true),
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
