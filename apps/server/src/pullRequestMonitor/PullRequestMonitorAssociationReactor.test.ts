@@ -1,8 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import type { OrchestrationEvent } from "@t3tools/contracts";
+import { ProjectId, ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
 
 import {
   associationFromEvent,
+  associationOwnerThreadId,
   repositoryFromPullRequestUrl,
 } from "./PullRequestMonitorAssociationReactor.ts";
 
@@ -31,6 +32,8 @@ describe("associationFromEvent", () => {
     expect(created).toEqual({
       threadId: "thr_1",
       projectId: "proj_1",
+      parentThreadId: null,
+      source: "thread-created",
       repository: "acme/app",
       number: 12,
     });
@@ -40,6 +43,7 @@ describe("associationFromEvent", () => {
     );
     expect(updated?.repository).toBe("acme/app");
     expect(updated?.projectId).toBe("");
+    expect(updated?.source).toBe("thread-meta-updated");
   });
 
   it("ignores lifecycle events that carry no association", () => {
@@ -69,5 +73,66 @@ describe("associationFromEvent", () => {
     );
     expect(repositoryFromPullRequestUrl(null)).toBeNull();
     expect(repositoryFromPullRequestUrl("https://github.com/acme")).toBeNull();
+  });
+});
+
+describe("associationOwnerThreadId", () => {
+  const projectId = ProjectId.make("proj_1");
+  const thread = (input: {
+    id: string;
+    parentThreadId?: string | null;
+    pullRequest?: { number: number; url: string } | null;
+  }) => ({
+    id: ThreadId.make(input.id),
+    projectId,
+    parentThreadId:
+      input.parentThreadId === undefined || input.parentThreadId === null
+        ? null
+        : ThreadId.make(input.parentThreadId),
+    pullRequest: input.pullRequest ?? null,
+    archivedAt: null,
+    deletedAt: null,
+  });
+
+  it("keeps inherited workflow PR metadata owned by the associated parent", () => {
+    const association = associationFromEvent(
+      event("thread.created", {
+        threadId: "review-worker",
+        projectId: "proj_1",
+        parentThreadId: "owner",
+        pullRequest,
+      }),
+    );
+    expect(association).not.toBeNull();
+    expect(
+      associationOwnerThreadId(
+        [
+          thread({ id: "owner", pullRequest }),
+          thread({ id: "review-worker", parentThreadId: "owner", pullRequest }),
+        ],
+        association!,
+        projectId,
+      ),
+    ).toBe("owner");
+  });
+
+  it("still treats an explicit metadata association as an ownership transfer", () => {
+    const association = associationFromEvent(
+      event("thread.meta-updated", {
+        threadId: "child",
+        pullRequest,
+      }),
+    );
+    expect(association).not.toBeNull();
+    expect(
+      associationOwnerThreadId(
+        [
+          thread({ id: "owner", pullRequest }),
+          thread({ id: "child", parentThreadId: "owner", pullRequest }),
+        ],
+        association!,
+        projectId,
+      ),
+    ).toBe("child");
   });
 });
