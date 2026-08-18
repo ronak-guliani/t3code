@@ -238,8 +238,16 @@ export type PullRequestMonitorRecord = typeof PullRequestMonitorRecord.Type;
 export const PullRequestMonitorStartInput = Schema.Struct({
   ...PullRequestRef.fields,
   ownerThreadId: Schema.optional(ThreadId),
+  requireAssociatedOwner: Schema.optional(Schema.Boolean),
+  ownerMode: Schema.optional(Schema.Literals(["preserve", "observe-only"])),
 });
 export type PullRequestMonitorStartInput = typeof PullRequestMonitorStartInput.Type;
+
+export const PullRequestMonitorOwnerCandidate = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+});
+export type PullRequestMonitorOwnerCandidate = typeof PullRequestMonitorOwnerCandidate.Type;
 
 export const PullRequestMonitorStopInput = Schema.Struct({
   monitorId: Schema.optional(PullRequestMonitorId),
@@ -420,6 +428,7 @@ export type PullRequestMonitorContextResult = typeof PullRequestMonitorContextRe
 
 export const PullRequestMonitorStatusResult = Schema.Struct({
   monitor: Schema.NullOr(PullRequestMonitorRecord),
+  ownerCandidates: Schema.Array(PullRequestMonitorOwnerCandidate),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
   recentEvents: Schema.Array(PullRequestMonitorActionableEvent),
   openFeedback: Schema.Array(PullRequestMonitorFeedbackItem),

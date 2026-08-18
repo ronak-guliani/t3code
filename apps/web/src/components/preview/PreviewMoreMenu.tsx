@@ -2,6 +2,7 @@
 
 import type { DesktopPreviewColorScheme } from "@t3tools/contracts";
 import { Minus, MoreVertical, Plus as PlusIcon, RotateCcw } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -19,6 +20,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 
 import { previewBridge } from "./previewBridge";
+import { subscribePreviewInteraction } from "./previewInteractionBus";
 
 const COLOR_SCHEME_OPTIONS: ReadonlyArray<{
   value: DesktopPreviewColorScheme;
@@ -68,6 +70,14 @@ export function PreviewMoreMenu({
   nativePictureInPicture,
   nativePictureInPictureDisabled,
 }: Props) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    return subscribePreviewInteraction((interactedTabId) => {
+      if (interactedTabId === tabId) setOpen(false);
+    });
+  }, [tabId]);
+
   if (!previewBridge) return null;
   const bridge = previewBridge;
   const tabDisabled = !tabId || !hasWebContents;
@@ -78,7 +88,7 @@ export function PreviewMoreMenu({
 
   const zoomLabel = `${Math.round(zoomFactor * 100)}%`;
   return (
-    <Menu>
+    <Menu open={open} onOpenChange={setOpen}>
       <Tooltip>
         <TooltipTrigger
           render={

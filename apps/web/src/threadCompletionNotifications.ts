@@ -48,7 +48,11 @@ export function collectThreadCompletionNotifications(
           return [];
         }
 
-        const status = notificationStatusFromTurnState(latestTurn.state);
+        const status =
+          notificationStatusFromTerminalActivity(
+            environmentState.insightActivitiesByThreadId[summary.id],
+            latestTurn.turnId,
+          ) ?? notificationStatusFromTurnState(latestTurn.state);
         if (!status) {
           return [];
         }
@@ -132,6 +136,41 @@ export function collectThreadCompletionNotifications(
   }
 
   return requests;
+}
+
+function notificationStatusFromTerminalActivity(
+  activities: EnvironmentState["insightActivitiesByThreadId"][ThreadId] | undefined,
+  turnId: TurnId,
+): DesktopThreadCompletionNotificationStatus | null {
+  if (!activities) {
+    return null;
+  }
+
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (activity?.kind !== "insights.turn.completed" || activity.turnId !== turnId) {
+      continue;
+    }
+
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    switch (payload?.state) {
+      case "completed":
+        return "completed";
+      case "failed":
+        return "failed";
+      case "interrupted":
+        return "interrupted";
+      case "cancelled":
+        return "cancelled";
+      default:
+        return null;
+    }
+  }
+
+  return null;
 }
 
 export function collectStaleActiveTurnToastRequests(input: {

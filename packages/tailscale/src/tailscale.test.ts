@@ -10,6 +10,8 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+
 import {
   buildTailscaleHttpsBaseUrl,
   disableTailscaleServe,
@@ -201,7 +203,7 @@ describe("tailscale", () => {
     return readTailscaleStatus.pipe(Effect.provide(layer));
   });
 
-  it.effect("preserves tailscale spawn failures as causes", () => {
+  it.effect("preserves Windows tailscale spawn failures as causes", () => {
     const systemCause = new Error("private executable lookup detail");
     const cause = PlatformError.systemError({
       _tag: "NotFound",
@@ -209,16 +211,19 @@ describe("tailscale", () => {
       method: "spawn",
       cause: systemCause,
     });
-    const layer = Layer.succeed(
-      ChildProcessSpawner.ChildProcessSpawner,
-      ChildProcessSpawner.make(() => Effect.fail(cause)),
+    const layer = Layer.mergeAll(
+      Layer.succeed(HostProcessPlatform, "win32"),
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.fail(cause)),
+      ),
     );
 
     return Effect.gen(function* () {
       const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
 
       assert.instanceOf(error, TailscaleCommandSpawnError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, "tailscale.exe");
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.strictEqual(error.cause, cause);
@@ -250,9 +255,10 @@ describe("tailscale", () => {
     });
   });
 
-  it.effect("times out tailscale status through TestClock", () => {
-    const layer = Layer.merge(
+  it.effect("times out Windows tailscale status through TestClock", () => {
+    const layer = Layer.mergeAll(
       TestClock.layer(),
+      Layer.succeed(HostProcessPlatform, "win32"),
       Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle())),
@@ -266,7 +272,7 @@ describe("tailscale", () => {
       const error = yield* Fiber.join(fiber);
 
       assert.instanceOf(error, TailscaleCommandTimeoutError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, "tailscale.exe");
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.equal(error.timeoutMs, 1_500);

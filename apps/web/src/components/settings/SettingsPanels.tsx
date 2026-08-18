@@ -1925,6 +1925,64 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsSection title="Pull request monitoring">
+        <SettingsRow
+          title="Automatically monitor associated PRs"
+          description="Start durable monitoring when a chat creates or associates a pull request."
+          resetAction={
+            settings.autoMonitorPullRequestsOnCreate !==
+            DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate ? (
+              <SettingResetButton
+                label="automatic pull request monitoring"
+                onClick={() =>
+                  updateSettings({
+                    autoMonitorPullRequestsOnCreate:
+                      DEFAULT_UNIFIED_SETTINGS.autoMonitorPullRequestsOnCreate,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.autoMonitorPullRequestsOnCreate}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoMonitorPullRequestsOnCreate: Boolean(checked) })
+              }
+              aria-label="Automatically monitor associated pull requests"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Automatic maintenance chats"
+          description="Create a prepared maintenance chat when feedback arrives and the owner chat is unavailable."
+          resetAction={
+            settings.autoLaunchPrMonitorFallback !==
+            DEFAULT_UNIFIED_SETTINGS.autoLaunchPrMonitorFallback ? (
+              <SettingResetButton
+                label="automatic pull request maintenance chats"
+                onClick={() =>
+                  updateSettings({
+                    autoLaunchPrMonitorFallback:
+                      DEFAULT_UNIFIED_SETTINGS.autoLaunchPrMonitorFallback,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.autoLaunchPrMonitorFallback}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoLaunchPrMonitorFallback: Boolean(checked) })
+              }
+              aria-label="Automatically create pull request maintenance chats"
+            />
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection title="Preferences">
         <SettingsRow
           title="Diff line wrapping"

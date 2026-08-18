@@ -24,6 +24,11 @@ export const GetProjectionStateInput = Schema.Struct({
 });
 export type GetProjectionStateInput = typeof GetProjectionStateInput.Type;
 
+export const DeleteProjectionStatesExceptInput = Schema.Struct({
+  projectors: Schema.Array(Schema.String),
+});
+export type DeleteProjectionStatesExceptInput = typeof DeleteProjectionStatesExceptInput.Type;
+
 /**
  * ProjectionStateRepositoryShape - Service API for projector state records.
  */
@@ -46,6 +51,13 @@ export interface ProjectionStateRepositoryShape {
    * List all projector cursor rows.
    */
   readonly listAll: () => Effect.Effect<ReadonlyArray<ProjectionState>, ProjectionRepositoryError>;
+
+  /**
+   * Delete cursor rows for projectors that are no longer active.
+   */
+  readonly deleteExcept: (
+    input: DeleteProjectionStatesExceptInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
    * Read the minimum applied sequence across all projectors.

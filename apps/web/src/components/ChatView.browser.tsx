@@ -12,6 +12,7 @@ import {
   type ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  QueuedTurnId,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   ThreadId,
@@ -977,6 +978,42 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
             ],
             updatedAt: isoAt(1_000),
           })
+        : thread,
+    ),
+  };
+}
+
+function createSnapshotWithQueuedTurn(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-queued-edit-target" as MessageId,
+    targetText: "queued edit thread",
+  });
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? {
+            ...thread,
+            queuedTurns: [
+              {
+                id: QueuedTurnId.make("queued-turn-browser-test"),
+                threadId: THREAD_ID,
+                message: {
+                  messageId: "queued-message-browser-test" as MessageId,
+                  role: "user",
+                  text: "Original queued text",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: NOW_ISO,
+                updatedAt: NOW_ISO,
+                failedAt: null,
+                failureMessage: null,
+              },
+            ],
+          }
         : thread,
     ),
   };
@@ -2750,6 +2787,75 @@ describe("ChatView timeline estimator parity (full app)", () => {
             request._tag === WS_METHODS.terminalWrite && request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("edits queued messages in the composer while preserving the existing draft", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithQueuedTurn(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const draftStore = useComposerDraftStore.getState();
+      draftStore.setPrompt(THREAD_REF, "Existing draft");
+      draftStore.addImage(THREAD_REF, {
+        type: "image",
+        id: "draft-image",
+        name: "draft.png",
+        mimeType: "image/png",
+        sizeBytes: 128,
+        previewUrl: "data:image/png;base64,",
+        file: new File(["draft"], "draft.png", { type: "image/png" }),
+      });
+      await waitForLayout();
+
+      await expect.element(page.getByLabelText("Remove draft.png")).toBeInTheDocument();
+      await page.getByLabelText("Edit queued message").click();
+
+      const editor = page.getByTestId("composer-editor");
+      await expect.element(editor).toHaveTextContent("Original queued text");
+      await expect.element(page.getByLabelText("Remove draft.png")).not.toBeInTheDocument();
+
+      await editor.fill("Updated queued text");
+      await page.getByRole("button", { name: "Save" }).click();
+
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.queued-turn.update" &&
+              request.text === "Updated queued text",
+          ),
+        ).toBe(true);
+      });
+      expect(composerDraftFor(THREAD_ID)?.prompt).toBe("Existing draft");
+      await expect.element(editor).toHaveTextContent("Existing draft");
+      await expect.element(page.getByLabelText("Remove draft.png")).toBeInTheDocument();
+
+      await page.getByLabelText("Edit queued message").click();
+      await editor.fill("Discarded queued edit");
+      await userEvent.keyboard("{Escape}");
+
+      await expect.element(editor).toHaveTextContent("Existing draft");
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.queued-turn.update",
+        ),
+      ).toHaveLength(1);
     } finally {
       await mounted.cleanup();
     }

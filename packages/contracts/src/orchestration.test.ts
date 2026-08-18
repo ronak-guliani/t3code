@@ -771,6 +771,21 @@ it.effect("decodes cross-thread message provenance with trimmed source metadata"
   }),
 );
 
+it.effect("decodes pull request monitor provenance with normalized metadata", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeMessageOrigin({
+      kind: "pull-request-monitor",
+      repository: " acme/app ",
+      number: 42,
+    });
+    assert.deepStrictEqual(parsed, {
+      kind: "pull-request-monitor",
+      repository: "acme/app",
+      number: 42,
+    });
+  }),
+);
+
 it.effect(
   "decodes thread.turn-start-requested defaults for provider, runtime mode, and interaction mode",
   () =>

@@ -9,6 +9,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   QueuedTurnId,
@@ -248,7 +249,18 @@ export const CrossThreadOrigin = Schema.Struct({
 });
 export type CrossThreadOrigin = typeof CrossThreadOrigin.Type;
 
-export const MessageOrigin = Schema.Union([WorkspaceHandoffOrigin, CrossThreadOrigin]);
+export const PullRequestMonitorOrigin = Schema.Struct({
+  kind: Schema.Literal("pull-request-monitor"),
+  repository: TrimmedNonEmptyString,
+  number: PositiveInt,
+});
+export type PullRequestMonitorOrigin = typeof PullRequestMonitorOrigin.Type;
+
+export const MessageOrigin = Schema.Union([
+  WorkspaceHandoffOrigin,
+  CrossThreadOrigin,
+  PullRequestMonitorOrigin,
+]);
 export type MessageOrigin = typeof MessageOrigin.Type;
 
 export const OrchestrationMessage = Schema.Struct({
@@ -766,6 +778,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  origin: Schema.optional(MessageOrigin),
   crossThreadSourceThreadId: Schema.optional(ThreadId),
   crossThreadDispatchCapability: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
@@ -803,6 +816,7 @@ const ThreadQueuedTurnCreateCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  origin: Schema.optional(MessageOrigin),
   createdAt: IsoDateTime,
 });
 

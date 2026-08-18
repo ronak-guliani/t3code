@@ -650,14 +650,15 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("mirrors Electron's effective zoom across registration and navigation", () =>
+  effectIt.effect("preserves tab-owned zoom across registration and navigation", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         let effectiveZoom = 0.9;
-        let zoomReadable = true;
         let url = "https://example.com";
         const listeners = new Map<string, (...args: unknown[]) => void>();
-        const setZoomFactor = vi.fn();
+        const setZoomFactor = vi.fn((zoomFactor: number) => {
+          effectiveZoom = zoomFactor;
+        });
         fromId.mockReturnValue({
           id: 42,
           isDestroyed: () => false,
@@ -665,10 +666,7 @@ describe("PreviewManager", () => {
           getURL: () => url,
           getTitle: () => "Example",
           isLoading: () => false,
-          getZoomFactor: () => {
-            if (!zoomReadable) throw new Error("zoom unavailable");
-            return effectiveZoom;
-          },
+          getZoomFactor: () => effectiveZoom,
           setZoomFactor,
           on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
             listeners.set(event, listener);
@@ -696,18 +694,15 @@ describe("PreviewManager", () => {
         yield* manager.createTab("tab_zoom");
         yield* manager.registerWebview("tab_zoom", 42);
 
-        expect(states.at(-1)?.zoomFactor).toBe(0.9);
-        expect(setZoomFactor).not.toHaveBeenCalled();
+        expect(states.at(-1)?.zoomFactor).toBe(1);
+        expect(setZoomFactor).toHaveBeenCalledWith(1);
+
+        yield* manager.zoomIn("tab_zoom");
+        expect(states.at(-1)?.zoomFactor).toBe(1.1);
+        expect(effectiveZoom).toBe(1.1);
 
         effectiveZoom = 1.25;
-        listeners.get("did-navigate")?.();
-        yield* Effect.yieldNow;
-
-        expect(states.at(-1)?.zoomFactor).toBe(1.25);
-        expect(setZoomFactor).not.toHaveBeenCalled();
-
-        zoomReadable = false;
-        url = "https://example.com/after-zoom-read-failed";
+        url = "https://example.com/next-origin";
         listeners.get("did-navigate")?.();
         yield* Effect.yieldNow;
 
@@ -716,7 +711,8 @@ describe("PreviewManager", () => {
           url,
           title: "Example",
         });
-        expect(states.at(-1)?.zoomFactor).toBe(1.25);
+        expect(states.at(-1)?.zoomFactor).toBe(1.1);
+        expect(effectiveZoom).toBe(1.1);
 
         const replacementSetZoomFactor = vi.fn();
         fromId.mockReturnValue({
@@ -745,8 +741,82 @@ describe("PreviewManager", () => {
 
         yield* manager.registerWebview("tab_zoom", 43);
 
-        expect(replacementSetZoomFactor).toHaveBeenCalledWith(1.25);
-        expect(states.at(-1)?.zoomFactor).toBe(1.25);
+        expect(replacementSetZoomFactor).toHaveBeenCalledWith(1.1);
+        expect(states.at(-1)?.zoomFactor).toBe(1.1);
+      }),
+    ),
+  );
+
+  effectIt.effect("keeps same-origin tabs in one shared zoom state", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const browserSession = {};
+        const listenersById = new Map<number, Map<string, (...args: unknown[]) => void>>();
+        const webviews = new Map<number, ReturnType<typeof makeWebview>>();
+        let effectiveZoom = 1;
+
+        function makeWebview(id: number) {
+          const listeners = new Map<string, (...args: unknown[]) => void>();
+          listenersById.set(id, listeners);
+          return {
+            id,
+            session: browserSession,
+            isDestroyed: () => false,
+            getType: () => "webview",
+            getURL: () => "https://example.com/dashboard",
+            getTitle: () => "Example",
+            isLoading: () => false,
+            getZoomFactor: () => effectiveZoom,
+            setZoomFactor: vi.fn((zoomFactor: number) => {
+              effectiveZoom = zoomFactor;
+            }),
+            on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+              listeners.set(event, listener);
+            }),
+            off: vi.fn(),
+            ipc: { on: vi.fn(), off: vi.fn() },
+            send: webviewSend,
+            navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+            setWindowOpenHandler: vi.fn(),
+            debugger: {
+              isAttached: () => false,
+              attach: vi.fn(),
+              sendCommand: vi.fn(async () => undefined),
+              on: vi.fn(),
+              off: vi.fn(),
+            },
+          };
+        }
+
+        webviews.set(41, makeWebview(41));
+        webviews.set(42, makeWebview(42));
+        fromId.mockImplementation(
+          (id?: number) => (id === undefined ? null : (webviews.get(id) ?? null)) as never,
+        );
+        const states = new Map<string, PreviewManager.PreviewTabState>();
+        yield* manager.subscribeStateChanges((tabId, state) =>
+          Effect.sync(() => {
+            states.set(tabId, state);
+          }),
+        );
+
+        yield* manager.createTab("tab_a");
+        yield* manager.registerWebview("tab_a", 41);
+        yield* manager.createTab("tab_b");
+        yield* manager.registerWebview("tab_b", 42);
+        yield* manager.zoomIn("tab_a");
+
+        expect(effectiveZoom).toBe(1.1);
+        expect(states.get("tab_a")?.zoomFactor).toBe(1.1);
+        expect(states.get("tab_b")?.zoomFactor).toBe(1.1);
+
+        effectiveZoom = 1.25;
+        listenersById.get(42)?.get("did-navigate")?.();
+        yield* Effect.yieldNow;
+
+        expect(effectiveZoom).toBe(1.1);
+        expect(states.get("tab_a")?.zoomFactor).toBe(1.1);
+        expect(states.get("tab_b")?.zoomFactor).toBe(1.1);
       }),
     ),
   );
