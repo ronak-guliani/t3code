@@ -632,6 +632,8 @@ export const layer = Layer.effect(
         for (const revision of batchRevisions) {
           const item = yield* feedbackStore.getItem(revision.itemId);
           if (!item || item.status === "closed") continue;
+          // A historical delivery must not mutate or deliver a newer item revision.
+          if (item.currentRevisionId !== revision.id) continue;
           const actionability = reconcileFeedbackItem(item, snapshot, {
             checkName: feedbackDetailFromSummary(item.summary),
             observedHeadSha: revision.headSha,
