@@ -1,8 +1,10 @@
+import { useAuth, useClerk } from "@clerk/react";
 import { encodeConnectAuthCode, readConnectAuthorizeRequest } from "@t3tools/shared/connectAuth";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   buildConnectCliAuthorizeUrl,
+  prepareConnectCliSignIn,
   readConnectCliAuthState,
   rememberConnectCliAuthState,
 } from "../cloud/connectCliAuth";
@@ -10,17 +12,34 @@ import {
 export function ConnectCliAuthorizeSurface() {
   const [request] = useState(() => readConnectAuthorizeRequest(new URL(window.location.href)));
   const [error, setError] = useState<string | null>(null);
+  const clerk = useClerk();
+  const { isLoaded, isSignedIn } = useAuth();
+  const signInOpened = useRef(false);
+  const redirecting = useRef(false);
+
+  const openSignIn = useCallback(() => {
+    if (!request) return;
+    clerk.openSignIn(prepareConnectCliSignIn(request, window.location.href));
+  }, [clerk, request]);
 
   useEffect(() => {
-    if (!request) return;
+    if (!request || !isLoaded || redirecting.current) return;
+    if (!isSignedIn) {
+      if (!signInOpened.current) {
+        signInOpened.current = true;
+        openSignIn();
+      }
+      return;
+    }
     const url = buildConnectCliAuthorizeUrl(request);
     if (!url) {
       setError("T3 Connect authorization is not configured for this hosted app.");
       return;
     }
+    redirecting.current = true;
     rememberConnectCliAuthState(request.state);
     window.location.assign(url);
-  }, [request]);
+  }, [isLoaded, isSignedIn, openSignIn, request]);
 
   return (
     <main className="mx-auto mt-24 max-w-lg px-6 font-sans">
@@ -28,9 +47,20 @@ export function ConnectCliAuthorizeSurface() {
       <p className="mt-3 text-muted-foreground">
         {error ??
           (request
-            ? "Redirecting to sign in and authorize T3 Connect."
+            ? isSignedIn
+              ? "Redirecting to authorize T3 Connect."
+              : "Sign in to continue authorizing T3 Connect."
             : "This link is incomplete. Re-run `t3 connect` and open the new URL.")}
       </p>
+      {request && isLoaded && !isSignedIn ? (
+        <button
+          className="mt-6 rounded border px-4 py-2 text-sm font-medium"
+          type="button"
+          onClick={openSignIn}
+        >
+          Sign in
+        </button>
+      ) : null}
     </main>
   );
 }

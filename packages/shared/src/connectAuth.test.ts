@@ -4,6 +4,7 @@ import {
   buildConnectAuthorizeRequestUrl,
   checkConnectAuthCode,
   connectCallbackUrl,
+  connectLoopbackRedirectUri,
   encodeConnectAuthCode,
   readConnectAuthorizeRequest,
 } from "./connectAuth.ts";
@@ -27,6 +28,34 @@ it("keeps the headless OAuth state and challenge in the browser-only URL fragmen
     connectCallbackUrl("https://app.example.test"),
     "https://app.example.test/connect/callback",
   );
+});
+
+it("round-trips a valid loopback port and rejects corrupted ports", () => {
+  const url = new URL(
+    buildConnectAuthorizeRequestUrl({
+      hostedAppUrl: "https://app.example.test",
+      state: "expected-state",
+      challenge: "pkce-challenge",
+      loopbackPort: 34338,
+    }),
+  );
+
+  assert.deepEqual(readConnectAuthorizeRequest(url), {
+    state: "expected-state",
+    challenge: "pkce-challenge",
+    loopbackPort: 34338,
+  });
+  assert.equal(connectLoopbackRedirectUri(34338), "http://127.0.0.1:34338/callback");
+
+  for (const port of ["", "abc", "-1", "0", "65536", "34338x", "34 38"]) {
+    assert.isNull(
+      readConnectAuthorizeRequest(
+        new URL(
+          `https://app.example.test/connect#state=expected-state&challenge=pkce-challenge&port=${encodeURIComponent(port)}`,
+        ),
+      ),
+    );
+  }
 });
 
 it("rejects malformed and cross-request authorization codes", () => {

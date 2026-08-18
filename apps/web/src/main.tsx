@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { ClerkProvider } from "@clerk/react";
 import { RouterProvider } from "@tanstack/react-router";
 import { createHashHistory, createBrowserHistory } from "@tanstack/react-router";
 
@@ -11,6 +12,10 @@ import { getRouter } from "./router";
 import { APP_DISPLAY_NAME } from "./branding";
 import { syncDocumentWindowControlsOverlayClass } from "./lib/windowControlsOverlay";
 import { syncDocumentAppZoomVariable } from "./lib/titlebar";
+import {
+  isConnectCliAuthEnabled,
+  resolveConnectCliAuthPublishableKey,
+} from "./cloud/connectCliAuth";
 
 // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
 const history = isElectron ? createHashHistory() : createBrowserHistory();
@@ -48,8 +53,15 @@ if (isElectron) {
 
 document.title = APP_DISPLAY_NAME;
 
+const app = <RouterProvider router={router} />;
+const clerkPublishableKey = resolveConnectCliAuthPublishableKey();
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <RouterProvider router={router} />
+    {clerkPublishableKey && isConnectCliAuthEnabled() ? (
+      <ClerkProvider publishableKey={clerkPublishableKey}>{app}</ClerkProvider>
+    ) : (
+      app
+    )}
   </React.StrictMode>,
 );

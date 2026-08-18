@@ -19,7 +19,6 @@ import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import {
   buildConnectAuthorizeRequestUrl,
-  buildConnectClerkAuthorizeUrl,
   checkConnectAuthCode,
   connectCallbackUrl,
 } from "@t3tools/shared/connectAuth";
@@ -183,6 +182,15 @@ interface LoopbackAuthorizationCallback {
   readonly awaitCode: Effect.Effect<string>;
 }
 
+export function buildLoopbackAuthorizationUrl(input: {
+  readonly hostedAppUrl: string;
+  readonly loopbackPort: number;
+  readonly state: string;
+  readonly challenge: string;
+}): string {
+  return buildConnectAuthorizeRequestUrl(input);
+}
+
 export const withLoopbackAuthorizationCallback = <A, E, R>(
   input: {
     readonly redirectUri: string;
@@ -271,16 +279,15 @@ export const make = Effect.gen(function* () {
 
   const login = Effect.fn("cloud.cli_token.login")(function* () {
     const metadata = yield* cloudCliOAuthConfig;
+    const hostedAppUrl = yield* hostedAppUrlConfig;
     const verifier = Encoding.encodeBase64Url(yield* crypto.randomBytes(32));
     const challenge = Encoding.encodeBase64Url(
       yield* crypto.digest("SHA-256", new TextEncoder().encode(verifier)),
     );
     const state = Encoding.encodeBase64Url(yield* crypto.randomBytes(16));
-    const authorizationUrl = buildConnectClerkAuthorizeUrl({
-      authorizationEndpoint: metadata.authorizationEndpoint,
-      clientId: metadata.clientId,
-      redirectUri: metadata.redirectUri,
-      scopes: metadata.scopes,
+    const authorizationUrl = buildLoopbackAuthorizationUrl({
+      hostedAppUrl,
+      loopbackPort: metadata.loopbackPort,
       state,
       challenge,
     });

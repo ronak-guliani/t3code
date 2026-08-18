@@ -415,9 +415,9 @@ async function main() {
                 assert(callback.status === 200, "Loopback authorization callback was rejected.");
                 const exchanged = yield* CliTokenManager.exchangeOAuthToken(
                   {
-                    authorizationEndpoint: "https://clerk.invalid/oauth/authorize",
                     tokenEndpoint: "https://clerk.invalid/oauth/token",
                     clientId: "release-smoke-client",
+                    loopbackPort: 34338,
                     redirectUri: "http://127.0.0.1:34338/callback",
                     scopes: ["openid", "profile", "email"],
                   },
