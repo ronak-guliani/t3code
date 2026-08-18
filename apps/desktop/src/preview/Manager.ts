@@ -1227,11 +1227,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         shortcut.control === input.control,
     );
 
-  const computeNavStatus = (wc: Electron.WebContents): PreviewNavStatus => {
+  const computeNavStatus = (
+    wc: Electron.WebContents,
+    loading: boolean = wc.isLoading(),
+  ): PreviewNavStatus => {
     const url = wc.getURL();
     const title = wc.getTitle();
     if (url === "" || url === "about:blank") return { kind: "Idle" };
-    if (wc.isLoading()) return { kind: "Loading", url, title };
+    if (loading) return { kind: "Loading", url, title };
     return { kind: "Success", url, title };
   };
 
@@ -1280,6 +1283,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const scope = yield* Scope.fork(parentScope, "sequential");
     const syncState = Effect.fn("PreviewManager.syncWebContentsState")(function* (
       preserveLoadFailure: boolean,
+      loading?: boolean,
     ) {
       if (wc.isDestroyed()) return;
       const tabs = yield* SynchronizedRef.get(tabsRef);
@@ -1291,7 +1295,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           () => wc.setZoomFactor(zoomFactor),
         ).pipe(Effect.ignore);
       }
-      const computedNavStatus = computeNavStatus(wc);
+      const computedNavStatus = computeNavStatus(wc, loading);
       const canGoBack = wc.navigationHistory.canGoBack();
       const canGoForward = wc.navigationHistory.canGoForward();
       const updatedAt = yield* currentIso;
@@ -1326,6 +1330,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     });
     const sync = () => runFork(syncState(true));
     const syncNavigation = () => runFork(syncState(false));
+    // Capture the event's load phase before the fork runs; reading isLoading()
+    // later can observe a subsequent phase and leave the renderer stuck loading.
+    const syncLoadStarted = () => runFork(syncState(false, true));
+    const syncLoadFinished = () => runFork(syncState(false, false));
+    const syncLoadStopped = () => runFork(syncState(true, false));
     const failed = (
       _event: Event,
       code: number,
@@ -1396,8 +1405,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.off("did-navigate", syncNavigation);
         wc.off("did-navigate-in-page", syncNavigation);
         wc.off("page-title-updated", sync);
-        wc.off("did-start-loading", sync);
-        wc.off("did-stop-loading", sync);
+        wc.off("did-start-loading", syncLoadStarted);
+        wc.off("did-finish-load", syncLoadFinished);
+        wc.off("did-stop-loading", syncLoadStopped);
         wc.off("did-fail-load", failed as never);
         wc.off("before-input-event", beforeInput);
         wc.ipc.off(HUMAN_INPUT_CHANNEL, humanInput);
@@ -1408,8 +1418,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-navigate", syncNavigation);
         wc.on("did-navigate-in-page", syncNavigation);
         wc.on("page-title-updated", sync);
-        wc.on("did-start-loading", sync);
-        wc.on("did-stop-loading", sync);
+        wc.on("did-start-loading", syncLoadStarted);
+        wc.on("did-finish-load", syncLoadFinished);
+        wc.on("did-stop-loading", syncLoadStopped);
         wc.on("did-fail-load", failed as never);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.setWindowOpenHandler(({ url }) => {
