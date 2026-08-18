@@ -286,6 +286,7 @@ export const layer = Layer.effect(
         for (const item of items) {
           const actionability = reconcileFeedbackItem(item, input.snapshot, {
             checkName: feedbackDetailFromSummary(item.summary),
+            observedHeadSha: item.currentRevisionHeadSha,
             claimHeadSha: item.status === "verifying" ? item.currentRevisionHeadSha : null,
           });
           if (actionability.kind === "actionable") {
@@ -539,10 +540,6 @@ export const layer = Layer.effect(
         if (snapshot.state !== "open") {
           return yield* monitorError("Pull request is no longer open.");
         }
-        if (monitor.headSha && snapshot.headSha !== monitor.headSha) {
-          // Head moved since the batched revisions; suppress this batch and let next poll rebuild.
-          return yield* monitorError("Pull request head changed before delivery.");
-        }
         return { snapshot, ownerThreadId: monitor.ownerThreadId as ThreadId };
       });
 
@@ -583,8 +580,9 @@ export const layer = Layer.effect(
             validated.failure instanceof Error
               ? validated.failure.message
               : String(validated.failure);
-          const suppressedByRevalidation =
-            /no longer open|no owner thread|not active|head changed/i.test(message);
+          const suppressedByRevalidation = /no longer open|no owner thread|not active/i.test(
+            message,
+          );
           const terminal = suppressedByRevalidation || attemptCount >= MAX_DELIVERY_ATTEMPTS;
           if (suppressedByRevalidation) {
             yield* feedbackStore.setDeliveryCircuitState({
@@ -636,6 +634,7 @@ export const layer = Layer.effect(
           if (!item || item.status === "closed") continue;
           const actionability = reconcileFeedbackItem(item, snapshot, {
             checkName: feedbackDetailFromSummary(item.summary),
+            observedHeadSha: revision.headSha,
           });
           if (actionability.kind !== "actionable") {
             yield* closeItemUpstream({ item, actionability, now });

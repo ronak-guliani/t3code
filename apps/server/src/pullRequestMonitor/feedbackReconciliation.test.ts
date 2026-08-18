@@ -163,6 +163,15 @@ describe("reconcileFeedbackItem", () => {
     expect(stillFailing.kind).toBe("actionable");
   });
 
+  it("supersedes a failed check observed at an older head", () => {
+    const result = reconcileFeedbackItem(
+      { kind: "check-failed", stableKey: "check-failed:check-1" },
+      snapshot({ headSha: "head-2" }),
+      { checkName: "ci", observedHeadSha: "head-1" },
+    );
+    expect(result.kind).toBe("superseded");
+  });
+
   it("keeps a claimed review finding open until the head advances", () => {
     const item = { kind: "review-finding" as const, stableKey: "review-finding:finding-1" };
     expect(reconcileFeedbackItem(item, snapshot(), { claimHeadSha: "head-1" }).kind).toBe(

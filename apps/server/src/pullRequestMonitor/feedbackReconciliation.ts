@@ -85,8 +85,12 @@ function reconcileChangesRequested(
 function reconcileCheck(
   sourceId: string | null,
   detailName: string | null,
+  observedHeadSha: string | null,
   snapshot: PullRequestMonitorSnapshot,
 ): FeedbackActionability {
+  if (observedHeadSha !== null && observedHeadSha !== snapshot.headSha) {
+    return { kind: "superseded", detail: "check run belongs to an older head" };
+  }
   const atHead = snapshot.checkRuns.filter((check) => check.headSha === snapshot.headSha);
   const byId = sourceId === null ? undefined : atHead.find((check) => check.id === sourceId);
   const candidate =
@@ -116,6 +120,8 @@ export function reconcileFeedbackItem(
   snapshot: PullRequestMonitorSnapshot,
   options?: {
     readonly checkName?: string | null;
+    /** Head the provider finding was observed against, when the finding is head-scoped. */
+    readonly observedHeadSha?: string | null;
     /**
      * Head the item was observed against, supplied only while a claimed fix awaits
      * verification. A moved head is the evidence that a claim was actually pushed.
@@ -130,7 +136,12 @@ export function reconcileFeedbackItem(
     case "changes-requested-review":
       return reconcileChangesRequested(sourceId, snapshot);
     case "check-failed":
-      return reconcileCheck(sourceId, options?.checkName ?? null, snapshot);
+      return reconcileCheck(
+        sourceId,
+        options?.checkName ?? null,
+        options?.observedHeadSha ?? null,
+        snapshot,
+      );
     case "behind-base":
       // A failed compare proves nothing: never resolve a finding on evidence we did not read.
       if (!snapshot.completeness.baseComparisonKnown || snapshot.behindBaseBy === null) {
