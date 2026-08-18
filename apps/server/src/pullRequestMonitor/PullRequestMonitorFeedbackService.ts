@@ -683,6 +683,7 @@ export const layer = Layer.effect(
           }
         }
 
+        const availableTools = yield* availableToolsFor(ownerThreadId);
         const prompt = buildWakePrompt({
           prNumber: monitor.number,
           repository: monitor.repository,
@@ -691,7 +692,7 @@ export const layer = Layer.effect(
           revisionSummaries,
           snapshot,
           readiness,
-          availableTools: yield* availableToolsFor(ownerThreadId),
+          availableTools,
         });
 
         // Durable queue behind any active turn; QueuedTurnReactor drains it when idle.
@@ -706,6 +707,9 @@ export const layer = Layer.effect(
             headSha: snapshot.headSha,
             sourceRevision: snapshot.sourceRevision,
             events,
+            deliveryId: delivery.id,
+            revisionSummaries,
+            availableTools,
           }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
         );
 

@@ -6,11 +6,15 @@ import {
   feedbackStableKeyOf,
   reconcileFeedbackItem,
 } from "../../pullRequestMonitor/feedbackReconciliation.ts";
+import { computeReadiness } from "../../pullRequestMonitor/readiness.ts";
+import { buildWakePrompt } from "../../pullRequestMonitor/wakePrompt.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { QueuedTurnReactor, type QueuedTurnReactorShape } from "../Services/QueuedTurnReactor.ts";
 import { isThreadReadyForQueuedDispatch } from "../commandInvariants.ts";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
+const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
+const MONITOR_REVALIDATION_RETRY_BASE_MS = 20_000;
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -58,6 +62,13 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
 
       const origin = nextQueuedTurn.origin;
       if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
+        const now = new Date();
+        if (
+          origin.nextRevalidationAt !== undefined &&
+          origin.nextRevalidationAt > now.toISOString()
+        ) {
+          return;
+        }
         const snapshotResult = yield* Effect.result(
           pullRequests.monitorSnapshot({
             projectId: thread.projectId,
@@ -66,12 +77,39 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
           }),
         );
         if (Result.isFailure(snapshotResult)) {
+          const attemptCount = (origin.revalidationAttemptCount ?? 0) + 1;
           yield* Effect.logWarning("could not revalidate queued PR monitor turn", {
             threadId,
             queuedTurnId: nextQueuedTurn.id,
             repository: origin.repository,
             pullRequestNumber: origin.number,
+            attemptCount,
             cause: snapshotResult.failure,
+          });
+          if (attemptCount >= MAX_MONITOR_REVALIDATION_ATTEMPTS) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.queued-turn.delete",
+              commandId: serverCommandId("queued-turn.delete-monitor-revalidation-failed"),
+              threadId,
+              queuedTurnId: nextQueuedTurn.id,
+              deletedAt: now.toISOString(),
+            });
+            return;
+          }
+          const retryDelayMs =
+            MONITOR_REVALIDATION_RETRY_BASE_MS * 2 ** Math.max(0, attemptCount - 1);
+          yield* orchestrationEngine.dispatch({
+            type: "thread.queued-turn.update",
+            commandId: serverCommandId("queued-turn.defer-monitor-revalidation"),
+            threadId,
+            queuedTurnId: nextQueuedTurn.id,
+            text: nextQueuedTurn.message.text,
+            origin: {
+              ...origin,
+              revalidationAttemptCount: attemptCount,
+              nextRevalidationAt: new Date(now.getTime() + retryDelayMs).toISOString(),
+            },
+            updatedAt: now.toISOString(),
           });
           return;
         }
@@ -79,18 +117,22 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         const sourceRevisionChanged =
           origin.sourceRevision !== undefined && snapshot.sourceRevision !== origin.sourceRevision;
         const providerStateChanged = snapshot.headSha !== origin.headSha || sourceRevisionChanged;
-        const hasActionableFinding =
-          origin.events === undefined ||
-          origin.events.length === 0 ||
-          origin.events.some(
+        const actionableEvents =
+          origin.events?.filter(
             (event) =>
               reconcileFeedbackItem(
                 { kind: event.kind, stableKey: feedbackStableKeyOf(event) },
                 snapshot,
                 { checkName: event.kind === "check-failed" ? (event.detail ?? null) : null },
               ).kind === "actionable",
-          );
-        if (snapshot.state !== "open" || (providerStateChanged && !hasActionableFinding)) {
+          ) ?? [];
+        if (
+          snapshot.state !== "open" ||
+          (providerStateChanged &&
+            origin.events !== undefined &&
+            origin.events.length > 0 &&
+            actionableEvents.length === 0)
+        ) {
           yield* orchestrationEngine.dispatch({
             type: "thread.queued-turn.delete",
             commandId: serverCommandId("queued-turn.delete-stale-monitor"),
@@ -99,6 +141,49 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
             deletedAt: new Date().toISOString(),
           });
           return;
+        }
+
+        const hadRevalidationFailure =
+          origin.revalidationAttemptCount !== undefined || origin.nextRevalidationAt !== undefined;
+        if (providerStateChanged || hadRevalidationFailure) {
+          const {
+            revalidationAttemptCount: _revalidationAttemptCount,
+            nextRevalidationAt: _nextRevalidationAt,
+            ...stableOrigin
+          } = origin;
+          const refreshedOrigin = {
+            ...stableOrigin,
+            headSha: snapshot.headSha,
+            sourceRevision: snapshot.sourceRevision,
+            ...(origin.events === undefined ? {} : { events: actionableEvents }),
+          };
+          const refreshedText =
+            providerStateChanged && origin.deliveryId !== undefined
+              ? buildWakePrompt({
+                  prNumber: origin.number,
+                  repository: origin.repository,
+                  deliveryId: origin.deliveryId,
+                  events: actionableEvents,
+                  ...((origin.events === undefined || origin.events.length === 0) &&
+                  origin.revisionSummaries !== undefined
+                    ? { revisionSummaries: origin.revisionSummaries }
+                    : {}),
+                  snapshot,
+                  readiness: computeReadiness(snapshot),
+                  ...(origin.availableTools === undefined
+                    ? {}
+                    : { availableTools: origin.availableTools }),
+                })
+              : nextQueuedTurn.message.text;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.queued-turn.update",
+            commandId: serverCommandId("queued-turn.refresh-monitor"),
+            threadId,
+            queuedTurnId: nextQueuedTurn.id,
+            text: refreshedText,
+            origin: refreshedOrigin,
+            updatedAt: now.toISOString(),
+          });
         }
       }
 

@@ -1198,6 +1198,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           queuedTurnId: command.queuedTurnId,
           text: command.text,
+          ...(command.origin !== undefined ? { origin: command.origin } : {}),
           updatedAt: command.updatedAt,
         },
       };

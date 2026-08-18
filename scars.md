@@ -39,7 +39,7 @@
 - Internal CLI failure classification must inspect structured process output, never flattened diagnostics containing agent-controlled argv. Immediately remove a delegated worktree only when `thread.create` provably did not commit; after creation, request durable server cleanup so provider and terminal teardown finish before removal, and preserve the worktree on lost or ambiguous responses.
 - Cross-thread dispatch must carry the source thread ID through the client HTTP schema while deriving message provenance server-side; projection session upserts must preserve an omitted active message while the same turn remains active.
 - System-authored user turns need explicit server-only message provenance at creation; never infer UI indicators from message ID prefixes or prompt text.
-- Provider-backed queued turns must revalidate their source revision at dispatch, not only enqueue; queue delay can make a previously fresh prompt stale.
+- Provider-backed queued turns must revalidate at dispatch, refresh mixed batches, and bound failed rechecks so stale work cannot waste a turn or block the queue.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
 - Canonical worktree selectors may be shared by multiple threads; resolve all distinct active project owners and reject cross-project ambiguity instead of choosing by snapshot order.
 - Nested-thread creation outcomes must distinguish definitive rejection from ambiguous commit state and report cleanup explicitly; preflight branch/path collisions for clear guidance, but keep `git worktree add` as the transactional authority.

@@ -681,6 +681,7 @@ export function projectEvent(
               ? {
                   ...queuedTurn,
                   message: { ...queuedTurn.message, text: payload.text },
+                  ...(payload.origin !== undefined ? { origin: payload.origin } : {}),
                   updatedAt: payload.updatedAt,
                   failedAt: null,
                   failureMessage: null,

@@ -8,6 +8,7 @@ import {
   type OrchestrationCommand,
   type OrchestrationQueuedTurn,
   type OrchestrationReadModel,
+  PullRequestOperationError,
   type PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
 import { Effect, Layer, Stream } from "effect";
@@ -112,7 +113,10 @@ function queuedReadModel(
   };
 }
 
-function pullRequestLayer(snapshot: PullRequestMonitorSnapshot) {
+function pullRequestLayer(
+  snapshot: PullRequestMonitorSnapshot,
+  snapshotError?: PullRequestOperationError,
+) {
   return Layer.succeed(
     PullRequestService,
     PullRequestService.of({
@@ -129,7 +133,8 @@ function pullRequestLayer(snapshot: PullRequestMonitorSnapshot) {
       reviewerCandidates: () => Effect.die("unused"),
       requestReviewers: () => Effect.die("unused"),
       invalidate: () => Effect.void,
-      monitorSnapshot: () => Effect.succeed(snapshot),
+      monitorSnapshot: () =>
+        snapshotError === undefined ? Effect.succeed(snapshot) : Effect.fail(snapshotError),
     }),
   );
 }
@@ -137,6 +142,7 @@ function pullRequestLayer(snapshot: PullRequestMonitorSnapshot) {
 async function runReactor(
   readModelInput: OrchestrationReadModel,
   snapshot: PullRequestMonitorSnapshot,
+  options?: { readonly snapshotError?: PullRequestOperationError },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
   const commands: OrchestrationCommand[] = [];
@@ -156,6 +162,28 @@ async function runReactor(
               thread.id === command.threadId ? { ...thread, queuedTurns: [] } : thread,
             ),
           };
+        } else if (command.type === "thread.queued-turn.update") {
+          readModel = {
+            ...readModel,
+            threads: readModel.threads.map((thread) =>
+              thread.id === command.threadId
+                ? {
+                    ...thread,
+                    queuedTurns: (thread.queuedTurns ?? []).map((queuedTurn) =>
+                      queuedTurn.id === command.queuedTurnId
+                        ? {
+                            ...queuedTurn,
+                            message: { ...queuedTurn.message, text: command.text },
+                            ...(command.origin === undefined ? {} : { origin: command.origin }),
+                            failedAt: null,
+                            failureMessage: null,
+                          }
+                        : queuedTurn,
+                    ),
+                  }
+                : thread,
+            ),
+          };
         }
         return { sequence: 2 };
       }),
@@ -164,7 +192,7 @@ async function runReactor(
   });
   const layer = QueuedTurnReactorLive.pipe(
     Layer.provide(engineLayer),
-    Layer.provide(pullRequestLayer(snapshot)),
+    Layer.provide(pullRequestLayer(snapshot, options?.snapshotError)),
   );
 
   await Effect.runPromise(
@@ -215,16 +243,25 @@ describe("QueuedTurnReactor", () => {
     });
   });
 
-  it("dispatches feedback that remains actionable after provider state changes", async () => {
+  it("filters resolved findings and refreshes the prompt before dispatch", async () => {
     const commands = await runReactor(
       queuedReadModel({
+        message: {
+          messageId: MessageId.make("message-startup"),
+          role: "user",
+          text: "stale behind-base and review prompt",
+          attachments: [],
+        },
         origin: {
           kind: "pull-request-monitor",
           repository: "acme/app",
           number: 42,
           headSha: "head-current",
           sourceRevision: "revision-old",
+          deliveryId: "delivery-1",
+          availableTools: ["pr_monitor_context"],
           events: [
+            { kind: "behind-base" },
             {
               kind: "new-review-comment",
               sourceId: "thread-live",
@@ -251,8 +288,87 @@ describe("QueuedTurnReactor", () => {
       },
     );
 
+    expect(commands).toHaveLength(2);
     expect(commands[0]).toMatchObject({
+      type: "thread.queued-turn.update",
+      threadId,
+      queuedTurnId,
+      origin: {
+        kind: "pull-request-monitor",
+        headSha: "head-current",
+        sourceRevision: "revision-new",
+        events: [{ kind: "new-review-comment", sourceId: "thread-live" }],
+      },
+    });
+    expect(commands[0]?.type === "thread.queued-turn.update" ? commands[0].text : "").toContain(
+      "Comment from reviewer",
+    );
+    expect(commands[0]?.type === "thread.queued-turn.update" ? commands[0].text : "").not.toContain(
+      "PR is behind",
+    );
+    expect(commands[1]).toMatchObject({
       type: "thread.queued-turn.dispatch",
+      threadId,
+      queuedTurnId,
+    });
+  });
+
+  it("backs off a failed monitor revalidation without dispatching", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: {
+          kind: "pull-request-monitor",
+          repository: "acme/app",
+          number: 42,
+          headSha: "head-current",
+          sourceRevision: "revision-old",
+          events: [{ kind: "behind-base" }],
+        },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        snapshotError: new PullRequestOperationError({
+          operation: "monitorSnapshot",
+          detail: "provider unavailable",
+        }),
+      },
+    );
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.queued-turn.update",
+      origin: {
+        kind: "pull-request-monitor",
+        revalidationAttemptCount: 1,
+      },
+    });
+  });
+
+  it("suppresses a monitor turn after bounded revalidation failures", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: {
+          kind: "pull-request-monitor",
+          repository: "acme/app",
+          number: 42,
+          headSha: "head-current",
+          sourceRevision: "revision-old",
+          events: [{ kind: "behind-base" }],
+          revalidationAttemptCount: 2,
+        },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        snapshotError: new PullRequestOperationError({
+          operation: "monitorSnapshot",
+          detail: "provider unavailable",
+        }),
+      },
+    );
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.queued-turn.delete",
       threadId,
       queuedTurnId,
     });

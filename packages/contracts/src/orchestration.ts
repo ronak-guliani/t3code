@@ -260,6 +260,11 @@ export const PullRequestMonitorOrigin = Schema.Struct({
   sourceRevision: Schema.optional(TrimmedNonEmptyString),
   /** Findings represented by the prompt, used only to suppress work resolved while queued. */
   events: Schema.optional(Schema.Array(PullRequestMonitorActionableEvent)),
+  deliveryId: Schema.optional(TrimmedNonEmptyString),
+  revisionSummaries: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(500)))),
+  availableTools: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  revalidationAttemptCount: Schema.optional(NonNegativeInt),
+  nextRevalidationAt: Schema.optional(IsoDateTime),
 });
 export type PullRequestMonitorOrigin = typeof PullRequestMonitorOrigin.Type;
 
@@ -848,6 +853,16 @@ const ThreadQueuedTurnUpdateCommand = Schema.Struct({
   threadId: ThreadId,
   queuedTurnId: QueuedTurnId,
   text: Schema.String,
+  origin: Schema.optional(MessageOrigin),
+  updatedAt: IsoDateTime,
+});
+
+const ClientThreadQueuedTurnUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.queued-turn.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  queuedTurnId: QueuedTurnId,
+  text: Schema.String,
   updatedAt: IsoDateTime,
 });
 
@@ -1023,7 +1038,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ClientThreadQueuedTurnCreateCommand,
-  ThreadQueuedTurnUpdateCommand,
+  ClientThreadQueuedTurnUpdateCommand,
   ThreadQueuedTurnDeleteCommand,
   ThreadQueuedTurnDispatchCommand,
   ThreadTurnInterruptCommand,
@@ -1357,6 +1372,7 @@ export const ThreadQueuedTurnUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   queuedTurnId: QueuedTurnId,
   text: Schema.String,
+  origin: Schema.optional(MessageOrigin),
   updatedAt: IsoDateTime,
 });
 

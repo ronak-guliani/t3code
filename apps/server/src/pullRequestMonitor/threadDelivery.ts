@@ -181,6 +181,9 @@ export const sendQueuedTurn = (input: {
   readonly headSha: string;
   readonly sourceRevision: string;
   readonly events: ReadonlyArray<PullRequestMonitorActionableEvent>;
+  readonly deliveryId: string;
+  readonly revisionSummaries: ReadonlyArray<string>;
+  readonly availableTools: ReadonlyArray<string>;
 }): Effect.Effect<void, unknown, OrchestrationEngineService> =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
@@ -207,6 +210,9 @@ export const sendQueuedTurn = (input: {
         headSha: input.headSha,
         sourceRevision: input.sourceRevision,
         events: input.events,
+        deliveryId: input.deliveryId,
+        revisionSummaries: input.revisionSummaries,
+        availableTools: input.availableTools,
       },
       createdAt: now,
     });
