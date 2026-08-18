@@ -818,7 +818,6 @@ export const fetchGitHubPullRequestMonitorSnapshot = Effect.fn(
     state,
     String(pullRequest.isDraft),
     pullRequest.mergeable,
-    String(compareDecoded.behindBy ?? "unknown"),
     ...normalizedReviews.map(
       (review) => `${review.id}:${review.state}:${review.submittedAt ?? ""}`,
     ),

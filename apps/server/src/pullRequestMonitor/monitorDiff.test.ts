@@ -111,12 +111,17 @@ describe("diffPullRequestMonitorSnapshot", () => {
     expect(diffPullRequestMonitorSnapshot(nextCursor, second).actionableEvents).toEqual([]);
   });
 
-  it("detects behind-base transitions from an empty cursor", () => {
-    const { actionableEvents } = diffPullRequestMonitorSnapshot(
-      emptyCursor(),
-      snapshot({ behindBaseBy: 2 }),
-    );
-    expect(actionableEvents.some((event) => event.kind === "behind-base")).toBe(true);
+  it("emits merge conflicts but ignores base distance", () => {
+    const behind = snapshot({ behindBaseBy: 2 });
+    const behindResult = diffPullRequestMonitorSnapshot(emptyCursor(), behind);
+    expect(behindResult.actionableEvents).toEqual([]);
+
+    const conflicting = snapshot({ behindBaseBy: 2, mergeability: "conflicting" });
+    const conflictResult = diffPullRequestMonitorSnapshot(behindResult.nextCursor, conflicting);
+    expect(conflictResult.actionableEvents).toEqual([{ kind: "merge-conflict" }]);
+    expect(
+      diffPullRequestMonitorSnapshot(conflictResult.nextCursor, conflicting).actionableEvents,
+    ).toEqual([]);
   });
 
   it("never wakes the owner for our own issue comments", () => {

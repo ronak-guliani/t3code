@@ -38,7 +38,7 @@ export function formatBlockersSummary(
 function formatEvent(
   event: PullRequestMonitorActionableEvent,
   snapshot: PullRequestMonitorSnapshot,
-): string {
+): string | null {
   const sourceId = event.sourceId;
   switch (event.kind) {
     case "new-review-comment": {
@@ -70,10 +70,10 @@ function formatEvent(
     }
     case "review-finding":
       return `- Review finding: ${excerpt(event.detail ?? sourceId ?? "unspecified")}`;
+    case "merge-conflict":
+      return `- PR has merge conflicts with ${snapshot.baseBranch}`;
     case "behind-base":
-      return `- PR is behind ${snapshot.baseBranch}${
-        snapshot.behindBaseBy === null ? "" : ` by ${snapshot.behindBaseBy} commit(s)`
-      }`;
+      return null;
     case "state-changed":
       return `- PR state changed${event.detail ? `: ${excerpt(event.detail)}` : ""}`;
     default:
@@ -169,13 +169,19 @@ export function buildWakePrompt(input: {
   /** Monitor tool names this thread's agent can actually call. */
   readonly availableTools?: ReadonlyArray<string>;
 }): string {
+  const formattedEvents = input.events.flatMap((event) => {
+    const line = formatEvent(event, input.snapshot);
+    return line === null ? [] : [line];
+  });
   const eventLines =
-    input.events.length > 0
-      ? input.events.map((event) => formatEvent(event, input.snapshot)).join("\n")
-      : (input.revisionSummaries ?? [])
-          .map((summary) => `- ${excerpt(summary)}`)
-          .slice(0, 12)
-          .join("\n");
+    formattedEvents.length > 0
+      ? formattedEvents.join("\n")
+      : input.events.length === 0
+        ? (input.revisionSummaries ?? [])
+            .map((summary) => `- ${excerpt(summary)}`)
+            .slice(0, 12)
+            .join("\n")
+        : "";
   const activityBlock =
     eventLines.length > 0
       ? eventLines

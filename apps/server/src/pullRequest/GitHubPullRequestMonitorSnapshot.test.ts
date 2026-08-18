@@ -292,7 +292,7 @@ it.effect("treats a failed base comparison as unknown, never as up to date", () 
     });
     assert.strictEqual(observed.behindBaseBy, 0);
     assert.isTrue(observed.completeness.baseComparisonKnown);
-    assert.notStrictEqual(observed.sourceRevision, snapshot.sourceRevision);
+    assert.strictEqual(observed.sourceRevision, snapshot.sourceRevision);
   }),
 );
 

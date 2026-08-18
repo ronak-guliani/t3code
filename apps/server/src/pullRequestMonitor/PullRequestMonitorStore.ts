@@ -41,7 +41,9 @@ const decodeCursor = Schema.decodeUnknownEffect(
           outcome: Schema.Literals(["success", "failure", "pending", "cancelled"]),
         }),
       ),
-      behindBase: Schema.Boolean,
+      mergeability: Schema.Literals(["mergeable", "conflicting", "unknown", ""]).pipe(
+        Schema.withDecodingDefault(Effect.succeed("")),
+      ),
       sourceRevision: Schema.String,
     }),
   ),
@@ -717,7 +719,6 @@ export const make = Effect.gen(function* () {
         const raw = rows[0]?.cursor_json;
         if (!raw) return Effect.succeed(emptyCursor());
         return decodeCursor(raw).pipe(
-          Effect.map((cursor) => cursor as PullRequestMonitorCursor),
           Effect.mapError((cause) => storeError("Could not decode monitor cursor.", cause)),
         );
       }),
