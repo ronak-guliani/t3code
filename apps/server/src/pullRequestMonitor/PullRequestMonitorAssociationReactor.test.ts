@@ -33,17 +33,26 @@ describe("associationFromEvent", () => {
       threadId: "thr_1",
       projectId: "proj_1",
       parentThreadId: null,
-      source: "thread-created",
+      ownershipMode: "transfer",
       repository: "acme/app",
       number: 12,
     });
 
-    const updated = associationFromEvent(
+    const refreshed = associationFromEvent(
       event("thread.meta-updated", { threadId: "thr_1", pullRequest }),
     );
-    expect(updated?.repository).toBe("acme/app");
-    expect(updated?.projectId).toBe("");
-    expect(updated?.source).toBe("thread-meta-updated");
+    expect(refreshed?.repository).toBe("acme/app");
+    expect(refreshed?.projectId).toBe("");
+    expect(refreshed?.ownershipMode).toBe("preserve");
+
+    const explicit = associationFromEvent(
+      event("thread.meta-updated", {
+        threadId: "thr_1",
+        pullRequest,
+        pullRequestOwnership: "transfer",
+      }),
+    );
+    expect(explicit?.ownershipMode).toBe("transfer");
   });
 
   it("ignores lifecycle events that carry no association", () => {
@@ -104,6 +113,7 @@ describe("associationOwnerThreadId", () => {
       }),
     );
     expect(association).not.toBeNull();
+    expect(association?.ownershipMode).toBe("preserve");
     expect(
       associationOwnerThreadId(
         [
@@ -145,6 +155,7 @@ describe("associationOwnerThreadId", () => {
       event("thread.meta-updated", {
         threadId: "child",
         pullRequest,
+        pullRequestOwnership: "transfer",
       }),
     );
     expect(association).not.toBeNull();
@@ -158,5 +169,25 @@ describe("associationOwnerThreadId", () => {
         projectId,
       ),
     ).toBe("child");
+  });
+
+  it("uses ancestry as the fallback for refreshed inherited metadata", () => {
+    const association = associationFromEvent(
+      event("thread.meta-updated", {
+        threadId: "review-worker",
+        pullRequest,
+      }),
+    );
+    expect(association).not.toBeNull();
+    expect(
+      associationOwnerThreadId(
+        [
+          thread({ id: "owner", pullRequest }),
+          thread({ id: "review-worker", parentThreadId: "owner", pullRequest }),
+        ],
+        association!,
+        projectId,
+      ),
+    ).toBe("owner");
   });
 });

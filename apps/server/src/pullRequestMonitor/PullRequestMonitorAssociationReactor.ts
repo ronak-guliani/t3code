@@ -16,7 +16,7 @@ export interface AssociatedPullRequest {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
   readonly parentThreadId: ThreadId | null;
-  readonly source: "thread-created" | "thread-meta-updated";
+  readonly ownershipMode: "preserve" | "transfer";
   readonly repository: string;
   readonly number: number;
 }
@@ -34,6 +34,7 @@ export function associationFromEvent(event: OrchestrationEvent): AssociatedPullR
     readonly projectId?: unknown;
     readonly parentThreadId?: unknown;
     readonly pullRequest?: { readonly number?: unknown; readonly url?: unknown } | null;
+    readonly pullRequestOwnership?: unknown;
   };
   const pullRequest = payload.pullRequest;
   if (!pullRequest || typeof pullRequest.number !== "number") return null;
@@ -51,7 +52,14 @@ export function associationFromEvent(event: OrchestrationEvent): AssociatedPullR
       event.type === "thread.created" && typeof payload.parentThreadId === "string"
         ? (payload.parentThreadId as ThreadId)
         : null,
-    source: event.type === "thread.created" ? "thread-created" : "thread-meta-updated",
+    ownershipMode:
+      event.type === "thread.created"
+        ? typeof payload.parentThreadId === "string"
+          ? "preserve"
+          : "transfer"
+        : payload.pullRequestOwnership === "transfer"
+          ? "transfer"
+          : "preserve",
     repository,
     number: pullRequest.number,
   };
@@ -74,7 +82,7 @@ export function associationOwnerThreadId(
   association: AssociatedPullRequest,
   projectId: ProjectId,
 ): ThreadId {
-  if (association.source !== "thread-created" || association.parentThreadId === null) {
+  if (association.ownershipMode === "transfer") {
     return association.threadId;
   }
 
@@ -90,7 +98,10 @@ export function associationOwnerThreadId(
     );
   };
   let ownerThreadId = association.threadId;
-  let parentThreadId: ThreadId | null = association.parentThreadId;
+  let parentThreadId =
+    association.parentThreadId ??
+    threads.find((thread) => thread.id === association.threadId)?.parentThreadId ??
+    null;
   const visited = new Set<string>([association.threadId]);
   while (parentThreadId !== null && !visited.has(parentThreadId)) {
     visited.add(parentThreadId);
@@ -135,7 +146,8 @@ const makeReactor = Effect.gen(function* () {
           repository: association.repository,
           number: association.number,
           ownerThreadId: associationOwnerThreadId(readModel.threads, association, projectId),
-          ...(association.source === "thread-created" ? { ownerMode: "preserve" as const } : {}),
+          requireAssociatedOwner: true,
+          ...(association.ownershipMode === "preserve" ? { ownerMode: "preserve" as const } : {}),
         })
         .pipe(
           Effect.catchCause((cause) =>

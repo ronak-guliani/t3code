@@ -563,6 +563,33 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("rejects an invalid inherited fallback before claiming an ownerless monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const missingOwner = ThreadId.make("owner-inherited-missing");
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1049,
+        ownerMode: "observe-only",
+      });
+
+      const result = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1049,
+          ownerThreadId: missingOwner,
+          ownerMode: "preserve",
+        }),
+      );
+      const status = yield* service.status({ monitorId: started.monitor.id });
+
+      assert.strictEqual(result._tag, "Failure");
+      assert.isNull(status.monitor?.ownerThreadId);
+    }),
+  );
+
   it.effect("retains a concurrent explicit transfer over an inherited claim", () =>
     Effect.gen(function* () {
       const service = yield* PullRequestMonitorService;

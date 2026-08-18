@@ -321,6 +321,12 @@ export const layer = Layer.effect(
             );
           }
           if (input.ownerMode === "preserve") {
+            if (existing.ownerThreadId === null && input.ownerThreadId !== undefined) {
+              yield* requireProjectThread({
+                projectId: existing.projectId,
+                threadId: input.ownerThreadId,
+              });
+            }
             const resumed: PullRequestMonitorRecord = {
               ...existing,
               status: "monitoring",
