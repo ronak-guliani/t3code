@@ -1519,6 +1519,62 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("removes retired projector cursors before replaying events", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = new Date().toISOString();
+
+      yield* sql`
+        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES ('projection.thread-sessions', 0, ${now})
+      `;
+      yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-retired-projector"),
+        aggregateKind: "project",
+        aggregateId: ProjectId.make("project-retired-projector"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-retired-projector"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-retired-projector"),
+        metadata: {},
+        payload: {
+          projectId: ProjectId.make("project-retired-projector"),
+          title: "Retired projector",
+          workspaceRoot: "/tmp/project-retired-projector",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const stateRows = yield* sql<{
+        readonly projector: string;
+        readonly lastAppliedSequence: number;
+      }>`
+        SELECT
+          projector,
+          last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+        ORDER BY projector ASC
+      `;
+      assert.deepEqual(
+        stateRows.map((row) => row.projector),
+        Object.values(ORCHESTRATION_PROJECTOR_NAMES).toSorted(),
+      );
+      const maxSequenceRows = yield* sql<{ readonly maxSequence: number }>`
+        SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+      `;
+      const maxSequence = maxSequenceRows[0]?.maxSequence ?? 0;
+      assert.isTrue(stateRows.every((row) => row.lastAppliedSequence === maxSequence));
+    }),
+  );
+
   it.effect("keeps accumulated assistant text when completion payload text is empty", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
