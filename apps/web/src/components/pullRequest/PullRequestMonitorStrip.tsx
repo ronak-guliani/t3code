@@ -13,7 +13,7 @@ import {
   RadarIcon,
   UserRoundIcon,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   pullRequestMonitorLaunchFallbackMutationOptions,
@@ -23,7 +23,11 @@ import {
 } from "~/lib/pullRequestReactQuery";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
+
+const OBSERVE_ONLY = "observe-only";
+const MAINTENANCE_CHAT = "maintenance-chat";
 
 function statusLabel(monitor: PullRequestMonitorRecord | null | undefined): string {
   if (!monitor || !monitor.enabled) return "Not monitoring";
@@ -91,6 +95,22 @@ export function PullRequestMonitorStrip(props: {
   const openFeedback = statusQuery.data?.openFeedback ?? [];
   const recentDeliveries = statusQuery.data?.recentDeliveries ?? [];
   const recentReports = statusQuery.data?.recentReports ?? [];
+  const ownerCandidates = statusQuery.data?.ownerCandidates ?? [];
+  const [ownerSelection, setOwnerSelection] = useState<string>("");
+  useEffect(() => {
+    if (ownerSelection === "" && ownerCandidates.length === 1) {
+      setOwnerSelection(ownerCandidates[0]!.threadId);
+      return;
+    }
+    if (
+      ownerSelection !== "" &&
+      ownerSelection !== OBSERVE_ONLY &&
+      ownerSelection !== MAINTENANCE_CHAT &&
+      !ownerCandidates.some((candidate) => candidate.threadId === ownerSelection)
+    ) {
+      setOwnerSelection("");
+    }
+  }, [ownerCandidates, ownerSelection]);
   const active = monitor?.enabled === true;
   const showFallback = active && monitor?.ownerThreadId === null;
   // Exactly one chat may modify a monitored PR; make that owner visible.
@@ -163,34 +183,7 @@ export function PullRequestMonitorStrip(props: {
             <PauseIcon className="size-3.5" />
             Stop
           </Button>
-        ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={start.isPending}
-            onClick={() => {
-              void start
-                .mutateAsync({
-                  projectId: props.reference.projectId,
-                  repository: props.reference.repository,
-                  number: props.reference.number,
-                })
-                .then(() => {
-                  toastManager.add({ type: "success", title: "Monitoring started" });
-                })
-                .catch((error: unknown) => {
-                  toastManager.add({
-                    type: "error",
-                    title: "Could not start monitoring",
-                    description: error instanceof Error ? error.message : String(error),
-                  });
-                });
-            }}
-          >
-            <PlayIcon className="size-3.5" />
-            Monitor
-          </Button>
-        )}
+        ) : null}
         {showFallback ? (
           <Button
             size="sm"
@@ -225,6 +218,81 @@ export function PullRequestMonitorStrip(props: {
           </Button>
         ) : null}
       </div>
+      {!active ? (
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/40 pt-2">
+          <Select<string>
+            value={ownerSelection}
+            onValueChange={(value) => {
+              setOwnerSelection(value ?? "");
+            }}
+          >
+            <SelectTrigger className="min-w-48 flex-1" aria-label="Monitoring owner">
+              <SelectValue placeholder="Choose where feedback goes" />
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {ownerCandidates.map((candidate) => (
+                <SelectItem key={candidate.threadId} value={candidate.threadId}>
+                  {candidate.title}
+                </SelectItem>
+              ))}
+              <SelectItem value={MAINTENANCE_CHAT}>New maintenance chat</SelectItem>
+              <SelectItem value={OBSERVE_ONLY}>Observe only</SelectItem>
+            </SelectPopup>
+          </Select>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={start.isPending || launchFallback.isPending || ownerSelection === ""}
+            onClick={() => {
+              const ownerThreadId = ownerCandidates.find(
+                (candidate) => candidate.threadId === ownerSelection,
+              )?.threadId;
+              void start
+                .mutateAsync({
+                  projectId: props.reference.projectId,
+                  repository: props.reference.repository,
+                  number: props.reference.number,
+                  ...(ownerThreadId ? { ownerThreadId, requireAssociatedOwner: true } : {}),
+                  ...(!ownerThreadId ? { ownerMode: "observe-only" as const } : {}),
+                })
+                .then(async () => {
+                  if (ownerSelection === MAINTENANCE_CHAT) {
+                    try {
+                      await launchFallback.mutateAsync({
+                        reference: props.reference,
+                        reason: "owner-missing",
+                      });
+                    } catch (error: unknown) {
+                      toastManager.add({
+                        type: "error",
+                        title: "Monitoring started without a maintenance chat",
+                        description: error instanceof Error ? error.message : String(error),
+                      });
+                      return;
+                    }
+                  }
+                  toastManager.add({
+                    type: "success",
+                    title:
+                      ownerSelection === OBSERVE_ONLY
+                        ? "Observe-only monitoring started"
+                        : "Monitoring started",
+                  });
+                })
+                .catch((error: unknown) => {
+                  toastManager.add({
+                    type: "error",
+                    title: "Could not start monitoring",
+                    description: error instanceof Error ? error.message : String(error),
+                  });
+                });
+            }}
+          >
+            <PlayIcon className="size-3.5" />
+            Monitor
+          </Button>
+        </div>
+      ) : null}
       {ownership ? (
         <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
           <UserRoundIcon className="mt-0.5 size-3 shrink-0" />

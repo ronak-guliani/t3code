@@ -6,6 +6,7 @@ import {
   type PullRequestMonitorListInput,
   type PullRequestMonitorListResult,
   type PullRequestMonitorMutationResult,
+  type PullRequestMonitorOwnerCandidate,
   type PullRequestMonitorRecord,
   type PullRequestMonitorStartInput,
   type PullRequestMonitorStatusInput,
@@ -43,7 +44,10 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { formatPullRequestMonitorCanonicalKey } from "./canonicalKey.ts";
+import {
+  formatPullRequestMonitorCanonicalKey,
+  repositoryFromPullRequestUrl,
+} from "./canonicalKey.ts";
 import { diffPullRequestMonitorSnapshot, emptyCursor } from "./monitorDiff.ts";
 import {
   abandonFallbackThread,
@@ -101,6 +105,29 @@ function monitorError(
 function describeCause(cause: Cause.Cause<unknown>): string {
   const squashed = Cause.squash(cause);
   return squashed instanceof Error ? squashed.message : String(squashed);
+}
+
+export function associatedOwnerCandidates(
+  threads: ReadonlyArray<{
+    readonly id: ThreadId;
+    readonly projectId: PullRequestRef["projectId"];
+    readonly title: string;
+    readonly pullRequest?: { readonly number: number; readonly url: string } | null;
+    readonly archivedAt: string | null;
+    readonly deletedAt: string | null;
+  }>,
+  reference: PullRequestRef,
+): ReadonlyArray<PullRequestMonitorOwnerCandidate> {
+  return threads
+    .filter(
+      (thread) =>
+        thread.projectId === reference.projectId &&
+        thread.archivedAt === null &&
+        thread.deletedAt === null &&
+        thread.pullRequest?.number === reference.number &&
+        repositoryFromPullRequestUrl(thread.pullRequest.url) === reference.repository,
+    )
+    .map((thread) => ({ threadId: thread.id, title: thread.title }));
 }
 
 export class PullRequestMonitorService extends Context.Service<
@@ -206,9 +233,23 @@ export const layer = Layer.effect(
         const monitor = yield* resolveMonitor(input).pipe(
           Effect.catchTag("PullRequestMonitorError", () => Effect.succeed(null)),
         );
+        const reference =
+          input.reference ??
+          (monitor === null
+            ? null
+            : {
+                projectId: monitor.projectId,
+                repository: monitor.repository,
+                number: monitor.number,
+              });
+        const ownerCandidates =
+          reference === null
+            ? []
+            : associatedOwnerCandidates((yield* engine.getReadModel()).threads, reference);
         if (!monitor) {
           return {
             monitor: null,
+            ownerCandidates,
             latestSnapshot: null,
             recentEvents: [],
             openFeedback: [],
@@ -222,6 +263,7 @@ export const layer = Layer.effect(
         const recentReports = yield* feedback.listReports(monitor.id);
         return {
           monitor,
+          ownerCandidates,
           latestSnapshot: latest?.snapshot ?? null,
           recentEvents: latest?.events ?? [],
           openFeedback,
@@ -258,6 +300,18 @@ export const layer = Layer.effect(
 
         const existing = yield* store.getByCanonicalKey(canonical);
         const now = yield* isoNow();
+        if (input.ownerThreadId !== undefined && input.requireAssociatedOwner === true) {
+          const candidates = associatedOwnerCandidates((yield* engine.getReadModel()).threads, {
+            projectId: input.projectId,
+            repository: detail.repository,
+            number: detail.number,
+          });
+          if (!candidates.some((candidate) => candidate.threadId === input.ownerThreadId)) {
+            return yield* monitorError(
+              "The selected owner chat is not actively associated with this pull request.",
+            );
+          }
+        }
 
         if (existing) {
           if (existing.projectId !== input.projectId) {
@@ -266,22 +320,22 @@ export const layer = Layer.effect(
               { monitorId: existing.id },
             );
           }
-          const nextOwner = input.ownerThreadId ?? existing.ownerThreadId;
+          const nextOwner =
+            input.ownerMode === "observe-only"
+              ? null
+              : (input.ownerThreadId ?? existing.ownerThreadId);
           // Ownership-scoped write so a concurrent poll cannot be clobbered by start().
           if (nextOwner !== existing.ownerThreadId) {
-            if (nextOwner === null) {
-              return yield* monitorError("Cannot clear monitor ownership through start().", {
-                monitorId: existing.id,
-              });
+            if (nextOwner !== null) {
+              yield* requireProjectThread({ projectId: existing.projectId, threadId: nextOwner });
             }
-            yield* requireProjectThread({ projectId: existing.projectId, threadId: nextOwner });
             yield* store.transferOwnershipAtomic({
               monitorId: existing.id,
               ownerThreadId: nextOwner,
               updatedAt: now,
               eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
               toThreadId: nextOwner,
-              reason: "start-owner-associate",
+              reason: nextOwner === null ? "start-observe-only" : "start-owner-associate",
             });
           }
           const resumed: PullRequestMonitorRecord = {

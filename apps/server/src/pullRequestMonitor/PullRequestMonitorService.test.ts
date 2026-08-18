@@ -35,6 +35,7 @@ import {
 } from "./PullRequestMonitorFeedbackService.ts";
 import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
 import {
+  associatedOwnerCandidates,
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
 } from "./PullRequestMonitorService.ts";
@@ -174,15 +175,21 @@ const knownThreads = new Map<
     worktreePath: string | null;
     archivedAt: string | null;
     busy: boolean;
+    pullRequest: { number: number; url: string } | null;
   }
 >();
 
-function seedThread(threadId: ThreadId, worktreePath: string | null = "/tmp/wt") {
+function seedThread(
+  threadId: ThreadId,
+  worktreePath: string | null = "/tmp/wt",
+  pullRequest: { number: number; url: string } | null = null,
+) {
   knownThreads.set(threadId, {
     projectId,
     worktreePath,
     archivedAt: null,
     busy: false,
+    pullRequest,
   });
 }
 
@@ -222,6 +229,17 @@ const fakeProjections = {
 } as unknown as ProjectionSnapshotQuery["Service"];
 
 const fakeEngine = {
+  getReadModel: () =>
+    Effect.succeed({
+      threads: [...knownThreads.entries()].map(([id, thread]) => ({
+        id,
+        projectId: thread.projectId,
+        title: `Chat ${id}`,
+        pullRequest: thread.pullRequest,
+        archivedAt: thread.archivedAt,
+        deletedAt: null,
+      })),
+    } as never),
   dispatch: (command: {
     type: string;
     threadId?: ThreadId;
@@ -318,6 +336,40 @@ const TestLayer = pullRequestMonitorServiceLayer.pipe(
 
 const layer = it.layer(TestLayer);
 
+it("returns only active chats associated with the monitored pull request", () => {
+  const candidates = associatedOwnerCandidates(
+    [
+      {
+        id: ThreadId.make("owner"),
+        projectId,
+        title: "Fix PR",
+        pullRequest: { number: 42, url: "https://github.com/acme/app/pull/42" },
+        archivedAt: null,
+        deletedAt: null,
+      },
+      {
+        id: ThreadId.make("other-pr"),
+        projectId,
+        title: "Other PR",
+        pullRequest: { number: 43, url: "https://github.com/acme/app/pull/43" },
+        archivedAt: null,
+        deletedAt: null,
+      },
+      {
+        id: ThreadId.make("archived"),
+        projectId,
+        title: "Archived",
+        pullRequest: { number: 42, url: "https://github.com/acme/app/pull/42" },
+        archivedAt: "2026-08-17T00:00:00.000Z",
+        deletedAt: null,
+      },
+    ],
+    { projectId, repository: "acme/app", number: 42 },
+  );
+
+  assert.deepStrictEqual(candidates, [{ threadId: ThreadId.make("owner"), title: "Fix PR" }]);
+});
+
 layer("PullRequestMonitorService", (it) => {
   it.effect("starts one canonical monitor and exposes status", () =>
     Effect.gen(function* () {
@@ -342,6 +394,7 @@ layer("PullRequestMonitorService", (it) => {
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNotNull(status.monitor);
       assert.isNotNull(status.latestSnapshot);
+      assert.deepStrictEqual(status.ownerCandidates, []);
       assert.isArray(status.openFeedback);
       assert.isArray(status.recentDeliveries);
       assert.isArray(status.recentReports);
@@ -374,6 +427,88 @@ layer("PullRequestMonitorService", (it) => {
       });
       assert.strictEqual(transferred.monitor.ownerThreadId, ownerB);
       assert.isNull(transferred.monitor.linkedReviewThreadId);
+    }),
+  );
+
+  it.effect("requires browser-selected owners to be actively associated with the PR", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const associated = ThreadId.make("associated-owner");
+      const unrelated = ThreadId.make("unrelated-owner");
+      const archived = ThreadId.make("archived-owner");
+      seedThread(associated, "/tmp/associated", {
+        number: 1044,
+        url: "https://github.com/acme/app/pull/1044",
+      });
+      seedThread(unrelated, "/tmp/unrelated", {
+        number: 45,
+        url: "https://github.com/acme/app/pull/45",
+      });
+      seedThread(archived, "/tmp/archived", {
+        number: 1044,
+        url: "https://github.com/acme/app/pull/1044",
+      });
+      const archivedRow = knownThreads.get(archived)!;
+      knownThreads.set(archived, {
+        ...archivedRow,
+        archivedAt: "2026-08-17T00:00:00.000Z",
+      });
+
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1044,
+        ownerThreadId: associated,
+        requireAssociatedOwner: true,
+      });
+      assert.strictEqual(started.monitor.ownerThreadId, associated);
+
+      const unrelatedResult = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1044,
+          ownerThreadId: unrelated,
+          requireAssociatedOwner: true,
+        }),
+      );
+      assert.strictEqual(unrelatedResult._tag, "Failure");
+
+      const archivedResult = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1044,
+          ownerThreadId: archived,
+          requireAssociatedOwner: true,
+        }),
+      );
+      assert.strictEqual(archivedResult._tag, "Failure");
+    }),
+  );
+
+  it.effect("can explicitly resume a monitor in observe-only mode", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("owner-observe");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 42,
+        ownerThreadId: owner,
+      });
+      yield* service.stop({ monitorId: started.monitor.id });
+
+      const resumed = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 42,
+        ownerMode: "observe-only",
+      });
+
+      assert.isNull(resumed.monitor.ownerThreadId);
+      assert.strictEqual(resumed.monitor.enabled, true);
     }),
   );
 
@@ -1215,6 +1350,7 @@ layer("PullRequestMonitorService", (it) => {
         worktreePath: "/tmp/wt",
         archivedAt: null,
         busy: true,
+        pullRequest: null,
       });
 
       const live = sampleSnapshot({
@@ -1366,6 +1502,7 @@ layer("PullRequestMonitorService", (it) => {
         worktreePath: "/tmp/wt",
         archivedAt: "2026-08-11T00:00:00.000Z",
         busy: true,
+        pullRequest: null,
       });
       dispatchedCommands.length = 0;
 
