@@ -12,7 +12,11 @@ import { killProcessTree } from "@t3tools/shared/processTree";
 import { ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
-import { CHAT_NEW_WORKSPACE_CLEANUP_SAFE } from "./cliProtocol.ts";
+import {
+  decodeNestedThreadCreationOutcome,
+  type NestedThreadCreationErrorCode,
+  type NestedThreadCreationOutcome,
+} from "./nestedThreadCreation.ts";
 
 type JsonRpcId = string | number | null;
 
@@ -502,45 +506,24 @@ const isDefinitiveCommandRejection = (error: unknown): boolean =>
     output.includes("ORCHESTRATION_COMMAND_REJECTED:"),
   );
 
-const isSafeNestedThreadCleanup = (error: unknown, cleanupToken: string): boolean =>
-  error instanceof CommandExecutionError &&
-  [error.result.stdout, error.result.stderr].some((output) =>
-    output.includes(`${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${cleanupToken}`),
-  );
-
-const hasSafeNestedThreadCleanupSignal = (error: unknown): boolean =>
-  error instanceof CommandExecutionError &&
-  [error.result.stdout, error.result.stderr].some((output) =>
-    output.includes(CHAT_NEW_WORKSPACE_CLEANUP_SAFE),
-  );
-
 interface IsolatedWorkspaceSpec {
   readonly branch: string;
   readonly path: string;
   readonly baseRef: string | undefined;
 }
 
-interface NestedThreadCreationOutcome {
-  readonly status: "created" | "failed" | "ambiguous";
-  readonly threadId: string | null;
-  readonly threadUrl: string | null;
-  readonly retryable: boolean;
-  readonly creationCommitted: boolean | null;
-  readonly cleanupPerformed: boolean;
-  readonly error?: string;
+interface WorkspacePreflight {
+  readonly workspace: IsolatedWorkspaceSpec;
+  readonly baseRef: string;
 }
 
-class WorkspacePreflightError extends Error {
-  constructor(message: string) {
+class WorkspaceConflictError extends Error {
+  readonly errorCode: NestedThreadCreationErrorCode;
+
+  constructor(errorCode: NestedThreadCreationErrorCode, message: string) {
     super(message);
-    this.name = "WorkspacePreflightError";
-  }
-}
-
-class NestedThreadSetupError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "NestedThreadSetupError";
+    this.name = "WorkspaceConflictError";
+    this.errorCode = errorCode;
   }
 }
 
@@ -561,9 +544,29 @@ function parseIsolatedWorkspaceSpec(
   }
   return {
     branch,
-    path: requireAbsolutePath(asString(value.path), toolName),
+    path: path.resolve(requireAbsolutePath(asString(value.path), toolName)),
     baseRef: asString(value.baseRef)?.trim() || undefined,
   };
+}
+
+const isMissingPathError = (error: unknown): boolean =>
+  error instanceof Error && "code" in error && error.code === "ENOENT";
+
+async function resolvePathThroughExistingAncestor(targetPath: string): Promise<string> {
+  const suffix: Array<string> = [];
+  let cursor = path.resolve(targetPath);
+  while (true) {
+    try {
+      const resolvedAncestor = await fs.realpath(cursor);
+      return path.join(resolvedAncestor, ...suffix.toReversed());
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw error;
+      suffix.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
 }
 
 async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<string> {
@@ -572,7 +575,6 @@ async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec):
   if (!baseRef) {
     throw new Error("Could not determine the current branch; pass baseRef explicitly.");
   }
-
   await runCommand(cwd, "git", [
     "worktree",
     "add",
@@ -584,32 +586,231 @@ async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec):
   return baseRef;
 }
 
-async function preflightGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<void> {
+async function findExistingAncestor(targetPath: string): Promise<string> {
+  let cursor = path.resolve(targetPath);
+  while (true) {
+    try {
+      await fs.lstat(cursor);
+      return cursor;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw error;
+      cursor = parent;
+    }
+  }
+}
+
+async function findContainingGitRoot(
+  targetPath: string,
+): Promise<{ readonly path: string; readonly bare: boolean } | null> {
+  let cursor = await findExistingAncestor(targetPath);
+  while (true) {
+    try {
+      await fs.lstat(path.join(cursor, ".git"));
+      return { path: cursor, bare: false };
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const bareMarkers = await Promise.all(
+        ["HEAD", "config", "objects", "refs"].map(async (marker) => {
+          try {
+            await fs.lstat(path.join(cursor, marker));
+            return true;
+          } catch (markerError) {
+            if (isMissingPathError(markerError)) return false;
+            throw markerError;
+          }
+        }),
+      );
+      if (bareMarkers.every(Boolean)) return { path: cursor, bare: true };
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return null;
+      cursor = parent;
+    }
+  }
+}
+
+async function findContainingGitCommonDir(targetPath: string): Promise<string | null> {
+  const gitRoot = await findContainingGitRoot(targetPath);
+  if (gitRoot === null) return null;
+  const result = JSON.parse(
+    await spawnCommand(
+      gitRoot.path,
+      "git",
+      gitRoot.bare
+        ? ["--git-dir=.", "rev-parse", "--git-common-dir"]
+        : ["rev-parse", "--git-common-dir"],
+    ),
+  ) as TerminalResult;
+  if (result.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git repository ownership inspection failed for '${gitRoot.path}'. Resolve the repository error before retrying: ${result.stderr.trim() || `exit ${String(result.code)}`}`,
+    );
+  }
+  const commonDir = result.stdout.trim();
+  if (!commonDir) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git repository ownership inspection returned no common directory for '${gitRoot.path}'. Repair the repository before retrying.`,
+    );
+  }
+  return await fs.realpath(
+    path.isAbsolute(commonDir) ? commonDir : path.resolve(gitRoot.path, commonDir),
+  );
+}
+
+const registeredWorktreePaths = (porcelain: string): ReadonlyArray<string> =>
+  porcelain
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => path.resolve(line.slice("worktree ".length)));
+
+async function inspectWorkspaceSideEffects(
+  cwd: string,
+  workspace: IsolatedWorkspaceSpec,
+): Promise<{
+  readonly branchCreated: boolean;
+  readonly pathCreated: boolean;
+  readonly worktreeRegistered: boolean;
+}> {
   const [pathStat, branchCheck, worktreeList] = await Promise.all([
-    fs.stat(workspace.path).catch(() => null),
+    fs.lstat(workspace.path).catch((error) => {
+      if (isMissingPathError(error)) return null;
+      throw error;
+    }),
     spawnCommand(cwd, "git", ["show-ref", "--verify", "--quiet", `refs/heads/${workspace.branch}`]),
     runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
   ]);
+  return {
+    branchCreated: (JSON.parse(branchCheck) as TerminalResult).code === 0,
+    pathCreated: pathStat !== null,
+    worktreeRegistered: registeredWorktreePaths(worktreeList.stdout).includes(workspace.path),
+  };
+}
+
+async function cleanupNestedWorkspace(
+  options: McpServeOptions,
+  workspace: IsolatedWorkspaceSpec,
+): Promise<void> {
+  const sideEffects = await inspectWorkspaceSideEffects(options.cwd, workspace);
+  const failures: Array<string> = [];
+  if (sideEffects.worktreeRegistered) {
+    try {
+      await runCommand(options.cwd, "git", ["worktree", "remove", "--force", workspace.path]);
+    } catch (error) {
+      failures.push(`worktree removal failed: ${toErrorMessage(error)}`);
+    }
+  } else if (sideEffects.pathCreated) {
+    failures.push(
+      `path '${workspace.path}' exists without a matching Git worktree registration and was preserved`,
+    );
+  }
+
+  const afterWorktreeRemoval = await inspectWorkspaceSideEffects(options.cwd, workspace);
+  if (
+    afterWorktreeRemoval.branchCreated &&
+    !afterWorktreeRemoval.pathCreated &&
+    !afterWorktreeRemoval.worktreeRegistered
+  ) {
+    try {
+      await runCommand(options.cwd, "git", ["branch", "--delete", "--force", workspace.branch]);
+    } catch (error) {
+      failures.push(`branch removal failed: ${toErrorMessage(error)}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(failures.join("; "));
+  }
+}
+
+async function preflightGitWorktree(
+  cwd: string,
+  input: IsolatedWorkspaceSpec,
+): Promise<WorkspacePreflight> {
+  const workspace = {
+    ...input,
+    path: await resolvePathThroughExistingAncestor(input.path),
+  };
+  const sourceCommonDir = await resolveGitCommonDir(cwd).catch((error) => {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `The calling workspace is not a usable Git repository: ${toErrorMessage(error)}. Open the parent thread in the repository that should own the child worktree.`,
+    );
+  });
+  const baseRef =
+    workspace.baseRef ?? (await runCommand(cwd, "git", ["branch", "--show-current"])).stdout.trim();
+  if (!baseRef) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BASE_REF_MISSING",
+      "Could not determine a base ref from the detached checkout. Pass workspace.baseRef explicitly.",
+    );
+  }
+
+  const [pathStat, branchFormat, branchCheck, baseRefCheck, worktreeList, containingCommonDir] =
+    await Promise.all([
+      fs.lstat(workspace.path).catch((error) => {
+        if (isMissingPathError(error)) return null;
+        throw error;
+      }),
+      spawnCommand(cwd, "git", ["check-ref-format", "--branch", workspace.branch]),
+      spawnCommand(cwd, "git", [
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/heads/${workspace.branch}`,
+      ]),
+      spawnCommand(cwd, "git", ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]),
+      runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
+      findContainingGitCommonDir(path.dirname(workspace.path)),
+    ]);
+  const branchFormatResult = JSON.parse(branchFormat) as TerminalResult;
+  if (branchFormatResult.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BRANCH_INVALID",
+      `Workspace branch is not a valid Git branch name: ${workspace.branch}. Choose a valid branch name and retry.`,
+    );
+  }
   if (pathStat !== null) {
-    throw new WorkspacePreflightError(
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PATH_OCCUPIED",
       `Workspace path is already occupied: ${workspace.path}. Choose an unused absolute path or remove the stale worktree first.`,
     );
   }
   const branchResult = JSON.parse(branchCheck) as TerminalResult;
   if (branchResult.code === 0) {
-    throw new WorkspacePreflightError(
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BRANCH_EXISTS",
       `Workspace branch already exists: ${workspace.branch}. Choose a new branch or remove the stale branch first.`,
     );
   }
-  const occupiedPaths = worktreeList.stdout
-    .split("\n")
-    .filter((line) => line.startsWith("worktree "))
-    .map((line) => path.resolve(line.slice("worktree ".length)));
-  if (occupiedPaths.includes(path.resolve(workspace.path))) {
-    throw new WorkspacePreflightError(
-      `Workspace path is already registered as a Git worktree: ${workspace.path}. Remove or prune the stale worktree first.`,
+  if (branchResult.code !== 1) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git could not check whether branch '${workspace.branch}' is available. Resolve the repository error and retry: ${branchResult.stderr.trim() || `exit ${String(branchResult.code)}`}`,
     );
   }
+  const baseResult = JSON.parse(baseRefCheck) as TerminalResult;
+  if (baseResult.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BASE_REF_MISSING",
+      `Workspace base ref does not resolve to a commit: ${baseRef}. Fetch or choose a valid baseRef and retry.`,
+    );
+  }
+  if (registeredWorktreePaths(worktreeList.stdout).includes(workspace.path)) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PATH_REGISTERED",
+      `Workspace path is already registered as a Git worktree: ${workspace.path}. Run 'git worktree prune' for a stale registration or remove the registered worktree before retrying.`,
+    );
+  }
+  if (containingCommonDir !== null && containingCommonDir !== sourceCommonDir) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_REPOSITORY_MISMATCH",
+      `Workspace path resolves inside a different Git repository: ${workspace.path}. Choose a path owned by this repository or a neutral parent directory.`,
+    );
+  }
+
+  return { workspace, baseRef };
 }
 
 async function recordThreadWorkspaceBinding(
@@ -738,10 +939,179 @@ async function switchWorkspaceTool(
   });
 }
 
+interface NestedThreadToolDependencies {
+  readonly beforeWorkspaceRevalidation: () => Promise<void>;
+  readonly createWorkspace: (cwd: string, preflight: WorkspacePreflight) => Promise<void>;
+  readonly cleanupWorkspace: (
+    options: McpServeOptions,
+    workspace: IsolatedWorkspaceSpec,
+  ) => Promise<void>;
+}
+
+const defaultNestedThreadToolDependencies: NestedThreadToolDependencies = {
+  beforeWorkspaceRevalidation: () => Promise.resolve(),
+  createWorkspace: async (cwd, preflight) => {
+    await createGitWorktree(cwd, {
+      ...preflight.workspace,
+      baseRef: preflight.baseRef,
+    });
+  },
+  cleanupWorkspace: cleanupNestedWorkspace,
+};
+
+const serializeNestedThreadOutcome = (outcome: NestedThreadCreationOutcome): string =>
+  JSON.stringify(outcome);
+
+const nestedThreadFailure = (
+  errorCode: NestedThreadCreationErrorCode,
+  message: string,
+  options: {
+    readonly retryable?: boolean;
+    readonly workspaceCreated?: boolean;
+    readonly cleanupPerformed?: boolean;
+  } = {},
+): NestedThreadCreationOutcome => ({
+  status: "failed",
+  threadId: null,
+  threadUrl: null,
+  retryable: options.retryable ?? false,
+  workspaceCreated: options.workspaceCreated ?? false,
+  cleanupPerformed: options.cleanupPerformed ?? false,
+  errorCode,
+  message,
+});
+
+function cliBoundaryFailure(
+  dryRun: boolean,
+  errorCode: "CLI_EXECUTION_FAILED" | "CLI_RESPONSE_INVALID",
+  detail: string,
+): NestedThreadCreationOutcome {
+  if (dryRun) {
+    return {
+      status: "failed",
+      threadId: null,
+      threadUrl: null,
+      retryable: true,
+      workspaceCreated: false,
+      cleanupPerformed: false,
+      errorCode,
+      message:
+        errorCode === "CLI_RESPONSE_INVALID"
+          ? `Nested-thread validation returned an invalid structured outcome and made no changes: ${detail}`
+          : `Nested-thread validation could not complete and made no changes. Retry after resolving the CLI error: ${detail}`,
+    };
+  }
+  return {
+    status: "ambiguous",
+    threadId: null,
+    threadUrl: null,
+    retryable: false,
+    workspaceCreated: false,
+    cleanupPerformed: false,
+    errorCode,
+    message:
+      errorCode === "CLI_RESPONSE_INVALID"
+        ? `The CLI returned an invalid structured creation outcome. Inspect child threads before retrying: ${detail}`
+        : `The CLI did not return a structured creation outcome. Inspect child threads before retrying: ${detail}`,
+  };
+}
+
+function parseNestedThreadCliOutcome(
+  result: TerminalResult,
+  dryRun: boolean,
+): NestedThreadCreationOutcome {
+  const outcome = decodeNestedThreadCreationOutcome(JSON.parse(result.stdout.trim()) as unknown);
+  const succeeded = result.code === 0;
+  if (
+    (dryRun && succeeded && outcome.status !== "dry-run") ||
+    (dryRun && !succeeded && (outcome.status === "created" || outcome.status === "dry-run")) ||
+    (!dryRun && outcome.status === "dry-run")
+  ) {
+    throw new Error(`CLI outcome status '${outcome.status}' does not match this invocation phase`);
+  }
+  return outcome;
+}
+
+async function invokeNestedThreadCli(
+  options: McpServeOptions,
+  commandArgs: ReadonlyArray<string>,
+  dryRun: boolean,
+): Promise<NestedThreadCreationOutcome> {
+  let result: TerminalResult;
+  try {
+    result = await runCommand(options.cwd, options.cliCommand, commandArgs);
+  } catch (error) {
+    if (error instanceof CommandExecutionError && error.result.stdout.trim()) {
+      try {
+        return parseNestedThreadCliOutcome(error.result, dryRun);
+      } catch {
+        return cliBoundaryFailure(dryRun, "CLI_RESPONSE_INVALID", error.result.stdout.trim());
+      }
+    }
+    return cliBoundaryFailure(dryRun, "CLI_EXECUTION_FAILED", toErrorMessage(error));
+  }
+  try {
+    return parseNestedThreadCliOutcome(result, dryRun);
+  } catch (error) {
+    return cliBoundaryFailure(dryRun, "CLI_RESPONSE_INVALID", toErrorMessage(error));
+  }
+}
+
+function nestedThreadCommandArgs(
+  options: McpServeOptions & {
+    readonly threadId: string;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly runtimeMode: RuntimeMode;
+  },
+  input: {
+    readonly project: string;
+    readonly title: string;
+    readonly prompt: string;
+    readonly model: string;
+    readonly reasoning: string | undefined;
+    readonly workspace: IsolatedWorkspaceSpec | undefined;
+    readonly dryRun: boolean;
+  },
+): ReadonlyArray<string> {
+  return [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "new",
+    "--project",
+    input.project,
+    "--parent",
+    options.threadId,
+    ...(!input.dryRun
+      ? [
+          "--cross-thread-source",
+          options.threadId,
+          "--cross-thread-capability",
+          issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
+        ]
+      : []),
+    "--provider",
+    options.providerInstanceId,
+    "--model",
+    input.model,
+    ...(input.reasoning ? ["--reasoning", input.reasoning] : []),
+    "--runtime-mode",
+    options.runtimeMode,
+    ...(input.workspace
+      ? ["--branch", input.workspace.branch, "--worktree", input.workspace.path]
+      : []),
+    ...(input.dryRun ? ["--dry-run"] : []),
+    "--title",
+    input.title,
+    input.prompt,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ];
+}
+
 async function createNestedThreadToolImpl(
   options: McpServeOptions,
   args: Record<string, unknown>,
-): Promise<string> {
+  dependencies: NestedThreadToolDependencies,
+): Promise<NestedThreadCreationOutcome> {
   if (!options.threadId) {
     throw new NestedThreadValidationError(
       "create_nested_thread is only available from a T3 provider session",
@@ -752,6 +1122,10 @@ async function createNestedThreadToolImpl(
   const prompt = asString(args.prompt)?.trim();
   const model = asString(args.model)?.trim();
   const reasoning = asString(args.reasoning)?.trim();
+  if (args.dryRun !== undefined && typeof args.dryRun !== "boolean") {
+    throw new NestedThreadValidationError("create_nested_thread dryRun must be a boolean");
+  }
+  const dryRun = args.dryRun === true;
   if (!project)
     throw new NestedThreadValidationError("create_nested_thread requires a non-empty project");
   if (!title)
@@ -773,7 +1147,6 @@ async function createNestedThreadToolImpl(
   }
 
   let workspace: IsolatedWorkspaceSpec | undefined;
-  const workspaceCleanupToken = randomUUID();
   if (args.workspace !== undefined) {
     if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
       throw new NestedThreadValidationError("create_nested_thread workspace must be an object");
@@ -789,121 +1162,185 @@ async function createNestedThreadToolImpl(
     } catch (error) {
       throw new NestedThreadValidationError(toErrorMessage(error));
     }
+  }
+
+  const authenticatedOptions = {
+    ...options,
+    threadId: options.threadId,
+    providerInstanceId: options.providerInstanceId,
+    runtimeMode: options.runtimeMode,
+  };
+  const validationOutcome = await invokeNestedThreadCli(
+    options,
+    nestedThreadCommandArgs(authenticatedOptions, {
+      project,
+      title,
+      prompt,
+      model,
+      reasoning,
+      workspace,
+      dryRun: true,
+    }),
+    true,
+  );
+  if (validationOutcome.status !== "dry-run") {
+    return validationOutcome;
+  }
+
+  if (!workspace) {
+    if (dryRun) return validationOutcome;
+    return await invokeNestedThreadCli(
+      options,
+      nestedThreadCommandArgs(authenticatedOptions, {
+        project,
+        title,
+        prompt,
+        model,
+        reasoning,
+        workspace,
+        dryRun: false,
+      }),
+      false,
+    );
+  }
+
+  const initialPreflight = await preflightGitWorktree(options.cwd, workspace);
+  workspace = initialPreflight.workspace;
+  if (dryRun) {
+    return {
+      ...validationOutcome,
+      message: `Nested-thread and workspace preflight passed for '${workspace.path}'; no changes were made.`,
+    };
+  }
+
+  await dependencies.beforeWorkspaceRevalidation();
+  const finalPreflight = await preflightGitWorktree(options.cwd, workspace);
+  workspace = finalPreflight.workspace;
+  try {
+    await dependencies.createWorkspace(options.cwd, finalPreflight);
+  } catch (error) {
+    let sideEffects: Awaited<ReturnType<typeof inspectWorkspaceSideEffects>>;
     try {
-      await preflightGitWorktree(options.cwd, workspace);
-      await createGitWorktree(options.cwd, workspace);
-    } catch (error) {
-      if (error instanceof WorkspacePreflightError) {
-        throw error;
+      sideEffects = await inspectWorkspaceSideEffects(options.cwd, workspace);
+    } catch (inspectionError) {
+      return {
+        status: "ambiguous",
+        threadId: null,
+        threadUrl: null,
+        retryable: false,
+        workspaceCreated: false,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CREATE_FAILED",
+        message: `Git worktree creation failed and its side effects could not be inspected. Inspect '${workspace.path}' and branch '${workspace.branch}' before retrying. Creation error: ${toErrorMessage(error)}. Inspection error: ${toErrorMessage(inspectionError)}`,
+      };
+    }
+    const workspaceCreated =
+      sideEffects.branchCreated || sideEffects.pathCreated || sideEffects.worktreeRegistered;
+    if (workspaceCreated) {
+      return {
+        status: "ambiguous",
+        threadId: null,
+        threadUrl: null,
+        retryable: false,
+        workspaceCreated: true,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CREATE_FAILED",
+        message: `Git worktree creation failed while branch, path, or registration state appeared concurrently. It was preserved because ownership is ambiguous. Inspect '${workspace.path}' and branch '${workspace.branch}' before retrying: ${toErrorMessage(error)}`,
+      };
+    }
+    return nestedThreadFailure(
+      "WORKSPACE_CREATE_FAILED",
+      `Git worktree creation failed without leaving a branch, path, or registration. Creation can be retried safely: ${toErrorMessage(error)}`,
+      { retryable: true },
+    );
+  }
+
+  const creationOutcome = await invokeNestedThreadCli(
+    options,
+    nestedThreadCommandArgs(authenticatedOptions, {
+      project,
+      title,
+      prompt,
+      model,
+      reasoning,
+      workspace,
+      dryRun: false,
+    }),
+    false,
+  );
+  if (creationOutcome.status === "dry-run") {
+    return cliBoundaryFailure(
+      false,
+      "CLI_RESPONSE_INVALID",
+      "mutating nested-thread creation returned a dry-run outcome",
+    );
+  }
+  if (creationOutcome.status === "created" || creationOutcome.status === "ambiguous") {
+    return { ...creationOutcome, workspaceCreated: true };
+  }
+  const outcomeWithWorkspace = { ...creationOutcome, workspaceCreated: true };
+  if (creationOutcome.threadId !== null) {
+    if (!creationOutcome.cleanupPerformed) return outcomeWithWorkspace;
+    try {
+      const sideEffects = await inspectWorkspaceSideEffects(options.cwd, workspace);
+      if (sideEffects.branchCreated || sideEffects.pathCreated || sideEffects.worktreeRegistered) {
+        return {
+          ...outcomeWithWorkspace,
+          retryable: false,
+          cleanupPerformed: false,
+          message: `${creationOutcome.message} Thread deletion committed, but durable worktree cleanup is still pending. Retry with this branch and path only after dryRun preflight succeeds.`,
+        };
       }
-      throw new NestedThreadSetupError(toErrorMessage(error), { cause: error });
+      return outcomeWithWorkspace;
+    } catch (error) {
+      return {
+        ...outcomeWithWorkspace,
+        retryable: false,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CLEANUP_FAILED",
+        message: `${creationOutcome.message} Thread deletion committed, but worktree cleanup state could not be verified. Inspect '${workspace.path}' before retrying: ${toErrorMessage(error)}`,
+      };
     }
   }
 
-  const commandArgs = [
-    ...(options.cliArgsPrefix ?? []),
-    "chat",
-    "new",
-    "--project",
-    project,
-    "--parent",
-    options.threadId,
-    "--cross-thread-source",
-    options.threadId,
-    "--cross-thread-capability",
-    issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
-    "--provider",
-    options.providerInstanceId,
-    "--model",
-    model,
-    ...(reasoning ? ["--reasoning", reasoning] : []),
-    "--runtime-mode",
-    options.runtimeMode,
-    ...(workspace
-      ? [
-          "--branch",
-          workspace.branch,
-          "--worktree",
-          workspace.path,
-          "--workspace-cleanup-token",
-          workspaceCleanupToken,
-        ]
-      : []),
-    "--title",
-    title,
-    prompt,
-    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
-  ];
-  let result: TerminalResult;
   try {
-    result = await runCommand(options.cwd, options.cliCommand, commandArgs);
-  } catch (creationError) {
-    if (!workspace) {
-      throw creationError;
-    }
-    if (!isSafeNestedThreadCleanup(creationError, workspaceCleanupToken)) {
-      throw new Error(
-        `${toErrorMessage(creationError)}\nThe child worktree was preserved because the nested thread may have been created before the response was lost. Inspect child threads under '${options.threadId}' before removing '${workspace.path}'.`,
-        {
-          cause: creationError,
-        },
-      );
-    }
-    try {
-      await rollbackCreatedWorktree(options, workspace.branch, workspace.path);
-    } catch (cleanupError) {
-      throw new Error(
-        `${toErrorMessage(creationError)}\nWorkspace cleanup also failed: ${toErrorMessage(cleanupError)}`,
-        { cause: cleanupError },
-      );
-    }
-    throw creationError;
+    await dependencies.cleanupWorkspace(options, workspace);
+    return {
+      ...outcomeWithWorkspace,
+      retryable: creationOutcome.retryable,
+      cleanupPerformed: true,
+      message: `${creationOutcome.message} The child worktree and branch were removed.`,
+    };
+  } catch (error) {
+    return {
+      ...outcomeWithWorkspace,
+      retryable: false,
+      cleanupPerformed: false,
+      errorCode: "WORKSPACE_CLEANUP_FAILED",
+      message: `${creationOutcome.message} Workspace cleanup also failed; inspect '${workspace.path}' and branch '${workspace.branch}' before retrying: ${toErrorMessage(error)}`,
+    };
   }
-  const resultBody = JSON.parse(result.stdout.trim()) as {
-    readonly threadId?: unknown;
-    readonly threadUrl?: unknown;
-  };
-  const threadId = typeof resultBody.threadId === "string" ? resultBody.threadId : null;
-  const threadUrl = typeof resultBody.threadUrl === "string" ? resultBody.threadUrl : null;
-  return JSON.stringify({
-    status: "created",
-    threadId,
-    threadUrl,
-    retryable: false,
-    creationCommitted: true,
-    cleanupPerformed: false,
-  } satisfies NestedThreadCreationOutcome);
 }
 
 async function createNestedThreadTool(
   options: McpServeOptions,
   args: Record<string, unknown>,
+  dependencyOverrides: Partial<NestedThreadToolDependencies> = {},
 ): Promise<string> {
   try {
-    return await createNestedThreadToolImpl(options, args);
+    return serializeNestedThreadOutcome(
+      await createNestedThreadToolImpl(options, args, {
+        ...defaultNestedThreadToolDependencies,
+        ...dependencyOverrides,
+      }),
+    );
   } catch (error) {
-    const workspaceRequested =
-      args.workspace !== undefined &&
-      args.workspace !== null &&
-      typeof args.workspace === "object" &&
-      !Array.isArray(args.workspace);
-    const safeCleanupPerformed = workspaceRequested && hasSafeNestedThreadCleanupSignal(error);
-    const definitiveRejection =
-      error instanceof NestedThreadValidationError ||
-      error instanceof NestedThreadSetupError ||
-      error instanceof WorkspacePreflightError ||
-      safeCleanupPerformed;
-    throw new Error(
-      JSON.stringify({
-        status: definitiveRejection ? "failed" : "ambiguous",
-        threadId: null,
-        threadUrl: null,
-        retryable: error instanceof WorkspacePreflightError,
-        creationCommitted: definitiveRejection ? false : null,
-        cleanupPerformed: safeCleanupPerformed,
-        error: toErrorMessage(error),
-      } satisfies NestedThreadCreationOutcome),
-      { cause: error },
+    return serializeNestedThreadOutcome(
+      nestedThreadFailure(
+        error instanceof WorkspaceConflictError ? error.errorCode : "VALIDATION_FAILED",
+        toErrorMessage(error),
+        { retryable: error instanceof WorkspaceConflictError },
+      ),
     );
   }
 }
@@ -1093,7 +1530,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. Returns a structured outcome with status, threadId, threadUrl, retryable, creationCommitted, and cleanupPerformed. When the child needs an isolated checkout, pass workspace here so T3 preflights branch/path collisions, then creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1106,6 +1543,10 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
           description: "Any model slug available through the authenticated Copilot provider.",
         },
         reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+        dryRun: {
+          type: "boolean",
+          description: "Validate the request and workspace preflight without making changes.",
+        },
         workspace: {
           type: "object",
           description:
@@ -1295,6 +1736,7 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
 export const __testing = {
   associatePullRequestTool,
   availableTools,
+  cleanupNestedWorkspace,
   createIsolatedWorkspaceTool,
   createNestedThreadTool,
   sendToThreadTool,

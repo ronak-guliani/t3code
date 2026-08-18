@@ -680,6 +680,65 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("caps full snapshot activities before decoding payloads", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-snapshot-cap', 'Snapshot cap project', '/tmp/snapshot-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+          '2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-snapshot-cap', 'project-snapshot-cap', 'Snapshot cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}', 'full-access', 'default',
+          NULL, 0, 0, 0, '2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE activity_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM activity_sequence WHERE value < 501
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+          sequence, created_at
+        )
+        SELECT
+          printf('activity-%04d', value),
+          'thread-snapshot-cap',
+          NULL,
+          'info',
+          'runtime.note',
+          printf('activity %d', value),
+          CASE WHEN value = 1 THEN 'invalid json' ELSE '{}' END,
+          value,
+          '2026-08-18T00:00:01.000Z'
+        FROM activity_sequence
+      `;
+
+      const snapshot = yield* snapshotQuery.getSnapshot();
+      const thread = snapshot.threads.find((entry) => entry.id === "thread-snapshot-cap");
+
+      assert.isDefined(thread);
+      assert.equal(thread.activities.length, 500);
+      assert.equal(thread.activities[0]?.id, asEventId("activity-0002"));
+      assert.equal(thread.activities.at(-1)?.id, asEventId("activity-0501"));
+    }),
+  );
+
   it.effect(
     "falls back to provider runtime resume cursors when thread session projections are stale",
     () =>

@@ -54,6 +54,7 @@ import { ProjectionWorkflowRepository } from "../../persistence/Services/Project
 import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionWorkflows.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
+import { MAX_THREAD_ACTIVITIES } from "../projector.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotCounts,
@@ -635,21 +636,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH ranked_activities AS (
+          SELECT
+            activity_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY created_at DESC, activity_id DESC
+            ) AS activity_rank
+          FROM projection_thread_activities
+        )
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
+          activities.activity_id AS "activityId",
+          activities.thread_id AS "threadId",
+          activities.turn_id AS "turnId",
+          activities.tone,
+          activities.kind,
+          activities.summary,
+          activities.payload_json AS "payload",
+          activities.sequence,
+          activities.created_at AS "createdAt"
+        FROM ranked_activities
+        INNER JOIN projection_thread_activities AS activities
+          ON activities.activity_id = ranked_activities.activity_id
+        WHERE ranked_activities.activity_rank <= ${MAX_THREAD_ACTIVITIES}
         ORDER BY
-          thread_id ASC,
-          created_at ASC,
-          activity_id ASC
+          activities.thread_id ASC,
+          activities.created_at ASC,
+          activities.activity_id ASC
       `,
   });
 

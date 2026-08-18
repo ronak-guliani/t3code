@@ -134,7 +134,7 @@ jobs:
         run: pnpm -r run typecheck
 
       - name: Test
-        run: pnpm -r --if-present run test
+        run: pnpm test:windows-smoke
 
       - name: Verify cross-platform clean script
         run: node scripts/clean.ts

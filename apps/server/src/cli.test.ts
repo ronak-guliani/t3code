@@ -63,6 +63,15 @@ const captureStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return { result, output };
   }).pipe(Effect.provide(Layer.mergeAll(CliRuntimeLayer, TestConsole.layer)));
 
+const captureExitAndStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const exit = yield* Effect.exit(effect);
+    const output =
+      (yield* TestConsole.logLines).findLast((line): line is string => typeof line === "string") ??
+      "";
+    return { exit, output };
+  }).pipe(Effect.provide(Layer.mergeAll(CliRuntimeLayer, TestConsole.layer)));
+
 const makeCliTestServerConfig = (baseDir: string) =>
   Effect.gen(function* () {
     const derivedPaths = yield* deriveServerPaths(baseDir, undefined);
@@ -818,6 +827,56 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             ]),
           );
           const newChat = JSON.parse(newChatOutput.output) as { readonly threadId: string };
+
+          const invalidNew = yield* captureExitAndStdout(
+            runCli([
+              "chat",
+              "new",
+              "--project",
+              "missing-project",
+              "--parent",
+              created.threadId,
+              "invalid-prompt",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          assert.equal(invalidNew.exit._tag, "Failure");
+          assert.deepStrictEqual(JSON.parse(invalidNew.output), {
+            status: "failed",
+            threadId: null,
+            threadUrl: null,
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: "VALIDATION_FAILED",
+            message: "No active project found for 'missing-project'.",
+          });
+
+          const dryRun = yield* captureStdout(
+            runCli([
+              "chat",
+              "new",
+              "--project",
+              workspaceRoot,
+              "--parent",
+              created.threadId,
+              "--dry-run",
+              "dry-run-prompt",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          assert.deepStrictEqual(JSON.parse(dryRun.output), {
+            status: "dry-run",
+            threadId: null,
+            threadUrl: null,
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: null,
+            message: "Nested-thread inputs are valid; no thread or workspace was created.",
+          });
 
           const allChatsOutput = yield* captureStdout(
             runCli(["chat", "list", "--base-dir", baseDir]),
