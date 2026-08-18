@@ -55,6 +55,37 @@ async function lifecycleReadModel(): Promise<OrchestrationReadModel> {
 }
 
 describe("decider thread lifecycle", () => {
+  it("propagates explicit pull request ownership transfer intent", async () => {
+    const readModel = await lifecycleReadModel();
+    const updated = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.meta.update",
+          commandId,
+          threadId,
+          pullRequest: {
+            number: 42,
+            title: "Explicit association",
+            url: "https://github.com/acme/app/pull/42",
+            baseBranch: "main",
+            headBranch: "feature",
+            state: "open",
+          },
+          pullRequestOwnership: "transfer",
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+
+    expect(updated).toMatchObject({
+      type: "thread.meta-updated",
+      payload: {
+        threadId,
+        pullRequestOwnership: "transfer",
+      },
+    });
+  });
+
   it("settles and reopens an eligible thread", async () => {
     const readModel = await lifecycleReadModel();
     const settled = await Effect.runPromise(
