@@ -1499,7 +1499,7 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
-  it.effect("queues remediation behind a user's active turn instead of steering it", () =>
+  it.effect("queues remediation durably and can return it to delivery retry", () =>
     Effect.gen(function* () {
       const monitors = yield* PullRequestMonitorService;
       const feedback = yield* PullRequestMonitorFeedbackService;
@@ -1562,6 +1562,16 @@ layer("PullRequestMonitorService", (it) => {
         dispatchedCommands.some((command) => command.type === "thread.queued-turn.create"),
       );
       assert.isFalse(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
+
+      const delivery = deliveries[0]!;
+      yield* feedback.retryQueuedDelivery({
+        deliveryId: delivery.id,
+        reason: "dispatch revalidation unavailable",
+      });
+      const retried = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(retried[0]?.status, "failed");
+      assert.strictEqual(retried[0]?.deliveredAt, null);
+      assert.strictEqual(retried[0]?.lastError, "dispatch revalidation unavailable");
       currentSnapshot = sampleSnapshot();
     }),
   );

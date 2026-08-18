@@ -1,6 +1,7 @@
 import type {
   PullRequestMonitorActionableEvent,
   PullRequestMonitorCheckRun,
+  PullRequestMergeability,
   PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
 
@@ -15,7 +16,7 @@ export interface PullRequestMonitorCursor {
   readonly checkRuns: Readonly<
     Record<string, { readonly runId: string; readonly outcome: PullRequestMonitorCheckOutcome }>
   >;
-  readonly behindBase: boolean;
+  readonly mergeability: PullRequestMergeability | "";
   readonly sourceRevision: string;
 }
 
@@ -39,7 +40,7 @@ export function emptyCursor(): PullRequestMonitorCursor {
     threadVersions: {},
     issueCommentVersions: {},
     checkRuns: {},
-    behindBase: false,
+    mergeability: "",
     sourceRevision: "",
   };
 }
@@ -66,7 +67,7 @@ export function cursorFromSnapshot(snapshot: PullRequestMonitorSnapshot): PullRe
           { runId: check.id, outcome: checkOutcome(check) },
         ]),
     ),
-    behindBase: (snapshot.behindBaseBy ?? 0) > 0,
+    mergeability: snapshot.mergeability,
     sourceRevision: snapshot.sourceRevision,
   };
 }
@@ -145,8 +146,8 @@ export function diffPullRequestMonitorSnapshot(
     }
   }
 
-  if ((snapshot.behindBaseBy ?? 0) > 0 && !previousCursor.behindBase) {
-    actionableEvents.push({ kind: "behind-base" });
+  if (snapshot.mergeability === "conflicting" && previousCursor.mergeability !== "conflicting") {
+    actionableEvents.push({ kind: "merge-conflict" });
   }
 
   return { actionableEvents, nextCursor: cursorFromSnapshot(snapshot) };

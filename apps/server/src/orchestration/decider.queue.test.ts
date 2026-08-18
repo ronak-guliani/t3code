@@ -98,6 +98,36 @@ describe("decider queued turns", () => {
         },
       },
     });
+
+    const withQueuedTurn = await Effect.runPromise(projectEvent(readModel, event));
+    const update = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.update",
+          commandId: CommandId.make("cmd-monitor-feedback-refresh"),
+          threadId,
+          queuedTurnId: asQueuedTurnId("queued-monitor-feedback"),
+          text: "Review refreshed pull request feedback.",
+          origin: {
+            kind: "pull-request-monitor",
+            repository: "acme/app",
+            number: 42,
+            headSha: "head-new",
+            sourceRevision: "revision-new",
+          },
+          updatedAt: "2026-03-01T00:00:01.000Z",
+        },
+        readModel: withQueuedTurn,
+      }),
+    );
+    const updateEvent = Array.isArray(update) ? update[0] : update;
+    expect(updateEvent?.payload).toMatchObject({
+      origin: {
+        kind: "pull-request-monitor",
+        headSha: "head-new",
+        sourceRevision: "revision-new",
+      },
+    });
   });
 
   it("derives cross-thread provenance from the active parent turn", async () => {

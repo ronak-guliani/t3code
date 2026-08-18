@@ -38,7 +38,11 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
-import { reconcileFeedbackItem, type FeedbackActionability } from "./feedbackReconciliation.ts";
+import {
+  feedbackStableKeyOf,
+  reconcileFeedbackItem,
+  type FeedbackActionability,
+} from "./feedbackReconciliation.ts";
 import { type PullRequestMonitorFeedbackReadiness } from "./readiness.ts";
 import { monitorToolNamesForThread } from "./monitorTools.ts";
 import { sendQueuedTurn } from "./threadDelivery.ts";
@@ -50,6 +54,7 @@ export const FEEDBACK_DEBOUNCE_MS = 15_000;
 export const DELIVERY_CIRCUIT_THRESHOLD = 5;
 export const DELIVERY_CIRCUIT_COOLDOWN_MS = 15 * 60_000;
 const MAX_DELIVERY_ATTEMPTS = 8;
+const QUEUED_DELIVERY_RETRY_MS = 20_000;
 
 function isoNow() {
   return Effect.map(DateTime.now, (now) => DateTime.formatIso(DateTime.toUtc(now)));
@@ -117,10 +122,6 @@ function stableDeliveryIds(input: {
   return { batchKey, deliveryId, commandId, messageId };
 }
 
-function eventStableKey(event: PullRequestMonitorActionableEvent): string {
-  return `${event.kind}:${event.sourceId ?? event.detail ?? "na"}`;
-}
-
 function eventSummary(event: PullRequestMonitorActionableEvent): string {
   const detail = event.detail ?? event.sourceId ?? event.kind;
   return `${event.kind}: ${detail}`.slice(0, 500);
@@ -155,6 +156,14 @@ export class PullRequestMonitorFeedbackService extends Context.Service<
       readonly findings: ReadonlyArray<PullRequestMonitorFinding>;
     }) => Effect.Effect<ReadonlyArray<PullRequestMonitorSubmittedFinding>, PullRequestMonitorError>;
     readonly flushDueDeliveries: Effect.Effect<void>;
+    /**
+     * Return a delivery to the durable retry loop after its queued turn could not be safely
+     * dispatched. Callers may delete the queue entry only after this succeeds.
+     */
+    readonly retryQueuedDelivery: (input: {
+      readonly deliveryId: PullRequestMonitorFeedbackDeliveryId;
+      readonly reason: string;
+    }) => Effect.Effect<void, PullRequestMonitorError>;
     readonly context: (
       input: PullRequestMonitorContextInput & {
         readonly resolveMonitor: () => Effect.Effect<
@@ -421,7 +430,7 @@ export const layer = Layer.effect(
             // Terminal state changes are not remediation work.
             if (event.kind === "state-changed") continue;
 
-            const stableKey = eventStableKey(event);
+            const stableKey = feedbackStableKeyOf(event);
             const itemId = stableItemId(input.monitor.id, stableKey);
             const existing = yield* feedbackStore.getItem(itemId);
             const summary = eventSummary(event);
@@ -683,6 +692,7 @@ export const layer = Layer.effect(
           }
         }
 
+        const availableTools = yield* availableToolsFor(ownerThreadId);
         const prompt = buildWakePrompt({
           prNumber: monitor.number,
           repository: monitor.repository,
@@ -691,7 +701,7 @@ export const layer = Layer.effect(
           revisionSummaries,
           snapshot,
           readiness,
-          availableTools: yield* availableToolsFor(ownerThreadId),
+          availableTools,
         });
 
         // Durable queue behind any active turn; QueuedTurnReactor drains it when idle.
@@ -703,6 +713,12 @@ export const layer = Layer.effect(
             text: prompt,
             repository: monitor.repository,
             pullRequestNumber: monitor.number,
+            headSha: snapshot.headSha,
+            sourceRevision: snapshot.sourceRevision,
+            events,
+            deliveryId: delivery.id,
+            revisionSummaries,
+            availableTools,
           }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
         );
 
@@ -834,6 +850,24 @@ export const layer = Layer.effect(
       Effect.ignore,
     );
 
+    const retryQueuedDelivery: (typeof PullRequestMonitorFeedbackService.Service)["retryQueuedDelivery"] =
+      (input) =>
+        Effect.gen(function* () {
+          const delivery = yield* feedbackStore.getDelivery(input.deliveryId);
+          if (!delivery) {
+            return yield* monitorError(`Feedback delivery '${input.deliveryId}' was not found.`);
+          }
+          const now = yield* isoNow();
+          yield* feedbackStore.updateDelivery({
+            ...delivery,
+            status: "failed",
+            lastError: input.reason.slice(0, 1_000),
+            nextAttemptAt: addMs(now, QUEUED_DELIVERY_RETRY_MS),
+            deliveredAt: null,
+            receiptJson: null,
+          });
+        });
+
     // Background flusher for debounce maturity + retries.
     yield* flushDueDeliveries.pipe(
       Effect.andThen(Effect.sleep(Duration.seconds(5))),
@@ -926,6 +960,7 @@ export const layer = Layer.effect(
       readinessSummary: summarize,
       ingestFindings,
       flushDueDeliveries,
+      retryQueuedDelivery,
       context,
       report,
       listOpenItems,

@@ -57,6 +57,7 @@ export const PullRequestMonitorBlockerKind = Schema.Literals([
   "check-cancelled",
   "changes-requested",
   "unresolved-thread",
+  /** Legacy durable blocker. Base distance is now informational and never blocks readiness. */
   "behind-base",
   /** Durable monitor state: feedback the owner has not dispositioned yet. */
   "feedback-open",
@@ -192,6 +193,8 @@ export const PullRequestMonitorActionableEventKind = Schema.Literals([
   "new-review-comment",
   "changes-requested-review",
   "check-failed",
+  "merge-conflict",
+  /** Legacy durable event. Base distance is now informational and never emitted. */
   "behind-base",
   "state-changed",
   /** Structured finding submitted by a review agent, not observed on the host. */

@@ -1,4 +1,5 @@
 import type {
+  PullRequestMonitorActionableEvent,
   PullRequestMonitorActionableEventKind,
   PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
@@ -19,7 +20,11 @@ export interface ReconcilableFeedbackItem {
   readonly stableKey: string;
 }
 
-/** `${kind}:${sourceId ?? detail ?? "na"}` — see eventStableKey in the feedback service. */
+export function feedbackStableKeyOf(event: PullRequestMonitorActionableEvent): string {
+  return `${event.kind}:${event.sourceId ?? event.detail ?? "na"}`;
+}
+
+/** `${kind}:${sourceId ?? detail ?? "na"}` — see feedbackStableKeyOf. */
 export function feedbackSourceIdOf(stableKey: string): string | null {
   const separator = stableKey.indexOf(":");
   if (separator < 0) return null;
@@ -143,13 +148,11 @@ export function reconcileFeedbackItem(
         snapshot,
       );
     case "behind-base":
-      // A failed compare proves nothing: never resolve a finding on evidence we did not read.
-      if (!snapshot.completeness.baseComparisonKnown || snapshot.behindBaseBy === null) {
-        return ACTIONABLE;
-      }
-      return snapshot.behindBaseBy > 0
-        ? ACTIONABLE
-        : { kind: "resolved-upstream", detail: "branch is no longer behind base" };
+      return { kind: "superseded", detail: "base distance is informational" };
+    case "merge-conflict":
+      return snapshot.mergeability === "mergeable"
+        ? { kind: "resolved-upstream", detail: "merge conflict resolved" }
+        : ACTIONABLE;
     case "review-finding": {
       // A reviewer-submitted finding has no host state to observe: only new commits can
       // show that a claimed fix landed.

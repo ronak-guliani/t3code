@@ -158,7 +158,7 @@ describe("computeReadiness", () => {
     expect(result.label).toBe("no-known-blockers");
   });
 
-  it("cannot claim ready-to-merge when the base comparison failed", () => {
+  it("treats base distance as informational", () => {
     const result = computeReadiness(
       snapshot({
         behindBaseBy: null,
@@ -172,18 +172,17 @@ describe("computeReadiness", () => {
         },
       }),
     );
-    // Unknown up-to-date status is not a blocker, but it is not evidence either.
     expect(result.ready).toBe(true);
-    expect(result.label).toBe("no-known-blockers");
+    expect(result.label).toBe("ready-to-merge");
     expect(result.blockers).toEqual([]);
-  });
-
-  it("claims ready-to-merge only with an observed, zero-distance base", () => {
-    const exact = computeReadiness(snapshot({ behindBaseBy: 0 }));
-    expect(exact).toEqual({ ready: true, label: "ready-to-merge", blockers: [] });
 
     const behind = computeReadiness(snapshot({ behindBaseBy: 3 }));
-    expect(behind.ready).toBe(false);
-    expect(behind.blockers).toEqual([{ kind: "behind-base", detail: "3" }]);
+    expect(behind).toEqual({ ready: true, label: "ready-to-merge", blockers: [] });
+  });
+
+  it("blocks on merge conflicts", () => {
+    const result = computeReadiness(snapshot({ mergeability: "conflicting" }));
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toEqual([{ kind: "mergeability", detail: "conflicting" }]);
   });
 });

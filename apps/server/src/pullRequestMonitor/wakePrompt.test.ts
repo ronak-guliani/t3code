@@ -74,6 +74,37 @@ describe("wakePrompt", () => {
     expect(prompt).toContain("new-review-comment");
   });
 
+  it("describes merge conflicts without base-distance noise", () => {
+    const prompt = buildWakePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      deliveryId: "del_conflict",
+      events: [{ kind: "merge-conflict" }],
+      snapshot: { ...snapshot, mergeability: "conflicting", behindBaseBy: 12 },
+      readiness: {
+        ready: false,
+        label: "blocked",
+        blockers: [{ kind: "mergeability", detail: "conflicting" }],
+      },
+    });
+    expect(prompt).toContain("PR has merge conflicts with main");
+    expect(prompt).not.toContain("behind main");
+  });
+
+  it("suppresses legacy base-distance events", () => {
+    const prompt = buildWakePrompt({
+      prNumber: 12,
+      repository: "acme/app",
+      deliveryId: "del_legacy",
+      events: [{ kind: "behind-base" }],
+      revisionSummaries: ["behind-base: behind-base"],
+      snapshot: { ...snapshot, behindBaseBy: 12 },
+      readiness,
+    });
+    expect(prompt).not.toContain("behind main");
+    expect(prompt).not.toContain("behind-base: behind-base");
+  });
+
   it("builds a bounded fallback maintenance prompt", () => {
     const prompt = buildFallbackMaintenancePrompt({
       prNumber: 12,

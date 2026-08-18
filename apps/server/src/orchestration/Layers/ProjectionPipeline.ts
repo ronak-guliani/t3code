@@ -1299,6 +1299,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionQueuedTurnRepository.upsert({
             ...existing.value,
             text: event.payload.text,
+            ...(event.payload.origin !== undefined ? { origin: event.payload.origin } : {}),
             updatedAt: event.payload.updatedAt,
             failedAt: null,
             failureMessage: null,
