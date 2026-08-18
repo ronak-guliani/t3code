@@ -77,4 +77,57 @@ describe("findProjectForCli", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects a worktree shared by threads from different active projects", async () => {
+    const root = path.join(tmpdir(), `t3-project-ambiguous-worktree-${crypto.randomUUID()}`);
+    const projectOne = path.join(root, "project-one");
+    const projectTwo = path.join(root, "project-two");
+    const worktree = path.join(root, "worktree");
+    await Promise.all([
+      mkdir(projectOne, { recursive: true }),
+      mkdir(projectTwo, { recursive: true }),
+      mkdir(worktree, { recursive: true }),
+    ]);
+
+    const snapshot = {
+      projects: [
+        {
+          id: "project-1",
+          title: "Project One",
+          workspaceRoot: projectOne,
+          deletedAt: null,
+        },
+        {
+          id: "project-2",
+          title: "Project Two",
+          workspaceRoot: projectTwo,
+          deletedAt: null,
+        },
+      ],
+      threads: [
+        {
+          id: "thread-1",
+          projectId: "project-1",
+          worktreePath: worktree,
+          archivedAt: null,
+          deletedAt: null,
+        },
+        {
+          id: "thread-2",
+          projectId: "project-2",
+          worktreePath: worktree,
+          archivedAt: null,
+          deletedAt: null,
+        },
+      ],
+    } as unknown as CliSnapshot;
+
+    try {
+      await expect(
+        Effect.runPromise(findProjectForCli(snapshot, worktree).pipe(Effect.provide(testLayer))),
+      ).rejects.toThrow(/Multiple active projects contain worktree .* Use the project id instead/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -122,6 +122,9 @@ describe("buildCopilotAcpSpawnInput", () => {
       expect(buildCopilotSessionContractFingerprint({})).not.toBe(
         buildCopilotSessionContractFingerprint({ T3_COPILOT_ACP_ENABLE_MCP: "1" }),
       );
+      expect(buildCopilotSessionContractFingerprint({}, false)).not.toBe(
+        buildCopilotSessionContractFingerprint({}, true),
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

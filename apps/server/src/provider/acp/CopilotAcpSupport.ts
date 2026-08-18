@@ -23,6 +23,7 @@ import {
 } from "../../mcpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import type { McpProviderSessionConfig } from "../../mcp/McpSessionRegistry.ts";
+import { fingerprintProviderMcpToolContract } from "../../mcp/providerToolContract.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
@@ -220,6 +221,7 @@ export function buildCopilotMcpServerOptions(
 
 export function buildCopilotSessionContractFingerprint(
   env: NodeJS.ProcessEnv = process.env,
+  providerMcpEnabled = false,
 ): string {
   const options = buildCopilotMcpServerOptions(
     "/",
@@ -233,7 +235,7 @@ export function buildCopilotSessionContractFingerprint(
   return createHash("sha256")
     .update(COPILOT_WORKSPACE_INSTRUCTIONS)
     .update(fingerprintMcpToolContract(options.toolsets))
-    .update("t3-tools\nt3-code")
+    .update(providerMcpEnabled ? fingerprintProviderMcpToolContract() : "t3-code:absent")
     .digest("hex");
 }
 

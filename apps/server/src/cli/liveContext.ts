@@ -132,10 +132,23 @@ export const findProjectForCli = Effect.fn("findProjectForCli")(function* (
             ),
       { concurrency: "unbounded" },
     );
-    const matchingThread = matchingThreads.find((thread) => thread !== null);
-    if (matchingThread) {
-      const project = activeProjects.find((candidate) => candidate.id === matchingThread.projectId);
+    const matchingProjectIds = new Set(
+      matchingThreads
+        .filter((thread) => thread !== null)
+        .map((thread) => thread.projectId)
+        .filter((projectId) => activeProjects.some((project) => project.id === projectId)),
+    );
+    if (matchingProjectIds.size === 1) {
+      const projectId = matchingProjectIds.values().next().value;
+      const project = activeProjects.find((candidate) => candidate.id === projectId);
       if (project) return project;
+    }
+    if (matchingProjectIds.size > 1) {
+      return yield* Effect.fail(
+        new Error(
+          `Multiple active projects contain worktree '${normalizedWorkspaceRoot}'. Use the project id instead.`,
+        ),
+      );
     }
   }
 

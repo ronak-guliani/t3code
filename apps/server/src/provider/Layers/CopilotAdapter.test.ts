@@ -602,6 +602,54 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
+  it.effect("starts a fresh ACP session when provider MCP availability changes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-provider-mcp-contract-thread");
+
+      yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+      });
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-provider-mcp-contract-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionId: "session-without-provider-mcp",
+          contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
+        },
+      });
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (request) => request.method,
+      );
+      assert.notInclude(methods, "session/load");
+      assert.include(methods, "session/new");
+      assert.notEqual(
+        (session.resumeCursor as { contractFingerprint?: string }).contractFingerprint,
+        COPILOT_SESSION_CONTRACT_FINGERPRINT,
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("attributes only new cumulative cost after resuming a Copilot ACP session", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
