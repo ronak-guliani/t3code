@@ -8,10 +8,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
-import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-import { Button } from "~/components/ui/button";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
@@ -62,7 +59,7 @@ interface Props {
   tabId?: string | null;
   configuredUrls?: ReadonlyArray<string> | undefined;
   visible: boolean;
-  /** When provided, renders a panel close affordance in the chrome row. */
+  /** Closes the panel after moving this browser into the floating preview. */
   onClose?: (() => void) | undefined;
 }
 
@@ -646,17 +643,6 @@ export function PreviewView({
                 nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
                 nativePictureInPictureDisabled={!desktopOverlay || isUnreachable}
               />
-            ) : null}
-            {onClose ? (
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                type="button"
-                aria-label="Close browser panel"
-                onClick={onClose}
-              >
-                <X className="size-3.5" />
-              </Button>
             ) : null}
           </>
         }

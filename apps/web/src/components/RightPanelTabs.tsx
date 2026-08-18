@@ -30,6 +30,7 @@ type Props = {
   readonly onCloseOthers: (surface: RightPanelSurface) => void;
   readonly onCloseToRight: (surface: RightPanelSurface) => void;
   readonly onCloseAll: () => void;
+  readonly onClosePanel: () => void;
   readonly onCopyPath: (path: string) => void;
   readonly onAddBrowser: () => void;
   readonly onAddTerminal: () => void;
@@ -128,6 +129,7 @@ export function RightPanelTabs({
   onCloseOthers,
   onCloseToRight,
   onCloseAll,
+  onClosePanel,
   onCopyPath,
   onAddBrowser,
   onAddTerminal,
@@ -138,6 +140,7 @@ export function RightPanelTabs({
   onToggleMaximize,
   children,
 }: Props) {
+  const activeSurface = surfaces.find((surface) => surface.id === activeSurfaceId);
   const closeOnMiddleClick = (event: MouseEvent, surface: RightPanelSurface) => {
     if (event.button !== 1) return;
     event.preventDefault();
@@ -161,7 +164,8 @@ export function RightPanelTabs({
               <div
                 key={surface.id}
                 className={cn(
-                  "group flex h-6 min-w-20 max-w-40 shrink-0 items-center rounded-md border text-[11px]",
+                  "group flex h-6 min-w-20 max-w-40 shrink-0 items-center rounded-md border",
+                  surface.kind === "preview" ? "text-[10px]" : "text-[11px]",
                   active
                     ? "border-border/70 bg-background text-foreground shadow-xs/5"
                     : "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -256,6 +260,16 @@ export function RightPanelTabs({
             className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          </button>
+        ) : null}
+        {activeSurface?.kind === "preview" ? (
+          <button
+            type="button"
+            aria-label="Close browser panel"
+            onClick={onClosePanel}
+            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />
           </button>
         ) : null}
       </div>
