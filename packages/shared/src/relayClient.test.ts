@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2";
+import * as NodePath from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -69,7 +70,7 @@ describe("RelayClient", () => {
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const overridePath = `${baseDir}/override-cloudflared`;
+      const overridePath = NodePath.join(baseDir, "override-cloudflared");
       yield* fileSystem.writeFileString(overridePath, "override");
       yield* fileSystem.chmod(overridePath, 0o755);
       const manager = yield* makeCloudflaredRelayClient({
@@ -128,7 +129,14 @@ describe("RelayClient", () => {
           }
         }),
       );
-      const managedPath = `${baseDir}/tools/cloudflared/${CLOUDFLARED_VERSION}/linux-x64/cloudflared`;
+      const managedPath = NodePath.join(
+        baseDir,
+        "tools",
+        "cloudflared",
+        CLOUDFLARED_VERSION,
+        "linux-x64",
+        "cloudflared",
+      );
       expect(installed).toEqual({
         status: "available",
         executablePath: managedPath,
@@ -234,8 +242,8 @@ describe("RelayClient", () => {
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-cloudflared-test-",
       });
-      const binDir = `${baseDir}/bin`;
-      const executablePath = `${binDir}/cloudflared`;
+      const binDir = NodePath.join(baseDir, "bin");
+      const executablePath = NodePath.join(binDir, "cloudflared");
       const manager = yield* makeCloudflaredRelayClient({
         baseDir,
       });
