@@ -73,7 +73,6 @@ export function associationOwnerThreadId(
   }>,
   association: AssociatedPullRequest,
   projectId: ProjectId,
-  existingOwnerThreadId: ThreadId | null = null,
 ): ThreadId {
   if (association.source !== "thread-created" || association.parentThreadId === null) {
     return association.threadId;
@@ -90,10 +89,6 @@ export function associationOwnerThreadId(
       repositoryFromPullRequestUrl(thread.pullRequest.url) === association.repository
     );
   };
-  if (existingOwnerThreadId !== null && isActiveAssociatedThread(existingOwnerThreadId)) {
-    return existingOwnerThreadId;
-  }
-
   let ownerThreadId = association.threadId;
   let parentThreadId: ThreadId | null = association.parentThreadId;
   const visited = new Set<string>([association.threadId]);
@@ -134,31 +129,13 @@ const makeReactor = Effect.gen(function* () {
           : ((readModel.threads.find((entry) => entry.id === association.threadId)?.projectId ??
               null) as ProjectId | null);
       if (projectId === null || projectId.length === 0) return;
-      const existingOwnerThreadId =
-        association.source === "thread-created"
-          ? yield* monitors.list({ projectId }).pipe(
-              Effect.map(
-                ({ monitors: records }) =>
-                  records.find(
-                    (monitor) =>
-                      monitor.repository === association.repository &&
-                      monitor.number === association.number,
-                  )?.ownerThreadId ?? null,
-              ),
-              Effect.catchTag("PullRequestMonitorError", () => Effect.succeed(null)),
-            )
-          : null;
       yield* monitors
         .start({
           projectId,
           repository: association.repository,
           number: association.number,
-          ownerThreadId: associationOwnerThreadId(
-            readModel.threads,
-            association,
-            projectId,
-            existingOwnerThreadId,
-          ),
+          ownerThreadId: associationOwnerThreadId(readModel.threads, association, projectId),
+          ...(association.source === "thread-created" ? { ownerMode: "preserve" as const } : {}),
         })
         .pipe(
           Effect.catchCause((cause) =>

@@ -320,6 +320,39 @@ export const layer = Layer.effect(
               { monitorId: existing.id },
             );
           }
+          if (input.ownerMode === "preserve") {
+            const resumed: PullRequestMonitorRecord = {
+              ...existing,
+              status: "monitoring",
+              enabled: true,
+              lastError: null,
+              nextPollAt: now,
+              updatedAt: now,
+              stoppedAt: null,
+            };
+            yield* store.updatePollState(resumed, undefined, { allowReenable: true });
+            if (existing.ownerThreadId === null && input.ownerThreadId !== undefined) {
+              yield* store.transferOwnershipAtomic({
+                monitorId: existing.id,
+                ownerThreadId: input.ownerThreadId,
+                expectedOwnerThreadId: null,
+                updatedAt: now,
+                eventId: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+                toThreadId: input.ownerThreadId,
+                reason: "start-preserve",
+              });
+            }
+            const current = yield* store.getById(existing.id);
+            if (!current) {
+              return yield* monitorError("Monitor no longer exists.", {
+                monitorId: existing.id,
+              });
+            }
+            yield* notify;
+            yield* pollMonitor(current).pipe(Effect.ignore);
+            const fresh = yield* store.getById(current.id);
+            return { monitor: fresh ?? current };
+          }
           const nextOwner =
             input.ownerMode === "observe-only"
               ? null

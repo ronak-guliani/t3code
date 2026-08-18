@@ -116,7 +116,7 @@ describe("associationOwnerThreadId", () => {
     ).toBe("owner");
   });
 
-  it("preserves an explicitly transferred owner for inherited descendants and siblings", () => {
+  it("uses ancestry only as the inherited fallback for descendants and siblings", () => {
     const threads = [
       thread({ id: "root", pullRequest }),
       thread({ id: "explicit-owner", parentThreadId: "root", pullRequest }),
@@ -136,9 +136,7 @@ describe("associationOwnerThreadId", () => {
         }),
       );
       expect(association).not.toBeNull();
-      expect(
-        associationOwnerThreadId(threads, association!, projectId, ThreadId.make("explicit-owner")),
-      ).toBe("explicit-owner");
+      expect(associationOwnerThreadId(threads, association!, projectId)).toBe("root");
     }
   });
 
