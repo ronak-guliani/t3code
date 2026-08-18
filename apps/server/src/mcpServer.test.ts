@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -23,6 +23,55 @@ const run = async (command: string, args: ReadonlyArray<string>, cwd: string) =>
   if (result.code !== 0) {
     throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr}`);
   }
+};
+
+const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+const nestedCliScript = (actualOutcome: Record<string, unknown>, actualExitCode = 0): string => {
+  const dryRunOutcome = {
+    status: "dry-run",
+    threadId: null,
+    retryable: false,
+    workspaceCreated: false,
+    cleanupPerformed: false,
+    errorCode: null,
+    message: "Nested-thread inputs are valid; no thread or workspace was created.",
+  };
+  return `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--dry-run" ]; then
+    if [ -n "$T3_MCP_TEST_DRY_ARGS" ]; then
+      printf "%s\\n" "$@" > "$T3_MCP_TEST_DRY_ARGS"
+    fi
+    printf '%s\\n' ${shellQuote(JSON.stringify(dryRunOutcome))}
+    exit 0
+  fi
+done
+if [ -n "$T3_MCP_TEST_ARGS" ]; then
+  printf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"
+fi
+printf '%s\\n' ${shellQuote(JSON.stringify(actualOutcome))}
+exit ${String(actualExitCode)}
+`;
+};
+
+const createdOutcome = {
+  status: "created",
+  threadId: "child-1",
+  retryable: false,
+  workspaceCreated: false,
+  cleanupPerformed: false,
+  errorCode: null,
+  message: "Nested thread created and its first turn was accepted.",
+} as const;
+
+const initGitRepository = async (root: string): Promise<void> => {
+  await writeFile(path.join(root, "README.md"), "base\n");
+  await run("git", ["init", "--initial-branch=main"], root);
+  await run("git", ["config", "user.email", "test@example.com"], root);
+  await run("git", ["config", "user.name", "T3 Test"], root);
+  await run("git", ["add", "README.md"], root);
+  await run("git", ["commit", "-m", "initial"], root);
 };
 
 describe("MCP Streamable HTTP server", () => {
@@ -234,6 +283,7 @@ describe("create_nested_thread MCP tool", () => {
               type: "string",
               minLength: 1,
             }),
+            dryRun: { type: "boolean", description: expect.any(String) },
             workspace: expect.objectContaining({
               type: "object",
               required: ["mode", "branch", "path"],
@@ -252,18 +302,18 @@ describe("create_nested_thread MCP tool", () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-thread-"));
     const cliPath = path.join(root, "t3-test");
     const argsPath = path.join(root, "cli-args.txt");
+    const dryArgsPath = path.join(root, "dry-cli-args.txt");
     const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+    const originalDryArgsPath = process.env.T3_MCP_TEST_DRY_ARGS;
 
     try {
-      await writeFile(
-        cliPath,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
-      );
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
+      process.env.T3_MCP_TEST_DRY_ARGS = dryArgsPath;
 
-      await expect(
-        __testing.createNestedThreadTool(
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
           {
             cwd: root,
             toolsets: new Set(["create_nested_thread"]),
@@ -282,10 +332,16 @@ describe("create_nested_thread MCP tool", () => {
             reasoning: "high",
           },
         ),
-      ).resolves.toBe(
-        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
       );
+      expect(outcome).toEqual({
+        ...createdOutcome,
+        workspaceCreated: false,
+      });
 
+      const dryArgs = (await readFile(dryArgsPath, "utf8")).trim().split("\n");
+      expect(dryArgs).toContain("--dry-run");
+      expect(dryArgs).not.toContain("--cross-thread-source");
+      expect(dryArgs).not.toContain("--cross-thread-capability");
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "server.mjs",
         "chat",
@@ -315,6 +371,8 @@ describe("create_nested_thread MCP tool", () => {
     } finally {
       if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
       else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      if (originalDryArgsPath === undefined) delete process.env.T3_MCP_TEST_DRY_ARGS;
+      else process.env.T3_MCP_TEST_DRY_ARGS = originalDryArgsPath;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -326,33 +384,30 @@ describe("create_nested_thread MCP tool", () => {
     const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
 
     try {
-      await writeFile(
-        cliPath,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
-      );
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
 
-      await expect(
-        __testing.createNestedThreadTool(
-          {
-            cwd: root,
-            toolsets: new Set(["create_nested_thread"]),
-            threadId: "parent-1",
-            cliCommand: cliPath,
-            runtimeMode: "full-access",
-            providerInstanceId: ProviderInstanceId.make("copilot"),
-          },
-          {
-            project: "project-1",
-            title: "Investigate nesting",
-            prompt: "Find the root cause.",
-            model: "claude-opus-5",
-          },
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+            },
+            {
+              project: "project-1",
+              title: "Investigate nesting",
+              prompt: "Find the root cause.",
+              model: "claude-opus-5",
+            },
+          ),
         ),
-      ).resolves.toBe(
-        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
-      );
+      ).toEqual(createdOutcome);
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "chat",
@@ -396,41 +451,42 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["config", "user.name", "T3 Test"], root);
       await run("git", ["add", "README.md"], root);
       await run("git", ["commit", "-m", "initial"], root);
-      await writeFile(
-        cliPath,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"\nprintf \'{"threadId":"child-1"}\\n\'\n',
-      );
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
 
-      await expect(
-        __testing.createNestedThreadTool(
-          {
-            cwd: root,
-            toolsets: new Set(["create_nested_thread"]),
-            threadId: "parent-1",
-            cliCommand: cliPath,
-            cliBaseDir: "/tmp/t3-dev",
-            runtimeMode: "full-access",
-            providerInstanceId: ProviderInstanceId.make("copilot"),
-          },
-          {
-            project: "project-1",
-            title: "Implement nesting",
-            prompt: "Complete the implementation.",
-            model: "gpt-5.6-sol",
-            workspace: {
-              mode: "isolated",
-              branch: "feature/isolated-child",
-              path: targetPath,
-              baseRef: "main",
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              cliBaseDir: "/tmp/t3-dev",
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
             },
-          },
+            {
+              project: "project-1",
+              title: "Implement nesting",
+              prompt: "Complete the implementation.",
+              model: "gpt-5.6-sol",
+              workspace: {
+                mode: "isolated",
+                branch: "feature/isolated-child",
+                path: targetPath,
+                baseRef: "main",
+              },
+            },
+          ),
         ),
-      ).resolves.toBe(
-        '{"status":"created","threadId":"child-1","retryable":false,"creationCommitted":true,"cleanupPerformed":false}',
-      );
+      ).toEqual({
+        ...createdOutcome,
+        workspaceCreated: true,
+      });
 
+      const resolvedTargetPath = await realpath(targetPath);
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "chat",
         "new",
@@ -451,9 +507,7 @@ describe("create_nested_thread MCP tool", () => {
         "--branch",
         "feature/isolated-child",
         "--worktree",
-        targetPath,
-        "--workspace-cleanup-token",
-        expect.any(String),
+        resolvedTargetPath,
         "--title",
         "Implement nesting",
         "Complete the implementation.",
@@ -483,33 +537,53 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["commit", "-m", "initial"], root);
       await writeFile(
         cliPath,
-        '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do\n  if [ "$1" = "--workspace-cleanup-token" ]; then\n    shift\n    printf "T3_CHAT_NEW_WORKSPACE_CLEANUP_SAFE:%s child creation failed\\n" "$1"\n    exit 1\n  fi\n  shift\ndone\nexit 1\n',
+        nestedCliScript(
+          {
+            status: "failed",
+            threadId: null,
+            retryable: true,
+            workspaceCreated: true,
+            cleanupPerformed: false,
+            errorCode: "THREAD_CREATE_REJECTED",
+            message: "Thread creation was rejected before it committed: child creation failed",
+          },
+          1,
+        ),
       );
       await chmod(cliPath, 0o755);
 
-      await expect(
-        __testing.createNestedThreadTool(
-          {
-            cwd: root,
-            toolsets: new Set(["create_nested_thread"]),
-            threadId: "parent-1",
-            cliCommand: cliPath,
-            runtimeMode: "full-access",
-            providerInstanceId: ProviderInstanceId.make("copilot"),
-          },
-          {
-            project: "project-1",
-            title: "Implement nesting",
-            prompt: "Complete the implementation.",
-            model: "gpt-5.6-sol",
-            workspace: {
-              mode: "isolated",
-              branch: "feature/rejected-child",
-              path: targetPath,
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
             },
-          },
+            {
+              project: "project-1",
+              title: "Implement nesting",
+              prompt: "Complete the implementation.",
+              model: "gpt-5.6-sol",
+              workspace: {
+                mode: "isolated",
+                branch: "feature/rejected-child",
+                path: targetPath,
+              },
+            },
+          ),
         ),
-      ).rejects.toThrow("child creation failed");
+      ).toMatchObject({
+        status: "failed",
+        threadId: null,
+        retryable: true,
+        workspaceCreated: true,
+        cleanupPerformed: true,
+        errorCode: "THREAD_CREATE_REJECTED",
+      });
 
       await expect(readFile(targetPath, "utf8")).rejects.toThrow();
       await expect(
@@ -534,32 +608,41 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["add", "README.md"], root);
       await run("git", ["commit", "-m", "initial"], root);
       await mkdir(targetPath);
-      await writeFile(cliPath, '#!/bin/sh\nprintf "CLI should not run\\n" >&2\nexit 1\n');
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
 
-      await expect(
-        __testing.createNestedThreadTool(
-          {
-            cwd: root,
-            toolsets: new Set(["create_nested_thread"]),
-            threadId: "parent-1",
-            cliCommand: cliPath,
-            runtimeMode: "full-access",
-            providerInstanceId: ProviderInstanceId.make("copilot"),
-          },
-          {
-            project: root,
-            title: "Implement nesting",
-            prompt: "Complete the implementation.",
-            model: "gpt-5.6-sol",
-            workspace: {
-              mode: "isolated",
-              branch: "feature/occupied-child",
-              path: targetPath,
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
             },
-          },
+            {
+              project: root,
+              title: "Implement nesting",
+              prompt: "Complete the implementation.",
+              model: "gpt-5.6-sol",
+              workspace: {
+                mode: "isolated",
+                branch: "feature/occupied-child",
+                path: targetPath,
+              },
+            },
+          ),
         ),
-      ).rejects.toThrow(/"status":"failed".*"retryable":true.*Workspace path is already occupied/);
+      ).toMatchObject({
+        status: "failed",
+        retryable: true,
+        workspaceCreated: false,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_PATH_OCCUPIED",
+        message: expect.stringContaining("Workspace path is already occupied"),
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
@@ -579,32 +662,39 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["add", "README.md"], root);
       await run("git", ["commit", "-m", "initial"], root);
       await run("git", ["branch", "feature/existing-child"], root);
-      await writeFile(cliPath, '#!/bin/sh\nprintf "CLI should not run\\n" >&2\nexit 1\n');
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
 
-      await expect(
-        __testing.createNestedThreadTool(
-          {
-            cwd: root,
-            toolsets: new Set(["create_nested_thread"]),
-            threadId: "parent-1",
-            cliCommand: cliPath,
-            runtimeMode: "full-access",
-            providerInstanceId: ProviderInstanceId.make("copilot"),
-          },
-          {
-            project: root,
-            title: "Implement nesting",
-            prompt: "Complete the implementation.",
-            model: "gpt-5.6-sol",
-            workspace: {
-              mode: "isolated",
-              branch: "feature/existing-child",
-              path: targetPath,
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
             },
-          },
+            {
+              project: root,
+              title: "Implement nesting",
+              prompt: "Complete the implementation.",
+              model: "gpt-5.6-sol",
+              workspace: {
+                mode: "isolated",
+                branch: "feature/existing-child",
+                path: targetPath,
+              },
+            },
+          ),
         ),
-      ).rejects.toThrow(/"status":"failed".*"retryable":true.*Workspace branch already exists/);
+      ).toMatchObject({
+        status: "failed",
+        retryable: true,
+        errorCode: "WORKSPACE_BRANCH_EXISTS",
+        message: expect.stringContaining("Workspace branch already exists"),
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
@@ -623,33 +713,40 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["config", "user.name", "T3 Test"], root);
       await run("git", ["add", "README.md"], root);
       await run("git", ["commit", "-m", "initial"], root);
-      await writeFile(cliPath, '#!/bin/sh\nprintf "CLI should not run\\n" >&2\nexit 1\n');
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
 
-      await expect(
-        __testing.createNestedThreadTool(
-          {
-            cwd: root,
-            toolsets: new Set(["create_nested_thread"]),
-            threadId: "parent-1",
-            cliCommand: cliPath,
-            runtimeMode: "full-access",
-            providerInstanceId: ProviderInstanceId.make("copilot"),
-          },
-          {
-            project: root,
-            title: "Implement nesting",
-            prompt: "Complete the implementation.",
-            model: "gpt-5.6-sol",
-            workspace: {
-              mode: "isolated",
-              branch: "feature/invalid-base-child",
-              path: targetPath,
-              baseRef: "missing-base-ref",
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
             },
-          },
+            {
+              project: root,
+              title: "Implement nesting",
+              prompt: "Complete the implementation.",
+              model: "gpt-5.6-sol",
+              workspace: {
+                mode: "isolated",
+                branch: "feature/invalid-base-child",
+                path: targetPath,
+                baseRef: "missing-base-ref",
+              },
+            },
+          ),
         ),
-      ).rejects.toThrow(/"status":"failed".*"creationCommitted":false.*missing-base-ref/);
+      ).toMatchObject({
+        status: "failed",
+        workspaceCreated: false,
+        errorCode: "WORKSPACE_BASE_REF_MISSING",
+        message: expect.stringContaining("missing-base-ref"),
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
@@ -663,12 +760,67 @@ describe("create_nested_thread MCP tool", () => {
     try {
       await writeFile(
         cliPath,
-        '#!/bin/sh\nprintf "ORCHESTRATION_COMMAND_REJECTED: turn start rejected\\n" >&2\nexit 1\n',
+        nestedCliScript(
+          {
+            status: "ambiguous",
+            threadId: "child-1",
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: "TURN_START_AMBIGUOUS",
+            message: "The first turn may have committed.",
+          },
+          1,
+        ),
       );
       await chmod(cliPath, 0o755);
 
-      await expect(
-        __testing.createNestedThreadTool(
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+            },
+            {
+              project: "project-1",
+              title: "Implement nesting",
+              prompt: "Complete the implementation.",
+              model: "gpt-5.6-sol",
+            },
+          ),
+        ),
+      ).toMatchObject({
+        status: "ambiguous",
+        threadId: "child-1",
+        retryable: false,
+        errorCode: "TURN_START_AMBIGUOUS",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ambiguity when the CLI response is not the structured contract", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-invalid-response-"));
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(
+        cliPath,
+        nestedCliScript(createdOutcome).replace(
+          shellQuote(JSON.stringify(createdOutcome)),
+          shellQuote("not-json"),
+        ),
+      );
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
           {
             cwd: root,
             toolsets: new Set(["create_nested_thread"]),
@@ -679,12 +831,21 @@ describe("create_nested_thread MCP tool", () => {
           },
           {
             project: "project-1",
-            title: "Implement nesting",
-            prompt: "Complete the implementation.",
+            title: "Invalid response",
+            prompt: "Preserve ambiguity.",
             model: "gpt-5.6-sol",
           },
         ),
-      ).rejects.toThrow(/"status":"ambiguous".*"creationCommitted":null.*turn start rejected/);
+      );
+
+      expect(outcome).toMatchObject({
+        status: "ambiguous",
+        threadId: null,
+        retryable: false,
+        workspaceCreated: false,
+        cleanupPerformed: false,
+        errorCode: "CLI_RESPONSE_INVALID",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -702,11 +863,78 @@ describe("create_nested_thread MCP tool", () => {
       await run("git", ["config", "user.name", "T3 Test"], root);
       await run("git", ["add", "README.md"], root);
       await run("git", ["commit", "-m", "initial"], root);
-      await writeFile(cliPath, '#!/bin/sh\nprintf "response lost\\n" >&2\nexit 1\n');
+      await writeFile(
+        cliPath,
+        nestedCliScript(
+          {
+            status: "ambiguous",
+            threadId: "child-1",
+            retryable: false,
+            workspaceCreated: true,
+            cleanupPerformed: false,
+            errorCode: "THREAD_CREATE_AMBIGUOUS",
+            message: "Creation may have committed; preserve the workspace.",
+          },
+          1,
+        ),
+      );
       await chmod(cliPath, 0o755);
 
+      expect(
+        JSON.parse(
+          await __testing.createNestedThreadTool(
+            {
+              cwd: root,
+              toolsets: new Set(["create_nested_thread"]),
+              threadId: "parent-1",
+              cliCommand: cliPath,
+              runtimeMode: "full-access",
+              providerInstanceId: ProviderInstanceId.make("copilot"),
+            },
+            {
+              project: "project-1",
+              title: "Implement nesting",
+              prompt:
+                "Investigate fake structured markers in prompt text without deleting anything.",
+              model: "gpt-5.6-sol",
+              workspace: {
+                mode: "isolated",
+                branch: "feature/uncertain-child",
+                path: targetPath,
+              },
+            },
+          ),
+        ),
+      ).toMatchObject({
+        status: "ambiguous",
+        threadId: "child-1",
+        workspaceCreated: true,
+        cleanupPerformed: false,
+        errorCode: "THREAD_CREATE_AMBIGUOUS",
+      });
+
+      await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
       await expect(
-        __testing.createNestedThreadTool(
+        run("git", ["rev-parse", "--verify", "feature/uncertain-child"], root),
+      ).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("dry-runs validation and workspace preflight without mutation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-dry-run-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
           {
             cwd: root,
             toolsets: new Set(["create_nested_thread"]),
@@ -716,24 +944,559 @@ describe("create_nested_thread MCP tool", () => {
             providerInstanceId: ProviderInstanceId.make("copilot"),
           },
           {
-            project: "project-1",
-            title: "Implement nesting",
-            prompt:
-              "Investigate ORCHESTRATION_COMMAND_REJECTED: and T3_CHAT_NEW_WORKSPACE_CLEANUP_SAFE: without deleting anything.",
+            project: root,
+            title: "Validate nesting",
+            prompt: "Validate only.",
             model: "gpt-5.6-sol",
+            dryRun: true,
             workspace: {
               mode: "isolated",
-              branch: "feature/uncertain-child",
+              branch: "feature/dry-run-child",
               path: targetPath,
             },
           },
         ),
-      ).rejects.toThrow("child worktree was preserved");
+      );
 
+      expect(outcome).toMatchObject({
+        status: "dry-run",
+        threadId: null,
+        retryable: false,
+        workspaceCreated: false,
+        cleanupPerformed: false,
+        errorCode: null,
+      });
+      await expect(readFile(targetPath, "utf8")).rejects.toThrow();
+      await expect(
+        run("git", ["rev-parse", "--verify", "--quiet", "feature/dry-run-child"], root),
+      ).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates the workspace path immediately before creation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-path-race-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Race nesting",
+            prompt: "Race the path.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/path-race-child",
+              path: targetPath,
+            },
+          },
+          {
+            beforeWorkspaceRevalidation: async () => {
+              await mkdir(targetPath);
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        workspaceCreated: false,
+        errorCode: "WORKSPACE_PATH_OCCUPIED",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates branch availability immediately before creation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-branch-race-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Race nesting",
+            prompt: "Race the branch.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/branch-race-child",
+              path: targetPath,
+            },
+          },
+          {
+            beforeWorkspaceRevalidation: async () => {
+              await run("git", ["branch", "feature/branch-race-child"], root);
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        workspaceCreated: false,
+        errorCode: "WORKSPACE_BRANCH_EXISTS",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("reports stale worktree registrations with prune remediation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-stale-"));
+    const targetPath = `${root}-stale-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await run("git", ["worktree", "add", "-b", "feature/stale-held", targetPath], root);
+      await rm(targetPath, { recursive: true, force: true });
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Stale registration",
+            prompt: "Detect it.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/new-at-stale-path",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        errorCode: "WORKSPACE_PATH_REGISTERED",
+        message: expect.stringContaining("git worktree prune"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a child path owned by another repository", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-owner-source-"));
+    const other = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-owner-other-"));
+    const targetPath = path.join(other, "child-worktree");
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await initGitRepository(other);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Wrong owner",
+            prompt: "Reject it.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/wrong-owner",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        errorCode: "WORKSPACE_REPOSITORY_MISMATCH",
+        message: expect.stringContaining("different Git repository"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a child path inside a bare repository", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-bare-source-"));
+    const bare = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-bare-owner-"));
+    const targetPath = path.join(bare, "nested", "child-worktree");
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await run("git", ["init", "--bare"], bare);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Bare owner",
+            prompt: "Reject it.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/bare-owner",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        errorCode: "WORKSPACE_REPOSITORY_MISMATCH",
+        message: expect.stringContaining("different Git repository"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(bare, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when repository ownership inspection fails", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-inspection-source-"));
+    const broken = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-inspection-broken-"));
+    const targetPath = path.join(broken, "child-worktree");
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(path.join(broken, ".git"), "gitdir: /missing/repository\n");
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Broken owner",
+            prompt: "Fail closed.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/broken-owner",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        workspaceCreated: false,
+        errorCode: "WORKSPACE_PREFLIGHT_FAILED",
+        message: expect.stringContaining("ownership inspection failed"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(broken, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves ownership-ambiguous workspace-create side effects", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-create-failure-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Create failure",
+            prompt: "Do not launch.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/create-failure",
+              path: targetPath,
+            },
+          },
+          {
+            createWorkspace: async (cwd, preflight) => {
+              await run(
+                "git",
+                [
+                  "worktree",
+                  "add",
+                  preflight.workspace.path,
+                  "-b",
+                  preflight.workspace.branch,
+                  preflight.baseRef,
+                ],
+                cwd,
+              );
+              throw new Error("simulated response loss after git mutation");
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "ambiguous",
+        threadId: null,
+        retryable: false,
+        workspaceCreated: true,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CREATE_FAILED",
+      });
       await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
       await expect(
-        run("git", ["rev-parse", "--verify", "feature/uncertain-child"], root),
+        run("git", ["rev-parse", "--verify", "feature/create-failure"], root),
       ).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("reports workspace cleanup failure and disables retry", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-cleanup-failure-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(
+        cliPath,
+        nestedCliScript(
+          {
+            status: "failed",
+            threadId: null,
+            retryable: true,
+            workspaceCreated: true,
+            cleanupPerformed: false,
+            errorCode: "THREAD_CREATE_REJECTED",
+            message: "Thread creation was rejected.",
+          },
+          1,
+        ),
+      );
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Cleanup failure",
+            prompt: "Reject and fail cleanup.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/cleanup-failure",
+              path: targetPath,
+            },
+          },
+          {
+            cleanupWorkspace: () => Promise.reject(new Error("simulated cleanup failure")),
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: false,
+        workspaceCreated: true,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CLEANUP_FAILED",
+        message: expect.stringContaining("simulated cleanup failure"),
+      });
+      await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the branch when cleanup finds an unregistered path", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-preserved-cleanup-"));
+    const targetPath = `${root}-child-worktree`;
+    const branch = "feature/preserved-cleanup";
+
+    try {
+      await initGitRepository(root);
+      await run("git", ["worktree", "add", "-b", branch, targetPath], root);
+      await run("git", ["worktree", "remove", "--force", targetPath], root);
+      await mkdir(targetPath);
+
+      await expect(
+        __testing.cleanupNestedWorkspace(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: "t3",
+          },
+          { branch, path: targetPath, baseRef: "main" },
+        ),
+      ).rejects.toThrow("exists without a matching Git worktree registration and was preserved");
+
+      await expect(
+        run("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], root),
+      ).resolves.toBeUndefined();
+      await expect(readFile(targetPath, "utf8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("does not claim durable worktree cleanup has already completed", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-pending-cleanup-"));
+    const targetPath = `${root}-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(
+        cliPath,
+        nestedCliScript(
+          {
+            status: "failed",
+            threadId: "child-1",
+            retryable: true,
+            workspaceCreated: true,
+            cleanupPerformed: true,
+            errorCode: "TURN_START_REJECTED",
+            message: "The first turn was rejected and thread deletion committed.",
+          },
+          1,
+        ),
+      );
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Pending cleanup",
+            prompt: "Reject the first turn.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/pending-cleanup",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        threadId: "child-1",
+        retryable: false,
+        workspaceCreated: true,
+        cleanupPerformed: false,
+        errorCode: "TURN_START_REJECTED",
+        message: expect.stringContaining("durable worktree cleanup is still pending"),
+      });
+      await expect(readFile(path.join(targetPath, "README.md"), "utf8")).resolves.toBe("base\n");
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
