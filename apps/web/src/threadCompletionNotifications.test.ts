@@ -124,6 +124,37 @@ function makeTracker() {
   };
 }
 
+function collectAfterBootstrap(
+  environmentState: EnvironmentState,
+  input: {
+    readonly tracker?: ReturnType<typeof makeTracker>;
+    readonly now?: number;
+  } = {},
+) {
+  const tracker = input.tracker ?? makeTracker();
+  collectThreadCompletionNotifications({
+    environmentStateById: {
+      [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+    },
+    notificationMode: "all",
+    activeThreadKey: null,
+    isDocumentFocused: false,
+    tracker,
+  });
+
+  return {
+    tracker,
+    requests: collectThreadCompletionNotifications({
+      environmentStateById: { [environmentId]: environmentState },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+      ...(input.now === undefined ? {} : { now: input.now }),
+    }),
+  };
+}
+
 describe("collectThreadCompletionNotifications", () => {
   it("does not notify completed turns from the first bootstrapped snapshot after app restart", () => {
     const tracker = makeTracker();
@@ -333,91 +364,42 @@ describe("collectThreadCompletionNotifications", () => {
     ]);
   });
 
-  it("prefers the provider terminal activity over a checkpoint-derived interruption", () => {
-    const tracker = makeTracker();
-    collectThreadCompletionNotifications({
-      environmentStateById: {
-        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
-      },
-      notificationMode: "all",
-      activeThreadKey: null,
-      isDocumentFocused: false,
-      tracker,
-    });
-
-    const requests = collectThreadCompletionNotifications({
-      environmentStateById: {
-        [environmentId]: makeEnvironmentState({
-          bootstrapComplete: true,
-          threadId: ThreadId.make("thread-missing-checkpoint"),
-          turnId: TurnId.make("turn-missing-checkpoint"),
-          turnState: "interrupted",
-          terminalActivityState: "completed",
-        }),
-      },
-      notificationMode: "all",
-      activeThreadKey: null,
-      isDocumentFocused: false,
-      tracker,
-    });
+  it.each([
+    {
+      name: "successful provider completion over a checkpoint interruption",
+      turnState: "interrupted" as const,
+      terminalActivityState: "completed" as const,
+      expectedStatus: "completed",
+      expectedTitle: "Chat completed",
+    },
+    {
+      name: "provider interruption over a stale completed shell state",
+      turnState: "completed" as const,
+      terminalActivityState: "interrupted" as const,
+      expectedStatus: "interrupted",
+      expectedTitle: "Chat interrupted",
+    },
+  ])("prefers $name", ({ turnState, terminalActivityState, expectedStatus, expectedTitle }) => {
+    const { requests, tracker } = collectAfterBootstrap(
+      makeEnvironmentState({
+        bootstrapComplete: true,
+        threadId: ThreadId.make("thread-provider-terminal"),
+        turnId: TurnId.make("turn-provider-terminal"),
+        turnState,
+        terminalActivityState,
+      }),
+      { now: 1_000 },
+    );
 
     expect(requests).toMatchObject([
       {
-        threadId: "thread-missing-checkpoint",
-        turnId: "turn-missing-checkpoint",
-        title: "Chat completed",
-        status: "completed",
+        threadId: "thread-provider-terminal",
+        turnId: "turn-provider-terminal",
+        title: expectedTitle,
+        status: expectedStatus,
       },
     ]);
-  });
-
-  it("preserves a genuine provider interruption over a stale completed shell state", () => {
-    const tracker = makeTracker();
-    collectThreadCompletionNotifications({
-      environmentStateById: {
-        [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
-      },
-      notificationMode: "all",
-      activeThreadKey: null,
-      isDocumentFocused: false,
-      tracker,
-    });
-
-    const interrupted = makeEnvironmentState({
-      bootstrapComplete: true,
-      threadId: ThreadId.make("thread-provider-interrupted"),
-      turnId: TurnId.make("turn-provider-interrupted"),
-      turnState: "completed",
-      terminalActivityState: "interrupted",
-    });
-    expect(
-      collectThreadCompletionNotifications({
-        environmentStateById: { [environmentId]: interrupted },
-        notificationMode: "all",
-        activeThreadKey: null,
-        isDocumentFocused: false,
-        tracker,
-        now: 1_000,
-      }),
-    ).toEqual([]);
-
-    expect(
-      collectThreadCompletionNotifications({
-        environmentStateById: { [environmentId]: interrupted },
-        notificationMode: "all",
-        activeThreadKey: null,
-        isDocumentFocused: false,
-        tracker,
-        now: 1_000 + INTERRUPTED_NOTIFICATION_GRACE_MS,
-      }),
-    ).toMatchObject([
-      {
-        threadId: "thread-provider-interrupted",
-        turnId: "turn-provider-interrupted",
-        title: "Chat interrupted",
-        status: "interrupted",
-      },
-    ]);
+    expect(tracker.pendingInterruptedTurnKeys).toEqual(new Map());
   });
 
   it("notifies an interruption that remains authoritative past the grace period", () => {

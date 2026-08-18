@@ -48,11 +48,11 @@ export function collectThreadCompletionNotifications(
           return [];
         }
 
-        const status =
-          notificationStatusFromTerminalActivity(
-            environmentState.insightActivitiesByThreadId[summary.id],
-            latestTurn.turnId,
-          ) ?? notificationStatusFromTurnState(latestTurn.state);
+        const terminalStatus = notificationStatusFromTerminalActivity(
+          environmentState.insightActivitiesByThreadId[summary.id],
+          latestTurn.turnId,
+        );
+        const status = terminalStatus ?? notificationStatusFromTurnState(latestTurn.state);
         if (!status) {
           return [];
         }
@@ -63,6 +63,7 @@ export function collectThreadCompletionNotifications(
             latestTurn,
             completedAt: latestTurn.completedAt,
             status,
+            delayInterruption: terminalStatus === null,
             turnKey: `${summary.environmentId}:${summary.id}:${latestTurn.turnId}`,
           },
         ];
@@ -96,7 +97,7 @@ export function collectThreadCompletionNotifications(
         continue;
       }
 
-      if (candidate.status === "interrupted") {
+      if (candidate.status === "interrupted" && candidate.delayInterruption) {
         const notifyAfter = input.tracker.pendingInterruptedTurnKeys.get(candidate.turnKey);
         if (notifyAfter === undefined) {
           input.tracker.pendingInterruptedTurnKeys.set(
@@ -156,18 +157,7 @@ function notificationStatusFromTerminalActivity(
       typeof activity.payload === "object" && activity.payload !== null
         ? (activity.payload as Record<string, unknown>)
         : null;
-    switch (payload?.state) {
-      case "completed":
-        return "completed";
-      case "failed":
-        return "failed";
-      case "interrupted":
-        return "interrupted";
-      case "cancelled":
-        return "cancelled";
-      default:
-        return null;
-    }
+    return normalizeNotificationStatus(payload?.state);
   }
 
   return null;
@@ -216,13 +206,22 @@ export function collectStaleActiveTurnToastRequests(input: {
 export function notificationStatusFromTurnState(
   state: string,
 ): DesktopThreadCompletionNotificationStatus | null {
+  return normalizeNotificationStatus(state);
+}
+
+function normalizeNotificationStatus(
+  state: unknown,
+): DesktopThreadCompletionNotificationStatus | null {
   switch (state) {
     case "completed":
       return "completed";
+    case "failed":
     case "error":
       return "failed";
     case "interrupted":
       return "interrupted";
+    case "cancelled":
+      return "cancelled";
     default:
       return null;
   }
