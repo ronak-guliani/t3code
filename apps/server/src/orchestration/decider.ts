@@ -933,6 +933,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
+          ...(command.threadUrl !== undefined ? { threadUrl: command.threadUrl } : {}),
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
@@ -1470,7 +1471,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           dispatchedAt: command.dispatchedAt,
         },
       };
-      return [...events, userMessageEvent, turnStartRequestedEvent, dispatchedEvent];
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: targetThread,
+        threadUrl: command.threadUrl ?? targetThread.threadUrl,
+        sourceEvents: [...events, userMessageEvent, turnStartRequestedEvent, dispatchedEvent],
+        sourceEvent: turnStartRequestedEvent,
+        lifecycle: "started",
+        sourceKey: queuedTurn.message.messageId,
+        createdAt: command.dispatchedAt,
+      });
     }
 
     case "thread.queued-turn.fail": {
@@ -1783,26 +1793,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           completedAt: command.completedAt,
         },
       };
-      const lifecycle =
-        command.status === "ready"
-          ? "completed"
-          : command.status === "error"
-            ? "failed"
-            : command.status === "missing"
-              ? "blocked"
-              : null;
-      return lifecycle === null
-        ? turnDiffCompletedEvent
-        : appendChildLifecycleNotification({
-            readModel,
-            childThread: thread,
-            threadUrl: command.threadUrl ?? thread.threadUrl,
-            sourceEvents: [turnDiffCompletedEvent],
-            sourceEvent: turnDiffCompletedEvent,
-            lifecycle,
-            sourceKey: command.turnId,
-            createdAt: command.completedAt,
-          });
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: thread,
+        threadUrl: command.threadUrl ?? thread.threadUrl,
+        sourceEvents: [turnDiffCompletedEvent],
+        sourceEvent: turnDiffCompletedEvent,
+        lifecycle: "completed",
+        sourceKey: command.turnId,
+        createdAt: command.completedAt,
+      });
     }
 
     case "thread.revert.complete": {

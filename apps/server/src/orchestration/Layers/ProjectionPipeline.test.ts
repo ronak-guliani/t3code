@@ -129,6 +129,24 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
+      const threadUrl = ThreadUrl.make("https://app.example/environment/thread-1");
+      yield* eventStore.append({
+        type: "thread.meta-updated",
+        eventId: EventId.make("evt-4"),
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        occurredAt: now,
+        commandId: CommandId.make("cmd-4"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-4"),
+        metadata: {},
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          threadUrl,
+          updatedAt: now,
+        },
+      });
+
       yield* projectionPipeline.bootstrap;
 
       const projectRows = yield* sql<{
@@ -157,6 +175,13 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(messageRows, [{ messageId: "message-1", text: "hello" }]);
 
+      const threadRows = yield* sql<{ readonly threadUrl: string | null }>`
+        SELECT thread_url AS "threadUrl"
+        FROM projection_threads
+        WHERE thread_id = 'thread-1'
+      `;
+      assert.deepEqual(threadRows, [{ threadUrl }]);
+
       const stateRows = yield* sql<{
         readonly projector: string;
         readonly lastAppliedSequence: number;
@@ -169,7 +194,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const row of stateRows) {
-        assert.equal(row.lastAppliedSequence, 3);
+        assert.equal(row.lastAppliedSequence, 4);
       }
     }),
   );

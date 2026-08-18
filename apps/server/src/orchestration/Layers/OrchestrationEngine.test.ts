@@ -135,6 +135,25 @@ describe("OrchestrationEngine", () => {
       expect((await system.run(system.engine.getReadModel())).threads[0]?.threadUrl).toBe(
         canonicalUrl,
       );
+
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-thread-canonical-url-update"),
+          threadId,
+          threadUrl: ThreadUrl.make("https://stale.example/thread"),
+          title: "Canonical URL updated",
+        }),
+      );
+      const events = await system.run(
+        Stream.runCollect(system.engine.readEvents(0)).pipe(
+          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+        ),
+      );
+      expect(events.at(-1)).toMatchObject({
+        type: "thread.meta-updated",
+        payload: { threadUrl: canonicalUrl },
+      });
     } finally {
       await system.dispose();
     }

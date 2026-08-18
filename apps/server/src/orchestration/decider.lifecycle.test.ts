@@ -6,6 +6,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  QueuedTurnId,
   ThreadId,
   ThreadUrl,
   TurnId,
@@ -149,18 +150,16 @@ describe("decider thread lifecycle", () => {
         childThreadUrl,
       ],
       ...(["ready", "missing", "error"] as const).map((status, index) => {
-        const lifecycle =
-          status === "ready" ? "completed" : status === "missing" ? "blocked" : "failed";
         return [
-          lifecycle,
+          "completed",
           {
             type: "thread.turn.diff.complete",
-            commandId: CommandId.make(`cmd-${lifecycle}`),
+            commandId: CommandId.make(`cmd-completed-${status}`),
             threadId: childThreadId,
             threadUrl: childThreadUrl,
-            turnId: TurnId.make(`turn-${lifecycle}`),
+            turnId: TurnId.make(`turn-completed-${status}`),
             completedAt: at,
-            checkpointRef: CheckpointRef.make(`checkpoint-${lifecycle}`),
+            checkpointRef: CheckpointRef.make(`checkpoint-completed-${status}`),
             status,
             files: [],
             agentTouchedPaths: [],
@@ -238,6 +237,103 @@ describe("decider thread lifecycle", () => {
         },
       });
     }
+  });
+
+  it.each(["missing", "error"] as const)(
+    "reports a successful provider turn as completed when checkpoint capture is %s",
+    async (status) => {
+      const readModel = await nestedLifecycleReadModel();
+      const at = "2026-07-30T01:00:00.000Z";
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.turn.diff.complete",
+            commandId: CommandId.make(`cmd-successful-turn-${status}`),
+            threadId: childThreadId,
+            threadUrl: childThreadUrl,
+            turnId: TurnId.make(`turn-successful-${status}`),
+            completedAt: at,
+            checkpointRef: CheckpointRef.make(`checkpoint-successful-${status}`),
+            status,
+            files: [],
+            agentTouchedPaths: [],
+            turnFiles: [],
+            checkpointTurnCount: 1,
+            createdAt: at,
+          },
+          readModel,
+        }),
+      );
+
+      expect(
+        eventsOf(result).find((event) => event.type === "thread.child-lifecycle-notified"),
+      ).toMatchObject({
+        payload: {
+          lifecycle: "completed",
+          dedupeKey: `child:${childThreadId}:completed:turn-successful-${status}`,
+        },
+      });
+    },
+  );
+
+  it("emits a durable started notification when queued child work is dispatched", async () => {
+    let readModel = await nestedLifecycleReadModel();
+    const at = "2026-07-30T01:00:00.000Z";
+    const queuedTurnId = QueuedTurnId.make("queued-child-start");
+    const messageId = MessageId.make("message-queued-child-start");
+    const queued = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-queued-child-create"),
+          threadId: childThreadId,
+          queuedTurnId,
+          message: {
+            messageId,
+            role: "user",
+            text: "Start queued child work",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: at,
+        },
+        readModel,
+      }),
+    );
+    readModel = await Effect.runPromise(
+      projectEvent(readModel, { ...eventsOf(queued)[0]!, sequence: 3 }),
+    );
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.dispatch",
+          commandId: CommandId.make("cmd-queued-child-dispatch"),
+          threadId: childThreadId,
+          threadUrl: childThreadUrl,
+          queuedTurnId,
+          dispatchedAt: at,
+        },
+        readModel,
+      }),
+    );
+    const events = eventsOf(result);
+
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.message-sent",
+      "thread.turn-start-requested",
+      "thread.queued-turn-dispatched",
+      "thread.child-lifecycle-notified",
+    ]);
+    expect(events.at(-1)).toMatchObject({
+      aggregateId: parentThreadId,
+      payload: {
+        lifecycle: "started",
+        dedupeKey: `child:${childThreadId}:started:${messageId}`,
+        threadUrl: childThreadUrl,
+      },
+    });
   });
 
   it("emits a stable semantic dedupe key for retried lifecycle notifications", async () => {

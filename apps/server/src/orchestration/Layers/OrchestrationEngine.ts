@@ -148,6 +148,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       case "thread.create":
       case "thread.meta.update":
       case "thread.turn.start":
+      case "thread.queued-turn.dispatch":
       case "thread.turn.diff.complete":
       case "thread.activity.append":
         return {

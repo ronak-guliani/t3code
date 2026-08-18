@@ -912,6 +912,7 @@ const ThreadQueuedTurnDispatchCommand = Schema.Struct({
   type: Schema.Literal("thread.queued-turn.dispatch"),
   commandId: CommandId,
   threadId: ThreadId,
+  threadUrl: Schema.optional(ThreadUrl),
   queuedTurnId: QueuedTurnId,
   dispatchedAt: IsoDateTime,
 });
@@ -1341,6 +1342,7 @@ export const ThreadDecoupledPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
+  threadUrl: Schema.optional(ThreadUrl),
   title: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),

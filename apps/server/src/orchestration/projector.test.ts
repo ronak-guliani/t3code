@@ -4,6 +4,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  ThreadUrl,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -255,6 +256,7 @@ describe("orchestration projector", () => {
           commandId: "cmd-branch-only",
           payload: {
             threadId: "thread-pr",
+            threadUrl: ThreadUrl.make("https://app.example/environment/thread-pr"),
             branch: "feature/other",
             updatedAt: now,
           },
@@ -265,6 +267,9 @@ describe("orchestration projector", () => {
     expect(
       afterBranchOnlyMeta.threads.find((thread) => thread.id === "thread-pr")?.pullRequest,
     ).toEqual(pullRequest);
+    expect(afterBranchOnlyMeta.threads.find((thread) => thread.id === "thread-pr")?.threadUrl).toBe(
+      "https://app.example/environment/thread-pr",
+    );
   });
 
   it("recovers explicit PR review provenance from legacy thread.created events", async () => {
