@@ -34,7 +34,13 @@ Call `create_nested_thread` with:
 ```
 
 `project`, `title`, `prompt`, and `model` are required. `reasoning` is optional and supports
-`low`, `medium`, `high`, or `xhigh` only when the selected model exposes that setting.
+`low`, `medium`, `high`, or `xhigh` only when the selected model exposes that setting. Set
+`dryRun: true` to validate the request and any workspace collision preflight without mutation.
+
+Every call returns `status`, `threadId`, `retryable`, `workspaceCreated`, `cleanupPerformed`,
+`errorCode`, and `message`. Use `threadId` only when `status` is `created` or `ambiguous`; on an
+ambiguous outcome, inspect that exact child before retrying. Retry a failed call only when
+`retryable` is true and follow any remediation in `message`.
 
 ## Delegation workflow
 
@@ -43,7 +49,7 @@ Call `create_nested_thread` with:
 3. Write a self-contained child prompt with the goal, context, permissions, constraints,
    validation commands, and expected report.
 4. If isolation is needed, include `workspace` in the same `create_nested_thread` call.
-5. Call `create_nested_thread` once and capture its returned `threadId`.
+5. Call `create_nested_thread` once, check `status`, and capture a non-null `threadId`.
 6. Monitor by `threadId` only when needed, then consolidate the result in the parent.
 
 ## Workspace ownership

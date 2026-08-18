@@ -87,7 +87,10 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
-import { CHAT_NEW_WORKSPACE_CLEANUP_SAFE } from "./cliProtocol.ts";
+import {
+  runNestedThreadCreationPhases,
+  type NestedThreadCreationOutcome,
+} from "./nestedThreadCreation.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
 import { getAutoBootstrapDefaultModelSelection } from "./serverRuntimeStartup.ts";
 import { readPersistedServerRuntimeState } from "./serverRuntimeState.ts";
@@ -136,6 +139,16 @@ import { pairCommand } from "./cli/pair.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
+
+class NestedThreadCreationCliError extends Error {
+  readonly outcome: NestedThreadCreationOutcome;
+
+  constructor(outcome: NestedThreadCreationOutcome) {
+    super(outcome.message);
+    this.name = "NestedThreadCreationCliError";
+    this.outcome = outcome;
+  }
+}
 
 const BootstrapEnvelopeSchema = Schema.Struct({
   mode: Schema.optional(RuntimeMode),
@@ -2173,13 +2186,15 @@ const chatNewCommand = Command.make("new", {
     Flag.withDescription("Authenticated source thread for a nested cross-thread message."),
   ),
   crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
-  workspaceCleanupToken: Flag.string("workspace-cleanup-token").pipe(Flag.optional),
+  dryRun: Flag.boolean("dry-run").pipe(
+    Flag.withDefault(false),
+    Flag.withDescription("Validate creation without creating a thread or starting a turn."),
+  ),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Prompt text.")),
 }).pipe(
   Command.withDescription("Create a chat and send the first prompt."),
-  Command.withHandler((flags) => {
-    let workspaceCleanupSafe = true;
-    return withLiveOrchestrationClient(flags, ({ getSnapshot, dispatch }) =>
+  Command.withHandler((flags) =>
+    withLiveOrchestrationClient(flags, ({ getSnapshot, dispatch }) =>
       Effect.gen(function* () {
         const snapshot = yield* getSnapshot;
         const project = yield* findProjectForCli(snapshot, flags.project);
@@ -2191,95 +2206,122 @@ const chatNewCommand = Command.make("new", {
             new Error(`Parent thread '${parent.id}' belongs to a different project.`),
           );
         }
-        const threadId = ThreadId.make(crypto.randomUUID());
         const modelSelection = yield* resolveModelSelectionWithDefault(
           flags,
           resolveDefaultModelSelectionForProject(project),
         );
+        if (flags.dryRun) {
+          yield* printJson({
+            status: "dry-run",
+            threadId: null,
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: null,
+            message: "Nested-thread inputs are valid; no thread or workspace was created.",
+          } satisfies NestedThreadCreationOutcome);
+          return;
+        }
+
+        const threadId = ThreadId.make(crypto.randomUUID());
         const createdAt = new Date().toISOString();
-        workspaceCleanupSafe = false;
-        const createExit = yield* Effect.exit(
-          dispatch({
-            type: "thread.create",
-            commandId: CommandId.make(crypto.randomUUID()),
-            threadId,
-            projectId: project.id,
-            parentThreadId: parent?.id ?? null,
-            title: flags.title,
-            modelSelection,
-            runtimeMode: flags.runtimeMode,
-            interactionMode: flags.interactionMode,
-            branch: Option.getOrUndefined(flags.branch) ?? null,
-            worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
-            createdAt,
-          }),
+        const outcome = yield* runNestedThreadCreationPhases(
+          threadId,
+          Option.isSome(flags.worktree),
+          {
+            createThread: dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId,
+              projectId: project.id,
+              parentThreadId: parent?.id ?? null,
+              title: flags.title,
+              modelSelection,
+              runtimeMode: flags.runtimeMode,
+              interactionMode: flags.interactionMode,
+              branch: Option.getOrUndefined(flags.branch) ?? null,
+              worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
+              createdAt,
+            }).pipe(Effect.asVoid),
+            startTurn: dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId,
+              message: {
+                messageId: MessageId.make(crypto.randomUUID()),
+                role: "user",
+                text: flags.prompt,
+                attachments: [],
+              },
+              ...(Option.isSome(flags.crossThreadSource)
+                ? {
+                    crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                    crossThreadDispatchCapability: Option.getOrUndefined(
+                      flags.crossThreadCapability,
+                    ),
+                  }
+                : {}),
+              modelSelection,
+              titleSeed: flags.title,
+              runtimeMode: flags.runtimeMode,
+              interactionMode: flags.interactionMode,
+              createdAt,
+            }).pipe(Effect.asVoid),
+            cleanupThread: dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make(crypto.randomUUID()),
+              threadId,
+              cleanupWorktree: Option.isSome(flags.worktree),
+            }).pipe(Effect.asVoid),
+            classifyFailure: (error) => ({
+              definitive: isDefinitiveCommandRejectionError(error),
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          },
         );
-        if (Exit.isFailure(createExit)) {
-          const failure = Cause.findErrorOption(createExit.cause);
-          workspaceCleanupSafe =
-            Option.isSome(failure) && isDefinitiveCommandRejectionError(failure.value);
-          return yield* Effect.failCause(createExit.cause);
+        yield* printJson(outcome);
+        if (outcome.status !== "created") {
+          return yield* new NestedThreadCreationCliError(outcome);
         }
-        const createResult = createExit.value;
-        const turnExit = yield* Effect.exit(
-          dispatch({
-            type: "thread.turn.start",
-            commandId: CommandId.make(crypto.randomUUID()),
-            threadId,
-            message: {
-              messageId: MessageId.make(crypto.randomUUID()),
-              role: "user",
-              text: flags.prompt,
-              attachments: [],
-            },
-            ...(Option.isSome(flags.crossThreadSource)
-              ? {
-                  crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
-                  crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
-                }
-              : {}),
-            modelSelection,
-            titleSeed: flags.title,
-            runtimeMode: flags.runtimeMode,
-            interactionMode: flags.interactionMode,
-            createdAt,
-          }),
-        );
-        if (Exit.isFailure(turnExit)) {
-          if (!Cause.hasInterruptsOnly(turnExit.cause)) {
-            const deleteExit = yield* Effect.exit(
-              dispatch({
-                type: "thread.delete",
-                commandId: CommandId.make(crypto.randomUUID()),
-                threadId,
-                cleanupWorktree: Option.isSome(flags.worktree),
-              }),
-            );
-            if (Exit.isFailure(deleteExit)) {
-              yield* Effect.logWarning("failed to schedule nested thread rollback", {
-                threadId,
-                cause: Cause.pretty(deleteExit.cause),
-              });
-            }
-          }
-          return yield* Effect.failCause(turnExit.cause);
-        }
-        const turnResult = turnExit.value;
-        yield* printJson({ threadId, createResult, turnResult });
       }),
     ).pipe(
       Effect.catchCause((cause) =>
-        workspaceCleanupSafe && Option.isSome(flags.workspaceCleanupToken)
-          ? Effect.fail(
-              new Error(
-                `${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${flags.workspaceCleanupToken.value} ${Cause.pretty(cause)}`,
-                { cause },
-              ),
-            )
-          : Effect.failCause(cause),
+        Option.match(Cause.findErrorOption(cause), {
+          onNone: () => {
+            const outcome = {
+              status: "failed",
+              threadId: null,
+              retryable: false,
+              workspaceCreated: false,
+              cleanupPerformed: false,
+              errorCode: "CLI_EXECUTION_FAILED",
+              message: Cause.pretty(cause),
+            } satisfies NestedThreadCreationOutcome;
+            return printJson(outcome).pipe(
+              Effect.andThen(Effect.fail(new NestedThreadCreationCliError(outcome))),
+            );
+          },
+          onSome: (error) => {
+            if (error instanceof NestedThreadCreationCliError) {
+              return Effect.failCause(cause);
+            }
+            const outcome = {
+              status: "failed",
+              threadId: null,
+              retryable: false,
+              workspaceCreated: false,
+              cleanupPerformed: false,
+              errorCode: "VALIDATION_FAILED",
+              message: error instanceof Error ? error.message : String(error),
+            } satisfies NestedThreadCreationOutcome;
+            return printJson(outcome).pipe(
+              Effect.andThen(Effect.fail(new NestedThreadCreationCliError(outcome))),
+            );
+          },
+        }),
       ),
-    );
-  }),
+    ),
+  ),
 );
 
 const chatStreamCommand = Command.make("stream", {
