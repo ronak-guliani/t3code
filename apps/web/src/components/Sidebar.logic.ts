@@ -44,6 +44,7 @@ export function resolveSidebarDraftPreview(input: {
   if (promptPreview) {
     return promptPreview;
   }
+
   const optimisticPreview = input.optimisticMessage?.text.trim().split("\n", 1)[0] ?? "";
   if (optimisticPreview) {
     return optimisticPreview;
@@ -51,6 +52,13 @@ export function resolveSidebarDraftPreview(input: {
   const attachmentCount =
     input.draftAttachmentCount + (input.optimisticMessage?.attachments?.length ?? 0);
   return `${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"}`;
+}
+
+export function resolveExistingThreadDraftPreview(
+  prompt: string | null | undefined,
+): string | null {
+  const preview = prompt?.trim().split("\n", 1)[0] ?? "";
+  return preview.length > 0 ? preview : null;
 }
 
 /**

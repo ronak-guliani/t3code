@@ -172,6 +172,7 @@ import {
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarDraftPreview,
+  resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
@@ -447,6 +448,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const pendingTurn = usePendingTurnStore(
     (state) => state.pendingByThreadKey[pendingTurnKey] ?? null,
   );
+  const composerPrompt = useComposerDraftStore((state) =>
+    virtualAgentRun ? null : (state.draftsByThreadKey[threadKey]?.prompt ?? null),
+  );
+  const composerDraftPreview = isActive ? null : resolveExistingThreadDraftPreview(composerPrompt);
   const effectiveThreadStatus = resolveSidebarThreadRowStatus({
     threadStatus,
     hasPendingTurn: isPendingTurnActive(pendingTurn, thread),
@@ -859,6 +864,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   thread={thread}
                 />
               </Tooltip>
+              {composerDraftPreview ? (
+                <span
+                  className="min-w-0 flex-1 truncate text-muted-foreground/50"
+                  style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
+                  title={composerDraftPreview}
+                >
+                  · {composerDraftPreview}
+                </span>
+              ) : null}
               {prStatus ? (
                 <>
                   <span
