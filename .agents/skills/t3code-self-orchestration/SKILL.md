@@ -38,9 +38,10 @@ Call `create_nested_thread` with:
 `dryRun: true` to validate the request and any workspace collision preflight without mutation.
 
 Every call returns `status`, `threadId`, `retryable`, `workspaceCreated`, `cleanupPerformed`,
-`errorCode`, and `message`. Use `threadId` only when `status` is `created` or `ambiguous`; on an
-ambiguous outcome, inspect that exact child before retrying. Retry a failed call only when
-`retryable` is true and follow any remediation in `message`.
+`errorCode`, and `message`. A `created` outcome always has a `threadId`. For an `ambiguous`
+outcome with a non-null `threadId`, inspect that exact child before retrying; when it is null,
+inspect the parent's children and any requested workspace state instead. Retry a failed call only
+when `retryable` is true and follow any remediation in `message`.
 
 ## Delegation workflow
 

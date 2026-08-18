@@ -1,7 +1,10 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { runNestedThreadCreationPhases } from "./nestedThreadCreation.ts";
+import {
+  decodeNestedThreadCreationOutcome,
+  runNestedThreadCreationPhases,
+} from "./nestedThreadCreation.ts";
 
 class PhaseError extends Error {
   readonly definitive: boolean;
@@ -34,7 +37,32 @@ const run = (
     }),
   );
 
+const createdOutcome = {
+  status: "created",
+  threadId: "child-1",
+  retryable: false,
+  workspaceCreated: true,
+  cleanupPerformed: false,
+  errorCode: null,
+  message: "Nested thread created and its first turn was accepted.",
+} as const;
+
 describe("runNestedThreadCreationPhases", () => {
+  it("rejects semantically invalid structured outcomes", () => {
+    for (const outcome of [
+      { ...createdOutcome, threadId: null },
+      { ...createdOutcome, errorCode: "CLI_RESPONSE_INVALID" },
+      {
+        ...createdOutcome,
+        status: "dry-run",
+        threadId: null,
+        workspaceCreated: true,
+      },
+    ]) {
+      expect(() => decodeNestedThreadCreationOutcome(outcome)).toThrow();
+    }
+  });
+
   it("reports the complete stable success contract", async () => {
     await expect(run()).resolves.toEqual({
       status: "created",

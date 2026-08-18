@@ -601,16 +601,42 @@ async function findExistingAncestor(targetPath: string): Promise<string> {
   }
 }
 
+async function findContainingGitRoot(targetPath: string): Promise<string | null> {
+  let cursor = await findExistingAncestor(targetPath);
+  while (true) {
+    try {
+      await fs.lstat(path.join(cursor, ".git"));
+      return cursor;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return null;
+      cursor = parent;
+    }
+  }
+}
+
 async function findContainingGitCommonDir(targetPath: string): Promise<string | null> {
-  const existingAncestor = await findExistingAncestor(targetPath);
+  const gitRoot = await findContainingGitRoot(targetPath);
+  if (gitRoot === null) return null;
   const result = JSON.parse(
-    await spawnCommand(existingAncestor, "git", ["rev-parse", "--git-common-dir"]),
+    await spawnCommand(gitRoot, "git", ["rev-parse", "--git-common-dir"]),
   ) as TerminalResult;
-  if (result.code !== 0) return null;
+  if (result.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git repository ownership inspection failed for '${gitRoot}'. Resolve the repository error before retrying: ${result.stderr.trim() || `exit ${String(result.code)}`}`,
+    );
+  }
   const commonDir = result.stdout.trim();
-  if (!commonDir) return null;
+  if (!commonDir) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git repository ownership inspection returned no common directory for '${gitRoot}'. Repair the repository before retrying.`,
+    );
+  }
   return await fs.realpath(
-    path.isAbsolute(commonDir) ? commonDir : path.resolve(existingAncestor, commonDir),
+    path.isAbsolute(commonDir) ? commonDir : path.resolve(gitRoot, commonDir),
   );
 }
 
@@ -930,8 +956,53 @@ const nestedThreadFailure = (
   message,
 });
 
-function parseNestedThreadCliOutcome(result: TerminalResult): NestedThreadCreationOutcome {
-  return decodeNestedThreadCreationOutcome(JSON.parse(result.stdout.trim()) as unknown);
+function cliBoundaryFailure(
+  dryRun: boolean,
+  errorCode: "CLI_EXECUTION_FAILED" | "CLI_RESPONSE_INVALID",
+  detail: string,
+): NestedThreadCreationOutcome {
+  if (dryRun) {
+    return {
+      status: "failed",
+      threadId: null,
+      retryable: true,
+      workspaceCreated: false,
+      cleanupPerformed: false,
+      errorCode,
+      message:
+        errorCode === "CLI_RESPONSE_INVALID"
+          ? `Nested-thread validation returned an invalid structured outcome and made no changes: ${detail}`
+          : `Nested-thread validation could not complete and made no changes. Retry after resolving the CLI error: ${detail}`,
+    };
+  }
+  return {
+    status: "ambiguous",
+    threadId: null,
+    retryable: false,
+    workspaceCreated: false,
+    cleanupPerformed: false,
+    errorCode,
+    message:
+      errorCode === "CLI_RESPONSE_INVALID"
+        ? `The CLI returned an invalid structured creation outcome. Inspect child threads before retrying: ${detail}`
+        : `The CLI did not return a structured creation outcome. Inspect child threads before retrying: ${detail}`,
+  };
+}
+
+function parseNestedThreadCliOutcome(
+  result: TerminalResult,
+  dryRun: boolean,
+): NestedThreadCreationOutcome {
+  const outcome = decodeNestedThreadCreationOutcome(JSON.parse(result.stdout.trim()) as unknown);
+  const succeeded = result.code === 0;
+  if (
+    (dryRun && succeeded && outcome.status !== "dry-run") ||
+    (dryRun && !succeeded && (outcome.status === "created" || outcome.status === "dry-run")) ||
+    (!dryRun && outcome.status === "dry-run")
+  ) {
+    throw new Error(`CLI outcome status '${outcome.status}' does not match this invocation phase`);
+  }
+  return outcome;
 }
 
 async function invokeNestedThreadCli(
@@ -945,47 +1016,17 @@ async function invokeNestedThreadCli(
   } catch (error) {
     if (error instanceof CommandExecutionError && error.result.stdout.trim()) {
       try {
-        return parseNestedThreadCliOutcome(error.result);
+        return parseNestedThreadCliOutcome(error.result, dryRun);
       } catch {
-        return {
-          status: dryRun ? "failed" : "ambiguous",
-          threadId: null,
-          retryable: dryRun,
-          workspaceCreated: false,
-          cleanupPerformed: false,
-          errorCode: "CLI_RESPONSE_INVALID",
-          message: dryRun
-            ? `Nested-thread validation returned an invalid structured outcome and made no changes: ${error.result.stdout.trim()}`
-            : `The CLI returned an invalid structured creation outcome. Inspect child threads before retrying: ${error.result.stdout.trim()}`,
-        };
+        return cliBoundaryFailure(dryRun, "CLI_RESPONSE_INVALID", error.result.stdout.trim());
       }
     }
-    return {
-      status: dryRun ? "failed" : "ambiguous",
-      threadId: null,
-      retryable: dryRun,
-      workspaceCreated: false,
-      cleanupPerformed: false,
-      errorCode: "CLI_EXECUTION_FAILED",
-      message: dryRun
-        ? `Nested-thread validation could not complete and made no changes. Retry after resolving the CLI error: ${toErrorMessage(error)}`
-        : `The CLI did not return a structured creation outcome. Inspect child threads before retrying: ${toErrorMessage(error)}`,
-    };
+    return cliBoundaryFailure(dryRun, "CLI_EXECUTION_FAILED", toErrorMessage(error));
   }
   try {
-    return parseNestedThreadCliOutcome(result);
+    return parseNestedThreadCliOutcome(result, dryRun);
   } catch (error) {
-    return {
-      status: dryRun ? "failed" : "ambiguous",
-      threadId: null,
-      retryable: dryRun,
-      workspaceCreated: false,
-      cleanupPerformed: false,
-      errorCode: "CLI_RESPONSE_INVALID",
-      message: dryRun
-        ? `Nested-thread validation returned an invalid structured outcome and made no changes: ${toErrorMessage(error)}`
-        : `The CLI returned an invalid structured creation outcome. Inspect child threads before retrying: ${toErrorMessage(error)}`,
-    };
+    return cliBoundaryFailure(dryRun, "CLI_RESPONSE_INVALID", toErrorMessage(error));
   }
 }
 
@@ -1013,10 +1054,14 @@ function nestedThreadCommandArgs(
     input.project,
     "--parent",
     options.threadId,
-    "--cross-thread-source",
-    options.threadId,
-    "--cross-thread-capability",
-    issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
+    ...(!input.dryRun
+      ? [
+          "--cross-thread-source",
+          options.threadId,
+          "--cross-thread-capability",
+          issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
+        ]
+      : []),
     "--provider",
     options.providerInstanceId,
     "--model",
@@ -1194,10 +1239,17 @@ async function createNestedThreadToolImpl(
     }),
     false,
   );
-  const outcomeWithWorkspace = { ...creationOutcome, workspaceCreated: true };
-  if (creationOutcome.status === "created" || creationOutcome.status === "ambiguous") {
-    return outcomeWithWorkspace;
+  if (creationOutcome.status === "dry-run") {
+    return cliBoundaryFailure(
+      false,
+      "CLI_RESPONSE_INVALID",
+      "mutating nested-thread creation returned a dry-run outcome",
+    );
   }
+  if (creationOutcome.status === "created" || creationOutcome.status === "ambiguous") {
+    return { ...creationOutcome, workspaceCreated: true };
+  }
+  const outcomeWithWorkspace = { ...creationOutcome, workspaceCreated: true };
   if (creationOutcome.threadId !== null) {
     if (!creationOutcome.cleanupPerformed) return outcomeWithWorkspace;
     try {

@@ -22,15 +22,44 @@ export const NestedThreadCreationErrorCode = Schema.Literals([
 ]);
 export type NestedThreadCreationErrorCode = typeof NestedThreadCreationErrorCode.Type;
 
-export const NestedThreadCreationOutcome = Schema.Struct({
-  status: Schema.Literals(["created", "dry-run", "failed", "ambiguous"]),
-  threadId: Schema.NullOr(Schema.String),
-  retryable: Schema.Boolean,
-  workspaceCreated: Schema.Boolean,
-  cleanupPerformed: Schema.Boolean,
-  errorCode: Schema.NullOr(NestedThreadCreationErrorCode),
-  message: Schema.String,
-});
+export const NestedThreadCreationOutcome = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("created"),
+    threadId: Schema.String,
+    retryable: Schema.Literal(false),
+    workspaceCreated: Schema.Boolean,
+    cleanupPerformed: Schema.Literal(false),
+    errorCode: Schema.Null,
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("dry-run"),
+    threadId: Schema.Null,
+    retryable: Schema.Literal(false),
+    workspaceCreated: Schema.Literal(false),
+    cleanupPerformed: Schema.Literal(false),
+    errorCode: Schema.Null,
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("failed"),
+    threadId: Schema.NullOr(Schema.String),
+    retryable: Schema.Boolean,
+    workspaceCreated: Schema.Boolean,
+    cleanupPerformed: Schema.Boolean,
+    errorCode: NestedThreadCreationErrorCode,
+    message: Schema.String,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("ambiguous"),
+    threadId: Schema.NullOr(Schema.String),
+    retryable: Schema.Literal(false),
+    workspaceCreated: Schema.Boolean,
+    cleanupPerformed: Schema.Literal(false),
+    errorCode: NestedThreadCreationErrorCode,
+    message: Schema.String,
+  }),
+]);
 export type NestedThreadCreationOutcome = typeof NestedThreadCreationOutcome.Type;
 
 export interface NestedThreadPhaseFailure {
@@ -64,16 +93,25 @@ export const runNestedThreadCreationPhases = <R>(
     const createExit = yield* Effect.exit(phases.createThread);
     if (Exit.isFailure(createExit)) {
       const failure = failureFromCause(createExit.cause, phases.classifyFailure);
+      if (failure.definitive) {
+        return {
+          status: "failed",
+          threadId: null,
+          retryable: true,
+          workspaceCreated,
+          cleanupPerformed: false,
+          errorCode: "THREAD_CREATE_REJECTED",
+          message: `Thread creation was rejected before it committed: ${failure.message}`,
+        };
+      }
       return {
-        status: failure.definitive ? "failed" : "ambiguous",
-        threadId: failure.definitive ? null : threadId,
-        retryable: failure.definitive,
+        status: "ambiguous",
+        threadId,
+        retryable: false,
         workspaceCreated,
         cleanupPerformed: false,
-        errorCode: failure.definitive ? "THREAD_CREATE_REJECTED" : "THREAD_CREATE_AMBIGUOUS",
-        message: failure.definitive
-          ? `Thread creation was rejected before it committed: ${failure.message}`
-          : `Thread creation may have committed, so retrying could create a duplicate. Inspect child thread '${threadId}' before retrying: ${failure.message}`,
+        errorCode: "THREAD_CREATE_AMBIGUOUS",
+        message: `Thread creation may have committed, so retrying could create a duplicate. Inspect child thread '${threadId}' before retrying: ${failure.message}`,
       };
     }
 
@@ -117,16 +155,25 @@ export const runNestedThreadCreationPhases = <R>(
     }
 
     const cleanupFailure = failureFromCause(cleanupExit.cause, phases.classifyFailure);
+    if (cleanupFailure.definitive) {
+      return {
+        status: "failed",
+        threadId,
+        retryable: false,
+        workspaceCreated,
+        cleanupPerformed: false,
+        errorCode: "THREAD_CLEANUP_REJECTED",
+        message: `The first turn was rejected, but thread cleanup was also rejected. Delete child thread '${threadId}' before retrying: ${cleanupFailure.message}`,
+      };
+    }
     return {
-      status: cleanupFailure.definitive ? "failed" : "ambiguous",
+      status: "ambiguous",
       threadId,
       retryable: false,
       workspaceCreated,
       cleanupPerformed: false,
-      errorCode: cleanupFailure.definitive ? "THREAD_CLEANUP_REJECTED" : "THREAD_CLEANUP_AMBIGUOUS",
-      message: cleanupFailure.definitive
-        ? `The first turn was rejected, but thread cleanup was also rejected. Delete child thread '${threadId}' before retrying: ${cleanupFailure.message}`
-        : `The first turn was rejected, but cleanup may have committed. Inspect child thread '${threadId}' before retrying: ${cleanupFailure.message}`,
+      errorCode: "THREAD_CLEANUP_AMBIGUOUS",
+      message: `The first turn was rejected, but cleanup may have committed. Inspect child thread '${threadId}' before retrying: ${cleanupFailure.message}`,
     };
   });
 

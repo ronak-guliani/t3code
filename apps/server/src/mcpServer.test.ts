@@ -40,6 +40,9 @@ const nestedCliScript = (actualOutcome: Record<string, unknown>, actualExitCode 
   return `#!/bin/sh
 for arg in "$@"; do
   if [ "$arg" = "--dry-run" ]; then
+    if [ -n "$T3_MCP_TEST_DRY_ARGS" ]; then
+      printf "%s\\n" "$@" > "$T3_MCP_TEST_DRY_ARGS"
+    fi
     printf '%s\\n' ${shellQuote(JSON.stringify(dryRunOutcome))}
     exit 0
   fi
@@ -299,12 +302,15 @@ describe("create_nested_thread MCP tool", () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-thread-"));
     const cliPath = path.join(root, "t3-test");
     const argsPath = path.join(root, "cli-args.txt");
+    const dryArgsPath = path.join(root, "dry-cli-args.txt");
     const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+    const originalDryArgsPath = process.env.T3_MCP_TEST_DRY_ARGS;
 
     try {
       await writeFile(cliPath, nestedCliScript(createdOutcome));
       await chmod(cliPath, 0o755);
       process.env.T3_MCP_TEST_ARGS = argsPath;
+      process.env.T3_MCP_TEST_DRY_ARGS = dryArgsPath;
 
       const outcome = JSON.parse(
         await __testing.createNestedThreadTool(
@@ -332,6 +338,10 @@ describe("create_nested_thread MCP tool", () => {
         workspaceCreated: false,
       });
 
+      const dryArgs = (await readFile(dryArgsPath, "utf8")).trim().split("\n");
+      expect(dryArgs).toContain("--dry-run");
+      expect(dryArgs).not.toContain("--cross-thread-source");
+      expect(dryArgs).not.toContain("--cross-thread-capability");
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "server.mjs",
         "chat",
@@ -361,6 +371,8 @@ describe("create_nested_thread MCP tool", () => {
     } finally {
       if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
       else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      if (originalDryArgsPath === undefined) delete process.env.T3_MCP_TEST_DRY_ARGS;
+      else process.env.T3_MCP_TEST_DRY_ARGS = originalDryArgsPath;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -1159,6 +1171,55 @@ describe("create_nested_thread MCP tool", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when repository ownership inspection fails", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-inspection-source-"));
+    const broken = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-inspection-broken-"));
+    const targetPath = path.join(broken, "child-worktree");
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await initGitRepository(root);
+      await writeFile(path.join(broken, ".git"), "gitdir: /missing/repository\n");
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const outcome = JSON.parse(
+        await __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Broken owner",
+            prompt: "Fail closed.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/broken-owner",
+              path: targetPath,
+            },
+          },
+        ),
+      );
+
+      expect(outcome).toMatchObject({
+        status: "failed",
+        retryable: true,
+        workspaceCreated: false,
+        errorCode: "WORKSPACE_PREFLIGHT_FAILED",
+        message: expect.stringContaining("ownership inspection failed"),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(broken, { recursive: true, force: true });
     }
   });
 
