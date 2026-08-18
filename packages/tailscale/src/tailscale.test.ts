@@ -66,11 +66,11 @@ function neverFinishingMockHandle() {
 }
 
 function mockSpawnerLayer(
+  platform: NodeJS.Platform,
   handler: (
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
-  platform: NodeJS.Platform = process.platform,
 ) {
   return Layer.mergeAll(
     Layer.succeed(HostProcessPlatform, platform),
@@ -175,7 +175,7 @@ describe("tailscale", () => {
   );
 
   it.effect("reads tailscale status through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["status", "--json"]);
       return {
@@ -193,11 +193,11 @@ describe("tailscale", () => {
   });
 
   it.effect("uses the executable suffix required by Windows direct spawning", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("win32", (command, args) => {
       assert.equal(command, "tailscale.exe");
       assert.deepEqual(args, ["status", "--json"]);
       return { stdout: tailscaleStatusWithSingleIpJson };
-    }, "win32");
+    });
 
     return readTailscaleStatus.pipe(Effect.provide(layer));
   });
@@ -232,7 +232,7 @@ describe("tailscale", () => {
   });
 
   it.effect("keeps nonzero exit diagnostics structured", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = mockSpawnerLayer("linux", () => ({
       code: 7,
       stderr: "not logged in tskey-auth-secret-token-value",
     }));
@@ -281,7 +281,7 @@ describe("tailscale", () => {
   });
 
   it.effect("configures tailscale serve through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "--bg", "--https=8443", "http://127.0.0.1:13773"]);
       return {};
@@ -291,7 +291,7 @@ describe("tailscale", () => {
   });
 
   it.effect("reads tailscale serve port occupancy through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "status", "--json"]);
       return { stdout: '{"TCP":{"8443":{"HTTPS":true}}}' };
@@ -303,7 +303,7 @@ describe("tailscale", () => {
   });
 
   it.effect("retains tailscale serve exit diagnostics", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = mockSpawnerLayer("linux", () => ({
       code: 1,
       stderr: "serve permission denied tskey-auth-secret-token-value",
     }));
@@ -331,7 +331,7 @@ describe("tailscale", () => {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
     }[] = [];
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       commands.push({ command, args });
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "--https=8443", "off"]);
