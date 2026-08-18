@@ -777,11 +777,17 @@ it.effect("decodes pull request monitor provenance with normalized metadata", ()
       kind: "pull-request-monitor",
       repository: " acme/app ",
       number: 42,
+      headSha: " abc123 ",
+      sourceRevision: " revision-1 ",
+      events: [{ kind: "behind-base" }],
     });
     assert.deepStrictEqual(parsed, {
       kind: "pull-request-monitor",
       repository: "acme/app",
       number: 42,
+      headSha: "abc123",
+      sourceRevision: "revision-1",
+      events: [{ kind: "behind-base" }],
     });
   }),
 );

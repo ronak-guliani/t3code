@@ -38,7 +38,11 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { PullRequestMonitorStore } from "./PullRequestMonitorStore.ts";
 import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
-import { reconcileFeedbackItem, type FeedbackActionability } from "./feedbackReconciliation.ts";
+import {
+  feedbackStableKeyOf,
+  reconcileFeedbackItem,
+  type FeedbackActionability,
+} from "./feedbackReconciliation.ts";
 import { type PullRequestMonitorFeedbackReadiness } from "./readiness.ts";
 import { monitorToolNamesForThread } from "./monitorTools.ts";
 import { sendQueuedTurn } from "./threadDelivery.ts";
@@ -115,10 +119,6 @@ function stableDeliveryIds(input: {
   const commandId = CommandId.make(`command:pr-monitor-feedback:${batchKey}`);
   const messageId = MessageId.make(`message:pr-monitor-feedback:${batchKey}`);
   return { batchKey, deliveryId, commandId, messageId };
-}
-
-function eventStableKey(event: PullRequestMonitorActionableEvent): string {
-  return `${event.kind}:${event.sourceId ?? event.detail ?? "na"}`;
 }
 
 function eventSummary(event: PullRequestMonitorActionableEvent): string {
@@ -420,7 +420,7 @@ export const layer = Layer.effect(
             // Terminal state changes are not remediation work.
             if (event.kind === "state-changed") continue;
 
-            const stableKey = eventStableKey(event);
+            const stableKey = feedbackStableKeyOf(event);
             const itemId = stableItemId(input.monitor.id, stableKey);
             const existing = yield* feedbackStore.getItem(itemId);
             const summary = eventSummary(event);
@@ -702,6 +702,9 @@ export const layer = Layer.effect(
             text: prompt,
             repository: monitor.repository,
             pullRequestNumber: monitor.number,
+            headSha: snapshot.headSha,
+            sourceRevision: snapshot.sourceRevision,
+            events,
           }).pipe(Effect.provideService(OrchestrationEngineService, engine)),
         );
 

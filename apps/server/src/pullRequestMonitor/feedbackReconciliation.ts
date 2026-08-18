@@ -1,4 +1,5 @@
 import type {
+  PullRequestMonitorActionableEvent,
   PullRequestMonitorActionableEventKind,
   PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
@@ -19,7 +20,11 @@ export interface ReconcilableFeedbackItem {
   readonly stableKey: string;
 }
 
-/** `${kind}:${sourceId ?? detail ?? "na"}` — see eventStableKey in the feedback service. */
+export function feedbackStableKeyOf(event: PullRequestMonitorActionableEvent): string {
+  return `${event.kind}:${event.sourceId ?? event.detail ?? "na"}`;
+}
+
+/** `${kind}:${sourceId ?? detail ?? "na"}` — see feedbackStableKeyOf. */
 export function feedbackSourceIdOf(stableKey: string): string | null {
   const separator = stableKey.indexOf(":");
   if (separator < 0) return null;
