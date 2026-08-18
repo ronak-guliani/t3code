@@ -6,6 +6,7 @@ import {
   PullRequestOperationError,
   ThreadId,
   type ModelSelection,
+  type PullRequestMonitorFeedbackDeliveryId,
   type PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -1479,6 +1480,276 @@ layer("PullRequestMonitorService", (it) => {
       });
       assert.strictEqual(items[0]?.status, "closed");
       assert.strictEqual(items[0]?.disposition, "resolved-upstream");
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("delivers unresolved review feedback when the head moves before delivery", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("thr_moved_head_owner");
+      seedThread(owner);
+
+      const unresolvedThread = {
+        id: "thread-moved-head",
+        author: { login: "reviewer", kind: "user" as const },
+        path: "a.ts",
+        line: 1,
+        createdAt: "2026-08-11T00:00:00.000Z",
+        updatedAt: "2026-08-11T00:00:00.000Z",
+        resolved: false,
+        latestCommentByViewer: false,
+        bodyExcerpt: "still needs fixing",
+      };
+      const observed = sampleSnapshot({ reviewThreads: [unresolvedThread] });
+      currentSnapshot = observed;
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 69,
+        ownerThreadId: owner,
+      });
+
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: observed,
+        events: [
+          {
+            kind: "new-review-comment",
+            sourceId: unresolvedThread.id,
+            detail: unresolvedThread.bodyExcerpt,
+          },
+        ],
+      });
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: state.pendingRevisionIds,
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+
+      // The provider head advances before the monitor's next poll, but the review
+      // thread remains unresolved and therefore still requires owner attention.
+      currentSnapshot = sampleSnapshot({
+        headSha: "feedface",
+        sourceRevision: "rev-2",
+        reviewThreads: [unresolvedThread],
+      });
+
+      dispatchedCommands.length = 0;
+      yield* feedback.flushDueDeliveries;
+
+      const deliveries = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(deliveries[0]?.status, "delivered");
+      assert.isTrue(
+        dispatchedCommands.some((command) => command.type === "thread.queued-turn.create"),
+      );
+      yield* feedback.flushDueDeliveries;
+      assert.strictEqual(
+        dispatchedCommands.filter((command) => command.type === "thread.queued-turn.create").length,
+        1,
+      );
+      const items = yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      });
+      assert.strictEqual(items[0]?.status, "open");
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("suppresses a failed check from an older head before delivery", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("thr_stale_check_owner");
+      seedThread(owner);
+
+      const failed = sampleSnapshot({
+        checkRuns: [
+          {
+            id: "check-old-head",
+            name: "ci",
+            status: "failure",
+            headSha: "deadbeef",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      currentSnapshot = failed;
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 70,
+        ownerThreadId: owner,
+      });
+
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: failed,
+        events: [{ kind: "check-failed", sourceId: "check-old-head", detail: "ci" }],
+      });
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: state.pendingRevisionIds,
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+
+      currentSnapshot = sampleSnapshot({
+        headSha: "feedface",
+        sourceRevision: "rev-2",
+        checkRuns: [],
+      });
+
+      dispatchedCommands.length = 0;
+      yield* feedback.flushDueDeliveries;
+
+      const deliveries = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(deliveries[0]?.status, "suppressed");
+      assert.strictEqual(
+        deliveries[0]?.lastError,
+        "All findings in this batch were resolved upstream before delivery.",
+      );
+      assert.isFalse(
+        dispatchedCommands.some((command) => command.type === "thread.queued-turn.create"),
+      );
+      const items = yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      });
+      assert.strictEqual(items[0]?.status, "closed");
+      assert.strictEqual(items[0]?.disposition, "superseded");
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("does not let a historical delivery close a newer revision", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("thr_historical_delivery_owner");
+      seedThread(owner);
+
+      const oldFailure = sampleSnapshot({
+        checkRuns: [
+          {
+            id: "check-stable-id",
+            name: "ci",
+            status: "failure",
+            headSha: "deadbeef",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      currentSnapshot = oldFailure;
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 71,
+        ownerThreadId: owner,
+      });
+      const event = { kind: "check-failed" as const, sourceId: "check-stable-id", detail: "ci" };
+
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: oldFailure,
+        events: [event],
+      });
+      const oldState = yield* feedbackStore.getState(started.monitor.id);
+      const [oldRevision] = yield* feedbackStore.listRevisionsByIds(oldState.pendingRevisionIds);
+      assert.isDefined(oldRevision);
+      const historicalDelivery = {
+        id: "fb_del_historical_revision" as PullRequestMonitorFeedbackDeliveryId,
+        monitorId: started.monitor.id,
+        batchKey: "fb_batch_historical_revision",
+        targetThreadId: owner,
+        commandId: "command:historical-revision",
+        messageId: "message:historical-revision",
+        revisionIds: [oldRevision.id],
+        status: "pending",
+        attemptCount: 0,
+        lastError: null,
+        createdAt: "1969-12-31T23:59:59.000Z",
+        deliveredAt: null,
+      } as const;
+      yield* feedbackStore.insertDelivery({
+        ...historicalDelivery,
+        nextAttemptAt: "9999-12-31T23:59:59.000Z",
+        receiptJson: null,
+      });
+      yield* feedbackStore.removePendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: [oldRevision.id],
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+
+      const newFailure = sampleSnapshot({
+        headSha: "feedface",
+        sourceRevision: "rev-2",
+        checkRuns: [
+          {
+            id: "check-stable-id",
+            name: "ci",
+            status: "failure",
+            headSha: "feedface",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      currentSnapshot = newFailure;
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: newFailure,
+        events: [event],
+      });
+      const newState = yield* feedbackStore.getState(started.monitor.id);
+      const [newRevision] = yield* feedbackStore.listRevisionsByIds(newState.pendingRevisionIds);
+      assert.isDefined(newRevision);
+      assert.notStrictEqual(newRevision.id, oldRevision.id);
+      yield* TestClock.adjust(Duration.millis(1));
+      yield* feedbackStore.updateDelivery({
+        ...historicalDelivery,
+        nextAttemptAt: "1969-12-31T23:59:59.000Z",
+        receiptJson: null,
+      });
+
+      dispatchedCommands.length = 0;
+      yield* feedback.flushDueDeliveries;
+
+      const item = (yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      }))[0];
+      assert.strictEqual(item?.status, "open");
+      assert.strictEqual(item?.currentRevisionId, newRevision.id);
+
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: [newRevision.id],
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+      yield* feedback.flushDueDeliveries;
+
+      const deliveries = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(
+        deliveries.find((delivery) => delivery.id === "fb_del_historical_revision")?.status,
+        "suppressed",
+      );
+      assert.strictEqual(
+        dispatchedCommands.filter((command) => command.type === "thread.queued-turn.create").length,
+        1,
+      );
       currentSnapshot = sampleSnapshot();
     }),
   );
