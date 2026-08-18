@@ -2054,8 +2054,10 @@ function activityAppendedEvent(input: {
   kind: string;
   turnId: string;
   payload?: Record<string, unknown>;
+  createdAt?: string;
 }): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> {
-  const occurredAt = new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
+  const occurredAt =
+    input.createdAt ?? new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
   return makeEvent(
     "thread.activity-appended",
     {
@@ -2074,6 +2076,132 @@ function activityAppendedEvent(input: {
     { sequence: input.sequence, eventId: EventId.make(`event-${input.sequence}`) },
   );
 }
+
+describe("activity append ordering", () => {
+  it("caps an ordered append without reordering the retained window", () => {
+    const activities = Array.from(
+      { length: 500 },
+      (_unused, index) =>
+        activityAppendedEvent({
+          sequence: index + 1,
+          id: `activity-${index}`,
+          kind: "step",
+          turnId: "turn-1",
+        }).payload.activity,
+    );
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities })),
+      activityAppendedEvent({
+        sequence: 501,
+        id: "activity-500",
+        kind: "step",
+        turnId: "turn-1",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      ...activities.slice(1).map((activity) => activity.id),
+      EventId.make("activity-500"),
+    ]);
+    expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
+  });
+
+  it("replaces a duplicate activity and restores comparator ordering", () => {
+    const duplicate = activityAppendedEvent({
+      sequence: 1,
+      id: "activity-duplicate",
+      kind: "step",
+      turnId: "turn-1",
+    }).payload.activity;
+    const later = activityAppendedEvent({
+      sequence: 3,
+      id: "activity-later",
+      kind: "step",
+      turnId: "turn-1",
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [duplicate, later] })),
+      activityAppendedEvent({
+        sequence: 2,
+        id: "activity-duplicate",
+        kind: "step.updated",
+        turnId: "turn-1",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities).toMatchObject([
+      { id: "activity-duplicate", kind: "step.updated" },
+      { id: "activity-later", kind: "step" },
+    ]);
+  });
+
+  it("sorts an out-of-order append using lifecycle and id tie-breaks", () => {
+    const createdAt = "2026-08-17T12:00:00.000Z";
+    const completed = activityAppendedEvent({
+      sequence: 2,
+      id: "activity-completed",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      createdAt,
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [completed] })),
+      activityAppendedEvent({
+        sequence: 1,
+        id: "activity-started",
+        kind: "tool.started",
+        turnId: "turn-1",
+        createdAt,
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      EventId.make("activity-started"),
+      EventId.make("activity-completed"),
+    ]);
+  });
+
+  it("sorts an unsorted restored window before appending a later activity", () => {
+    const later = activityAppendedEvent({
+      sequence: 2,
+      id: "activity-later",
+      kind: "step",
+      turnId: "turn-1",
+      createdAt: "2026-08-17T12:00:02.000Z",
+    }).payload.activity;
+    const earlier = activityAppendedEvent({
+      sequence: 1,
+      id: "activity-earlier",
+      kind: "step",
+      turnId: "turn-1",
+      createdAt: "2026-08-17T12:00:01.000Z",
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [later, earlier] })),
+      activityAppendedEvent({
+        sequence: 3,
+        id: "activity-new-tail",
+        kind: "step",
+        turnId: "turn-1",
+        createdAt: "2026-08-17T12:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      EventId.make("activity-earlier"),
+      EventId.make("activity-later"),
+      EventId.make("activity-new-tail"),
+    ]);
+  });
+});
 
 describe("activity pagination state", () => {
   it("does not offer older current-turn history when live updates only evict prior turns", () => {
