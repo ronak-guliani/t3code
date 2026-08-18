@@ -694,6 +694,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
+  pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
 });
 
 const ThreadWorkspaceHandoffCommand = Schema.Struct({
@@ -1292,6 +1293,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
+  pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
   updatedAt: IsoDateTime,
 });
 

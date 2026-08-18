@@ -15,7 +15,10 @@ Use T3's workspace tools instead of mutating Git worktrees directly.
 - Use `create_isolated_workspace` for a new worktree and new local branch.
 - Use `switch_workspace` when the desired worktree already exists.
 - Use `git worktree list --porcelain` only for read-only discovery.
-- If a workspace tool is deferred, load its definition with tool search first. Never substitute a raw `git worktree add` or `move` command.
+- If a workspace tool is deferred, load its exact definition with tool search first. For a new
+  worktree for the current task, search `t3-tools` for `create_isolated_workspace` and call it.
+  Do not substitute `create_nested_thread`: a request to do the current task in a new worktree is
+  a handoff, not delegation. Never substitute a raw `git worktree add` or `move` command.
 
 ## Create an isolated workspace
 

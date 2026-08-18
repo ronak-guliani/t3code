@@ -894,7 +894,7 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("keeps a main-frame load failure visible until a retry starts", () =>
+  effectIt.effect("keeps load failures visible and finishes on main-frame completion", () =>
     withManager((manager) =>
       Effect.gen(function* () {
         const url = "http://localhost:5733/";
@@ -978,6 +978,15 @@ describe("PreviewManager", () => {
         expect(statuses.at(-1)?.kind).toBe("LoadFailed");
 
         listeners.get("did-navigate")?.();
+        yield* Effect.yieldNow;
+        expect(statuses.at(-1)?.kind).toBe("Success");
+
+        loading = true;
+        listeners.get("did-start-loading")?.();
+        yield* Effect.yieldNow;
+        expect(statuses.at(-1)?.kind).toBe("Loading");
+
+        listeners.get("did-finish-load")?.();
         yield* Effect.yieldNow;
         expect(statuses.at(-1)?.kind).toBe("Success");
       }),

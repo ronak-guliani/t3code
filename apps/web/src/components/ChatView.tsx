@@ -4891,6 +4891,7 @@ function ChatViewBody(
                 onCloseOthers={closeOtherRightPanelSurfaces}
                 onCloseToRight={closeRightPanelSurfacesToRight}
                 onCloseAll={closeAllRightPanelSurfaces}
+                onClosePanel={closeBrowserPreview}
                 onCopyPath={copyRightPanelFilePath}
                 onAddBrowser={createBrowserSurface}
                 onAddTerminal={addTerminalSurface}
@@ -4944,6 +4945,7 @@ function ChatViewBody(
             onCloseOthers={closeOtherRightPanelSurfaces}
             onCloseToRight={closeRightPanelSurfacesToRight}
             onCloseAll={closeAllRightPanelSurfaces}
+            onClosePanel={closeBrowserPreview}
             onCopyPath={copyRightPanelFilePath}
             onAddBrowser={createBrowserSurface}
             onAddTerminal={addTerminalSurface}

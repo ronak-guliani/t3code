@@ -1,0 +1,24 @@
+import { createHash } from "node:crypto";
+
+import { Tool } from "effect/unstable/ai";
+
+import { PreviewToolkit } from "./toolkits/preview/tools.ts";
+import { PullRequestMonitorToolkit } from "./toolkits/pullRequestMonitor/tools.ts";
+
+const providerMcpTools = [
+  ...Object.values(PreviewToolkit.tools),
+  ...Object.values(PullRequestMonitorToolkit.tools),
+].sort((left, right) => left.name.localeCompare(right.name));
+
+export const fingerprintProviderMcpToolContract = (): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify(
+        providerMcpTools.map((tool) => ({
+          name: tool.name,
+          description: Tool.getDescription(tool),
+          inputSchema: Tool.getJsonSchema(tool),
+        })),
+      ),
+    )
+    .digest("hex");

@@ -306,7 +306,7 @@ describe("PreviewView navigation", () => {
 
   it("floats the active browser over chat and closes its panel", () => {
     const onClose = vi.fn();
-    renderToStaticMarkup(
+    const markup = renderToStaticMarkup(
       <PreviewView
         threadRef={{
           environmentId: EnvironmentId.make("environment-1"),
@@ -318,6 +318,7 @@ describe("PreviewView navigation", () => {
       />,
     );
 
+    expect(markup).not.toContain("Close browser panel");
     expect(mocks.pictureInPicture).not.toBeNull();
     mocks.pictureInPicture?.();
 
