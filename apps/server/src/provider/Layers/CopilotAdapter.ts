@@ -330,15 +330,21 @@ function cloneCopilotTurns(
   }));
 }
 
+function parseCopilotResumeSessionId(raw: unknown): string | undefined {
+  if (!isRecord(raw)) return undefined;
+  if (raw.schemaVersion !== COPILOT_RESUME_VERSION) return undefined;
+  if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
+  return raw.sessionId.trim();
+}
+
 function parseCopilotResume(
   raw: unknown,
   expectedContractFingerprint: string,
 ): { sessionId: string } | undefined {
-  if (!isRecord(raw)) return undefined;
-  if (raw.schemaVersion !== COPILOT_RESUME_VERSION) return undefined;
-  if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
+  const sessionId = parseCopilotResumeSessionId(raw);
+  if (!sessionId || !isRecord(raw)) return undefined;
   if (raw.contractFingerprint !== expectedContractFingerprint) return undefined;
-  return { sessionId: raw.sessionId.trim() };
+  return { sessionId };
 }
 
 function textOrFallback(value: string | null | undefined, fallback: string): string {
@@ -1306,12 +1312,13 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           ctx.threadId,
           ctx.providerInstanceId,
         );
+        const savedSessionId = parseCopilotResumeSessionId(ctx.session.resumeCursor);
         const resumeSessionId = parseCopilotResume(
           ctx.session.resumeCursor,
           sessionContractFingerprint,
         )?.sessionId;
         const cwd = ctx.session.cwd;
-        if (!resumeSessionId) {
+        if (!savedSessionId) {
           return yield* new ProviderAdapterProcessError({
             provider: PROVIDER,
             threadId: ctx.threadId,
@@ -1335,7 +1342,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           copilotSettings: ctx.copilotSettings,
           pendingApprovals: ctx.pendingApprovals,
           pendingUserInputs: ctx.pendingUserInputs,
-          resumeSessionId,
+          ...(resumeSessionId ? { resumeSessionId } : {}),
           getCurrentTurnId: () => ctx.activeTurnId,
           onSessionEvent: (event) => processBackgroundAgentEvent(ctx, event),
           onFatalCopilotError: (turnId, message) => {

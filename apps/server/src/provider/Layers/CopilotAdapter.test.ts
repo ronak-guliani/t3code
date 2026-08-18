@@ -2021,6 +2021,72 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
+  it.effect("starts fresh when a live restart finds a stale MCP contract", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-stale-live-restart-thread");
+
+      yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+      });
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-stale-live-restart-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_IGNORE_CANCEL: "1",
+          T3_ACP_PROMPT_DELAY_MS: "2000",
+          T3_ACP_PROMPT_STARTED_TEXT: "waiting for stale-contract interrupt",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const turnStartedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "content.delta" &&
+            event.payload.delta === "waiting for stale-contract interrupt",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const interruptedTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "hang until interrupted after MCP contract changes",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      const promptStarted = yield* Fiber.join(turnStartedFiber);
+      assert.equal(promptStarted._tag, "Some");
+      yield* McpSessionRegistry.revokeActiveMcpProviderInstance(threadId, COPILOT_INSTANCE_ID);
+
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.join(interruptedTurnFiber);
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (request) => request.method,
+      );
+      assert.equal(methods.filter((method) => method === "session/new").length, 2);
+      assert.notInclude(methods, "session/load");
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("optionally smoke-tests the real Copilot binary with full-access ACP startup", () =>
     Effect.gen(function* () {
       if (process.env.T3_RUN_REAL_COPILOT_SMOKE !== "1") {

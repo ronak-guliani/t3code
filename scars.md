@@ -35,6 +35,7 @@
 - Delegated isolation belongs to the child: create and bind its worktree through `create_nested_thread.workspace` before the first child turn; never hand off the parent as preparation for delegation.
 - Deferred MCP tools are not absent tools: load the function definition through tool search; MCP resources/list and non-invokable resource counts do not report tool availability.
 - Persist a fingerprint of Copilot's T3 instructions, both MCP tool contracts, and per-session server presence in its resume cursor; discard stale ACP sessions instead of replaying an obsolete tool view.
+- A live Copilot runtime restart must distinguish a missing resume session from a stale contract: missing state is an error, but a contract mismatch starts a fresh ACP session.
 - Internal CLI failure classification must inspect structured process output, never flattened diagnostics containing agent-controlled argv. Immediately remove a delegated worktree only when `thread.create` provably did not commit; after creation, request durable server cleanup so provider and terminal teardown finish before removal, and preserve the worktree on lost or ambiguous responses.
 - Cross-thread dispatch must carry the source thread ID through the client HTTP schema while deriving message provenance server-side; projection session upserts must preserve an omitted active message while the same turn remains active.
 - System-authored user turns need explicit server-only message provenance at creation; never infer UI indicators from message ID prefixes or prompt text.
