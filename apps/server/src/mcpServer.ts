@@ -536,6 +536,13 @@ class WorkspacePreflightError extends Error {
   }
 }
 
+class NestedThreadSetupError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "NestedThreadSetupError";
+  }
+}
+
 class NestedThreadValidationError extends Error {
   constructor(message: string) {
     super(message);
@@ -781,8 +788,15 @@ async function createNestedThreadToolImpl(
     } catch (error) {
       throw new NestedThreadValidationError(toErrorMessage(error));
     }
-    await preflightGitWorktree(options.cwd, workspace);
-    await createGitWorktree(options.cwd, workspace);
+    try {
+      await preflightGitWorktree(options.cwd, workspace);
+      await createGitWorktree(options.cwd, workspace);
+    } catch (error) {
+      if (error instanceof WorkspacePreflightError) {
+        throw error;
+      }
+      throw new NestedThreadSetupError(toErrorMessage(error), { cause: error });
+    }
   }
 
   const commandArgs = [
@@ -870,8 +884,8 @@ async function createNestedThreadTool(
     const safeCleanupPerformed = workspaceRequested && hasSafeNestedThreadCleanupSignal(error);
     const definitiveRejection =
       error instanceof NestedThreadValidationError ||
+      error instanceof NestedThreadSetupError ||
       error instanceof WorkspacePreflightError ||
-      isDefinitiveCommandRejection(error) ||
       safeCleanupPerformed;
     throw new Error(
       JSON.stringify({
