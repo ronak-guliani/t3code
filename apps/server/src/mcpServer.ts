@@ -536,6 +536,20 @@ class WorkspacePreflightError extends Error {
   }
 }
 
+class NestedThreadSetupError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "NestedThreadSetupError";
+  }
+}
+
+class NestedThreadValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NestedThreadValidationError";
+  }
+}
+
 function parseIsolatedWorkspaceSpec(
   value: Record<string, unknown>,
   toolName: string,
@@ -549,6 +563,24 @@ function parseIsolatedWorkspaceSpec(
     path: requireAbsolutePath(asString(value.path), toolName),
     baseRef: asString(value.baseRef)?.trim() || undefined,
   };
+}
+
+async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<string> {
+  const baseRef =
+    workspace.baseRef ?? (await runCommand(cwd, "git", ["branch", "--show-current"])).stdout.trim();
+  if (!baseRef) {
+    throw new Error("Could not determine the current branch; pass baseRef explicitly.");
+  }
+
+  await runCommand(cwd, "git", [
+    "worktree",
+    "add",
+    workspace.path,
+    "-b",
+    workspace.branch,
+    baseRef,
+  ]);
+  return baseRef;
 }
 
 async function preflightGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<void> {
@@ -577,24 +609,6 @@ async function preflightGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpe
       `Workspace path is already registered as a Git worktree: ${workspace.path}. Remove or prune the stale worktree first.`,
     );
   }
-}
-
-async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<string> {
-  const baseRef =
-    workspace.baseRef ?? (await runCommand(cwd, "git", ["branch", "--show-current"])).stdout.trim();
-  if (!baseRef) {
-    throw new Error("Could not determine the current branch; pass baseRef explicitly.");
-  }
-
-  await runCommand(cwd, "git", [
-    "worktree",
-    "add",
-    workspace.path,
-    "-b",
-    workspace.branch,
-    baseRef,
-  ]);
-  return baseRef;
 }
 
 async function recordThreadWorkspaceBinding(
@@ -728,38 +742,61 @@ async function createNestedThreadToolImpl(
   args: Record<string, unknown>,
 ): Promise<string> {
   if (!options.threadId) {
-    throw new Error("create_nested_thread is only available from a T3 provider session");
+    throw new NestedThreadValidationError(
+      "create_nested_thread is only available from a T3 provider session",
+    );
   }
   const project = asString(args.project)?.trim();
   const title = asString(args.title)?.trim();
   const prompt = asString(args.prompt)?.trim();
   const model = asString(args.model)?.trim();
   const reasoning = asString(args.reasoning)?.trim();
-  if (!project) throw new Error("create_nested_thread requires a non-empty project");
-  if (!title) throw new Error("create_nested_thread requires a non-empty title");
-  if (!prompt) throw new Error("create_nested_thread requires a non-empty prompt");
-  if (!model) throw new Error("create_nested_thread requires a non-empty model");
+  if (!project)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty project");
+  if (!title)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty title");
+  if (!prompt)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty prompt");
+  if (!model)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty model");
 
   if (!options.runtimeMode) {
-    throw new Error("create_nested_thread requires an authenticated parent runtime mode");
+    throw new NestedThreadValidationError(
+      "create_nested_thread requires an authenticated parent runtime mode",
+    );
   }
   if (!options.providerInstanceId) {
-    throw new Error("create_nested_thread requires an authenticated parent provider instance");
+    throw new NestedThreadValidationError(
+      "create_nested_thread requires an authenticated parent provider instance",
+    );
   }
 
   let workspace: IsolatedWorkspaceSpec | undefined;
   const workspaceCleanupToken = randomUUID();
   if (args.workspace !== undefined) {
     if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
-      throw new Error("create_nested_thread workspace must be an object");
+      throw new NestedThreadValidationError("create_nested_thread workspace must be an object");
     }
     const workspaceInput = asRecord(args.workspace);
     if (asString(workspaceInput.mode) !== "isolated") {
-      throw new Error("create_nested_thread workspace mode must be 'isolated'");
+      throw new NestedThreadValidationError(
+        "create_nested_thread workspace mode must be 'isolated'",
+      );
     }
-    workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
-    await preflightGitWorktree(options.cwd, workspace);
-    await createGitWorktree(options.cwd, workspace);
+    try {
+      workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
+    } catch (error) {
+      throw new NestedThreadValidationError(toErrorMessage(error));
+    }
+    try {
+      await preflightGitWorktree(options.cwd, workspace);
+      await createGitWorktree(options.cwd, workspace);
+    } catch (error) {
+      if (error instanceof WorkspacePreflightError) {
+        throw error;
+      }
+      throw new NestedThreadSetupError(toErrorMessage(error), { cause: error });
+    }
   }
 
   const commandArgs = [
@@ -839,25 +876,28 @@ async function createNestedThreadTool(
   try {
     return await createNestedThreadToolImpl(options, args);
   } catch (error) {
-    const workspaceInput =
-      args.workspace && typeof args.workspace === "object" && !Array.isArray(args.workspace)
-        ? asRecord(args.workspace)
-        : undefined;
-    const workspaceRequested = workspaceInput !== undefined;
+    const workspaceRequested =
+      args.workspace !== undefined &&
+      args.workspace !== null &&
+      typeof args.workspace === "object" &&
+      !Array.isArray(args.workspace);
     const safeCleanupPerformed = workspaceRequested && hasSafeNestedThreadCleanupSignal(error);
     const definitiveRejection =
+      error instanceof NestedThreadValidationError ||
+      error instanceof NestedThreadSetupError ||
       error instanceof WorkspacePreflightError ||
-      isDefinitiveCommandRejection(error) ||
       safeCleanupPerformed;
-    const outcome = {
-      status: definitiveRejection ? "failed" : "ambiguous",
-      threadId: null,
-      retryable: error instanceof WorkspacePreflightError,
-      creationCommitted: definitiveRejection ? false : null,
-      cleanupPerformed: safeCleanupPerformed,
-      error: toErrorMessage(error),
-    } satisfies NestedThreadCreationOutcome;
-    throw new Error(JSON.stringify(outcome), { cause: error });
+    throw new Error(
+      JSON.stringify({
+        status: definitiveRejection ? "failed" : "ambiguous",
+        threadId: null,
+        retryable: error instanceof WorkspacePreflightError,
+        creationCommitted: definitiveRejection ? false : null,
+        cleanupPerformed: safeCleanupPerformed,
+        error: toErrorMessage(error),
+      } satisfies NestedThreadCreationOutcome),
+      { cause: error },
+    );
   }
 }
 

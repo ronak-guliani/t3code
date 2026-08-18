@@ -119,7 +119,6 @@ export const findProjectForCli = Effect.fn("findProjectForCli")(function* (
         ),
       );
     }
-
     const matchingThreads = yield* Effect.forEach(
       activeThreadsOf(snapshot),
       (thread) =>

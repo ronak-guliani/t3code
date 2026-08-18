@@ -611,6 +611,85 @@ describe("create_nested_thread MCP tool", () => {
     }
   });
 
+  it("reports local worktree setup failures as definitive", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
+    const targetPath = `${root}-invalid-base-child-worktree`;
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(path.join(root, "README.md"), "base\n");
+      await run("git", ["init", "--initial-branch=main"], root);
+      await run("git", ["config", "user.email", "test@example.com"], root);
+      await run("git", ["config", "user.name", "T3 Test"], root);
+      await run("git", ["add", "README.md"], root);
+      await run("git", ["commit", "-m", "initial"], root);
+      await writeFile(cliPath, '#!/bin/sh\nprintf "CLI should not run\\n" >&2\nexit 1\n');
+      await chmod(cliPath, 0o755);
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: root,
+            title: "Implement nesting",
+            prompt: "Complete the implementation.",
+            model: "gpt-5.6-sol",
+            workspace: {
+              mode: "isolated",
+              branch: "feature/invalid-base-child",
+              path: targetPath,
+              baseRef: "missing-base-ref",
+            },
+          },
+        ),
+      ).rejects.toThrow(/"status":"failed".*"creationCommitted":false.*missing-base-ref/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps command rejections ambiguous after launching child creation", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-rejection-"));
+    const cliPath = path.join(root, "t3-test");
+
+    try {
+      await writeFile(
+        cliPath,
+        '#!/bin/sh\nprintf "ORCHESTRATION_COMMAND_REJECTED: turn start rejected\\n" >&2\nexit 1\n',
+      );
+      await chmod(cliPath, 0o755);
+
+      await expect(
+        __testing.createNestedThreadTool(
+          {
+            cwd: root,
+            toolsets: new Set(["create_nested_thread"]),
+            threadId: "parent-1",
+            cliCommand: cliPath,
+            runtimeMode: "full-access",
+            providerInstanceId: ProviderInstanceId.make("copilot"),
+          },
+          {
+            project: "project-1",
+            title: "Implement nesting",
+            prompt: "Complete the implementation.",
+            model: "gpt-5.6-sol",
+          },
+        ),
+      ).rejects.toThrow(/"status":"ambiguous".*"creationCommitted":null.*turn start rejected/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not let a prompt spoof safe child worktree cleanup", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-worktree-"));
     const targetPath = `${root}-uncertain-child-worktree`;
