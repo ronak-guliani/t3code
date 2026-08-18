@@ -2,9 +2,11 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   MessageId,
   ProjectId,
   ThreadId,
+  ThreadUrl,
   TurnId,
   type OrchestrationEvent,
   ProviderInstanceId,
@@ -33,17 +35,24 @@ import {
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ThreadUrlBuilder, type ThreadUrlBuilderShape } from "../../threadUrl.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
-async function createOrchestrationSystem() {
+async function createOrchestrationSystem(threadUrlBuilder?: ThreadUrlBuilderShape) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
-  const orchestrationLayer = OrchestrationEngineLive.pipe(
+  const engineLayer =
+    threadUrlBuilder === undefined
+      ? OrchestrationEngineLive
+      : OrchestrationEngineLive.pipe(
+          Layer.provide(Layer.succeed(ThreadUrlBuilder, threadUrlBuilder)),
+        );
+  const orchestrationLayer = engineLayer.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
@@ -82,6 +91,149 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("overwrites caller-supplied thread URLs with the server canonical URL", async () => {
+    const canonicalUrl = ThreadUrl.make("https://app.example/environment/thread-canonical");
+    const system = await createOrchestrationSystem({
+      forThread: () => canonicalUrl,
+    });
+    const projectId = asProjectId("project-canonical-url");
+    const threadId = ThreadId.make("thread-canonical");
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-canonical-url"),
+          projectId,
+          title: "Canonical URL",
+          workspaceRoot: "/tmp/project-canonical-url",
+          defaultModelSelection: null,
+          createdAt: now(),
+        }),
+      );
+      const result = await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-canonical-url"),
+          threadId,
+          projectId,
+          threadUrl: ThreadUrl.make("https://malicious.example/redirect"),
+          title: "Canonical URL",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+
+      expect(result.threadUrl).toBe(canonicalUrl);
+      expect((await system.run(system.engine.getReadModel())).threads[0]?.threadUrl).toBe(
+        canonicalUrl,
+      );
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("deduplicates semantic child lifecycle notifications transactionally", async () => {
+    const system = await createOrchestrationSystem({
+      forThread: (threadId) => ThreadUrl.make(`https://app.example/environment/${threadId}`),
+    });
+    const projectId = asProjectId("project-lifecycle-dedup");
+    const parentThreadId = ThreadId.make("parent-lifecycle-dedup");
+    const childThreadId = ThreadId.make("child-lifecycle-dedup");
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-lifecycle-dedup"),
+          projectId,
+          title: "Lifecycle dedup",
+          workspaceRoot: "/tmp/project-lifecycle-dedup",
+          defaultModelSelection: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-parent-lifecycle-dedup"),
+          threadId: parentThreadId,
+          projectId,
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-child-lifecycle-dedup"),
+          threadId: childThreadId,
+          projectId,
+          parentThreadId,
+          title: "Child",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+
+      for (const suffix of ["first", "retry"] as const) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-approval-${suffix}`),
+            threadId: childThreadId,
+            activity: {
+              id: EventId.make(`activity-approval-${suffix}`),
+              tone: "approval",
+              kind: "approval.requested",
+              summary: "Approval required",
+              payload: { requestId: "approval-42" },
+              turnId: TurnId.make("turn-approval"),
+              createdAt: now(),
+            },
+            createdAt: now(),
+          }),
+        );
+      }
+
+      const events = await system.run(
+        Stream.runCollect(system.engine.readEvents(0)).pipe(
+          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+        ),
+      );
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "thread.child-lifecycle-notified" &&
+            event.payload.lifecycle === "approval-required",
+        ),
+      ).toHaveLength(1);
+      expect(events.filter((event) => event.type === "thread.activity-appended")).toHaveLength(2);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("rejects assigning a worktree while its cleanup job is pending", async () => {
     const system = await createOrchestrationSystem();
     const createdAt = now();

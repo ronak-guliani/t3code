@@ -150,9 +150,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       case "thread.turn.start":
       case "thread.turn.diff.complete":
       case "thread.activity.append":
-        if (command.threadUrl !== undefined) {
-          return command;
-        }
         return {
           ...command,
           threadUrl: threadUrls.value.forThread(command.threadId),
@@ -258,6 +255,25 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               let nextReadModel = readModel;
 
               for (const nextEvent of eventBases) {
+                if (nextEvent.type === "thread.child-lifecycle-notified") {
+                  const claimed = yield* sql<{ readonly dedupe_key: string }>`
+                    INSERT INTO child_lifecycle_notification_dedup (
+                      dedupe_key,
+                      event_id,
+                      created_at
+                    )
+                    VALUES (
+                      ${nextEvent.payload.dedupeKey},
+                      ${nextEvent.eventId},
+                      ${nextEvent.occurredAt}
+                    )
+                    ON CONFLICT(dedupe_key) DO NOTHING
+                    RETURNING dedupe_key
+                  `;
+                  if (claimed.length === 0) {
+                    continue;
+                  }
+                }
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
                 yield* projectionPipeline.projectEvent(savedEvent);

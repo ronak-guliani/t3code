@@ -22,4 +22,17 @@ describe("resolveActiveAppOrigin", () => {
       }),
     ).toBe("http://code.internal:8443");
   });
+
+  it("uses the advertised external interface for wildcard production bindings", () => {
+    expect(
+      resolveActiveAppOrigin(
+        {
+          devUrl: undefined,
+          host: "0.0.0.0",
+          port: 3773,
+        },
+        () => "192.168.1.25",
+      ),
+    ).toBe("http://192.168.1.25:3773");
+  });
 });

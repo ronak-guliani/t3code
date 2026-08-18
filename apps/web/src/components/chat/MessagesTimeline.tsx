@@ -59,6 +59,7 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveLifecycleActionTarget,
   resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
@@ -1607,9 +1608,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
-        {workEntry.action ? (
+        {workEntry.action && actionTarget ? (
           <a
-            href={workEntry.action.url}
+            href={actionTarget.href}
             {...(actionTarget?.kind === "external"
               ? { target: "_blank", rel: "noopener noreferrer" }
               : {})}
@@ -1654,37 +1655,6 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     </div>
   );
 });
-
-function resolveLifecycleActionTarget(
-  actionUrl: string,
-  currentUrl: string,
-):
-  | { readonly kind: "external" }
-  | {
-      readonly kind: "thread";
-      readonly environmentId: EnvironmentId;
-      readonly threadId: ThreadId;
-    }
-  | null {
-  try {
-    const current = new URL(currentUrl);
-    const target = new URL(actionUrl, current);
-    if (target.origin !== current.origin) {
-      return { kind: "external" };
-    }
-    const segments = target.pathname.split("/").filter(Boolean);
-    if (segments.length !== 2) {
-      return null;
-    }
-    return {
-      kind: "thread",
-      environmentId: EnvironmentId.make(decodeURIComponent(segments[0]!)),
-      threadId: ThreadId.make(decodeURIComponent(segments[1]!)),
-    };
-  } catch {
-    return null;
-  }
-}
 
 const AgentRunRow = memo(function AgentRunRow({
   agentRun,

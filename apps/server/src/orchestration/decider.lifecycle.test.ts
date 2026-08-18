@@ -240,7 +240,7 @@ describe("decider thread lifecycle", () => {
     }
   });
 
-  it("deduplicates a retried semantic child lifecycle notification after replay", async () => {
+  it("emits a stable semantic dedupe key for retried lifecycle notifications", async () => {
     let readModel = await nestedLifecycleReadModel();
     const command = {
       type: "thread.activity.append",
@@ -285,9 +285,10 @@ describe("decider thread lifecycle", () => {
       ),
     );
 
-    expect(
-      retried.filter((event) => event.type === "thread.child-lifecycle-notified"),
-    ).toHaveLength(0);
+    const retriedNotification = retried.find(
+      (event) => event.type === "thread.child-lifecycle-notified",
+    );
+    expect(retriedNotification?.payload.dedupeKey).toBe(persistedNotification?.payload.dedupeKey);
   });
 
   it("propagates explicit pull request ownership transfer intent", async () => {

@@ -118,14 +118,6 @@ function childLifecycleDedupeKey(
   return `child:${childThreadId}:${lifecycle}:${sourceKey}`;
 }
 
-function readActivityDedupeKey(activity: OrchestrationThread["activities"][number]): string | null {
-  if (typeof activity.payload !== "object" || activity.payload === null) {
-    return null;
-  }
-  const dedupeKey = (activity.payload as Record<string, unknown>).dedupeKey;
-  return typeof dedupeKey === "string" ? dedupeKey : null;
-}
-
 function appendChildLifecycleNotification(input: {
   readonly readModel: OrchestrationReadModel;
   readonly childThread: OrchestrationThread;
@@ -151,9 +143,6 @@ function appendChildLifecycleNotification(input: {
   }
 
   const dedupeKey = childLifecycleDedupeKey(input.childThread.id, input.lifecycle, input.sourceKey);
-  if (parentThread.activities.some((activity) => readActivityDedupeKey(activity) === dedupeKey)) {
-    return sourceResult;
-  }
 
   const presentation = CHILD_LIFECYCLE_PRESENTATION[input.lifecycle];
   const eventBase = withEventBase({

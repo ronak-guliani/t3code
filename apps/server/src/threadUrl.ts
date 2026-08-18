@@ -5,16 +5,16 @@ import { Context, Effect, Layer } from "effect";
 import { ServerConfig, type ServerConfigShape } from "./config.ts";
 import { ServerEnvironmentLive } from "./environment/Layers/ServerEnvironment.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
-import { formatHostForUrl, isWildcardHost } from "./startupAccess.ts";
+import { formatHostForUrl, resolveHeadlessConnectionHost } from "./startupAccess.ts";
 
 export function resolveActiveAppOrigin(
   config: Pick<ServerConfigShape, "devUrl" | "host" | "port">,
+  resolveConnectionHost: (host: string | undefined) => string = resolveHeadlessConnectionHost,
 ): string {
   if (config.devUrl) {
     return config.devUrl.origin;
   }
-  const hostname =
-    config.host && !isWildcardHost(config.host) ? formatHostForUrl(config.host) : "localhost";
+  const hostname = formatHostForUrl(resolveConnectionHost(config.host));
   return `http://${hostname}:${config.port}`;
 }
 
