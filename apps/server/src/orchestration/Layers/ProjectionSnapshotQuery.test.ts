@@ -75,6 +75,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           branch,
           worktree_path,
           latest_turn_id,
+          pinned_at,
+          pin_order_key,
           latest_user_message_at,
           pending_approval_count,
           pending_user_input_count,
@@ -93,6 +95,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           NULL,
           NULL,
           'turn-1',
+          '2026-02-24T00:00:02.500Z',
+          'a0',
           '2026-02-24T00:00:04.000Z',
           1,
           0,
@@ -317,8 +321,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
-          pinnedAt: null,
-          pinOrderKey: null,
+          pinnedAt: "2026-02-24T00:00:02.500Z",
+          pinOrderKey: "a0",
           deletedAt: null,
           messages: [
             {
@@ -441,8 +445,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
-          pinnedAt: null,
-          pinOrderKey: null,
+          pinnedAt: "2026-02-24T00:00:02.500Z",
+          pinOrderKey: "a0",
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -459,6 +463,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingQueuedTurn: false,
         },
       ]);
+
+      const threadShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
+      assert.equal(threadShell._tag, "Some");
+      if (threadShell._tag === "Some") {
+        assert.equal(threadShell.value.pinnedAt, "2026-02-24T00:00:02.500Z");
+        assert.equal(threadShell.value.pinOrderKey, "a0");
+      }
 
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       assert.equal(threadDetail._tag, "Some");

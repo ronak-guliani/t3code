@@ -168,6 +168,69 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread pinning", () => {
+    it("applies pin, reorder, and unpin events", () => {
+      const pinned = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.pinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          pinnedAt: "2026-04-01T05:00:00.000Z",
+          pinOrderKey: "a",
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+      expect(pinned.kind).toBe("updated");
+      if (pinned.kind !== "updated") {
+        return;
+      }
+
+      const reordered = applyThreadDetailEvent(pinned.thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T06:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.pin-reordered",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          orderKey: "b",
+          updatedAt: "2026-04-01T06:00:00.000Z",
+        },
+      });
+      expect(reordered.kind).toBe("updated");
+      if (reordered.kind !== "updated") {
+        return;
+      }
+      expect(reordered.thread).toMatchObject({
+        pinnedAt: "2026-04-01T05:00:00.000Z",
+        pinOrderKey: "b",
+      });
+
+      const unpinned = applyThreadDetailEvent(reordered.thread, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T07:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.unpinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          updatedAt: "2026-04-01T07:00:00.000Z",
+        },
+      });
+      expect(unpinned.kind).toBe("updated");
+      if (unpinned.kind === "updated") {
+        expect(unpinned.thread.pinnedAt).toBeNull();
+        expect(unpinned.thread.pinOrderKey).toBeNull();
+      }
+    });
+  });
+
   describe("thread.meta-updated", () => {
     it("patches title and branch", () => {
       const result = applyThreadDetailEvent(baseThread, {

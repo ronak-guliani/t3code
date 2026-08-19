@@ -1,0 +1,11 @@
+{
+  "id": "dispatch-unpin-1",
+  "type": "request",
+  "protocolVersion": "mobile.v1",
+  "method": "orchestration.dispatchCommand",
+  "payload": {
+    "type": "thread.unpin",
+    "commandId": "mobile-unpin-1",
+    "threadId": "thread-fixture"
+  }
+}

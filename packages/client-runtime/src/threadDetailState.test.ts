@@ -182,6 +182,61 @@ describe("createThreadDetailManager", () => {
     release();
   });
 
+  it("applies live pinning events without waiting for a new snapshot", () => {
+    const { client, emit } = createMockClient();
+    const manager = createThreadDetailManager({
+      getRegistry: () => atomRegistry,
+      getClient: () => null,
+    });
+    const release = manager.watch(TARGET, client);
+
+    emit({
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 1,
+        thread: BASE_THREAD,
+      },
+    });
+    for (const event of [
+      {
+        type: "thread.pinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          pinnedAt: "2026-04-01T01:00:00.000Z",
+          pinOrderKey: "a",
+          updatedAt: "2026-04-01T01:00:00.000Z",
+        },
+      },
+      {
+        type: "thread.pin-reordered",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          orderKey: "b",
+          updatedAt: "2026-04-01T02:00:00.000Z",
+        },
+      },
+    ] as const) {
+      emit({
+        kind: "event",
+        event: {
+          ...baseEventFields,
+          sequence: event.type === "thread.pinned" ? 2 : 3,
+          occurredAt: event.payload.updatedAt,
+          aggregateKind: "thread",
+          aggregateId: ThreadId.make("thread-1"),
+          ...event,
+        },
+      });
+    }
+
+    expect(manager.getSnapshot(TARGET).data).toMatchObject({
+      pinnedAt: "2026-04-01T01:00:00.000Z",
+      pinOrderKey: "b",
+      updatedAt: "2026-04-01T02:00:00.000Z",
+    });
+    release();
+  });
+
   it("marks threads as deleted when the stream deletes them", () => {
     const { client, emit } = createMockClient();
     const manager = createThreadDetailManager({

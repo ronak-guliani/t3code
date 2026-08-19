@@ -1,0 +1,12 @@
+{
+  "id": "dispatch-pin-1",
+  "type": "request",
+  "protocolVersion": "mobile.v1",
+  "method": "orchestration.dispatchCommand",
+  "payload": {
+    "type": "thread.pin",
+    "commandId": "mobile-pin-1",
+    "threadId": "thread-fixture",
+    "orderKey": "a"
+  }
+}
