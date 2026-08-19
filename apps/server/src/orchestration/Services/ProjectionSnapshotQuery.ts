@@ -80,6 +80,10 @@ export interface ProjectionSnapshotQueryShape {
     OrchestrationShellSnapshot,
     ProjectionRepositoryError
   >;
+  readonly getArchivedShellSnapshot?: () => Effect.Effect<
+    OrchestrationShellSnapshot,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read the latest sequence applied by every projector without hydrating a

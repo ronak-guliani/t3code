@@ -2155,6 +2155,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             streamDomainEvents: Stream.fromPubSub(liveEvents),
           },
           projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(2),
             getThreadDetailSnapshotById: () =>
               Effect.die("A valid resume cursor must not reload the thread snapshot"),
           },
@@ -2217,6 +2218,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             readEvents: () => Stream.make(unrelatedEvent),
           },
           projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(2),
             getThreadDetailSnapshotById: () =>
               Effect.die("A valid resume cursor must not reload the thread snapshot"),
           },
@@ -2291,6 +2293,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             streamDomainEvents: Stream.fromPubSub(liveEvents),
           },
           projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(2),
             getShellSnapshot: () =>
               Effect.die("A valid resume cursor must not reload the shell snapshot"),
             getThreadShellById: () => Effect.succeed(Option.some(thread)),
@@ -2573,6 +2576,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 updatedAt: "2026-05-10T00:00:00.000Z",
               }),
             getThreadDetailById: () => Effect.succeed(Option.some(defaultThread)),
+            getThreadDetailSnapshotById: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 5,
+                  thread: defaultThread,
+                }),
+              ),
           },
           orchestrationEngine: {
             getReadModel: () => Effect.succeed({ ...readModel, snapshotSequence: 5 }),

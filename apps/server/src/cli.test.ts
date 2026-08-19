@@ -29,6 +29,7 @@ import { OrchestrationEngineService } from "./orchestration/Services/Orchestrati
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
+  orchestrationArchivedShellSnapshotRouteLayer,
   orchestrationDispatchRouteLayer,
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
@@ -135,6 +136,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
   Effect.gen(function* () {
     const config = yield* makeCliTestServerConfig(baseDir);
     const routesLayer = Layer.mergeAll(
+      orchestrationArchivedShellSnapshotRouteLayer,
       orchestrationSnapshotRouteLayer,
       orchestrationShellSnapshotRouteLayer,
       orchestrationThreadSnapshotRouteLayer,

@@ -90,16 +90,10 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   }
 }
 
+const noCommandContextThreadIds = new Set<ThreadId>();
+
 function commandContextThreadIds(command: OrchestrationCommand): ReadonlySet<ThreadId> {
   switch (command.type) {
-    case "project.create":
-    case "project.meta.update":
-    case "project.delete":
-    case "workflow.run.request":
-    case "workflow.node.worker.start":
-    case "workflow.worker-result.record":
-    case "workflow.run.finalize":
-      return new Set();
     case "thread.fork":
       return new Set([command.sourceThreadId]);
     case "thread.turn.start":
@@ -108,10 +102,13 @@ function commandContextThreadIds(command: OrchestrationCommand): ReadonlySet<Thr
         ...(command.crossThreadSourceThreadId === undefined
           ? []
           : [command.crossThreadSourceThreadId]),
-        ...(command.sourceProposedPlan === undefined ? [] : [command.sourceProposedPlan.threadId]),
       ]);
-    default:
+    case "thread.settle":
+    case "thread.snooze":
+    case "thread.queued-turn.dispatch":
       return new Set([command.threadId]);
+    default:
+      return noCommandContextThreadIds;
   }
 }
 
@@ -120,7 +117,9 @@ function withoutThreadBodies(thread: OrchestrationThread): OrchestrationThread {
     ...thread,
     messages: [],
     activities: [],
+    activityContext: [],
     hasMoreActivities: false,
+    hasMoreCurrentTurnActivities: false,
     checkpoints: [],
   };
 }
@@ -129,6 +128,36 @@ function withoutReadModelBodies(readModel: OrchestrationReadModel): Orchestratio
   return {
     ...readModel,
     threads: readModel.threads.map(withoutThreadBodies),
+  };
+}
+
+export function mergeRecoveryReadModel(
+  commandModel: OrchestrationReadModel,
+  projectedSnapshot: OrchestrationReadModel,
+): OrchestrationReadModel {
+  if (projectedSnapshot.snapshotSequence >= commandModel.snapshotSequence) {
+    return projectedSnapshot;
+  }
+
+  const projectedBodiesByThreadId = new Map(
+    projectedSnapshot.threads.map((thread) => [thread.id, thread] as const),
+  );
+  return {
+    ...commandModel,
+    threads: commandModel.threads.map((thread) => {
+      const projected = projectedBodiesByThreadId.get(thread.id);
+      return projected === undefined
+        ? thread
+        : {
+            ...thread,
+            messages: projected.messages,
+            activities: projected.activities,
+            activityContext: projected.activityContext,
+            hasMoreActivities: projected.hasMoreActivities,
+            hasMoreCurrentTurnActivities: projected.hasMoreCurrentTurnActivities,
+            checkpoints: projected.checkpoints,
+          };
+    }),
   };
 }
 
@@ -447,27 +476,50 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         cause instanceof Error ? cause : new Error("Orchestration engine initialization failed"),
       ),
       Effect.orDie,
-      Effect.flatMap(() => projectionSnapshotQuery.getSnapshot()),
-      Effect.map((snapshot) => {
-        const bodiesByThreadId = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
-        return {
-          ...commandReadModel,
-          threads: commandReadModel.threads.map((thread) => {
-            const body = bodiesByThreadId.get(thread.id);
-            return body === undefined
-              ? thread
-              : {
-                  ...thread,
-                  messages: body.messages,
-                  activities: body.activities,
-                  ...(body.hasMoreActivities === undefined
-                    ? {}
-                    : { hasMoreActivities: body.hasMoreActivities }),
-                  checkpoints: body.checkpoints,
-                };
-          }),
-        } satisfies OrchestrationReadModel;
+      Effect.flatMap(() => {
+        const requiredReadModel = commandReadModel;
+        return projectionSnapshotQuery
+          .getSnapshot()
+          .pipe(
+            Effect.map((snapshot) =>
+              snapshot.snapshotSequence >= requiredReadModel.snapshotSequence
+                ? snapshot
+                : requiredReadModel,
+            ),
+          );
       }),
+      Effect.orDie,
+    );
+
+  const getCommandReadModel: NonNullable<OrchestrationEngineShape["getCommandReadModel"]> = () =>
+    Deferred.await(initialized).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof Error ? cause : new Error("Orchestration engine initialization failed"),
+      ),
+      Effect.orDie,
+      Effect.map(() => commandReadModel),
+    );
+
+  const getRecoveryReadModel: NonNullable<OrchestrationEngineShape["getRecoveryReadModel"]> = () =>
+    Deferred.await(initialized).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof Error ? cause : new Error("Orchestration engine initialization failed"),
+      ),
+      Effect.orDie,
+      Effect.flatMap(() => projectionSnapshotQuery.getSnapshot()),
+      Effect.map((snapshot) => mergeRecoveryReadModel(commandReadModel, snapshot)),
+      Effect.orDie,
+    );
+
+  const getThreadDetailById: NonNullable<OrchestrationEngineShape["getThreadDetailById"]> = (
+    threadId,
+  ) =>
+    Deferred.await(initialized).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof Error ? cause : new Error("Orchestration engine initialization failed"),
+      ),
+      Effect.orDie,
+      Effect.flatMap(() => projectionSnapshotQuery.getThreadDetailById(threadId)),
       Effect.orDie,
     );
 
@@ -483,6 +535,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     });
 
   return {
+    getCommandReadModel,
+    getRecoveryReadModel,
+    getThreadDetailById,
     getReadModel,
     readEvents,
     dispatch,

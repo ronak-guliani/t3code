@@ -17,7 +17,7 @@ import {
   isRemovableArchiveWorktreePath,
   shouldScheduleArchiveWorktreeCleanup,
 } from "../archiveWorktreeCleanup.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService, readCommandModel } from "../Services/OrchestrationEngine.ts";
 import {
   ThreadDeletionReactor,
   type ThreadDeletionReactorShape,
@@ -150,7 +150,7 @@ const make = Effect.gen(function* () {
           return Option.none();
         }
 
-        const readModel = yield* orchestrationEngine.getReadModel();
+        const readModel = yield* readCommandModel(orchestrationEngine);
         const cleanupThread = readModel.threads.find((thread) => thread.id === cleanup.threadId);
         // Archive cleanup can race unarchive: the job still names this thread, but
         // ownership checks exclude it. If the owner is active again, abort removal.
@@ -373,7 +373,7 @@ const make = Effect.gen(function* () {
   const scheduleArchiveWorktreeCleanup = Effect.fn("scheduleArchiveWorktreeCleanup")(function* (
     threadId: ThreadId,
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (thread === undefined || thread.worktreePath === null || thread.pullRequest == null) {
       return;
@@ -497,7 +497,7 @@ const make = Effect.gen(function* () {
     event: ThreadUnarchivedEvent,
   ) {
     const { threadId } = event.payload;
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     const worktreePath = thread?.worktreePath ?? null;
     yield* cancelPendingCleanupForThreadAndPath(threadId, worktreePath);
@@ -596,7 +596,7 @@ const make = Effect.gen(function* () {
   // keeps the original "open" colour after merge/close.
   const refreshOpenPullRequestAssociations = Effect.fn("refreshOpenPullRequestAssociations")(
     function* () {
-      const readModel = yield* orchestrationEngine.getReadModel();
+      const readModel = yield* readCommandModel(orchestrationEngine);
       const projectsById = new Map(
         readModel.projects
           .filter((project) => project.deletedAt === null)
@@ -695,7 +695,7 @@ const make = Effect.gen(function* () {
       ),
     );
     yield* Effect.forkScoped(
-      orchestrationEngine.getReadModel().pipe(
+      readCommandModel(orchestrationEngine).pipe(
         Effect.flatMap((readModel) =>
           Effect.forEach(
             new Set(

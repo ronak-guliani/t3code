@@ -1700,6 +1700,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             has_actionable_proposed_plan,
             created_at,
             updated_at,
+            archived_at,
             deleted_at
           )
           VALUES
@@ -1719,6 +1720,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               0,
               '2026-05-01T00:00:00.000Z',
               '2026-05-01T00:00:02.000Z',
+              NULL,
+              NULL
+            ),
+            (
+              'archived-thread',
+              'live-project',
+              'Archived thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              NULL,
+              NULL,
+              NULL,
+              NULL,
+              0,
+              0,
+              0,
+              '2026-05-01T00:00:00.000Z',
+              '2026-05-01T00:00:02.000Z',
+              '2026-05-01T00:00:02.000Z',
               NULL
             ),
             (
@@ -1737,6 +1758,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               0,
               '2026-05-01T00:00:00.000Z',
               '2026-05-10T00:00:00.000Z',
+              NULL,
               '2026-05-10T00:00:00.000Z'
             )
         `;
@@ -1840,6 +1862,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.equal(shellSnapshot.threads[0]?.session?.threadId, "live-thread");
         assert.equal(shellSnapshot.threads[0]?.session?.updatedAt, "2026-05-01T00:00:03.000Z");
         assert.equal(shellSnapshot.threads[0]?.latestTurn?.turnId, "live-turn");
+        const archivedShellSnapshot = yield* snapshotQuery.getArchivedShellSnapshot!();
+        assert.deepStrictEqual(
+          archivedShellSnapshot.projects.map((project) => project.id),
+          ["live-project"],
+        );
+        assert.deepStrictEqual(
+          archivedShellSnapshot.threads.map((thread) => thread.id),
+          ["archived-thread"],
+        );
         // Soft-deleted rows are no longer loaded, but deleting still bumps
         // `updated_at`, so snapshot freshness must keep reflecting it.
         assert.equal(shellSnapshot.updatedAt, "2026-05-10T00:00:00.000Z");

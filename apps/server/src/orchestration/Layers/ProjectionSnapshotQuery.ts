@@ -518,6 +518,26 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listArchivedProjectRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionProjectDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          ${projectRowColumns}
+        FROM projection_projects p
+        WHERE p.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM projection_threads t
+            WHERE t.project_id = p.project_id
+              AND t.deleted_at IS NULL
+              AND t.archived_at IS NOT NULL
+          )
+        ORDER BY p.created_at ASC, p.project_id ASC
+      `,
+  });
+
   const listLiveThreadRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionThreadDbRowSchema,
@@ -528,6 +548,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE deleted_at IS NULL
           AND archived_at IS NULL
+        ORDER BY created_at ASC, thread_id ASC
+      `,
+  });
+
+  const listArchivedThreadRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          ${threadRowColumns}
+        FROM projection_threads
+        WHERE deleted_at IS NULL
+          AND archived_at IS NOT NULL
         ORDER BY created_at ASC, thread_id ASC
       `,
   });
@@ -734,6 +768,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listArchivedThreadSessionRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionThreadSessionDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          ${threadSessionRowColumns}
+        FROM projection_thread_sessions s
+        LEFT JOIN provider_session_runtime r
+          ON r.thread_id = s.thread_id
+        WHERE EXISTS (
+          SELECT 1
+          FROM projection_threads t
+          WHERE t.thread_id = s.thread_id
+            AND t.deleted_at IS NULL
+            AND t.archived_at IS NOT NULL
+        )
+        ORDER BY s.thread_id ASC
+      `,
+  });
+
   const listCheckpointRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: ProjectionCheckpointDbRowSchema,
@@ -807,6 +862,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads AS threads
         ${latestTurnRowJoin}
         WHERE threads.deleted_at IS NULL
+        ORDER BY turns.thread_id ASC
+      `,
+  });
+
+  const listArchivedLatestTurnRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionLatestTurnDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          ${latestTurnRowColumns}
+        FROM projection_threads AS threads
+        ${latestTurnRowJoin}
+        WHERE threads.deleted_at IS NULL
+          AND threads.archived_at IS NOT NULL
         ORDER BY turns.thread_id ASC
       `,
   });
@@ -1951,11 +2021,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         }),
       );
 
-  const getShellSnapshot: ProjectionSnapshotQueryShape["getShellSnapshot"] = () =>
+  const getShellSnapshotFromRows = (input: {
+    readonly projectRows: ReturnType<typeof listLiveProjectRows>;
+    readonly threadRows: ReturnType<typeof listLiveThreadRows>;
+    readonly sessionRows: ReturnType<typeof listLiveThreadSessionRows>;
+    readonly latestTurnRows: ReturnType<typeof listLiveLatestTurnRows>;
+  }) =>
     sql
       .withTransaction(
         Effect.all([
-          listLiveProjectRows(undefined).pipe(
+          input.projectRows.pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listProjects:query",
@@ -1963,7 +2038,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listLiveThreadRows(undefined).pipe(
+          input.threadRows.pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listThreads:query",
@@ -1971,7 +2046,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listLiveThreadSessionRows(undefined).pipe(
+          input.sessionRows.pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listThreadSessions:query",
@@ -1979,7 +2054,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listLiveLatestTurnRows(undefined).pipe(
+          input.latestTurnRows.pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
                 "ProjectionSnapshotQuery.getShellSnapshot:listLatestTurns:query",
@@ -2164,6 +2239,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           return toPersistenceSqlError("ProjectionSnapshotQuery.getShellSnapshot:query")(error);
         }),
       );
+
+  const getShellSnapshot: ProjectionSnapshotQueryShape["getShellSnapshot"] = () =>
+    getShellSnapshotFromRows({
+      projectRows: listLiveProjectRows(undefined),
+      threadRows: listLiveThreadRows(undefined),
+      sessionRows: listLiveThreadSessionRows(undefined),
+      latestTurnRows: listLiveLatestTurnRows(undefined),
+    });
+
+  const getArchivedShellSnapshot: NonNullable<
+    ProjectionSnapshotQueryShape["getArchivedShellSnapshot"]
+  > = () =>
+    getShellSnapshotFromRows({
+      projectRows: listArchivedProjectRows(undefined),
+      threadRows: listArchivedThreadRows(undefined),
+      sessionRows: listArchivedThreadSessionRows(undefined),
+      latestTurnRows: listArchivedLatestTurnRows(undefined),
+    });
 
   const getSnapshotSequence: ProjectionSnapshotQueryShape["getSnapshotSequence"] = () =>
     listProjectionStateRows(undefined).pipe(
@@ -2752,6 +2845,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getCommandReadModel,
     getSnapshot,
     getShellSnapshot,
+    getArchivedShellSnapshot,
     getSnapshotSequence,
     getCounts,
     getActiveProjectByWorkspaceRoot,

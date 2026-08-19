@@ -29,7 +29,11 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  readCommandModel,
+  readThreadDetail,
+} from "../Services/OrchestrationEngine.ts";
 import { assistantTurnCount } from "../Utils.ts";
 import {
   ProviderCommandReactor,
@@ -358,8 +362,12 @@ const make = Effect.gen(function* () {
       );
 
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     return readModel.threads.find((entry) => entry.id === threadId);
+  });
+
+  const resolveThreadWithBodies = Effect.fnUntraced(function* (threadId: ThreadId) {
+    return Option.getOrUndefined(yield* readThreadDetail(orchestrationEngine, threadId));
   });
 
   const hasActiveProviderTurn = (threadId: ThreadId) =>
@@ -425,7 +433,7 @@ const make = Effect.gen(function* () {
       readonly modelSelection?: ModelSelection;
     },
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
@@ -819,7 +827,7 @@ const make = Effect.gen(function* () {
   const processProviderForkRequested = Effect.fn("processProviderForkRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.provider-fork-requested" }>,
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const sourceThread = readModel.threads.find(
       (entry) => entry.id === event.payload.sourceThreadId,
     );
@@ -985,7 +993,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const thread = yield* resolveThread(event.payload.threadId);
+    const thread = yield* resolveThreadWithBodies(event.payload.threadId);
     if (!thread) {
       return;
     }
@@ -1010,7 +1018,7 @@ const make = Effect.gen(function* () {
       const generationCwd =
         resolveThreadWorkspaceCwd({
           thread,
-          projects: (yield* orchestrationEngine.getReadModel()).projects,
+          projects: (yield* readCommandModel(orchestrationEngine)).projects,
         }) ?? process.cwd();
       const generationInput = {
         messageText: message.text,

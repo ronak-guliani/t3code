@@ -2263,7 +2263,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
-            projectionSnapshotQuery.getShellSnapshot().pipe(
+            (
+              projectionSnapshotQuery.getArchivedShellSnapshot?.() ??
+              projectionSnapshotQuery.getShellSnapshot()
+            ).pipe(
               Effect.map(filterArchivedShellSnapshot),
               Effect.mapError(
                 (cause) =>

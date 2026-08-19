@@ -225,9 +225,9 @@ export const withThreadDispatch = <A, E, R>(
   }) => Effect.Effect<A, E, R>,
   options?: ThreadResolutionOptions,
 ) =>
-  withLiveOrchestrationClient(flags, ({ getSnapshot, dispatch }) =>
+  withLiveOrchestrationClient(flags, ({ getSnapshot, getArchivedSnapshot, dispatch }) =>
     Effect.gen(function* () {
-      const snapshot = yield* getSnapshot;
+      const snapshot = yield* options?.includeArchived === true ? getArchivedSnapshot : getSnapshot;
       const thread = yield* findThreadForCli(snapshot, identifier, options);
       return yield* run({ thread, snapshot, dispatch });
     }),
