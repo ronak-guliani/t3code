@@ -482,9 +482,9 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                 return;
               }
               case "orchestration.subscribeThread": {
-                const [threadDetail, readModel] = yield* Effect.all([
+                const [threadDetail, snapshotSequence] = yield* Effect.all([
                   projectionSnapshotQuery.getThreadDetailById(message.payload.threadId),
-                  orchestrationEngine.getReadModel(),
+                  projectionSnapshotQuery.getSnapshotSequence(),
                 ]);
                 if (Option.isNone(threadDetail)) {
                   yield* sendError(
@@ -499,7 +499,7 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   mobileStream(message.id, {
                     kind: "snapshot",
                     snapshot: {
-                      snapshotSequence: readModel.snapshotSequence,
+                      snapshotSequence,
                       thread: threadDetail.value,
                     },
                   }),

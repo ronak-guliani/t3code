@@ -1,4 +1,11 @@
-import type { OrchestrationEvent, ProjectId, ThreadId, WorkflowRunId } from "@t3tools/contracts";
+import type {
+  OrchestrationEvent,
+  OrchestrationReadModel,
+  OrchestrationThread,
+  ProjectId,
+  ThreadId,
+  WorkflowRunId,
+} from "@t3tools/contracts";
 import { OrchestrationCommand } from "@t3tools/contracts";
 import {
   Cause,
@@ -83,6 +90,48 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   }
 }
 
+function commandContextThreadIds(command: OrchestrationCommand): ReadonlySet<ThreadId> {
+  switch (command.type) {
+    case "project.create":
+    case "project.meta.update":
+    case "project.delete":
+    case "workflow.run.request":
+    case "workflow.node.worker.start":
+    case "workflow.worker-result.record":
+    case "workflow.run.finalize":
+      return new Set();
+    case "thread.fork":
+      return new Set([command.sourceThreadId]);
+    case "thread.turn.start":
+      return new Set([
+        command.threadId,
+        ...(command.crossThreadSourceThreadId === undefined
+          ? []
+          : [command.crossThreadSourceThreadId]),
+        ...(command.sourceProposedPlan === undefined ? [] : [command.sourceProposedPlan.threadId]),
+      ]);
+    default:
+      return new Set([command.threadId]);
+  }
+}
+
+function withoutThreadBodies(thread: OrchestrationThread): OrchestrationThread {
+  return {
+    ...thread,
+    messages: [],
+    activities: [],
+    hasMoreActivities: false,
+    checkpoints: [],
+  };
+}
+
+function withoutReadModelBodies(readModel: OrchestrationReadModel): OrchestrationReadModel {
+  return {
+    ...readModel,
+    threads: readModel.threads.map(withoutThreadBodies),
+  };
+}
+
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventStore = yield* OrchestrationEventStore;
@@ -91,7 +140,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
 
-  let readModel = createEmptyReadModel(new Date().toISOString());
+  let commandReadModel = createEmptyReadModel(new Date().toISOString());
 
   const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
   const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
@@ -100,6 +149,28 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const withWorktreeLock: OrchestrationEngineShape["withWorktreeLock"] = (effect) =>
     worktreeLock.withPermits(1)(effect);
+
+  const hydrateCommandContext = Effect.fn("hydrateCommandContext")(function* (
+    command: OrchestrationCommand,
+  ) {
+    const threadIds = commandContextThreadIds(command);
+    if (threadIds.size === 0) return commandReadModel;
+
+    const details = yield* Effect.forEach(
+      threadIds,
+      (threadId) => projectionSnapshotQuery.getThreadDetailById(threadId),
+      { concurrency: "unbounded" },
+    );
+    const detailById = new Map(
+      details.flatMap((detail) =>
+        Option.isSome(detail) ? ([[detail.value.id, detail.value]] as const) : [],
+      ),
+    );
+    return {
+      ...commandReadModel,
+      threads: commandReadModel.threads.map((thread) => detailById.get(thread.id) ?? thread),
+    } satisfies OrchestrationReadModel;
+  });
 
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
@@ -150,7 +221,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   });
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
-    const dispatchStartSequence = readModel.snapshotSequence;
+    const dispatchStartSequence = commandReadModel.snapshotSequence;
     const processingStartedAtMs = Date.now();
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
@@ -165,11 +236,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         return;
       }
 
-      let nextReadModel = readModel;
+      let nextReadModel = commandReadModel;
       for (const persistedEvent of persistedEvents) {
         nextReadModel = yield* projectEvent(nextReadModel, persistedEvent);
       }
-      readModel = nextReadModel;
+      commandReadModel = withoutReadModelBodies(nextReadModel);
 
       for (const persistedEvent of persistedEvents) {
         yield* PubSub.publish(eventPubSub, persistedEvent);
@@ -209,16 +280,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        const contextualReadModel = yield* hydrateCommandContext(command);
         const eventBase = yield* decideOrchestrationCommand({
           command,
-          readModel,
+          readModel: contextualReadModel,
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
-              let nextReadModel = readModel;
+              let nextReadModel = contextualReadModel;
 
               for (const nextEvent of eventBases) {
                 const savedEvent = yield* eventStore.append(nextEvent);
@@ -260,7 +332,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             ),
           );
 
-        readModel = committedCommand.nextReadModel;
+        commandReadModel = withoutReadModelBodies(committedCommand.nextReadModel);
         for (const [index, event] of committedCommand.committedEvents.entries()) {
           yield* PubSub.publish(eventPubSub, event);
           if (index === 0) {
@@ -318,7 +390,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 ).pipe(
                   Effect.annotateLogs({
                     commandId: envelope.command.commandId,
-                    snapshotSequence: readModel.snapshotSequence,
+                    snapshotSequence: commandReadModel.snapshotSequence,
                   }),
                 ),
               ),
@@ -331,7 +403,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   aggregateKind: aggregateRef.aggregateKind,
                   aggregateId: aggregateRef.aggregateId,
                   acceptedAt: new Date().toISOString(),
-                  resultSequence: readModel.snapshotSequence,
+                  resultSequence: commandReadModel.snapshotSequence,
                   status: "rejected",
                   error: error.message,
                 })
@@ -352,10 +424,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       const initializationExit = yield* Effect.exit(
         Effect.gen(function* () {
           yield* projectionPipeline.bootstrap;
-          readModel = yield* projectionSnapshotQuery.getSnapshot();
+          commandReadModel = yield* (
+            projectionSnapshotQuery.getCommandReadModel?.() ?? projectionSnapshotQuery.getSnapshot()
+          );
           yield* Effect.forkScoped(worker);
           yield* Effect.logDebug("orchestration engine started").pipe(
-            Effect.annotateLogs({ sequence: readModel.snapshotSequence }),
+            Effect.annotateLogs({ sequence: commandReadModel.snapshotSequence }),
           );
         }),
       );
@@ -373,11 +447,32 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         cause instanceof Error ? cause : new Error("Orchestration engine initialization failed"),
       ),
       Effect.orDie,
-      Effect.map(() => readModel),
+      Effect.flatMap(() => projectionSnapshotQuery.getSnapshot()),
+      Effect.map((snapshot) => {
+        const bodiesByThreadId = new Map(snapshot.threads.map((thread) => [thread.id, thread]));
+        return {
+          ...commandReadModel,
+          threads: commandReadModel.threads.map((thread) => {
+            const body = bodiesByThreadId.get(thread.id);
+            return body === undefined
+              ? thread
+              : {
+                  ...thread,
+                  messages: body.messages,
+                  activities: body.activities,
+                  ...(body.hasMoreActivities === undefined
+                    ? {}
+                    : { hasMoreActivities: body.hasMoreActivities }),
+                  checkpoints: body.checkpoints,
+                };
+          }),
+        } satisfies OrchestrationReadModel;
+      }),
+      Effect.orDie,
     );
 
-  const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
-    eventStore.readFromSequence(fromSequenceExclusive);
+  const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, limit) =>
+    eventStore.readFromSequence(fromSequenceExclusive, limit);
 
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {

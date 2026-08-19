@@ -736,6 +736,23 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(thread.activities.length, 500);
       assert.equal(thread.activities[0]?.id, asEventId("activity-0002"));
       assert.equal(thread.activities.at(-1)?.id, asEventId("activity-0501"));
+
+      yield* sql`
+        UPDATE projection_thread_activities
+        SET payload_json = 'invalid retained json'
+        WHERE activity_id = 'activity-0501'
+      `;
+
+      assert.isDefined(snapshotQuery.getCommandReadModel);
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      const commandThread = commandReadModel.threads.find(
+        (entry) => entry.id === "thread-snapshot-cap",
+      );
+
+      assert.isDefined(commandThread);
+      assert.deepEqual(commandThread.messages, []);
+      assert.deepEqual(commandThread.activities, []);
+      assert.deepEqual(commandThread.checkpoints, []);
     }),
   );
 

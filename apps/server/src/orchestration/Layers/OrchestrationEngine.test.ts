@@ -229,6 +229,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getCommandReadModel: () => Effect.succeed(projectionSnapshot),
           getSnapshot: () => Effect.succeed(projectionSnapshot),
           getShellSnapshot: () =>
             Effect.succeed({

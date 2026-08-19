@@ -1214,23 +1214,32 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
 
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
-                const headSequence = (yield* orchestrationEngine.getReadModel()).snapshotSequence;
+                const headSequence = yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to read orchestration shell sequence",
+                        cause,
+                      }),
+                  ),
+                );
                 const replayGap = headSequence - afterSequence;
                 if (replayGap >= 0 && replayGap <= SHELL_RESUME_MAX_GAP) {
-                  const catchUpStream = orchestrationEngine.readEvents(afterSequence).pipe(
-                    Stream.take(replayGap),
-                    Stream.mapEffect(toShellStreamEvent),
-                    Stream.flatMap((event) =>
-                      Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
-                    ),
-                    Stream.mapError(
-                      (cause) =>
-                        new OrchestrationGetSnapshotError({
-                          message: "Failed to replay orchestration shell events",
-                          cause,
-                        }),
-                    ),
-                  );
+                  const catchUpStream = orchestrationEngine
+                    .readEvents(afterSequence, replayGap)
+                    .pipe(
+                      Stream.mapEffect(toShellStreamEvent),
+                      Stream.flatMap((event) =>
+                        Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
+                      ),
+                      Stream.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: "Failed to replay orchestration shell events",
+                            cause,
+                          }),
+                      ),
+                    );
                   const liveAfterHead = bufferedLiveStream.pipe(
                     Stream.filter(
                       (item) =>
@@ -1307,29 +1316,38 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
 
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
-                const headSequence = (yield* orchestrationEngine.getReadModel()).snapshotSequence;
+                const headSequence = yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: `Failed to read thread ${input.threadId} sequence`,
+                        cause,
+                      }),
+                  ),
+                );
                 const replayGap = headSequence - afterSequence;
                 if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
-                  const catchUpStream = orchestrationEngine.readEvents(afterSequence).pipe(
-                    Stream.take(replayGap),
-                    Stream.filter(
-                      (event) =>
-                        event.aggregateKind === "thread" &&
-                        event.aggregateId === input.threadId &&
-                        isThreadDetailEvent(event),
-                    ),
-                    Stream.map((event) => ({
-                      kind: "event" as const,
-                      event: projectActivityEvent(event),
-                    })),
-                    Stream.mapError(
-                      (cause) =>
-                        new OrchestrationGetSnapshotError({
-                          message: `Failed to replay thread ${input.threadId} events`,
-                          cause,
-                        }),
-                    ),
-                  );
+                  const catchUpStream = orchestrationEngine
+                    .readEvents(afterSequence, replayGap)
+                    .pipe(
+                      Stream.filter(
+                        (event) =>
+                          event.aggregateKind === "thread" &&
+                          event.aggregateId === input.threadId &&
+                          isThreadDetailEvent(event),
+                      ),
+                      Stream.map((event) => ({
+                        kind: "event" as const,
+                        event: projectActivityEvent(event),
+                      })),
+                      Stream.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: `Failed to replay thread ${input.threadId} events`,
+                            cause,
+                          }),
+                      ),
+                    );
                   const liveAfterHead = bufferedLiveStream.pipe(
                     Stream.filter(
                       (item) => item.kind === "event" && item.event.sequence > headSequence,
