@@ -80,9 +80,13 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
     serverVersion: packageJson.version,
     capabilities: {
       repositoryIdentity: true,
-      pullRequests: true,
+      connectionProbe: true,
+      pullRequests: false,
       threadSettlement: true,
       threadSnooze: true,
+      threadPinning: false,
+      threadPinReorder: false,
+      threadTitleRegeneration: false,
     },
   };
 

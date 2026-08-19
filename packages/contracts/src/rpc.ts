@@ -301,6 +301,7 @@ export const WS_METHODS = {
   terminalClose: "terminal.close",
 
   // Server meta
+  serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverRefreshProviders: "server.refreshProviders",
   serverListProviderCommands: "server.listProviderCommands",
@@ -366,6 +367,11 @@ export const WsServerUpsertKeybindingRpc = Rpc.make(WS_METHODS.serverUpsertKeybi
   payload: ServerUpsertKeybindingInput,
   success: ServerUpsertKeybindingResult,
   error: KeybindingsConfigError,
+});
+
+export const WsServerProbeRpc = Rpc.make(WS_METHODS.serverProbe, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({}),
 });
 
 export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
@@ -1129,6 +1135,7 @@ export const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
 );
 
 export const WsRpcGroup = RpcGroup.make(
+  WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
   WsServerListProviderCommandsRpc,

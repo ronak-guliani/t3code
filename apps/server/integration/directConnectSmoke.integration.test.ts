@@ -341,7 +341,18 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         const serverConfig = yield* Effect.promise(() =>
           transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
         );
-        expect(serverConfig.environment.capabilities.connectionProbe).toBeUndefined();
+        expect(serverConfig.environment.capabilities).toMatchObject({
+          connectionProbe: true,
+          pullRequests: false,
+          threadSettlement: true,
+          threadSnooze: true,
+          threadPinning: false,
+          threadPinReorder: false,
+          threadTitleRegeneration: false,
+        });
+        yield* Effect.promise(() =>
+          transport.request((client) => client[WS_METHODS.serverProbe]({})),
+        );
         expect(serverConfig.shellResumeCompletionMarker).toBe(true);
         expect(serverConfig.threadResumeCompletionMarker).toBe(true);
         const unsubscribeLifecycle = transport.subscribe(
