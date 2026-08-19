@@ -1,0 +1,12 @@
+{
+  "id": "dispatch-title-regenerate-1",
+  "type": "request",
+  "protocolVersion": "mobile.v1",
+  "method": "orchestration.dispatchCommand",
+  "payload": {
+    "type": "thread.meta.update",
+    "commandId": "mobile-title-regenerate-1",
+    "threadId": "thread-fixture",
+    "regenerateTitle": true
+  }
+}

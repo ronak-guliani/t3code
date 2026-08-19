@@ -56,6 +56,7 @@ describe("mobile v1 wire fixtures", () => {
       "pin-reorder-request.json",
       "pin-request.json",
       "session-stop-request.json",
+      "title-regenerate-request.json",
       "turn-interrupt-request.json",
       "turn-start-request.json",
       "unpin-request.json",
@@ -65,6 +66,35 @@ describe("mobile v1 wire fixtures", () => {
     for (const fixtureName of fixtureNames("client")) {
       const fixture = readFixture(`client/${fixtureName}`);
       expect(encodeClientMessage(decodeClientMessage(fixture))).toEqual(fixture);
+    }
+  });
+
+  it("rejects title regeneration requests with unrelated metadata mutations", () => {
+    const unrelatedMetadata = [
+      { title: "Manual rename" },
+      { modelSelection: { instanceId: "codex", model: "gpt-5" } },
+      { branch: null },
+      { worktreePath: null },
+      { pullRequest: null },
+      { pullRequestOwnership: "transfer" },
+    ];
+
+    for (const metadata of unrelatedMetadata) {
+      expect(() =>
+        decodeClientMessage({
+          id: "dispatch-title-regenerate-invalid",
+          type: "request",
+          protocolVersion: "mobile.v1",
+          method: "orchestration.dispatchCommand",
+          payload: {
+            type: "thread.meta.update",
+            commandId: "mobile-title-regenerate-invalid",
+            threadId: "thread-fixture",
+            regenerateTitle: true,
+            ...metadata,
+          },
+        }),
+      ).toThrow();
     }
   });
 });

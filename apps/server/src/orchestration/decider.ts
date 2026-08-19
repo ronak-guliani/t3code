@@ -798,7 +798,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.meta.update": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -815,6 +815,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.regenerateTitle === true
+            ? {
+                regenerateTitle: true as const,
+                previousTitle: thread.title,
+                titleRegeneration: {
+                  requestId: command.commandId,
+                  startedAt: occurredAt,
+                },
+              }
+            : {}),
+          ...(command.title !== undefined && thread.titleRegeneration != null
+            ? { titleRegeneration: null }
+            : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),
@@ -1083,6 +1096,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         },
       ];
+    }
+
+    case "thread.title.regeneration.complete": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const requestIsCurrent = thread.titleRegeneration?.requestId === command.requestId;
+      const occurredAt = nowIso();
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          ...(requestIsCurrent && command.title !== undefined ? { title: command.title } : {}),
+          ...(requestIsCurrent ? { titleRegeneration: null } : {}),
+          updatedAt: requestIsCurrent ? occurredAt : thread.updatedAt,
+        },
+      };
     }
 
     case "thread.runtime-mode.set": {

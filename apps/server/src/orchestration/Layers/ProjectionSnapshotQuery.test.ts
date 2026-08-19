@@ -1,5 +1,6 @@
 import {
   CheckpointRef,
+  CommandId,
   EventId,
   MessageId,
   ProjectId,
@@ -77,6 +78,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latest_turn_id,
           pinned_at,
           pin_order_key,
+          title_regeneration_request_id,
+          title_regeneration_started_at,
           latest_user_message_at,
           pending_approval_count,
           pending_user_input_count,
@@ -97,6 +100,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'turn-1',
           '2026-02-24T00:00:02.500Z',
           'a0',
+          'cmd-title-regenerate',
+          '2026-02-24T00:00:02.750Z',
           '2026-02-24T00:00:04.000Z',
           1,
           0,
@@ -323,6 +328,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           snoozedAt: null,
           pinnedAt: "2026-02-24T00:00:02.500Z",
           pinOrderKey: "a0",
+          titleRegeneration: {
+            requestId: CommandId.make("cmd-title-regenerate"),
+            startedAt: "2026-02-24T00:00:02.750Z",
+          },
           deletedAt: null,
           messages: [
             {
@@ -447,6 +456,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           snoozedAt: null,
           pinnedAt: "2026-02-24T00:00:02.500Z",
           pinOrderKey: "a0",
+          titleRegeneration: {
+            requestId: CommandId.make("cmd-title-regenerate"),
+            startedAt: "2026-02-24T00:00:02.750Z",
+          },
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -469,6 +482,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       if (threadShell._tag === "Some") {
         assert.equal(threadShell.value.pinnedAt, "2026-02-24T00:00:02.500Z");
         assert.equal(threadShell.value.pinOrderKey, "a0");
+        assert.deepEqual(threadShell.value.titleRegeneration, {
+          requestId: "cmd-title-regenerate",
+          startedAt: "2026-02-24T00:00:02.750Z",
+        });
       }
 
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));

@@ -3318,6 +3318,69 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
     }),
   );
 
+  it.effect("persists and clears title regeneration state", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const threads = yield* ProjectionThreadRepository;
+      const threadId = ThreadId.make("thread-title-regeneration-pipeline");
+      const projectId = ProjectId.make("project-title-regeneration-pipeline");
+      const createdAt = "2026-08-19T20:00:00.000Z";
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-title-regeneration-project"),
+        projectId,
+        title: "Title Regeneration Project",
+        workspaceRoot: "/tmp/project-title-regeneration-pipeline",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-title-regeneration-thread"),
+        threadId,
+        projectId,
+        title: "Original title",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+
+      yield* engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-title-regenerate"),
+        threadId,
+        regenerateTitle: true,
+      });
+      const pending = yield* threads.getById({ threadId });
+      assert.equal(pending._tag, "Some");
+      if (pending._tag !== "Some") return;
+      assert.equal(pending.value.titleRegenerationRequestId, "cmd-title-regenerate");
+      assert.isNotNull(pending.value.titleRegenerationStartedAt);
+
+      yield* engine.dispatch({
+        type: "thread.title.regeneration.complete",
+        commandId: CommandId.make("cmd-title-regeneration-complete"),
+        threadId,
+        requestId: CommandId.make("cmd-title-regenerate"),
+        title: "Regenerated title",
+      });
+      const completed = yield* threads.getById({ threadId });
+      assert.equal(completed._tag, "Some");
+      if (completed._tag === "Some") {
+        assert.equal(completed.value.title, "Regenerated title");
+        assert.isNull(completed.value.titleRegenerationRequestId);
+        assert.isNull(completed.value.titleRegenerationStartedAt);
+      }
+    }),
+  );
+
   it.effect(
     "persists workspace handoff origin onto the marker and the dispatched continuation",
     () =>

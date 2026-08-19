@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CheckpointRef,
+  CommandId,
   EventId,
   MessageId,
   ProjectId,
@@ -254,6 +255,48 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.branch).toBe("feature/demo");
         // Model selection should be unchanged since it wasn't in the payload
         expect(result.thread.modelSelection).toEqual(baseThread.modelSelection);
+      }
+    });
+
+    it("applies and clears title regeneration state", () => {
+      const pending = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          titleRegeneration: {
+            requestId: CommandId.make("cmd-title-regenerate"),
+            startedAt: "2026-04-01T05:00:00.000Z",
+          },
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+      expect(pending.kind).toBe("updated");
+      if (pending.kind !== "updated") return;
+      expect(pending.thread.titleRegeneration?.requestId).toBe("cmd-title-regenerate");
+
+      const completed = applyThreadDetailEvent(pending.thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T05:00:01.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          title: "Regenerated title",
+          titleRegeneration: null,
+          updatedAt: "2026-04-01T05:00:01.000Z",
+        },
+      });
+      expect(completed.kind).toBe("updated");
+      if (completed.kind === "updated") {
+        expect(completed.thread.title).toBe("Regenerated title");
+        expect(completed.thread.titleRegeneration).toBeNull();
       }
     });
   });

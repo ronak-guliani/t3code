@@ -18,6 +18,7 @@ import {
   type MobileAuthWebSocketTokenResult,
   type MobileClientCapability,
   type MobileClientOrchestrationCommand,
+  isMobileThreadTitleRegenerationCommand,
   type MobileCommandReceipt,
   MobileClientMessage,
   type MobileDescriptorResult,
@@ -169,6 +170,8 @@ function isMobileClientOrchestrationCommand(
     case "thread.unpin":
     case "thread.pin.reorder":
       return true;
+    case "thread.meta.update":
+      return isMobileThreadTitleRegenerationCommand(command);
     default:
       return false;
   }
@@ -564,7 +567,7 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   yield* sendError(
                     message.id,
                     "invalid-message",
-                    "Mobile dispatch only supports read+chat and thread pinning commands.",
+                    "Mobile dispatch only supports read+chat, thread pinning, and metadata commands.",
                   );
                   return;
                 }
