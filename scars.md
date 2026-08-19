@@ -112,6 +112,7 @@
 - PR head movement is not a batch-level feedback invalidation: reconcile each durable finding against fresh provider state, and supersede only evidence intrinsically scoped to the old head (such as failed checks), or unresolved comments and findings can be lost between poll and delivery.
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
 - Mobile capability flags are promises across both orchestration and `mobile.v1`; command schemas, mobile allowlists, server dispatch guards, and every exported live-event reducer must move together before advertising support.
+- Long-running mobile mutations need durable pending state plus correlated completion commands; clear interrupted work on reactor startup and ignore stale completions so reconnects and manual edits cannot be overwritten.
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.

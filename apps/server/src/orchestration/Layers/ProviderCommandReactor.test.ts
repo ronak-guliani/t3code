@@ -691,6 +691,65 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.title).toBe("Generated title");
   });
 
+  it("regenerates a thread title from retained conversation context", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-before-regeneration"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-before-regeneration"),
+          role: "user",
+          text: "Investigate reconnect failures after restarting the session.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-custom-title-before-regeneration"),
+        threadId: ThreadId.make("thread-1"),
+        title: "Old reconnect title",
+      }),
+    );
+
+    harness.generateThreadTitle.mockClear();
+    harness.generateThreadTitle.mockReturnValue(
+      Effect.succeed({ title: "Restart reconnect failures" }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-title-regenerate"),
+        threadId: ThreadId.make("thread-1"),
+        regenerateTitle: true,
+      }),
+    );
+
+    await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
+    expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+      previousTitle: "Old reconnect title",
+    });
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"))?.title ===
+        "Restart reconnect failures"
+      );
+    });
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.titleRegeneration).toBeNull();
+  });
+
   it("does not overwrite an existing custom thread title on the first turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

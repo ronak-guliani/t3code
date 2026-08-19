@@ -79,7 +79,8 @@ import Migration0074 from "./Migrations/074_PullRequestMonitorFallback.ts";
 import Migration0075 from "./Migrations/075_RepairSkippedPullRequestMonitorLedger.ts";
 import Migration0076 from "./Migrations/076_PullRequestMonitorRevisionIdentity.ts";
 import Migration0077 from "./Migrations/077_ProjectionThreadsPinning.ts";
-import Migration0079 from "./Migrations/079_ProjectionThreadsPinningAndChildLifecycleRepair.ts";
+import Migration0078 from "./Migrations/078_ProjectionThreadTitleRegeneration.ts";
+import Migration0079 from "./Migrations/079_ProjectionThreadCompatibilityRepair.ts";
 import Migration0080 from "./Migrations/080_ChildLifecycleNotificationDedup.ts";
 
 /**
@@ -159,7 +160,8 @@ export const migrationEntries = [
   [75, "RepairSkippedPullRequestMonitorLedger", Migration0075],
   [76, "PullRequestMonitorRevisionIdentity", Migration0076],
   [77, "ProjectionThreadsPinning", Migration0077],
-  [79, "ProjectionThreadsPinningAndChildLifecycleRepair", Migration0079],
+  [78, "ProjectionThreadTitleRegeneration", Migration0078],
+  [79, "ProjectionThreadCompatibilityRepair", Migration0079],
   [80, "ChildLifecycleNotificationDedup", Migration0080],
 ] as const;
 

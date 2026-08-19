@@ -1,11 +1,11 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import ProjectionThreadsPinning from "./077_ProjectionThreadsPinning.ts";
+import ProjectionThreadTitleRegeneration from "./078_ProjectionThreadTitleRegeneration.ts";
 
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* ProjectionThreadsPinning;
+  yield* ProjectionThreadTitleRegeneration;
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_threads (
       thread_id TEXT PRIMARY KEY,

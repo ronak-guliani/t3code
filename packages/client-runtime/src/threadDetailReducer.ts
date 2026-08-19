@@ -200,6 +200,7 @@ export function applyThreadDetailEvent(
           snoozedAt: null,
           pinnedAt: null,
           pinOrderKey: null,
+          titleRegeneration: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -218,6 +219,7 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           archivedAt: event.payload.archivedAt,
+          titleRegeneration: null,
           updatedAt: event.payload.updatedAt,
         },
       };
@@ -319,6 +321,9 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+          ...(event.payload.titleRegeneration !== undefined
+            ? { titleRegeneration: event.payload.titleRegeneration }
+            : {}),
           ...(event.payload.modelSelection !== undefined
             ? { modelSelection: event.payload.modelSelection }
             : {}),

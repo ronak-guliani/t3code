@@ -662,6 +662,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             snoozedAt: null,
             pinnedAt: null,
             pinOrderKey: null,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
             latestChildNotificationAt: null,
             pendingApprovalCount: 0,
@@ -689,6 +691,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: event.payload.archivedAt,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -877,6 +881,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { threadUrl: event.payload.threadUrl }
               : {}),
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.titleRegeneration !== undefined
+              ? {
+                  titleRegenerationRequestId: event.payload.titleRegeneration?.requestId ?? null,
+                  titleRegenerationStartedAt: event.payload.titleRegeneration?.startedAt ?? null,
+                }
+              : {}),
             ...(event.payload.modelSelection !== undefined
               ? { modelSelection: event.payload.modelSelection }
               : {}),

@@ -80,7 +80,7 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
 it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
   "080_ChildLifecycleNotificationDedup divergent ledger",
   (it) => {
-    it.effect("repairs pinning after the previous branch migration ledger", () =>
+    it.effect("repairs main projections after the previous branch migration ledger", () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runMigrations({ toMigrationInclusive: 76 });
@@ -108,6 +108,8 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
         const names = new Set(columns.map((column) => column.name));
         assert.isTrue(names.has("pinned_at"));
         assert.isTrue(names.has("pin_order_key"));
+        assert.isTrue(names.has("title_regeneration_request_id"));
+        assert.isTrue(names.has("title_regeneration_started_at"));
         assert.isTrue(names.has("thread_url"));
         assert.isTrue(names.has("latest_child_notification_at"));
       }),
