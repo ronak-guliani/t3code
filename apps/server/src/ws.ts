@@ -116,7 +116,10 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
-import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  readCommandModel,
+} from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
 import {
@@ -1214,15 +1217,8 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
 
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
-                const headSequence = yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: "Failed to read orchestration shell sequence",
-                        cause,
-                      }),
-                  ),
-                );
+                const headSequence = (yield* readCommandModel(orchestrationEngine))
+                  .snapshotSequence;
                 const replayGap = headSequence - afterSequence;
                 if (replayGap >= 0 && replayGap <= SHELL_RESUME_MAX_GAP) {
                   const catchUpStream = orchestrationEngine
@@ -1316,15 +1312,8 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
 
               if (input.afterSequence !== undefined) {
                 const afterSequence = input.afterSequence;
-                const headSequence = yield* projectionSnapshotQuery.getSnapshotSequence().pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to read thread ${input.threadId} sequence`,
-                        cause,
-                      }),
-                  ),
-                );
+                const headSequence = (yield* readCommandModel(orchestrationEngine))
+                  .snapshotSequence;
                 const replayGap = headSequence - afterSequence;
                 if (replayGap >= 0 && replayGap <= THREAD_RESUME_MAX_GAP) {
                   const catchUpStream = orchestrationEngine
