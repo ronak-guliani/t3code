@@ -327,6 +327,15 @@ function mapLatestTurn(
   };
 }
 
+function mapTitleRegeneration(row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>) {
+  return row.titleRegenerationRequestId != null && row.titleRegenerationStartedAt != null
+    ? {
+        requestId: row.titleRegenerationRequestId,
+        startedAt: row.titleRegenerationStartedAt,
+      }
+    : null;
+}
+
 function mapSessionRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRowSchema>,
 ): OrchestrationSession {
@@ -469,6 +478,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     snoozed_at AS "snoozedAt",
     pinned_at AS "pinnedAt",
     pin_order_key AS "pinOrderKey",
+    title_regeneration_request_id AS "titleRegenerationRequestId",
+    title_regeneration_started_at AS "titleRegenerationStartedAt",
     latest_user_message_at AS "latestUserMessageAt",
     pending_approval_count AS "pendingApprovalCount",
     pending_user_input_count AS "pendingUserInputCount",
@@ -974,6 +985,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.snoozed_at AS "snoozedAt",
           threads.pinned_at AS "pinnedAt",
           threads.pin_order_key AS "pinOrderKey",
+          threads.title_regeneration_request_id AS "titleRegenerationRequestId",
+          threads.title_regeneration_started_at AS "titleRegenerationStartedAt",
           threads.latest_user_message_at AS "latestUserMessageAt",
           threads.pending_approval_count AS "pendingApprovalCount",
           threads.pending_user_input_count AS "pendingUserInputCount",
@@ -1684,6 +1697,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   snoozedAt: row.snoozedAt,
                   pinnedAt: row.pinnedAt,
                   pinOrderKey: row.pinOrderKey,
+                  titleRegeneration: mapTitleRegeneration(row),
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1901,6 +1915,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     snoozedAt: row.snoozedAt,
                     pinnedAt: row.pinnedAt,
                     pinOrderKey: row.pinOrderKey,
+                    titleRegeneration: mapTitleRegeneration(row),
                     session,
                     latestUserMessageAt: row.latestUserMessageAt,
                     hasPendingApprovals: row.pendingApprovalCount > 0,
@@ -2156,6 +2171,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             snoozedAt: threadRow.value.snoozedAt,
             pinnedAt: threadRow.value.pinnedAt,
             pinOrderKey: threadRow.value.pinOrderKey,
+            titleRegeneration: mapTitleRegeneration(threadRow.value),
             session,
             latestUserMessageAt: threadRow.value.latestUserMessageAt,
             hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
@@ -2332,6 +2348,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         snoozedAt: threadRow.value.snoozedAt,
         pinnedAt: threadRow.value.pinnedAt,
         pinOrderKey: threadRow.value.pinOrderKey,
+        titleRegeneration: mapTitleRegeneration(threadRow.value),
         deletedAt: null,
         messages: messageRows.map((row) => {
           const message = {

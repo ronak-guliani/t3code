@@ -168,6 +168,7 @@ function isMobileClientOrchestrationCommand(
     case "thread.pin":
     case "thread.unpin":
     case "thread.pin.reorder":
+    case "thread.meta.update":
       return true;
     default:
       return false;
@@ -564,7 +565,7 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   yield* sendError(
                     message.id,
                     "invalid-message",
-                    "Mobile dispatch only supports read+chat and thread pinning commands.",
+                    "Mobile dispatch only supports read+chat, thread pinning, and metadata commands.",
                   );
                   return;
                 }

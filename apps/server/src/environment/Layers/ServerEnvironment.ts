@@ -92,7 +92,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       threadSnooze: true,
       threadPinning: true,
       threadPinReorder: true,
-      threadTitleRegeneration: false,
+      threadTitleRegeneration: true,
     },
   };
 

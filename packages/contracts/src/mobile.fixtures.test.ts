@@ -56,6 +56,7 @@ describe("mobile v1 wire fixtures", () => {
       "pin-reorder-request.json",
       "pin-request.json",
       "session-stop-request.json",
+      "title-regenerate-request.json",
       "turn-interrupt-request.json",
       "turn-start-request.json",
       "unpin-request.json",

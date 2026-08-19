@@ -254,6 +254,7 @@ export const makeCopilotTextGeneration = Effect.fn("makeCopilotTextGeneration")(
   )(function* (input) {
     const { prompt, outputSchema } = buildThreadTitlePrompt({
       message: input.message,
+      previousTitle: input.previousTitle,
       attachments: input.attachments,
     });
 

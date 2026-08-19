@@ -2833,6 +2833,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 threadId: defaultThreadId,
               },
             ],
+            [
+              "dispatch-title-regenerate-1",
+              {
+                type: "thread.meta.update",
+                commandId: CommandId.make("mobile-title-regenerate-1"),
+                threadId: defaultThreadId,
+                regenerateTitle: true,
+              },
+            ],
           ] as const) {
             socket.send(
               JSON.stringify({
@@ -2850,8 +2859,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             assert.equal(pinResponse.id, id);
             assert.equal(pinResponse.payload.status, "accepted");
           }
-          assert.equal(dispatchCount, 4);
-          assert.equal(startupGateCount, 4);
+          assert.equal(dispatchCount, 5);
+          assert.equal(startupGateCount, 5);
 
           socket.send(
             JSON.stringify({
@@ -2873,7 +2882,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }
           assert.equal(rejectedArchive.id, "dispatch-archive-1");
           assert.equal(rejectedArchive.error.code, "invalid-message");
-          assert.equal(dispatchCount, 4);
+          assert.equal(dispatchCount, 5);
 
           socket.send(
             JSON.stringify({
