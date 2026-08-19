@@ -78,6 +78,7 @@ import Migration0073 from "./Migrations/073_PullRequestMonitorOwnership.ts";
 import Migration0074 from "./Migrations/074_PullRequestMonitorFallback.ts";
 import Migration0075 from "./Migrations/075_RepairSkippedPullRequestMonitorLedger.ts";
 import Migration0076 from "./Migrations/076_PullRequestMonitorRevisionIdentity.ts";
+import Migration0077 from "./Migrations/077_ProjectionThreadsPinning.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -155,6 +156,7 @@ export const migrationEntries = [
   [74, "PullRequestMonitorFallback", Migration0074],
   [75, "RepairSkippedPullRequestMonitorLedger", Migration0075],
   [76, "PullRequestMonitorRevisionIdentity", Migration0076],
+  [77, "ProjectionThreadsPinning", Migration0077],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
