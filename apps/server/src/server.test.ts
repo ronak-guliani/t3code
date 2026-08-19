@@ -2886,6 +2886,31 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
           socket.send(
             JSON.stringify({
+              id: "dispatch-title-regenerate-with-branch",
+              type: "request",
+              protocolVersion: MOBILE_PROTOCOL_VERSION,
+              method: "orchestration.dispatchCommand",
+              payload: {
+                type: "thread.meta.update",
+                commandId: CommandId.make("mobile-title-regenerate-with-branch"),
+                threadId: defaultThreadId,
+                regenerateTitle: true,
+                branch: null,
+              },
+            }),
+          );
+          const rejectedMetadataMutation = decodeMobileServerMessage(
+            yield* readNodeWebSocketJson(socket),
+          );
+          if (rejectedMetadataMutation.type !== "error") {
+            assert.fail("Expected metadata mutation validation error");
+          }
+          assert.equal(rejectedMetadataMutation.id, "dispatch-title-regenerate-with-branch");
+          assert.equal(rejectedMetadataMutation.error.code, "invalid-message");
+          assert.equal(dispatchCount, 5);
+
+          socket.send(
+            JSON.stringify({
               id: "diff-1",
               type: "request",
               protocolVersion: MOBILE_PROTOCOL_VERSION,

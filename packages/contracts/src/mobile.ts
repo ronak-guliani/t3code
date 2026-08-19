@@ -139,6 +139,39 @@ export const MobileReplayEventsRequest = Schema.Struct({
   payload: OrchestrationReplayEventsInput,
 });
 
+type ThreadMetaUpdateCommand = Extract<
+  ClientOrchestrationCommand,
+  { readonly type: "thread.meta.update" }
+>;
+
+export type MobileThreadTitleRegenerationCommand = Omit<
+  ThreadMetaUpdateCommand,
+  "title" | "modelSelection" | "branch" | "worktreePath" | "pullRequest" | "pullRequestOwnership"
+> & {
+  readonly regenerateTitle: true;
+  readonly title?: never;
+  readonly modelSelection?: never;
+  readonly branch?: never;
+  readonly worktreePath?: never;
+  readonly pullRequest?: never;
+  readonly pullRequestOwnership?: never;
+};
+
+export function isMobileThreadTitleRegenerationCommand(
+  command: ClientOrchestrationCommand,
+): command is MobileThreadTitleRegenerationCommand {
+  return (
+    command.type === "thread.meta.update" &&
+    command.regenerateTitle === true &&
+    command.title === undefined &&
+    command.modelSelection === undefined &&
+    command.branch === undefined &&
+    command.worktreePath === undefined &&
+    command.pullRequest === undefined &&
+    command.pullRequestOwnership === undefined
+  );
+}
+
 export const MobileClientOrchestrationCommand = ClientOrchestrationCommand.check(
   Schema.makeFilter(
     (command) =>
@@ -151,30 +184,31 @@ export const MobileClientOrchestrationCommand = ClientOrchestrationCommand.check
       command.type === "thread.pin" ||
       command.type === "thread.unpin" ||
       command.type === "thread.pin.reorder" ||
-      command.type === "thread.meta.update" ||
+      isMobileThreadTitleRegenerationCommand(command) ||
       new SchemaIssue.InvalidValue(Option.some(command.type), {
         message:
-          "mobile.v1 only supports read+chat commands: turn start without bootstrap, interrupt, approval response, user input response, checkpoint revert, session stop, pinning, and thread metadata updates",
+          "mobile.v1 only supports read+chat commands: turn start without bootstrap, interrupt, approval response, user input response, checkpoint revert, session stop, pinning, and standalone title regeneration",
       }),
     { identifier: "MobileClientOrchestrationCommand" },
   ),
 );
-export type MobileClientOrchestrationCommand = Extract<
-  ClientOrchestrationCommand,
-  {
-    readonly type:
-      | "thread.turn.start"
-      | "thread.turn.interrupt"
-      | "thread.approval.respond"
-      | "thread.user-input.respond"
-      | "thread.checkpoint.revert"
-      | "thread.session.stop"
-      | "thread.pin"
-      | "thread.unpin"
-      | "thread.pin.reorder"
-      | "thread.meta.update";
-  }
->;
+export type MobileClientOrchestrationCommand =
+  | Extract<
+      ClientOrchestrationCommand,
+      {
+        readonly type:
+          | "thread.turn.start"
+          | "thread.turn.interrupt"
+          | "thread.approval.respond"
+          | "thread.user-input.respond"
+          | "thread.checkpoint.revert"
+          | "thread.session.stop"
+          | "thread.pin"
+          | "thread.unpin"
+          | "thread.pin.reorder";
+      }
+    >
+  | MobileThreadTitleRegenerationCommand;
 
 export const MobileDispatchCommandRequest = Schema.Struct({
   id: TrimmedNonEmptyString,

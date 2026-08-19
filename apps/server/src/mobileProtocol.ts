@@ -18,6 +18,7 @@ import {
   type MobileAuthWebSocketTokenResult,
   type MobileClientCapability,
   type MobileClientOrchestrationCommand,
+  isMobileThreadTitleRegenerationCommand,
   type MobileCommandReceipt,
   MobileClientMessage,
   type MobileDescriptorResult,
@@ -168,8 +169,9 @@ function isMobileClientOrchestrationCommand(
     case "thread.pin":
     case "thread.unpin":
     case "thread.pin.reorder":
-    case "thread.meta.update":
       return true;
+    case "thread.meta.update":
+      return isMobileThreadTitleRegenerationCommand(command);
     default:
       return false;
   }
