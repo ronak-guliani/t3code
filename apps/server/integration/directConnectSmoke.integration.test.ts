@@ -349,6 +349,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           threadPinning: false,
           threadPinReorder: false,
           threadTitleRegeneration: false,
+          agentActivityPublishing: false,
         });
         yield* Effect.promise(() =>
           transport.request((client) => client[WS_METHODS.serverProbe]({})),
