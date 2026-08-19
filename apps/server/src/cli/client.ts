@@ -120,6 +120,7 @@ export interface CliLiveSnapshotRpcClient {
 
 export interface CliLiveSnapshotClient {
   readonly getSnapshot: ReturnType<typeof fetchLiveOrchestrationShellSnapshot>;
+  readonly getArchivedSnapshot: ReturnType<typeof fetchLiveOrchestrationArchivedShellSnapshot>;
   readonly getThreadSnapshot: (
     threadId: import("@t3tools/contracts").ThreadId,
   ) => ReturnType<typeof fetchLiveOrchestrationThreadSnapshot>;
@@ -527,6 +528,11 @@ export const getLiveOrchestrationShellSnapshot = (flags: CliLiveTargetFlags) =>
     fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
   ).pipe(Effect.provide(FetchHttpClient.layer));
 
+export const getLiveOrchestrationArchivedShellSnapshot = (flags: CliLiveTargetFlags) =>
+  withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
+    fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
+  ).pipe(Effect.provide(FetchHttpClient.layer));
+
 export const withLiveOrchestrationClient = <A, E, R>(
   flags: CliLiveTargetFlags,
   run: (client: CliLiveOrchestrationClient) => Effect.Effect<A, E, R>,
@@ -546,6 +552,7 @@ export const withLiveSnapshotClient = <A, E, R>(
   withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
     run({
       getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
+      getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
       getThreadSnapshot: (threadId) =>
         fetchLiveOrchestrationThreadSnapshot(origin, bearerToken, threadId),
     }),

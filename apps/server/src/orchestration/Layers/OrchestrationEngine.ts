@@ -152,9 +152,9 @@ export function mergeRecoveryReadModel(
             ...thread,
             messages: projected.messages,
             activities: projected.activities,
-            activityContext: projected.activityContext,
-            hasMoreActivities: projected.hasMoreActivities,
-            hasMoreCurrentTurnActivities: projected.hasMoreCurrentTurnActivities,
+            activityContext: projected.activityContext ?? [],
+            hasMoreActivities: projected.hasMoreActivities ?? false,
+            hasMoreCurrentTurnActivities: projected.hasMoreCurrentTurnActivities ?? false,
             checkpoints: projected.checkpoints,
           };
     }),

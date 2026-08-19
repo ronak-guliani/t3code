@@ -21,6 +21,17 @@ export interface ThreadResolutionOptions {
   readonly includeArchived?: boolean;
 }
 
+export const combineCliSnapshots = (active: CliSnapshot, archived: CliSnapshot): CliSnapshot => ({
+  projects: [
+    ...new Map(
+      [...active.projects, ...archived.projects].map((value) => [value.id, value]),
+    ).values(),
+  ],
+  threads: [
+    ...new Map([...active.threads, ...archived.threads].map((value) => [value.id, value])).values(),
+  ],
+});
+
 export const normalizeWorkspaceRootForProjectCommand = Effect.fn(
   "normalizeWorkspaceRootForProjectCommand",
 )(function* (workspaceRoot: string) {
@@ -321,9 +332,12 @@ export const withThreadDetail = <A, E, R>(
   }) => Effect.Effect<A, E, R>,
   options?: ThreadResolutionOptions,
 ) =>
-  withLiveSnapshotClient(flags, ({ getSnapshot, getThreadSnapshot }) =>
+  withLiveSnapshotClient(flags, ({ getSnapshot, getArchivedSnapshot, getThreadSnapshot }) =>
     Effect.gen(function* () {
-      const snapshot = yield* getSnapshot;
+      const snapshot =
+        options?.includeArchived === true
+          ? combineCliSnapshots(...(yield* Effect.all([getSnapshot, getArchivedSnapshot])))
+          : yield* getSnapshot;
       const thread = yield* findThreadForCli(snapshot, identifier, options);
       const detail = yield* getThreadSnapshot(thread.id);
       return yield* run({ thread, detail: detail.thread, snapshot });

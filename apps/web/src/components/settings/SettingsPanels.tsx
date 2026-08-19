@@ -36,6 +36,7 @@ import {
   DEFAULT_CODE_FONT,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_INPUT_FONT_SIZE,
+  DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
   DEFAULT_SIDEBAR_FONT_SIZE,
   DEFAULT_SIDEBAR_META_FONT_SIZE,
   DEFAULT_SIDEBAR_ROW_SPACING,
@@ -49,6 +50,7 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   type CodeFont,
   type FontSize,
+  type MessagePreviewLineCount,
   type SidebarRowSpacing,
   type SidebarTranslucency,
   type ThreadCompletionNotificationMode,
@@ -361,6 +363,14 @@ const FONT_SIZE_OPTIONS: ReadonlyArray<{ value: FontSize; label: string }> = [
   { value: 22, label: "22px" },
   { value: 24, label: "24px" },
 ];
+
+const MESSAGE_PREVIEW_LINE_OPTIONS: ReadonlyArray<MessagePreviewLineCount> = [
+  1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25, 30,
+];
+
+function isMessagePreviewLineCount(value: unknown): value is MessagePreviewLineCount {
+  return MESSAGE_PREVIEW_LINE_OPTIONS.some((option) => String(option) === String(value));
+}
 
 function isFontSize(value: unknown): value is FontSize {
   return FONT_SIZE_OPTIONS.some((option) => String(option.value) === String(value));
@@ -830,6 +840,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.chatFontSize !== DEFAULT_UNIFIED_SETTINGS.chatFontSize
         ? ["Chat font size"]
         : []),
+      ...(!Equal.equals(
+        settings.messagePreviewLineLimits,
+        DEFAULT_UNIFIED_SETTINGS.messagePreviewLineLimits,
+      )
+        ? ["Message preview lines"]
+        : []),
       ...(settings.statusLineFontSize !== DEFAULT_UNIFIED_SETTINGS.statusLineFontSize
         ? ["Status line font size"]
         : []),
@@ -884,6 +900,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
       settings.chatFontSize,
+      settings.messagePreviewLineLimits,
       settings.codeFontSize,
       settings.statusLineFontSize,
       settings.inputFontSize,
@@ -1678,6 +1695,74 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+        {(
+          [
+            {
+              key: "normal",
+              title: "Normal message preview",
+              description: "Lines shown before expanding messages sent directly in a chat.",
+            },
+            {
+              key: "crossThread",
+              title: "Cross-thread message preview",
+              description: "Lines shown before expanding messages sent from another chat.",
+            },
+            {
+              key: "monitoring",
+              title: "Monitoring message preview",
+              description: "Lines shown before expanding pull request monitoring messages.",
+            },
+          ] as const
+        ).map(({ key, title, description }) => (
+          <SettingsRow
+            key={key}
+            title={title}
+            description={description}
+            resetAction={
+              settings.messagePreviewLineLimits[key] !==
+              DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS[key] ? (
+                <SettingResetButton
+                  label={title.toLowerCase()}
+                  onClick={() =>
+                    updateSettings({
+                      messagePreviewLineLimits: {
+                        ...settings.messagePreviewLineLimits,
+                        [key]: DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS[key],
+                      },
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={String(settings.messagePreviewLineLimits[key])}
+                onValueChange={(value) => {
+                  const lineCount = Number(value);
+                  if (isMessagePreviewLineCount(lineCount)) {
+                    updateSettings({
+                      messagePreviewLineLimits: {
+                        ...settings.messagePreviewLineLimits,
+                        [key]: lineCount,
+                      },
+                    });
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-40" aria-label={title}>
+                  <SelectValue>{settings.messagePreviewLineLimits[key]} lines</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {MESSAGE_PREVIEW_LINE_OPTIONS.map((lineCount) => (
+                    <SelectItem hideIndicator key={lineCount} value={String(lineCount)}>
+                      {lineCount} lines
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        ))}
         <SettingsRow
           title="Status line font size"
           description="Font size for assistant metadata lines, including timestamps, elapsed time, and resume commands."

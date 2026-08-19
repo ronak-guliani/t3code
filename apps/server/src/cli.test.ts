@@ -746,6 +746,29 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             true,
           );
           yield* runCliWithRuntime(["chat", "archive", created.threadId, "--base-dir", baseDir]);
+
+          const archivedShowOutput = yield* captureStdout(
+            runCli(["chat", "show", created.threadId, "--base-dir", baseDir]),
+          );
+          const archivedSummary = JSON.parse(archivedShowOutput.output) as {
+            readonly id: string;
+            readonly archivedAt: string | null;
+          };
+          assert.equal(archivedSummary.id, created.threadId);
+          assert.isNotNull(archivedSummary.archivedAt);
+
+          const archivedDetailOutput = yield* captureStdout(
+            runCli(["chat", "show", created.threadId, "--messages", "--base-dir", baseDir]),
+          );
+          const archivedDetail = JSON.parse(archivedDetailOutput.output) as {
+            readonly id: string;
+            readonly archivedAt: string | null;
+            readonly messages: ReadonlyArray<unknown>;
+          };
+          assert.equal(archivedDetail.id, created.threadId);
+          assert.isNotNull(archivedDetail.archivedAt);
+          assert.isArray(archivedDetail.messages);
+
           yield* runCliWithRuntime(["chat", "unarchive", created.threadId, "--base-dir", baseDir]);
 
           const orchestrationEngine = yield* OrchestrationEngineService;
