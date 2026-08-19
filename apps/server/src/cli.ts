@@ -104,6 +104,7 @@ import {
   dispatchRawOrchestrationCommand,
   fetchLiveOrchestrationShellSnapshot,
   getLiveOrchestrationShellSnapshot,
+  getLiveOrchestrationArchivedShellSnapshot,
   isDefinitiveCommandRejectionError,
   printJson,
   readJsonPayload,
@@ -119,6 +120,7 @@ import {
 import {
   activeProjectsOf,
   activeThreadsOf,
+  combineCliSnapshots,
   findProjectForCli,
   findThreadForCli,
   normalizeWorkspaceRootForProjectCommand,
@@ -1596,7 +1598,12 @@ const chatShowCommand = Command.make("show", {
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       if (!flags.messages) {
-        const snapshot = yield* getLiveOrchestrationShellSnapshot(flags);
+        const snapshot = combineCliSnapshots(
+          ...(yield* Effect.all([
+            getLiveOrchestrationShellSnapshot(flags),
+            getLiveOrchestrationArchivedShellSnapshot(flags),
+          ])),
+        );
         const thread = yield* findThreadForCli(snapshot, flags.chat, { includeArchived: true });
         return yield* printJson(threadSummary(thread));
       }

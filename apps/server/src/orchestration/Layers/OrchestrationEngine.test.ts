@@ -22,7 +22,7 @@ import {
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
-import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
+import { mergeRecoveryReadModel, OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -229,6 +229,7 @@ describe("OrchestrationEngine", () => {
     const layer = OrchestrationEngineLive.pipe(
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getCommandReadModel: () => Effect.succeed(projectionSnapshot),
           getSnapshot: () => Effect.succeed(projectionSnapshot),
           getShellSnapshot: () =>
             Effect.succeed({
@@ -283,6 +284,30 @@ describe("OrchestrationEngine", () => {
     expect(readModel.projects[0]?.title).toBe("Bootstrap Project");
     expect(readModel.threads).toHaveLength(1);
     expect(readModel.threads[0]?.title).toBe("Bootstrap Thread");
+
+    const projectedMessage = {
+      id: asMessageId("projected-message"),
+      role: "user" as const,
+      text: "projected body",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-03-03T00:00:03.000Z",
+      updatedAt: "2026-03-03T00:00:03.000Z",
+    };
+    const projectedWithBody = {
+      ...projectionSnapshot,
+      threads: [{ ...projectionSnapshot.threads[0]!, messages: [projectedMessage] }],
+    };
+    const newerCommandModel = {
+      ...projectionSnapshot,
+      snapshotSequence: 8,
+      threads: [{ ...projectionSnapshot.threads[0]!, title: "Newer title" }],
+    };
+    const recoveryModel = mergeRecoveryReadModel(newerCommandModel, projectedWithBody);
+    expect(recoveryModel.snapshotSequence).toBe(8);
+    expect(recoveryModel.threads[0]?.title).toBe("Newer title");
+    expect(recoveryModel.threads[0]?.messages).toEqual([projectedMessage]);
+    expect(mergeRecoveryReadModel(projectionSnapshot, projectedWithBody)).toBe(projectedWithBody);
 
     await runtime.dispose();
   });
@@ -393,6 +418,16 @@ describe("OrchestrationEngine", () => {
     const readModelA = await system.run(engine.getReadModel());
     const readModelB = await system.run(engine.getReadModel());
     expect(readModelB).toEqual(readModelA);
+    expect(engine.getCommandReadModel).toBeDefined();
+    const commandThread = (await system.run(engine.getCommandReadModel!())).threads.find(
+      (thread) => thread.id === "thread-1",
+    );
+    expect(commandThread?.messages).toEqual([]);
+    expect(commandThread?.activities).toEqual([]);
+    expect(commandThread?.activityContext).toEqual([]);
+    expect(commandThread?.hasMoreActivities).toBe(false);
+    expect(commandThread?.hasMoreCurrentTurnActivities).toBe(false);
+    expect(commandThread?.checkpoints).toEqual([]);
     await system.dispose();
   });
 
@@ -1121,7 +1156,6 @@ describe("OrchestrationEngine", () => {
         createdAt,
       }),
     );
-
     await expect(
       runtime.runPromise(
         engine.dispatch({

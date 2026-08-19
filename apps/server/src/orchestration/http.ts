@@ -123,6 +123,35 @@ export const orchestrationShellSnapshotRouteLayer = HttpRouter.add(
   ),
 );
 
+export const orchestrationArchivedShellSnapshotRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/orchestration/archived-shell-snapshot",
+  Effect.gen(function* () {
+    yield* authorizeClientSession(AuthOrchestrationReadScope);
+    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const snapshot = yield* (
+      projectionSnapshotQuery.getArchivedShellSnapshot?.() ??
+      projectionSnapshotQuery.getShellSnapshot()
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OrchestrationGetSnapshotError({
+            message: "Failed to load archived orchestration shell snapshot.",
+            cause,
+          }),
+      ),
+    );
+    return HttpServerResponse.jsonUnsafe(snapshot satisfies OrchestrationShellSnapshot, {
+      status: 200,
+    });
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
+  ),
+);
+
 export const orchestrationThreadSnapshotRouteLayer = HttpRouter.add(
   "GET",
   "/api/orchestration/threads/:threadId/snapshot",
