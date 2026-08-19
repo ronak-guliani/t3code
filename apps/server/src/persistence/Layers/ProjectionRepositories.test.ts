@@ -94,6 +94,8 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         settledAt: null,
         snoozedUntil: null,
         snoozedAt: null,
+        pinnedAt: null,
+        pinOrderKey: null,
         latestUserMessageAt: null,
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,

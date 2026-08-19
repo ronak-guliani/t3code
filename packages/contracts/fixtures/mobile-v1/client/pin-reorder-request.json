@@ -1,0 +1,12 @@
+{
+  "id": "dispatch-pin-reorder-1",
+  "type": "request",
+  "protocolVersion": "mobile.v1",
+  "method": "orchestration.dispatchCommand",
+  "payload": {
+    "type": "thread.pin.reorder",
+    "commandId": "mobile-pin-reorder-1",
+    "threadId": "thread-fixture",
+    "orderKey": "b"
+  }
+}
