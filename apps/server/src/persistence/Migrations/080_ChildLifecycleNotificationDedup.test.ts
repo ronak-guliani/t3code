@@ -6,12 +6,12 @@ import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
-  "078_ChildLifecycleNotificationDedup",
+  "080_ChildLifecycleNotificationDedup",
   (it) => {
     it.effect("backfills existing lifecycle keys and enforces semantic uniqueness", () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 77 });
+        yield* runMigrations({ toMigrationInclusive: 79 });
         yield* sql`
           INSERT INTO orchestration_events (
             event_id,
@@ -43,7 +43,7 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
           )
         `;
 
-        yield* runMigrations({ toMigrationInclusive: 78 });
+        yield* runMigrations({ toMigrationInclusive: 80 });
 
         const rows = yield* sql<{
           readonly dedupe_key: string;
@@ -72,6 +72,44 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
           )
         `);
         assert.strictEqual(duplicate._tag, "Failure");
+      }),
+    );
+  },
+);
+
+it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
+  "080_ChildLifecycleNotificationDedup divergent ledger",
+  (it) => {
+    it.effect("repairs pinning after the previous branch migration ledger", () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 76 });
+        yield* sql`ALTER TABLE projection_threads ADD COLUMN thread_url TEXT`;
+        yield* sql`ALTER TABLE projection_threads ADD COLUMN latest_child_notification_at TEXT`;
+        yield* sql`
+          CREATE TABLE child_lifecycle_notification_dedup (
+            dedupe_key TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+          )
+        `;
+        yield* sql`
+          INSERT INTO effect_sql_migrations (migration_id, name)
+          VALUES
+            (77, 'ChildLifecycleNotifications'),
+            (78, 'ChildLifecycleNotificationDedup')
+        `;
+
+        yield* runMigrations({ toMigrationInclusive: 80 });
+
+        const columns = yield* sql<{ readonly name: string }>`
+          PRAGMA table_info(projection_threads)
+        `;
+        const names = new Set(columns.map((column) => column.name));
+        assert.isTrue(names.has("pinned_at"));
+        assert.isTrue(names.has("pin_order_key"));
+        assert.isTrue(names.has("thread_url"));
+        assert.isTrue(names.has("latest_child_notification_at"));
       }),
     );
   },

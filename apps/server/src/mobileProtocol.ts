@@ -165,6 +165,9 @@ function isMobileClientOrchestrationCommand(
     case "thread.user-input.respond":
     case "thread.checkpoint.revert":
     case "thread.session.stop":
+    case "thread.pin":
+    case "thread.unpin":
+    case "thread.pin.reorder":
       return true;
     default:
       return false;
@@ -561,7 +564,7 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   yield* sendError(
                     message.id,
                     "invalid-message",
-                    "Mobile dispatch only supports read+chat MVP commands.",
+                    "Mobile dispatch only supports read+chat and thread pinning commands.",
                   );
                   return;
                 }

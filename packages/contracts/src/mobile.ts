@@ -148,9 +148,12 @@ export const MobileClientOrchestrationCommand = ClientOrchestrationCommand.check
       command.type === "thread.user-input.respond" ||
       command.type === "thread.checkpoint.revert" ||
       command.type === "thread.session.stop" ||
+      command.type === "thread.pin" ||
+      command.type === "thread.unpin" ||
+      command.type === "thread.pin.reorder" ||
       new SchemaIssue.InvalidValue(Option.some(command.type), {
         message:
-          "mobile.v1 only supports read+chat commands: turn start without bootstrap, interrupt, approval response, user input response, checkpoint revert, and session stop",
+          "mobile.v1 only supports read+chat commands: turn start without bootstrap, interrupt, approval response, user input response, checkpoint revert, session stop, pin, unpin, and pin reorder",
       }),
     { identifier: "MobileClientOrchestrationCommand" },
   ),
@@ -164,7 +167,10 @@ export type MobileClientOrchestrationCommand = Extract<
       | "thread.approval.respond"
       | "thread.user-input.respond"
       | "thread.checkpoint.revert"
-      | "thread.session.stop";
+      | "thread.session.stop"
+      | "thread.pin"
+      | "thread.unpin"
+      | "thread.pin.reorder";
   }
 >;
 

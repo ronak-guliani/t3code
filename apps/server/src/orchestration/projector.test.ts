@@ -159,6 +159,8 @@ describe("orchestration projector", () => {
         settledAt: null,
         snoozedUntil: null,
         snoozedAt: null,
+        pinnedAt: null,
+        pinOrderKey: null,
         deletedAt: null,
         messages: [],
         queuedTurns: [],

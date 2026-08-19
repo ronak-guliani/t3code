@@ -5,7 +5,7 @@ export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
   yield* sql`
-    CREATE TABLE child_lifecycle_notification_dedup (
+    CREATE TABLE IF NOT EXISTS child_lifecycle_notification_dedup (
       dedupe_key TEXT PRIMARY KEY,
       event_id TEXT NOT NULL UNIQUE,
       created_at TEXT NOT NULL

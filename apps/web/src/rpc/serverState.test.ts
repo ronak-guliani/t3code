@@ -270,11 +270,25 @@ describe("serverState", () => {
         message: "rate limited",
       },
     ];
+    const nextKeybindings = [
+      {
+        command: "chat.new" as const,
+        shortcut: {
+          key: "n",
+          metaKey: true,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+          modKey: true,
+        },
+      },
+    ];
 
     emitServerConfigEvent({
       version: 1,
       type: "keybindingsUpdated",
       payload: {
+        keybindings: nextKeybindings,
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
       },
     });
@@ -299,6 +313,7 @@ describe("serverState", () => {
     await waitFor(() => {
       expect(getServerConfig()).toEqual({
         ...baseServerConfig,
+        keybindings: nextKeybindings,
         issues: [{ kind: "keybindings.malformed-config", message: "bad json" }],
         providers: nextProviders,
         settings: {

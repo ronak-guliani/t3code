@@ -53,9 +53,12 @@ describe("mobile v1 wire fixtures", () => {
     expect(fixtureNames("client")).toEqual([
       "approval-respond-request.json",
       "checkpoint-revert-request.json",
+      "pin-reorder-request.json",
+      "pin-request.json",
       "session-stop-request.json",
       "turn-interrupt-request.json",
       "turn-start-request.json",
+      "unpin-request.json",
       "user-input-respond-request.json",
     ]);
 

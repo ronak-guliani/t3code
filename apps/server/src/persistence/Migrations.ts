@@ -78,8 +78,9 @@ import Migration0073 from "./Migrations/073_PullRequestMonitorOwnership.ts";
 import Migration0074 from "./Migrations/074_PullRequestMonitorFallback.ts";
 import Migration0075 from "./Migrations/075_RepairSkippedPullRequestMonitorLedger.ts";
 import Migration0076 from "./Migrations/076_PullRequestMonitorRevisionIdentity.ts";
-import Migration0077 from "./Migrations/077_ChildLifecycleNotifications.ts";
-import Migration0078 from "./Migrations/078_ChildLifecycleNotificationDedup.ts";
+import Migration0077 from "./Migrations/077_ProjectionThreadsPinning.ts";
+import Migration0079 from "./Migrations/079_ProjectionThreadsPinningAndChildLifecycleRepair.ts";
+import Migration0080 from "./Migrations/080_ChildLifecycleNotificationDedup.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -157,8 +158,9 @@ export const migrationEntries = [
   [74, "PullRequestMonitorFallback", Migration0074],
   [75, "RepairSkippedPullRequestMonitorLedger", Migration0075],
   [76, "PullRequestMonitorRevisionIdentity", Migration0076],
-  [77, "ChildLifecycleNotifications", Migration0077],
-  [78, "ChildLifecycleNotificationDedup", Migration0078],
+  [77, "ProjectionThreadsPinning", Migration0077],
+  [79, "ProjectionThreadsPinningAndChildLifecycleRepair", Migration0079],
+  [80, "ChildLifecycleNotificationDedup", Migration0080],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

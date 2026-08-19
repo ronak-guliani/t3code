@@ -2806,6 +2806,53 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.equal(dispatchCount, 1);
           assert.equal(startupGateCount, 1);
 
+          for (const [id, payload] of [
+            [
+              "dispatch-pin-1",
+              {
+                type: "thread.pin",
+                commandId: CommandId.make("mobile-pin-1"),
+                threadId: defaultThreadId,
+                orderKey: "a",
+              },
+            ],
+            [
+              "dispatch-pin-reorder-1",
+              {
+                type: "thread.pin.reorder",
+                commandId: CommandId.make("mobile-pin-reorder-1"),
+                threadId: defaultThreadId,
+                orderKey: "b",
+              },
+            ],
+            [
+              "dispatch-unpin-1",
+              {
+                type: "thread.unpin",
+                commandId: CommandId.make("mobile-unpin-1"),
+                threadId: defaultThreadId,
+              },
+            ],
+          ] as const) {
+            socket.send(
+              JSON.stringify({
+                id,
+                type: "request",
+                protocolVersion: MOBILE_PROTOCOL_VERSION,
+                method: "orchestration.dispatchCommand",
+                payload,
+              }),
+            );
+            const pinResponse = decodeMobileServerMessage(yield* readNodeWebSocketJson(socket));
+            if (pinResponse.type !== "response" || !("commandId" in pinResponse.payload)) {
+              assert.fail(`Expected accepted command receipt for ${payload.type}`);
+            }
+            assert.equal(pinResponse.id, id);
+            assert.equal(pinResponse.payload.status, "accepted");
+          }
+          assert.equal(dispatchCount, 4);
+          assert.equal(startupGateCount, 4);
+
           socket.send(
             JSON.stringify({
               id: "dispatch-archive-1",
@@ -2826,7 +2873,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }
           assert.equal(rejectedArchive.id, "dispatch-archive-1");
           assert.equal(rejectedArchive.error.code, "invalid-message");
-          assert.equal(dispatchCount, 1);
+          assert.equal(dispatchCount, 4);
 
           socket.send(
             JSON.stringify({
@@ -3580,7 +3627,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(second, {
         version: 1,
         type: "keybindingsUpdated",
-        payload: { issues: [] },
+        payload: { keybindings: [], issues: [] },
       });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

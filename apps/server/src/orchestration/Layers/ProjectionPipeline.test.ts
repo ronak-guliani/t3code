@@ -23,6 +23,7 @@ import {
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
@@ -3261,7 +3262,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-latest-turn-ses
 const engineLayer = it.layer(
   OrchestrationEngineLive.pipe(
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
-    Layer.provide(OrchestrationProjectionPipelineLive),
+    Layer.provideMerge(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolverLive),
@@ -3369,6 +3370,93 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
           defaultModelSelection: '{"instanceId":"codex","model":"gpt-5"}',
         },
       ]);
+    }),
+  );
+
+  it.effect("persists pin, idempotent re-pin, reorder, and unpin events", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const threads = yield* ProjectionThreadRepository;
+      const threadId = ThreadId.make("thread-pinning-pipeline");
+      const createdAt = "2026-08-19T19:00:00.000Z";
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-pinning-project"),
+        projectId: ProjectId.make("project-pinning-pipeline"),
+        title: "Pinning Project",
+        workspaceRoot: "/tmp/project-pinning-pipeline",
+        defaultModelSelection: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-pinning-thread"),
+        threadId,
+        projectId: ProjectId.make("project-pinning-pipeline"),
+        title: "Pinning Thread",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+
+      yield* engine.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("cmd-pin-without-order"),
+        threadId,
+      });
+      const pinned = yield* threads.getById({ threadId });
+      assert.equal(pinned._tag, "Some");
+      if (pinned._tag !== "Some") {
+        return;
+      }
+      assert.isNotNull(pinned.value.pinnedAt);
+      assert.isNull(pinned.value.pinOrderKey);
+
+      yield* engine.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("cmd-idempotent-repin"),
+        threadId,
+        orderKey: "ignored",
+      });
+      const repinned = yield* threads.getById({ threadId });
+      assert.equal(repinned._tag, "Some");
+      if (repinned._tag !== "Some") {
+        return;
+      }
+      assert.equal(repinned.value.pinnedAt, pinned.value.pinnedAt);
+      assert.isNull(repinned.value.pinOrderKey);
+
+      yield* engine.dispatch({
+        type: "thread.pin.reorder",
+        commandId: CommandId.make("cmd-pin-reorder"),
+        threadId,
+        orderKey: "a0",
+      });
+      const reordered = yield* threads.getById({ threadId });
+      assert.equal(reordered._tag, "Some");
+      if (reordered._tag !== "Some") {
+        return;
+      }
+      assert.equal(reordered.value.pinOrderKey, "a0");
+
+      yield* engine.dispatch({
+        type: "thread.unpin",
+        commandId: CommandId.make("cmd-unpin"),
+        threadId,
+      });
+      const unpinned = yield* threads.getById({ threadId });
+      assert.equal(unpinned._tag, "Some");
+      if (unpinned._tag === "Some") {
+        assert.isNull(unpinned.value.pinnedAt);
+        assert.isNull(unpinned.value.pinOrderKey);
+      }
     }),
   );
 

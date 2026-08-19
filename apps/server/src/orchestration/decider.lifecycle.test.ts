@@ -578,4 +578,97 @@ describe("decider thread lifecycle", () => {
       payload: { threadId, reason: "user", updatedAt },
     });
   });
+
+  it("pins idempotently without moving an existing pin", async () => {
+    const pinnedAt = "2026-07-30T04:00:00.000Z";
+    const updatedAt = "2026-07-30T05:00:00.000Z";
+    const readModel = await Effect.runPromise(
+      projectEvent(await lifecycleReadModel(), {
+        sequence: 2,
+        eventId: EventId.make("event-thread-pinned"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.pinned",
+        occurredAt: pinnedAt,
+        commandId,
+        causationEventId: null,
+        correlationId: commandId,
+        metadata: {},
+        payload: { threadId, pinnedAt, pinOrderKey: "a", updatedAt },
+      }),
+    );
+
+    const repinned = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.pin",
+          commandId,
+          threadId,
+          orderKey: "b",
+        } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+
+    expect(repinned).toMatchObject({
+      type: "thread.pinned",
+      payload: { threadId, pinnedAt, updatedAt },
+    });
+    if (!("type" in repinned)) {
+      throw new Error("Expected re-pin to emit one event.");
+    }
+    expect("pinOrderKey" in repinned.payload).toBe(false);
+  });
+
+  it("clears parked lifecycle states when pinning", async () => {
+    const snoozedAt = "2026-07-30T04:00:00.000Z";
+    const readModel = await Effect.runPromise(
+      projectEvent(await lifecycleReadModel(), {
+        sequence: 2,
+        eventId: EventId.make("event-thread-snoozed"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.snoozed",
+        occurredAt: snoozedAt,
+        commandId,
+        causationEventId: null,
+        correlationId: commandId,
+        metadata: {},
+        payload: {
+          threadId,
+          snoozedUntil: "2027-07-30T04:00:00.000Z",
+          snoozedAt,
+          updatedAt: snoozedAt,
+        },
+      }),
+    );
+
+    const events = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: { type: "thread.pin", commandId, threadId } satisfies OrchestrationCommand,
+        readModel,
+      }),
+    );
+
+    expect(Array.isArray(events) ? events.map((event) => event.type) : []).toEqual([
+      "thread.pinned",
+      "thread.unsnoozed",
+    ]);
+  });
+
+  it("rejects reordering an unpinned thread", async () => {
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.pin.reorder",
+            commandId,
+            threadId,
+            orderKey: "a",
+          } satisfies OrchestrationCommand,
+          readModel: await lifecycleReadModel(),
+        }),
+      ),
+    ).rejects.toThrow("is not pinned and cannot be reordered");
+  });
 });

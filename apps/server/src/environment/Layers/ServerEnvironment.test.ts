@@ -4,6 +4,15 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Exit, FileSystem, Layer, PlatformError } from "effect";
 
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../../config.ts";
+import {
+  layer as ServerSecretStoreLayer,
+  ServerSecretStore,
+} from "../../auth/ServerSecretStore.ts";
+import {
+  PUBLISH_AGENT_ACTIVITY_SECRET,
+  RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+  RELAY_URL_SECRET,
+} from "../../cloud/config.ts";
 import { ServerEnvironment } from "../Services/ServerEnvironment.ts";
 import { ServerEnvironmentLive } from "./ServerEnvironment.ts";
 
@@ -58,7 +67,37 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       }).pipe(Effect.provide(makeServerEnvironmentLayer(baseDir)));
 
       expect(first.environmentId).toBe(second.environmentId);
-      expect(second.capabilities.repositoryIdentity).toBe(true);
+      expect(second.capabilities).toEqual({
+        repositoryIdentity: true,
+        connectionProbe: true,
+        pullRequests: false,
+        threadSettlement: true,
+        threadSnooze: true,
+        threadPinning: true,
+        threadPinReorder: true,
+        threadTitleRegeneration: false,
+        agentActivityPublishing: false,
+      });
+
+      yield* Effect.gen(function* () {
+        const secrets = yield* ServerSecretStore;
+        const encode = (value: string) => new TextEncoder().encode(value);
+        yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, encode("true"));
+        yield* secrets.set(RELAY_URL_SECRET, encode("https://relay.example.test"));
+        yield* secrets.set(RELAY_ENVIRONMENT_CREDENTIAL_SECRET, encode("credential"));
+      }).pipe(
+        Effect.provide(
+          ServerSecretStoreLayer.pipe(
+            Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+          ),
+        ),
+      );
+
+      const publishing = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(Effect.provide(makeServerEnvironmentLayer(baseDir)));
+      expect(publishing.capabilities.agentActivityPublishing).toBe(true);
     }),
   );
 

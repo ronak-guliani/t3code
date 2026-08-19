@@ -468,6 +468,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     settled_at AS "settledAt",
     snoozed_until AS "snoozedUntil",
     snoozed_at AS "snoozedAt",
+    pinned_at AS "pinnedAt",
+    pin_order_key AS "pinOrderKey",
     latest_user_message_at AS "latestUserMessageAt",
     latest_child_notification_at AS "latestChildNotificationAt",
     pending_approval_count AS "pendingApprovalCount",
@@ -973,6 +975,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.settled_at AS "settledAt",
           threads.snoozed_until AS "snoozedUntil",
           threads.snoozed_at AS "snoozedAt",
+          threads.pinned_at AS "pinnedAt",
+          threads.pin_order_key AS "pinOrderKey",
           threads.latest_user_message_at AS "latestUserMessageAt",
           threads.latest_child_notification_at AS "latestChildNotificationAt",
           threads.pending_approval_count AS "pendingApprovalCount",
@@ -1683,6 +1687,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   settledAt: row.settledAt,
                   snoozedUntil: row.snoozedUntil,
                   snoozedAt: row.snoozedAt,
+                  pinnedAt: row.pinnedAt,
+                  pinOrderKey: row.pinOrderKey,
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1899,6 +1905,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     settledAt: row.settledAt,
                     snoozedUntil: row.snoozedUntil,
                     snoozedAt: row.snoozedAt,
+                    pinnedAt: row.pinnedAt,
+                    pinOrderKey: row.pinOrderKey,
                     session,
                     latestUserMessageAt: row.latestUserMessageAt,
                     ...(row.latestChildNotificationAt !== null
@@ -2156,6 +2164,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             settledAt: threadRow.value.settledAt,
             snoozedUntil: threadRow.value.snoozedUntil,
             snoozedAt: threadRow.value.snoozedAt,
+            pinnedAt: threadRow.value.pinnedAt,
+            pinOrderKey: threadRow.value.pinOrderKey,
             session,
             latestUserMessageAt: threadRow.value.latestUserMessageAt,
             ...(threadRow.value.latestChildNotificationAt !== null
@@ -2334,6 +2344,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         settledAt: threadRow.value.settledAt,
         snoozedUntil: threadRow.value.snoozedUntil,
         snoozedAt: threadRow.value.snoozedAt,
+        pinnedAt: threadRow.value.pinnedAt,
+        pinOrderKey: threadRow.value.pinOrderKey,
         deletedAt: null,
         messages: messageRows.map((row) => {
           const message = {
