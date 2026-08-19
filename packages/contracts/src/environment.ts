@@ -19,14 +19,28 @@ export const ExecutionEnvironmentPlatform = Schema.Struct({
 });
 export type ExecutionEnvironmentPlatform = typeof ExecutionEnvironmentPlatform.Type;
 
+export const ServerSelfUpdateMethod = Schema.Literals(["boot-service", "respawn"]);
+export type ServerSelfUpdateMethod = typeof ServerSelfUpdateMethod.Type;
+
+export const ServerSelfUpdateCapability = Schema.Literals([
+  "boot-service",
+  "respawn",
+  "desktop-managed",
+]);
+export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
+
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
-  // Optional so clients can avoid PR requests against older servers.
   pullRequests: Schema.optionalKey(Schema.Boolean),
-  // Optional so clients can safely avoid lifecycle commands on older servers.
   threadSettlement: Schema.optionalKey(Schema.Boolean),
   threadSnooze: Schema.optionalKey(Schema.Boolean),
+  threadPinning: Schema.optionalKey(Schema.Boolean),
+  threadPinReorder: Schema.optionalKey(Schema.Boolean),
+  threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
+  serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
+  serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),
+  agentActivityPublishing: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 
