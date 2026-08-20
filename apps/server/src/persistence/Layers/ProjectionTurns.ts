@@ -168,7 +168,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           turns.source_proposed_plan_thread_id AS "sourceProposedPlanThreadId",
           turns.source_proposed_plan_id AS "sourceProposedPlanId",
           turns.requested_at AS "requestedAt"
-        FROM projection_turns
+        FROM projection_turns AS turns
         WHERE thread_id = ${threadId}
           AND turn_id IS NULL
           AND state = 'pending'
