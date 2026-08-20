@@ -29,6 +29,8 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   OrchestrationEngineService,
   readCommandModel,
@@ -248,6 +250,8 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const eventStore = yield* OrchestrationEventStore;
+  const projectionTurnRepository = yield* ProjectionTurnRepository;
   const checkpointStore = yield* CheckpointStore;
   const git = yield* GitCore;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
@@ -1684,9 +1688,35 @@ const make = Effect.gen(function* () {
       Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
     );
 
-    // The domain event stream is hot, so work pending before this reactor
-    // starts cannot be resumed. Correlated completions only clear the request
-    // captured here, leaving any newer request untouched.
+    yield* projectionTurnRepository.listPendingTurnStarts().pipe(
+      Effect.flatMap((durablePendingTurnStarts) =>
+        Effect.forEach(
+          durablePendingTurnStarts,
+          (pendingTurnStart) =>
+            eventStore.findTurnStartRequested(pendingTurnStart).pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () =>
+                    Effect.logWarning("pending turn start has no durable start intent", {
+                      threadId: pendingTurnStart.threadId,
+                      messageId: pendingTurnStart.messageId,
+                    }),
+                  onSome: processEvent,
+                }),
+              ),
+            ),
+          { concurrency: 1 },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor failed to resume pending turn starts", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
+    // Correlated completions only clear the request captured here, leaving any
+    // newer request untouched.
     yield* clearInterruptedThreadTitleRegenerations().pipe(
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) {

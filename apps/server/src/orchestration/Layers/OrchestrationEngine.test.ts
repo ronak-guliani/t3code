@@ -171,6 +171,7 @@ describe("OrchestrationEngine", () => {
           }),
         ),
       readFromSequence: () => Stream.empty,
+      findTurnStartRequested: () => Effect.succeedNone,
       readAll: () =>
         Stream.fail(
           new PersistenceSqlError({
@@ -865,6 +866,7 @@ describe("OrchestrationEngine", () => {
       readAll() {
         return Stream.fromIterable(events);
       },
+      findTurnStartRequested: () => Effect.succeedNone,
     };
 
     const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
@@ -1089,6 +1091,7 @@ describe("OrchestrationEngine", () => {
       readAll() {
         return Stream.fromIterable(events);
       },
+      findTurnStartRequested: () => Effect.succeedNone,
     };
 
     let shouldFailProjection = true;
