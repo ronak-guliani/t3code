@@ -4702,6 +4702,7 @@ function ChatViewBody(
                   gitCwd={gitCwd ?? undefined}
                   resolvedTheme={resolvedTheme}
                   timestampFormat={timestampFormat}
+                  messagePreviewLineLimits={settings.messagePreviewLineLimits}
                   workspaceRoot={activeWorkspaceRoot}
                   chatFindShortcutLabel={chatFindShortcutLabel}
                   hasMoreOlder={hasMoreOlderActivities}

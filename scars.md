@@ -102,6 +102,7 @@
 - Shell-summary projection refreshes scan full thread history; only run them for events that can change summary fields, and execute independent repository reads concurrently.
 - Live activity windows are ordered and capped; fast-path new tail appends, but retain the dedupe/sort fallback for duplicate IDs, out-of-order events, and unsorted restored state.
 - Restart hydration must apply the live projector's per-thread activity cap in SQL before decoding payload JSON; full projection histories can exceed the V8 heap even when each live thread is bounded in memory.
+- Orchestration engine startup must hydrate compact command state only; message, activity, and checkpoint bodies stay in SQLite and are loaded for targeted command/detail contexts, never retained across dispatches.
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.
 - Eager background-service layers must retain construction dependencies with `Layer.provideMerge`; a sibling runtime layer is not enough. Keep a full `makeServerLayer` build test because isolated sublayer tests can pass while packaged startup fails with a missing service.
 - Flavor-scoped provider subprocesses must inherit `T3CODE_HOME`, and live CLI commands must honor it; reject runtime-state files owned by dead PIDs before borrowing auth so port reuse cannot surface as a misleading HTTP 401.

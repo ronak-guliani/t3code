@@ -36,6 +36,35 @@ export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 11 as FontSize;
 export const DEFAULT_SIDEBAR_META_FONT_SIZE: FontSize = 10 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
 
+export const MessagePreviewLineCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
+  Schema.isLessThanOrEqualTo(30),
+);
+export type MessagePreviewLineCount = typeof MessagePreviewLineCount.Type;
+
+export interface MessagePreviewLineLimits {
+  readonly normal: MessagePreviewLineCount;
+  readonly crossThread: MessagePreviewLineCount;
+  readonly monitoring: MessagePreviewLineCount;
+}
+
+export const DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS: MessagePreviewLineLimits = {
+  normal: 10 as MessagePreviewLineCount,
+  crossThread: 10 as MessagePreviewLineCount,
+  monitoring: 4 as MessagePreviewLineCount,
+};
+
+export const MessagePreviewLineLimits = Schema.Struct({
+  normal: MessagePreviewLineCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS.normal)),
+  ),
+  crossThread: MessagePreviewLineCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS.crossThread)),
+  ),
+  monitoring: MessagePreviewLineCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS.monitoring)),
+  ),
+});
+
 export const SidebarRowSpacing = Schema.Literals(["compact", "default", "relaxed"]);
 export type SidebarRowSpacing = typeof SidebarRowSpacing.Type;
 export const DEFAULT_SIDEBAR_ROW_SPACING: SidebarRowSpacing = "default";
@@ -143,6 +172,9 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   codeFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODE_FONT_SIZE))),
   inputFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INPUT_FONT_SIZE))),
+  messagePreviewLineLimits: MessagePreviewLineLimits.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS)),
+  ),
   sidebarFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_FONT_SIZE)),
   ),
@@ -517,6 +549,7 @@ export const ClientSettingsPatch = Schema.Struct({
   statusLineFontSize: Schema.optionalKey(FontSize),
   codeFontSize: Schema.optionalKey(FontSize),
   inputFontSize: Schema.optionalKey(FontSize),
+  messagePreviewLineLimits: Schema.optionalKey(MessagePreviewLineLimits),
   sidebarFontSize: Schema.optionalKey(FontSize),
   sidebarMetaFontSize: Schema.optionalKey(FontSize),
   sidebarRowSpacing: Schema.optionalKey(SidebarRowSpacing),
