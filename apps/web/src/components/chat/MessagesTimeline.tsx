@@ -76,12 +76,7 @@ import {
   extractTrailingPreviewAnnotation,
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
-import {
-  DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
-  type MessagePreviewLineCount,
-  type MessagePreviewLineLimits,
-  type TimestampFormat,
-} from "@t3tools/contracts/settings";
+import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { formatTimestamp } from "../../timestampFormat";
@@ -109,7 +104,6 @@ interface TimelineRowSharedState {
   completionSummary: string | null;
   copilotResumeCommand: string | null;
   timestampFormat: TimestampFormat;
-  messagePreviewLineLimits: MessagePreviewLineLimits;
   routeThreadKey: string;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -159,7 +153,6 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
-  messagePreviewLineLimits?: MessagePreviewLineLimits;
   workspaceRoot: string | undefined;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   activeChatFindRowId?: string | null;
@@ -179,6 +172,7 @@ export interface AssistantResponseMeta {
   };
 }
 
+const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
 const USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD = 900;
 const AUTOLOAD_OLDER_OVERFLOW_PX = 8;
 
@@ -237,7 +231,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
-  messagePreviewLineLimits = DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
   workspaceRoot,
   onIsAtEndChange,
   activeChatFindRowId = null,
@@ -340,7 +333,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionSummary,
       copilotResumeCommand,
       timestampFormat,
-      messagePreviewLineLimits,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -364,7 +356,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionSummary,
       copilotResumeCommand,
       timestampFormat,
-      messagePreviewLineLimits,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -576,10 +567,6 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                   rowId={row.id}
                   text={visibleText}
                   terminalContexts={terminalContexts}
-                  collapsedLineLimit={resolveMessagePreviewLineLimit(
-                    row.message.origin?.kind,
-                    ctx.messagePreviewLineLimits,
-                  )}
                   forceExpanded={ctx.activeChatFindRowId === row.id}
                 />
               </div>
@@ -1209,15 +1196,10 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   rowId: string;
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
-  collapsedLineLimit: MessagePreviewLineCount;
   forceExpanded: boolean;
 }) {
   const hasBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
-  const isCollapsible = shouldCollapseUserMessage(
-    props.text,
-    props.terminalContexts,
-    props.collapsedLineLimit,
-  );
+  const isCollapsible = shouldCollapseUserMessage(props.text, props.terminalContexts);
   const [isExpandedOverride, setIsExpandedOverride] = useState<boolean | null>(null);
   const isExpanded = props.forceExpanded || !isCollapsible || isExpandedOverride === true;
   const isCollapsed = isCollapsible && !isExpanded;
@@ -1230,13 +1212,11 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-user-message-row-id={props.rowId}
           data-user-message-collapsible={String(isCollapsible)}
           data-user-message-collapsed={String(isCollapsed)}
-          data-user-message-collapsed-line-limit={props.collapsedLineLimit}
           data-user-message-fade={String(isCollapsed)}
-          className={cn("relative", isCollapsed ? "overflow-hidden" : null)}
+          className={cn("relative", isCollapsed ? "max-h-44 overflow-hidden" : null)}
           style={
             isCollapsed
               ? {
-                  maxHeight: `${props.collapsedLineLimit}lh`,
                   maskImage: "linear-gradient(to bottom, black 65%, transparent 100%)",
                   WebkitMaskImage: "linear-gradient(to bottom, black 65%, transparent 100%)",
                 }
@@ -1407,23 +1387,13 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
 function shouldCollapseUserMessage(
   text: string,
   terminalContexts: ReadonlyArray<ParsedTerminalContextEntry>,
-  collapsedLineLimit: MessagePreviewLineCount,
 ): boolean {
   const trimmedText = text.trim();
   if (trimmedText.length >= USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD) {
     return true;
   }
   const lineCount = trimmedText.length === 0 ? 0 : trimmedText.split(/\r\n|\r|\n/).length;
-  return lineCount > collapsedLineLimit || terminalContexts.length > 2;
-}
-
-function resolveMessagePreviewLineLimit(
-  originKind: NonNullable<TimelineMessage["origin"]>["kind"] | undefined,
-  limits: MessagePreviewLineLimits,
-): MessagePreviewLineCount {
-  if (originKind === "cross-thread") return limits.crossThread;
-  if (originKind === "pull-request-monitor") return limits.monitoring;
-  return limits.normal;
+  return lineCount > USER_MESSAGE_COLLAPSE_LINE_THRESHOLD || terminalContexts.length > 2;
 }
 
 function formatMessageMeta(

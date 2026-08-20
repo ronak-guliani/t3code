@@ -16,11 +16,7 @@ import {
   type ProjectionWorkflowRun,
 } from "../../persistence/Services/ProjectionWorkflows.ts";
 import { renderWorkflowContextArtifact } from "../workflowContext.ts";
-import {
-  OrchestrationEngineService,
-  readCommandModel,
-  readThreadDetail,
-} from "../Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   WorkflowCoordinatorReactor,
   type WorkflowCoordinatorReactorShape,
@@ -135,7 +131,7 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       return;
     }
 
-    const readModel = yield* readCommandModel(orchestrationEngine);
+    const readModel = yield* orchestrationEngine.getReadModel();
     const parent = readModel.threads.find(
       (thread) => thread.id === input.parentThreadId && thread.deletedAt === null,
     );
@@ -231,7 +227,7 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       if (Option.isNone(inputArtifact) || inputArtifact.value.payload.kind !== "input-context") {
         return;
       }
-      const readModel = yield* readCommandModel(orchestrationEngine);
+      const readModel = yield* orchestrationEngine.getReadModel();
       const parent = readModel.threads.find(
         (thread) => thread.id === input.parentThreadId && thread.deletedAt === null,
       );
@@ -324,9 +320,8 @@ const makeWorkflowCoordinatorReactor = Effect.gen(function* () {
       return;
     }
 
-    const worker = Option.getOrUndefined(
-      yield* readThreadDetail(orchestrationEngine, node.workerThreadId),
-    );
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const worker = readModel.threads.find((thread) => thread.id === node.workerThreadId);
     if (!worker || worker.deletedAt !== null) {
       yield* recordWorkerResult({
         runId: run.id,

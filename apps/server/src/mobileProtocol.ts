@@ -488,10 +488,11 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                 return;
               }
               case "orchestration.subscribeThread": {
-                const threadSnapshot = yield* projectionSnapshotQuery.getThreadDetailSnapshotById(
-                  message.payload.threadId,
-                );
-                if (Option.isNone(threadSnapshot)) {
+                const [threadDetail, readModel] = yield* Effect.all([
+                  projectionSnapshotQuery.getThreadDetailById(message.payload.threadId),
+                  orchestrationEngine.getReadModel(),
+                ]);
+                if (Option.isNone(threadDetail)) {
                   yield* sendError(
                     message.id,
                     "not-found",
@@ -503,7 +504,10 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                 yield* send(
                   mobileStream(message.id, {
                     kind: "snapshot",
-                    snapshot: threadSnapshot.value,
+                    snapshot: {
+                      snapshotSequence: readModel.snapshotSequence,
+                      thread: threadDetail.value,
+                    },
                   }),
                 );
 

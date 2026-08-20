@@ -106,7 +106,6 @@ export type WsRpcClient =
 
 export interface CliLiveOrchestrationClient {
   readonly getSnapshot: ReturnType<typeof fetchLiveOrchestrationShellSnapshot>;
-  readonly getArchivedSnapshot: ReturnType<typeof fetchLiveOrchestrationArchivedShellSnapshot>;
   readonly dispatch: (command: ClientOrchestrationCommand) => ReturnType<typeof dispatchCommand>;
 }
 
@@ -120,7 +119,6 @@ export interface CliLiveSnapshotRpcClient {
 
 export interface CliLiveSnapshotClient {
   readonly getSnapshot: ReturnType<typeof fetchLiveOrchestrationShellSnapshot>;
-  readonly getArchivedSnapshot: ReturnType<typeof fetchLiveOrchestrationArchivedShellSnapshot>;
   readonly getThreadSnapshot: (
     threadId: import("@t3tools/contracts").ThreadId,
   ) => ReturnType<typeof fetchLiveOrchestrationThreadSnapshot>;
@@ -477,29 +475,6 @@ const withBorrowedBearerToken = <A, E, R>(
     }).pipe(Effect.provide(authLayer));
   });
 
-export const fetchLiveOrchestrationArchivedShellSnapshot = (origin: string, bearerToken: string) =>
-  Effect.gen(function* () {
-    const request = HttpClientRequest.get(
-      `${origin}/api/orchestration/archived-shell-snapshot`,
-    ).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bearerToken(bearerToken));
-    const httpClient = yield* HttpClient.HttpClient;
-    const response = yield* httpClient.execute(request);
-    if (response.status < 200 || response.status >= 300) {
-      return yield* new CliRpcError({
-        message: `Failed to fetch archived orchestration shell snapshot: HTTP ${response.status}.`,
-      });
-    }
-    return yield* decodeShellSnapshot(response).pipe(
-      Effect.mapError(
-        (cause) =>
-          new CliRpcError({
-            message: "Failed to decode archived orchestration shell snapshot.",
-            cause,
-          }),
-      ),
-    );
-  });
-
 export const withLiveRpcClient = <A, E, R>(
   flags: CliLiveTargetFlags,
   run: (client: WsRpcClient) => Effect.Effect<A, E, R>,
@@ -528,11 +503,6 @@ export const getLiveOrchestrationShellSnapshot = (flags: CliLiveTargetFlags) =>
     fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
   ).pipe(Effect.provide(FetchHttpClient.layer));
 
-export const getLiveOrchestrationArchivedShellSnapshot = (flags: CliLiveTargetFlags) =>
-  withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
-    fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
-  ).pipe(Effect.provide(FetchHttpClient.layer));
-
 export const withLiveOrchestrationClient = <A, E, R>(
   flags: CliLiveTargetFlags,
   run: (client: CliLiveOrchestrationClient) => Effect.Effect<A, E, R>,
@@ -540,7 +510,6 @@ export const withLiveOrchestrationClient = <A, E, R>(
   withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
     run({
       getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
-      getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
       dispatch: (command) => dispatchCommand(origin, bearerToken, command),
     }),
   ).pipe(Effect.provide(FetchHttpClient.layer));
@@ -552,7 +521,6 @@ export const withLiveSnapshotClient = <A, E, R>(
   withBorrowedBearerToken(flags, ({ origin, bearerToken }) =>
     run({
       getSnapshot: fetchLiveOrchestrationShellSnapshot(origin, bearerToken),
-      getArchivedSnapshot: fetchLiveOrchestrationArchivedShellSnapshot(origin, bearerToken),
       getThreadSnapshot: (threadId) =>
         fetchLiveOrchestrationThreadSnapshot(origin, bearerToken, threadId),
     }),
