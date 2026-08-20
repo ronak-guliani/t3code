@@ -20,6 +20,18 @@ it("declares an authorization scope for every RPC", () => {
 
 it("separates orchestration reads from access-management reads", () => {
   expect(requiredScopeForRpcMethod(WS_METHODS.serverGetConfig)).toBe(AuthOrchestrationReadScope);
+  expect(requiredScopeForRpcMethod(WS_METHODS.serverReportClientActivity)).toBe(
+    AuthOrchestrationReadScope,
+  );
+  expect(requiredScopeForRpcMethod(WS_METHODS.serverReportHostPowerState)).toBe(
+    AuthOrchestrationOperateScope,
+  );
+  expect(requiredScopeForRpcMethod(WS_METHODS.serverGetBackgroundPolicy)).toBe(
+    AuthOrchestrationReadScope,
+  );
+  expect(requiredScopeForRpcMethod(WS_METHODS.subscribeBackgroundPolicy)).toBe(
+    AuthOrchestrationReadScope,
+  );
   expect(requiredScopeForRpcMethod(WS_METHODS.subscribeAuthAccess)).toBe(AuthAccessReadScope);
 });
 
@@ -31,5 +43,17 @@ it.effect("rejects RPC methods outside the persisted scope set", () =>
     );
 
     expect(error.requiredScope).toBe(AuthOrchestrationOperateScope);
+  }),
+);
+
+it.effect("restricts host power reports to the local owner session", () =>
+  Effect.gen(function* () {
+    const scopes = new Set([AuthOrchestrationOperateScope]);
+    yield* authorizeRpcMethod(scopes, WS_METHODS.serverReportHostPowerState, "owner");
+    const error = yield* Effect.flip(
+      authorizeRpcMethod(scopes, WS_METHODS.serverReportHostPowerState, "client"),
+    );
+
+    expect(error.message).toContain("local owner session");
   }),
 );

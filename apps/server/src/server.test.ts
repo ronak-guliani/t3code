@@ -43,6 +43,7 @@ import {
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
+  DateTime,
   Deferred,
   Duration,
   Effect,
@@ -115,6 +116,8 @@ import {
   BrowserTraceCollector,
   type BrowserTraceCollectorShape,
 } from "./observability/Services/BrowserTraceCollector.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
 import {
   ProjectSetupScriptRunner,
@@ -494,6 +497,7 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.serverSettings,
         }),
       ),
+      Layer.provide(BackgroundPolicy.layer.pipe(Layer.provide(HostPowerMonitor.layer))),
       Layer.provide(
         Layer.mock(Open)({
           ...options?.layers?.open,
@@ -1887,6 +1891,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isFalse(legacyParameterConnected);
       assert.isTrue(firstConnected);
       assert.isFalse(replayConnected);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("accepts official mobile activity reports over an OAuth websocket session", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken([
+        "orchestration:read",
+        "orchestration:operate",
+      ]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const snapshot = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverReportClientActivity]({
+            clientId: "official-ios-device",
+            clientKind: "mobile",
+            visible: true,
+            focused: true,
+            recentlyInteracted: true,
+            appState: "active",
+            scopes: [{ type: "provider-status" }],
+            ttlMs: 45_000,
+            observedAt: DateTime.makeUnsafe(Date.now()),
+          }).pipe(Effect.andThen(client[WS_METHODS.serverGetBackgroundPolicy]({}))),
+        ),
+      );
+
+      assert.equal(ticketResponse.status, 200);
+      assert.equal(snapshot.activeForegroundLeaseCount, 1);
+      assert.deepStrictEqual(snapshot.activeScopeKeys, ["provider-status"]);
+      assert.equal(snapshot.leases[0]?.clientId, "official-ios-device");
+      assert.equal(snapshot.leases[0]?.clientKind, "mobile");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -29,6 +29,7 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -174,6 +175,7 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
@@ -245,10 +247,22 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
+let nextRpcClientId = 0;
+
+function allocateRpcClientId(): RpcClientId {
+  const clientId = RpcClientId.make(nextRpcClientId);
+  nextRpcClientId = nextRpcClientId >= Number.MAX_SAFE_INTEGER ? 0 : nextRpcClientId + 1;
+  return clientId;
+}
+
+const makeWsRpcLayer = (currentSession: AuthenticatedSession, rpcClientId: RpcClientId) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+      yield* Effect.addFinalizer(() =>
+        backgroundPolicy.removeRpcClient(currentSessionId, rpcClientId).pipe(Effect.ignore),
+      );
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -2502,6 +2516,26 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverReportClientActivity]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReportClientActivity,
+            backgroundPolicy.reportClientActivity(currentSessionId, rpcClientId, input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverReportHostPowerState]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReportHostPowerState,
+            backgroundPolicy.reportHostPowerState(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetBackgroundPolicy]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetBackgroundPolicy,
+            backgroundPolicy.snapshotForSession(currentSessionId),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
@@ -2682,6 +2716,17 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "auth" },
           ),
+        [WS_METHODS.subscribeBackgroundPolicy]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeBackgroundPolicy,
+            Stream.unwrap(
+              Effect.map(
+                backgroundPolicy.subscribeForSession(currentSessionId),
+                ({ latest, changes }) => Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
       });
     }),
   );
@@ -2696,6 +2741,8 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const serverAuth = yield* ServerAuth;
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
+        const rpcClientId = allocateRpcClientId();
+        const connectionId = crypto.randomUUID();
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           spanPrefix: "ws.rpc",
           spanAttributes: {
@@ -2705,9 +2752,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              makeWsRpcLayer(session),
+              makeWsRpcLayer(session, rpcClientId),
               RpcSerialization.layerJson,
-              rpcAuthorizationLayer(new Set(session.scopes)),
+              rpcAuthorizationLayer(new Set(session.scopes), session.role),
             ),
           ),
         );
@@ -2717,7 +2764,6 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         // A silently replaced socket leaves every subscription on the old
         // connection dead, so connection open/close is the anchor every stream
         // log below correlates against.
-        const connectionId = crypto.randomUUID();
         const connectedAt = Date.now();
         return yield* Effect.acquireUseRelease(
           sessions.markConnected(session.sessionId),

@@ -21,6 +21,12 @@ The official `orchestration.searchThreads` RPC and direct workspace payloads
 for `projects.searchEntries` and `projects.readFile` are supported alongside
 the fork's existing transcript-search and thread/project-scoped payloads.
 
+The official app's background activity protocol is also supported. Mobile
+clients report a 45-second activity lease every 25 seconds through
+`server.reportClientActivity`; reconnects replace the previous lease for the
+same authenticated session and stable device ID. Background-policy reads are
+session-filtered, and only the local owner session may report host power state.
+
 Use this when you want to connect to a T3 Code server from another device such as a phone, tablet, or separate desktop app.
 
 ## Recommended Setup
