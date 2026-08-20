@@ -188,7 +188,7 @@ describe("retainThreadDetailSubscription", () => {
     vi.useRealTimers();
   });
 
-  it("keeps thread detail subscriptions warm across releases until idle eviction", async () => {
+  it("detaches idle thread detail streams while retaining their cached entries", async () => {
     const {
       retainThreadDetailSubscription,
       startEnvironmentConnectionService,
@@ -205,17 +205,18 @@ describe("retainThreadDetailSubscription", () => {
     expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
 
     releaseFirst();
-    expect(mockThreadUnsubscribe).not.toHaveBeenCalled();
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
 
     const releaseSecond = retainThreadDetailSubscription(environmentId, threadId);
-    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(2);
 
     releaseSecond();
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
-    expect(mockThreadUnsubscribe).not.toHaveBeenCalled();
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(28 * 60 * 1000);
-    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(2);
 
     stop();
     await resetEnvironmentServiceForTests();
@@ -460,7 +461,7 @@ describe("retainThreadDetailSubscription", () => {
       release();
     }
 
-    expect(mockThreadUnsubscribe).not.toHaveBeenCalled();
+    expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(12);
 
     stop();
     await resetEnvironmentServiceForTests();
