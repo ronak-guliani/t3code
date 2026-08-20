@@ -471,6 +471,60 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-collapsible="false"');
   });
 
+  it("uses the four-line monitoring preview default", async () => {
+    const entry = buildUserTimelineEntry(["One", "Two", "Three", "Four", "Five"].join("\n"));
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "pull-request-monitor",
+                repository: "acme/widgets",
+                number: 42,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsed-line-limit="4"');
+    expect(markup).toContain("max-height:4lh");
+  });
+
+  it("uses configurable cross-thread preview lines", async () => {
+    const entry = buildUserTimelineEntry(["One", "Two", "Three"].join("\n"));
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        messagePreviewLineLimits={{ normal: 10, crossThread: 2, monitoring: 4 }}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "cross-thread",
+                sourceThreadId: ThreadId.make("source-thread"),
+                sourceMessageId: MessageId.make("source-message"),
+                sourceThreadTitle: "Source chat",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsed-line-limit="2"');
+    expect(markup).toContain("max-height:2lh");
+  });
+
   it("forces active chat find user message rows expanded", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
