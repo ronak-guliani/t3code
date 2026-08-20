@@ -154,13 +154,13 @@ const isWsRpcMethod = (method: string): method is WsRpcMethod =>
 export const authorizeRpcMethod = (
   scopes: ReadonlySet<AuthEnvironmentScope>,
   method: string,
-  role?: "owner" | "client",
+  role: "owner" | "client",
 ): Effect.Effect<void, EnvironmentAuthorizationError> => {
   if (!isWsRpcMethod(method)) {
     throw new Error(`RPC method ${method} has no declared authorization scope.`);
   }
   const requiredScope = requiredScopeForRpcMethod(method);
-  if (method === WS_METHODS.serverReportHostPowerState && role !== undefined && role !== "owner") {
+  if (method === WS_METHODS.serverReportHostPowerState && role !== "owner") {
     return Effect.fail(
       new EnvironmentAuthorizationError({
         message: "Only the local owner session may report host power state.",

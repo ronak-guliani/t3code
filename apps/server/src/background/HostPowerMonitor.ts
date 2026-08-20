@@ -17,6 +17,9 @@ export class HostPowerMonitor extends Context.Service<
   }
 >()("t3/background/HostPowerMonitor") {}
 
+export const HOST_POWER_STALE_AFTER_MS = 60_000;
+const HOST_POWER_STALE_CHECK_INTERVAL = "15 seconds";
+
 export const makeUnknownSnapshot = (
   source: HostPowerSnapshot["source"],
   updatedAt: HostPowerSnapshot["updatedAt"],
@@ -53,6 +56,35 @@ export const make = Effect.fn("background.hostPower.make")(function* (
   const initial = initialSnapshot ?? makeUnknownSnapshot("unknown", yield* DateTime.now);
   const latestRef = yield* Ref.make(initial);
   const changes = yield* PubSub.sliding<HostPowerSnapshot>(1);
+
+  yield* Effect.forever(
+    Effect.sleep(HOST_POWER_STALE_CHECK_INTERVAL).pipe(
+      Effect.andThen(DateTime.now),
+      Effect.flatMap((now) =>
+        Ref.modify(latestRef, (current) => {
+          if (
+            current.stale ||
+            DateTime.toEpochMillis(now) - DateTime.toEpochMillis(current.updatedAt) <
+              HOST_POWER_STALE_AFTER_MS
+          ) {
+            return [Option.none<HostPowerSnapshot>(), current] as const;
+          }
+          const stale = {
+            ...current,
+            stale: true,
+            updatedAt: now,
+          };
+          return [Option.some(stale), stale] as const;
+        }),
+      ),
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.void,
+          onSome: (stale) => PubSub.publish(changes, stale),
+        }),
+      ),
+    ),
+  ).pipe(Effect.forkScoped);
 
   const report: HostPowerMonitor["Service"]["report"] = (snapshot) =>
     Ref.modify(latestRef, (current) => {

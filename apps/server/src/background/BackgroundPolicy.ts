@@ -10,6 +10,7 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
@@ -96,7 +97,8 @@ export function upsertClientActivityLease(
   }
 
   const key = leaseKey(lease);
-  if (!next.has(key)) {
+  const existing = next.get(key);
+  if (existing === undefined || existing.rpcClientId !== lease.rpcClientId) {
     const connectionLeases = [...next.entries()]
       .filter(
         ([, current]) =>
@@ -112,6 +114,19 @@ export function upsertClientActivityLease(
 
   next.set(key, lease);
   return next;
+}
+
+function sameSessionSnapshot(
+  left: BackgroundPolicySnapshot,
+  right: BackgroundPolicySnapshot,
+): boolean {
+  return (
+    Equal.equals(left.hostPower, right.hostPower) &&
+    Equal.equals(left.leases, right.leases) &&
+    left.activeForegroundLeaseCount === right.activeForegroundLeaseCount &&
+    Equal.equals(left.activeScopeKeys, right.activeScopeKeys) &&
+    left.shouldRunOpportunisticWork === right.shouldRunOpportunisticWork
+  );
 }
 
 function isForegroundLease(lease: ClientActivityLease, now: DateTime.Utc): boolean {
@@ -306,12 +321,16 @@ export const make = Effect.fn("background.policy.make")(function* () {
     subscribe: subscribeBeforeSnapshot(changes, snapshot, publishMutex),
     subscribeForSession: (sessionId) =>
       subscribeBeforeSnapshot(changes, snapshot, publishMutex).pipe(
-        Effect.map(({ latest, changes: stream }) => ({
-          latest: filterSnapshotForSession(latest, sessionId),
-          changes: stream.pipe(
-            Stream.map((current) => filterSnapshotForSession(current, sessionId)),
-          ),
-        })),
+        Effect.map(({ latest, changes: stream }) => {
+          const filteredLatest = filterSnapshotForSession(latest, sessionId);
+          return {
+            latest: filteredLatest,
+            changes: Stream.concat(
+              Stream.make(filteredLatest),
+              stream.pipe(Stream.map((current) => filterSnapshotForSession(current, sessionId))),
+            ).pipe(Stream.changesWith(sameSessionSnapshot), Stream.drop(1)),
+          };
+        }),
       ),
   });
 });

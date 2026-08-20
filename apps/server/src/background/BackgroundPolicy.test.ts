@@ -7,7 +7,11 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
 
 import * as BackgroundPolicy from "./BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./HostPowerMonitor.ts";
@@ -160,6 +164,77 @@ describe("BackgroundPolicy", () => {
     }).pipe(Effect.provide(makeLayer())),
   );
 
+  it.effect("enforces the connection cap when stable client ids change owners", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const sessionId = AuthSessionId.make("mobile-session");
+      const replacementConnectionId = RpcClientId.make(1);
+
+      for (
+        let index = 0;
+        index <= BackgroundPolicy.MAX_CLIENT_ACTIVITY_LEASES_PER_RPC_CLIENT;
+        index += 1
+      ) {
+        const clientId = `mobile-device-${index}`;
+        yield* policy.reportClientActivity(
+          sessionId,
+          RpcClientId.make(100 + index),
+          makeReport({ clientId }),
+        );
+        yield* policy.reportClientActivity(
+          sessionId,
+          replacementConnectionId,
+          makeReport({ clientId }),
+        );
+      }
+
+      const snapshot = yield* policy.snapshot;
+      assert.equal(
+        snapshot.leases.filter((lease) => lease.rpcClientId === replacementConnectionId).length,
+        BackgroundPolicy.MAX_CLIENT_ACTIVITY_LEASES_PER_RPC_CLIENT,
+      );
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("does not forward another session's activity heartbeat", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const firstSession = AuthSessionId.make("session-1");
+      const secondSession = AuthSessionId.make("session-2");
+      yield* policy.reportClientActivity(
+        firstSession,
+        RpcClientId.make(1),
+        makeReport({ clientId: "first-device" }),
+      );
+      yield* policy.reportClientActivity(
+        secondSession,
+        RpcClientId.make(2),
+        makeReport({ clientId: "second-device" }),
+      );
+      const subscription = yield* policy.subscribeForSession(firstSession);
+      const nextSnapshot = yield* Stream.runHead(subscription.changes).pipe(Effect.forkChild);
+
+      yield* policy.reportClientActivity(
+        secondSession,
+        RpcClientId.make(2),
+        makeReport({ clientId: "second-device" }),
+      );
+      yield* Effect.yieldNow;
+      yield* policy.reportClientActivity(
+        firstSession,
+        RpcClientId.make(1),
+        makeReport({
+          clientId: "first-device",
+          recentlyInteracted: false,
+        }),
+      );
+
+      const next = Option.getOrThrow(yield* Fiber.join(nextSnapshot));
+      assert.equal(next.leases[0]?.clientId, "first-device");
+      assert.equal(next.leases[0]?.recentlyInteracted, false);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
   it.effect("honors fresh host constraints without trusting stale power data", () =>
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
@@ -215,6 +290,38 @@ describe("BackgroundPolicy", () => {
             ),
           ),
         ),
+      ),
+    ),
+  );
+
+  it.effect("marks restrictive host power stale after reports stop", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      yield* policy.reportClientActivity(
+        AuthSessionId.make("mobile-session"),
+        RpcClientId.make(1),
+        makeReport({ ttlMs: 120_000 }),
+      );
+      yield* policy.reportHostPowerState({
+        ...nominalHostPower,
+        source: "electron-main",
+        lowPowerMode: "true",
+        stale: false,
+      });
+
+      const constrained = yield* policy.snapshot;
+      assert.equal(constrained.shouldRunOpportunisticWork, false);
+
+      yield* TestClock.adjust(`${HostPowerMonitor.HOST_POWER_STALE_AFTER_MS} millis`);
+      const stale = yield* policy.snapshot;
+      assert.equal(stale.hostPower.stale, true);
+      assert.equal(stale.shouldRunOpportunisticWork, true);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          ...nominalHostPower,
+          updatedAt: DateTime.makeUnsafe(0),
+        }),
       ),
     ),
   );

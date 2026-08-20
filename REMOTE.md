@@ -26,6 +26,8 @@ clients report a 45-second activity lease every 25 seconds through
 `server.reportClientActivity`; reconnects replace the previous lease for the
 same authenticated session and stable device ID. Background-policy reads are
 session-filtered, and only the local owner session may report host power state.
+Host reports use server receipt time and automatically become stale after a
+reporting gap so a crashed desktop cannot pin restrictive power state.
 
 Use this when you want to connect to a T3 Code server from another device such as a phone, tablet, or separate desktop app.
 

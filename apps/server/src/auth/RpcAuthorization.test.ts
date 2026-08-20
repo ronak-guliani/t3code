@@ -37,9 +37,17 @@ it("separates orchestration reads from access-management reads", () => {
 
 it.effect("rejects RPC methods outside the persisted scope set", () =>
   Effect.gen(function* () {
-    yield* authorizeRpcMethod(new Set([AuthOrchestrationReadScope]), WS_METHODS.serverGetConfig);
+    yield* authorizeRpcMethod(
+      new Set([AuthOrchestrationReadScope]),
+      WS_METHODS.serverGetConfig,
+      "client",
+    );
     const error = yield* Effect.flip(
-      authorizeRpcMethod(new Set([AuthOrchestrationReadScope]), WS_METHODS.serverRefreshProviders),
+      authorizeRpcMethod(
+        new Set([AuthOrchestrationReadScope]),
+        WS_METHODS.serverRefreshProviders,
+        "client",
+      ),
     );
 
     expect(error.requiredScope).toBe(AuthOrchestrationOperateScope);
