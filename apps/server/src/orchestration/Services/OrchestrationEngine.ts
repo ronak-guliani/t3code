@@ -42,7 +42,9 @@ export interface OrchestrationEngineShape {
    * Read authoritative metadata with the latest projected bodies for recovery
    * paths that must continue after event persistence outruns SQL projection.
    */
-  readonly getRecoveryReadModel?: () => Effect.Effect<OrchestrationReadModel, never, never>;
+  readonly getRecoveryReadModel?: (
+    threadId?: ThreadId,
+  ) => Effect.Effect<OrchestrationReadModel, never, never>;
 
   /**
    * Read the current in-memory orchestration read model.
@@ -111,8 +113,9 @@ export function readThreadDetail(
 
 export function readRecoveryModel(
   engine: OrchestrationEngineShape,
+  threadId?: ThreadId,
 ): Effect.Effect<OrchestrationReadModel, never, never> {
-  return engine.getRecoveryReadModel?.() ?? engine.getReadModel();
+  return engine.getRecoveryReadModel?.(threadId) ?? engine.getReadModel();
 }
 
 /**

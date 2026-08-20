@@ -109,8 +109,8 @@ let needsProviderInvalidation = false;
 
 // Thread detail subscription cache policy:
 // - Active consumers keep a subscription retained via refCount.
-// - Released idle entries keep their cached store data for a longer TTL, but
-//   detach their stream so reconnect does not rehydrate every recently visited thread.
+// - Released subscriptions stay warm for a longer idle TTL to avoid churn
+//   while moving around the UI.
 // - Threads with active work or pending user action are sticky and are never
 //   evicted while they remain non-idle.
 // - Capacity eviction only targets idle cached subscriptions.
@@ -434,8 +434,6 @@ function reconcileThreadDetailSubscriptionEvictionState(
     return;
   }
 
-  entry.unsubscribe();
-  entry.unsubscribe = NOOP;
   scheduleThreadDetailSubscriptionEviction(entry);
 }
 

@@ -8,7 +8,6 @@ import {
   type TurnId,
   type TimestampFormat,
 } from "@t3tools/contracts";
-import type { MessagePreviewLineLimits } from "@t3tools/contracts/settings";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   forwardRef,
@@ -79,7 +78,6 @@ interface ChatTimelineSectionProps {
   gitCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
-  messagePreviewLineLimits: MessagePreviewLineLimits;
   workspaceRoot: string | undefined;
   chatFindShortcutLabel: string | null;
   hasMoreOlder: boolean;
@@ -120,7 +118,6 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
       gitCwd,
       resolvedTheme,
       timestampFormat,
-      messagePreviewLineLimits,
       workspaceRoot,
       chatFindShortcutLabel,
       hasMoreOlder,
@@ -635,7 +632,6 @@ export const ChatTimelineSection = forwardRef<ChatTimelineSectionHandle, ChatTim
           markdownCwd={gitCwd}
           resolvedTheme={resolvedTheme}
           timestampFormat={timestampFormat}
-          messagePreviewLineLimits={messagePreviewLineLimits}
           workspaceRoot={workspaceRoot}
           onIsAtEndChange={onIsAtEndChange}
           hasMoreOlder={hasMoreOlder}

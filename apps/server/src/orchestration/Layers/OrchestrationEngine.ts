@@ -500,14 +500,29 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       Effect.map(() => commandReadModel),
     );
 
-  const getRecoveryReadModel: NonNullable<OrchestrationEngineShape["getRecoveryReadModel"]> = () =>
+  const getRecoveryReadModel: NonNullable<OrchestrationEngineShape["getRecoveryReadModel"]> = (
+    threadId,
+  ) =>
     Deferred.await(initialized).pipe(
       Effect.mapError((cause) =>
         cause instanceof Error ? cause : new Error("Orchestration engine initialization failed"),
       ),
       Effect.orDie,
-      Effect.flatMap(() => projectionSnapshotQuery.getSnapshot()),
-      Effect.map((snapshot) => mergeRecoveryReadModel(commandReadModel, snapshot)),
+      Effect.flatMap(() =>
+        threadId === undefined
+          ? projectionSnapshotQuery.getSnapshot()
+          : projectionSnapshotQuery.getThreadDetailById(threadId).pipe(
+              Effect.map((detail) => ({
+                ...commandReadModel,
+                threads: commandReadModel.threads.map((thread) =>
+                  Option.isSome(detail) && thread.id === detail.value.id ? detail.value : thread,
+                ),
+              })),
+            ),
+      ),
+      Effect.map((snapshot) =>
+        threadId === undefined ? mergeRecoveryReadModel(commandReadModel, snapshot) : snapshot,
+      ),
       Effect.orDie,
     );
 
