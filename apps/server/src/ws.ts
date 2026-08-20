@@ -247,22 +247,26 @@ function toAuthAccessStreamEvent(
   }
 }
 
-let nextRpcClientId = 0;
+let nextBackgroundConnectionGeneration = 0n;
+const RPC_CLIENT_ID_MODULUS = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
 
-function allocateRpcClientId(): RpcClientId {
-  const clientId = RpcClientId.make(nextRpcClientId);
-  nextRpcClientId = nextRpcClientId >= Number.MAX_SAFE_INTEGER ? 0 : nextRpcClientId + 1;
-  return clientId;
+function allocateBackgroundConnectionIdentity(): BackgroundPolicy.BackgroundConnectionIdentity {
+  const generation = nextBackgroundConnectionGeneration;
+  nextBackgroundConnectionGeneration += 1n;
+  return {
+    generation,
+    rpcClientId: RpcClientId.make(Number(generation % RPC_CLIENT_ID_MODULUS)),
+  };
 }
 
-const makeWsRpcLayer = (currentSession: AuthenticatedSession, rpcClientId: RpcClientId) =>
+const makeWsRpcLayer = (
+  currentSession: AuthenticatedSession,
+  backgroundConnection: BackgroundPolicy.BackgroundConnectionIdentity,
+) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
-      yield* Effect.addFinalizer(() =>
-        backgroundPolicy.removeRpcClient(currentSessionId, rpcClientId).pipe(Effect.ignore),
-      );
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -2519,7 +2523,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession, rpcClientId: RpcCl
         [WS_METHODS.serverReportClientActivity]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverReportClientActivity,
-            backgroundPolicy.reportClientActivity(currentSessionId, rpcClientId, input),
+            backgroundPolicy.reportClientActivity(currentSessionId, backgroundConnection, input),
             { "rpc.aggregate": "server" },
           ),
         [WS_METHODS.serverReportHostPowerState]: (input) =>
@@ -2741,7 +2745,8 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const serverAuth = yield* ServerAuth;
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
-        const rpcClientId = allocateRpcClientId();
+        const backgroundConnection = allocateBackgroundConnectionIdentity();
+        const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
         const connectionId = crypto.randomUUID();
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           spanPrefix: "ws.rpc",
@@ -2752,7 +2757,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              makeWsRpcLayer(session, rpcClientId),
+              makeWsRpcLayer(session, backgroundConnection),
               RpcSerialization.layerJson,
               rpcAuthorizationLayer(new Set(session.scopes), session.role),
             ),
@@ -2766,7 +2771,13 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         // log below correlates against.
         const connectedAt = Date.now();
         return yield* Effect.acquireUseRelease(
-          sessions.markConnected(session.sessionId),
+          Effect.all(
+            [
+              sessions.markConnected(session.sessionId),
+              backgroundPolicy.registerConnection(session.sessionId, backgroundConnection),
+            ],
+            { discard: true },
+          ),
           () =>
             Effect.logInfo("websocket connected", {
               userAgent: request.headers["user-agent"],
@@ -2781,7 +2792,14 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               ),
               withLogContext({ sessionId: session.sessionId, connectionId }),
             ),
-          () => sessions.markDisconnected(session.sessionId),
+          () =>
+            Effect.all(
+              [
+                backgroundPolicy.removeConnection(session.sessionId, backgroundConnection),
+                sessions.markDisconnected(session.sessionId),
+              ],
+              { discard: true },
+            ),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
     ),

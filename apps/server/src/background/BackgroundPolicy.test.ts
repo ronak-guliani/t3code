@@ -54,14 +54,36 @@ function makeLayer(hostPower: HostPowerSnapshot = nominalHostPower) {
   );
 }
 
+function connection(
+  rpcClientId: number,
+  generation = BigInt(rpcClientId),
+): BackgroundPolicy.BackgroundConnectionIdentity {
+  return {
+    rpcClientId: RpcClientId.make(rpcClientId),
+    generation,
+  };
+}
+
+const registerConnections = (
+  policy: BackgroundPolicy.BackgroundPolicy["Service"],
+  sessionId: AuthSessionId,
+  ...connections: ReadonlyArray<BackgroundPolicy.BackgroundConnectionIdentity>
+) =>
+  Effect.forEach(
+    connections,
+    (clientConnection) => policy.registerConnection(sessionId, clientConnection),
+    { discard: true },
+  );
+
 describe("BackgroundPolicy", () => {
   it.effect("records the official mobile activity lease and removes it on disconnect", () =>
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
       const sessionId = AuthSessionId.make("mobile-session");
-      const rpcClientId = RpcClientId.make(1);
+      const clientConnection = connection(1);
 
-      yield* policy.reportClientActivity(sessionId, rpcClientId, makeReport());
+      yield* registerConnections(policy, sessionId, clientConnection);
+      yield* policy.reportClientActivity(sessionId, clientConnection, makeReport());
       const connected = yield* policy.snapshot;
 
       assert.equal(connected.activeForegroundLeaseCount, 1);
@@ -69,7 +91,8 @@ describe("BackgroundPolicy", () => {
       assert.equal(connected.leases[0]?.clientKind, "mobile");
       assert.equal(connected.shouldRunOpportunisticWork, true);
 
-      yield* policy.removeRpcClient(sessionId, rpcClientId);
+      yield* policy.removeConnection(sessionId, clientConnection);
+      yield* policy.reportClientActivity(sessionId, clientConnection, makeReport());
       const disconnected = yield* policy.snapshot;
 
       assert.equal(disconnected.activeForegroundLeaseCount, 0);
@@ -82,25 +105,128 @@ describe("BackgroundPolicy", () => {
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
       const sessionId = AuthSessionId.make("mobile-session");
-      const oldConnectionId = RpcClientId.make(1);
-      const replacementConnectionId = RpcClientId.make(2);
+      const oldConnection = connection(1);
+      const replacementConnection = connection(2);
 
+      yield* registerConnections(policy, sessionId, oldConnection, replacementConnection);
       yield* policy.reportClientActivity(
         sessionId,
-        oldConnectionId,
+        oldConnection,
         makeReport({ clientId: "stable-mobile-device" }),
       );
       yield* policy.reportClientActivity(
         sessionId,
-        replacementConnectionId,
-        makeReport({ clientId: "stable-mobile-device" }),
+        replacementConnection,
+        makeReport({
+          clientId: "stable-mobile-device",
+          scopes: [{ type: "server-config" }],
+        }),
       );
-      yield* policy.removeRpcClient(sessionId, oldConnectionId);
+      yield* policy.reportClientActivity(
+        sessionId,
+        oldConnection,
+        makeReport({
+          clientId: "stable-mobile-device",
+          scopes: [{ type: "diagnostics" }],
+        }),
+      );
+      yield* policy.removeConnection(sessionId, oldConnection);
 
       const snapshot = yield* policy.snapshot;
       assert.equal(snapshot.leases.length, 1);
-      assert.equal(snapshot.leases[0]?.rpcClientId, replacementConnectionId);
+      assert.equal(snapshot.leases[0]?.rpcClientId, replacementConnection.rpcClientId);
       assert.equal(snapshot.leases[0]?.clientId, "stable-mobile-device");
+      assert.deepStrictEqual(snapshot.leases[0]?.scopes, [{ type: "server-config" }]);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("keeps replacement ownership after its lease expires", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const sessionId = AuthSessionId.make("mobile-session");
+      const oldConnection = connection(1);
+      const replacementConnection = connection(2);
+      const report = makeReport({
+        clientId: "stable-mobile-device",
+        ttlMs: 1_000,
+      });
+
+      yield* registerConnections(policy, sessionId, oldConnection, replacementConnection);
+      yield* policy.reportClientActivity(sessionId, oldConnection, report);
+      yield* policy.reportClientActivity(sessionId, replacementConnection, report);
+      yield* TestClock.adjust("1001 millis");
+      yield* policy.reportClientActivity(sessionId, oldConnection, report);
+
+      const afterLateReport = yield* policy.snapshot;
+      assert.equal(afterLateReport.leases.length, 0);
+
+      yield* policy.reportClientActivity(sessionId, replacementConnection, report);
+      const afterReplacementReport = yield* policy.snapshot;
+      assert.equal(afterReplacementReport.leases.length, 1);
+      assert.equal(
+        afterReplacementReport.leases[0]?.rpcClientId,
+        replacementConnection.rpcClientId,
+      );
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("does not let an older connection reclaim after its replacement disconnects", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const sessionId = AuthSessionId.make("mobile-session");
+      const oldConnection = connection(1);
+      const replacementConnection = connection(2);
+      const report = makeReport({ clientId: "stable-mobile-device" });
+
+      yield* registerConnections(policy, sessionId, oldConnection, replacementConnection);
+      yield* policy.reportClientActivity(sessionId, oldConnection, report);
+      yield* policy.reportClientActivity(sessionId, replacementConnection, report);
+      yield* policy.removeConnection(sessionId, replacementConnection);
+      yield* policy.reportClientActivity(sessionId, oldConnection, report);
+
+      const snapshot = yield* policy.snapshot;
+      assert.equal(snapshot.leases.length, 0);
+    }).pipe(Effect.provide(makeLayer())),
+  );
+
+  it.effect("does not let an older connection reclaim an evicted ownership key", () =>
+    Effect.gen(function* () {
+      const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const sessionId = AuthSessionId.make("mobile-session");
+      const oldConnection = connection(1);
+      const replacementConnection = connection(2);
+      const displacedClientId = "stable-mobile-device";
+
+      yield* registerConnections(policy, sessionId, oldConnection, replacementConnection);
+      yield* policy.reportClientActivity(
+        sessionId,
+        oldConnection,
+        makeReport({ clientId: displacedClientId }),
+      );
+      yield* policy.reportClientActivity(
+        sessionId,
+        replacementConnection,
+        makeReport({ clientId: displacedClientId }),
+      );
+      for (
+        let index = 0;
+        index < BackgroundPolicy.MAX_CLIENT_ACTIVITY_LEASES_PER_RPC_CLIENT;
+        index += 1
+      ) {
+        yield* policy.reportClientActivity(
+          sessionId,
+          replacementConnection,
+          makeReport({ clientId: `replacement-device-${index}` }),
+        );
+      }
+      yield* policy.reportClientActivity(
+        sessionId,
+        oldConnection,
+        makeReport({ clientId: displacedClientId }),
+      );
+
+      const snapshot = yield* policy.snapshot;
+      assert.isFalse(snapshot.leases.some((lease) => lease.clientId === displacedClientId));
     }).pipe(Effect.provide(makeLayer())),
   );
 
@@ -109,14 +235,16 @@ describe("BackgroundPolicy", () => {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
       const firstSession = AuthSessionId.make("session-1");
       const secondSession = AuthSessionId.make("session-2");
+      yield* registerConnections(policy, firstSession, connection(1));
+      yield* registerConnections(policy, secondSession, connection(2));
       yield* policy.reportClientActivity(
         firstSession,
-        RpcClientId.make(1),
+        connection(1),
         makeReport({ clientId: "first-device" }),
       );
       yield* policy.reportClientActivity(
         secondSession,
-        RpcClientId.make(2),
+        connection(2),
         makeReport({
           clientId: "second-device",
           scopes: [{ type: "diagnostics" }],
@@ -135,8 +263,9 @@ describe("BackgroundPolicy", () => {
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
       const sessionId = AuthSessionId.make("mobile-session");
-      const rpcClientId = RpcClientId.make(1);
+      const clientConnection = connection(1);
 
+      yield* registerConnections(policy, sessionId, clientConnection);
       for (
         let index = 0;
         index <= BackgroundPolicy.MAX_CLIENT_ACTIVITY_LEASES_PER_RPC_CLIENT;
@@ -144,7 +273,7 @@ describe("BackgroundPolicy", () => {
       ) {
         yield* policy.reportClientActivity(
           sessionId,
-          rpcClientId,
+          clientConnection,
           makeReport({ clientId: `mobile-device-${index}` }),
         );
       }
@@ -168,7 +297,8 @@ describe("BackgroundPolicy", () => {
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
       const sessionId = AuthSessionId.make("mobile-session");
-      const replacementConnectionId = RpcClientId.make(1);
+      const replacementConnection = connection(1, 10_000n);
+      yield* registerConnections(policy, sessionId, replacementConnection);
 
       for (
         let index = 0;
@@ -176,21 +306,20 @@ describe("BackgroundPolicy", () => {
         index += 1
       ) {
         const clientId = `mobile-device-${index}`;
+        const originalConnection = connection(100 + index, BigInt(index));
+        yield* registerConnections(policy, sessionId, originalConnection);
+        yield* policy.reportClientActivity(sessionId, originalConnection, makeReport({ clientId }));
         yield* policy.reportClientActivity(
           sessionId,
-          RpcClientId.make(100 + index),
-          makeReport({ clientId }),
-        );
-        yield* policy.reportClientActivity(
-          sessionId,
-          replacementConnectionId,
+          replacementConnection,
           makeReport({ clientId }),
         );
       }
 
       const snapshot = yield* policy.snapshot;
       assert.equal(
-        snapshot.leases.filter((lease) => lease.rpcClientId === replacementConnectionId).length,
+        snapshot.leases.filter((lease) => lease.rpcClientId === replacementConnection.rpcClientId)
+          .length,
         BackgroundPolicy.MAX_CLIENT_ACTIVITY_LEASES_PER_RPC_CLIENT,
       );
     }).pipe(Effect.provide(makeLayer())),
@@ -201,14 +330,16 @@ describe("BackgroundPolicy", () => {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
       const firstSession = AuthSessionId.make("session-1");
       const secondSession = AuthSessionId.make("session-2");
+      yield* registerConnections(policy, firstSession, connection(1));
+      yield* registerConnections(policy, secondSession, connection(2));
       yield* policy.reportClientActivity(
         firstSession,
-        RpcClientId.make(1),
+        connection(1),
         makeReport({ clientId: "first-device" }),
       );
       yield* policy.reportClientActivity(
         secondSession,
-        RpcClientId.make(2),
+        connection(2),
         makeReport({ clientId: "second-device" }),
       );
       const subscription = yield* policy.subscribeForSession(firstSession);
@@ -216,13 +347,13 @@ describe("BackgroundPolicy", () => {
 
       yield* policy.reportClientActivity(
         secondSession,
-        RpcClientId.make(2),
+        connection(2),
         makeReport({ clientId: "second-device" }),
       );
       yield* Effect.yieldNow;
       yield* policy.reportClientActivity(
         firstSession,
-        RpcClientId.make(1),
+        connection(1),
         makeReport({
           clientId: "first-device",
           recentlyInteracted: false,
@@ -238,11 +369,10 @@ describe("BackgroundPolicy", () => {
   it.effect("honors fresh host constraints without trusting stale power data", () =>
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
-      yield* policy.reportClientActivity(
-        AuthSessionId.make("mobile-session"),
-        RpcClientId.make(1),
-        makeReport(),
-      );
+      const sessionId = AuthSessionId.make("mobile-session");
+      const clientConnection = connection(1);
+      yield* registerConnections(policy, sessionId, clientConnection);
+      yield* policy.reportClientActivity(sessionId, clientConnection, makeReport());
 
       const constrained = yield* policy.snapshot;
       assert.equal(constrained.shouldRunOpportunisticWork, false);
@@ -297,9 +427,12 @@ describe("BackgroundPolicy", () => {
   it.effect("marks restrictive host power stale after reports stop", () =>
     Effect.gen(function* () {
       const policy = yield* BackgroundPolicy.BackgroundPolicy;
+      const sessionId = AuthSessionId.make("mobile-session");
+      const clientConnection = connection(1);
+      yield* registerConnections(policy, sessionId, clientConnection);
       yield* policy.reportClientActivity(
-        AuthSessionId.make("mobile-session"),
-        RpcClientId.make(1),
+        sessionId,
+        clientConnection,
         makeReport({ ttlMs: 120_000 }),
       );
       yield* policy.reportHostPowerState({
