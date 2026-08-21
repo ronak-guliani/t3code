@@ -9,11 +9,11 @@ import {
   type AuthWebSocketTokenResult,
 } from "@t3tools/contracts";
 import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
-import { verifyDpopProof } from "@t3tools/shared/dpop";
 import { DateTime, Effect, Layer, Option } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
+import { verifyAndConsumeDpopProof } from "../DpopReplayGuard.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
 import { BootstrapCredentialError } from "../Services/BootstrapCredentialService.ts";
@@ -184,7 +184,7 @@ export const makeServerAuth = Effect.gen(function* () {
             }),
           );
         }
-        const verification = verifyDpopProof({
+        const verification = verifyAndConsumeDpopProof({
           proof: request.headers["dpop"],
           method: request.method,
           url: requestUrl.value.toString(),
@@ -495,7 +495,7 @@ export const makeServerAuth = Effect.gen(function* () {
       }),
     );
 
-  const issueWebSocketToken: ServerAuthShape["issueWebSocketToken"] = (session) =>
+  const issueSessionWebSocketToken = (session: AuthenticatedSession) =>
     sessions.issueWebSocketToken(session.sessionId).pipe(
       Effect.mapError(
         (cause) =>
@@ -513,8 +513,18 @@ export const makeServerAuth = Effect.gen(function* () {
       ),
     );
 
+  const issueWebSocketToken: ServerAuthShape["issueWebSocketToken"] = (session) =>
+    session.proofKeyThumbprint
+      ? Effect.fail(
+          new AuthError({
+            message: "Proof-bound sessions must use websocket tickets.",
+            status: 403,
+          }),
+        )
+      : issueSessionWebSocketToken(session);
+
   const issueWebSocketTicket: ServerAuthShape["issueWebSocketTicket"] = (session) =>
-    issueWebSocketToken(session).pipe(
+    issueSessionWebSocketToken(session).pipe(
       Effect.map((issued) => {
         const now = Date.now();
         pruneExpiredWebSocketTickets(now);

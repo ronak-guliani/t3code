@@ -19,11 +19,11 @@ import {
   type AuthWebSocketTicketResult,
 } from "@t3tools/contracts";
 import { parseAllowedOAuthScope } from "@t3tools/shared/oauthScope";
-import { verifyDpopProof } from "@t3tools/shared/dpop";
 import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { AuthError, ServerAuth } from "./Services/ServerAuth.ts";
+import { verifyAndConsumeDpopProof } from "./DpopReplayGuard.ts";
 import { SessionCredentialService } from "./Services/SessionCredentialService.ts";
 import { deriveAuthClientMetadata } from "./utils.ts";
 import { browserApiCorsHeaders } from "../httpCors.ts";
@@ -281,7 +281,7 @@ export const authAccessTokenRouteLayer = HttpRouter.add(
         : Option.isNone(requestUrl)
           ? null
           : (() => {
-              const verification = verifyDpopProof({
+              const verification = verifyAndConsumeDpopProof({
                 proof: dpopProof,
                 method: request.method,
                 url: requestUrl.value.toString(),

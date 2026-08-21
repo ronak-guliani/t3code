@@ -56,7 +56,9 @@ export const crossVersionRpcSerializationLayer = Layer.succeed(
               : { ...record, requestId: wireRequestId },
           );
 
-          if (record?._tag === "Exit" && requestId !== undefined) {
+          if (record?._tag === "Defect") {
+            wireRequestIds.clear();
+          } else if (record?._tag === "Exit" && requestId !== undefined) {
             wireRequestIds.delete(requestId);
           }
           return encoded;

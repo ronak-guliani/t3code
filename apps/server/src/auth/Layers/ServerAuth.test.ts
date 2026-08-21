@@ -215,6 +215,17 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
           url: requestUrl,
         }),
       );
+      const replayFailure = yield* Effect.flip(
+        serverAuth.authenticateHttpRequest(
+          makeAuthorizationRequest({
+            authorization: `DPoP ${access.access_token}`,
+            dpop: proof,
+            url: requestUrl,
+          }),
+        ),
+      );
+      const websocketTokenFailure = yield* Effect.flip(serverAuth.issueWebSocketToken(session));
+      const websocketTicket = yield* serverAuth.issueWebSocketTicket(session);
       const bearerFailure = yield* Effect.flip(
         serverAuth.authenticateHttpRequest(
           makeAuthorizationRequest({
@@ -251,6 +262,9 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       expect(access.token_type).toBe("DPoP");
       expect(session.method).toBe("dpop-access-token");
       expect(session.proofKeyThumbprint).toBe(proofKeyThumbprint);
+      expect(replayFailure.status).toBe(401);
+      expect(websocketTokenFailure.status).toBe(403);
+      expect(websocketTicket.ticket.length).toBeGreaterThan(0);
       expect(bearerFailure.status).toBe(401);
       expect(cookieFailure.status).toBe(401);
       expect(legacyExchangeFailure.status).toBe(401);
