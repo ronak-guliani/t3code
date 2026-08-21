@@ -75,6 +75,8 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
+const BOOTSTRAP_EVENT_BATCH_SIZE = 256;
+
 interface ProjectorDefinition {
   readonly name: ProjectorName;
   readonly apply: (
@@ -1949,40 +1951,81 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       );
     });
 
-    const bootstrapProjector = (projector: ProjectorDefinition) =>
-      projectionStateRepository
-        .getByProjector({
-          projector: projector.name,
-        })
-        .pipe(
-          Effect.flatMap((stateRow) =>
-            Stream.runForEach(
-              eventStore.readFromSequence(
-                Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
-              ),
-              (event) => runProjectorForEvent(projector, event),
-            ),
-          ),
-        );
+    // Bootstrap replays the event stream once for all projectors instead of
+    // once per projector, and commits each batch of events in a single
+    // transaction with one coalesced cursor upsert per projector. Projectors
+    // whose cursor is ahead of an event skip it, so per-projector resume
+    // positions are preserved.
+    const runProjectorsForEventBatch = Effect.fn("runProjectorsForEventBatch")(function* (
+      events: ReadonlyArray<OrchestrationEvent>,
+      cursors: Map<ProjectorName, number>,
+    ) {
+      if (events.length === 0) {
+        return;
+      }
 
-    const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
-        concurrency: 1,
-      }).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ServerConfig, serverConfig),
-        Effect.asVoid,
-        Effect.catchTag("SqlError", (sqlError) =>
-          Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
+      const attachmentSideEffects: AttachmentSideEffects = {
+        deletedThreadIds: new Set<string>(),
+        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+      };
+      const lastAppliedByProjector = new Map<ProjectorName, OrchestrationEvent>();
+
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          for (const event of events) {
+            for (const projector of projectors) {
+              if (event.sequence <= (cursors.get(projector.name) ?? 0)) {
+                continue;
+              }
+              yield* projector.apply(event, attachmentSideEffects);
+              lastAppliedByProjector.set(projector.name, event);
+            }
+          }
+
+          for (const [projectorName, lastApplied] of lastAppliedByProjector) {
+            cursors.set(projectorName, lastApplied.sequence);
+            yield* projectionStateRepository.upsert({
+              projector: projectorName,
+              lastAppliedSequence: lastApplied.sequence,
+              updatedAt: lastApplied.occurredAt,
+            });
+          }
+        }),
+      );
+
+      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to apply projected attachment side-effects", {
+            cause,
+          }),
         ),
       );
+    });
 
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
       yield* projectionStateRepository.deleteExcept({
         projectors: projectors.map((projector) => projector.name),
       });
-      yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1 });
+
+      const cursors = new Map<ProjectorName, number>();
+      for (const projector of projectors) {
+        const stateRow = yield* projectionStateRepository.getByProjector({
+          projector: projector.name,
+        });
+        cursors.set(
+          projector.name,
+          Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+        );
+      }
+      const minCursor = Math.min(...cursors.values());
+
+      yield* Stream.runForEach(
+        Stream.grouped(
+          eventStore.readFromSequence(minCursor, Number.MAX_SAFE_INTEGER),
+          BOOTSTRAP_EVENT_BATCH_SIZE,
+        ),
+        (events) => runProjectorsForEventBatch(events, cursors),
+      );
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
@@ -1997,6 +2040,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         Effect.fail(toPersistenceSqlError("ProjectionPipeline.bootstrap:query")(sqlError)),
       ),
     );
+
+    const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
+      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
+        concurrency: 1,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ServerConfig, serverConfig),
+        Effect.asVoid,
+        Effect.catchTag("SqlError", (sqlError) =>
+          Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
+        ),
+      );
 
     return {
       bootstrap,
