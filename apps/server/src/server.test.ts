@@ -1189,6 +1189,32 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("mounts the authenticated Connect link-state endpoint", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const url = yield* getHttpServerUrl("/api/connect/link-state");
+      const token = yield* getAuthenticatedBearerSessionToken();
+      const response = yield* Effect.promise(() =>
+        fetch(url, {
+          headers: {
+            authorization: `Bearer ${token}`,
+          },
+        }),
+      );
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly cloudUserId: string | null;
+        readonly endpointRuntimeStatus: {
+          readonly status: string;
+        };
+      };
+
+      assert.equal(response.status, 200);
+      assert.equal(body.cloudUserId, null);
+      assert.equal(body.endpointRuntimeStatus.status, "disabled");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("includes CORS headers on public environment descriptor responses", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
