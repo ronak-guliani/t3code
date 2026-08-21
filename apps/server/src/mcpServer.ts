@@ -1072,6 +1072,8 @@ function nestedThreadCommandArgs(
 ): ReadonlyArray<string> {
   return [
     ...(options.cliArgsPrefix ?? []),
+    "--log-level",
+    "error",
     "chat",
     "new",
     "--project",
