@@ -11,6 +11,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 
 /**
  * Retention limits for collections within a thread.
@@ -667,7 +668,11 @@ export function applyThreadDetailEvent(
       const activity =
         event.type === "thread.activity-appended"
           ? event.payload.activity
-          : event.payload.notification;
+          : childLifecycleNotificationToActivity({
+              eventId: event.eventId,
+              payload: event.payload,
+              sequence: event.sequence,
+            });
       const activities = pipe(
         thread.activities,
         Arr.filter((entry) => entry.id !== activity.id),

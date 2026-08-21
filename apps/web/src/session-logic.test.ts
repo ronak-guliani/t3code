@@ -654,8 +654,12 @@ describe("deriveWorkLogEntries", () => {
           kind: "child.lifecycle.completed",
           summary: "Release assistant completed",
           payload: {
-            childThreadId: "child-thread",
+            parentThreadId: ThreadId.make("parent-thread"),
+            childThreadId: ThreadId.make("child-thread"),
+            childTitle: "Release assistant",
             lifecycle: "completed",
+            dedupeKey: "child:child-thread:completed:turn-1",
+            createdAt: "2026-02-23T00:00:01.000Z",
           },
         }),
       ],
@@ -683,12 +687,15 @@ describe("deriveWorkLogEntries", () => {
           kind: "child.lifecycle.pr-created",
           summary: "Release assistant created a pull request",
           payload: {
-            childThreadId: "child-thread",
+            parentThreadId: ThreadId.make("parent-thread"),
+            childThreadId: ThreadId.make("child-thread"),
+            childTitle: "Release assistant",
             lifecycle: "pr-created",
-            action: {
-              label: "Open pull request",
+            dedupeKey: "child:child-thread:pr-created:https://github.com/acme/app/pull/42",
+            externalAction: {
               url: "https://github.com/acme/app/pull/42",
             },
+            createdAt: "2026-02-23T00:00:01.000Z",
           },
         }),
       ],
@@ -699,34 +706,6 @@ describe("deriveWorkLogEntries", () => {
       kind: "external",
       label: "Open pull request",
       url: "https://github.com/acme/app/pull/42",
-    });
-  });
-
-  it("prefers derived child navigation over a legacy persisted thread URL", () => {
-    const [entry] = deriveWorkLogEntries(
-      [
-        makeActivity({
-          id: "legacy-child-completed",
-          createdAt: "2026-02-23T00:00:01.000Z",
-          kind: "child.lifecycle.completed",
-          summary: "Release assistant completed",
-          payload: {
-            childThreadId: "child-thread",
-            lifecycle: "completed",
-            action: {
-              label: "View result",
-              url: "https://stale.example/environment/child-thread",
-            },
-          },
-        }),
-      ],
-      TurnId.make("parent-latest-turn"),
-    );
-
-    expect(entry?.action).toEqual({
-      kind: "thread",
-      label: "View result",
-      threadId: "child-thread",
     });
   });
 

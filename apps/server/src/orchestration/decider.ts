@@ -80,35 +80,6 @@ type DecideOrchestrationCommandResult =
   | PlannedOrchestrationEvent
   | ReadonlyArray<PlannedOrchestrationEvent>;
 
-const CHILD_LIFECYCLE_PRESENTATION: Record<
-  ChildThreadLifecycle,
-  {
-    readonly summarySuffix: string;
-    readonly actionLabel: string;
-    readonly tone: "info" | "approval" | "error";
-  }
-> = {
-  started: { summarySuffix: "started", actionLabel: "View child", tone: "info" },
-  blocked: { summarySuffix: "is blocked", actionLabel: "Review child", tone: "error" },
-  "approval-required": {
-    summarySuffix: "needs approval",
-    actionLabel: "Review approval",
-    tone: "approval",
-  },
-  "input-required": {
-    summarySuffix: "needs input",
-    actionLabel: "Provide input",
-    tone: "approval",
-  },
-  failed: { summarySuffix: "failed", actionLabel: "Review failure", tone: "error" },
-  completed: { summarySuffix: "completed", actionLabel: "View result", tone: "info" },
-  "pr-created": {
-    summarySuffix: "created a pull request",
-    actionLabel: "Open pull request",
-    tone: "info",
-  },
-};
-
 function childLifecycleDedupeKey(
   childThreadId: ThreadId,
   lifecycle: ChildThreadLifecycle,
@@ -117,16 +88,26 @@ function childLifecycleDedupeKey(
   return `child:${childThreadId}:${lifecycle}:${sourceKey}`;
 }
 
-function appendChildLifecycleNotification(input: {
+type AppendChildLifecycleNotificationInput = {
   readonly readModel: OrchestrationReadModel;
   readonly childThread: OrchestrationThread;
   readonly sourceEvents: ReadonlyArray<PlannedOrchestrationEvent>;
   readonly sourceEvent: PlannedOrchestrationEvent;
-  readonly lifecycle: ChildThreadLifecycle;
   readonly sourceKey: string;
   readonly createdAt: string;
-  readonly actionUrl?: string;
-}): DecideOrchestrationCommandResult {
+} & (
+  | {
+      readonly lifecycle: Exclude<ChildThreadLifecycle, "pr-created">;
+    }
+  | {
+      readonly lifecycle: "pr-created";
+      readonly externalActionUrl: string;
+    }
+);
+
+function appendChildLifecycleNotification(
+  input: AppendChildLifecycleNotificationInput,
+): DecideOrchestrationCommandResult {
   const sourceResult =
     input.sourceEvents.length === 1 ? input.sourceEvents[0]! : input.sourceEvents;
   const parentThreadId = input.childThread.parentThreadId;
@@ -142,36 +123,12 @@ function appendChildLifecycleNotification(input: {
 
   const dedupeKey = childLifecycleDedupeKey(input.childThread.id, input.lifecycle, input.sourceKey);
 
-  const presentation = CHILD_LIFECYCLE_PRESENTATION[input.lifecycle];
   const eventBase = withEventBase({
     aggregateKind: "thread",
     aggregateId: parentThreadId,
     occurredAt: input.createdAt,
     commandId: input.sourceEvent.commandId!,
   });
-  const notification = {
-    id: eventBase.eventId,
-    tone: presentation.tone,
-    kind: `child.lifecycle.${input.lifecycle}`,
-    summary: `${input.childThread.title} ${presentation.summarySuffix}`,
-    payload: {
-      parentThreadId,
-      childThreadId: input.childThread.id,
-      childTitle: input.childThread.title,
-      lifecycle: input.lifecycle,
-      dedupeKey,
-      ...(input.actionUrl === undefined
-        ? {}
-        : {
-            action: {
-              label: presentation.actionLabel,
-              url: input.actionUrl,
-            },
-          }),
-    },
-    turnId: null,
-    createdAt: input.createdAt,
-  } as const;
   return [
     ...input.sourceEvents,
     {
@@ -184,15 +141,13 @@ function appendChildLifecycleNotification(input: {
         childTitle: input.childThread.title,
         lifecycle: input.lifecycle,
         dedupeKey,
-        ...(input.actionUrl === undefined
+        ...(input.lifecycle !== "pr-created"
           ? {}
           : {
-              action: {
-                label: presentation.actionLabel,
-                url: input.actionUrl,
+              externalAction: {
+                url: input.externalActionUrl,
               },
             }),
-        notification,
         createdAt: input.createdAt,
       },
     },
@@ -975,7 +930,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             lifecycle: "pr-created",
             sourceKey: command.pullRequest.url,
             createdAt: occurredAt,
-            actionUrl: command.pullRequest.url,
+            externalActionUrl: command.pullRequest.url,
           })
         : metaUpdatedEvent;
     }

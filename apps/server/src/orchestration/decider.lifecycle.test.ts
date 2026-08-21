@@ -154,11 +154,7 @@ describe("decider thread lifecycle", () => {
     const readModel = await nestedLifecycleReadModel();
     const at = "2026-07-30T01:00:00.000Z";
     const commands: ReadonlyArray<
-      readonly [
-        string,
-        OrchestrationCommand,
-        { readonly label: string; readonly url: string } | undefined,
-      ]
+      readonly [string, OrchestrationCommand, { readonly url: string } | undefined]
     > = [
       [
         "started",
@@ -221,7 +217,6 @@ describe("decider thread lifecycle", () => {
           },
         },
         {
-          label: "Open pull request",
           url: "https://github.com/acme/app/pull/42",
         },
       ],
@@ -238,26 +233,18 @@ describe("decider thread lifecycle", () => {
           parentThreadId,
           childThreadId,
           lifecycle,
-          notification: {
-            payload: {
-              childThreadId,
-              lifecycle,
-            },
-          },
         },
       });
       if (notification?.type !== "thread.child-lifecycle-notified") {
         throw new Error(`Expected ${lifecycle} child lifecycle notification.`);
       }
-      expect(notification.payload.action).toEqual(expectedAction);
-      expect(notification.payload.notification.payload).toMatchObject(
-        expectedAction === undefined ? {} : { action: expectedAction },
-      );
-      if (expectedAction === undefined) {
-        expect(
-          (notification.payload.notification.payload as Record<string, unknown>).action,
-        ).toBeUndefined();
-      }
+      expect(notification.payload).not.toHaveProperty("notification");
+      expect(notification.payload).not.toHaveProperty("action");
+      expect(
+        notification.payload.lifecycle === "pr-created"
+          ? notification.payload.externalAction
+          : undefined,
+      ).toEqual(expectedAction);
     }
   });
 

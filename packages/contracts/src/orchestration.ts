@@ -436,21 +436,34 @@ export const ChildThreadLifecycle = Schema.Literals([
 ]);
 export type ChildThreadLifecycle = typeof ChildThreadLifecycle.Type;
 
-export const ChildThreadLifecycleNotification = Schema.Struct({
+const ChildThreadLifecycleNotificationFields = {
   parentThreadId: ThreadId,
   childThreadId: ThreadId,
   childTitle: TrimmedNonEmptyString,
-  lifecycle: ChildThreadLifecycle,
   dedupeKey: TrimmedNonEmptyString,
-  action: Schema.optionalKey(
-    Schema.Struct({
-      label: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+} as const;
+
+export const ChildThreadLifecycleNotification = Schema.Union([
+  Schema.Struct({
+    ...ChildThreadLifecycleNotificationFields,
+    lifecycle: Schema.Literals([
+      "started",
+      "blocked",
+      "approval-required",
+      "input-required",
+      "failed",
+      "completed",
+    ]),
+  }),
+  Schema.Struct({
+    ...ChildThreadLifecycleNotificationFields,
+    lifecycle: Schema.Literal("pr-created"),
+    externalAction: Schema.Struct({
       url: TrimmedNonEmptyString,
     }),
-  ),
-  notification: OrchestrationThreadActivity,
-  createdAt: IsoDateTime,
-});
+  }),
+]);
 export type ChildThreadLifecycleNotification = typeof ChildThreadLifecycleNotification.Type;
 
 const OrchestrationLatestTurnState = Schema.Literals([

@@ -622,18 +622,6 @@ describe("applyThreadDetailEvent", () => {
           childTitle: "Release assistant",
           lifecycle: "completed" as const,
           dedupeKey: "child:thread-2:completed:turn-2",
-          notification: {
-            id: EventId.make("event-child-completed"),
-            tone: "info" as const,
-            kind: "child.lifecycle.completed",
-            summary: "Release assistant completed",
-            payload: {
-              childThreadId: ThreadId.make("thread-2"),
-              lifecycle: "completed",
-            },
-            turnId: null,
-            createdAt: "2026-04-01T12:00:00.000Z",
-          },
           createdAt: "2026-04-01T12:00:00.000Z",
         },
       };
@@ -643,8 +631,14 @@ describe("applyThreadDetailEvent", () => {
       if (restored.kind !== "updated") return;
       expect(restored.thread.activities).toHaveLength(1);
       expect(restored.thread.activities[0]).toMatchObject({
+        id: "event-child-completed",
         kind: "child.lifecycle.completed",
         summary: "Release assistant completed",
+        payload: {
+          parentThreadId: "thread-1",
+          childThreadId: "thread-2",
+          lifecycle: "completed",
+        },
       });
 
       const replayed = applyThreadDetailEvent(restored.thread, event);

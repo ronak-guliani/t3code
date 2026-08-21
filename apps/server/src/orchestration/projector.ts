@@ -5,6 +5,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -1046,10 +1047,15 @@ export function projectEvent(
           if (!parent) {
             return nextBase;
           }
+          const activity = childLifecycleNotificationToActivity({
+            eventId: event.eventId,
+            payload,
+            sequence: event.sequence,
+          });
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.parentThreadId, {
-              activities: appendThreadActivity(parent, payload.notification),
+              activities: appendThreadActivity(parent, activity),
               updatedAt: event.occurredAt,
             }),
           };

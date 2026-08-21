@@ -30,6 +30,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -2241,11 +2242,14 @@ function applyEnvironmentOrchestrationEvent(
           ? event.payload.threadId
           : event.payload.parentThreadId,
         (thread) => {
-          const nextActivity = {
-            ...(event.type === "thread.activity-appended"
-              ? event.payload.activity
-              : event.payload.notification),
-          };
+          const nextActivity =
+            event.type === "thread.activity-appended"
+              ? { ...event.payload.activity }
+              : childLifecycleNotificationToActivity({
+                  eventId: event.eventId,
+                  payload: event.payload,
+                  sequence: event.sequence,
+                });
           const tailActivity = thread.activities.at(-1);
           let canAppendInOrder =
             tailActivity === undefined || compareActivities(tailActivity, nextActivity) <= 0;

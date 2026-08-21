@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, FileSystem, Layer, Option, Path, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -1252,19 +1253,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             createdAt: event.payload.activity.createdAt,
           });
           return;
-        case "thread.child-lifecycle-notified":
-          yield* projectionThreadActivityRepository.upsert({
-            activityId: event.payload.notification.id,
-            threadId: event.payload.parentThreadId,
-            turnId: event.payload.notification.turnId,
-            tone: event.payload.notification.tone,
-            kind: event.payload.notification.kind,
-            summary: event.payload.notification.summary,
-            payload: event.payload.notification.payload,
+        case "thread.child-lifecycle-notified": {
+          const activity = childLifecycleNotificationToActivity({
+            eventId: event.eventId,
+            payload: event.payload,
             sequence: event.sequence,
-            createdAt: event.payload.notification.createdAt,
+          });
+          yield* projectionThreadActivityRepository.upsert({
+            activityId: activity.id,
+            threadId: event.payload.parentThreadId,
+            turnId: activity.turnId,
+            tone: activity.tone,
+            kind: activity.kind,
+            summary: activity.summary,
+            payload: activity.payload,
+            ...(activity.sequence === undefined ? {} : { sequence: activity.sequence }),
+            createdAt: activity.createdAt,
           });
           return;
+        }
 
         case "thread.reverted": {
           const existingRows = yield* projectionThreadActivityRepository.listByThreadId({

@@ -15,7 +15,10 @@ import {
   ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { isTurnLifecycleInsightActivity } from "@t3tools/shared/orchestrationActivity";
+import {
+  isChildLifecycleThreadActivity,
+  isTurnLifecycleInsightActivity,
+} from "@t3tools/shared/orchestrationActivity";
 
 import type {
   ChatMessage,
@@ -778,10 +781,6 @@ const CHILD_LIFECYCLE_ACTION_LABELS: Record<ChildThreadLifecycle, string> = {
   "pr-created": "Open pull request",
 };
 
-function isChildThreadLifecycle(value: string): value is ChildThreadLifecycle {
-  return value in CHILD_LIFECYCLE_ACTION_LABELS;
-}
-
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
@@ -832,32 +831,23 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
+  const childLifecycleActivity = isChildLifecycleThreadActivity(activity) ? activity : null;
   const externalAction =
-    payload?.action &&
-    typeof payload.action === "object" &&
-    typeof (payload.action as Record<string, unknown>).label === "string" &&
-    typeof (payload.action as Record<string, unknown>).url === "string"
+    childLifecycleActivity?.payload.lifecycle === "pr-created"
       ? {
           kind: "external" as const,
-          label: (payload.action as Record<string, unknown>).label as string,
-          url: (payload.action as Record<string, unknown>).url as string,
+          label: CHILD_LIFECYCLE_ACTION_LABELS["pr-created"],
+          url: childLifecycleActivity.payload.externalAction.url,
         }
       : null;
-  const lifecycle = payload?.lifecycle;
-  const childThreadId = payload?.childThreadId;
-  const childAction =
-    typeof lifecycle === "string" &&
-    isChildThreadLifecycle(lifecycle) &&
-    activity.kind === `child.lifecycle.${lifecycle}` &&
-    typeof childThreadId === "string"
-      ? {
-          kind: "thread" as const,
-          label: CHILD_LIFECYCLE_ACTION_LABELS[lifecycle],
-          threadId: ThreadId.make(childThreadId),
-        }
-      : null;
-  const action =
-    lifecycle === "pr-created" ? (externalAction ?? childAction) : (childAction ?? externalAction);
+  const childAction = childLifecycleActivity
+    ? {
+        kind: "thread" as const,
+        label: CHILD_LIFECYCLE_ACTION_LABELS[childLifecycleActivity.payload.lifecycle],
+        threadId: childLifecycleActivity.payload.childThreadId,
+      }
+    : null;
+  const action = externalAction ?? childAction;
   if (detail) {
     entry.detail = detail;
   }

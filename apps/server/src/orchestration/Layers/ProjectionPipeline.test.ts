@@ -229,18 +229,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: threadCreatedPayload(childThreadId, parentThreadId),
       });
-      const notification = {
-        id: EventId.make("evt-child-lifecycle-completed"),
-        tone: "info" as const,
-        kind: "child.lifecycle.completed",
-        summary: "Release assistant completed",
-        payload: {
-          childThreadId,
-          lifecycle: "completed",
-        },
-        turnId: null,
-        createdAt: notifiedAt,
-      };
       yield* appendAndProject({
         type: "thread.child-lifecycle-notified",
         eventId: EventId.make("evt-child-lifecycle-completed"),
@@ -257,7 +245,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           childTitle: "Release assistant",
           lifecycle: "completed",
           dedupeKey: "child:thread-child-lifecycle:completed:turn-1",
-          notification,
           createdAt: notifiedAt,
         },
       });
@@ -272,14 +259,21 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const activityRows = yield* sql<{
         readonly threadId: string;
         readonly kind: string;
+        readonly summary: string;
+        readonly tone: string;
       }>`
-        SELECT thread_id AS "threadId", kind
+        SELECT thread_id AS "threadId", kind, summary, tone
         FROM projection_thread_activities
         WHERE activity_id = 'evt-child-lifecycle-completed'
       `;
       assert.deepEqual(threadRows, [{ latestChildNotificationAt: notifiedAt }]);
       assert.deepEqual(activityRows, [
-        { threadId: parentThreadId, kind: "child.lifecycle.completed" },
+        {
+          threadId: parentThreadId,
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+          tone: "info",
+        },
       ]);
     }),
   );
