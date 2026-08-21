@@ -105,6 +105,38 @@ async function nestedLifecycleReadModel(): Promise<OrchestrationReadModel> {
   );
 }
 
+async function nestedActiveTurnReadModel(turnId: TurnId): Promise<OrchestrationReadModel> {
+  const model = await nestedLifecycleReadModel();
+  const now = "2026-07-30T00:30:00.000Z";
+  return Effect.runPromise(
+    projectEvent(model, {
+      sequence: 3,
+      eventId: EventId.make(`event-active-${turnId}`),
+      aggregateKind: "thread",
+      aggregateId: childThreadId,
+      type: "thread.session-set",
+      occurredAt: now,
+      commandId,
+      causationEventId: null,
+      correlationId: commandId,
+      metadata: {},
+      payload: {
+        threadId: childThreadId,
+        session: {
+          threadId: childThreadId,
+          status: "running",
+          providerName: "codex",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        },
+      },
+    }),
+  );
+}
+
 function eventsOf(
   result: ReturnType<typeof decideOrchestrationCommand> extends Effect.Effect<
     infer A,
@@ -151,26 +183,6 @@ describe("decider thread lifecycle", () => {
         },
         undefined,
       ],
-      ...(["ready", "missing", "error"] as const).map((status, index) => {
-        return [
-          "completed",
-          {
-            type: "thread.turn.diff.complete",
-            commandId: CommandId.make(`cmd-completed-${status}`),
-            threadId: childThreadId,
-            turnId: TurnId.make(`turn-completed-${status}`),
-            completedAt: at,
-            checkpointRef: CheckpointRef.make(`checkpoint-completed-${status}`),
-            status,
-            files: [],
-            agentTouchedPaths: [],
-            turnFiles: [],
-            checkpointTurnCount: index + 1,
-            createdAt: at,
-          } satisfies OrchestrationCommand,
-          undefined,
-        ] as const;
-      }),
       ...(["approval.requested", "user-input.requested"] as const).map((kind) => {
         const lifecycle = kind === "approval.requested" ? "approval-required" : "input-required";
         return [
@@ -249,8 +261,51 @@ describe("decider thread lifecycle", () => {
     }
   });
 
-  it.each(["missing", "error"] as const)(
-    "reports a successful provider turn as completed when checkpoint capture is %s",
+  it.each([
+    ["ready", "completed"],
+    ["error", "failed"],
+    ["stopped", "blocked"],
+  ] as const)(
+    "reports an authoritative provider transition to %s as %s",
+    async (status, lifecycle) => {
+      const turnId = TurnId.make(`turn-${lifecycle}`);
+      const readModel = await nestedActiveTurnReadModel(turnId);
+      const at = "2026-07-30T01:00:00.000Z";
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.session.set",
+            commandId: CommandId.make(`cmd-${lifecycle}`),
+            threadId: childThreadId,
+            session: {
+              threadId: childThreadId,
+              status,
+              providerName: "codex",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: status === "error" ? "Provider turn failed" : null,
+              updatedAt: at,
+            },
+            createdAt: at,
+          },
+          readModel,
+        }),
+      );
+
+      expect(
+        eventsOf(result).find((event) => event.type === "thread.child-lifecycle-notified"),
+      ).toMatchObject({
+        payload: {
+          lifecycle,
+          dedupeKey: `child:${childThreadId}:${lifecycle}:${turnId}`,
+        },
+      });
+    },
+  );
+
+  it.each(["ready", "missing", "error", "speculative"] as const)(
+    "does not derive lifecycle state from a %s checkpoint",
     async (status) => {
       const readModel = await nestedLifecycleReadModel();
       const at = "2026-07-30T01:00:00.000Z";
@@ -258,11 +313,11 @@ describe("decider thread lifecycle", () => {
         decideOrchestrationCommand({
           command: {
             type: "thread.turn.diff.complete",
-            commandId: CommandId.make(`cmd-successful-turn-${status}`),
+            commandId: CommandId.make(`cmd-checkpoint-${status}`),
             threadId: childThreadId,
-            turnId: TurnId.make(`turn-successful-${status}`),
+            turnId: TurnId.make(`turn-checkpoint-${status}`),
             completedAt: at,
-            checkpointRef: CheckpointRef.make(`checkpoint-successful-${status}`),
+            checkpointRef: CheckpointRef.make(`checkpoint-${status}`),
             status,
             files: [],
             agentTouchedPaths: [],
@@ -275,13 +330,8 @@ describe("decider thread lifecycle", () => {
       );
 
       expect(
-        eventsOf(result).find((event) => event.type === "thread.child-lifecycle-notified"),
-      ).toMatchObject({
-        payload: {
-          lifecycle: "completed",
-          dedupeKey: `child:${childThreadId}:completed:turn-successful-${status}`,
-        },
-      });
+        eventsOf(result).some((event) => event.type === "thread.child-lifecycle-notified"),
+      ).toBe(false);
     },
   );
 

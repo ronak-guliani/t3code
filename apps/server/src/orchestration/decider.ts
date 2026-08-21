@@ -1797,12 +1797,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           session: command.session,
         },
       };
-      if (command.session?.status !== "running" || !threadHasSettlementOverride(thread)) {
-        return sessionSetEvent;
-      }
-      return [
-        sessionSetEvent,
-        {
+      const sourceEvents: PlannedOrchestrationEvent[] = [sessionSetEvent];
+      if (command.session?.status === "running" && threadHasSettlementOverride(thread)) {
+        sourceEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
             aggregateId: command.threadId,
@@ -1815,8 +1812,37 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             reason: "activity",
             updatedAt: command.createdAt,
           },
-        },
-      ];
+        });
+      }
+
+      const completedTurnId =
+        thread.session?.status === "running" &&
+        thread.session.activeTurnId !== null &&
+        command.session?.activeTurnId === null
+          ? thread.session.activeTurnId
+          : null;
+      const lifecycle =
+        completedTurnId === null
+          ? null
+          : command.session.status === "ready"
+            ? "completed"
+            : command.session.status === "error"
+              ? "failed"
+              : command.session.status === "stopped"
+                ? "blocked"
+                : null;
+      if (lifecycle === null) {
+        return sourceEvents.length === 1 ? sessionSetEvent : sourceEvents;
+      }
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: thread,
+        sourceEvents,
+        sourceEvent: sessionSetEvent,
+        lifecycle,
+        sourceKey: completedTurnId,
+        createdAt: command.createdAt,
+      });
     }
 
     case "thread.message.assistant.delta": {
@@ -1916,7 +1942,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.diff.complete": {
-      const thread = yield* requireThread({
+      yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1942,15 +1968,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           completedAt: command.completedAt,
         },
       };
-      return appendChildLifecycleNotification({
-        readModel,
-        childThread: thread,
-        sourceEvents: [turnDiffCompletedEvent],
-        sourceEvent: turnDiffCompletedEvent,
-        lifecycle: "completed",
-        sourceKey: command.turnId,
-        createdAt: command.completedAt,
-      });
+      return turnDiffCompletedEvent;
     }
 
     case "thread.revert.complete": {
