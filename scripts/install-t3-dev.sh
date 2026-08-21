@@ -18,6 +18,11 @@ APP_NAME="T3 Code (Dev)"
 APP_BUNDLE="${APP_NAME}.app"
 INSTALL_DEST="/Applications/${APP_BUNDLE}"
 RELEASE_DIR="${REPO_ROOT}/release"
+PUBLIC_CONFIG_ENV_ARGS=(
+  --env-file=.env.example
+  --env-file-if-exists=.env
+  --env-file-if-exists=.env.local
+)
 
 DO_BUILD=1
 DO_LAUNCH=1
@@ -107,11 +112,11 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
       "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".dmg.blockmap \
       "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".zip \
       "${RELEASE_DIR}"/T3-Code-Dev-*-"${BUILD_ARCH}".zip.blockmap
-    ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
+    ( cd "$REPO_ROOT" && node "${PUBLIC_CONFIG_ENV_ARGS[@]}" scripts/build-desktop-artifact.ts --platform mac --target dmg --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
   else
     log "Building unpacked ${APP_FLAVOR} ${BUILD_ARCH} app..."
     rm -rf "${RELEASE_DIR}/${APP_BUNDLE}"
-    ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dir --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
+    ( cd "$REPO_ROOT" && node "${PUBLIC_CONFIG_ENV_ARGS[@]}" scripts/build-desktop-artifact.ts --platform mac --target dir --arch "$BUILD_ARCH" --flavor "$APP_FLAVOR" )
   fi
 fi
 
