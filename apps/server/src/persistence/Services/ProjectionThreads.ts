@@ -18,7 +18,6 @@ import {
   ReviewResult,
   ReviewSnapshot,
   ThreadId,
-  ThreadUrl,
   TurnId,
 } from "@t3tools/contracts";
 import { Effect, Option, Schema, Context } from "effect";
@@ -29,7 +28,6 @@ export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
-  threadUrl: Schema.NullOr(ThreadUrl).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   title: Schema.String,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,

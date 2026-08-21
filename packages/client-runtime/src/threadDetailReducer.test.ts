@@ -8,7 +8,6 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  ThreadUrl,
   TurnId,
 } from "@t3tools/contracts";
 import type { OrchestrationThread } from "@t3tools/contracts";
@@ -621,13 +620,8 @@ describe("applyThreadDetailEvent", () => {
           parentThreadId: ThreadId.make("thread-1"),
           childThreadId: ThreadId.make("thread-2"),
           childTitle: "Release assistant",
-          threadUrl: ThreadUrl.make("https://app.example/env/thread-2"),
           lifecycle: "completed" as const,
           dedupeKey: "child:thread-2:completed:turn-2",
-          action: {
-            label: "View result",
-            url: "https://app.example/env/thread-2",
-          },
           notification: {
             id: EventId.make("event-child-completed"),
             tone: "info" as const,
@@ -636,10 +630,6 @@ describe("applyThreadDetailEvent", () => {
             payload: {
               childThreadId: ThreadId.make("thread-2"),
               lifecycle: "completed",
-              action: {
-                label: "View result",
-                url: "https://app.example/env/thread-2",
-              },
             },
             turnId: null,
             createdAt: "2026-04-01T12:00:00.000Z",

@@ -3,6 +3,7 @@ import * as Arr from "effect/Array";
 import { extractNormalizedChangedFilePathsFromToolPayload } from "@t3tools/shared/toolChangedFiles";
 import {
   ApprovalRequestId,
+  type ChildThreadLifecycle,
   isToolLifecycleItemType,
   MessageId,
   type OrchestrationLatestTurn,
@@ -11,7 +12,7 @@ import {
   ProviderDriverKind,
   type ToolLifecycleItemType,
   type UserInputQuestion,
-  type ThreadId,
+  ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
 import { isTurnLifecycleInsightActivity } from "@t3tools/shared/orchestrationActivity";
@@ -65,10 +66,17 @@ export interface WorkLogEntry {
   requestKind?: PendingApproval["requestKind"];
   isComplete?: boolean;
   agentRun?: AgentRun;
-  action?: {
-    label: string;
-    url: string;
-  };
+  action?:
+    | {
+        kind: "thread";
+        label: string;
+        threadId: ThreadId;
+      }
+    | {
+        kind: "external";
+        label: string;
+        url: string;
+      };
 }
 
 export interface AgentRun {
@@ -211,6 +219,22 @@ export function formatElapsed(startIso: string, endIso: string | undefined): str
     return null;
   }
   return formatDuration(endedAt - startedAt);
+}
+
+export function latestValidTimestamp(
+  candidates: ReadonlyArray<string | null | undefined>,
+): string | undefined {
+  let latest: string | undefined;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const candidateMs = Date.parse(candidate);
+    if (Number.isFinite(candidateMs) && candidateMs > latestMs) {
+      latest = candidate;
+      latestMs = candidateMs;
+    }
+  }
+  return latest;
 }
 
 type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
@@ -744,6 +768,20 @@ function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): bool
   return typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:");
 }
 
+const CHILD_LIFECYCLE_ACTION_LABELS: Record<ChildThreadLifecycle, string> = {
+  started: "View child",
+  blocked: "Review child",
+  "approval-required": "Review approval",
+  "input-required": "Provide input",
+  failed: "Review failure",
+  completed: "View result",
+  "pr-created": "Open pull request",
+};
+
+function isChildThreadLifecycle(value: string): value is ChildThreadLifecycle {
+  return value in CHILD_LIFECYCLE_ACTION_LABELS;
+}
+
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
   const payload =
     activity.payload && typeof activity.payload === "object"
@@ -794,19 +832,36 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   };
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
-  const action =
+  const externalAction =
     payload?.action &&
     typeof payload.action === "object" &&
     typeof (payload.action as Record<string, unknown>).label === "string" &&
     typeof (payload.action as Record<string, unknown>).url === "string"
       ? {
+          kind: "external" as const,
           label: (payload.action as Record<string, unknown>).label as string,
           url: (payload.action as Record<string, unknown>).url as string,
         }
       : null;
+  const lifecycle = payload?.lifecycle;
+  const childThreadId = payload?.childThreadId;
+  const childAction =
+    typeof lifecycle === "string" &&
+    isChildThreadLifecycle(lifecycle) &&
+    activity.kind === `child.lifecycle.${lifecycle}` &&
+    typeof childThreadId === "string"
+      ? {
+          kind: "thread" as const,
+          label: CHILD_LIFECYCLE_ACTION_LABELS[lifecycle],
+          threadId: ThreadId.make(childThreadId),
+        }
+      : null;
+  const action =
+    lifecycle === "pr-created" ? (externalAction ?? childAction) : (childAction ?? externalAction);
   if (detail) {
     entry.detail = detail;
   }
+
   if (commandPreview.command) {
     entry.command = commandPreview.command;
   }

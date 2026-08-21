@@ -7,6 +7,7 @@ import type {
   SidebarStateSnapshot,
 } from "@t3tools/contracts";
 import { dispatchReorderPinnedThreads, dispatchSetThreadPinned } from "./sidebarStateSync";
+import { latestValidTimestamp } from "./session-logic";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 export const SIDEBAR_PINS_MIGRATED_KEY_PREFIX = "t3code:sidebar-pins-migrated:v1";
@@ -610,12 +611,10 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
   for (const thread of threads) {
     const existingVisitedAt = nextThreadLastVisitedAtById[thread.key];
     if (existingVisitedAt !== undefined) {
-      const latestNotificationAt = [thread.latestTurnCompletedAt, thread.latestChildNotificationAt]
-        .filter((value): value is string => Boolean(value))
-        .reduce<string | undefined>((latest, value) => {
-          if (latest === undefined) return value;
-          return Date.parse(value) > Date.parse(latest) ? value : latest;
-        }, undefined);
+      const latestNotificationAt = latestValidTimestamp([
+        thread.latestTurnCompletedAt,
+        thread.latestChildNotificationAt,
+      ]);
       if (existingVisitedAt === thread.seedVisitedAt && latestNotificationAt) {
         const existingVisitedAtMs = Date.parse(existingVisitedAt);
         const latestNotificationAtMs = Date.parse(latestNotificationAt);
@@ -629,22 +628,11 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
       }
       continue;
     }
-    let seedVisitedAt: string | undefined;
-    let seedVisitedAtMs = Number.NEGATIVE_INFINITY;
-    for (const candidate of [
+    const seedVisitedAt = latestValidTimestamp([
       thread.seedVisitedAt,
       thread.latestTurnCompletedAt,
       thread.latestChildNotificationAt,
-    ]) {
-      if (!candidate) {
-        continue;
-      }
-      const candidateMs = Date.parse(candidate);
-      if (Number.isFinite(candidateMs) && candidateMs > seedVisitedAtMs) {
-        seedVisitedAt = candidate;
-        seedVisitedAtMs = candidateMs;
-      }
-    }
+    ]);
     if (seedVisitedAt !== undefined) {
       nextThreadLastVisitedAtById[thread.key] = seedVisitedAt;
     }

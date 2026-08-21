@@ -20,6 +20,7 @@ import {
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatElapsed, type AgentRun } from "../../session-logic";
+import { buildThreadPath } from "@t3tools/shared/threadUrl";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -60,7 +61,7 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
-  resolveLifecycleActionTarget,
+  resolveExternalActionUrl,
   resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
@@ -1585,6 +1586,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const { canExpandCommand = false, workEntry, workspaceRoot } = props;
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
   const navigate = useNavigate();
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
   }
@@ -1604,10 +1606,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const CommandToggleIcon = isCommandExpanded ? ChevronDownIcon : ChevronRightIcon;
   const expandableCommand = canExpandCommand ? fullCommand : null;
-  const actionTarget =
-    workEntry.action && typeof window !== "undefined"
-      ? resolveLifecycleActionTarget(workEntry.action.url, window.location.href)
-      : null;
+  const actionHref =
+    workEntry.action?.kind === "thread"
+      ? buildThreadPath({
+          environmentId: activeThreadEnvironmentId,
+          threadId: workEntry.action.threadId,
+        })
+      : workEntry.action?.kind === "external"
+        ? resolveExternalActionUrl(workEntry.action.url)
+        : null;
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1682,20 +1689,20 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
-        {workEntry.action && actionTarget ? (
+        {workEntry.action && actionHref ? (
           <a
-            href={actionTarget.href}
-            {...(actionTarget?.kind === "external"
+            href={actionHref}
+            {...(workEntry.action.kind === "external"
               ? { target: "_blank", rel: "noopener noreferrer" }
               : {})}
             onClick={(event) => {
-              if (actionTarget?.kind !== "thread") return;
+              if (workEntry.action?.kind !== "thread") return;
               event.preventDefault();
               void navigate({
                 to: "/$environmentId/$threadId",
                 params: {
-                  environmentId: actionTarget.environmentId,
-                  threadId: actionTarget.threadId,
+                  environmentId: activeThreadEnvironmentId,
+                  threadId: workEntry.action.threadId,
                 },
               });
             }}

@@ -1,12 +1,6 @@
 import { formatElapsed, type TimelineEntry, type WorkLogEntry } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
-import {
-  EnvironmentId,
-  type MessageId,
-  ThreadId,
-  type TurnId,
-  type WorkspaceHandoffOrigin,
-} from "@t3tools/contracts";
+import { type MessageId, type TurnId, type WorkspaceHandoffOrigin } from "@t3tools/contracts";
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
@@ -72,38 +66,13 @@ export interface StableMessagesTimelineRowsState {
 
 export type WorkGroupExpansionOverride = "expanded" | "collapsed" | null;
 
-export type LifecycleActionTarget =
-  | { readonly kind: "external"; readonly href: string }
-  | {
-      readonly kind: "thread";
-      readonly href: string;
-      readonly environmentId: EnvironmentId;
-      readonly threadId: ThreadId;
-    };
-
-export function resolveLifecycleActionTarget(
-  actionUrl: string,
-  currentUrl: string,
-): LifecycleActionTarget | null {
+export function resolveExternalActionUrl(actionUrl: string): string | null {
   try {
-    const current = new URL(currentUrl);
-    const target = new URL(actionUrl, current);
+    const target = new URL(actionUrl);
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       return null;
     }
-    if (target.origin !== current.origin) {
-      return { kind: "external", href: target.href };
-    }
-    const segments = target.pathname.split("/").filter(Boolean);
-    if (segments.length !== 2) {
-      return null;
-    }
-    return {
-      kind: "thread",
-      href: target.href,
-      environmentId: EnvironmentId.make(decodeURIComponent(segments[0]!)),
-      threadId: ThreadId.make(decodeURIComponent(segments[1]!)),
-    };
+    return target.href;
   } catch {
     return null;
   }

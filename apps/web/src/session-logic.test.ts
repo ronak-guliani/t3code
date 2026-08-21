@@ -24,7 +24,24 @@ import {
   hasToolActivityForTurn,
   isThreadActivelyWorking,
   isLatestTurnSettled,
+  latestValidTimestamp,
 } from "./session-logic";
+
+describe("latestValidTimestamp", () => {
+  it("ignores invalid values even when the first candidate is invalid", () => {
+    expect(
+      latestValidTimestamp([
+        "not-a-timestamp",
+        "2026-02-23T00:00:02.000Z",
+        "2026-02-23T00:00:01.000Z",
+      ]),
+    ).toBe("2026-02-23T00:00:02.000Z");
+  });
+
+  it("returns undefined when no candidate is valid", () => {
+    expect(latestValidTimestamp([null, undefined, "invalid"])).toBeUndefined();
+  });
+});
 
 describe("deriveAgentRunTimelineEntries", () => {
   it("maps an agent run into the normal prompt, work, and completed response sequence", () => {
@@ -628,7 +645,7 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
-  it("preserves a child lifecycle action for clickable parent notifications", () => {
+  it("derives a child navigation action from lifecycle facts", () => {
     const entries = deriveWorkLogEntries(
       [
         makeActivity({
@@ -637,10 +654,8 @@ describe("deriveWorkLogEntries", () => {
           kind: "child.lifecycle.completed",
           summary: "Release assistant completed",
           payload: {
-            action: {
-              label: "View result",
-              url: "https://app.example/environment/thread",
-            },
+            childThreadId: "child-thread",
+            lifecycle: "completed",
           },
         }),
       ],
@@ -651,11 +666,68 @@ describe("deriveWorkLogEntries", () => {
       {
         label: "Release assistant completed",
         action: {
+          kind: "thread",
           label: "View result",
-          url: "https://app.example/environment/thread",
+          threadId: "child-thread",
         },
       },
     ]);
+  });
+
+  it("preserves a persisted external pull request action", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "child-pr-created",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "child.lifecycle.pr-created",
+          summary: "Release assistant created a pull request",
+          payload: {
+            childThreadId: "child-thread",
+            lifecycle: "pr-created",
+            action: {
+              label: "Open pull request",
+              url: "https://github.com/acme/app/pull/42",
+            },
+          },
+        }),
+      ],
+      TurnId.make("parent-latest-turn"),
+    );
+
+    expect(entry?.action).toEqual({
+      kind: "external",
+      label: "Open pull request",
+      url: "https://github.com/acme/app/pull/42",
+    });
+  });
+
+  it("prefers derived child navigation over a legacy persisted thread URL", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "legacy-child-completed",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+          payload: {
+            childThreadId: "child-thread",
+            lifecycle: "completed",
+            action: {
+              label: "View result",
+              url: "https://stale.example/environment/child-thread",
+            },
+          },
+        }),
+      ],
+      TurnId.make("parent-latest-turn"),
+    );
+
+    expect(entry?.action).toEqual({
+      kind: "thread",
+      label: "View result",
+      threadId: "child-thread",
+    });
   });
 
   it("omits tool started entries and keeps completed entries", () => {

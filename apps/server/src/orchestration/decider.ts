@@ -7,7 +7,6 @@ import type {
   OrchestrationReadModel,
   OrchestrationThread,
   ThreadId,
-  ThreadUrl,
   TurnId,
 } from "@t3tools/contracts";
 import { Effect, Option } from "effect";
@@ -121,7 +120,6 @@ function childLifecycleDedupeKey(
 function appendChildLifecycleNotification(input: {
   readonly readModel: OrchestrationReadModel;
   readonly childThread: OrchestrationThread;
-  readonly threadUrl: ThreadUrl | undefined;
   readonly sourceEvents: ReadonlyArray<PlannedOrchestrationEvent>;
   readonly sourceEvent: PlannedOrchestrationEvent;
   readonly lifecycle: ChildThreadLifecycle;
@@ -132,7 +130,7 @@ function appendChildLifecycleNotification(input: {
   const sourceResult =
     input.sourceEvents.length === 1 ? input.sourceEvents[0]! : input.sourceEvents;
   const parentThreadId = input.childThread.parentThreadId;
-  if (parentThreadId === null || parentThreadId === undefined || input.threadUrl === undefined) {
+  if (parentThreadId === null || parentThreadId === undefined) {
     return sourceResult;
   }
   const parentThread = input.readModel.threads.find(
@@ -160,13 +158,16 @@ function appendChildLifecycleNotification(input: {
       parentThreadId,
       childThreadId: input.childThread.id,
       childTitle: input.childThread.title,
-      threadUrl: input.threadUrl,
       lifecycle: input.lifecycle,
       dedupeKey,
-      action: {
-        label: presentation.actionLabel,
-        url: input.actionUrl ?? input.threadUrl,
-      },
+      ...(input.actionUrl === undefined
+        ? {}
+        : {
+            action: {
+              label: presentation.actionLabel,
+              url: input.actionUrl,
+            },
+          }),
     },
     turnId: null,
     createdAt: input.createdAt,
@@ -181,13 +182,16 @@ function appendChildLifecycleNotification(input: {
         parentThreadId,
         childThreadId: input.childThread.id,
         childTitle: input.childThread.title,
-        threadUrl: input.threadUrl,
         lifecycle: input.lifecycle,
         dedupeKey,
-        action: {
-          label: presentation.actionLabel,
-          url: input.actionUrl ?? input.threadUrl,
-        },
+        ...(input.actionUrl === undefined
+          ? {}
+          : {
+              action: {
+                label: presentation.actionLabel,
+                url: input.actionUrl,
+              },
+            }),
         notification,
         createdAt: input.createdAt,
       },
@@ -565,7 +569,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           parentThreadId: command.parentThreadId ?? null,
-          ...(command.threadUrl !== undefined ? { threadUrl: command.threadUrl } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -933,7 +936,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
-          ...(command.threadUrl !== undefined ? { threadUrl: command.threadUrl } : {}),
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.regenerateTitle === true
             ? {
@@ -968,7 +970,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ? appendChildLifecycleNotification({
             readModel,
             childThread: thread,
-            threadUrl: command.threadUrl ?? thread.threadUrl,
             sourceEvents: [metaUpdatedEvent],
             sourceEvent: metaUpdatedEvent,
             lifecycle: "pr-created",
@@ -1421,7 +1422,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
-        threadUrl: command.threadUrl ?? targetThread.threadUrl,
         sourceEvents: [userMessageEvent, turnStartRequestedEvent, ...lifecycleEvents],
         sourceEvent: turnStartRequestedEvent,
         lifecycle: "started",
@@ -1624,7 +1624,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return appendChildLifecycleNotification({
         readModel,
         childThread: targetThread,
-        threadUrl: command.threadUrl ?? targetThread.threadUrl,
         sourceEvents: [...events, userMessageEvent, turnStartRequestedEvent, dispatchedEvent],
         sourceEvent: turnStartRequestedEvent,
         lifecycle: "started",
@@ -1946,7 +1945,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return appendChildLifecycleNotification({
         readModel,
         childThread: thread,
-        threadUrl: command.threadUrl ?? thread.threadUrl,
         sourceEvents: [turnDiffCompletedEvent],
         sourceEvent: turnDiffCompletedEvent,
         lifecycle: "completed",
@@ -2039,7 +2037,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return appendChildLifecycleNotification({
         readModel,
         childThread: thread,
-        threadUrl: command.threadUrl ?? thread.threadUrl,
         sourceEvents,
         sourceEvent: activityEvent,
         lifecycle,

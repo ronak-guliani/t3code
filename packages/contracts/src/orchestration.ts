@@ -440,13 +440,14 @@ export const ChildThreadLifecycleNotification = Schema.Struct({
   parentThreadId: ThreadId,
   childThreadId: ThreadId,
   childTitle: TrimmedNonEmptyString,
-  threadUrl: ThreadUrl,
   lifecycle: ChildThreadLifecycle,
   dedupeKey: TrimmedNonEmptyString,
-  action: Schema.Struct({
-    label: TrimmedNonEmptyString,
-    url: TrimmedNonEmptyString,
-  }),
+  action: Schema.optionalKey(
+    Schema.Struct({
+      label: TrimmedNonEmptyString,
+      url: TrimmedNonEmptyString,
+    }),
+  ),
   notification: OrchestrationThreadActivity,
   createdAt: IsoDateTime,
 });
@@ -481,7 +482,6 @@ export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
-  threadUrl: Schema.optionalKey(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -563,7 +563,6 @@ export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
-  threadUrl: Schema.optionalKey(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -668,7 +667,6 @@ const ThreadCreateCommand = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
-  threadUrl: Schema.optional(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -758,7 +756,6 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
-  threadUrl: Schema.optional(ThreadUrl),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
@@ -849,7 +846,6 @@ export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
-  threadUrl: Schema.optional(ThreadUrl),
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
@@ -951,7 +947,6 @@ const ThreadQueuedTurnDispatchCommand = Schema.Struct({
   type: Schema.Literal("thread.queued-turn.dispatch"),
   commandId: CommandId,
   threadId: ThreadId,
-  threadUrl: Schema.optional(ThreadUrl),
   queuedTurnId: QueuedTurnId,
   dispatchedAt: IsoDateTime,
 });
@@ -1176,7 +1171,6 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.diff.complete"),
   commandId: CommandId,
   threadId: ThreadId,
-  threadUrl: Schema.optional(ThreadUrl),
   turnId: TurnId,
   completedAt: IsoDateTime,
   checkpointRef: CheckpointRef,
@@ -1195,7 +1189,6 @@ const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
   threadId: ThreadId,
-  threadUrl: Schema.optional(ThreadUrl),
   activity: OrchestrationThreadActivity,
   createdAt: IsoDateTime,
 });
@@ -1323,7 +1316,6 @@ export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
-  threadUrl: Schema.optionalKey(ThreadUrl),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1417,7 +1409,6 @@ export const ThreadDecoupledPayload = Schema.Struct({
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
-  threadUrl: Schema.optional(ThreadUrl),
   title: Schema.optional(TrimmedNonEmptyString),
   /** Intent marker consumed by the title-generation reactor. Keeping this on
       the existing event lets older clients safely ignore the new field. */

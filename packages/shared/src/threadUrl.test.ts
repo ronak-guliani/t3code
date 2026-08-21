@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
-import { buildThreadUrl } from "./threadUrl.ts";
+import { buildThreadPath, buildThreadUrl } from "./threadUrl.ts";
 
 describe("buildThreadUrl", () => {
   it("uses and normalizes the active production app origin", () => {
@@ -22,5 +22,14 @@ describe("buildThreadUrl", () => {
         threadId: ThreadId.make("thread?draft"),
       }),
     ).toBe("http://127.0.0.1:5173/dev/thread%3Fdraft");
+  });
+
+  it("builds a same-origin router path without requiring browser globals", () => {
+    expect(
+      buildThreadPath({
+        environmentId: EnvironmentId.make("environment prod"),
+        threadId: ThreadId.make("child/one"),
+      }),
+    ).toBe("/environment%20prod/child%2Fone");
   });
 });

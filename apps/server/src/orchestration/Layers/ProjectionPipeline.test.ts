@@ -9,7 +9,6 @@ import {
   ThreadId,
   TurnId,
   ProviderInstanceId,
-  ThreadUrl,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -130,24 +129,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         },
       });
 
-      const threadUrl = ThreadUrl.make("https://app.example/environment/thread-1");
-      yield* eventStore.append({
-        type: "thread.meta-updated",
-        eventId: EventId.make("evt-4"),
-        aggregateKind: "thread",
-        aggregateId: ThreadId.make("thread-1"),
-        occurredAt: now,
-        commandId: CommandId.make("cmd-4"),
-        causationEventId: null,
-        correlationId: CommandId.make("cmd-4"),
-        metadata: {},
-        payload: {
-          threadId: ThreadId.make("thread-1"),
-          threadUrl,
-          updatedAt: now,
-        },
-      });
-
       yield* projectionPipeline.bootstrap;
 
       const projectRows = yield* sql<{
@@ -176,13 +157,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.deepEqual(messageRows, [{ messageId: "message-1", text: "hello" }]);
 
-      const threadRows = yield* sql<{ readonly threadUrl: string | null }>`
-        SELECT thread_url AS "threadUrl"
-        FROM projection_threads
-        WHERE thread_id = 'thread-1'
-      `;
-      assert.deepEqual(threadRows, [{ threadUrl }]);
-
       const stateRows = yield* sql<{
         readonly projector: string;
         readonly lastAppliedSequence: number;
@@ -195,7 +169,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       `;
       assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const row of stateRows) {
-        assert.equal(row.lastAppliedSequence, 4);
+        assert.equal(row.lastAppliedSequence, 3);
       }
     }),
   );
@@ -207,7 +181,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const parentThreadId = ThreadId.make("thread-parent-lifecycle");
       const childThreadId = ThreadId.make("thread-child-lifecycle");
-      const threadUrl = ThreadUrl.make("https://app.example/environment/thread-child-lifecycle");
       const createdAt = "2026-03-24T00:00:00.000Z";
       const notifiedAt = "2026-03-24T00:05:00.000Z";
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
@@ -218,7 +191,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         threadId,
         projectId: ProjectId.make("project-lifecycle"),
         parentThreadId,
-        ...(parentThreadId !== null ? { threadUrl } : {}),
         title: parentThreadId === null ? "Parent" : "Release assistant",
         modelSelection: {
           instanceId: ProviderInstanceId.make("codex"),
@@ -265,8 +237,6 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         payload: {
           childThreadId,
           lifecycle: "completed",
-          threadUrl,
-          action: { label: "View result", url: threadUrl },
         },
         turnId: null,
         createdAt: notifiedAt,
@@ -285,10 +255,8 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           parentThreadId,
           childThreadId,
           childTitle: "Release assistant",
-          threadUrl,
           lifecycle: "completed",
           dedupeKey: "child:thread-child-lifecycle:completed:turn-1",
-          action: { label: "View result", url: threadUrl },
           notification,
           createdAt: notifiedAt,
         },

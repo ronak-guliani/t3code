@@ -353,7 +353,6 @@ export function projectEvent(
             ...(payload.parentThreadId !== undefined
               ? { parentThreadId: payload.parentThreadId }
               : {}),
-            ...(payload.threadUrl !== undefined ? { threadUrl: payload.threadUrl } : {}),
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
@@ -532,7 +531,6 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
-            ...(payload.threadUrl !== undefined ? { threadUrl: payload.threadUrl } : {}),
             ...(payload.title !== undefined ? { title: payload.title } : {}),
             ...(payload.titleRegeneration !== undefined
               ? { titleRegeneration: payload.titleRegeneration }

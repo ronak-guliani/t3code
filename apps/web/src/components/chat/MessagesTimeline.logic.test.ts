@@ -8,41 +8,27 @@ import {
   EMPTY_REVIEW_OUTPUT_MESSAGE_IDS,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
-  resolveLifecycleActionTarget,
+  resolveExternalActionUrl,
   resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
 
-describe("resolveLifecycleActionTarget", () => {
-  const currentUrl = "https://app.example/env/current";
-
-  it("routes encoded same-origin thread links internally", () => {
-    expect(resolveLifecycleActionTarget("/env%20one/thread%2Ftwo", currentUrl)).toEqual({
-      kind: "thread",
-      href: "https://app.example/env%20one/thread%2Ftwo",
-      environmentId: "env one",
-      threadId: "thread/two",
-    });
-  });
-
-  it("opens external HTTPS links in a new browsing context", () => {
-    expect(
-      resolveLifecycleActionTarget("https://github.com/example/repo/pull/1", currentUrl),
-    ).toEqual({
-      kind: "external",
-      href: "https://github.com/example/repo/pull/1",
-    });
+describe("resolveExternalActionUrl", () => {
+  it("accepts external HTTPS links", () => {
+    expect(resolveExternalActionUrl("https://github.com/example/repo/pull/1")).toBe(
+      "https://github.com/example/repo/pull/1",
+    );
   });
 
   it.each([
     "javascript:alert(1)",
     "data:text/html,unsafe",
     "file:///tmp/unsafe",
-    "https://app.example/not-a-thread",
+    "/env/thread",
     "http://[malformed",
   ])("rejects unsafe or invalid action URL %s", (url) => {
-    expect(resolveLifecycleActionTarget(url, currentUrl)).toBeNull();
+    expect(resolveExternalActionUrl(url)).toBeNull();
   });
 });
 

@@ -634,7 +634,11 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               baseDir,
             ]),
           );
-          const created = JSON.parse(createdOutput.output) as { readonly threadId: string };
+          const created = JSON.parse(createdOutput.output) as {
+            readonly threadId: string;
+            readonly threadUrl: string;
+          };
+          assert.equal(new URL(created.threadUrl).pathname.split("/").at(-1), created.threadId);
 
           yield* runCliWithRuntime([
             "chat",
@@ -826,7 +830,11 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               baseDir,
             ]),
           );
-          const newChat = JSON.parse(newChatOutput.output) as { readonly threadId: string };
+          const newChat = JSON.parse(newChatOutput.output) as {
+            readonly threadId: string;
+            readonly threadUrl: string;
+          };
+          assert.equal(new URL(newChat.threadUrl).pathname.split("/").at(-1), newChat.threadId);
 
           const invalidNew = yield* captureExitAndStdout(
             runCli([

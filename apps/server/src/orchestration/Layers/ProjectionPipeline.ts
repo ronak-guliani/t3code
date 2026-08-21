@@ -638,7 +638,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
             parentThreadId: event.payload.parentThreadId ?? null,
-            threadUrl: event.payload.threadUrl ?? null,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -877,9 +876,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            ...(event.payload.threadUrl !== undefined
-              ? { threadUrl: event.payload.threadUrl }
-              : {}),
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
             ...(event.payload.titleRegeneration !== undefined
               ? {

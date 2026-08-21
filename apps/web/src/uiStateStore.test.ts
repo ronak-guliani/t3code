@@ -542,6 +542,22 @@ describe("uiStateStore pure functions", () => {
     });
   });
 
+  it("syncThreads ignores an invalid first timestamp when selecting the latest visit", () => {
+    const thread1 = ThreadId.make("thread-1");
+    const next = syncThreads(makeUiState(), [
+      {
+        key: thread1,
+        seedVisitedAt: "invalid",
+        latestTurnCompletedAt: "also-invalid",
+        latestChildNotificationAt: "2026-02-25T12:36:00.000Z",
+      },
+    ]);
+
+    expect(next.threadLastVisitedAtById).toEqual({
+      [thread1]: "2026-02-25T12:36:00.000Z",
+    });
+  });
+
   it("syncThreads repairs a persisted legacy seed that predates the latest completion", () => {
     const thread1 = ThreadId.make("thread-1");
     const legacySeed = "2026-02-25T12:30:00.000Z";

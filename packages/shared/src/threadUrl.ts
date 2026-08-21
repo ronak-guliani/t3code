@@ -11,8 +11,15 @@ export function buildThreadUrl(input: {
   readonly threadId: ThreadId;
 }): ThreadUrlType {
   const url = new URL(input.appOrigin);
-  url.pathname = `/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.threadId)}`;
+  url.pathname = buildThreadPath(input);
   url.search = "";
   url.hash = "";
   return ThreadUrl.make(url.toString());
+}
+
+export function buildThreadPath(input: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+}): string {
+  return `/${encodeURIComponent(input.environmentId)}/${encodeURIComponent(input.threadId)}`;
 }

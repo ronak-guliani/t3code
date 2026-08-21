@@ -6,7 +6,6 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
-  ThreadUrl,
   TurnId,
   type OrchestrationEvent,
   ProviderInstanceId,
@@ -35,24 +34,17 @@ import {
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadUrlBuilder, type ThreadUrlBuilderShape } from "../../threadUrl.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
-async function createOrchestrationSystem(threadUrlBuilder?: ThreadUrlBuilderShape) {
+async function createOrchestrationSystem() {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
-  const engineLayer =
-    threadUrlBuilder === undefined
-      ? OrchestrationEngineLive
-      : OrchestrationEngineLive.pipe(
-          Layer.provide(Layer.succeed(ThreadUrlBuilder, threadUrlBuilder)),
-        );
-  const orchestrationLayer = engineLayer.pipe(
+  const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),
@@ -91,78 +83,8 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
-  it("overwrites caller-supplied thread URLs with the server canonical URL", async () => {
-    const canonicalUrl = ThreadUrl.make("https://app.example/environment/thread-canonical");
-    const system = await createOrchestrationSystem({
-      forThread: () => canonicalUrl,
-    });
-    const projectId = asProjectId("project-canonical-url");
-    const threadId = ThreadId.make("thread-canonical");
-
-    try {
-      await system.run(
-        system.engine.dispatch({
-          type: "project.create",
-          commandId: CommandId.make("cmd-project-canonical-url"),
-          projectId,
-          title: "Canonical URL",
-          workspaceRoot: "/tmp/project-canonical-url",
-          defaultModelSelection: null,
-          createdAt: now(),
-        }),
-      );
-      const result = await system.run(
-        system.engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.make("cmd-thread-canonical-url"),
-          threadId,
-          projectId,
-          threadUrl: ThreadUrl.make("https://malicious.example/redirect"),
-          title: "Canonical URL",
-          modelSelection: {
-            instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5-codex",
-          },
-          runtimeMode: "full-access",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          branch: null,
-          worktreePath: null,
-          createdAt: now(),
-        }),
-      );
-
-      expect(result.threadUrl).toBe(canonicalUrl);
-      expect((await system.run(system.engine.getReadModel())).threads[0]?.threadUrl).toBe(
-        canonicalUrl,
-      );
-
-      await system.run(
-        system.engine.dispatch({
-          type: "thread.meta.update",
-          commandId: CommandId.make("cmd-thread-canonical-url-update"),
-          threadId,
-          threadUrl: ThreadUrl.make("https://stale.example/thread"),
-          title: "Canonical URL updated",
-        }),
-      );
-      const events = await system.run(
-        Stream.runCollect(system.engine.readEvents(0)).pipe(
-          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
-        ),
-      );
-      expect(events.at(-1)).toMatchObject({
-        type: "thread.meta-updated",
-        payload: { threadUrl: canonicalUrl },
-      });
-    } finally {
-      await system.dispose();
-    }
-  });
-
   it("deduplicates semantic child lifecycle notifications transactionally", async () => {
-    const system = await createOrchestrationSystem({
-      forThread: (threadId) => ThreadUrl.make(`https://app.example/environment/${threadId}`),
-    });
+    const system = await createOrchestrationSystem();
     const projectId = asProjectId("project-lifecycle-dedup");
     const parentThreadId = ThreadId.make("parent-lifecycle-dedup");
     const childThreadId = ThreadId.make("child-lifecycle-dedup");

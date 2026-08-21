@@ -88,7 +88,6 @@ export const threadSummary = (thread: CliThread) => ({
   id: thread.id,
   projectId: thread.projectId,
   parentThreadId: thread.parentThreadId,
-  threadUrl: thread.threadUrl,
   title: thread.title,
   modelSelection: thread.modelSelection,
   runtimeMode: thread.runtimeMode,

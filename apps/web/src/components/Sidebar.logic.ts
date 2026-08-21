@@ -9,7 +9,11 @@ import {
 import type { SidebarThreadSummary, Thread } from "../types";
 import { DEFAULT_NEW_THREAD_WORKSPACE } from "../lib/newThreadDefaults";
 import { cn } from "../lib/utils";
-import { isLatestTurnSettled, isThreadActivelyWorking } from "../session-logic";
+import {
+  isLatestTurnSettled,
+  isThreadActivelyWorking,
+  latestValidTimestamp,
+} from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -137,13 +141,13 @@ const THREAD_STATUSES = {
 } as const satisfies Record<string, ThreadStatusPill>;
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Working: 3,
-  Connecting: 3,
-  "Plan Ready": 2,
+  "Pending Approval": 6,
+  "Awaiting Input": 5,
+  Working: 4,
+  Connecting: 4,
+  "Plan Ready": 3,
+  "Child update": 2,
   Completed: 1,
-  "Child update": 1,
 };
 
 type ThreadStatusInput = Pick<
@@ -249,19 +253,16 @@ export function hasUnseenCompletion(thread: {
   latestChildNotificationAt?: string | null | undefined;
   lastVisitedAt?: string | null | undefined;
 }): boolean {
-  const latestNotificationAt = [thread.latestTurn?.completedAt, thread.latestChildNotificationAt]
-    .filter((value): value is string => Boolean(value))
-    .reduce<number | null>((latest, value) => {
-      const timestamp = Date.parse(value);
-      if (Number.isNaN(timestamp)) return latest;
-      return latest === null ? timestamp : Math.max(latest, timestamp);
-    }, null);
-  if (latestNotificationAt === null) return false;
+  const latestNotificationAt = latestValidTimestamp([
+    thread.latestTurn?.completedAt,
+    thread.latestChildNotificationAt,
+  ]);
+  if (latestNotificationAt === undefined) return false;
   if (!thread.lastVisitedAt) return true;
 
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
-  return latestNotificationAt > lastVisitedAt;
+  return Date.parse(latestNotificationAt) > lastVisitedAt;
 }
 
 function hasUnseenChildNotification(thread: {

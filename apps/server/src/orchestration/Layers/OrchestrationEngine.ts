@@ -35,6 +35,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
+import { ThreadUrlBuilder } from "../../threadUrl.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
@@ -49,7 +50,6 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
-import { ThreadUrlBuilder } from "../../threadUrl.ts";
 
 const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
@@ -109,6 +109,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const withWorktreeLock: OrchestrationEngineShape["withWorktreeLock"] = (effect) =>
     worktreeLock.withPermits(1)(effect);
 
+  const dispatchResult = (command: OrchestrationCommand, sequence: number): DispatchResult => ({
+    sequence,
+    ...((command.type === "thread.create" ||
+      (command.type === "thread.turn.start" && command.bootstrap?.createThread !== undefined)) &&
+    Option.isSome(threadUrls)
+      ? { threadUrl: threadUrls.value.forThread(command.threadId) }
+      : {}),
+  });
+
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
       case "thread.create":
@@ -139,26 +148,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         return command;
     }
   });
-
-  const attachCanonicalThreadUrl = (command: OrchestrationCommand): OrchestrationCommand => {
-    if (Option.isNone(threadUrls)) {
-      return command;
-    }
-    switch (command.type) {
-      case "thread.create":
-      case "thread.meta.update":
-      case "thread.turn.start":
-      case "thread.queued-turn.dispatch":
-      case "thread.turn.diff.complete":
-      case "thread.activity.append":
-        return {
-          ...command,
-          threadUrl: threadUrls.value.forThread(command.threadId),
-        };
-      default:
-        return command;
-    }
-  };
 
   const isWorktreeCleanupPending = Effect.fn("isWorktreeCleanupPending")(function* (
     worktreePath: string,
@@ -206,9 +195,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
     const process = Effect.exit(
       Effect.gen(function* () {
-        const command = attachCanonicalThreadUrl(
-          yield* canonicalizeCommandWorktree(envelope.command),
-        );
+        const command = yield* canonicalizeCommandWorktree(envelope.command);
         yield* Effect.annotateCurrentSpan({
           "orchestration.command_id": envelope.command.commandId,
           "orchestration.command_type": envelope.command.type,
@@ -221,14 +208,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
-            return {
-              sequence: existingReceipt.value.resultSequence,
-              ...((command.type === "thread.create" ||
-                (command.type === "thread.turn.start" && command.bootstrap?.createThread)) &&
-              command.threadUrl !== undefined
-                ? { threadUrl: command.threadUrl }
-                : {}),
-            };
+            return dispatchResult(command, existingReceipt.value.resultSequence);
           }
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
@@ -303,11 +283,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 committedEvents,
                 lastSequence: lastSavedEvent.sequence,
                 nextReadModel,
-                ...((command.type === "thread.create" ||
-                  (command.type === "thread.turn.start" && command.bootstrap?.createThread)) &&
-                command.threadUrl !== undefined
-                  ? { threadUrl: command.threadUrl }
-                  : {}),
               } as const;
             }),
           )
@@ -335,10 +310,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return {
-          sequence: committedCommand.lastSequence,
-          ...(committedCommand.threadUrl ? { threadUrl: committedCommand.threadUrl } : {}),
-        };
+        return dispatchResult(command, committedCommand.lastSequence);
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>

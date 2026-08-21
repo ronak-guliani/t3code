@@ -8,7 +8,6 @@ import {
   ProviderInstanceId,
   QueuedTurnId,
   ThreadId,
-  ThreadUrl,
   TurnId,
   type OrchestrationCommand,
   type OrchestrationReadModel,
@@ -24,7 +23,6 @@ const projectId = ProjectId.make("project-lifecycle");
 const threadId = ThreadId.make("thread-lifecycle");
 const parentThreadId = ThreadId.make("parent-lifecycle");
 const childThreadId = ThreadId.make("child-lifecycle");
-const childThreadUrl = ThreadUrl.make("https://app.example/env/child-lifecycle");
 
 async function lifecycleReadModel(): Promise<OrchestrationReadModel> {
   const now = "2026-07-30T00:00:00.000Z";
@@ -84,7 +82,6 @@ async function nestedLifecycleReadModel(): Promise<OrchestrationReadModel> {
       threadId: id,
       projectId,
       parentThreadId: parentId,
-      ...(parentId !== null ? { threadUrl: childThreadUrl } : {}),
       title,
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -121,17 +118,22 @@ function eventsOf(
 }
 
 describe("decider thread lifecycle", () => {
-  it("routes every child lifecycle notification to its parent with a canonical action", async () => {
+  it("routes child facts to the parent and persists only external actions", async () => {
     const readModel = await nestedLifecycleReadModel();
     const at = "2026-07-30T01:00:00.000Z";
-    const commands: ReadonlyArray<readonly [string, OrchestrationCommand, string]> = [
+    const commands: ReadonlyArray<
+      readonly [
+        string,
+        OrchestrationCommand,
+        { readonly label: string; readonly url: string } | undefined,
+      ]
+    > = [
       [
         "started",
         {
           type: "thread.turn.start",
           commandId: CommandId.make("cmd-started"),
           threadId: childThreadId,
-          threadUrl: childThreadUrl,
           message: {
             messageId: MessageId.make("message-started"),
             role: "user",
@@ -147,7 +149,7 @@ describe("decider thread lifecycle", () => {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           createdAt: at,
         },
-        childThreadUrl,
+        undefined,
       ],
       ...(["ready", "missing", "error"] as const).map((status, index) => {
         return [
@@ -156,7 +158,6 @@ describe("decider thread lifecycle", () => {
             type: "thread.turn.diff.complete",
             commandId: CommandId.make(`cmd-completed-${status}`),
             threadId: childThreadId,
-            threadUrl: childThreadUrl,
             turnId: TurnId.make(`turn-completed-${status}`),
             completedAt: at,
             checkpointRef: CheckpointRef.make(`checkpoint-completed-${status}`),
@@ -167,7 +168,7 @@ describe("decider thread lifecycle", () => {
             checkpointTurnCount: index + 1,
             createdAt: at,
           } satisfies OrchestrationCommand,
-          childThreadUrl,
+          undefined,
         ] as const;
       }),
       ...(["approval.requested", "user-input.requested"] as const).map((kind) => {
@@ -178,7 +179,6 @@ describe("decider thread lifecycle", () => {
             type: "thread.activity.append",
             commandId: CommandId.make(`cmd-${lifecycle}`),
             threadId: childThreadId,
-            threadUrl: childThreadUrl,
             activity: {
               id: EventId.make(`activity-${lifecycle}`),
               tone: "approval",
@@ -190,7 +190,7 @@ describe("decider thread lifecycle", () => {
             },
             createdAt: at,
           } satisfies OrchestrationCommand,
-          childThreadUrl,
+          undefined,
         ] as const;
       }),
       [
@@ -199,7 +199,6 @@ describe("decider thread lifecycle", () => {
           type: "thread.meta.update",
           commandId: CommandId.make("cmd-pr-created"),
           threadId: childThreadId,
-          threadUrl: childThreadUrl,
           pullRequest: {
             number: 42,
             title: "Release",
@@ -209,11 +208,14 @@ describe("decider thread lifecycle", () => {
             state: "open",
           },
         },
-        "https://github.com/acme/app/pull/42",
+        {
+          label: "Open pull request",
+          url: "https://github.com/acme/app/pull/42",
+        },
       ],
     ];
 
-    for (const [lifecycle, command, actionUrl] of commands) {
+    for (const [lifecycle, command, expectedAction] of commands) {
       const result = await Effect.runPromise(decideOrchestrationCommand({ command, readModel }));
       const notification = eventsOf(result).find(
         (event) => event.type === "thread.child-lifecycle-notified",
@@ -224,18 +226,26 @@ describe("decider thread lifecycle", () => {
           parentThreadId,
           childThreadId,
           lifecycle,
-          threadUrl: childThreadUrl,
-          action: { url: actionUrl },
           notification: {
             payload: {
               childThreadId,
               lifecycle,
-              threadUrl: childThreadUrl,
-              action: { url: actionUrl },
             },
           },
         },
       });
+      if (notification?.type !== "thread.child-lifecycle-notified") {
+        throw new Error(`Expected ${lifecycle} child lifecycle notification.`);
+      }
+      expect(notification.payload.action).toEqual(expectedAction);
+      expect(notification.payload.notification.payload).toMatchObject(
+        expectedAction === undefined ? {} : { action: expectedAction },
+      );
+      if (expectedAction === undefined) {
+        expect(
+          (notification.payload.notification.payload as Record<string, unknown>).action,
+        ).toBeUndefined();
+      }
     }
   });
 
@@ -250,7 +260,6 @@ describe("decider thread lifecycle", () => {
             type: "thread.turn.diff.complete",
             commandId: CommandId.make(`cmd-successful-turn-${status}`),
             threadId: childThreadId,
-            threadUrl: childThreadUrl,
             turnId: TurnId.make(`turn-successful-${status}`),
             completedAt: at,
             checkpointRef: CheckpointRef.make(`checkpoint-successful-${status}`),
@@ -311,7 +320,6 @@ describe("decider thread lifecycle", () => {
           type: "thread.queued-turn.dispatch",
           commandId: CommandId.make("cmd-queued-child-dispatch"),
           threadId: childThreadId,
-          threadUrl: childThreadUrl,
           queuedTurnId,
           dispatchedAt: at,
         },
@@ -331,7 +339,6 @@ describe("decider thread lifecycle", () => {
       payload: {
         lifecycle: "started",
         dedupeKey: `child:${childThreadId}:started:${messageId}`,
-        threadUrl: childThreadUrl,
       },
     });
   });
@@ -342,7 +349,6 @@ describe("decider thread lifecycle", () => {
       type: "thread.activity.append",
       commandId: CommandId.make("cmd-approval-first"),
       threadId: childThreadId,
-      threadUrl: childThreadUrl,
       activity: {
         id: EventId.make("activity-approval-first"),
         tone: "approval",
