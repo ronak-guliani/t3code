@@ -372,6 +372,10 @@ function isMessagePreviewLineCount(value: unknown): value is MessagePreviewLineC
   return MESSAGE_PREVIEW_LINE_OPTIONS.some((option) => String(option) === String(value));
 }
 
+function formatMessagePreviewLineCount(lineCount: MessagePreviewLineCount): string {
+  return `${lineCount} ${lineCount === 1 ? "line" : "lines"}`;
+}
+
 function isFontSize(value: unknown): value is FontSize {
   return FONT_SIZE_OPTIONS.some((option) => String(option.value) === String(value));
 }
@@ -1750,12 +1754,14 @@ export function GeneralSettingsPanel() {
                 }}
               >
                 <SelectTrigger className="w-full sm:w-40" aria-label={title}>
-                  <SelectValue>{settings.messagePreviewLineLimits[key]} lines</SelectValue>
+                  <SelectValue>
+                    {formatMessagePreviewLineCount(settings.messagePreviewLineLimits[key])}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   {MESSAGE_PREVIEW_LINE_OPTIONS.map((lineCount) => (
                     <SelectItem hideIndicator key={lineCount} value={String(lineCount)}>
-                      {lineCount} lines
+                      {formatMessagePreviewLineCount(lineCount)}
                     </SelectItem>
                   ))}
                 </SelectPopup>

@@ -12,6 +12,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1213,11 +1214,42 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   forceExpanded: boolean;
 }) {
   const hasBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
-  const isCollapsible = shouldCollapseUserMessage(
-    props.text,
-    props.terminalContexts,
-    props.collapsedLineLimit,
-  );
+  const contentRef = useRef<HTMLDivElement>(null);
+  const previewHeightRef = useRef<HTMLDivElement>(null);
+  const [hasRenderedOverflow, setHasRenderedOverflow] = useState(false);
+  const measureRenderedOverflow = useCallback(() => {
+    const content = contentRef.current;
+    const previewHeight = previewHeightRef.current;
+    if (!content || !previewHeight) return;
+
+    const nextHasRenderedOverflow = exceedsMessagePreviewHeight(
+      content.scrollHeight,
+      previewHeight.getBoundingClientRect().height,
+    );
+    setHasRenderedOverflow((current) =>
+      current === nextHasRenderedOverflow ? current : nextHasRenderedOverflow,
+    );
+  }, []);
+  useLayoutEffect(measureRenderedOverflow);
+  useEffect(() => {
+    const content = contentRef.current;
+    const previewHeight = previewHeightRef.current;
+    if (!content || !previewHeight) return;
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measureRenderedOverflow);
+      return () => window.removeEventListener("resize", measureRenderedOverflow);
+    }
+
+    const observer = new ResizeObserver(measureRenderedOverflow);
+    observer.observe(content);
+    observer.observe(previewHeight);
+    return () => observer.disconnect();
+  }, [measureRenderedOverflow]);
+
+  const isCollapsible =
+    hasRenderedOverflow ||
+    shouldCollapseUserMessage(props.text, props.terminalContexts, props.collapsedLineLimit);
   const [isExpandedOverride, setIsExpandedOverride] = useState<boolean | null>(null);
   const isExpanded = props.forceExpanded || !isCollapsible || isExpandedOverride === true;
   const isCollapsed = isCollapsible && !isExpanded;
@@ -1243,7 +1275,15 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
               : undefined
           }
         >
-          <UserMessageBody text={props.text} terminalContexts={props.terminalContexts} />
+          <div
+            ref={previewHeightRef}
+            aria-hidden="true"
+            className="pointer-events-none invisible absolute h-auto w-px"
+            style={{ height: `${props.collapsedLineLimit}lh` }}
+          />
+          <div ref={contentRef}>
+            <UserMessageBody text={props.text} terminalContexts={props.terminalContexts} />
+          </div>
         </div>
       ) : null}
       {isCollapsible ? (
@@ -1415,6 +1455,10 @@ function shouldCollapseUserMessage(
   }
   const lineCount = trimmedText.length === 0 ? 0 : trimmedText.split(/\r\n|\r|\n/).length;
   return lineCount > collapsedLineLimit || terminalContexts.length > 2;
+}
+
+export function exceedsMessagePreviewHeight(contentHeight: number, previewHeight: number): boolean {
+  return contentHeight > previewHeight + 1;
 }
 
 function resolveMessagePreviewLineLimit(

@@ -3,7 +3,11 @@ import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { LegendListRef } from "@legendapp/list/react";
-import { MessagesTimeline, shouldAutoloadOlderHistory } from "./MessagesTimeline";
+import {
+  exceedsMessagePreviewHeight,
+  MessagesTimeline,
+  shouldAutoloadOlderHistory,
+} from "./MessagesTimeline";
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -168,6 +172,11 @@ function buildWorkspaceHandoffEntries() {
 }
 
 describe("MessagesTimeline", () => {
+  it("detects rendered message overflow beyond the configured preview height", () => {
+    expect(exceedsMessagePreviewHeight(81, 80)).toBe(false);
+    expect(exceedsMessagePreviewHeight(82, 80)).toBe(true);
+  });
+
   it("renders a workspace handoff marker instead of the boilerplate continuation", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline {...buildProps()} timelineEntries={buildWorkspaceHandoffEntries()} />,
