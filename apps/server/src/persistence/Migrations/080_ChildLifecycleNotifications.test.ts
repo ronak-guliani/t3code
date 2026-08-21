@@ -19,6 +19,18 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
         assert.isFalse(beforeColumns.some(({ name }) => name === "latest_child_notification_at"));
 
         yield* sql`
+          ALTER TABLE projection_threads
+          ADD COLUMN latest_child_notification_at TEXT
+        `;
+        yield* sql`
+          CREATE TABLE child_lifecycle_notification_dedup (
+            dedupe_key TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+          )
+        `;
+
+        yield* sql`
           INSERT INTO orchestration_events (
             event_id,
             aggregate_kind,
@@ -84,6 +96,15 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
           )
         `);
         assert.strictEqual(duplicate._tag, "Failure");
+
+        yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 80`;
+        yield* sql`DROP TABLE projection_threads`;
+        yield* runMigrations({ toMigrationInclusive: 80 });
+
+        const restoredColumns = yield* sql<{ readonly name: string }>`
+          PRAGMA table_info(projection_threads)
+        `;
+        assert.isTrue(restoredColumns.some(({ name }) => name === "latest_child_notification_at"));
       }),
     );
   },
