@@ -44,7 +44,9 @@ const SessionClaims = Schema.Struct({
     "browser-session-cookie",
     "bearer-session-token",
     "bearer-access-token",
+    "dpop-access-token",
   ]),
+  proofKeyThumbprint: Schema.optionalKey(Schema.String),
   iat: Schema.Number,
   exp: Schema.Number,
 });
@@ -272,6 +274,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         sub: input?.subject ?? "browser",
         role: input?.role ?? "client",
         method: input?.method ?? "browser-session-cookie",
+        ...(input?.proofKeyThumbprint ? { proofKeyThumbprint: input.proofKeyThumbprint } : {}),
         iat: issuedAt.epochMilliseconds,
         exp: expiresAt.epochMilliseconds,
       };
@@ -285,6 +288,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         role: claims.role,
         scopes: input?.scopes ?? null,
         method: claims.method,
+        proofKeyThumbprint: claims.proofKeyThumbprint ?? null,
         client: {
           label: client.label ?? null,
           ipAddress: client.ipAddress ?? null,
@@ -319,6 +323,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         expiresAt: expiresAt,
         role: claims.role,
         scopes,
+        ...(claims.proofKeyThumbprint ? { proofKeyThumbprint: claims.proofKeyThumbprint } : {}),
       } satisfies IssuedSession;
     }).pipe(Effect.mapError(toSessionCredentialError("Failed to issue session credential.")));
 
@@ -366,6 +371,11 @@ export const makeSessionCredentialService = Effect.gen(function* () {
           message: "Session token revoked.",
         });
       }
+      if ((row.value.proofKeyThumbprint ?? undefined) !== claims.proofKeyThumbprint) {
+        return yield* new SessionCredentialError({
+          message: "Session proof key binding mismatch.",
+        });
+      }
 
       return {
         sessionId: claims.sid,
@@ -376,6 +386,7 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         subject: claims.sub,
         role: claims.role,
         scopes: row.value.scopes ?? defaultSessionScopes(row.value.role),
+        ...(claims.proofKeyThumbprint ? { proofKeyThumbprint: claims.proofKeyThumbprint } : {}),
       } satisfies VerifiedSession;
     }).pipe(
       Effect.mapError((cause) =>
@@ -471,6 +482,9 @@ export const makeSessionCredentialService = Effect.gen(function* () {
         subject: row.value.subject,
         role: row.value.role,
         scopes: row.value.scopes ?? defaultSessionScopes(row.value.role),
+        ...(row.value.proofKeyThumbprint
+          ? { proofKeyThumbprint: row.value.proofKeyThumbprint }
+          : {}),
       } satisfies VerifiedSession;
     }).pipe(
       Effect.mapError((cause) =>

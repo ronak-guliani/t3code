@@ -1033,7 +1033,7 @@ const connectNodeWebSocket = (url: string) =>
       }),
   );
 
-const readNodeWebSocketJson = (socket: NodeWsSocket) =>
+const readNodeWebSocketJson = (socket: NodeWsSocket, onListening?: () => void) =>
   Effect.promise(
     () =>
       new Promise<unknown>((resolve, reject) => {
@@ -1055,6 +1055,7 @@ const readNodeWebSocketJson = (socket: NodeWsSocket) =>
         };
         socket.once("message", handleMessage);
         socket.once("error", handleError);
+        onListening?.();
       }),
   );
 
@@ -1875,6 +1876,103 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
         assert.equal(response.auth.policy, "desktop-managed-local");
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("preserves numeric request ids from official Effect RPC clients", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+      const request = JSON.stringify({
+        _tag: "Request",
+        id: 0,
+        tag: WS_METHODS.serverGetConfig,
+        payload: {},
+        headers: [],
+      });
+      const response = (yield* Effect.scoped(
+        Effect.gen(function* () {
+          const socket = yield* connectNodeWebSocket(wsUrl);
+          return yield* readNodeWebSocketJson(socket, () => socket.send(request)).pipe(
+            Effect.timeout("5 seconds"),
+          );
+        }),
+      )) as {
+        readonly _tag: string;
+        readonly requestId: unknown;
+        readonly exit?: { readonly _tag: string };
+      };
+
+      assert.equal(response._tag, "Exit");
+      assert.equal(response.requestId, 0);
+      assert.equal(response.exit?._tag, "Success");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("clears numeric request id mappings after connection defects", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const [defect, exit] = (yield* Effect.scoped(
+        Effect.gen(function* () {
+          const socket = yield* connectNodeWebSocket(wsUrl);
+          const defect = yield* readNodeWebSocketJson(socket, () =>
+            socket.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: 0,
+                tag: "unknown.request",
+                payload: {},
+                headers: [],
+              }),
+            ),
+          );
+          const exit = yield* readNodeWebSocketJson(socket, () =>
+            socket.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: "0",
+                tag: WS_METHODS.serverGetConfig,
+                payload: {},
+                headers: [],
+              }),
+            ),
+          );
+          return [defect, exit] as const;
+        }),
+      )) as readonly [
+        { readonly _tag: string },
+        { readonly _tag: string; readonly requestId: unknown },
+      ];
+
+      assert.equal(defect._tag, "Defect");
+      assert.equal(exit._tag, "Exit");
+      assert.equal(exit.requestId, "0");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("consumes an official websocket ticket exactly once", () =>
