@@ -29,6 +29,7 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -97,7 +98,7 @@ import {
 } from "./git/VcsBridge.ts";
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import { RpcServer } from "effect/unstable/rpc";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { DiffStateQuery } from "./diffState/Services/DiffStateQuery.ts";
@@ -120,6 +121,7 @@ import {
   OrchestrationEngineService,
   readCommandModel,
 } from "./orchestration/Services/OrchestrationEngine.ts";
+import { crossVersionRpcSerializationLayer } from "./rpc/crossVersionRpcSerialization.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
 import {
@@ -174,6 +176,7 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
@@ -245,10 +248,26 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
+let nextBackgroundConnectionGeneration = 0n;
+const RPC_CLIENT_ID_MODULUS = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+
+function allocateBackgroundConnectionIdentity(): BackgroundPolicy.BackgroundConnectionIdentity {
+  const generation = nextBackgroundConnectionGeneration;
+  nextBackgroundConnectionGeneration += 1n;
+  return {
+    generation,
+    rpcClientId: RpcClientId.make(Number(generation % RPC_CLIENT_ID_MODULUS)),
+  };
+}
+
+const makeWsRpcLayer = (
+  currentSession: AuthenticatedSession,
+  backgroundConnection: BackgroundPolicy.BackgroundConnectionIdentity,
+) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -2502,6 +2521,26 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverReportClientActivity]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReportClientActivity,
+            backgroundPolicy.reportClientActivity(currentSessionId, backgroundConnection, input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverReportHostPowerState]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReportHostPowerState,
+            backgroundPolicy.reportHostPowerState(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetBackgroundPolicy]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetBackgroundPolicy,
+            backgroundPolicy.snapshotForSession(currentSessionId),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
@@ -2682,6 +2721,17 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "auth" },
           ),
+        [WS_METHODS.subscribeBackgroundPolicy]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeBackgroundPolicy,
+            Stream.unwrap(
+              Effect.map(
+                backgroundPolicy.subscribeForSession(currentSessionId),
+                ({ latest, changes }) => Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
       });
     }),
   );
@@ -2696,6 +2746,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const serverAuth = yield* ServerAuth;
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
+        const backgroundConnection = allocateBackgroundConnectionIdentity();
+        const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+        const connectionId = crypto.randomUUID();
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           spanPrefix: "ws.rpc",
           spanAttributes: {
@@ -2705,9 +2758,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              makeWsRpcLayer(session),
-              RpcSerialization.layerJson,
-              rpcAuthorizationLayer(new Set(session.scopes)),
+              makeWsRpcLayer(session, backgroundConnection),
+              crossVersionRpcSerializationLayer,
+              rpcAuthorizationLayer(new Set(session.scopes), session.role),
             ),
           ),
         );
@@ -2717,10 +2770,15 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         // A silently replaced socket leaves every subscription on the old
         // connection dead, so connection open/close is the anchor every stream
         // log below correlates against.
-        const connectionId = crypto.randomUUID();
         const connectedAt = Date.now();
         return yield* Effect.acquireUseRelease(
-          sessions.markConnected(session.sessionId),
+          Effect.all(
+            [
+              sessions.markConnected(session.sessionId),
+              backgroundPolicy.registerConnection(session.sessionId, backgroundConnection),
+            ],
+            { discard: true },
+          ),
           () =>
             Effect.logInfo("websocket connected", {
               userAgent: request.headers["user-agent"],
@@ -2735,7 +2793,14 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               ),
               withLogContext({ sessionId: session.sessionId, connectionId }),
             ),
-          () => sessions.markDisconnected(session.sessionId),
+          () =>
+            Effect.all(
+              [
+                backgroundPolicy.removeConnection(session.sessionId, backgroundConnection),
+                sessions.markDisconnected(session.sessionId),
+              ],
+              { discard: true },
+            ),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
     ),

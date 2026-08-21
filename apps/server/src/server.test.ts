@@ -43,6 +43,7 @@ import {
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
+  DateTime,
   Deferred,
   Duration,
   Effect,
@@ -115,6 +116,8 @@ import {
   BrowserTraceCollector,
   type BrowserTraceCollectorShape,
 } from "./observability/Services/BrowserTraceCollector.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
 import {
   ProjectSetupScriptRunner,
@@ -494,6 +497,7 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.serverSettings,
         }),
       ),
+      Layer.provide(BackgroundPolicy.layer.pipe(Layer.provide(HostPowerMonitor.layer))),
       Layer.provide(
         Layer.mock(Open)({
           ...options?.layers?.open,
@@ -1029,7 +1033,7 @@ const connectNodeWebSocket = (url: string) =>
       }),
   );
 
-const readNodeWebSocketJson = (socket: NodeWsSocket) =>
+const readNodeWebSocketJson = (socket: NodeWsSocket, onListening?: () => void) =>
   Effect.promise(
     () =>
       new Promise<unknown>((resolve, reject) => {
@@ -1051,6 +1055,7 @@ const readNodeWebSocketJson = (socket: NodeWsSocket) =>
         };
         socket.once("message", handleMessage);
         socket.once("error", handleError);
+        onListening?.();
       }),
   );
 
@@ -1182,6 +1187,32 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.equal(response.status, 503);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("mounts the authenticated Connect link-state endpoint", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const url = yield* getHttpServerUrl("/api/connect/link-state");
+      const token = yield* getAuthenticatedBearerSessionToken();
+      const response = yield* Effect.promise(() =>
+        fetch(url, {
+          headers: {
+            authorization: `Bearer ${token}`,
+          },
+        }),
+      );
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly cloudUserId: string | null;
+        readonly endpointRuntimeStatus: {
+          readonly status: string;
+        };
+      };
+
+      assert.equal(response.status, 200);
+      assert.equal(body.cloudUserId, null);
+      assert.equal(body.endpointRuntimeStatus.status, "disabled");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -1847,6 +1878,103 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("preserves numeric request ids from official Effect RPC clients", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+      const request = JSON.stringify({
+        _tag: "Request",
+        id: 0,
+        tag: WS_METHODS.serverGetConfig,
+        payload: {},
+        headers: [],
+      });
+      const response = (yield* Effect.scoped(
+        Effect.gen(function* () {
+          const socket = yield* connectNodeWebSocket(wsUrl);
+          return yield* readNodeWebSocketJson(socket, () => socket.send(request)).pipe(
+            Effect.timeout("5 seconds"),
+          );
+        }),
+      )) as {
+        readonly _tag: string;
+        readonly requestId: unknown;
+        readonly exit?: { readonly _tag: string };
+      };
+
+      assert.equal(response._tag, "Exit");
+      assert.equal(response.requestId, 0);
+      assert.equal(response.exit?._tag, "Success");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("clears numeric request id mappings after connection defects", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const [defect, exit] = (yield* Effect.scoped(
+        Effect.gen(function* () {
+          const socket = yield* connectNodeWebSocket(wsUrl);
+          const defect = yield* readNodeWebSocketJson(socket, () =>
+            socket.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: 0,
+                tag: "unknown.request",
+                payload: {},
+                headers: [],
+              }),
+            ),
+          );
+          const exit = yield* readNodeWebSocketJson(socket, () =>
+            socket.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: "0",
+                tag: WS_METHODS.serverGetConfig,
+                payload: {},
+                headers: [],
+              }),
+            ),
+          );
+          return [defect, exit] as const;
+        }),
+      )) as readonly [
+        { readonly _tag: string },
+        { readonly _tag: string; readonly requestId: unknown },
+      ];
+
+      assert.equal(defect._tag, "Defect");
+      assert.equal(exit._tag, "Exit");
+      assert.equal(exit.requestId, "0");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("consumes an official websocket ticket exactly once", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
@@ -1887,6 +2015,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isFalse(legacyParameterConnected);
       assert.isTrue(firstConnected);
       assert.isFalse(replayConnected);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("accepts official mobile activity reports over an OAuth websocket session", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken([
+        "orchestration:read",
+        "orchestration:operate",
+      ]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const snapshot = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverReportClientActivity]({
+            clientId: "official-ios-device",
+            clientKind: "mobile",
+            visible: true,
+            focused: true,
+            recentlyInteracted: true,
+            appState: "active",
+            scopes: [{ type: "provider-status" }],
+            ttlMs: 45_000,
+            observedAt: DateTime.makeUnsafe(Date.now()),
+          }).pipe(Effect.andThen(client[WS_METHODS.serverGetBackgroundPolicy]({}))),
+        ),
+      );
+
+      assert.equal(ticketResponse.status, 200);
+      assert.equal(snapshot.activeForegroundLeaseCount, 1);
+      assert.deepStrictEqual(snapshot.activeScopeKeys, ["provider-status"]);
+      assert.equal(snapshot.leases[0]?.clientId, "official-ios-device");
+      assert.equal(snapshot.leases[0]?.clientKind, "mobile");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

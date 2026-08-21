@@ -658,6 +658,11 @@ describe("wsApi", () => {
       statusLineFontSize: 14,
       codeFontSize: 12,
       inputFontSize: 14,
+      messagePreviewLineLimits: {
+        normal: 10,
+        crossThread: 10,
+        monitoring: 4,
+      },
       sidebarFontSize: 12,
       sidebarMetaFontSize: 11,
       sidebarRowSpacing: "default" as const,
@@ -732,6 +737,11 @@ describe("wsApi", () => {
       statusLineFontSize: 14,
       codeFontSize: 12,
       inputFontSize: 14,
+      messagePreviewLineLimits: {
+        normal: 10,
+        crossThread: 10,
+        monitoring: 4,
+      },
       sidebarFontSize: 12,
       sidebarMetaFontSize: 11,
       sidebarRowSpacing: "default" as const,

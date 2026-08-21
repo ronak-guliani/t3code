@@ -1,5 +1,6 @@
 export * from "./baseSchemas.ts";
 export * from "./auth.ts";
+export * from "./background.ts";
 export * from "./agentWorkflows.ts";
 export * from "./environmentHttp.ts";
 export * from "./relayClient.ts";

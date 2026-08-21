@@ -18,6 +18,11 @@ ARTIFACT_GLOB="T3-Code-Local-Alpha-*-arm64.dmg"
 APP_BUNDLE="${APP_NAME}.app"
 INSTALL_DEST="/Applications/${APP_BUNDLE}"
 RELEASE_DIR="${REPO_ROOT}/release"
+PUBLIC_CONFIG_ENV_ARGS=(
+  --env-file=.env.example
+  --env-file-if-exists=.env
+  --env-file-if-exists=.env.local
+)
 
 DO_BUILD=1
 DO_LAUNCH=1
@@ -67,7 +72,7 @@ if [[ "$DO_BUILD" -eq 1 ]]; then
         "${RELEASE_DIR}"/T3-Code-Local-Alpha-*-arm64.dmg.blockmap \
         "${RELEASE_DIR}"/T3-Code-Local-Alpha-*-arm64.zip \
         "${RELEASE_DIR}"/T3-Code-Local-Alpha-*-arm64.zip.blockmap
-  ( cd "$REPO_ROOT" && node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 --flavor "$APP_FLAVOR" )
+  ( cd "$REPO_ROOT" && node "${PUBLIC_CONFIG_ENV_ARGS[@]}" scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64 --flavor "$APP_FLAVOR" )
 fi
 
 DMG_PATH="$(ls -t "${RELEASE_DIR}"/${ARTIFACT_GLOB} 2>/dev/null | head -n 1 || true)"

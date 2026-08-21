@@ -26,6 +26,7 @@ const AuthPairingLinkDbRow = Schema.Struct({
   scopes: Schema.NullOr(Schema.fromJsonString(AuthEnvironmentScopes)),
   subject: Schema.String,
   label: Schema.NullOr(Schema.String),
+  proofKeyThumbprint: Schema.NullOr(Schema.String),
   createdAt: Schema.DateTimeUtcFromString,
   expiresAt: Schema.DateTimeUtcFromString,
   consumedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -54,6 +55,7 @@ const makeAuthPairingLinkRepository = Effect.gen(function* () {
           scopes,
           subject,
           label,
+          proof_key_thumbprint,
           created_at,
           expires_at,
           consumed_at,
@@ -67,6 +69,7 @@ const makeAuthPairingLinkRepository = Effect.gen(function* () {
           ${input.scopes === null ? null : JSON.stringify(input.scopes)},
           ${input.subject},
           ${input.label},
+          ${input.proofKeyThumbprint},
           ${input.createdAt},
           ${input.expiresAt},
           NULL,
@@ -78,13 +81,14 @@ const makeAuthPairingLinkRepository = Effect.gen(function* () {
   const consumeAvailablePairingLinkRow = SqlSchema.findOneOption({
     Request: ConsumeAuthPairingLinkInput,
     Result: AuthPairingLinkDbRow,
-    execute: ({ credential, consumedAt, now }) =>
+    execute: ({ credential, proofKeyThumbprint, consumedAt, now }) =>
       sql`
         UPDATE auth_pairing_links
         SET consumed_at = ${consumedAt}
         WHERE credential = ${credential}
           AND revoked_at IS NULL
           AND consumed_at IS NULL
+          AND proof_key_thumbprint IS ${proofKeyThumbprint}
           AND expires_at > ${now}
         RETURNING
           id AS "id",
@@ -94,6 +98,7 @@ const makeAuthPairingLinkRepository = Effect.gen(function* () {
           scopes AS "scopes",
           subject AS "subject",
           label AS "label",
+          proof_key_thumbprint AS "proofKeyThumbprint",
           created_at AS "createdAt",
           expires_at AS "expiresAt",
           consumed_at AS "consumedAt",
@@ -114,6 +119,7 @@ const makeAuthPairingLinkRepository = Effect.gen(function* () {
           scopes AS "scopes",
           subject AS "subject",
           label AS "label",
+          proof_key_thumbprint AS "proofKeyThumbprint",
           created_at AS "createdAt",
           expires_at AS "expiresAt",
           consumed_at AS "consumedAt",
@@ -153,6 +159,7 @@ const makeAuthPairingLinkRepository = Effect.gen(function* () {
           scopes AS "scopes",
           subject AS "subject",
           label AS "label",
+          proof_key_thumbprint AS "proofKeyThumbprint",
           created_at AS "createdAt",
           expires_at AS "expiresAt",
           consumed_at AS "consumedAt",
