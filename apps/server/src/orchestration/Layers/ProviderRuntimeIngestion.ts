@@ -87,6 +87,32 @@ const STREAMING_DELTA_FLUSH_INTERVAL = Duration.millis(50);
 // completion, turn finalization) overtake the buffered text, so the ingestion
 // worker retries the flush until it succeeds before processing that event.
 const STREAMING_DELTA_STRICT_RETRY_DELAY = Duration.millis(25);
+// Bound on strict-flush retry rounds so one poisoned message cannot stall the
+// shared ingestion worker indefinitely; leftovers are salvaged into the
+// finalize buffer instead of blocking later events for unrelated sessions.
+const STREAMING_DELTA_STRICT_MAX_RETRY_ROUNDS = 400;
+
+// Domain rejections that can never succeed on retry regardless of engine
+// health. Matched by tag: Effect Schema error classes must be identified via
+// their tag, not instanceof.
+const PERMANENT_STREAMING_DELTA_DISPATCH_ERROR_TAGS: ReadonlySet<string> = new Set([
+  "OrchestrationCommandJsonParseError",
+  "OrchestrationCommandDecodeError",
+  "OrchestrationCommandInvariantError",
+  "OrchestrationCommandPreviouslyRejectedError",
+  "OrchestrationCommandWorktreeCleanupPendingError",
+]);
+
+const hasPermanentStreamingDeltaDispatchFailure = (cause: Cause.Cause<unknown>): boolean =>
+  cause.reasons.some(
+    (reason) =>
+      reason._tag === "Fail" &&
+      typeof reason.error === "object" &&
+      reason.error !== null &&
+      PERMANENT_STREAMING_DELTA_DISPATCH_ERROR_TAGS.has(
+        (reason.error as { readonly _tag?: string })._tag ?? "",
+      ),
+  );
 const RUNTIME_INGESTION_QUEUE_CAPACITY = 1_024;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -874,7 +900,24 @@ const make = Effect.gen(function* () {
           .pipe(
             Effect.catchCause((cause) => {
               if (Cause.hasInterruptsOnly(cause)) {
-                return Effect.failCause(cause);
+                // The batch is already removed from the buffer; restore it so
+                // a later flusher or the shutdown finalizer can still deliver
+                // text an interrupted in-flight dispatch took out.
+                return Effect.flatMap(restorePendingStreamingDelta(messageId, pending), () =>
+                  Effect.failCause(cause),
+                );
+              }
+              if (hasPermanentStreamingDeltaDispatchFailure(cause)) {
+                // Retrying can never succeed. Hand the text to the finalize
+                // buffer instead of restoring it: the next terminal event for
+                // this message carries it to completion, and ingestion never
+                // wedges on a permanently rejected delta dispatch.
+                return Effect.flatMap(appendBufferedAssistantText(messageId, pending.text), () =>
+                  Effect.logError(
+                    "provider runtime ingestion gave up dispatching coalesced streaming delta; text deferred to message finalization",
+                    { messageId, cause: Cause.pretty(cause) },
+                  ),
+                );
               }
               return Effect.gen(function* () {
                 yield* restorePendingStreamingDelta(messageId, pending);
@@ -901,14 +944,41 @@ const make = Effect.gen(function* () {
     (map) => map.size > 0,
   );
 
+  // Last-resort salvage for buffers that keep failing transiently: move their
+  // text into the finalize buffer under the flush lock (excluding concurrent
+  // restores) so the upcoming terminal event still delivers it.
+  const salvageAllPendingStreamingDeltas = streamingDeltaFlushLock.withPermits(1)(
+    Effect.gen(function* () {
+      const remaining = yield* Ref.getAndSet(pendingStreamingDeltas, new Map());
+      const entries = Array.from(remaining.entries());
+      if (entries.length === 0) {
+        return;
+      }
+      for (const [messageId, pending] of entries) {
+        yield* appendBufferedAssistantText(messageId, pending.text);
+      }
+      yield* Effect.logWarning(
+        "provider runtime ingestion deferred persistently failing streaming deltas to message finalization",
+        { messageIds: entries.map(([messageId]) => messageId) },
+      );
+    }),
+  );
+
   // Ordering-critical flush: used before terminal events. A transient engine
   // failure must not let the terminal event overtake buffered text, so retry
-  // until every buffer is delivered.
+  // until every buffer is delivered — bounded so one poisoned message cannot
+  // wedge the shared ingestion worker forever; leftovers are salvaged into
+  // the finalize buffer rather than dropped.
   const flushAllStreamingDeltasStrictly = Effect.gen(function* () {
     yield* flushAllStreamingDeltas();
-    while (yield* hasPendingStreamingDeltas) {
+    let rounds = 0;
+    while ((yield* hasPendingStreamingDeltas) && rounds < STREAMING_DELTA_STRICT_MAX_RETRY_ROUNDS) {
       yield* Effect.sleep(STREAMING_DELTA_STRICT_RETRY_DELAY);
       yield* flushAllStreamingDeltas();
+      rounds += 1;
+    }
+    if (yield* hasPendingStreamingDeltas) {
+      yield* salvageAllPendingStreamingDeltas;
     }
   }).pipe(Effect.asVoid);
 
@@ -2115,7 +2185,19 @@ const make = Effect.gen(function* () {
 
   yield* Effect.forkScoped(
     Effect.forever(
-      Effect.sleep(STREAMING_DELTA_FLUSH_INTERVAL).pipe(Effect.andThen(flushAllStreamingDeltas())),
+      Effect.sleep(STREAMING_DELTA_FLUSH_INTERVAL).pipe(
+        Effect.andThen(flushAllStreamingDeltas()),
+        // An interrupted in-flight flush must not kill the flusher fiber: the
+        // batch is restored by the flush itself and the next tick retries.
+        // Shutdown still ends this loop through its own scope interruption.
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logWarning("periodic streaming delta flush failed", {
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      ),
     ),
   );
 

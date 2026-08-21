@@ -28,6 +28,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
   ProviderService,
@@ -243,7 +244,9 @@ describe("ProviderRuntimeIngestion", () => {
   async function createHarness(options?: {
     serverSettings?: Partial<ServerSettings>;
     reviewSnapshot?: ReviewSnapshot;
-    failAssistantDeltaDispatch?: () => boolean;
+    failAssistantDeltaDispatch?: (
+      command: OrchestrationCommand,
+    ) => boolean | "invariant" | "transient" | "interrupt";
     recordAssistantDeltaDispatches?: boolean;
   }) {
     const assistantDeltaDispatchLog: Array<string> = [];
@@ -274,7 +277,22 @@ describe("ProviderRuntimeIngestion", () => {
                       return real.dispatch(command);
                     }
                     assistantDeltaDispatchLog.push(command.delta);
-                    return options.failAssistantDeltaDispatch?.()
+                    const failure = options.failAssistantDeltaDispatch?.(command) ?? false;
+                    if (failure === "interrupt") {
+                      return Effect.interrupt;
+                    }
+                    if (failure === "transient") {
+                      // A SQL failure is in the dispatch error union but is
+                      // not one of the permanent domain rejections, so the
+                      // ingestion layer classifies it as retryable.
+                      return Effect.fail(
+                        new PersistenceSqlError({
+                          operation: "test.dispatch",
+                          detail: "simulated transient assistant delta dispatch failure",
+                        }),
+                      );
+                    }
+                    return failure
                       ? Effect.fail(
                           new OrchestrationCommandInvariantError({
                             commandType: command.type,
@@ -2653,7 +2671,9 @@ describe("ProviderRuntimeIngestion", () => {
     let failAssistantDeltaDispatch = true;
     const harness = await createHarness({
       serverSettings: { enableAssistantStreaming: true },
-      failAssistantDeltaDispatch: () => failAssistantDeltaDispatch,
+      // Transient (unknown-cause) failures stay retryable: the periodic
+      // flusher keeps attempting them until the engine recovers.
+      failAssistantDeltaDispatch: () => (failAssistantDeltaDispatch ? "transient" : false),
     });
     const now = new Date().toISOString();
     const turnId = asTurnId("turn-streaming-dispatch-failure");
@@ -2779,7 +2799,9 @@ describe("ProviderRuntimeIngestion", () => {
     let failAssistantDeltaDispatch = true;
     const harness = await createHarness({
       serverSettings: { enableAssistantStreaming: true },
-      failAssistantDeltaDispatch: () => failAssistantDeltaDispatch,
+      // Transient failures are retried by the strict pre-completion flush, so
+      // the completion stays blocked until the engine recovers.
+      failAssistantDeltaDispatch: () => (failAssistantDeltaDispatch ? "transient" : false),
     });
     const now = new Date().toISOString();
     const turnId = asTurnId("turn-terminal-ordering");
@@ -2839,6 +2861,164 @@ describe("ProviderRuntimeIngestion", () => {
 
     // Ordering proof: every streaming delta event for this message precedes
     // its terminal (non-streaming) event in the committed history.
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const terminalIndex = events.findIndex(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === false,
+    );
+    expect(terminalIndex).toBeGreaterThan(-1);
+    const streamingAfterTerminal = events.some(
+      (event, index): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        index > terminalIndex &&
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === true,
+    );
+    expect(streamingAfterTerminal).toBe(false);
+  });
+
+  it("restores buffered deltas when a flush is interrupted mid-dispatch", async () => {
+    let deltaDispatchAttempts = 0;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      failAssistantDeltaDispatch: () => (deltaDispatchAttempts++ === 0 ? "interrupt" : false),
+    });
+    const now = new Date().toISOString();
+    const messageId = "assistant:item-interrupted-flush";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-interrupted-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interrupted-flush"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-interrupted-flush",
+    );
+
+    // Sub-threshold text is buffered; the first periodic flush attempt takes
+    // the batch out of the buffer and is interrupted mid-dispatch.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-interrupted-flush-alpha"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interrupted-flush"),
+      itemId: asItemId("item-interrupted-flush"),
+      payload: { streamKind: "assistant_text", delta: "alpha" },
+    });
+    // Give the first (interrupted) flush window time to fail and restore.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(deltaDispatchAttempts).toBeGreaterThan(0);
+
+    // The interrupted batch must have been restored: the next successful
+    // flush delivers it, and nothing is lost when more text arrives.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-interrupted-flush-beta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interrupted-flush"),
+      itemId: asItemId("item-interrupted-flush"),
+      payload: { streamKind: "assistant_text", delta: "beta" },
+    });
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.text === "alphabeta",
+      ),
+    );
+
+    // Exactly-once delivery: an un-restored batch would have lost "alpha";
+    // a doubly-restored one would duplicate it in the committed history.
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const committedDeltaText = events
+      .filter(
+        (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === messageId &&
+          event.payload.streaming === true,
+      )
+      .map((event) => event.payload.text)
+      .join("");
+    expect(committedDeltaText).toBe("alphabeta");
+  });
+
+  it("salvages permanently failing deltas into finalization instead of wedging ingestion", async () => {
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      // Every coalesced-delta dispatch fails permanently, but the finalize
+      // fallback path stays healthy so salvaged text still reaches the
+      // completed message.
+      failAssistantDeltaDispatch: (command) =>
+        command.commandId.includes(":assistant-delta:") ? "invariant" : false,
+    });
+    const now = new Date().toISOString();
+    const messageId = "assistant:item-permanent-failure";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-permanent-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-permanent-failure"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-permanent-failure",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-permanent-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-permanent-failure"),
+      itemId: asItemId("item-permanent-failure"),
+      payload: { streamKind: "assistant_text", delta: "salvaged tail" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-permanent-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-permanent-failure"),
+      itemId: asItemId("item-permanent-failure"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+
+    // The strict pre-completion flush must recognize the invariant rejection
+    // as permanent, salvage the buffered text into the finalize buffer, and
+    // let the terminal event proceed — the shared ingestion worker must not
+    // wedge on retries. The completed message carries the full text via the
+    // finalize fallback dispatch.
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && !message.streaming && message.text === "salvaged tail",
+      ),
+    );
+
+    // Ordering holds: no streaming delta for this message was committed after
+    // its terminal event.
     const events = await Effect.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
