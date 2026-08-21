@@ -9,6 +9,7 @@ import {
   ProviderSession,
   ProviderInstanceId,
   type ReviewSnapshot,
+  type OrchestrationCommand,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -38,6 +39,7 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
+import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -241,6 +243,7 @@ describe("ProviderRuntimeIngestion", () => {
   async function createHarness(options?: {
     serverSettings?: Partial<ServerSettings>;
     reviewSnapshot?: ReviewSnapshot;
+    failAssistantDeltaDispatch?: () => boolean;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
@@ -253,8 +256,33 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const engineLayer =
+      options?.failAssistantDeltaDispatch === undefined
+        ? orchestrationLayer
+        : Layer.merge(
+            orchestrationLayer,
+            Layer.effect(
+              OrchestrationEngineService,
+              Effect.gen(function* () {
+                const real = yield* OrchestrationEngineService;
+                return {
+                  ...real,
+                  dispatch: (command: OrchestrationCommand) =>
+                    command.type === "thread.message.assistant.delta" &&
+                    options.failAssistantDeltaDispatch!()
+                      ? Effect.fail(
+                          new OrchestrationCommandInvariantError({
+                            commandType: command.type,
+                            detail: "simulated assistant delta dispatch failure",
+                          }),
+                        )
+                      : real.dispatch(command),
+                } satisfies OrchestrationEngineShape;
+              }),
+            ).pipe(Layer.provide(orchestrationLayer)),
+          );
     const ingestionLayer = ProviderRuntimeIngestionLive.pipe(
-      Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(engineLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
@@ -2498,6 +2526,167 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(finalMessage?.text).toBe("hello live");
     expect(finalMessage?.streaming).toBe(false);
+  });
+
+  it("coalesces streaming assistant deltas into fewer engine commands without losing text", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-streaming-coalesce");
+    const messageId = "assistant:item-streaming-coalesce";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-coalesce"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    const chunks = Array.from({ length: 40 }, (_, index) => `<chunk-${index}>`);
+    for (const [index, chunk] of chunks.entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-message-delta-streaming-coalesce-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId: asItemId("item-streaming-coalesce"),
+        payload: { streamKind: "assistant_text", delta: chunk },
+      });
+    }
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-streaming-coalesce"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-streaming-coalesce"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && !message.streaming && message.text === chunks.join(""),
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const streamingDeltaEvents = events.filter(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === true,
+    );
+    expect(streamingDeltaEvents.length).toBeGreaterThan(0);
+    expect(streamingDeltaEvents.length).toBeLessThan(chunks.length);
+  });
+
+  it("dispatches coalesced streaming deltas once they exceed the size threshold", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = new Date().toISOString();
+    const oversizedDelta = "y".repeat(3_000);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-spill"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-spill"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-streaming-spill",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-spill"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-spill"),
+      itemId: asItemId("item-streaming-spill"),
+      payload: { streamKind: "assistant_text", delta: oversizedDelta },
+    });
+
+    // No non-delta event follows, so only the size-threshold spill can deliver
+    // the text before the periodic flush window.
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === "assistant:item-streaming-spill" && message.text === oversizedDelta,
+      ),
+    );
+    expect(
+      thread.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-spill",
+      )?.text,
+    ).toBe(oversizedDelta);
+  });
+
+  it("retries coalesced streaming deltas after an engine dispatch failure instead of dropping them", async () => {
+    let failAssistantDeltaDispatch = true;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      failAssistantDeltaDispatch: () => failAssistantDeltaDispatch,
+    });
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-streaming-dispatch-failure");
+    const messageId = "assistant:item-streaming-dispatch-failure";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-dispatch-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-dispatch-failure-first"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-streaming-dispatch-failure"),
+      payload: { streamKind: "assistant_text", delta: "survives failures" },
+    });
+    // Let several periodic flush windows attempt (and fail) the dispatch.
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    failAssistantDeltaDispatch = false;
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-dispatch-failure-second"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-streaming-dispatch-failure"),
+      payload: { streamKind: "assistant_text", delta: " plus tail" },
+    });
+
+    // No non-delta event is emitted afterwards, so only a live periodic
+    // flusher can deliver the coalesced text.
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.text === "survives failures plus tail",
+      ),
+    );
   });
 
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {

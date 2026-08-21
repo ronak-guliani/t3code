@@ -28,6 +28,8 @@ import {
   Effect,
   Layer,
   Option,
+  Ref,
+  Semaphore,
   Stream,
   SynchronizedRef,
 } from "effect";
@@ -51,13 +53,23 @@ import { parseReviewResult } from "../reviewResult.ts";
 import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
+const providerCommandIdFromEventId = (eventId: string, tag: string): CommandId =>
+  CommandId.make(`provider:${eventId}:${tag}:${crypto.randomUUID()}`);
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
-  CommandId.make(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
+  providerCommandIdFromEventId(event.eventId, tag);
 
 interface AssistantSegmentState {
   baseKey: string;
   nextSegmentIndex: number;
   activeMessageId: MessageId | null;
+}
+
+interface PendingStreamingDelta {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly eventId: string;
+  readonly createdAt: string;
+  text: string;
 }
 
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
@@ -67,6 +79,8 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const STREAMING_DELTA_COALESCE_CHARS = 2_048;
+const STREAMING_DELTA_FLUSH_INTERVAL = Duration.millis(50);
 const RUNTIME_INGESTION_QUEUE_CAPACITY = 1_024;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -106,6 +120,12 @@ function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string
 
 function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
+}
+
+function assistantTextDeltaFromEvent(event: ProviderRuntimeEvent): string | undefined {
+  return event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+    ? event.payload.delta
+    : undefined;
 }
 
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
@@ -785,6 +805,113 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
     lookup: () => Effect.succeed(""),
   });
+
+  // Coalescing buffer for streaming-mode assistant deltas: deltas accumulate per
+  // message and are dispatched as one command on a size threshold, a time window,
+  // or before any non-delta event is processed (which preserves ordering with
+  // completion/finalization commands).
+  const pendingStreamingDeltas = yield* Ref.make<Map<MessageId, PendingStreamingDelta>>(new Map());
+  const streamingDeltaFlushLock = yield* Semaphore.make(1);
+
+  const takePendingStreamingDelta = (messageId: MessageId) =>
+    Ref.modify(
+      pendingStreamingDeltas,
+      (
+        map,
+      ): readonly [PendingStreamingDelta | undefined, Map<MessageId, PendingStreamingDelta>] => {
+        const entry = map.get(messageId);
+        if (entry === undefined) {
+          return [undefined, map];
+        }
+        const next = new Map(map);
+        next.delete(messageId);
+        return [entry, next];
+      },
+    );
+
+  // Puts undelivered text back at the front of the buffer so a failed dispatch
+  // is retried by the next flush instead of silently dropping streamed text.
+  const restorePendingStreamingDelta = (messageId: MessageId, pending: PendingStreamingDelta) =>
+    Ref.update(pendingStreamingDeltas, (map) => {
+      const existing = map.get(messageId);
+      const next = new Map(map);
+      next.set(
+        messageId,
+        existing === undefined ? pending : { ...existing, text: `${pending.text}${existing.text}` },
+      );
+      return next;
+    });
+
+  const flushStreamingDeltaForMessage = (messageId: MessageId) =>
+    streamingDeltaFlushLock.withPermits(1)(
+      Effect.gen(function* () {
+        const pending = yield* takePendingStreamingDelta(messageId);
+        if (pending === undefined || pending.text.length === 0) {
+          return;
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.message.assistant.delta",
+            commandId: providerCommandIdFromEventId(pending.eventId, "assistant-delta"),
+            threadId: pending.threadId,
+            messageId,
+            delta: pending.text,
+            ...(pending.turnId !== undefined ? { turnId: pending.turnId } : {}),
+            createdAt: pending.createdAt,
+          })
+          .pipe(
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) {
+                return Effect.failCause(cause);
+              }
+              return Effect.gen(function* () {
+                yield* restorePendingStreamingDelta(messageId, pending);
+                yield* Effect.logWarning(
+                  "provider runtime ingestion failed to dispatch coalesced streaming delta",
+                  { messageId, cause: Cause.pretty(cause) },
+                );
+              });
+            }),
+          );
+      }),
+    );
+
+  const flushAllStreamingDeltas = () =>
+    Effect.gen(function* () {
+      const messageIds = Array.from((yield* Ref.get(pendingStreamingDeltas)).keys());
+      for (const messageId of messageIds) {
+        yield* flushStreamingDeltaForMessage(messageId);
+      }
+    }).pipe(Effect.asVoid);
+
+  const appendStreamingAssistantDelta = (input: {
+    threadId: ThreadId;
+    messageId: MessageId;
+    turnId: TurnId | undefined;
+    eventId: string;
+    delta: string;
+    createdAt: string;
+  }) =>
+    Ref.modify(
+      pendingStreamingDeltas,
+      (map): readonly [boolean, Map<MessageId, PendingStreamingDelta>] => {
+        const existing = map.get(input.messageId);
+        const text = `${existing?.text ?? ""}${input.delta}`;
+        const next = new Map(map);
+        next.set(input.messageId, {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          eventId: input.eventId,
+          createdAt: input.createdAt,
+          text,
+        });
+        return [text.length >= STREAMING_DELTA_COALESCE_CHARS, next];
+      },
+    ).pipe(
+      Effect.flatMap((shouldSpill) =>
+        shouldSpill ? flushStreamingDeltaForMessage(input.messageId) : Effect.void,
+      ),
+    );
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -1641,10 +1768,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const assistantDelta =
-        event.type === "content.delta" && event.payload.streamKind === "assistant_text"
-          ? event.payload.delta
-          : undefined;
+      const assistantDelta = assistantTextDeltaFromEvent(event);
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
@@ -1677,13 +1801,12 @@ const make = Effect.gen(function* () {
             });
           }
         } else {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.message.assistant.delta",
-            commandId: providerCommandId(event, "assistant-delta"),
+          yield* appendStreamingAssistantDelta({
             threadId: thread.id,
             messageId: assistantMessageId,
+            turnId,
+            eventId: event.eventId,
             delta: assistantDelta,
-            ...(turnId ? { turnId } : {}),
             createdAt: now,
           });
         }
@@ -1941,12 +2064,39 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const isAssistantTextDeltaEvent = (event: ProviderRuntimeEvent): boolean =>
+    assistantTextDeltaFromEvent(event) !== undefined;
+
   const worker = yield* makeDrainableWorker(
     (event: ProviderRuntimeEvent) =>
-      processRuntimeEventSafely(event).pipe(Effect.andThen(markProcessed(event))),
+      Effect.andThen(
+        // Non-delta events may finalize or complete a message, so any buffered
+        // deltas must reach the engine first to preserve ordering.
+        isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltas(),
+        processRuntimeEventSafely(event),
+      ).pipe(Effect.andThen(markProcessed(event))),
     {
       capacity: RUNTIME_INGESTION_QUEUE_CAPACITY,
     },
+  );
+
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(STREAMING_DELTA_FLUSH_INTERVAL).pipe(Effect.andThen(flushAllStreamingDeltas())),
+    ),
+  );
+
+  yield* Effect.addFinalizer(() =>
+    flushAllStreamingDeltas().pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.logWarning(
+              "provider runtime ingestion failed to flush streaming deltas on shutdown",
+              { cause: Cause.pretty(cause) },
+            ),
+      ),
+    ),
   );
 
   const start: ProviderRuntimeIngestionShape["start"] = () =>
