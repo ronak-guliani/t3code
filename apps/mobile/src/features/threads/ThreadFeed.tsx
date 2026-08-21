@@ -96,6 +96,30 @@ function formatMessageTime(input: string): string {
   return MESSAGE_TIME_FORMATTER.format(timestamp);
 }
 
+// Presented feed entries are rebuilt on every derivation, so reference
+// equality always fails. Compare by stable content instead: message rows wrap
+// reducer-owned objects whose identity survives unchanged stream batches, so
+// the expensive markdown rows skip re-rendering while a turn streams.
+function threadFeedEntriesAreEqual(previous: ThreadFeedEntry, next: ThreadFeedEntry): boolean {
+  if (previous.id !== next.id || previous.type !== next.type) {
+    return false;
+  }
+  if (next.type === "message" && previous.type === "message") {
+    return previous.message === next.message;
+  }
+  if (next.type === "turn-fold" && previous.type === "turn-fold") {
+    return (
+      previous.expanded === next.expanded &&
+      previous.foldKind === next.foldKind &&
+      previous.label === next.label
+    );
+  }
+  if (next.type === "work-toggle" && previous.type === "work-toggle") {
+    return previous.expanded === next.expanded && previous.hiddenCount === next.hiddenCount;
+  }
+  return false;
+}
+
 export interface ThreadFeedProps {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -1549,6 +1573,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             maintainVisibleContentPosition={maintainVisibleContentPosition}
             data={presentedFeed}
             extraData={listAppearanceData}
+            itemsAreEqual={threadFeedEntriesAreEqual}
             renderItem={renderItem}
             keyExtractor={(entry) => entry.id}
             getItemType={(entry) =>

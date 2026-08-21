@@ -432,7 +432,12 @@ export function applyThreadDetailEvent(
               },
               ...thread.messages.slice(messageIndex + 1),
             ];
-      const cappedMessages = Arr.takeRight(messages, limits.maxMessages);
+      // Copy only once the cap is actually exceeded; the streaming hot path
+      // runs per delta and the common case stays under the limit.
+      const cappedMessages =
+        messages.length > limits.maxMessages
+          ? Arr.takeRight(messages, limits.maxMessages)
+          : messages;
 
       // Update latestTurn for assistant messages bound to a turn.
       const latestTurn: OrchestrationThread["latestTurn"] =
@@ -712,7 +717,13 @@ function rebindCheckpointAssistantMessage(
   turnId: TurnId,
   messageId: MessageId,
 ): OrchestrationCheckpointSummary[] {
-  return Arr.map(checkpoints, (entry) =>
+  // Streaming chunks call this per delta; keep the original reference when no
+  // checkpoint matches so downstream identity checks stay stable.
+  if (!checkpoints.some((entry) => entry.turnId === turnId)) {
+    // Callers only read checkpoints, so the same reference is safe to retype.
+    return checkpoints as OrchestrationCheckpointSummary[];
+  }
+  return checkpoints.map((entry) =>
     entry.turnId === turnId ? { ...entry, assistantMessageId: messageId } : entry,
   );
 }

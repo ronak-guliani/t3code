@@ -118,6 +118,8 @@ const THREAD_DETAIL_SUBSCRIPTION_IDLE_EVICTION_MS = 15 * 60 * 1000;
 const MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS = 32;
 const NOOP = () => undefined;
 
+const THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS = 32;
+
 function compareAppliedProjectionVersion(
   left: { readonly sequence: number; readonly updatedAt: string | null },
   right: { readonly sequence: number; readonly updatedAt: string | null },
@@ -310,19 +312,54 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     return false;
   }
 
-  entry.unsubscribe = connection.client.orchestration.subscribeThread(
+  // Streaming turns emit high-frequency deltas; buffer trailing events for a
+  // short window so the store applies them as one batch. The first event of a
+  // burst still applies synchronously to keep isolated events latency-free.
+  let pendingEvents: OrchestrationEvent[] | null = null;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushPendingEvents = () => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    const buffered = pendingEvents;
+    pendingEvents = null;
+    if (buffered !== null && buffered.length > 0) {
+      applyRecoveredEventBatch(buffered, entry.environmentId);
+    }
+  };
+
+  const unsubscribeTransport = connection.client.orchestration.subscribeThread(
     { threadId: entry.threadId },
     (item) => {
       if (item.kind === "snapshot") {
+        flushPendingEvents();
         useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
         return;
       }
       if (item.kind === "synchronized") {
         return;
       }
-      applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
+      if (flushTimer === null) {
+        applyRecoveredEventBatch([item.event], entry.environmentId);
+        if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
+          return;
+        }
+        pendingEvents = [];
+        flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
+        return;
+      }
+      pendingEvents!.push(item.event);
     },
   );
+  entry.unsubscribe = () => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    pendingEvents = null;
+    unsubscribeTransport();
+  };
   stopWatchingThreadDetailSubscriptionReadiness(entry);
   return true;
 }

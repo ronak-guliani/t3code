@@ -627,11 +627,16 @@ function checkpointStatusToTurnState(
 }
 
 function rebindCheckpointAssistantMessage(
-  checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
+  checkpoints: OrchestrationCheckpointSummary[],
   turnId: TurnId,
   messageId: MessageId,
 ): OrchestrationCheckpointSummary[] {
-  return Arr.map(checkpoints, (entry) =>
+  // Streaming chunks call this per delta; keep the original reference when no
+  // checkpoint matches so downstream identity checks stay stable.
+  if (!checkpoints.some((entry) => entry.turnId === turnId)) {
+    return checkpoints;
+  }
+  return checkpoints.map((entry) =>
     entry.turnId === turnId ? { ...entry, assistantMessageId: messageId } : entry,
   );
 }

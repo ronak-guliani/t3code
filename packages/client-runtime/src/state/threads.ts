@@ -17,7 +17,10 @@ import { EnvironmentRegistry } from "../connection/registry.ts";
 import { connectionProjectionPhase } from "../connection/model.ts";
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import { EnvironmentCacheStore } from "../platform/persistence.ts";
-import { subscribe } from "../rpc/client.ts";
+import {
+  subscribe,
+  type EnvironmentRpcStreamFailure,
+} from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 import { THREAD_STATE_IDLE_TTL_MS } from "./threadRetention.ts";
@@ -31,6 +34,8 @@ import {
 function statusWithoutLiveData(data: Option.Option<OrchestrationThread>): EnvironmentThreadStatus {
   return Option.isSome(data) ? "cached" : "empty";
 }
+
+const THREAD_STREAM_QUEUE_CAPACITY = 1024;
 
 function formatThreadError(cause: Cause.Cause<unknown>): string {
   const error = Cause.squash(cause);
@@ -142,42 +147,81 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     );
   });
 
+  const applyEventBatch = Effect.fn("EnvironmentThreadState.applyEventBatch")(function* (
+    events: ReadonlyArray<Extract<OrchestrationThreadStreamItem, { kind: "event" }>>,
+  ) {
+    if (events.length === 0) {
+      return;
+    }
+
+    const lastAppliedSequence = yield* SubscriptionRef.get(lastSequence);
+    const applicable = events.filter((item) => item.event.sequence > lastAppliedSequence);
+    if (applicable.length === 0) {
+      return;
+    }
+
+    // Fold all events through the reducer against evolving local state so one
+    // batch produces at most one state write and one persistence offer.
+    let data = (yield* SubscriptionRef.get(state)).data;
+    let deleted = false;
+    for (const item of applicable) {
+      if (Option.isNone(data)) {
+        if (item.event.type === "thread.deleted") {
+          deleted = true;
+        }
+        continue;
+      }
+      const result = applyThreadDetailEvent(data.value, item.event);
+      if (result.kind === "updated") {
+        data = Option.some(result.thread);
+      } else if (result.kind === "deleted") {
+        data = Option.none();
+        deleted = true;
+      }
+    }
+
+    yield* SubscriptionRef.set(
+      lastSequence,
+      Math.max(...applicable.map((item) => item.event.sequence)),
+    );
+    if (deleted && Option.isNone(data)) {
+      yield* setDeleted();
+      return;
+    }
+    if (Option.isSome(data)) {
+      yield* setThread(data.value);
+    }
+  });
+
   const applyItem = Effect.fn("EnvironmentThreadState.applyItem")(function* (
-    item: OrchestrationThreadStreamItem,
+    item: Exclude<OrchestrationThreadStreamItem, { kind: "event" }>,
   ) {
     if (item.kind === "snapshot") {
       yield* SubscriptionRef.set(lastSequence, item.snapshot.snapshotSequence);
       yield* setThread(item.snapshot.thread);
       return;
     }
-    if (item.kind === "synchronized") {
-      if (item.sequence !== undefined) {
-        yield* SubscriptionRef.update(lastSequence, (sequence) =>
-          Math.max(sequence, item.sequence ?? sequence),
-        );
-      }
-      return;
+    if (item.sequence !== undefined) {
+      yield* SubscriptionRef.update(lastSequence, (sequence) =>
+        Math.max(sequence, item.sequence ?? sequence),
+      );
     }
+  });
 
-    const sequence = yield* SubscriptionRef.get(lastSequence);
-    if (item.event.sequence <= sequence) {
-      return;
-    }
-    yield* SubscriptionRef.set(lastSequence, item.event.sequence);
-
-    const current = yield* SubscriptionRef.get(state);
-    if (Option.isNone(current.data)) {
-      if (item.event.type === "thread.deleted") {
-        yield* setDeleted();
+  const applyItems = Effect.fn("EnvironmentThreadState.applyItems")(function* (
+    items: ReadonlyArray<OrchestrationThreadStreamItem>,
+  ) {
+    let events: Array<Extract<OrchestrationThreadStreamItem, { kind: "event" }>> = [];
+    for (const item of items) {
+      if (item.kind === "event") {
+        events.push(item);
+        continue;
       }
-      return;
+      yield* applyEventBatch(events);
+      events = [];
+      yield* applyItem(item);
     }
-    const result = applyThreadDetailEvent(current.data.value, item.event);
-    if (result.kind === "updated") {
-      yield* setThread(result.thread);
-    } else if (result.kind === "deleted") {
-      yield* setDeleted();
-    }
+    yield* applyEventBatch(events);
   });
 
   yield* SubscriptionRef.changes(supervisor.state).pipe(
@@ -195,6 +239,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   );
 
   yield* setSynchronizing;
+  // High-frequency streams (streaming text deltas) would otherwise run the
+  // reducer, notify subscribers, and queue persistence once per network
+  // event. Route items through a queue and drain everything that accumulated
+  // while the previous batch applied: bursts collapse into one folded state
+  // write with no added latency for isolated events.
+  const streamQueue = yield* Queue.bounded<
+    OrchestrationThreadStreamItem,
+    EnvironmentRpcStreamFailure<typeof ORCHESTRATION_WS_METHODS.subscribeThread> | Cause.Done
+  >(THREAD_STREAM_QUEUE_CAPACITY);
   yield* subscribe(
     ORCHESTRATION_WS_METHODS.subscribeThread,
     { threadId },
@@ -202,7 +255,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       onExpectedFailure: setStreamError,
       retryExpectedFailureAfter: "250 millis",
     },
-  ).pipe(Stream.runForEach(applyItem), Effect.forkScoped);
+  ).pipe(Stream.runIntoQueue(streamQueue), Effect.forkScoped);
+  yield* Queue.takeAll(streamQueue).pipe(
+    Effect.flatMap((items) => applyItems(items)),
+    Effect.forever,
+    Effect.catchTag("Done", () => Effect.void),
+    Effect.forkScoped,
+  );
 
   yield* Effect.addFinalizer(() =>
     SubscriptionRef.get(state).pipe(
