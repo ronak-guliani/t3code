@@ -1520,6 +1520,138 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("replays more than 1,000 events and honors divergent projector cursors", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-bootstrap-batch");
+      const projectId = ProjectId.make("project-bootstrap-batch");
+      const now = new Date().toISOString();
+
+      const appendMetaUpdated = (suffix: number, title: string) =>
+        eventStore.append({
+          type: "thread.meta-updated",
+          eventId: EventId.make(`evt-bootstrap-batch-${suffix}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make(`cmd-bootstrap-batch-${suffix}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-bootstrap-batch-${suffix}`),
+          metadata: {},
+          payload: {
+            threadId,
+            title,
+            updatedAt: now,
+          },
+        });
+
+      const projectEvent = yield* eventStore.append({
+        type: "project.created",
+        eventId: EventId.make("evt-bootstrap-batch-project"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-batch-project"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-batch-project"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Project Bootstrap Batch",
+          workspaceRoot: "/tmp/project-bootstrap-batch",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.make("evt-bootstrap-batch-thread"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-bootstrap-batch-thread"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-bootstrap-batch-thread"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Thread Bootstrap Batch",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      // Exceeds the retired per-read event cap (1,000) so a regression back to
+      // the capped read leaves every cursor short of the stream tail.
+      for (let suffix = 3; suffix <= 1202; suffix += 1) {
+        yield* appendMetaUpdated(suffix, `Title ${suffix}`);
+      }
+
+      // The suite shares one database, so derive this test's window instead of
+      // assuming absolute sequence numbers. Give the projects projector a head
+      // start past the project creation event while every other projector
+      // resumes from behind it; the shared single-pass replay must still
+      // respect each resume position.
+      yield* sql`
+        INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+        VALUES (
+          ${ORCHESTRATION_PROJECTOR_NAMES.projects},
+          ${projectEvent.sequence},
+          ${now}
+        )
+        ON CONFLICT(projector) DO UPDATE SET
+          last_applied_sequence = excluded.last_applied_sequence,
+          updated_at = excluded.updated_at
+      `;
+
+      yield* projectionPipeline.bootstrap;
+
+      const stateRows = yield* sql<{
+        readonly projector: string;
+        readonly lastAppliedSequence: number;
+      }>`
+        SELECT
+          projector,
+          last_applied_sequence AS "lastAppliedSequence"
+        FROM projection_state
+      `;
+      const maxSequenceRows = yield* sql<{ readonly maxSequence: number }>`
+        SELECT MAX(sequence) AS "maxSequence" FROM orchestration_events
+      `;
+      const maxSequence = maxSequenceRows[0]?.maxSequence ?? 0;
+      assert.equal(stateRows.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
+      for (const row of stateRows) {
+        assert.equal(row.lastAppliedSequence, maxSequence);
+      }
+
+      // The projects projector skipped everything at or below its cursor, so
+      // the project creation event was never applied by it.
+      const projectRows = yield* sql<{ readonly projectId: string }>`
+        SELECT project_id AS "projectId" FROM projection_projects
+        WHERE project_id = ${projectId}
+      `;
+      assert.deepEqual(projectRows, []);
+
+      // Every other projector applied the full history including the tail.
+      const threadRows = yield* sql<{ readonly title: string }>`
+        SELECT title FROM projection_threads WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(threadRows, [{ title: "Title 1202" }]);
+    }),
+  );
+
   it.effect("removes retired projector cursors before replaying events", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
