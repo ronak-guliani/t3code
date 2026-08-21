@@ -123,6 +123,7 @@ interface SidebarV2ThreadNode {
   readonly thread: SidebarThreadSummary;
   readonly threadKey: string;
   readonly children: SidebarV2ThreadNode[];
+  mostRecentThread: SidebarThreadSummary;
   readonly status: SidebarV2Status;
   rolledUpStatus: SidebarV2Status;
   descendantCount: number;
@@ -182,6 +183,7 @@ function buildThreadNodes(
           thread,
           threadKey,
           children: [],
+          mostRecentThread: thread,
           status: resolveSidebarV2Status({
             ...thread,
             hasPendingTurn: pendingThreadKeys.has(threadKey),
@@ -215,6 +217,13 @@ function buildThreadNodes(
 function resolveNodeRollups(nodes: readonly SidebarV2ThreadNode[]): void {
   for (const node of nodes) {
     resolveNodeRollups(node.children);
+    node.mostRecentThread = node.children.reduce(
+      (mostRecentThread, child) =>
+        sortByRecent(child.mostRecentThread, mostRecentThread) < 0
+          ? child.mostRecentThread
+          : mostRecentThread,
+      node.thread,
+    );
     node.descendantCount = node.children.reduce(
       (count, child) => count + 1 + child.descendantCount,
       0,
@@ -377,8 +386,16 @@ export function classifySidebarV2Shelves(input: {
       active.push(group);
     }
   }
+  const mostRecentThreadByRootKey = new Map(
+    rootNodes.map((node) => [node.threadKey, node.mostRecentThread] as const),
+  );
   const sortGroups = (groups: readonly SidebarV2ThreadGroup[]) =>
-    groups.toSorted((left, right) => sortByRecent(left.root, right.root));
+    groups.toSorted((left, right) =>
+      sortByRecent(
+        mostRecentThreadByRootKey.get(left.rootKey) ?? left.root,
+        mostRecentThreadByRootKey.get(right.rootKey) ?? right.root,
+      ),
+    );
   return {
     pinned: [...pinnedByProjectKey.values()].flat(),
     pinnedByProjectKey,
