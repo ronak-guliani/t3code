@@ -13,6 +13,7 @@ import { DateTime, Effect, Layer, Option } from "effect";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import { AuthControlPlane } from "../Services/AuthControlPlane.ts";
+import { verifyAndConsumeDpopProof } from "../DpopReplayGuard.ts";
 import { ServerAuthPolicyLive } from "./ServerAuthPolicy.ts";
 import { BootstrapCredentialService } from "../Services/BootstrapCredentialService.ts";
 import { BootstrapCredentialError } from "../Services/BootstrapCredentialService.ts";
@@ -35,7 +36,8 @@ type BootstrapExchangeResult = {
   readonly sessionToken: string;
 };
 
-const AUTHORIZATION_PREFIX = "Bearer ";
+const BEARER_AUTHORIZATION_PREFIX = "Bearer ";
+const DPOP_AUTHORIZATION_PREFIX = "DPoP ";
 const WEBSOCKET_TOKEN_QUERY_PARAM = "wsToken";
 const WEBSOCKET_TICKET_QUERY_PARAM = "wsTicket";
 const WEBSOCKET_TICKET_TTL_MS = 5 * 60 * 1_000;
@@ -79,13 +81,26 @@ export function toBootstrapExchangeAuthError(cause: BootstrapCredentialError): A
   });
 }
 
-function parseBearerToken(request: HttpServerRequest.HttpServerRequest): string | null {
+type AuthorizationCredential =
+  | { readonly _tag: "Bearer"; readonly token: string }
+  | { readonly _tag: "Dpop"; readonly token: string };
+
+function parseAuthorizationCredential(
+  request: HttpServerRequest.HttpServerRequest,
+): AuthorizationCredential | null {
   const header = request.headers["authorization"];
-  if (typeof header !== "string" || !header.startsWith(AUTHORIZATION_PREFIX)) {
+  if (typeof header !== "string") {
     return null;
   }
-  const token = header.slice(AUTHORIZATION_PREFIX.length).trim();
-  return token.length > 0 ? token : null;
+  if (header.startsWith(BEARER_AUTHORIZATION_PREFIX)) {
+    const token = header.slice(BEARER_AUTHORIZATION_PREFIX.length).trim();
+    return token.length > 0 ? { _tag: "Bearer", token } : null;
+  }
+  if (header.startsWith(DPOP_AUTHORIZATION_PREFIX)) {
+    const token = header.slice(DPOP_AUTHORIZATION_PREFIX.length).trim();
+    return token.length > 0 ? { _tag: "Dpop", token } : null;
+  }
+  return null;
 }
 
 export const makeServerAuth = Effect.gen(function* () {
@@ -111,6 +126,7 @@ export const makeServerAuth = Effect.gen(function* () {
         role: session.role,
         scopes: session.scopes,
         ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
+        ...(session.proofKeyThumbprint ? { proofKeyThumbprint: session.proofKeyThumbprint } : {}),
       })),
       Effect.mapError(
         (cause) =>
@@ -124,9 +140,22 @@ export const makeServerAuth = Effect.gen(function* () {
 
   const authenticateRequest = (request: HttpServerRequest.HttpServerRequest) => {
     const cookieToken = request.cookies[sessions.cookieName];
-    const bearerToken = parseBearerToken(request);
-    const credential = cookieToken ?? bearerToken;
-    if (!credential) {
+    if (cookieToken) {
+      return authenticateToken(cookieToken).pipe(
+        Effect.flatMap((session) =>
+          session.proofKeyThumbprint
+            ? Effect.fail(
+                new AuthError({
+                  message: "Proof-bound access token cannot authenticate as a session cookie.",
+                  status: 401,
+                }),
+              )
+            : Effect.succeed(session),
+        ),
+      );
+    }
+    const authorization = parseAuthorizationCredential(request);
+    if (!authorization) {
       return Effect.fail(
         new AuthError({
           message: "Authentication required.",
@@ -134,7 +163,45 @@ export const makeServerAuth = Effect.gen(function* () {
         }),
       );
     }
-    return authenticateToken(credential);
+    return authenticateToken(authorization.token).pipe(
+      Effect.flatMap((session) => {
+        if (authorization._tag === "Bearer") {
+          return session.proofKeyThumbprint
+            ? Effect.fail(
+                new AuthError({
+                  message: "Proof-bound access token requires DPoP authorization.",
+                  status: 401,
+                }),
+              )
+            : Effect.succeed(session);
+        }
+        const requestUrl = HttpServerRequest.toURL(request);
+        if (!session.proofKeyThumbprint || Option.isNone(requestUrl)) {
+          return Effect.fail(
+            new AuthError({
+              message: "Invalid DPoP authorization.",
+              status: 401,
+            }),
+          );
+        }
+        const verification = verifyAndConsumeDpopProof({
+          proof: request.headers["dpop"],
+          method: request.method,
+          url: requestUrl.value.toString(),
+          nowEpochSeconds: Math.floor(Date.now() / 1_000),
+          expectedThumbprint: session.proofKeyThumbprint,
+          expectedAccessToken: authorization.token,
+        });
+        return verification.ok
+          ? Effect.succeed(session)
+          : Effect.fail(
+              new AuthError({
+                message: "Invalid DPoP authorization.",
+                status: 401,
+              }),
+            );
+      }),
+    );
   };
 
   const getSessionState: ServerAuthShape["getSessionState"] = (request) =>
@@ -159,8 +226,8 @@ export const makeServerAuth = Effect.gen(function* () {
     );
 
   const exchangeBootstrapCredentialForAccessToken: ServerAuthShape["exchangeBootstrapCredentialForAccessToken"] =
-    (credential, requestedScopes, requestMetadata) =>
-      bootstrapCredentials.consume(credential).pipe(
+    (credential, requestedScopes, requestMetadata, proofKeyThumbprint) =>
+      bootstrapCredentials.consume(credential, proofKeyThumbprint).pipe(
         Effect.mapError(toBootstrapExchangeAuthError),
         Effect.flatMap((grant) => {
           const allowedScopes = grant.scopes;
@@ -176,7 +243,7 @@ export const makeServerAuth = Effect.gen(function* () {
           }
           return sessions
             .issue({
-              method: "bearer-access-token",
+              method: grant.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
               subject: grant.subject,
               role: grant.role,
               scopes,
@@ -184,6 +251,7 @@ export const makeServerAuth = Effect.gen(function* () {
                 ...requestMetadata,
                 ...(grant.label ? { label: grant.label } : {}),
               },
+              ...(grant.proofKeyThumbprint ? { proofKeyThumbprint: grant.proofKeyThumbprint } : {}),
             })
             .pipe(
               Effect.mapError(
@@ -200,7 +268,7 @@ export const makeServerAuth = Effect.gen(function* () {
                       ({
                         access_token: session.token,
                         issued_token_type: AuthAccessTokenType,
-                        token_type: "Bearer",
+                        token_type: grant.proofKeyThumbprint ? "DPoP" : "Bearer",
                         expires_in: Math.max(
                           0,
                           Math.floor(
@@ -313,6 +381,7 @@ export const makeServerAuth = Effect.gen(function* () {
         scopes,
         subject: role === "owner" ? "owner-bootstrap" : "one-time-token",
         ...(input?.label ? { label: input.label } : {}),
+        ...(input?.proofKeyThumbprint ? { proofKeyThumbprint: input.proofKeyThumbprint } : {}),
       });
     }).pipe(
       Effect.mapError((cause) =>
@@ -426,7 +495,7 @@ export const makeServerAuth = Effect.gen(function* () {
       }),
     );
 
-  const issueWebSocketToken: ServerAuthShape["issueWebSocketToken"] = (session) =>
+  const issueSessionWebSocketToken = (session: AuthenticatedSession) =>
     sessions.issueWebSocketToken(session.sessionId).pipe(
       Effect.mapError(
         (cause) =>
@@ -444,8 +513,18 @@ export const makeServerAuth = Effect.gen(function* () {
       ),
     );
 
+  const issueWebSocketToken: ServerAuthShape["issueWebSocketToken"] = (session) =>
+    session.proofKeyThumbprint
+      ? Effect.fail(
+          new AuthError({
+            message: "Proof-bound sessions must use websocket tickets.",
+            status: 403,
+          }),
+        )
+      : issueSessionWebSocketToken(session);
+
   const issueWebSocketTicket: ServerAuthShape["issueWebSocketTicket"] = (session) =>
-    issueWebSocketToken(session).pipe(
+    issueSessionWebSocketToken(session).pipe(
       Effect.map((issued) => {
         const now = Date.now();
         pruneExpiredWebSocketTickets(now);

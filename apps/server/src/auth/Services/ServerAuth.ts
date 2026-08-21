@@ -27,6 +27,7 @@ export interface AuthenticatedSession {
   readonly role: SessionRole;
   readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly expiresAt?: DateTime.DateTime;
+  readonly proofKeyThumbprint?: string;
 }
 
 export class AuthError extends Data.TaggedError("AuthError")<{
@@ -59,10 +60,12 @@ export interface ServerAuthShape {
     credential: string,
     requestedScopes: ReadonlyArray<AuthEnvironmentScope> | undefined,
     requestMetadata: AuthClientMetadata,
+    proofKeyThumbprint?: string,
   ) => Effect.Effect<AuthAccessTokenResult, AuthError>;
   readonly issuePairingCredential: (
     input?: AuthCreatePairingCredentialInput & {
       readonly role?: SessionRole;
+      readonly proofKeyThumbprint?: string;
     },
   ) => Effect.Effect<AuthPairingCredentialResult, AuthError>;
   readonly listPairingLinks: () => Effect.Effect<ReadonlyArray<AuthPairingLink>, AuthError>;

@@ -80,8 +80,9 @@ import Migration0075 from "./Migrations/075_RepairSkippedPullRequestMonitorLedge
 import Migration0076 from "./Migrations/076_PullRequestMonitorRevisionIdentity.ts";
 import Migration0077 from "./Migrations/077_ProjectionThreadsPinning.ts";
 import Migration0078 from "./Migrations/078_ProjectionThreadTitleRegeneration.ts";
-import Migration0079 from "./Migrations/079_ProjectionThreadCompatibilityRepair.ts";
-import Migration0080 from "./Migrations/080_ChildLifecycleNotificationDedup.ts";
+import Migration0079 from "./Migrations/079_AuthDpopProofKeys.ts";
+import Migration0080 from "./Migrations/080_ProjectionThreadCompatibilityRepair.ts";
+import Migration0081 from "./Migrations/081_ChildLifecycleNotificationDedup.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -161,8 +162,9 @@ export const migrationEntries = [
   [76, "PullRequestMonitorRevisionIdentity", Migration0076],
   [77, "ProjectionThreadsPinning", Migration0077],
   [78, "ProjectionThreadTitleRegeneration", Migration0078],
-  [79, "ProjectionThreadCompatibilityRepair", Migration0079],
-  [80, "ChildLifecycleNotificationDedup", Migration0080],
+  [79, "AuthDpopProofKeys", Migration0079],
+  [80, "ProjectionThreadCompatibilityRepair", Migration0080],
+  [81, "ChildLifecycleNotificationDedup", Migration0081],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

@@ -1,8 +1,13 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import AuthDpopProofKeys from "./079_AuthDpopProofKeys.ts";
+import ProjectionThreadCompatibilityRepair from "./080_ProjectionThreadCompatibilityRepair.ts";
+
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* AuthDpopProofKeys;
+  yield* ProjectionThreadCompatibilityRepair;
 
   yield* sql`
     CREATE TABLE IF NOT EXISTS child_lifecycle_notification_dedup (

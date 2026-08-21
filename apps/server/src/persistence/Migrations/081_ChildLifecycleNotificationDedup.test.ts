@@ -6,12 +6,12 @@ import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
-  "080_ChildLifecycleNotificationDedup",
+  "081_ChildLifecycleNotificationDedup",
   (it) => {
     it.effect("backfills existing lifecycle keys and enforces semantic uniqueness", () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 79 });
+        yield* runMigrations({ toMigrationInclusive: 80 });
         yield* sql`
           INSERT INTO orchestration_events (
             event_id,
@@ -43,7 +43,7 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
           )
         `;
 
-        yield* runMigrations({ toMigrationInclusive: 80 });
+        yield* runMigrations({ toMigrationInclusive: 81 });
 
         const rows = yield* sql<{
           readonly dedupe_key: string;
@@ -78,9 +78,9 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
 );
 
 it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
-  "080_ChildLifecycleNotificationDedup divergent ledger",
+  "081_ChildLifecycleNotificationDedup divergent ledger",
   (it) => {
-    it.effect("repairs main projections after the previous branch migration ledger", () =>
+    it.effect("repairs schemas skipped by the previous branch migration ledger", () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runMigrations({ toMigrationInclusive: 76 });
@@ -97,10 +97,12 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
           INSERT INTO effect_sql_migrations (migration_id, name)
           VALUES
             (77, 'ChildLifecycleNotifications'),
-            (78, 'ChildLifecycleNotificationDedup')
+            (78, 'ChildLifecycleNotificationDedup'),
+            (79, 'ProjectionThreadCompatibilityRepair'),
+            (80, 'ChildLifecycleNotificationDedup')
         `;
 
-        yield* runMigrations({ toMigrationInclusive: 80 });
+        yield* runMigrations({ toMigrationInclusive: 81 });
 
         const columns = yield* sql<{ readonly name: string }>`
           PRAGMA table_info(projection_threads)
@@ -112,6 +114,15 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
         assert.isTrue(names.has("title_regeneration_started_at"));
         assert.isTrue(names.has("thread_url"));
         assert.isTrue(names.has("latest_child_notification_at"));
+
+        const pairingLinkColumns = yield* sql<{ readonly name: string }>`
+          PRAGMA table_info(auth_pairing_links)
+        `;
+        const sessionColumns = yield* sql<{ readonly name: string }>`
+          PRAGMA table_info(auth_sessions)
+        `;
+        assert.isTrue(pairingLinkColumns.some(({ name }) => name === "proof_key_thumbprint"));
+        assert.isTrue(sessionColumns.some(({ name }) => name === "proof_key_thumbprint"));
       }),
     );
   },

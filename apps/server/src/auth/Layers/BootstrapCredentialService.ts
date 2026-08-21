@@ -159,6 +159,7 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
         scopes: issued.scopes,
         subject: input?.subject ?? "one-time-token",
         label: input?.label ?? null,
+        proofKeyThumbprint: input?.proofKeyThumbprint ?? null,
         createdAt: now,
         expiresAt: expiresAt,
       });
@@ -175,7 +176,7 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
       return issued;
     }).pipe(Effect.mapError(toBootstrapCredentialError("Failed to issue pairing credential.")));
 
-  const consume: BootstrapCredentialServiceShape["consume"] = (credential) =>
+  const consume: BootstrapCredentialServiceShape["consume"] = (credential, proofKeyThumbprint) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const seededResult: ConsumeResult = yield* Ref.modify(
@@ -183,6 +184,16 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
         (current): readonly [ConsumeResult, Map<string, StoredBootstrapGrant>] => {
           const grant = current.get(credential);
           if (!grant) {
+            return [
+              {
+                _tag: "error",
+                reason: "not-found",
+                error: invalidBootstrapCredentialError("Unknown bootstrap credential."),
+              },
+              current,
+            ];
+          }
+          if (grant.proofKeyThumbprint !== proofKeyThumbprint) {
             return [
               {
                 _tag: "error",
@@ -227,6 +238,9 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
                 scopes: grant.scopes,
                 subject: grant.subject,
                 ...(grant.label ? { label: grant.label } : {}),
+                ...(grant.proofKeyThumbprint
+                  ? { proofKeyThumbprint: grant.proofKeyThumbprint }
+                  : {}),
                 expiresAt: grant.expiresAt,
               } satisfies BootstrapGrant,
             },
@@ -244,6 +258,7 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
 
       const consumed = yield* pairingLinks.consumeAvailable({
         credential,
+        proofKeyThumbprint: proofKeyThumbprint ?? null,
         consumedAt: now,
         now,
       });
@@ -256,6 +271,9 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
           scopes: consumed.value.scopes ?? defaultSessionScopes(consumed.value.role),
           subject: consumed.value.subject,
           ...(consumed.value.label ? { label: consumed.value.label } : {}),
+          ...(consumed.value.proofKeyThumbprint
+            ? { proofKeyThumbprint: consumed.value.proofKeyThumbprint }
+            : {}),
           expiresAt: consumed.value.expiresAt,
         } satisfies BootstrapGrant;
       }
@@ -268,6 +286,11 @@ export const makeBootstrapCredentialService = Effect.gen(function* () {
       if (matching.value.revokedAt !== null) {
         return yield* invalidBootstrapCredentialError(
           "Bootstrap credential is no longer available.",
+        );
+      }
+      if ((matching.value.proofKeyThumbprint ?? undefined) !== proofKeyThumbprint) {
+        return yield* invalidBootstrapCredentialError(
+          "Bootstrap credential proof key does not match.",
         );
       }
 

@@ -99,7 +99,7 @@ import * as CloudEnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as CloudServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as CliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
-import { connectHttpApiLayer } from "./cloud/http.ts";
+import { connectHttpApiRoutesLayer } from "./cloud/http.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiRoutesLayer } from "./pullRequest/http.ts";
 import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequestProviderRegistry.ts";
@@ -107,6 +107,8 @@ import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestServic
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -325,12 +327,14 @@ export const CloudRuntimeLayerLive = Layer.effectDiscard(
   Layer.provideMerge(CloudRuntimeServicesLayerLive),
 ) as unknown as Layer.Layer<CloudRuntimeServices>;
 
-const ConnectHttpApiLayerLive = connectHttpApiLayer as unknown as Layer.Layer<never>;
+const ConnectHttpApiRoutesLayerLive = connectHttpApiRoutesLayer as unknown as Layer.Layer<never>;
 
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(ProviderLayerLive),
   Layer.provideMerge(OrchestrationLayerLive),
 );
+
+const BackgroundLayerLive = BackgroundPolicy.layer.pipe(Layer.provideMerge(HostPowerMonitor.layer));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
@@ -362,6 +366,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntimeLive),
   Layer.provideMerge(ServerSettingsLive),
+  Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(SidebarStateLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
@@ -414,7 +419,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
   pullRequestHttpApiRoutesLayer,
-  ConnectHttpApiLayerLive,
+  ConnectHttpApiRoutesLayerLive,
   mobileRouteLayer,
   otlpTracesProxyRouteLayer,
   projectFaviconRouteLayer,
