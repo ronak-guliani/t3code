@@ -890,7 +890,11 @@ const make = Effect.gen(function* () {
         yield* orchestrationEngine
           .dispatch({
             type: "thread.message.assistant.delta",
-            commandId: providerCommandIdFromEventId(pending.eventId, "assistant-delta"),
+            // Deterministic per buffered batch (no random suffix): if this
+            // dispatch committed and its caller was still interrupted, the
+            // engine's command receipt deduplicates the retry instead of
+            // appending the same text twice.
+            commandId: CommandId.make(`provider:${pending.eventId}:assistant-delta`),
             threadId: pending.threadId,
             messageId,
             delta: pending.text,
@@ -898,6 +902,12 @@ const make = Effect.gen(function* () {
             createdAt: pending.createdAt,
           })
           .pipe(
+            // An interrupt observed mid-dispatch is ambiguous: the engine may
+            // have committed. Making the dispatch itself uninterruptible
+            // removes that window — external interruption waits until the
+            // dispatch settles, so restore-on-interrupt below only runs for
+            // dispatches that provably did not commit.
+            Effect.uninterruptible,
             Effect.catchCause((cause) => {
               if (Cause.hasInterruptsOnly(cause)) {
                 // The batch is already removed from the buffer; restore it so

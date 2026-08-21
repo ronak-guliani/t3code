@@ -23,7 +23,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -246,7 +246,7 @@ describe("ProviderRuntimeIngestion", () => {
     reviewSnapshot?: ReviewSnapshot;
     failAssistantDeltaDispatch?: (
       command: OrchestrationCommand,
-    ) => boolean | "invariant" | "transient" | "interrupt";
+    ) => boolean | "invariant" | "transient" | "interrupt" | "commit-then-interrupt";
     recordAssistantDeltaDispatches?: boolean;
   }) {
     const assistantDeltaDispatchLog: Array<string> = [];
@@ -279,7 +279,18 @@ describe("ProviderRuntimeIngestion", () => {
                     assistantDeltaDispatchLog.push(command.delta);
                     const failure = options.failAssistantDeltaDispatch?.(command) ?? false;
                     if (failure === "interrupt") {
-                      return Effect.interrupt;
+                      // A value-shaped interrupts-only cause, so it reaches
+                      // the flush's catchCause even though the production
+                      // dispatch is uninterruptible.
+                      return Effect.failCause(Cause.interrupt());
+                    }
+                    if (failure === "commit-then-interrupt") {
+                      // The dispatch really commits, then the caller still
+                      // observes an interrupts-only outcome — the ambiguous
+                      // commit case.
+                      return Effect.andThen(real.dispatch(command), () =>
+                        Effect.failCause(Cause.interrupt()),
+                      );
                     }
                     if (failure === "transient") {
                       // A SQL failure is in the dispatch error union but is
@@ -2957,6 +2968,73 @@ describe("ProviderRuntimeIngestion", () => {
       .map((event) => event.payload.text)
       .join("");
     expect(committedDeltaText).toBe("alphabeta");
+  });
+
+  it("does not duplicate a delta whose dispatch committed before the caller was interrupted", async () => {
+    let ambiguousAttempts = 0;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      // First flush attempt: the dispatch commits on the engine, then the
+      // caller observes an interrupts-only outcome. Every later attempt
+      // succeeds normally.
+      failAssistantDeltaDispatch: () =>
+        ambiguousAttempts++ === 0 ? "commit-then-interrupt" : false,
+    });
+    const now = new Date().toISOString();
+    const messageId = "assistant:item-ambiguous-commit";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-ambiguous-commit"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-ambiguous-commit"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-ambiguous-commit",
+    );
+
+    // Sub-threshold text is buffered; the first periodic flush commits it and
+    // then surfaces an interrupt, so the batch is restored ambiguously.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-ambiguous-commit-alpha"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-ambiguous-commit"),
+      itemId: asItemId("item-ambiguous-commit"),
+      payload: { streamKind: "assistant_text", delta: "alpha" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(ambiguousAttempts).toBeGreaterThan(0);
+
+    // The retry must hit the engine's command receipt for the deterministic
+    // command id and deduplicate instead of appending "alpha" twice.
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.text === "alpha",
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const committedDeltaText = events
+      .filter(
+        (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === messageId &&
+          event.payload.streaming === true,
+      )
+      .map((event) => event.payload.text)
+      .join("");
+    expect(committedDeltaText).toBe("alpha");
   });
 
   it("salvages permanently failing deltas into finalization instead of wedging ingestion", async () => {
