@@ -98,7 +98,7 @@ import {
 } from "./git/VcsBridge.ts";
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import { RpcServer } from "effect/unstable/rpc";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { DiffStateQuery } from "./diffState/Services/DiffStateQuery.ts";
@@ -117,6 +117,7 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
+import { crossVersionRpcSerializationLayer } from "./rpc/crossVersionRpcSerialization.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
@@ -2748,7 +2749,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             Layer.mergeAll(
               makeWsRpcLayer(session, backgroundConnection),
-              RpcSerialization.layerJson,
+              crossVersionRpcSerializationLayer,
               rpcAuthorizationLayer(new Set(session.scopes), session.role),
             ),
           ),

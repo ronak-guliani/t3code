@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
@@ -5,6 +7,11 @@ import {
   AuthOrchestrationReadScope,
   AuthTerminalOperateScope,
 } from "@t3tools/contracts";
+import {
+  computeDpopAccessTokenHash,
+  computeDpopJwkThumbprint,
+  type DpopPublicJwk,
+} from "@t3tools/shared/dpop";
 import { Effect, Layer } from "effect";
 
 import type { ServerConfigShape } from "../../config.ts";
@@ -43,6 +50,50 @@ const makeCookieRequest = (
     },
     headers: {},
   }) as unknown as Parameters<ServerAuthShape["authenticateHttpRequest"]>[0];
+
+const makeAuthorizationRequest = (input: {
+  readonly authorization: string;
+  readonly dpop?: string;
+  readonly url: string;
+}): Parameters<ServerAuthShape["authenticateHttpRequest"]>[0] =>
+  ({
+    cookies: {},
+    headers: {
+      authorization: input.authorization,
+      ...(input.dpop ? { dpop: input.dpop } : {}),
+    },
+    method: "POST",
+    url: input.url,
+  }) as unknown as Parameters<ServerAuthShape["authenticateHttpRequest"]>[0];
+
+function signDpopProof(input: {
+  readonly url: string;
+  readonly privateKey: NodeCrypto.KeyObject;
+  readonly publicJwk: DpopPublicJwk;
+  readonly accessToken?: string;
+}) {
+  const header = Buffer.from(
+    JSON.stringify({
+      typ: "dpop+jwt",
+      alg: "ES256",
+      jwk: input.publicJwk,
+    }),
+  ).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({
+      htm: "POST",
+      htu: input.url,
+      jti: crypto.randomUUID(),
+      iat: Math.floor(Date.now() / 1_000),
+      ...(input.accessToken ? { ath: computeDpopAccessTokenHash(input.accessToken) } : {}),
+    }),
+  ).toString("base64url");
+  const signature = NodeCrypto.sign("sha256", Buffer.from(`${header}.${payload}`), {
+    key: input.privateKey,
+    dsaEncoding: "ieee-p1363",
+  }).toString("base64url");
+  return `${header}.${payload}.${signature}`;
+}
 
 const requestMetadata = {
   deviceType: "desktop" as const,
@@ -125,6 +176,86 @@ it.layer(NodeServices.layer)("ServerAuthLive", (it) => {
       expect(access.scope).toBe("orchestration:read terminal:operate");
       expect(session.method).toBe("bearer-access-token");
       expect(session.scopes).toEqual([AuthOrchestrationReadScope, AuthTerminalOperateScope]);
+    }).pipe(Effect.provide(makeServerAuthLayer())),
+  );
+
+  it.effect("binds managed access tokens to the official client's DPoP key", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* ServerAuth;
+      const { privateKey, publicKey } = NodeCrypto.generateKeyPairSync("ec", {
+        namedCurve: "P-256",
+      });
+      const publicJwk = publicKey.export({ format: "jwk" }) as DpopPublicJwk;
+      const proofKeyThumbprint = computeDpopJwkThumbprint(publicJwk);
+      const pairingCredential = yield* serverAuth.issuePairingCredential({
+        label: "Official iOS",
+        proofKeyThumbprint,
+      });
+      const access = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        pairingCredential.credential,
+        [AuthOrchestrationReadScope],
+        {
+          ...requestMetadata,
+          deviceType: "mobile",
+          os: "iOS",
+        },
+        proofKeyThumbprint,
+      );
+      const requestUrl = "https://environment.example.test/api/auth/websocket-ticket";
+      const proof = signDpopProof({
+        url: requestUrl,
+        privateKey,
+        publicJwk,
+        accessToken: access.access_token,
+      });
+      const session = yield* serverAuth.authenticateHttpRequest(
+        makeAuthorizationRequest({
+          authorization: `DPoP ${access.access_token}`,
+          dpop: proof,
+          url: requestUrl,
+        }),
+      );
+      const bearerFailure = yield* Effect.flip(
+        serverAuth.authenticateHttpRequest(
+          makeAuthorizationRequest({
+            authorization: `Bearer ${access.access_token}`,
+            url: requestUrl,
+          }),
+        ),
+      );
+      const cookieFailure = yield* Effect.flip(
+        serverAuth.authenticateHttpRequest(makeCookieRequest(access.access_token)),
+      );
+      const secondPairingCredential = yield* serverAuth.issuePairingCredential({
+        label: "Official iOS retry",
+        proofKeyThumbprint,
+      });
+      const legacyExchangeFailure = yield* Effect.flip(
+        serverAuth.exchangeBootstrapCredential(secondPairingCredential.credential, requestMetadata),
+      );
+      const wrongKeyFailure = yield* Effect.flip(
+        serverAuth.exchangeBootstrapCredentialForAccessToken(
+          secondPairingCredential.credential,
+          [AuthOrchestrationReadScope],
+          requestMetadata,
+          "wrong-thumbprint",
+        ),
+      );
+      const retriedAccess = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
+        secondPairingCredential.credential,
+        [AuthOrchestrationReadScope],
+        requestMetadata,
+        proofKeyThumbprint,
+      );
+
+      expect(access.token_type).toBe("DPoP");
+      expect(session.method).toBe("dpop-access-token");
+      expect(session.proofKeyThumbprint).toBe(proofKeyThumbprint);
+      expect(bearerFailure.status).toBe(401);
+      expect(cookieFailure.status).toBe(401);
+      expect(legacyExchangeFailure.status).toBe(401);
+      expect(wrongKeyFailure.status).toBe(401);
+      expect(retriedAccess.token_type).toBe("DPoP");
     }).pipe(Effect.provide(makeServerAuthLayer())),
   );
 

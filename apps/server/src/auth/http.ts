@@ -19,7 +19,8 @@ import {
   type AuthWebSocketTicketResult,
 } from "@t3tools/contracts";
 import { parseAllowedOAuthScope } from "@t3tools/shared/oauthScope";
-import { DateTime, Effect, Layer, Schema } from "effect";
+import { verifyDpopProof } from "@t3tools/shared/dpop";
+import { DateTime, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { AuthError, ServerAuth } from "./Services/ServerAuth.ts";
@@ -72,6 +73,7 @@ export const environmentAuthenticatedAuthLayer = Layer.effect(
           subject: session.subject,
           method: session.method,
           scopes: new Set(session.scopes),
+          ...(session.proofKeyThumbprint ? { proofKeyThumbprint: session.proofKeyThumbprint } : {}),
           ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
         });
         return yield* handler.pipe(
@@ -271,6 +273,28 @@ export const authAccessTokenRouteLayer = HttpRouter.add(
         environmentReason: "invalid_scope",
       });
     }
+    const requestUrl = HttpServerRequest.toURL(request);
+    const dpopProof = request.headers["dpop"];
+    const proofKeyThumbprint =
+      dpopProof === undefined
+        ? undefined
+        : Option.isNone(requestUrl)
+          ? null
+          : (() => {
+              const verification = verifyDpopProof({
+                proof: dpopProof,
+                method: request.method,
+                url: requestUrl.value.toString(),
+                nowEpochSeconds: Math.floor(Date.now() / 1_000),
+              });
+              return verification.ok ? verification.thumbprint : null;
+            })();
+    if (proofKeyThumbprint === null) {
+      return yield* new AuthError({
+        message: "Invalid DPoP proof.",
+        status: 401,
+      });
+    }
     const result = yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
       payload.subject_token,
       requestedScopes,
@@ -282,6 +306,7 @@ export const authAccessTokenRouteLayer = HttpRouter.add(
           ...(payload.client_os ? { os: payload.client_os } : {}),
         },
       }),
+      proofKeyThumbprint,
     );
     return HttpServerResponse.jsonUnsafe(result satisfies AuthAccessTokenResult, {
       status: 200,
