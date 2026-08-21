@@ -8,6 +8,7 @@ import {
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
+  hasUnseenChildNotification,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
@@ -115,11 +116,12 @@ describe("hasUnseenCompletion", () => {
       }),
     ).toBe(true);
   });
+});
 
+describe("hasUnseenChildNotification", () => {
   it("returns true when a child lifecycle notification arrived after the parent visit", () => {
     expect(
-      hasUnseenCompletion({
-        latestTurn: null,
+      hasUnseenChildNotification({
         latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
       }),
@@ -128,8 +130,7 @@ describe("hasUnseenCompletion", () => {
 
   it("returns false after the parent has visited the latest child notification", () => {
     expect(
-      hasUnseenCompletion({
-        latestTurn: null,
+      hasUnseenChildNotification({
         latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
         lastVisitedAt: "2026-03-09T10:05:00.000Z",
       }),

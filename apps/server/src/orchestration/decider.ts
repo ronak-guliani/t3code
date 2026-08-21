@@ -2001,20 +2001,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? "approval-required"
           : command.activity.kind === "user-input.requested"
             ? "input-required"
-            : command.activity.kind === "provider.turn.start.failed"
+            : command.activity.kind === "provider.turn.start.failed" ||
+                command.activity.kind === "runtime.error"
               ? "failed"
               : null;
       if (lifecycle === null) {
         return sourceEvents;
       }
+      const sourceKey =
+        lifecycle === "approval-required" || lifecycle === "input-required"
+          ? (requestId ?? command.activity.id)
+          : (command.activity.turnId ?? thread.latestTurn?.turnId ?? command.activity.id);
       return appendChildLifecycleNotification({
         readModel,
         childThread: thread,
         sourceEvents,
         sourceEvent: activityEvent,
         lifecycle,
-        sourceKey:
-          requestId ?? command.activity.turnId ?? thread.latestTurn?.turnId ?? command.activity.id,
+        sourceKey,
         createdAt: command.createdAt,
       });
     }

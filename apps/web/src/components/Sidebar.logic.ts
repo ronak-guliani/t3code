@@ -250,13 +250,9 @@ export function useThreadJumpHintVisibility(): {
 
 export function hasUnseenCompletion(thread: {
   latestTurn: SidebarThreadSummary["latestTurn"];
-  latestChildNotificationAt?: string | null | undefined;
   lastVisitedAt?: string | null | undefined;
 }): boolean {
-  const latestNotificationAt = latestValidTimestamp([
-    thread.latestTurn?.completedAt,
-    thread.latestChildNotificationAt,
-  ]);
+  const latestNotificationAt = latestValidTimestamp([thread.latestTurn?.completedAt]);
   if (latestNotificationAt === undefined) return false;
   if (!thread.lastVisitedAt) return true;
 
@@ -265,7 +261,7 @@ export function hasUnseenCompletion(thread: {
   return Date.parse(latestNotificationAt) > lastVisitedAt;
 }
 
-function hasUnseenChildNotification(thread: {
+export function hasUnseenChildNotification(thread: {
   latestChildNotificationAt?: string | null | undefined;
   lastVisitedAt?: string | null | undefined;
 }): boolean {
@@ -530,7 +526,6 @@ export function resolveThreadStatusPill(input: {
   if (
     hasUnseenCompletion({
       latestTurn: thread.latestTurn,
-      latestChildNotificationAt: thread.latestChildNotificationAt,
       lastVisitedAt: input.lastVisitedAt,
     })
   ) {

@@ -291,6 +291,41 @@ describe("decider thread lifecycle", () => {
     },
   );
 
+  it("reports runtime errors while the failed turn remains active", async () => {
+    const turnId = TurnId.make("turn-runtime-error");
+    const readModel = await nestedActiveTurnReadModel(turnId);
+    const at = "2026-07-30T01:00:00.000Z";
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.activity.append",
+          commandId: CommandId.make("cmd-runtime-error"),
+          threadId: childThreadId,
+          activity: {
+            id: EventId.make("activity-runtime-error"),
+            tone: "error",
+            kind: "runtime.error",
+            summary: "Runtime error",
+            payload: { message: "Provider turn failed" },
+            turnId,
+            createdAt: at,
+          },
+          createdAt: at,
+        },
+        readModel,
+      }),
+    );
+
+    expect(
+      eventsOf(result).find((event) => event.type === "thread.child-lifecycle-notified"),
+    ).toMatchObject({
+      payload: {
+        lifecycle: "failed",
+        dedupeKey: `child:${childThreadId}:failed:${turnId}`,
+      },
+    });
+  });
+
   it.each(["ready", "missing", "error", "speculative"] as const)(
     "does not derive lifecycle state from a %s checkpoint",
     async (status) => {
@@ -428,6 +463,43 @@ describe("decider thread lifecycle", () => {
       (event) => event.type === "thread.child-lifecycle-notified",
     );
     expect(retriedNotification?.payload.dedupeKey).toBe(persistedNotification?.payload.dedupeKey);
+  });
+
+  it("uses distinct dedupe keys for request-less prompts in the same turn", async () => {
+    const readModel = await nestedLifecycleReadModel();
+    const turnId = TurnId.make("turn-request-less-prompts");
+    const notificationKeys = await Promise.all(
+      (["approval.requested", "user-input.requested"] as const).map(async (kind) => {
+        const activityId = EventId.make(`activity-${kind}`);
+        const result = await Effect.runPromise(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.activity.append",
+              commandId: CommandId.make(`cmd-${kind}`),
+              threadId: childThreadId,
+              activity: {
+                id: activityId,
+                tone: "approval",
+                kind,
+                summary: "Action required",
+                payload: {},
+                turnId,
+                createdAt: "2026-07-30T01:00:00.000Z",
+              },
+              createdAt: "2026-07-30T01:00:00.000Z",
+            },
+            readModel,
+          }),
+        );
+        return eventsOf(result).find((event) => event.type === "thread.child-lifecycle-notified")
+          ?.payload.dedupeKey;
+      }),
+    );
+
+    expect(notificationKeys).toEqual([
+      `child:${childThreadId}:approval-required:activity-approval.requested`,
+      `child:${childThreadId}:input-required:activity-user-input.requested`,
+    ]);
   });
 
   it("propagates explicit pull request ownership transfer intent", async () => {
