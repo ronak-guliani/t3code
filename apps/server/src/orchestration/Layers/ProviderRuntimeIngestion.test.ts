@@ -24,7 +24,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
@@ -244,7 +244,9 @@ describe("ProviderRuntimeIngestion", () => {
     serverSettings?: Partial<ServerSettings>;
     reviewSnapshot?: ReviewSnapshot;
     failAssistantDeltaDispatch?: () => boolean;
+    recordAssistantDeltaDispatches?: boolean;
   }) {
+    const assistantDeltaDispatchLog: Array<string> = [];
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -257,7 +259,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const engineLayer =
-      options?.failAssistantDeltaDispatch === undefined
+      options?.failAssistantDeltaDispatch === undefined && !options?.recordAssistantDeltaDispatches
         ? orchestrationLayer
         : Layer.merge(
             orchestrationLayer,
@@ -267,16 +269,20 @@ describe("ProviderRuntimeIngestion", () => {
                 const real = yield* OrchestrationEngineService;
                 return {
                   ...real,
-                  dispatch: (command: OrchestrationCommand) =>
-                    command.type === "thread.message.assistant.delta" &&
-                    options.failAssistantDeltaDispatch!()
+                  dispatch: (command: OrchestrationCommand) => {
+                    if (command.type !== "thread.message.assistant.delta") {
+                      return real.dispatch(command);
+                    }
+                    assistantDeltaDispatchLog.push(command.delta);
+                    return options.failAssistantDeltaDispatch?.()
                       ? Effect.fail(
                           new OrchestrationCommandInvariantError({
                             commandType: command.type,
                             detail: "simulated assistant delta dispatch failure",
                           }),
                         )
-                      : real.dispatch(command),
+                      : real.dispatch(command);
+                  },
                 } satisfies OrchestrationEngineShape;
               }),
             ).pipe(Layer.provide(orchestrationLayer)),
@@ -376,6 +382,7 @@ describe("ProviderRuntimeIngestion", () => {
       setProviderSession: provider.setSession,
       drain,
       snapshotQuery,
+      assistantDeltaDispatchLog,
     };
   }
 
@@ -2591,7 +2598,10 @@ describe("ProviderRuntimeIngestion", () => {
   });
 
   it("dispatches coalesced streaming deltas once they exceed the size threshold", async () => {
-    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      recordAssistantDeltaDispatches: true,
+    });
     const now = new Date().toISOString();
     const oversizedDelta = "y".repeat(3_000);
 
@@ -2608,30 +2618,35 @@ describe("ProviderRuntimeIngestion", () => {
       (thread) => thread.session?.activeTurnId === "turn-streaming-spill",
     );
 
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-message-delta-streaming-spill"),
-      provider: ProviderDriverKind.make("codex"),
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-streaming-spill"),
-      itemId: asItemId("item-streaming-spill"),
-      payload: { streamKind: "assistant_text", delta: oversizedDelta },
-    });
+    // Freeze time so the 50ms periodic flusher can never fire; only the
+    // size-threshold spill may deliver the text.
+    vi.useFakeTimers();
+    try {
+      expect(harness.assistantDeltaDispatchLog).toEqual([]);
 
-    // No non-delta event follows, so only the size-threshold spill can deliver
-    // the text before the periodic flush window.
-    const thread = await waitForThread(harness.engine, (entry) =>
-      entry.messages.some(
-        (message: ProviderRuntimeTestMessage) =>
-          message.id === "assistant:item-streaming-spill" && message.text === oversizedDelta,
-      ),
-    );
-    expect(
-      thread.messages.find(
-        (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-spill",
-      )?.text,
-    ).toBe(oversizedDelta);
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-streaming-spill"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-spill"),
+        itemId: asItemId("item-streaming-spill"),
+        payload: { streamKind: "assistant_text", delta: oversizedDelta },
+      });
+
+      // Advance well short of the periodic window while letting the spill
+      // dispatch run; the text must arrive through the threshold branch alone.
+      let delivered = false;
+      for (let elapsed = 0; elapsed < 40 && !delivered; elapsed += 5) {
+        await vi.advanceTimersByTimeAsync(5);
+        delivered = harness.assistantDeltaDispatchLog.length > 0;
+      }
+      expect(delivered).toBe(true);
+      expect(harness.assistantDeltaDispatchLog).toEqual([oversizedDelta]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries coalesced streaming deltas after an engine dispatch failure instead of dropping them", async () => {
@@ -2687,6 +2702,163 @@ describe("ProviderRuntimeIngestion", () => {
           message.id === messageId && message.text === "survives failures plus tail",
       ),
     );
+  });
+
+  it("flushes sub-threshold buffered deltas to the engine when the runtime shuts down", async () => {
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      recordAssistantDeltaDispatches: true,
+    });
+    const now = new Date().toISOString();
+    const tailDelta = " buffered tail";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-shutdown-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-shutdown-flush"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-shutdown-flush",
+    );
+
+    // First spill delivers a partial chunk, then a sub-threshold delta is
+    // left buffered with no terminal event and no periodic window elapsing.
+    vi.useFakeTimers();
+    try {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-shutdown-flush-partial"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-shutdown-flush"),
+        itemId: asItemId("item-shutdown-flush"),
+        payload: { streamKind: "assistant_text", delta: "y".repeat(3_000) },
+      });
+      for (let elapsed = 0; elapsed < 20; elapsed += 5) {
+        await vi.advanceTimersByTimeAsync(5);
+      }
+      expect(harness.assistantDeltaDispatchLog).toEqual(["y".repeat(3_000)]);
+
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-shutdown-flush-tail"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-shutdown-flush"),
+        itemId: asItemId("item-shutdown-flush"),
+        payload: { streamKind: "assistant_text", delta: tailDelta },
+      });
+      // Keep total elapsed time below the 50ms periodic window so the text is
+      // provably still buffered.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(harness.assistantDeltaDispatchLog).toEqual(["y".repeat(3_000)]);
+
+      // Disposal needs real timers for the Effect runtime's async
+      // continuations. The shutdown finalizer begins flushing immediately
+      // during dispose, well before the next periodic window could fire, so
+      // this exercises exactly the shutdown-vs-periodic-flusher race: the
+      // buffered tail must reach the engine exactly once, unlost.
+      vi.useRealTimers();
+      if (runtime === null) {
+        throw new Error("runtime was not initialized");
+      }
+      await runtime.dispose();
+      expect(harness.assistantDeltaDispatchLog).toEqual(["y".repeat(3_000), tailDelta]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds a terminal event until its prerequisite delta flush succeeds", async () => {
+    let failAssistantDeltaDispatch = true;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      failAssistantDeltaDispatch: () => failAssistantDeltaDispatch,
+    });
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-terminal-ordering");
+    const messageId = "assistant:item-terminal-ordering";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-terminal-ordering"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-terminal-ordering"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-terminal-ordering"),
+      payload: { streamKind: "assistant_text", delta: "tail before completion" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-terminal-ordering"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-terminal-ordering"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+
+    // While the delta dispatch keeps failing, the completion must not be
+    // processed: no finalized message may appear while text is undelivered.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const blockedReadModel = await Effect.runPromise(harness.engine.getReadModel());
+    const blockedThread = blockedReadModel.threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      blockedThread?.messages.every((message: ProviderRuntimeTestMessage) => message.streaming),
+    ).toBe(true);
+
+    failAssistantDeltaDispatch = false;
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId &&
+          !message.streaming &&
+          message.text === "tail before completion",
+      ),
+    );
+
+    // Ordering proof: every streaming delta event for this message precedes
+    // its terminal (non-streaming) event in the committed history.
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const terminalIndex = events.findIndex(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === false,
+    );
+    expect(terminalIndex).toBeGreaterThan(-1);
+    const streamingAfterTerminal = events.some(
+      (event, index): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        index > terminalIndex &&
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === true,
+    );
+    expect(streamingAfterTerminal).toBe(false);
   });
 
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {

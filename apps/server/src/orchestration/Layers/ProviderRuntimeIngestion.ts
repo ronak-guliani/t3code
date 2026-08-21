@@ -70,6 +70,8 @@ interface PendingStreamingDelta {
   readonly eventId: string;
   readonly createdAt: string;
   text: string;
+  /** UTF-8 byte length of `text`, tracked incrementally per appended delta. */
+  textBytes: number;
 }
 
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
@@ -79,8 +81,12 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
-const STREAMING_DELTA_COALESCE_CHARS = 2_048;
+const STREAMING_DELTA_COALESCE_BYTES = 2_048;
 const STREAMING_DELTA_FLUSH_INTERVAL = Duration.millis(50);
+// A failed delta dispatch must not let a following terminal event (message
+// completion, turn finalization) overtake the buffered text, so the ingestion
+// worker retries the flush until it succeeds before processing that event.
+const STREAMING_DELTA_STRICT_RETRY_DELAY = Duration.millis(25);
 const RUNTIME_INGESTION_QUEUE_CAPACITY = 1_024;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -837,7 +843,13 @@ const make = Effect.gen(function* () {
       const next = new Map(map);
       next.set(
         messageId,
-        existing === undefined ? pending : { ...existing, text: `${pending.text}${existing.text}` },
+        existing === undefined
+          ? pending
+          : {
+              ...existing,
+              text: `${pending.text}${existing.text}`,
+              textBytes: pending.textBytes + existing.textBytes,
+            },
       );
       return next;
     });
@@ -884,6 +896,22 @@ const make = Effect.gen(function* () {
       }
     }).pipe(Effect.asVoid);
 
+  const hasPendingStreamingDeltas = Effect.map(
+    Ref.get(pendingStreamingDeltas),
+    (map) => map.size > 0,
+  );
+
+  // Ordering-critical flush: used before terminal events. A transient engine
+  // failure must not let the terminal event overtake buffered text, so retry
+  // until every buffer is delivered.
+  const flushAllStreamingDeltasStrictly = Effect.gen(function* () {
+    yield* flushAllStreamingDeltas();
+    while (yield* hasPendingStreamingDeltas) {
+      yield* Effect.sleep(STREAMING_DELTA_STRICT_RETRY_DELAY);
+      yield* flushAllStreamingDeltas();
+    }
+  }).pipe(Effect.asVoid);
+
   const appendStreamingAssistantDelta = (input: {
     threadId: ThreadId;
     messageId: MessageId;
@@ -904,8 +932,11 @@ const make = Effect.gen(function* () {
           eventId: input.eventId,
           createdAt: input.createdAt,
           text,
+          // Compare UTF-8 bytes against the byte-named threshold; code-unit
+          // lengths understate multi-byte content by up to 3x per character.
+          textBytes: (existing?.textBytes ?? 0) + Buffer.byteLength(input.delta, "utf8"),
         });
-        return [text.length >= STREAMING_DELTA_COALESCE_CHARS, next];
+        return [next.get(input.messageId)!.textBytes >= STREAMING_DELTA_COALESCE_BYTES, next];
       },
     ).pipe(
       Effect.flatMap((shouldSpill) =>
@@ -2071,8 +2102,10 @@ const make = Effect.gen(function* () {
     (event: ProviderRuntimeEvent) =>
       Effect.andThen(
         // Non-delta events may finalize or complete a message, so any buffered
-        // deltas must reach the engine first to preserve ordering.
-        isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltas(),
+        // deltas must reach the engine first to preserve ordering. The strict
+        // variant retries through transient dispatch failures instead of
+        // letting a completion overtake undelivered text.
+        isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
         processRuntimeEventSafely(event),
       ).pipe(Effect.andThen(markProcessed(event))),
     {
