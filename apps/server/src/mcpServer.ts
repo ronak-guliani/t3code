@@ -12,6 +12,7 @@ import { killProcessTree } from "@t3tools/shared/processTree";
 import { ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
+import { composeDelegationPrompt, DELEGATION_PROMPT_BLOCKS } from "./delegationPrompt.ts";
 import {
   decodeNestedThreadCreationOutcome,
   type NestedThreadCreationErrorCode,
@@ -1144,6 +1145,10 @@ async function createNestedThreadToolImpl(
       "create_nested_thread requires an authenticated parent provider instance",
     );
   }
+  const childPrompt =
+    args.promptTemplate === undefined
+      ? prompt
+      : composeDelegationPrompt(prompt, args.promptTemplate);
 
   let workspace: IsolatedWorkspaceSpec | undefined;
   if (args.workspace !== undefined) {
@@ -1174,7 +1179,7 @@ async function createNestedThreadToolImpl(
     nestedThreadCommandArgs(authenticatedOptions, {
       project,
       title,
-      prompt,
+      prompt: childPrompt,
       model,
       reasoning,
       workspace,
@@ -1193,7 +1198,7 @@ async function createNestedThreadToolImpl(
       nestedThreadCommandArgs(authenticatedOptions, {
         project,
         title,
-        prompt,
+        prompt: childPrompt,
         model,
         reasoning,
         workspace,
@@ -1257,7 +1262,7 @@ async function createNestedThreadToolImpl(
     nestedThreadCommandArgs(authenticatedOptions, {
       project,
       title,
-      prompt,
+      prompt: childPrompt,
       model,
       reasoning,
       workspace,
@@ -1534,6 +1539,104 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
         project: { type: "string", description: "Project id, title, or workspace root." },
         title: { type: "string" },
         prompt: { type: "string" },
+        promptTemplate: {
+          type: "object",
+          description:
+            "Optional reusable prompt blocks. Only selected blocks are emitted; canonical ordering prevents contradictory layout, while overrides replace one standard block and additions append to it.",
+          properties: {
+            blocks: {
+              type: "array",
+              minItems: 1,
+              uniqueItems: true,
+              items: { type: "string", enum: [...DELEGATION_PROMPT_BLOCKS] },
+              description:
+                "Prompt blocks to compose. investigation-only conflicts with implementation, commit, and push-and-create-pr.",
+            },
+            repository: {
+              type: "object",
+              properties: {
+                context: { type: "string", minLength: 1 },
+                instructionFiles: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string", minLength: 1 },
+                },
+              },
+              additionalProperties: false,
+            },
+            validation: {
+              type: "object",
+              description: "Required when the validation block is selected.",
+              properties: {
+                commands: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string", minLength: 1 },
+                },
+              },
+              required: ["commands"],
+              additionalProperties: false,
+            },
+            commit: {
+              type: "object",
+              properties: {
+                requirements: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string", minLength: 1 },
+                },
+              },
+              additionalProperties: false,
+            },
+            pullRequest: {
+              type: "object",
+              properties: {
+                requirements: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string", minLength: 1 },
+                },
+              },
+              additionalProperties: false,
+            },
+            reporting: {
+              type: "object",
+              properties: {
+                items: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string", minLength: 1 },
+                },
+              },
+              additionalProperties: false,
+            },
+            overrides: {
+              type: "object",
+              description: "Replacement text keyed by a selected block.",
+              properties: Object.fromEntries(
+                DELEGATION_PROMPT_BLOCKS.map((block) => [block, { type: "string", minLength: 1 }]),
+              ),
+              additionalProperties: false,
+            },
+            additions: {
+              type: "object",
+              description: "Additional bullet items keyed by a selected block.",
+              properties: Object.fromEntries(
+                DELEGATION_PROMPT_BLOCKS.map((block) => [
+                  block,
+                  {
+                    type: "array",
+                    minItems: 1,
+                    items: { type: "string", minLength: 1 },
+                  },
+                ]),
+              ),
+              additionalProperties: false,
+            },
+          },
+          required: ["blocks"],
+          additionalProperties: false,
+        },
         model: {
           type: "string",
           minLength: 1,

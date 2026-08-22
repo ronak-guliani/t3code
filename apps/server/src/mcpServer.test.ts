@@ -50,6 +50,10 @@ done
 if [ -n "$T3_MCP_TEST_ARGS" ]; then
   printf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"
 fi
+if [ -n "$T3_MCP_TEST_PROMPT" ]; then
+  for arg in "$@"; do prompt="$arg"; done
+  printf "%s" "$prompt" > "$T3_MCP_TEST_PROMPT"
+fi
 printf '%s\\n' ${shellQuote(JSON.stringify(actualOutcome))}
 exit ${String(actualExitCode)}
 `;
@@ -283,6 +287,26 @@ describe("create_nested_thread MCP tool", () => {
               type: "string",
               minLength: 1,
             }),
+            promptTemplate: expect.objectContaining({
+              type: "object",
+              required: ["blocks"],
+              properties: expect.objectContaining({
+                blocks: expect.objectContaining({
+                  uniqueItems: true,
+                  items: expect.objectContaining({
+                    enum: expect.arrayContaining([
+                      "repository",
+                      "investigation-only",
+                      "implementation",
+                      "validation",
+                      "commit",
+                      "push-and-create-pr",
+                      "reporting",
+                    ]),
+                  }),
+                }),
+              }),
+            }),
             dryRun: { type: "boolean", description: expect.any(String) },
             workspace: expect.objectContaining({
               type: "object",
@@ -375,6 +399,67 @@ describe("create_nested_thread MCP tool", () => {
       else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
       if (originalDryArgsPath === undefined) delete process.env.T3_MCP_TEST_DRY_ARGS;
       else process.env.T3_MCP_TEST_DRY_ARGS = originalDryArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("composes reusable prompt blocks before passing the exact prompt to the child", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-template-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const promptPath = path.join(root, "child-prompt.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+    const originalPromptPath = process.env.T3_MCP_TEST_PROMPT;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+      process.env.T3_MCP_TEST_PROMPT = promptPath;
+
+      await __testing.createNestedThreadTool(
+        {
+          cwd: root,
+          toolsets: new Set(["create_nested_thread"]),
+          threadId: "parent-1",
+          cliCommand: cliPath,
+          runtimeMode: "full-access",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+        },
+        {
+          project: "project-1",
+          title: "Implement parser",
+          prompt: "Implement the parser.",
+          model: "gpt-5.6-sol",
+          promptTemplate: {
+            blocks: ["implementation", "validation", "reporting"],
+            validation: { commands: ["pnpm test parser"] },
+            reporting: { items: ["Report changed files."] },
+          },
+        },
+      );
+
+      expect(await readFile(promptPath, "utf8")).toBe(`## Task
+Implement the parser.
+
+## Permissions
+Implementation is permitted. Make only the focused changes required for the task, preserve unrelated work, and follow repository conventions.
+
+## Validation
+Run every listed validation command before reporting success. If a command fails, investigate it and report the unresolved failure rather than claiming completion.
+
+Commands:
+- \`pnpm test parser\`
+
+## Expected report
+Report the outcome, material findings or changes, validation results, commit SHA and pull request URL when applicable, blockers, and limitations. Do not claim actions that were not completed.
+
+- Report changed files.`);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      if (originalPromptPath === undefined) delete process.env.T3_MCP_TEST_PROMPT;
+      else process.env.T3_MCP_TEST_PROMPT = originalPromptPath;
       await rm(root, { recursive: true, force: true });
     }
   });

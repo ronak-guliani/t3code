@@ -44,6 +44,7 @@
 - Provider-backed queued turns must revalidate at dispatch, refresh mixed batches, and return terminal recheck failures to durable delivery retry before unblocking the queue.
 - PR base distance is telemetry, not remediation; wake owners for merge conflicts or concrete failures, never routine commit drift.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
+- Delegation prompt policy belongs in one server-side composer exposed through structured MCP input; keep blocks opt-in, reject contradictory permissions and orphaned overrides, and leave repository-specific context in call arguments rather than canonical template text.
 - Canonical worktree selectors may be shared by multiple threads; resolve all distinct active project owners and reject cross-project ambiguity instead of choosing by snapshot order.
 - Nested-thread creation outcomes must distinguish definitive rejection from ambiguous commit state and report cleanup explicitly; preflight branch/path collisions for clear guidance, but keep `git worktree add` as the transactional authority.
 - Nested-thread creation must validate CLI context and canonical Git ownership/collisions before mutation, revalidate at the commit edge, return one stable typed outcome for every phase, and compensate only side effects known not to belong to a committed child.
