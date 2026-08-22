@@ -8,6 +8,7 @@ import {
 import { describe, expect, it } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -242,6 +243,8 @@ const makeHarness = (options: {
   readonly liveEvents?: readonly OrchestrationEvent[];
   readonly blockReplayUntil?: Deferred.Deferred<void>;
   readonly failReplay?: Error;
+  readonly pubsub?: PubSub.PubSub<OrchestrationEvent>;
+  readonly publishOnReplayStart?: readonly OrchestrationEvent[];
   readonly autoMonitor?: boolean;
   readonly initialCursor?: number;
   readonly getSettings?: () => Effect.Effect<{ autoMonitorPullRequestsOnCreate: boolean }, Error>;
@@ -269,12 +272,41 @@ const makeHarness = (options: {
             // Drain drops the resolved element so only real events reach process().
             Stream.fromEffect(Deferred.await(options.blockReplayUntil)).pipe(Stream.drain),
           )
-        : Stream.fromIterable(options.events);
+        : options.pubsub !== undefined && options.publishOnReplayStart !== undefined
+          ? Stream.concat(
+              // Publish from inside the replay stream: only a subscription attached
+              // before readEvents started can possibly capture these events.
+              Stream.fromIterable(options.publishOnReplayStart).pipe(
+                Stream.mapEffect((event) => PubSub.publish(options.pubsub!, event)),
+                Stream.drain,
+              ),
+              Stream.fromIterable(options.events),
+            )
+          : Stream.fromIterable(options.events);
+  // Real PubSub mode: acquireDomainEventSubscription performs the synchronous
+  // handshake the reactor relies on. Cold mode: a scripted subscription replays
+  // liveEvents on take and then blocks, mimicking a quiet hot stream.
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () =>
       Effect.succeed({ threads: [{ id: "thr_review", projectId: "proj_1" }], projects: [] }),
     readEvents: () => replay,
-    streamDomainEvents: Stream.fromIterable(options.liveEvents ?? []),
+    streamDomainEvents:
+      options.pubsub !== undefined
+        ? Stream.fromPubSub(options.pubsub)
+        : Stream.fromIterable(options.liveEvents ?? []),
+    acquireDomainEventSubscription:
+      options.pubsub !== undefined
+        ? PubSub.subscribe(options.pubsub)
+        : Effect.gen(function* () {
+            // Cold mode: a dedicated quiet PubSub whose scripted liveEvents are
+            // published only after the subscription is registered.
+            const source = yield* PubSub.unbounded<OrchestrationEvent>();
+            const subscription = yield* PubSub.subscribe(source);
+            yield* Effect.forEach(options.liveEvents ?? [], (event) =>
+              PubSub.publish(source, event),
+            );
+            return subscription;
+          }),
   } as unknown as OrchestrationEngineService["Service"]);
   const monitorLayer = Layer.succeed(PullRequestMonitorService, {
     submitFindings: (input: PullRequestMonitorSubmitFindingsInput) =>
@@ -489,6 +521,29 @@ describe("PullRequestReviewHandoffReactor layer", () => {
     // Nothing may persist past the gap at 4: a restart replays from before it.
     expect((result as { value?: number }).value).toBeUndefined();
   }, 120_000);
+
+  it("captures live events published while replay starts (attach before snapshot)", async () => {
+    const pubsub = await Effect.runPromise(PubSub.unbounded<OrchestrationEvent>());
+    const live = parsed([finding({ id: "f-live", title: "Live" })]);
+    const harness = makeHarness({
+      events: [makeEvent(5, parsed())],
+      pubsub,
+      publishOnReplayStart: [makeEvent(9, live)],
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        const delivered = yield* waitFor(() => harness.calls.length === 2);
+        expect(delivered).toBe(true);
+        return { cursor: harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR) };
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    // The event published as the replay snapshot was being read must be captured by the
+    // live subscription (acquired before readEvents) and processed exactly once.
+    const value = (result as { value?: { cursor?: number } }).value;
+    expect(value?.cursor).toBe(9);
+  }, 20_000);
 
   it("pauses live handling while backlog replay keeps failing", async () => {
     const harness = makeHarness({

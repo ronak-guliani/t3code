@@ -203,6 +203,8 @@ describe("ProviderSessionReaper", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
 
     const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(

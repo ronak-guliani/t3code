@@ -158,6 +158,8 @@ describe("WorkflowCoordinatorReactor", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const workflows: ProjectionWorkflowRepositoryShape = {
       upsertRun: () => Effect.void,
@@ -225,6 +227,8 @@ describe("WorkflowCoordinatorReactor", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const finalizedRun: ProjectionWorkflowRun = { ...run, status: "completed" };
     let requestedRun: ProjectionWorkflowRun = run;
@@ -280,6 +284,8 @@ describe("WorkflowCoordinatorReactor", () => {
       dispatch: () => Effect.succeed({ sequence: 1 }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const workflows: ProjectionWorkflowRepositoryShape = {
       upsertRun: () => Effect.void,
@@ -323,6 +329,8 @@ describe("WorkflowCoordinatorReactor", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const workflows: ProjectionWorkflowRepositoryShape = {
       upsertRun: () => Effect.void,
@@ -407,6 +415,8 @@ describe("WorkflowCoordinatorReactor", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const workflows: ProjectionWorkflowRepositoryShape = {
       upsertRun: () => Effect.void,
@@ -506,6 +516,8 @@ describe("WorkflowCoordinatorReactor", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const workflows: ProjectionWorkflowRepositoryShape = {
       upsertRun: () => Effect.void,
@@ -602,6 +614,8 @@ describe("WorkflowCoordinatorReactor", () => {
         }),
       withWorktreeLock: (effect) => effect,
       streamDomainEvents: Stream.empty,
+      // Unused by these tests; Effect.never satisfies the scoped subscription type.
+      acquireDomainEventSubscription: Effect.never,
     };
     const workflows: ProjectionWorkflowRepositoryShape = {
       upsertRun: () => Effect.void,
