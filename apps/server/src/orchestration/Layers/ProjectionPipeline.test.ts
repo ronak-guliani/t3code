@@ -879,7 +879,7 @@ it.layer(
     }),
   );
 
-  it.effect("keeps an image added after a revert in the same bootstrap batch", () =>
+  it.effect("keeps an image added after a revert across bootstrap batches", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -889,11 +889,11 @@ it.layer(
       const now = new Date().toISOString();
       const threadId = ThreadId.make("thread-bootstrap-revert-image");
       const attachmentId = "thread-bootstrap-revert-image-00000000-0000-4000-8000-000000000001";
+      const bootstrapBatchSize = 256;
 
-      const append = (event: Parameters<typeof eventStore.append>[0]) =>
-        eventStore.append(event).pipe(Effect.asVoid);
+      const append = (event: Parameters<typeof eventStore.append>[0]) => eventStore.append(event);
 
-      yield* append({
+      const firstReplayEvent = yield* append({
         type: "project.created",
         eventId: EventId.make("evt-bootstrap-revert-image-1"),
         aggregateKind: "project",
@@ -959,30 +959,58 @@ it.layer(
           updatedAt: now,
         },
       });
-      yield* append({
+
+      yield* Effect.forEach(
+        Array.from({ length: bootstrapBatchSize - 4 }, (_, index) => index),
+        (index) =>
+          append({
+            type: "thread.message-sent",
+            eventId: EventId.make(`evt-bootstrap-revert-image-filler-${index}`),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: CommandId.make(`cmd-bootstrap-revert-image-filler-${index}`),
+            causationEventId: null,
+            correlationId: CorrelationId.make(`cmd-bootstrap-revert-image-filler-${index}`),
+            metadata: {},
+            payload: {
+              threadId,
+              messageId: MessageId.make(`message-bootstrap-revert-image-filler-${index}`),
+              role: "user",
+              text: "Filler",
+              turnId: null,
+              streaming: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
+        { concurrency: 1 },
+      );
+
+      const revertEvent = yield* append({
         type: "thread.reverted",
-        eventId: EventId.make("evt-bootstrap-revert-image-4"),
+        eventId: EventId.make("evt-bootstrap-revert-image-revert"),
         aggregateKind: "thread",
         aggregateId: threadId,
         occurredAt: now,
-        commandId: CommandId.make("cmd-bootstrap-revert-image-4"),
+        commandId: CommandId.make("cmd-bootstrap-revert-image-revert"),
         causationEventId: null,
-        correlationId: CommandId.make("cmd-bootstrap-revert-image-4"),
+        correlationId: CommandId.make("cmd-bootstrap-revert-image-revert"),
         metadata: {},
         payload: {
           threadId,
           turnCount: 0,
         },
       });
-      yield* append({
+      const retainingMessageEvent = yield* append({
         type: "thread.message-sent",
-        eventId: EventId.make("evt-bootstrap-revert-image-5"),
+        eventId: EventId.make("evt-bootstrap-revert-image-retaining-message"),
         aggregateKind: "thread",
         aggregateId: threadId,
         occurredAt: now,
-        commandId: CommandId.make("cmd-bootstrap-revert-image-5"),
+        commandId: CommandId.make("cmd-bootstrap-revert-image-retaining-message"),
         causationEventId: null,
-        correlationId: CommandId.make("cmd-bootstrap-revert-image-5"),
+        correlationId: CommandId.make("cmd-bootstrap-revert-image-retaining-message"),
         metadata: {},
         payload: {
           threadId,
@@ -1004,6 +1032,9 @@ it.layer(
           updatedAt: now,
         },
       });
+
+      assert.equal(revertEvent.sequence - firstReplayEvent.sequence + 1, bootstrapBatchSize);
+      assert.equal(retainingMessageEvent.sequence, revertEvent.sequence + 1);
 
       const attachmentPath = path.join(attachmentsDir, `${attachmentId}.png`);
       yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
