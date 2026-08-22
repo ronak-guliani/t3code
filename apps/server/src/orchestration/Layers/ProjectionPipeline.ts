@@ -1992,14 +1992,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const runProjectorsForEventBatch = Effect.fn("runProjectorsForEventBatch")(function* (
       events: ReadonlyArray<OrchestrationEvent>,
       cursors: Map<ProjectorName, number>,
+      attachmentSideEffects: AttachmentSideEffects,
     ) {
       if (events.length === 0) {
         return;
       }
 
-      const attachmentSideEffects: AttachmentSideEffects = {
-        affectedThreadIds: new Set<string>(),
-      };
       const lastAppliedByProjector = new Map<ProjectorName, OrchestrationEvent>();
 
       yield* sql.withTransaction(
@@ -2024,14 +2022,6 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
         }),
       );
-
-      yield* applyAttachmentSideEffects(attachmentSideEffects).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("failed to apply projected attachment side-effects", {
-            cause,
-          }),
-        ),
-      );
     });
 
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
@@ -2050,13 +2040,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         );
       }
       const minCursor = Math.min(...cursors.values());
+      const attachmentSideEffects: AttachmentSideEffects = {
+        affectedThreadIds: new Set<string>(),
+      };
 
       yield* Stream.runForEach(
         Stream.grouped(
           eventStore.readFromSequence(minCursor, Number.MAX_SAFE_INTEGER),
           BOOTSTRAP_EVENT_BATCH_SIZE,
         ),
-        (events) => runProjectorsForEventBatch(events, cursors),
+        (events) => runProjectorsForEventBatch(events, cursors, attachmentSideEffects),
+      );
+
+      yield* applyAttachmentSideEffects(attachmentSideEffects).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to apply projected attachment side-effects", {
+            cause,
+          }),
+        ),
       );
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
