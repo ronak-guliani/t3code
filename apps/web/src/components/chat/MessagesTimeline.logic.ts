@@ -66,6 +66,28 @@ export interface StableMessagesTimelineRowsState {
 
 export type WorkGroupExpansionOverride = "expanded" | "collapsed" | null;
 
+export function resolveExternalActionUrl(actionUrl: string): string | null {
+  try {
+    const target = new URL(actionUrl);
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      return null;
+    }
+    return target.href;
+  } catch {
+    return null;
+  }
+}
+
+export function shouldHandleInternalActionClick(input: {
+  readonly button: number;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+}): boolean {
+  return input.button === 0 && !input.metaKey && !input.ctrlKey && !input.shiftKey && !input.altKey;
+}
+
 export function resolveWorkGroupExpanded({
   shouldAutoCollapse,
   expansionOverride,

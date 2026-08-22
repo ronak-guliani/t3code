@@ -22,6 +22,7 @@ import {
   AuthWebSocketTokenResult,
   ClientOrchestrationCommand,
   CommandId,
+  DispatchResult,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
   OrchestrationShellStreamItem,
@@ -80,7 +81,6 @@ export const isDefinitiveCommandRejectionResponse = (body: string): boolean => {
 };
 
 const JsonRecord = Schema.Record(Schema.String, Schema.Unknown);
-const DispatchResult = Schema.Struct({ sequence: Schema.Number });
 const decodeJsonRecord = Schema.decodeUnknownEffect(JsonRecord);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
 const decodeShellSnapshot = HttpClientResponse.schemaBodyJson(OrchestrationShellSnapshot);

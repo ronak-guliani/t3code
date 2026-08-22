@@ -458,19 +458,20 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
 }
 
 export interface SidebarV2StatusLabel {
-  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done";
+  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done" | "Child update";
   readonly className: string;
   readonly showElapsed: boolean;
 }
 
 /**
  * The right-hand label a card row shows at rest. A `ready` thread only earns
- * one while its completion is unseen, so a row the user already read falls
- * back to its relative timestamp instead of shouting "Done" forever.
+ * one while its completion or child update is unseen, so a row the user
+ * already read falls back to its relative timestamp.
  */
 export function resolveSidebarV2StatusLabel(input: {
   readonly status: SidebarV2Status;
   readonly unseenCompletion: boolean;
+  readonly unseenChildNotification: boolean;
 }): SidebarV2StatusLabel | null {
   switch (input.status) {
     case "working":
@@ -498,13 +499,19 @@ export function resolveSidebarV2StatusLabel(input: {
         showElapsed: false,
       };
     case "ready":
-      return input.unseenCompletion
+      return input.unseenChildNotification
         ? {
-            label: "Done",
-            className: "text-emerald-700 dark:text-emerald-300",
+            label: "Child update",
+            className: "text-sky-600 dark:text-sky-400",
             showElapsed: false,
           }
-        : null;
+        : input.unseenCompletion
+          ? {
+              label: "Done",
+              className: "text-emerald-700 dark:text-emerald-300",
+              showElapsed: false,
+            }
+          : null;
   }
 }
 

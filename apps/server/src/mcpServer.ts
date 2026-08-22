@@ -973,6 +973,7 @@ const nestedThreadFailure = (
 ): NestedThreadCreationOutcome => ({
   status: "failed",
   threadId: null,
+  threadUrl: null,
   retryable: options.retryable ?? false,
   workspaceCreated: options.workspaceCreated ?? false,
   cleanupPerformed: options.cleanupPerformed ?? false,
@@ -989,6 +990,7 @@ function cliBoundaryFailure(
     return {
       status: "failed",
       threadId: null,
+      threadUrl: null,
       retryable: true,
       workspaceCreated: false,
       cleanupPerformed: false,
@@ -1002,6 +1004,7 @@ function cliBoundaryFailure(
   return {
     status: "ambiguous",
     threadId: null,
+    threadUrl: null,
     retryable: false,
     workspaceCreated: false,
     cleanupPerformed: false,
@@ -1225,6 +1228,7 @@ async function createNestedThreadToolImpl(
       return {
         status: "ambiguous",
         threadId: null,
+        threadUrl: null,
         retryable: false,
         workspaceCreated: false,
         cleanupPerformed: false,
@@ -1238,6 +1242,7 @@ async function createNestedThreadToolImpl(
       return {
         status: "ambiguous",
         threadId: null,
+        threadUrl: null,
         retryable: false,
         workspaceCreated: true,
         cleanupPerformed: false,
@@ -1527,7 +1532,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
       properties: {

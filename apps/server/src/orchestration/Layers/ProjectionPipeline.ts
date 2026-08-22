@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, FileSystem, Layer, Option, Path, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 
 import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -664,6 +665,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
+            latestChildNotificationAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             hasActionableProposedPlan: 0,
@@ -1006,6 +1008,26 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           return;
         }
 
+        case "thread.child-lifecycle-notified": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.parentThreadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          const latestChildNotificationAt =
+            existingRow.value.latestChildNotificationAt !== null &&
+            existingRow.value.latestChildNotificationAt > event.payload.createdAt
+              ? existingRow.value.latestChildNotificationAt
+              : event.payload.createdAt;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            latestChildNotificationAt,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
         case "thread.session-set": {
           const existingRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
@@ -1231,6 +1253,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             createdAt: event.payload.activity.createdAt,
           });
           return;
+        case "thread.child-lifecycle-notified": {
+          const activity = childLifecycleNotificationToActivity({
+            eventId: event.eventId,
+            payload: event.payload,
+            sequence: event.sequence,
+          });
+          yield* projectionThreadActivityRepository.upsert({
+            activityId: activity.id,
+            threadId: event.payload.parentThreadId,
+            turnId: activity.turnId,
+            tone: activity.tone,
+            kind: activity.kind,
+            summary: activity.summary,
+            payload: activity.payload,
+            ...(activity.sequence === undefined ? {} : { sequence: activity.sequence }),
+            createdAt: activity.createdAt,
+          });
+          return;
+        }
 
         case "thread.reverted": {
           const existingRows = yield* projectionThreadActivityRepository.listByThreadId({

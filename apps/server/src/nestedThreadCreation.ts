@@ -1,3 +1,4 @@
+import { ThreadUrl } from "@t3tools/contracts";
 import { Cause, Effect, Exit, Schema } from "effect";
 
 export const NestedThreadCreationErrorCode = Schema.Literals([
@@ -22,10 +23,15 @@ export const NestedThreadCreationErrorCode = Schema.Literals([
 ]);
 export type NestedThreadCreationErrorCode = typeof NestedThreadCreationErrorCode.Type;
 
+const NestedThreadUrl = Schema.NullOr(ThreadUrl).pipe(
+  Schema.withDecodingDefault(Effect.succeed(null)),
+);
+
 export const NestedThreadCreationOutcome = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("created"),
     threadId: Schema.String,
+    threadUrl: NestedThreadUrl,
     retryable: Schema.Literal(false),
     workspaceCreated: Schema.Boolean,
     cleanupPerformed: Schema.Literal(false),
@@ -35,6 +41,7 @@ export const NestedThreadCreationOutcome = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("dry-run"),
     threadId: Schema.Null,
+    threadUrl: NestedThreadUrl,
     retryable: Schema.Literal(false),
     workspaceCreated: Schema.Literal(false),
     cleanupPerformed: Schema.Literal(false),
@@ -44,6 +51,7 @@ export const NestedThreadCreationOutcome = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("failed"),
     threadId: Schema.NullOr(Schema.String),
+    threadUrl: NestedThreadUrl,
     retryable: Schema.Boolean,
     workspaceCreated: Schema.Boolean,
     cleanupPerformed: Schema.Boolean,
@@ -53,6 +61,7 @@ export const NestedThreadCreationOutcome = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("ambiguous"),
     threadId: Schema.NullOr(Schema.String),
+    threadUrl: NestedThreadUrl,
     retryable: Schema.Literal(false),
     workspaceCreated: Schema.Boolean,
     cleanupPerformed: Schema.Literal(false),
@@ -68,7 +77,7 @@ export interface NestedThreadPhaseFailure {
 }
 
 interface NestedThreadCreationPhases<R> {
-  readonly createThread: Effect.Effect<void, unknown, R>;
+  readonly createThread: Effect.Effect<ThreadUrl | null, unknown, R>;
   readonly startTurn: Effect.Effect<void, unknown, R>;
   readonly cleanupThread: Effect.Effect<void, unknown, R>;
   readonly classifyFailure: (error: unknown) => NestedThreadPhaseFailure;
@@ -97,6 +106,7 @@ export const runNestedThreadCreationPhases = <R>(
         return {
           status: "failed",
           threadId: null,
+          threadUrl: null,
           retryable: true,
           workspaceCreated,
           cleanupPerformed: false,
@@ -107,6 +117,7 @@ export const runNestedThreadCreationPhases = <R>(
       return {
         status: "ambiguous",
         threadId,
+        threadUrl: null,
         retryable: false,
         workspaceCreated,
         cleanupPerformed: false,
@@ -120,6 +131,7 @@ export const runNestedThreadCreationPhases = <R>(
       return {
         status: "created",
         threadId,
+        threadUrl: createExit.value,
         retryable: false,
         workspaceCreated,
         cleanupPerformed: false,
@@ -133,6 +145,7 @@ export const runNestedThreadCreationPhases = <R>(
       return {
         status: "ambiguous",
         threadId,
+        threadUrl: null,
         retryable: false,
         workspaceCreated,
         cleanupPerformed: false,
@@ -146,6 +159,7 @@ export const runNestedThreadCreationPhases = <R>(
       return {
         status: "failed",
         threadId,
+        threadUrl: null,
         retryable: true,
         workspaceCreated,
         cleanupPerformed: true,
@@ -159,6 +173,7 @@ export const runNestedThreadCreationPhases = <R>(
       return {
         status: "failed",
         threadId,
+        threadUrl: null,
         retryable: false,
         workspaceCreated,
         cleanupPerformed: false,
@@ -169,6 +184,7 @@ export const runNestedThreadCreationPhases = <R>(
     return {
       status: "ambiguous",
       threadId,
+      threadUrl: null,
       retryable: false,
       workspaceCreated,
       cleanupPerformed: false,

@@ -31,6 +31,7 @@ const nestedCliScript = (actualOutcome: Record<string, unknown>, actualExitCode 
   const dryRunOutcome = {
     status: "dry-run",
     threadId: null,
+    threadUrl: null,
     retryable: false,
     workspaceCreated: false,
     cleanupPerformed: false,
@@ -58,6 +59,7 @@ exit ${String(actualExitCode)}
 const createdOutcome = {
   status: "created",
   threadId: "child-1",
+  threadUrl: "https://app.example/env/child-1",
   retryable: false,
   workspaceCreated: false,
   cleanupPerformed: false,

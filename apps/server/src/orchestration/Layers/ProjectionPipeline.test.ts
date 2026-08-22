@@ -174,6 +174,110 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("persists parent child-lifecycle activity and unread timestamp", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const parentThreadId = ThreadId.make("thread-parent-lifecycle");
+      const childThreadId = ThreadId.make("thread-child-lifecycle");
+      const createdAt = "2026-03-24T00:00:00.000Z";
+      const notifiedAt = "2026-03-24T00:05:00.000Z";
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const threadCreatedPayload = (threadId: ThreadId, parentThreadId: ThreadId | null) => ({
+        threadId,
+        projectId: ProjectId.make("project-lifecycle"),
+        parentThreadId,
+        title: parentThreadId === null ? "Parent" : "Release assistant",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        runtimeMode: "full-access" as const,
+        pendingRuntimeMode: null,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        createdAt,
+        updatedAt: createdAt,
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-parent-lifecycle"),
+        aggregateKind: "thread",
+        aggregateId: parentThreadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-parent-lifecycle"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-parent-lifecycle"),
+        metadata: {},
+        payload: threadCreatedPayload(parentThreadId, null),
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-child-lifecycle"),
+        aggregateKind: "thread",
+        aggregateId: childThreadId,
+        occurredAt: createdAt,
+        commandId: CommandId.make("cmd-child-lifecycle"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-child-lifecycle"),
+        metadata: {},
+        payload: threadCreatedPayload(childThreadId, parentThreadId),
+      });
+      yield* appendAndProject({
+        type: "thread.child-lifecycle-notified",
+        eventId: EventId.make("evt-child-lifecycle-completed"),
+        aggregateKind: "thread",
+        aggregateId: parentThreadId,
+        occurredAt: notifiedAt,
+        commandId: CommandId.make("cmd-child-lifecycle-completed"),
+        causationEventId: EventId.make("evt-child-source"),
+        correlationId: CorrelationId.make("cmd-child-lifecycle-completed"),
+        metadata: {},
+        payload: {
+          parentThreadId,
+          childThreadId,
+          childTitle: "Release assistant",
+          lifecycle: "completed",
+          dedupeKey: "child:thread-child-lifecycle:completed:turn-1",
+          createdAt: notifiedAt,
+        },
+      });
+
+      const threadRows = yield* sql<{
+        readonly latestChildNotificationAt: string | null;
+      }>`
+        SELECT latest_child_notification_at AS "latestChildNotificationAt"
+        FROM projection_threads
+        WHERE thread_id = ${parentThreadId}
+      `;
+      const activityRows = yield* sql<{
+        readonly threadId: string;
+        readonly kind: string;
+        readonly summary: string;
+        readonly tone: string;
+      }>`
+        SELECT thread_id AS "threadId", kind, summary, tone
+        FROM projection_thread_activities
+        WHERE activity_id = 'evt-child-lifecycle-completed'
+      `;
+      assert.deepEqual(threadRows, [{ latestChildNotificationAt: notifiedAt }]);
+      assert.deepEqual(activityRows, [
+        {
+          threadId: parentThreadId,
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+          tone: "info",
+        },
+      ]);
+    }),
+  );
+
   it.effect("skips shell-summary history scans for assistant messages and routine activity", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
