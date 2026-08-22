@@ -7,10 +7,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
@@ -31,6 +31,9 @@ const SUBMIT_RETRY = Schedule.exponential("1 seconds").pipe(
   Schedule.both(Schedule.recurs(5)),
   Schedule.jittered,
 );
+
+/** Backlog replay retries before live handling pauses until restart (see startup below). */
+const REPLAY_RETRY = SUBMIT_RETRY;
 
 const SEVERITY_BY_PRIORITY = {
   critical: "blocker",
@@ -158,10 +161,10 @@ const isHandoffEvent = (
  * individually addressable items delivered to the owning chat. Ownership stays with the
  * existing monitor owner; only linkedReviewThreadId moves to the review chat.
  *
- * Consumption is at-least-once. On startup everything since the persisted cursor is replayed
- * while each live event waits for catch-up to finish: streamDomainEvents is hot and new-only,
- * so an event handled before catch-up completes would otherwise advance the cursor past
- * not-yet-replayed events and lose them. Handling is therefore strictly ascending, which
+ * Consumption is at-least-once. At startup the hot live stream is attached and buffered
+ * before the backlog is read (snapshot-first), so no event can fall between the two
+ * sources; buffered events are only processed after the backlog replays successfully.
+ * Handling is therefore strictly ascending, which
  * lets one watermark enforce the restart guarantee: after any event exhausts its retries,
  * cursor persistence freezes for the rest of the session, keeping the persisted cursor
  * behind that event. Later events still proceed without stalling (their submissions are
@@ -244,32 +247,40 @@ const makeReactor = Effect.gen(function* () {
       });
     });
 
-  const startCursor = yield* Ref.get(processed);
-  // Replay the backlog first; streamDomainEvents is hot and new-only, so each live event
-  // waits until catch-up finishes before processing. Events appended during catch-up can
-  // appear in both branches; duplicates are dropped by the sequence check in process().
-  const caughtUp = yield* Deferred.make<void>();
-  yield* engine.readEvents(startCursor).pipe(
-    Stream.runForEach(process),
-    Effect.catchCause((cause) =>
-      Effect.logWarning("pr review handoff replay terminated", {
-        cause: Cause.pretty(cause),
-      }),
-    ),
-    Effect.andThen(Deferred.succeed(caughtUp, undefined).pipe(Effect.orDie)),
-    Effect.interruptible,
-    Effect.forkScoped,
-  );
-  yield* engine.streamDomainEvents.pipe(
-    Stream.mapEffect((event) => Effect.as(Deferred.await(caughtUp), event)),
-    Stream.runForEach(process),
-    Effect.catchCause((cause) =>
-      Effect.logWarning("pr review handoff live stream terminated", {
-        cause: Cause.pretty(cause),
-      }),
-    ),
-    Effect.interruptible,
-    Effect.forkScoped,
+  // Snapshot-first ordering: attach and buffer the hot stream before reading the backlog
+  // so no event can fall between the two sources. streamDomainEvents is hot and new-only;
+  // buffered live events are only processed after the backlog replays successfully, with
+  // duplicates dropped by the sequence check in process().
+  yield* Effect.forkScoped(
+    Effect.gen(function* () {
+      const startCursor = yield* Ref.get(processed);
+      const liveBuffer = yield* Queue.unbounded<OrchestrationEvent>();
+      yield* Effect.forkScoped(
+        engine.streamDomainEvents.pipe(
+          Stream.runForEach((event) => Queue.offer(liveBuffer, event)),
+        ),
+      );
+      const replayed = yield* Effect.result(
+        engine.readEvents(startCursor).pipe(Stream.runForEach(process), Effect.retry(REPLAY_RETRY)),
+      );
+      if (Result.isFailure(replayed)) {
+        // Never release live handling past a backlog we failed to deliver; the frozen
+        // cursor and buffer teardown on restart re-attempt everything.
+        yield* Effect.logError(
+          "pr review handoff backlog replay failed; live handling paused until restart",
+          { cause: replayed.failure },
+        );
+        return;
+      }
+      yield* Stream.fromQueue(liveBuffer).pipe(
+        Stream.runForEach(process),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("pr review handoff live stream terminated", {
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    }).pipe(Effect.interruptible),
   );
 });
 

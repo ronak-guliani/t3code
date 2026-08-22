@@ -241,6 +241,7 @@ const makeHarness = (options: {
   readonly events: readonly OrchestrationEvent[];
   readonly liveEvents?: readonly OrchestrationEvent[];
   readonly blockReplayUntil?: Deferred.Deferred<void>;
+  readonly failReplay?: Error;
   readonly autoMonitor?: boolean;
   readonly initialCursor?: number;
   readonly getSettings?: () => Effect.Effect<{ autoMonitorPullRequestsOnCreate: boolean }, Error>;
@@ -260,12 +261,15 @@ const makeHarness = (options: {
     submit = scripted;
   }
   const replay =
-    options.blockReplayUntil !== undefined
-      ? Stream.concat(
-          Stream.fromIterable(options.events),
-          Stream.fromEffect(Deferred.await(options.blockReplayUntil)),
-        )
-      : Stream.fromIterable(options.events);
+    options.failReplay !== undefined
+      ? Stream.fail(options.failReplay)
+      : options.blockReplayUntil !== undefined
+        ? Stream.concat(
+            Stream.fromIterable(options.events),
+            // Drain drops the resolved element so only real events reach process().
+            Stream.fromEffect(Deferred.await(options.blockReplayUntil)).pipe(Stream.drain),
+          )
+        : Stream.fromIterable(options.events);
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () =>
       Effect.succeed({ threads: [{ id: "thr_review", projectId: "proj_1" }], projects: [] }),
@@ -485,6 +489,29 @@ describe("PullRequestReviewHandoffReactor layer", () => {
     // Nothing may persist past the gap at 4: a restart replays from before it.
     expect((result as { value?: number }).value).toBeUndefined();
   }, 120_000);
+
+  it("pauses live handling while backlog replay keeps failing", async () => {
+    const harness = makeHarness({
+      events: [],
+      liveEvents: [makeEvent(9, parsed())],
+      failReplay: new Error("store unavailable"),
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        yield* Effect.sleep("3 seconds");
+        return {
+          calls: harness.calls.length,
+          cursor: harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR),
+        };
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    const value = (result as { value?: { calls: number; cursor?: number } }).value;
+    // A failed backlog must never release live handling past it.
+    expect(value?.calls).toBe(0);
+    expect(value?.cursor).toBeUndefined();
+  }, 30_000);
 
   it("retries a transient settings read failure instead of dropping the findings", async () => {
     let settingsAttempts = 0;
