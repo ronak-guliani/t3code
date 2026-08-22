@@ -81,6 +81,27 @@ describe("resolveServerEnvironmentLabel", () => {
     }),
   );
 
+  it.effect("appends a normalized installation label", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: " Julius's MacBook Pro \n",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+
+      const result = yield* resolveServerEnvironmentLabel({
+        cwdBaseName: "t3code",
+        platform: "darwin",
+        hostname: "macbook-pro",
+        installationLabel: " Dev ",
+      }).pipe(Effect.provide(NoopFileSystemLayer));
+
+      expect(result).toBe("Julius's MacBook Pro (Dev)");
+    }),
+  );
+
   it.effect("prefers Linux PRETTY_HOSTNAME from machine-info", () =>
     Effect.gen(function* () {
       const result = yield* resolveServerEnvironmentLabel({
