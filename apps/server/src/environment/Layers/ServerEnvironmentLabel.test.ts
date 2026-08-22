@@ -17,6 +17,33 @@ afterEach(() => {
 });
 
 describe("resolveServerEnvironmentLabel", () => {
+  it.effect("prefers a configured per-environment label", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveServerEnvironmentLabel({
+        cwdBaseName: "t3code",
+        configuredLabel: " Ronak's MacBook Pro (Dev) ",
+        platform: "darwin",
+        hostname: "macbook-pro",
+      }).pipe(Effect.provide(NoopFileSystemLayer));
+
+      expect(result).toBe("Ronak's MacBook Pro (Dev)");
+      expect(mockedRunProcess).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("ignores a blank configured label", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveServerEnvironmentLabel({
+        cwdBaseName: "t3code",
+        configuredLabel: "   ",
+        platform: "win32",
+        hostname: "macbook-pro",
+      }).pipe(Effect.provide(NoopFileSystemLayer));
+
+      expect(result).toBe("macbook-pro");
+    }),
+  );
+
   it.effect("uses hostname fallback regardless of launch mode", () =>
     Effect.gen(function* () {
       const result = yield* resolveServerEnvironmentLabel({
