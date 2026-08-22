@@ -126,6 +126,33 @@ export type ThreadFeedEntry =
       readonly expanded: boolean;
     };
 
+export function threadFeedEntriesAreEqual(
+  previous: ThreadFeedEntry,
+  next: ThreadFeedEntry,
+): boolean {
+  if (previous.id !== next.id || previous.type !== next.type) {
+    return false;
+  }
+  if (next.type === "message" && previous.type === "message") {
+    return previous.message === next.message;
+  }
+  if (next.type === "turn-fold" && previous.type === "turn-fold") {
+    return (
+      previous.expanded === next.expanded &&
+      previous.foldKind === next.foldKind &&
+      previous.label === next.label
+    );
+  }
+  if (next.type === "work-toggle" && previous.type === "work-toggle") {
+    return (
+      previous.expanded === next.expanded &&
+      previous.hiddenCount === next.hiddenCount &&
+      previous.onlyToolActivities === next.onlyToolActivities
+    );
+  }
+  return false;
+}
+
 export type ThreadFeedLatestTurn = Pick<
   OrchestrationLatestTurn,
   "turnId" | "state" | "startedAt" | "completedAt"

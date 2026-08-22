@@ -9,7 +9,9 @@ import {
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -398,6 +400,39 @@ describe("EnvironmentThreads", () => {
       }
 
       expect((yield* Ref.get(harness.latest)).status).toBe("live");
+    }),
+  );
+
+  it.effect("drain loop suspends while no stream items are buffered", () =>
+    Effect.gen(function* () {
+      // The consumer must block on an empty queue between stream arrivals;
+      // a non-blocking drain would busy-spin per retained thread state.
+      const queue = yield* Queue.unbounded<number, Cause.Done>();
+      const batches = yield* Ref.make(0);
+      const fiber = yield* Queue.takeAll(queue).pipe(
+        Effect.flatMap(() => Ref.update(batches, (count) => count + 1)),
+        Effect.forever,
+        Effect.catchTag("Done", () => Effect.void),
+        Effect.forkScoped,
+      );
+
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(batches)).toBe(0);
+
+      yield* Queue.offer(queue, 1);
+      yield* Queue.offer(queue, 2);
+      for (let attempt = 0; attempt < 50 && (yield* Ref.get(batches)) === 0; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(batches)).toBe(1);
+
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(batches)).toBe(1);
+      yield* Fiber.interrupt(fiber);
     }),
   );
 });
