@@ -7,6 +7,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -64,7 +65,7 @@ export const reviewFindingKey = (input: {
 
 export interface ParsedPullRequestReview {
   readonly reviewThreadId: ThreadId;
-  readonly projectId: ProjectId | null;
+  readonly projectId: ProjectId;
   readonly repository: string;
   readonly number: number;
   readonly diffHash: string;
@@ -80,7 +81,7 @@ export interface ParsedPullRequestReview {
 
 /**
  * Convert a persisted PR review result into a submitFindings handoff. Non-PR scopes,
- * invalid output, and zero-finding reviews do not qualify.
+ * invalid output, zero-finding reviews, and unresolvable projects do not qualify.
  */
 export function handoffFromReviewResult(input: {
   readonly reviewThreadId: ThreadId;
@@ -90,6 +91,7 @@ export function handoffFromReviewResult(input: {
   if (input.result.status !== "parsed" || input.result.findings.length === 0) return null;
   const scope = input.result.snapshot.scope;
   if (scope.kind !== "pull-request") return null;
+  if (input.projectId === null) return null;
   const repository = repositoryFromPullRequestUrl(scope.url);
   if (repository === null) return null;
   return {
@@ -114,7 +116,7 @@ export function handoffToSubmitInput(
 ): PullRequestMonitorSubmitFindingsInput {
   return {
     reference: {
-      projectId: review.projectId ?? ("" as ProjectId),
+      projectId: review.projectId,
       repository: review.repository,
       number: review.number,
     },
@@ -156,12 +158,16 @@ const isHandoffEvent = (
  * individually addressable items delivered to the owning chat. Ownership stays with the
  * existing monitor owner; only linkedReviewThreadId moves to the review chat.
  *
- * Consumption is at-least-once: on startup the persisted cursor replays everything since
- * the last successful handoff, merged with the live stream (duplicates are dropped by
- * sequence). The cursor advances only after a successful submit; a transient failure
- * retries with backoff, and an event that keeps failing stays behind the cursor so a
- * restart retries it again. Settings gate the behaviour, and failures never block the
- * review itself or other events behind them.
+ * Consumption is at-least-once. On startup everything since the persisted cursor is replayed
+ * while each live event waits for catch-up to finish: streamDomainEvents is hot and new-only,
+ * so an event handled before catch-up completes would otherwise advance the cursor past
+ * not-yet-replayed events and lose them. Handling is therefore strictly ascending, which
+ * lets one watermark enforce the restart guarantee: after any event exhausts its retries,
+ * cursor persistence freezes for the rest of the session, keeping the persisted cursor
+ * behind that event. Later events still proceed without stalling (their submissions are
+ * not lost), and a restart replays from behind the gap to re-attempt it; resubmitted
+ * events are idempotent by content key. Settings gate the behaviour, and failures never
+ * block the review itself.
  */
 const makeReactor = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
@@ -170,18 +176,19 @@ const makeReactor = Effect.gen(function* () {
   const projectionState = yield* ProjectionStateRepository;
 
   const initial = yield* projectionState.getByProjector({ projector: REVIEW_HANDOFF_PROJECTOR });
-  // Highest sequence fully handled. Events above it are pending or skipped-this-session.
+  // Highest sequence fully handled this session; persisted until a permanent failure occurs.
   const processed = yield* Ref.make(
     Option.match(initial, {
       onNone: () => 0,
       onSome: (state) => state.lastAppliedSequence,
     }),
   );
-  const skipped = yield* Ref.make(new Set<number>());
+  // Lowest sequence that exhausted retries this session, freezing further persistence.
+  const failedFrom = yield* Ref.make<number | null>(null);
 
-  const advanceCursor = Effect.fn("advanceCursor")(function* (sequence: number) {
+  const markHandled = Effect.fn("markHandled")(function* (sequence: number) {
     const current = yield* Ref.getAndUpdate(processed, (value) => Math.max(value, sequence));
-    if (sequence <= current) return;
+    if (sequence <= current || (yield* Ref.get(failedFrom)) !== null) return;
     yield* projectionState
       .upsert({
         projector: REVIEW_HANDOFF_PROJECTOR,
@@ -202,10 +209,10 @@ const makeReactor = Effect.gen(function* () {
   const handle = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
       if (!isHandoffEvent(event)) return;
-      const settings = yield* Effect.result(serverSettings.getSettings);
-      if (Result.isFailure(settings) || settings.success.autoMonitorPullRequestsOnCreate !== true) {
-        return;
-      }
+      // Settings read errors propagate to process(): retried transiently like submit
+      // failures so a transient settings outage cannot silently drop the findings.
+      const settings = yield* serverSettings.getSettings;
+      if (settings.autoMonitorPullRequestsOnCreate !== true) return;
       const readModel = yield* engine.getReadModel();
       const projectId = (readModel.threads.find((entry) => entry.id === event.payload.threadId)
         ?.projectId ?? null) as ProjectId | null;
@@ -214,36 +221,50 @@ const makeReactor = Effect.gen(function* () {
         projectId,
         result: event.payload.result,
       });
-      if (review === null || !review.projectId) return;
-      // Errors propagate to process(): retried transiently, then skipped until restart.
+      if (review === null) return;
       yield* monitors.submitFindings(handoffToSubmitInput(review));
     });
 
   const process = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
-      const current = yield* Ref.get(processed);
-      if (event.sequence <= current || (yield* Ref.get(skipped)).has(event.sequence)) return;
+      if (event.sequence <= (yield* Ref.get(processed))) return;
       const outcome = yield* Effect.result(handle(event).pipe(Effect.retry(SUBMIT_RETRY)));
       if (Result.isSuccess(outcome)) {
-        yield* advanceCursor(event.sequence);
+        yield* markHandled(event.sequence);
         return;
       }
-      // Keep looping: mark this event skipped for this session but leave the cursor
-      // behind it so a restart replays and re-attempts it.
-      yield* Ref.update(skipped, (set) => new Set(set).add(event.sequence));
+      // Keep looping: freeze persistence at this gap so a restart replays it, while later
+      // events still proceed without stalling.
+      yield* Ref.update(failedFrom, (current) =>
+        current === null ? event.sequence : Math.min(current, event.sequence),
+      );
       yield* Effect.logError("pr review handoff gave up; will retry after restart", {
         sequence: event.sequence,
         type: event.type,
       });
     });
 
-  // Merge replay-since-cursor with the live stream: neither a restart gap nor events
-  // dispatched during catch-up can be lost. runForEach keeps handling sequential.
-  yield* engine.readEvents(yield* Ref.get(processed)).pipe(
-    Stream.merge(engine.streamDomainEvents),
+  const startCursor = yield* Ref.get(processed);
+  // Replay the backlog first; streamDomainEvents is hot and new-only, so each live event
+  // waits until catch-up finishes before processing. Events appended during catch-up can
+  // appear in both branches; duplicates are dropped by the sequence check in process().
+  const caughtUp = yield* Deferred.make<void>();
+  yield* engine.readEvents(startCursor).pipe(
     Stream.runForEach(process),
     Effect.catchCause((cause) =>
-      Effect.logWarning("pr review handoff stream terminated", {
+      Effect.logWarning("pr review handoff replay terminated", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+    Effect.andThen(Deferred.succeed(caughtUp, undefined).pipe(Effect.orDie)),
+    Effect.interruptible,
+    Effect.forkScoped,
+  );
+  yield* engine.streamDomainEvents.pipe(
+    Stream.mapEffect((event) => Effect.as(Deferred.await(caughtUp), event)),
+    Stream.runForEach(process),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("pr review handoff live stream terminated", {
         cause: Cause.pretty(cause),
       }),
     ),

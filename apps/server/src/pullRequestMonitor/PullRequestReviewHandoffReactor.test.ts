@@ -6,6 +6,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -222,9 +223,9 @@ const makeEvent = (sequence: number, result: unknown): OrchestrationEvent =>
     metadata: {},
   }) as unknown as OrchestrationEvent;
 
-const waitFor = (predicate: () => boolean) =>
+const waitFor = (predicate: () => boolean, attempts = 750) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 750; attempt += 1) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       if (predicate()) return true;
       yield* Effect.sleep("20 millis");
     }
@@ -238,8 +239,11 @@ interface Harness {
 
 const makeHarness = (options: {
   readonly events: readonly OrchestrationEvent[];
+  readonly liveEvents?: readonly OrchestrationEvent[];
+  readonly blockReplayUntil?: Deferred.Deferred<void>;
   readonly autoMonitor?: boolean;
   readonly initialCursor?: number;
+  readonly getSettings?: () => Effect.Effect<{ autoMonitorPullRequestsOnCreate: boolean }, Error>;
   readonly submitFindings?: (
     input: PullRequestMonitorSubmitFindingsInput,
   ) => Effect.Effect<void, Error>;
@@ -255,11 +259,18 @@ const makeHarness = (options: {
     const scripted = options.submitFindings;
     submit = scripted;
   }
+  const replay =
+    options.blockReplayUntil !== undefined
+      ? Stream.concat(
+          Stream.fromIterable(options.events),
+          Stream.fromEffect(Deferred.await(options.blockReplayUntil)),
+        )
+      : Stream.fromIterable(options.events);
   const engineLayer = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () =>
       Effect.succeed({ threads: [{ id: "thr_review", projectId: "proj_1" }], projects: [] }),
-    readEvents: () => Stream.fromIterable(options.events),
-    streamDomainEvents: Stream.empty,
+    readEvents: () => replay,
+    streamDomainEvents: Stream.fromIterable(options.liveEvents ?? []),
   } as unknown as OrchestrationEngineService["Service"]);
   const monitorLayer = Layer.succeed(PullRequestMonitorService, {
     submitFindings: (input: PullRequestMonitorSubmitFindingsInput) =>
@@ -268,9 +279,20 @@ const makeHarness = (options: {
         Effect.as({} as never),
       ),
   } as unknown as PullRequestMonitorService["Service"]);
-  const settingsLayer = ServerSettingsService.layerTest({
-    autoMonitorPullRequestsOnCreate: options.autoMonitor ?? true,
-  });
+  const settingsLayer =
+    options.getSettings !== undefined
+      ? (Layer.succeed(
+          ServerSettingsService,
+          // Getter so each read can observe a fresh scripted attempt.
+          {
+            get getSettings() {
+              return options.getSettings!();
+            },
+          } as unknown as ServerSettingsService["Service"],
+        ) as never)
+      : ServerSettingsService.layerTest({
+          autoMonitorPullRequestsOnCreate: options.autoMonitor ?? true,
+        });
   const stateLayer = Layer.succeed(ProjectionStateRepository, {
     getByProjector: ({ projector }: { projector: string }) =>
       Effect.succeed(
@@ -297,7 +319,7 @@ const makeHarness = (options: {
     layer: layer.pipe(
       Layer.provideMerge(engineLayer),
       Layer.provideMerge(monitorLayer),
-      Layer.provideMerge(settingsLayer),
+      Layer.provideMerge(settingsLayer as Layer.Layer<never>),
       Layer.provideMerge(stateLayer),
     ) as unknown as Layer.Layer<never>,
   };
@@ -403,4 +425,86 @@ describe("PullRequestReviewHandoffReactor layer", () => {
     expect(result._tag).toBe("Success");
     expect((result as { value?: number }).value).toBe(7);
   }, 20_000);
+
+  it("buffers live events until backlog replay completes", async () => {
+    const release = await Effect.runPromise(Deferred.make<void>());
+    const backlog = parsed([finding({ id: "f-backlog", title: "Backlog" })]);
+    const live = parsed([finding({ id: "f-live", title: "Live" })]);
+    const harness = makeHarness({
+      events: [makeEvent(5, backlog)],
+      liveEvents: [makeEvent(9, live)],
+      blockReplayUntil: release,
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        yield* Effect.sleep("300 millis");
+        // While replay is blocked, only the backlog event may have been handled; a live
+        // event handled now would strand the backlog behind sequence 9.
+        const duringCatchUp = [...harness.calls];
+        yield* Deferred.succeed(release, undefined);
+        const delivered = yield* waitFor(() => harness.calls.length === 2);
+        expect(delivered).toBe(true);
+        return { duringCatchUp, cursor: harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR) };
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    const value = (
+      result as {
+        value?: {
+          duringCatchUp: readonly PullRequestMonitorSubmitFindingsInput[];
+          cursor?: number;
+        };
+      }
+    ).value;
+    expect(value?.duringCatchUp.map((entry) => entry.findings?.[0]?.title)).toEqual(["Backlog"]);
+    expect(value?.cursor).toBe(9);
+  }, 20_000);
+
+  it("keeps persistence frozen behind a failed event even when later events succeed", async () => {
+    const failing = parsed([finding({ id: "f-a", title: "Failing" })]);
+    const succeeding = parsed([finding({ id: "f-b", title: "Succeeding" })]);
+    const harness = makeHarness({
+      events: [makeEvent(4, failing), makeEvent(7, succeeding)],
+      submitFindings: (input) =>
+        (input.findings ?? []).some((entry) => entry.title === "Failing")
+          ? Effect.fail(new Error("permanent"))
+          : Effect.void,
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        // Event 4 exhausts its retries (~30s of backoff); event 7 must still submit.
+        const delivered = yield* waitFor(() => harness.calls.length === 1, 3_000);
+        expect(delivered).toBe(true);
+        expect(harness.calls[0]?.findings?.[0]?.title).toBe("Succeeding");
+        return harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR);
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    // Nothing may persist past the gap at 4: a restart replays from before it.
+    expect((result as { value?: number }).value).toBeUndefined();
+  }, 120_000);
+
+  it("retries a transient settings read failure instead of dropping the findings", async () => {
+    let settingsAttempts = 0;
+    const harness = makeHarness({
+      events: [makeEvent(5, parsed())],
+      getSettings: () =>
+        ++settingsAttempts === 1
+          ? Effect.fail(new Error("transient settings outage"))
+          : Effect.succeed({ autoMonitorPullRequestsOnCreate: true }),
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        const delivered = yield* waitFor(() => harness.calls.length === 1, 3_000);
+        expect(delivered).toBe(true);
+        return harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR);
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    expect(settingsAttempts).toBeGreaterThanOrEqual(2);
+    expect((result as { value?: number }).value).toBe(5);
+  }, 60_000);
 });
