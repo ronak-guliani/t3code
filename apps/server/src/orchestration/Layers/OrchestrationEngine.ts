@@ -202,6 +202,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ...commandReadModel,
       threads: commandReadModel.threads.map((thread) => detailById.get(thread.id) ?? thread),
     } satisfies OrchestrationReadModel;
+  });
+
   const dispatchResult = (command: OrchestrationCommand, sequence: number): DispatchResult => ({
     sequence,
     ...((command.type === "thread.create" ||
