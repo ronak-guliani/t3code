@@ -7,6 +7,7 @@ import type {
   SidebarStateSnapshot,
 } from "@t3tools/contracts";
 import { dispatchReorderPinnedThreads, dispatchSetThreadPinned } from "./sidebarStateSync";
+import { latestValidTimestamp } from "./session-logic";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 export const SIDEBAR_PINS_MIGRATED_KEY_PREFIX = "t3code:sidebar-pins-migrated:v1";
@@ -115,6 +116,7 @@ export interface SyncThreadInput {
   key: string;
   seedVisitedAt?: string | undefined;
   latestTurnCompletedAt?: string | null | undefined;
+  latestChildNotificationAt?: string | null | undefined;
 }
 
 const initialState: UiState = {
@@ -609,32 +611,28 @@ export function syncThreads(state: UiState, threads: readonly SyncThreadInput[])
   for (const thread of threads) {
     const existingVisitedAt = nextThreadLastVisitedAtById[thread.key];
     if (existingVisitedAt !== undefined) {
-      const latestTurnCompletedAt = thread.latestTurnCompletedAt;
-      if (existingVisitedAt === thread.seedVisitedAt && latestTurnCompletedAt) {
+      const latestNotificationAt = latestValidTimestamp([
+        thread.latestTurnCompletedAt,
+        thread.latestChildNotificationAt,
+      ]);
+      if (existingVisitedAt === thread.seedVisitedAt && latestNotificationAt) {
         const existingVisitedAtMs = Date.parse(existingVisitedAt);
-        const latestTurnCompletedAtMs = Date.parse(latestTurnCompletedAt);
+        const latestNotificationAtMs = Date.parse(latestNotificationAt);
         if (
           Number.isFinite(existingVisitedAtMs) &&
-          Number.isFinite(latestTurnCompletedAtMs) &&
-          latestTurnCompletedAtMs > existingVisitedAtMs
+          Number.isFinite(latestNotificationAtMs) &&
+          latestNotificationAtMs > existingVisitedAtMs
         ) {
-          nextThreadLastVisitedAtById[thread.key] = latestTurnCompletedAt;
+          nextThreadLastVisitedAtById[thread.key] = latestNotificationAt;
         }
       }
       continue;
     }
-    let seedVisitedAt: string | undefined;
-    let seedVisitedAtMs = Number.NEGATIVE_INFINITY;
-    for (const candidate of [thread.seedVisitedAt, thread.latestTurnCompletedAt]) {
-      if (!candidate) {
-        continue;
-      }
-      const candidateMs = Date.parse(candidate);
-      if (Number.isFinite(candidateMs) && candidateMs > seedVisitedAtMs) {
-        seedVisitedAt = candidate;
-        seedVisitedAtMs = candidateMs;
-      }
-    }
+    const seedVisitedAt = latestValidTimestamp([
+      thread.seedVisitedAt,
+      thread.latestTurnCompletedAt,
+      thread.latestChildNotificationAt,
+    ]);
     if (seedVisitedAt !== undefined) {
       nextThreadLastVisitedAtById[thread.key] = seedVisitedAt;
     }

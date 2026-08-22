@@ -14,6 +14,7 @@ import {
   ProviderItemId,
   QueuedTurnId,
   ThreadId,
+  ThreadUrl,
   TrimmedNonEmptyString,
   TrimmedString,
   TurnId,
@@ -424,6 +425,47 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const ChildThreadLifecycle = Schema.Literals([
+  "started",
+  "blocked",
+  "approval-required",
+  "input-required",
+  "failed",
+  "completed",
+  "pr-created",
+]);
+export type ChildThreadLifecycle = typeof ChildThreadLifecycle.Type;
+
+const ChildThreadLifecycleNotificationFields = {
+  parentThreadId: ThreadId,
+  childThreadId: ThreadId,
+  childTitle: TrimmedNonEmptyString,
+  dedupeKey: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+} as const;
+
+export const ChildThreadLifecycleNotification = Schema.Union([
+  Schema.Struct({
+    ...ChildThreadLifecycleNotificationFields,
+    lifecycle: Schema.Literals([
+      "started",
+      "blocked",
+      "approval-required",
+      "input-required",
+      "failed",
+      "completed",
+    ]),
+  }),
+  Schema.Struct({
+    ...ChildThreadLifecycleNotificationFields,
+    lifecycle: Schema.Literal("pr-created"),
+    externalAction: Schema.Struct({
+      url: TrimmedNonEmptyString,
+    }),
+  }),
+]);
+export type ChildThreadLifecycleNotification = typeof ChildThreadLifecycleNotification.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -557,6 +599,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
+  latestChildNotificationAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
   hasActionableProposedPlan: Schema.Boolean,
@@ -1243,6 +1286,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
   "thread.activity-appended",
+  "thread.child-lifecycle-notified",
   "workflow.run-requested",
   "workflow.artifact-created",
   "workflow.node-worker-started",
@@ -1553,6 +1597,8 @@ export const ThreadActivityAppendedPayload = Schema.Struct({
   activity: OrchestrationThreadActivity,
 });
 
+export const ThreadChildLifecycleNotifiedPayload = ChildThreadLifecycleNotification;
+
 export const WorkflowRunRequestedPayload = Schema.Struct({
   run: WorkflowRun,
   definition: WorkflowDefinition,
@@ -1795,6 +1841,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.activity-appended"),
     payload: ThreadActivityAppendedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.child-lifecycle-notified"),
+    payload: ThreadChildLifecycleNotifiedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2085,6 +2136,7 @@ export type ProjectionPendingApprovalDecision = typeof ProjectionPendingApproval
 
 export const DispatchResult = Schema.Struct({
   sequence: NonNegativeInt,
+  threadUrl: Schema.optionalKey(ThreadUrl),
 });
 export type DispatchResult = typeof DispatchResult.Type;
 

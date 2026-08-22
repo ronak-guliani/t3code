@@ -31,6 +31,7 @@ const nestedCliScript = (actualOutcome: Record<string, unknown>, actualExitCode 
   const dryRunOutcome = {
     status: "dry-run",
     threadId: null,
+    threadUrl: null,
     retryable: false,
     workspaceCreated: false,
     cleanupPerformed: false,
@@ -49,6 +50,10 @@ for arg in "$@"; do
 done
 if [ -n "$T3_MCP_TEST_ARGS" ]; then
   printf "%s\\n" "$@" > "$T3_MCP_TEST_ARGS"
+fi
+if [ -n "$T3_MCP_TEST_PROMPT" ]; then
+  for arg in "$@"; do prompt="$arg"; done
+  printf "%s" "$prompt" > "$T3_MCP_TEST_PROMPT"
 fi
 printf '%s\\n' ${shellQuote(JSON.stringify(actualOutcome))}
 exit ${String(actualExitCode)}
@@ -94,6 +99,7 @@ exit 0
 const createdOutcome = {
   status: "created",
   threadId: "child-1",
+  threadUrl: "https://app.example/env/child-1",
   retryable: false,
   workspaceCreated: false,
   cleanupPerformed: false,
@@ -321,6 +327,26 @@ describe("create_nested_thread MCP tool", () => {
               type: "string",
               minLength: 1,
             }),
+            promptTemplate: expect.objectContaining({
+              type: "object",
+              required: ["blocks"],
+              properties: expect.objectContaining({
+                blocks: expect.objectContaining({
+                  uniqueItems: true,
+                  items: expect.objectContaining({
+                    enum: expect.arrayContaining([
+                      "repository",
+                      "investigation-only",
+                      "implementation",
+                      "validation",
+                      "commit",
+                      "push-and-create-pr",
+                      "reporting",
+                    ]),
+                  }),
+                }),
+              }),
+            }),
             dryRun: { type: "boolean", description: expect.any(String) },
             workspace: expect.objectContaining({
               type: "object",
@@ -413,6 +439,67 @@ describe("create_nested_thread MCP tool", () => {
       else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
       if (originalDryArgsPath === undefined) delete process.env.T3_MCP_TEST_DRY_ARGS;
       else process.env.T3_MCP_TEST_DRY_ARGS = originalDryArgsPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("composes reusable prompt blocks before passing the exact prompt to the child", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-template-"));
+    const cliPath = path.join(root, "t3-test");
+    const argsPath = path.join(root, "cli-args.txt");
+    const promptPath = path.join(root, "child-prompt.txt");
+    const originalArgsPath = process.env.T3_MCP_TEST_ARGS;
+    const originalPromptPath = process.env.T3_MCP_TEST_PROMPT;
+
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      process.env.T3_MCP_TEST_ARGS = argsPath;
+      process.env.T3_MCP_TEST_PROMPT = promptPath;
+
+      await __testing.createNestedThreadTool(
+        {
+          cwd: root,
+          toolsets: new Set(["create_nested_thread"]),
+          threadId: "parent-1",
+          cliCommand: cliPath,
+          runtimeMode: "full-access",
+          providerInstanceId: ProviderInstanceId.make("copilot"),
+        },
+        {
+          project: "project-1",
+          title: "Implement parser",
+          prompt: "Implement the parser.",
+          model: "gpt-5.6-sol",
+          promptTemplate: {
+            blocks: ["implementation", "validation", "reporting"],
+            validation: { commands: ["pnpm test parser"] },
+            reporting: { items: ["Report changed files."] },
+          },
+        },
+      );
+
+      expect(await readFile(promptPath, "utf8")).toBe(`## Task
+Implement the parser.
+
+## Permissions
+Implementation is permitted. Make only the focused changes required for the task, preserve unrelated work, and follow repository conventions.
+
+## Validation
+Run every listed validation command before reporting success. If a command fails, investigate it and report the unresolved failure rather than claiming completion.
+
+Commands:
+- \`pnpm test parser\`
+
+## Expected report
+Report the outcome, material findings or changes, validation results, commit SHA and pull request URL when applicable, blockers, and limitations. Do not claim actions that were not completed.
+
+- Report changed files.`);
+    } finally {
+      if (originalArgsPath === undefined) delete process.env.T3_MCP_TEST_ARGS;
+      else process.env.T3_MCP_TEST_ARGS = originalArgsPath;
+      if (originalPromptPath === undefined) delete process.env.T3_MCP_TEST_PROMPT;
+      else process.env.T3_MCP_TEST_PROMPT = originalPromptPath;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -585,6 +672,7 @@ describe("create_nested_thread MCP tool", () => {
           {
             status: "failed",
             threadId: null,
+            threadUrl: null,
             retryable: true,
             workspaceCreated: true,
             cleanupPerformed: false,
@@ -1580,7 +1668,18 @@ describe("create_nested_threads MCP tool", () => {
         name: "create_nested_threads",
         inputSchema: expect.objectContaining({
           properties: expect.objectContaining({
-            children: expect.objectContaining({ minItems: 1, maxItems: 16 }),
+            children: expect.objectContaining({
+              minItems: 1,
+              maxItems: 16,
+              items: expect.objectContaining({
+                properties: expect.objectContaining({
+                  promptTemplate: expect.objectContaining({
+                    type: "object",
+                    required: ["blocks"],
+                  }),
+                }),
+              }),
+            }),
             concurrency: expect.objectContaining({ minimum: 1, maximum: 4, default: 4 }),
           }),
           required: ["children"],
@@ -1642,7 +1741,7 @@ describe("create_nested_threads MCP tool", () => {
     }
   });
 
-  it("rejects every duplicate branch or canonical path before creating other items", async () => {
+  it("rejects duplicate branch or canonical path identities regardless of case", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-collision-"));
     const cliPath = path.join(root, "t3-test");
     const sharedPath = `${root}-shared`;
@@ -1660,11 +1759,11 @@ describe("create_nested_threads MCP tool", () => {
       const result = JSON.parse(
         await __testing.createNestedThreadsTool(options(root, cliPath), {
           children: [
-            withWorkspace("Shared path", "feature/path-one", sharedPath),
+            withWorkspace("Shared path", "Feature/path-one", sharedPath),
             withWorkspace(
               "Shared path alias",
               "feature/path-two",
-              path.join(root, "..", path.basename(sharedPath)),
+              path.join(root, "..", path.basename(sharedPath).toUpperCase()),
             ),
             withWorkspace("Shared branch", "feature/path-one", otherPath),
             child("Independent"),
@@ -1703,6 +1802,7 @@ describe("create_nested_threads MCP tool", () => {
     const rejectedOutcome = {
       status: "failed",
       threadId: null,
+      threadUrl: null,
       retryable: true,
       workspaceCreated: false,
       cleanupPerformed: false,
@@ -1712,6 +1812,7 @@ describe("create_nested_threads MCP tool", () => {
     const ambiguousOutcome = {
       status: "ambiguous",
       threadId: "child-ambiguous",
+      threadUrl: null,
       retryable: false,
       workspaceCreated: false,
       cleanupPerformed: false,

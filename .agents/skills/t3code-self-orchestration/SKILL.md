@@ -39,6 +39,42 @@ Call `create_nested_thread` with:
 `low`, `medium`, `high`, or `xhigh` only when the selected model exposes that setting. Set
 `dryRun: true` to validate the request and any workspace collision preflight without mutation.
 
+Use `promptTemplate` to add only the standard blocks the child needs. The server composes selected
+blocks in canonical order and rejects duplicate blocks, unknown fields, missing validation
+commands, and contradictory permissions. Keep `prompt` focused on the task itself:
+
+```json
+{
+  "prompt": "Implement reusable cache invalidation.",
+  "promptTemplate": {
+    "blocks": [
+      "repository",
+      "implementation",
+      "validation",
+      "commit",
+      "push-and-create-pr",
+      "reporting"
+    ],
+    "repository": {
+      "context": "Work in acme/widgets on the current feature branch.",
+      "instructionFiles": ["AGENTS.md", "scars.md"]
+    },
+    "validation": {
+      "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"]
+    },
+    "commit": {
+      "requirements": ["Include the repository's required co-author trailer."]
+    }
+  }
+}
+```
+
+Available blocks are `repository`, `investigation-only`, `implementation`, `validation`, `commit`,
+`push-and-create-pr`, and `reporting`. Omit irrelevant blocks. Use `overrides` to replace the
+standard text for one selected block and `additions` to append block-specific bullet items.
+Repository context, commands, commit/PR requirements, and report items remain structured fields.
+Never combine `investigation-only` with `implementation`, `commit`, or `push-and-create-pr`.
+
 Every call returns `status`, `threadId`, `retryable`, `workspaceCreated`, `cleanupPerformed`,
 `errorCode`, and `message`. A `created` outcome always has a `threadId`. For an `ambiguous`
 outcome with a non-null `threadId`, inspect that exact child before retrying; when it is null,
@@ -50,7 +86,8 @@ the same child fields shown above and optional `concurrency` from 1-4 (default 4
 array is always in input order and contains `{ index, outcome }` for every child, even when only
 some children succeed. Items that share a workspace branch or canonical path are all rejected with
 `VALIDATION_FAILED` before mutation; unrelated items continue. Never retry the whole batch: inspect
-and retry only individual outcomes whose `retryable` field is true.
+and retry only individual outcomes whose `retryable` field is true. Branch and path collision keys
+are Unicode-normalized and case-folded so case-only variants cannot race on macOS or Windows.
 
 ```json
 {
@@ -81,8 +118,8 @@ and retry only individual outcomes whose `retryable` field is true.
 
 1. Decide whether delegation is worthwhile; keep simple lookups and tightly coupled edits local.
 2. Resolve the project and choose an available Copilot model. Pass the model explicitly.
-3. Write a self-contained child prompt with the goal, context, permissions, constraints,
-   validation commands, and expected report.
+3. Put the goal and task-specific constraints in `prompt`; select reusable context, permissions,
+   validation, delivery, and reporting blocks with `promptTemplate`.
 4. If isolation is needed, include `workspace` in the same `create_nested_thread` call.
 5. Call the selected creation tool once, check each outcome, and capture every non-null `threadId`.
 6. Monitor by `threadId` only when needed, then consolidate the result in the parent.

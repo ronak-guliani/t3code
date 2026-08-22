@@ -481,6 +481,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     title_regeneration_request_id AS "titleRegenerationRequestId",
     title_regeneration_started_at AS "titleRegenerationStartedAt",
     latest_user_message_at AS "latestUserMessageAt",
+    latest_child_notification_at AS "latestChildNotificationAt",
     pending_approval_count AS "pendingApprovalCount",
     pending_user_input_count AS "pendingUserInputCount",
     has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -988,6 +989,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.title_regeneration_request_id AS "titleRegenerationRequestId",
           threads.title_regeneration_started_at AS "titleRegenerationStartedAt",
           threads.latest_user_message_at AS "latestUserMessageAt",
+          threads.latest_child_notification_at AS "latestChildNotificationAt",
           threads.pending_approval_count AS "pendingApprovalCount",
           threads.pending_user_input_count AS "pendingUserInputCount",
           threads.has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -1918,6 +1920,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     titleRegeneration: mapTitleRegeneration(row),
                     session,
                     latestUserMessageAt: row.latestUserMessageAt,
+                    ...(row.latestChildNotificationAt !== null
+                      ? { latestChildNotificationAt: row.latestChildNotificationAt }
+                      : {}),
                     hasPendingApprovals: row.pendingApprovalCount > 0,
                     hasPendingUserInput: row.pendingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -2174,6 +2179,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             titleRegeneration: mapTitleRegeneration(threadRow.value),
             session,
             latestUserMessageAt: threadRow.value.latestUserMessageAt,
+            ...(threadRow.value.latestChildNotificationAt !== null
+              ? { latestChildNotificationAt: threadRow.value.latestChildNotificationAt }
+              : {}),
             hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
             hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
             hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,

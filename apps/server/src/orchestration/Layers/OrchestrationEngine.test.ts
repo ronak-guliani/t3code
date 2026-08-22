@@ -2,6 +2,7 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -82,6 +83,98 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("deduplicates semantic child lifecycle notifications transactionally", async () => {
+    const system = await createOrchestrationSystem();
+    const projectId = asProjectId("project-lifecycle-dedup");
+    const parentThreadId = ThreadId.make("parent-lifecycle-dedup");
+    const childThreadId = ThreadId.make("child-lifecycle-dedup");
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-lifecycle-dedup"),
+          projectId,
+          title: "Lifecycle dedup",
+          workspaceRoot: "/tmp/project-lifecycle-dedup",
+          defaultModelSelection: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-parent-lifecycle-dedup"),
+          threadId: parentThreadId,
+          projectId,
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-child-lifecycle-dedup"),
+          threadId: childThreadId,
+          projectId,
+          parentThreadId,
+          title: "Child",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+
+      for (const suffix of ["first", "retry"] as const) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-approval-${suffix}`),
+            threadId: childThreadId,
+            activity: {
+              id: EventId.make(`activity-approval-${suffix}`),
+              tone: "approval",
+              kind: "approval.requested",
+              summary: "Approval required",
+              payload: { requestId: "approval-42" },
+              turnId: TurnId.make("turn-approval"),
+              createdAt: now(),
+            },
+            createdAt: now(),
+          }),
+        );
+      }
+
+      const events = await system.run(
+        Stream.runCollect(system.engine.readEvents(0)).pipe(
+          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+        ),
+      );
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "thread.child-lifecycle-notified" &&
+            event.payload.lifecycle === "approval-required",
+        ),
+      ).toHaveLength(1);
+      expect(events.filter((event) => event.type === "thread.activity-appended")).toHaveLength(2);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("rejects assigning a worktree while its cleanup job is pending", async () => {
     const system = await createOrchestrationSystem();
     const createdAt = now();

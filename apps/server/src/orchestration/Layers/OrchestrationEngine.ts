@@ -1,4 +1,10 @@
-import type { OrchestrationEvent, ProjectId, ThreadId, WorkflowRunId } from "@t3tools/contracts";
+import type {
+  DispatchResult,
+  OrchestrationEvent,
+  ProjectId,
+  ThreadId,
+  WorkflowRunId,
+} from "@t3tools/contracts";
 import { OrchestrationCommand } from "@t3tools/contracts";
 import {
   Cause,
@@ -29,6 +35,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
+import { ThreadUrlBuilder } from "../../threadUrl.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
@@ -51,7 +58,7 @@ const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvar
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
-  result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
+  result: Deferred.Deferred<DispatchResult, OrchestrationDispatchError>;
   startedAtMs: number;
 }
 
@@ -90,6 +97,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
+  const threadUrls = yield* Effect.serviceOption(ThreadUrlBuilder);
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -100,6 +108,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const withWorktreeLock: OrchestrationEngineShape["withWorktreeLock"] = (effect) =>
     worktreeLock.withPermits(1)(effect);
+
+  const dispatchResult = (command: OrchestrationCommand, sequence: number): DispatchResult => ({
+    sequence,
+    ...((command.type === "thread.create" ||
+      (command.type === "thread.turn.start" && command.bootstrap?.createThread !== undefined)) &&
+    Option.isSome(threadUrls)
+      ? { threadUrl: threadUrls.value.forThread(command.threadId) }
+      : {}),
+  });
 
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
@@ -191,9 +208,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
-            return {
-              sequence: existingReceipt.value.resultSequence,
-            };
+            return dispatchResult(command, existingReceipt.value.resultSequence);
           }
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
@@ -221,6 +236,25 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               let nextReadModel = readModel;
 
               for (const nextEvent of eventBases) {
+                if (nextEvent.type === "thread.child-lifecycle-notified") {
+                  const claimed = yield* sql<{ readonly dedupe_key: string }>`
+                    INSERT INTO child_lifecycle_notification_dedup (
+                      dedupe_key,
+                      event_id,
+                      created_at
+                    )
+                    VALUES (
+                      ${nextEvent.payload.dedupeKey},
+                      ${nextEvent.eventId},
+                      ${nextEvent.occurredAt}
+                    )
+                    ON CONFLICT(dedupe_key) DO NOTHING
+                    RETURNING dedupe_key
+                  `;
+                  if (claimed.length === 0) {
+                    continue;
+                  }
+                }
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
                 yield* projectionPipeline.projectEvent(savedEvent);
@@ -276,7 +310,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return { sequence: committedCommand.lastSequence };
+        return dispatchResult(command, committedCommand.lastSequence);
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>
@@ -382,7 +416,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       yield* Deferred.await(initialized);
-      const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+      const result = yield* Deferred.make<DispatchResult, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
       return yield* Deferred.await(result);
     });

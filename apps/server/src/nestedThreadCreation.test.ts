@@ -1,3 +1,4 @@
+import { ThreadUrl } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -21,14 +22,15 @@ const fail = (message: string, definitive: boolean) =>
 
 const run = (
   phases: Partial<{
-    readonly createThread: Effect.Effect<void, PhaseError>;
+    readonly createThread: Effect.Effect<ThreadUrl | null, PhaseError>;
     readonly startTurn: Effect.Effect<void, PhaseError>;
     readonly cleanupThread: Effect.Effect<void, PhaseError>;
   }> = {},
 ) =>
   Effect.runPromise(
     runNestedThreadCreationPhases("child-1", true, {
-      createThread: phases.createThread ?? Effect.void,
+      createThread:
+        phases.createThread ?? Effect.succeed(ThreadUrl.make("https://app.example/env/child-1")),
       startTurn: phases.startTurn ?? Effect.void,
       cleanupThread: phases.cleanupThread ?? Effect.void,
       classifyFailure: (error) =>
@@ -41,6 +43,7 @@ const run = (
 const createdOutcome = {
   status: "created",
   threadId: "child-1",
+  threadUrl: "https://app.example/env/child-1",
   retryable: false,
   workspaceCreated: true,
   cleanupPerformed: false,
@@ -59,6 +62,7 @@ describe("runNestedThreadCreationPhases", () => {
             outcome: {
               status: "failed",
               threadId: null,
+              threadUrl: null,
               retryable: true,
               workspaceCreated: false,
               cleanupPerformed: false,
@@ -76,6 +80,7 @@ describe("runNestedThreadCreationPhases", () => {
           outcome: {
             status: "failed",
             threadId: null,
+            threadUrl: null,
             retryable: true,
             workspaceCreated: false,
             cleanupPerformed: false,
@@ -106,6 +111,7 @@ describe("runNestedThreadCreationPhases", () => {
     await expect(run()).resolves.toEqual({
       status: "created",
       threadId: "child-1",
+      threadUrl: "https://app.example/env/child-1",
       retryable: false,
       workspaceCreated: true,
       cleanupPerformed: false,

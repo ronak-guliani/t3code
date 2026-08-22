@@ -25,6 +25,7 @@ import {
   ThreadTurnDiffCompletedPayload as ContractsThreadTurnDiffCompletedPayloadSchema,
   ThreadRevertedPayload as ContractsThreadRevertedPayloadSchema,
   ThreadActivityAppendedPayload as ContractsThreadActivityAppendedPayloadSchema,
+  ThreadChildLifecycleNotifiedPayload as ContractsThreadChildLifecycleNotifiedPayloadSchema,
   ThreadTurnStartRequestedPayload as ContractsThreadTurnStartRequestedPayloadSchema,
   ThreadQueuedTurnCreatedPayload as ContractsThreadQueuedTurnCreatedPayloadSchema,
   ThreadQueuedTurnUpdatedPayload as ContractsThreadQueuedTurnUpdatedPayloadSchema,
@@ -71,6 +72,8 @@ export const ThreadSessionSetPayload = ContractsThreadSessionSetPayloadSchema;
 export const ThreadTurnDiffCompletedPayload = ContractsThreadTurnDiffCompletedPayloadSchema;
 export const ThreadRevertedPayload = ContractsThreadRevertedPayloadSchema;
 export const ThreadActivityAppendedPayload = ContractsThreadActivityAppendedPayloadSchema;
+export const ThreadChildLifecycleNotifiedPayload =
+  ContractsThreadChildLifecycleNotifiedPayloadSchema;
 
 export const ThreadTurnStartRequestedPayload = ContractsThreadTurnStartRequestedPayloadSchema;
 export const ThreadQueuedTurnCreatedPayload = ContractsThreadQueuedTurnCreatedPayloadSchema;
