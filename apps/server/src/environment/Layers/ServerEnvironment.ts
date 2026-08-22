@@ -78,9 +78,11 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
       cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
     ),
   );
+  const installationLabel = process.env.T3CODE_ENVIRONMENT_LABEL_SUFFIX;
   const label = yield* resolveServerEnvironmentLabel({
     cwdBaseName,
     configuredLabel,
+    ...(installationLabel === undefined ? {} : { installationLabel }),
   });
 
   const descriptor: ExecutionEnvironmentDescriptor = {

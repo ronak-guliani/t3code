@@ -9,11 +9,16 @@ interface ResolveServerEnvironmentLabelInput {
   readonly configuredLabel?: string | null;
   readonly platform?: NodeJS.Platform;
   readonly hostname?: string | null;
+  readonly installationLabel?: string | null;
 }
 
 function normalizeLabel(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+function withInstallationLabel(hostLabel: string, installationLabel: string | null): string {
+  return installationLabel ? `${hostLabel} (${installationLabel})` : hostLabel;
 }
 
 function parseMachineInfoValue(raw: string, key: string): string | null {
@@ -98,15 +103,19 @@ export const resolveServerEnvironmentLabel = Effect.fn("resolveServerEnvironment
   }
 
   const platform = input.platform ?? process.platform;
+  const installationLabel = normalizeLabel(input.installationLabel);
   const friendlyHostLabel = yield* resolveFriendlyHostLabel(platform);
   if (friendlyHostLabel) {
-    return friendlyHostLabel;
+    return withInstallationLabel(friendlyHostLabel, installationLabel);
   }
 
   const hostname = normalizeLabel(input.hostname ?? OS.hostname());
   if (hostname) {
-    return hostname;
+    return withInstallationLabel(hostname, installationLabel);
   }
 
-  return normalizeLabel(input.cwdBaseName) ?? "T3 environment";
+  return withInstallationLabel(
+    normalizeLabel(input.cwdBaseName) ?? "T3 environment",
+    installationLabel,
+  );
 });

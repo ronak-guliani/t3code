@@ -344,6 +344,7 @@ function resolveDesktopDevServerUrl(): string {
 function backendChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   env.T3CODE_HOME = BASE_DIR;
+  env.T3CODE_ENVIRONMENT_LABEL_SUFFIX = desktopAppBranding.stageLabel;
   delete env.T3CODE_PORT;
   delete env.T3CODE_MODE;
   delete env.T3CODE_NO_BROWSER;
