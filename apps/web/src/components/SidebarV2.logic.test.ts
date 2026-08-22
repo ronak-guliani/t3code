@@ -236,6 +236,44 @@ describe("classifySidebarV2Shelves", () => {
     expect(rowTitles(shelves.active)).toEqual(["Parent", "  Child", "    Grandchild"]);
   });
 
+  it("sorts a group by its most recently active or completed nested chat", () => {
+    const olderParent = thread({
+      id: ThreadId.make("older-parent"),
+      title: "Older parent",
+      updatedAt: "2026-01-01T09:00:00.000Z",
+    });
+    const activeChild = thread({
+      id: ThreadId.make("active-child"),
+      parentThreadId: olderParent.id,
+      title: "Active child",
+      updatedAt: "2026-01-01T11:00:00.000Z",
+      hasPendingApprovals: true,
+    });
+    const completedChild = thread({
+      id: ThreadId.make("completed-child"),
+      parentThreadId: olderParent.id,
+      title: "Completed child",
+      updatedAt: "2026-01-01T12:00:00.000Z",
+      virtualAgentRun: {
+        parentThreadId: olderParent.id,
+        taskId: "agent-1",
+        status: "completed",
+      },
+    });
+    const newerSiblingGroup = thread({
+      id: ThreadId.make("newer-sibling-group"),
+      title: "Newer sibling group",
+      updatedAt: "2026-01-01T10:00:00.000Z",
+    });
+
+    const shelves = classifySidebarV2Shelves({
+      threads: [olderParent, activeChild, completedChild, newerSiblingGroup],
+      now,
+    });
+
+    expect(rootsOf(shelves.active)).toEqual([olderParent, newerSiblingGroup]);
+  });
+
   it("keeps a settled parent's subtree together and rolls the child up while collapsed", () => {
     const parent = thread({
       id: ThreadId.make("parent"),

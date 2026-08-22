@@ -346,6 +346,8 @@ describe("create_nested_thread MCP tool", () => {
       expect(dryArgs).not.toContain("--cross-thread-capability");
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "server.mjs",
+        "--log-level",
+        "error",
         "chat",
         "new",
         "--project",
@@ -412,6 +414,8 @@ describe("create_nested_thread MCP tool", () => {
       ).toEqual(createdOutcome);
 
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "--log-level",
+        "error",
         "chat",
         "new",
         "--project",
@@ -490,6 +494,8 @@ describe("create_nested_thread MCP tool", () => {
 
       const resolvedTargetPath = await realpath(targetPath);
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
+        "--log-level",
+        "error",
         "chat",
         "new",
         "--project",

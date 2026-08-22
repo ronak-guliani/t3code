@@ -243,6 +243,52 @@ describe("buildSidebarThreadRows", () => {
     expect(result.orderedThreadKeys).toEqual([key(parent.id), key(child.id), key(grandchild.id)]);
   });
 
+  it("sorts a group by its most recently active or completed nested chat", () => {
+    const parent = thread("older-parent", {
+      title: "Older parent",
+      updatedAt: "2026-01-01T09:00:00.000Z",
+    });
+    const activeChild = thread("active-child", {
+      parentThreadId: parent.id,
+      title: "Active child",
+      updatedAt: "2026-01-01T11:00:00.000Z",
+    });
+    const completedChild = thread("completed-child", {
+      parentThreadId: parent.id,
+      title: "Completed child",
+      updatedAt: "2026-01-01T12:00:00.000Z",
+    });
+    const newerSiblingGroup = thread("newer-sibling-group", {
+      title: "Newer sibling group",
+      updatedAt: "2026-01-01T10:00:00.000Z",
+    });
+    const completedStatus: ThreadStatusPill = {
+      label: "Completed",
+      colorClass: "text-emerald-600",
+      dotClass: "bg-emerald-500",
+      pulse: false,
+      presentation: "corner-badge",
+    };
+
+    const result = buildSidebarThreadRows({
+      threads: [parent, activeChild, completedChild, newerSiblingGroup],
+      pinnedThreadKeys: [],
+      expandedOverrideByThreadKey: new Map(),
+      sortOrder: "updated_at",
+      resolveThreadStatus: (candidate) => {
+        if (candidate.id === activeChild.id) return workingStatus;
+        return candidate.id === completedChild.id ? completedStatus : null;
+      },
+    });
+
+    expect(result.rowViews.map((row) => row.thread.title)).toEqual([
+      "Older parent",
+      "Completed child",
+      "Active child",
+      "Newer sibling group",
+    ]);
+  });
+
   it("collapses settled parents by default so nested chats stay hidden", () => {
     const parent = thread("thread-1");
     const child = thread("thread-2", { parentThreadId: parent.id });
