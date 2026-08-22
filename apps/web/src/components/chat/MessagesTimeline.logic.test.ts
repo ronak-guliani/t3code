@@ -9,10 +9,35 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
+  shouldHandleInternalActionClick,
   resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+
+describe("shouldHandleInternalActionClick", () => {
+  it("handles only unmodified primary clicks", () => {
+    expect(
+      shouldHandleInternalActionClick({
+        button: 0,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+      }),
+    ).toBe(true);
+
+    for (const input of [
+      { button: 1, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false },
+      { button: 0, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: true, shiftKey: false, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: false, shiftKey: true, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: true },
+    ]) {
+      expect(shouldHandleInternalActionClick(input)).toBe(false);
+    }
+  });
+});
 
 describe("resolveExternalActionUrl", () => {
   it("accepts external HTTPS links", () => {

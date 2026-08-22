@@ -63,6 +63,7 @@ import {
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
   resolveWorkGroupExpanded,
+  shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
@@ -1697,6 +1698,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               : {})}
             onClick={(event) => {
               if (workEntry.action?.kind !== "thread") return;
+              if (!shouldHandleInternalActionClick(event)) return;
               event.preventDefault();
               void navigate({
                 to: "/$environmentId/$threadId",

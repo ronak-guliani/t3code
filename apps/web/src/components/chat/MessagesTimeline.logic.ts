@@ -78,6 +78,16 @@ export function resolveExternalActionUrl(actionUrl: string): string | null {
   }
 }
 
+export function shouldHandleInternalActionClick(input: {
+  readonly button: number;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+}): boolean {
+  return input.button === 0 && !input.metaKey && !input.ctrlKey && !input.shiftKey && !input.altKey;
+}
+
 export function resolveWorkGroupExpanded({
   shouldAutoCollapse,
   expansionOverride,

@@ -104,7 +104,15 @@ it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()))(
         const restoredColumns = yield* sql<{ readonly name: string }>`
           PRAGMA table_info(projection_threads)
         `;
-        assert.isTrue(restoredColumns.some(({ name }) => name === "latest_child_notification_at"));
+        const restoredNames = new Set(restoredColumns.map(({ name }) => name));
+        for (const name of [
+          "pinned_at",
+          "title_regeneration_request_id",
+          "title_regeneration_started_at",
+          "latest_child_notification_at",
+        ]) {
+          assert.isTrue(restoredNames.has(name));
+        }
       }),
     );
   },
