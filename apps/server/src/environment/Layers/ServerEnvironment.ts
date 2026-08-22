@@ -72,8 +72,15 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
 
   const environmentId = EnvironmentId.make(environmentIdRaw);
   const cwdBaseName = path.basename(serverConfig.cwd).trim();
+  const configuredLabel = yield* fileSystem.readFileString(serverConfig.environmentLabelPath).pipe(
+    Effect.map((value) => value.trim()),
+    Effect.catch((cause) =>
+      cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+    ),
+  );
   const label = yield* resolveServerEnvironmentLabel({
     cwdBaseName,
+    configuredLabel,
   });
 
   const descriptor: ExecutionEnvironmentDescriptor = {

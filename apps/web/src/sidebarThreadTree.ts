@@ -1,7 +1,7 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { type OrchestrationThreadActivity, ThreadId } from "@t3tools/contracts";
 import type { SidebarThreadSortOrder } from "@t3tools/contracts/settings";
-import { sortThreads } from "./lib/threadSort";
+import { getThreadSortTimestamp, sortThreads } from "./lib/threadSort";
 import {
   resolveProjectStatusIndicator,
   isActiveThreadStatus,
@@ -171,6 +171,7 @@ interface ThreadTreeNode {
   thread: SidebarThreadSummary;
   threadKey: string;
   children: ThreadTreeNode[];
+  mostRecentThread: SidebarThreadSummary;
   status: ThreadStatusPill | null;
   rolledUpStatus: ThreadStatusPill | null;
   descendantCount: number;
@@ -264,6 +265,19 @@ function applyPinnedFirst(
   return [...pinnedRoots, ...unpinnedRoots];
 }
 
+function compareThreadsBySortOrder(
+  left: SidebarThreadSummary,
+  right: SidebarThreadSummary,
+  sortOrder: SidebarThreadSortOrder,
+): number {
+  const leftTimestamp = getThreadSortTimestamp(left, sortOrder);
+  const rightTimestamp = getThreadSortTimestamp(right, sortOrder);
+  if (leftTimestamp !== rightTimestamp) {
+    return rightTimestamp > leftTimestamp ? 1 : -1;
+  }
+  return right.id.localeCompare(left.id);
+}
+
 function buildTree(input: BuildSidebarThreadRowsInput): {
   roots: ThreadTreeNode[];
   nodesByKey: Map<string, ThreadTreeNode>;
@@ -279,6 +293,7 @@ function buildTree(input: BuildSidebarThreadRowsInput): {
         thread,
         threadKey: getThreadKey(thread),
         children: [] as ThreadTreeNode[],
+        mostRecentThread: thread,
         status: input.resolveThreadStatus(thread),
         rolledUpStatus: null,
         descendantCount: 0,
@@ -302,12 +317,19 @@ function buildTree(input: BuildSidebarThreadRowsInput): {
     }
   }
 
-  return { roots: applyPinnedFirst(roots, input.pinnedThreadKeys), nodesByKey };
+  return { roots, nodesByKey };
 }
 
-function resolveRollups(nodes: readonly ThreadTreeNode[]): void {
+function resolveRollups(nodes: readonly ThreadTreeNode[], sortOrder: SidebarThreadSortOrder): void {
   for (const node of nodes) {
-    resolveRollups(node.children);
+    resolveRollups(node.children, sortOrder);
+    node.mostRecentThread = node.children.reduce(
+      (mostRecentThread, child) =>
+        compareThreadsBySortOrder(child.mostRecentThread, mostRecentThread, sortOrder) < 0
+          ? child.mostRecentThread
+          : mostRecentThread,
+      node.thread,
+    );
     node.descendantCount = node.children.reduce(
       (count, child) => count + 1 + child.descendantCount,
       0,
@@ -369,11 +391,17 @@ export function buildSidebarThreadRows(
   input: BuildSidebarThreadRowsInput,
 ): SidebarThreadRowsResult {
   const { roots, nodesByKey } = buildTree(input);
-  resolveRollups(roots);
+  resolveRollups(roots, input.sortOrder);
+  const orderedRoots = applyPinnedFirst(
+    roots.toSorted((left, right) =>
+      compareThreadsBySortOrder(left.mostRecentThread, right.mostRecentThread, input.sortOrder),
+    ),
+    input.pinnedThreadKeys,
+  );
 
   const rowViews: SidebarThreadRowView[] = [];
   flattenRows({
-    nodes: roots,
+    nodes: orderedRoots,
     activeThreadKey: input.activeThreadKey,
     expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
     output: rowViews,
@@ -387,7 +415,7 @@ export function buildSidebarThreadRows(
   return {
     rowViews,
     orderedThreadKeys: rowViews.map((rowView) => rowView.threadKey),
-    projectStatus: resolveProjectStatusIndicator(roots.map((root) => root.rolledUpStatus)),
+    projectStatus: resolveProjectStatusIndicator(orderedRoots.map((root) => root.rolledUpStatus)),
     statusByThreadKey,
   };
 }

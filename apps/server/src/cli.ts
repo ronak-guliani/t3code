@@ -1779,7 +1779,7 @@ const chatCreateCommand = Command.make("create", {
           worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
           createdAt: new Date().toISOString(),
         });
-        yield* printJson({ threadId, result });
+        yield* printJson({ threadId, threadUrl: result.threadUrl, result });
       }),
     ),
   ),
@@ -2166,6 +2166,7 @@ const chatNewCommand = Command.make("new", {
           yield* printJson({
             status: "dry-run",
             threadId: null,
+            threadUrl: null,
             retryable: false,
             workspaceCreated: false,
             cleanupPerformed: false,
@@ -2194,7 +2195,7 @@ const chatNewCommand = Command.make("new", {
               branch: Option.getOrUndefined(flags.branch) ?? null,
               worktreePath: Option.getOrUndefined(flags.worktree) ?? null,
               createdAt,
-            }).pipe(Effect.asVoid),
+            }).pipe(Effect.map((result) => result.threadUrl ?? null)),
             startTurn: dispatch({
               type: "thread.turn.start",
               commandId: CommandId.make(crypto.randomUUID()),
@@ -2233,7 +2234,7 @@ const chatNewCommand = Command.make("new", {
         );
         yield* printJson(outcome);
         if (outcome.status !== "created") {
-          return yield* new NestedThreadCreationCliError(outcome);
+          return yield* Effect.fail(new NestedThreadCreationCliError(outcome));
         }
       }),
     ).pipe(
@@ -2243,6 +2244,7 @@ const chatNewCommand = Command.make("new", {
             const outcome = {
               status: "failed",
               threadId: null,
+              threadUrl: null,
               retryable: false,
               workspaceCreated: false,
               cleanupPerformed: false,
@@ -2260,6 +2262,7 @@ const chatNewCommand = Command.make("new", {
             const outcome = {
               status: "failed",
               threadId: null,
+              threadUrl: null,
               retryable: false,
               workspaceCreated: false,
               cleanupPerformed: false,

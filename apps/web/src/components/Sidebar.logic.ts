@@ -9,7 +9,11 @@ import {
 import type { SidebarThreadSummary, Thread } from "../types";
 import { DEFAULT_NEW_THREAD_WORKSPACE } from "../lib/newThreadDefaults";
 import { cn } from "../lib/utils";
-import { isLatestTurnSettled, isThreadActivelyWorking } from "../session-logic";
+import {
+  isLatestTurnSettled,
+  isThreadActivelyWorking,
+  latestValidTimestamp,
+} from "../session-logic";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export const THREAD_JUMP_HINT_SHOW_DELAY_MS = 100;
@@ -76,7 +80,8 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready";
+    | "Plan Ready"
+    | "Child update";
   readonly colorClass: string;
   readonly dotClass: string;
   readonly pulse: boolean;
@@ -126,14 +131,22 @@ const THREAD_STATUSES = {
     pulse: false,
     presentation: "corner-badge",
   },
+  childUpdate: {
+    label: "Child update",
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: false,
+    presentation: "corner-badge",
+  },
 } as const satisfies Record<string, ThreadStatusPill>;
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Working: 3,
-  Connecting: 3,
-  "Plan Ready": 2,
+  "Pending Approval": 6,
+  "Awaiting Input": 5,
+  Working: 4,
+  Connecting: 4,
+  "Plan Ready": 3,
+  "Child update": 2,
   Completed: 1,
 };
 
@@ -144,6 +157,7 @@ type ThreadStatusInput = Pick<
   | "hasPendingUserInput"
   | "hasPendingQueuedTurn"
   | "interactionMode"
+  | "latestChildNotificationAt"
   | "latestTurn"
   | "session"
   | "virtualAgentRun"
@@ -234,19 +248,29 @@ export function useThreadJumpHintVisibility(): {
   };
 }
 
-export function hasUnseenCompletion(
-  thread: Pick<SidebarThreadSummary, "latestTurn"> & {
-    lastVisitedAt?: string | null | undefined;
-  },
-): boolean {
-  if (!thread.latestTurn?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestTurn.completedAt);
-  if (Number.isNaN(completedAt)) return false;
+export function hasUnseenCompletion(thread: {
+  latestTurn: SidebarThreadSummary["latestTurn"];
+  lastVisitedAt?: string | null | undefined;
+}): boolean {
+  const latestNotificationAt = latestValidTimestamp([thread.latestTurn?.completedAt]);
+  if (latestNotificationAt === undefined) return false;
   if (!thread.lastVisitedAt) return true;
 
   const lastVisitedAt = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
+  return Date.parse(latestNotificationAt) > lastVisitedAt;
+}
+
+export function hasUnseenChildNotification(thread: {
+  latestChildNotificationAt?: string | null | undefined;
+  lastVisitedAt?: string | null | undefined;
+}): boolean {
+  if (!thread.latestChildNotificationAt) return false;
+  const notificationAt = Date.parse(thread.latestChildNotificationAt);
+  if (Number.isNaN(notificationAt)) return false;
+  if (!thread.lastVisitedAt) return true;
+  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  return Number.isNaN(lastVisitedAt) || notificationAt > lastVisitedAt;
 }
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
@@ -490,7 +514,21 @@ export function resolveThreadStatusPill(input: {
     return THREAD_STATUSES.planReady;
   }
 
-  if (hasUnseenCompletion({ latestTurn: thread.latestTurn, lastVisitedAt: input.lastVisitedAt })) {
+  if (
+    hasUnseenChildNotification({
+      latestChildNotificationAt: thread.latestChildNotificationAt,
+      lastVisitedAt: input.lastVisitedAt,
+    })
+  ) {
+    return THREAD_STATUSES.childUpdate;
+  }
+
+  if (
+    hasUnseenCompletion({
+      latestTurn: thread.latestTurn,
+      lastVisitedAt: input.lastVisitedAt,
+    })
+  ) {
     return THREAD_STATUSES.completed;
   }
 

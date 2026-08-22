@@ -11,6 +11,7 @@
  * @module OrchestrationEngineService
  */
 import type {
+  DispatchResult,
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
@@ -75,7 +76,7 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-  ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
+  ) => Effect.Effect<DispatchResult, OrchestrationDispatchError, never>;
 
   /**
    * Serialize worktree binding and cleanup operations to prevent ownership races.

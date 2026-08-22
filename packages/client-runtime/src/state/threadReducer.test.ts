@@ -641,6 +641,45 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.child-lifecycle-notified", () => {
+    it("projects and deduplicates the child lifecycle activity", () => {
+      const event = {
+        ...baseEventFields,
+        eventId: EventId.make("event-child-completed"),
+        sequence: 131,
+        occurredAt: "2026-04-01T12:00:00.000Z",
+        aggregateKind: "thread" as const,
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.child-lifecycle-notified" as const,
+        payload: {
+          parentThreadId: ThreadId.make("thread-1"),
+          childThreadId: ThreadId.make("thread-2"),
+          childTitle: "Release assistant",
+          lifecycle: "completed" as const,
+          dedupeKey: "child:thread-2:completed:turn-2",
+          createdAt: "2026-04-01T12:00:00.000Z",
+        },
+      };
+
+      const projected = applyThreadDetailEvent(baseThread, event);
+      expect(projected.kind).toBe("updated");
+      if (projected.kind !== "updated") return;
+      expect(projected.thread.activities).toEqual([
+        expect.objectContaining({
+          id: "event-child-completed",
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+        }),
+      ]);
+
+      const replayed = applyThreadDetailEvent(projected.thread, event);
+      expect(replayed.kind).toBe("updated");
+      if (replayed.kind === "updated") {
+        expect(replayed.thread.activities).toHaveLength(1);
+      }
+    });
+  });
+
   describe("thread.turn-diff-completed", () => {
     it("adds a checkpoint and updates latestTurn", () => {
       const result = applyThreadDetailEvent(baseThread, {

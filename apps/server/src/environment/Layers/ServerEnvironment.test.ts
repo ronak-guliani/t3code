@@ -101,6 +101,28 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
     }),
   );
 
+  it.effect("uses the persisted environment label override", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-label-test-",
+      });
+      const serverConfig = yield* makeServerConfig(baseDir);
+      yield* fileSystem.makeDirectory(serverConfig.stateDir, { recursive: true });
+      yield* fileSystem.writeFileString(
+        serverConfig.environmentLabelPath,
+        "Ronak's MacBook Pro (Dev)\n",
+      );
+
+      const descriptor = yield* Effect.gen(function* () {
+        const serverEnvironment = yield* ServerEnvironment;
+        return yield* serverEnvironment.getDescriptor;
+      }).pipe(Effect.provide(makeServerEnvironmentLayer(baseDir)));
+
+      expect(descriptor.label).toBe("Ronak's MacBook Pro (Dev)");
+    }),
+  );
+
   it.effect("fails instead of overwriting a persisted id when reading the file errors", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

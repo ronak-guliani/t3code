@@ -1,7 +1,7 @@
 import {
-  type EnvironmentId,
+  EnvironmentId,
   type MessageId,
-  type ThreadId,
+  ThreadId,
   type TurnDiffScope,
   type TurnId,
 } from "@t3tools/contracts";
@@ -20,6 +20,7 @@ import {
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatElapsed, type AgentRun } from "../../session-logic";
+import { buildThreadPath } from "@t3tools/shared/threadUrl";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -60,7 +61,9 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveExternalActionUrl,
   resolveWorkGroupExpanded,
+  shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
@@ -1583,6 +1586,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { canExpandCommand = false, workEntry, workspaceRoot } = props;
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
+  const navigate = useNavigate();
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
   }
@@ -1602,6 +1607,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const CommandToggleIcon = isCommandExpanded ? ChevronDownIcon : ChevronRightIcon;
   const expandableCommand = canExpandCommand ? fullCommand : null;
+  const actionHref =
+    workEntry.action?.kind === "thread"
+      ? buildThreadPath({
+          environmentId: activeThreadEnvironmentId,
+          threadId: workEntry.action.threadId,
+        })
+      : workEntry.action?.kind === "external"
+        ? resolveExternalActionUrl(workEntry.action.url)
+        : null;
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1676,6 +1690,29 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
+        {workEntry.action && actionHref ? (
+          <a
+            href={actionHref}
+            {...(workEntry.action.kind === "external"
+              ? { target: "_blank", rel: "noopener noreferrer" }
+              : {})}
+            onClick={(event) => {
+              if (workEntry.action?.kind !== "thread") return;
+              if (!shouldHandleInternalActionClick(event)) return;
+              event.preventDefault();
+              void navigate({
+                to: "/$environmentId/$threadId",
+                params: {
+                  environmentId: activeThreadEnvironmentId,
+                  threadId: workEntry.action.threadId,
+                },
+              });
+            }}
+            className="shrink-0 text-[0.9em] font-medium text-primary hover:underline"
+          >
+            {workEntry.action.label}
+          </a>
+        ) : null}
       </div>
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">

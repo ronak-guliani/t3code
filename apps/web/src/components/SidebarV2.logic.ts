@@ -123,6 +123,7 @@ interface SidebarV2ThreadNode {
   readonly thread: SidebarThreadSummary;
   readonly threadKey: string;
   readonly children: SidebarV2ThreadNode[];
+  mostRecentThread: SidebarThreadSummary;
   readonly status: SidebarV2Status;
   rolledUpStatus: SidebarV2Status;
   descendantCount: number;
@@ -182,6 +183,7 @@ function buildThreadNodes(
           thread,
           threadKey,
           children: [],
+          mostRecentThread: thread,
           status: resolveSidebarV2Status({
             ...thread,
             hasPendingTurn: pendingThreadKeys.has(threadKey),
@@ -215,6 +217,13 @@ function buildThreadNodes(
 function resolveNodeRollups(nodes: readonly SidebarV2ThreadNode[]): void {
   for (const node of nodes) {
     resolveNodeRollups(node.children);
+    node.mostRecentThread = node.children.reduce(
+      (mostRecentThread, child) =>
+        sortByRecent(child.mostRecentThread, mostRecentThread) < 0
+          ? child.mostRecentThread
+          : mostRecentThread,
+      node.thread,
+    );
     node.descendantCount = node.children.reduce(
       (count, child) => count + 1 + child.descendantCount,
       0,
@@ -377,8 +386,16 @@ export function classifySidebarV2Shelves(input: {
       active.push(group);
     }
   }
+  const mostRecentThreadByRootKey = new Map(
+    rootNodes.map((node) => [node.threadKey, node.mostRecentThread] as const),
+  );
   const sortGroups = (groups: readonly SidebarV2ThreadGroup[]) =>
-    groups.toSorted((left, right) => sortByRecent(left.root, right.root));
+    groups.toSorted((left, right) =>
+      sortByRecent(
+        mostRecentThreadByRootKey.get(left.rootKey) ?? left.root,
+        mostRecentThreadByRootKey.get(right.rootKey) ?? right.root,
+      ),
+    );
   return {
     pinned: [...pinnedByProjectKey.values()].flat(),
     pinnedByProjectKey,
@@ -441,19 +458,20 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
 }
 
 export interface SidebarV2StatusLabel {
-  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done";
+  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done" | "Child update";
   readonly className: string;
   readonly showElapsed: boolean;
 }
 
 /**
  * The right-hand label a card row shows at rest. A `ready` thread only earns
- * one while its completion is unseen, so a row the user already read falls
- * back to its relative timestamp instead of shouting "Done" forever.
+ * one while its completion or child update is unseen, so a row the user
+ * already read falls back to its relative timestamp.
  */
 export function resolveSidebarV2StatusLabel(input: {
   readonly status: SidebarV2Status;
   readonly unseenCompletion: boolean;
+  readonly unseenChildNotification: boolean;
 }): SidebarV2StatusLabel | null {
   switch (input.status) {
     case "working":
@@ -481,13 +499,19 @@ export function resolveSidebarV2StatusLabel(input: {
         showElapsed: false,
       };
     case "ready":
-      return input.unseenCompletion
+      return input.unseenChildNotification
         ? {
-            label: "Done",
-            className: "text-emerald-700 dark:text-emerald-300",
+            label: "Child update",
+            className: "text-sky-600 dark:text-sky-400",
             showElapsed: false,
           }
-        : null;
+        : input.unseenCompletion
+          ? {
+              label: "Done",
+              className: "text-emerald-700 dark:text-emerald-300",
+              showElapsed: false,
+            }
+          : null;
   }
 }
 

@@ -56,10 +56,10 @@ import { createEnvironmentConnection, type EnvironmentConnection } from "./conne
 import {
   useStore,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
   selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadExistsByRef,
-  selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { isPendingTurnActive, usePendingTurnStore } from "~/pendingTurnStore";
@@ -628,12 +628,13 @@ function syncProjectUiFromStore() {
 }
 
 function syncThreadUiFromStore() {
-  const threads = selectThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       seedVisitedAt: thread.updatedAt ?? thread.createdAt,
       latestTurnCompletedAt: thread.latestTurn?.completedAt,
+      latestChildNotificationAt: thread.latestChildNotificationAt,
     })),
   );
   markPromotedDraftThreadsByRef(
@@ -645,7 +646,7 @@ function reconcileSnapshotDerivedState() {
   syncProjectUiFromStore();
   syncThreadUiFromStore();
 
-  const threads = selectThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
   const activeThreadKeys = collectActiveTerminalThreadIds({
     snapshotThreads: threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -759,12 +760,13 @@ function applyRecoveredEventBatch(
     (event) => event.type === "thread.created" || event.type === "thread.deleted",
   );
   if (needsThreadUiSync) {
-    const threads = selectThreadsAcrossEnvironments(useStore.getState());
+    const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
     useUiStateStore.getState().syncThreads(
       threads.map((thread) => ({
         key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
         seedVisitedAt: thread.updatedAt ?? thread.createdAt,
         latestTurnCompletedAt: thread.latestTurn?.completedAt,
+        latestChildNotificationAt: thread.latestChildNotificationAt,
       })),
     );
   }

@@ -606,6 +606,49 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread.child-lifecycle-notified", () => {
+    it("restores the parent activity on reconnect without duplicating a replayed event", () => {
+      const event = {
+        ...baseEventFields,
+        eventId: EventId.make("event-child-completed"),
+        sequence: 13,
+        occurredAt: "2026-04-01T12:00:00.000Z",
+        aggregateKind: "thread" as const,
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.child-lifecycle-notified" as const,
+        payload: {
+          parentThreadId: ThreadId.make("thread-1"),
+          childThreadId: ThreadId.make("thread-2"),
+          childTitle: "Release assistant",
+          lifecycle: "completed" as const,
+          dedupeKey: "child:thread-2:completed:turn-2",
+          createdAt: "2026-04-01T12:00:00.000Z",
+        },
+      };
+
+      const restored = applyThreadDetailEvent(baseThread, event);
+      expect(restored.kind).toBe("updated");
+      if (restored.kind !== "updated") return;
+      expect(restored.thread.activities).toHaveLength(1);
+      expect(restored.thread.activities[0]).toMatchObject({
+        id: "event-child-completed",
+        kind: "child.lifecycle.completed",
+        summary: "Release assistant completed",
+        payload: {
+          parentThreadId: "thread-1",
+          childThreadId: "thread-2",
+          lifecycle: "completed",
+        },
+      });
+
+      const replayed = applyThreadDetailEvent(restored.thread, event);
+      expect(replayed.kind).toBe("updated");
+      if (replayed.kind === "updated") {
+        expect(replayed.thread.activities).toHaveLength(1);
+      }
+    });
+  });
+
   describe("thread.turn-diff-completed", () => {
     it("adds a checkpoint and updates latestTurn", () => {
       const result = applyThreadDetailEvent(baseThread, {
