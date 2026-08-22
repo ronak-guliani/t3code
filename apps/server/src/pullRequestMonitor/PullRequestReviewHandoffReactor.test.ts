@@ -1,9 +1,25 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  type OrchestrationEvent,
+  ProjectId,
+  type PullRequestMonitorSubmitFindingsInput,
+  type ReviewResult,
+  ThreadId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
+import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionStateRepository } from "../persistence/Services/ProjectionState.ts";
+import { PullRequestMonitorService } from "./PullRequestMonitorService.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import {
   handoffFromReviewResult,
   handoffToSubmitInput,
+  layer,
+  REVIEW_HANDOFF_PROJECTOR,
   reviewFindingKey,
 } from "./PullRequestReviewHandoffReactor.ts";
 
@@ -75,7 +91,7 @@ describe("handoffFromReviewResult", () => {
     expect(
       handoffFromReviewResult({
         ...input,
-        result: { status: "invalid-output", snapshot, issues: ["bad"] },
+        result: { status: "invalid-output", snapshot, issues: ["bad"] } as ReviewResult,
       }),
     ).toBeNull();
     expect(handoffFromReviewResult({ ...input, result: parsed([]) })).toBeNull();
@@ -157,12 +173,234 @@ describe("handoffToSubmitInput", () => {
     expect(finding!.path!.length).toBeLessThanOrEqual(500);
   });
 
-  it("keys differ when content differs at the same location", () => {
-    const keyOf = (title: string) =>
-      reviewFindingKey({ diffHash: "h", path: "a.ts", startLine: 2, title });
-    expect(keyOf("one")).not.toBe(keyOf("two"));
-    expect(reviewFindingKey({ diffHash: "h", path: "a.ts", startLine: 2, title: "t" })).not.toBe(
-      reviewFindingKey({ diffHash: "h", path: "b.ts", startLine: 2, title: "t" }),
-    );
+  it("keys differ when any stable content differs", () => {
+    const keyOf = (overrides: Partial<Parameters<typeof reviewFindingKey>[0]> = {}) =>
+      reviewFindingKey({
+        diffHash: "h",
+        path: "a.ts",
+        startLine: 2,
+        title: "t",
+        body: "b",
+        priority: "high",
+        ...overrides,
+      });
+    const base = keyOf();
+    expect(base).not.toBe(keyOf({ title: "other" }));
+    expect(base).not.toBe(keyOf({ body: "other body" }));
+    expect(base).not.toBe(keyOf({ priority: "low" }));
+    expect(base).not.toBe(keyOf({ path: "b.ts" }));
+    expect(base).not.toBe(keyOf({ startLine: 3 }));
+    expect(base).not.toBe(keyOf({ diffHash: "h2" }));
+    expect(keyOf()).toBe(keyOf());
   });
+
+  it("findings sharing title and location but differing in body keep distinct keys", () => {
+    const collidingReview = {
+      ...review,
+      findings: [
+        ...review.findings,
+        { ...review.findings[0]!, id: "finding-dup", body: "Different detail." },
+      ],
+    };
+    const keys = (handoffToSubmitInput(collidingReview).findings ?? []).map((entry) => entry.key);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+const makeEvent = (sequence: number, result: unknown): OrchestrationEvent =>
+  ({
+    sequence,
+    eventId: `evt_${sequence}`,
+    aggregateKind: "thread",
+    aggregateId: "thr_review",
+    type: "thread.review-result-set",
+    payload: { threadId: "thr_review", result },
+    occurredAt: new Date().toISOString(),
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+  }) as unknown as OrchestrationEvent;
+
+const waitFor = (predicate: () => boolean) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; attempt < 750; attempt += 1) {
+      if (predicate()) return true;
+      yield* Effect.sleep("20 millis");
+    }
+    return false;
+  });
+
+interface Harness {
+  readonly calls: readonly PullRequestMonitorSubmitFindingsInput[];
+  readonly cursorRows: ReadonlyMap<string, number>;
+}
+
+const makeHarness = (options: {
+  readonly events: readonly OrchestrationEvent[];
+  readonly autoMonitor?: boolean;
+  readonly initialCursor?: number;
+  readonly submitFindings?: (
+    input: PullRequestMonitorSubmitFindingsInput,
+  ) => Effect.Effect<void, Error>;
+}): Harness & { readonly layer: Layer.Layer<never> } => {
+  const calls: PullRequestMonitorSubmitFindingsInput[] = [];
+  const cursorRows = new Map<string, number>();
+  if (options.initialCursor !== undefined) {
+    cursorRows.set(REVIEW_HANDOFF_PROJECTOR, options.initialCursor);
+  }
+  let submit: (input: PullRequestMonitorSubmitFindingsInput) => Effect.Effect<void, Error> = () =>
+    Effect.void;
+  if (options.submitFindings) {
+    const scripted = options.submitFindings;
+    submit = scripted;
+  }
+  const engineLayer = Layer.succeed(OrchestrationEngineService, {
+    getReadModel: () =>
+      Effect.succeed({ threads: [{ id: "thr_review", projectId: "proj_1" }], projects: [] }),
+    readEvents: () => Stream.fromIterable(options.events),
+    streamDomainEvents: Stream.empty,
+  } as unknown as OrchestrationEngineService["Service"]);
+  const monitorLayer = Layer.succeed(PullRequestMonitorService, {
+    submitFindings: (input: PullRequestMonitorSubmitFindingsInput) =>
+      submit(input).pipe(
+        Effect.tap(() => Effect.sync(() => calls.push(input))),
+        Effect.as({} as never),
+      ),
+  } as unknown as PullRequestMonitorService["Service"]);
+  const settingsLayer = ServerSettingsService.layerTest({
+    autoMonitorPullRequestsOnCreate: options.autoMonitor ?? true,
+  });
+  const stateLayer = Layer.succeed(ProjectionStateRepository, {
+    getByProjector: ({ projector }: { projector: string }) =>
+      Effect.succeed(
+        cursorRows.has(projector)
+          ? Option.some({
+              projector,
+              lastAppliedSequence: cursorRows.get(projector)!,
+              updatedAt: new Date().toISOString(),
+            })
+          : Option.none(),
+      ),
+    upsert: (row: { projector: string; lastAppliedSequence: number }) =>
+      Effect.sync(() => {
+        cursorRows.set(row.projector, row.lastAppliedSequence);
+      }),
+  } as unknown as ProjectionStateRepository["Service"]);
+  return {
+    get calls() {
+      return calls;
+    },
+    get cursorRows() {
+      return cursorRows;
+    },
+    layer: layer.pipe(
+      Layer.provideMerge(engineLayer),
+      Layer.provideMerge(monitorLayer),
+      Layer.provideMerge(settingsLayer),
+      Layer.provideMerge(stateLayer),
+    ) as unknown as Layer.Layer<never>,
+  };
+};
+
+const runWithLayer = <A, E>(effect: Effect.Effect<A, E, never>, testLayer: Layer.Layer<never>) =>
+  Effect.runPromiseExit(Effect.provide(effect, testLayer));
+
+describe("PullRequestReviewHandoffReactor layer", () => {
+  it("submits parsed PR findings and advances the durable cursor", async () => {
+    const harness = makeHarness({ events: [makeEvent(7, parsed())] });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        const delivered = yield* waitFor(() => harness.calls.length === 1);
+        expect(delivered).toBe(true);
+        expect(harness.calls[0]).toMatchObject({
+          reference: { projectId: "proj_1", repository: "acme/app", number: 12 },
+          reviewThreadId: "thr_review",
+        });
+        return harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR);
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    expect((result as { value?: number }).value).toBe(7);
+  }, 20_000);
+
+  it("does nothing when the settings gate is off or the event does not qualify", async () => {
+    for (const options of [
+      { events: [makeEvent(3, parsed())], autoMonitor: false },
+      { events: [makeEvent(3, { status: "invalid-output", snapshot, issues: ["bad"] })] },
+      { events: [makeEvent(3, parsed([]))] },
+      { events: [makeEvent(3, { type: "thread.message-sent", payload: {} })] },
+    ]) {
+      const harness = makeHarness(options);
+      const result = await runWithLayer(
+        Effect.gen(function* () {
+          yield* Effect.sleep("300 millis");
+          return harness.calls.length;
+        }),
+        harness.layer,
+      );
+      expect(result._tag).toBe("Success");
+      expect((result as { value?: number }).value).toBe(0);
+    }
+  }, 20_000);
+
+  it("retries a transient failure until the idempotent submit succeeds", async () => {
+    let attempts = 0;
+    const harness = makeHarness({
+      events: [makeEvent(5, parsed())],
+      submitFindings: () => (++attempts === 1 ? Effect.fail(new Error("transient")) : Effect.void),
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        const delivered = yield* waitFor(() => harness.calls.length >= 1);
+        expect(delivered).toBe(true);
+        return harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR);
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect((result as { value?: number }).value).toBe(5);
+  }, 30_000);
+
+  it("leaves the cursor behind a persistently failing event so restart retries it", async () => {
+    let attempts = 0;
+    const harness = makeHarness({
+      events: [makeEvent(9, parsed())],
+      submitFindings: () =>
+        Effect.gen(function* () {
+          attempts += 1;
+          return yield* Effect.fail(new Error("permanent"));
+        }),
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        yield* Effect.sleep("3 seconds");
+        return { cursor: harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR), attempts };
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    expect(attempts).toBeGreaterThan(0);
+    const value = (result as { value?: { cursor?: number } }).value;
+    expect(value?.cursor).toBeUndefined();
+  }, 20_000);
+
+  it("resumes from a persisted cursor instead of replaying already-handled events", async () => {
+    const harness = makeHarness({
+      events: [makeEvent(4, parsed()), makeEvent(7, parsed())],
+      initialCursor: 4,
+    });
+    const result = await runWithLayer(
+      Effect.gen(function* () {
+        const delivered = yield* waitFor(() => harness.calls.length === 1);
+        expect(delivered).toBe(true);
+        return harness.cursorRows.get(REVIEW_HANDOFF_PROJECTOR);
+      }),
+      harness.layer,
+    );
+    expect(result._tag).toBe("Success");
+    expect((result as { value?: number }).value).toBe(7);
+  }, 20_000);
 });
