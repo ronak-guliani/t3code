@@ -1722,6 +1722,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
         ],

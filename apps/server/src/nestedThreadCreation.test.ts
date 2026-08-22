@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  decodeNestedThreadBatchCreationOutcome,
   decodeNestedThreadCreationOutcome,
   runNestedThreadCreationPhases,
 } from "./nestedThreadCreation.ts";
@@ -48,6 +49,44 @@ const createdOutcome = {
 } as const;
 
 describe("runNestedThreadCreationPhases", () => {
+  it("preserves indexed per-item outcomes in the batch contract", () => {
+    expect(
+      decodeNestedThreadBatchCreationOutcome({
+        results: [
+          { index: 0, outcome: createdOutcome },
+          {
+            index: 1,
+            outcome: {
+              status: "failed",
+              threadId: null,
+              retryable: true,
+              workspaceCreated: false,
+              cleanupPerformed: false,
+              errorCode: "VALIDATION_FAILED",
+              message: "Duplicate workspace.",
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      results: [
+        { index: 0, outcome: createdOutcome },
+        {
+          index: 1,
+          outcome: {
+            status: "failed",
+            threadId: null,
+            retryable: true,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: "VALIDATION_FAILED",
+            message: "Duplicate workspace.",
+          },
+        },
+      ],
+    });
+  });
+
   it("rejects semantically invalid structured outcomes", () => {
     for (const outcome of [
       { ...createdOutcome, threadId: null },

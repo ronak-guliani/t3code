@@ -55,6 +55,42 @@ exit ${String(actualExitCode)}
 `;
 };
 
+const nestedCliScriptByPrompt = (
+  outcomes: ReadonlyArray<{
+    readonly prompt: string;
+    readonly outcome: Record<string, unknown>;
+    readonly exitCode?: number;
+  }>,
+): string => {
+  const dryRunOutcome = {
+    status: "dry-run",
+    threadId: null,
+    retryable: false,
+    workspaceCreated: false,
+    cleanupPerformed: false,
+    errorCode: null,
+    message: "Nested-thread inputs are valid; no thread or workspace was created.",
+  };
+  return `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--dry-run" ]; then
+    printf '%s\\n' ${shellQuote(JSON.stringify(dryRunOutcome))}
+    exit 0
+  fi
+${outcomes
+  .map(
+    ({ prompt, outcome, exitCode = 0 }) => `  if [ "$arg" = ${shellQuote(prompt)} ]; then
+    printf '%s\\n' ${shellQuote(JSON.stringify(outcome))}
+    exit ${String(exitCode)}
+  fi`,
+  )
+  .join("\n")}
+done
+printf '%s\\n' ${shellQuote(JSON.stringify(createdOutcome))}
+exit 0
+`;
+};
+
 const createdOutcome = {
   status: "created",
   threadId: "child-1",
@@ -82,6 +118,7 @@ describe("MCP Streamable HTTP server", () => {
         "create_isolated_workspace",
         "switch_workspace",
         "create_nested_thread",
+        "create_nested_threads",
         "associate_pull_request",
       ]),
       threadId: "thread-1",
@@ -112,6 +149,7 @@ describe("MCP Streamable HTTP server", () => {
             { name: "create_isolated_workspace" },
             { name: "switch_workspace" },
             { name: "create_nested_thread" },
+            { name: "create_nested_threads" },
             { name: "associate_pull_request" },
           ],
         },
@@ -1506,6 +1544,346 @@ describe("create_nested_thread MCP tool", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(targetPath, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("create_nested_threads MCP tool", () => {
+  const options = (cwd: string, cliCommand: string) => ({
+    cwd,
+    toolsets: new Set(["create_nested_threads"]),
+    threadId: "parent-1",
+    cliCommand,
+    runtimeMode: "full-access" as const,
+    providerInstanceId: ProviderInstanceId.make("copilot"),
+  });
+
+  const child = (title: string, prompt = `${title} prompt`) => ({
+    project: "project-1",
+    title,
+    prompt,
+    model: "gpt-5.6-sol",
+  });
+
+  it("publishes a bounded batch contract without changing the single-create contract", () => {
+    const tools = __testing.availableTools(
+      new Set(["create_nested_thread", "create_nested_threads"]),
+    );
+    expect(tools).toEqual([
+      expect.objectContaining({
+        name: "create_nested_thread",
+        inputSchema: expect.objectContaining({
+          required: ["project", "title", "prompt", "model"],
+        }),
+      }),
+      expect.objectContaining({
+        name: "create_nested_threads",
+        inputSchema: expect.objectContaining({
+          properties: expect.objectContaining({
+            children: expect.objectContaining({ minItems: 1, maxItems: 16 }),
+            concurrency: expect.objectContaining({ minimum: 1, maximum: 4, default: 4 }),
+          }),
+          required: ["children"],
+        }),
+      }),
+    ]);
+  });
+
+  it("returns all successful outcomes in deterministic input order", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-success-"));
+    const cliPath = path.join(root, "t3-test");
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.createNestedThreadsTool(options(root, cliPath), {
+          children: [child("First"), child("Second"), child("Third")],
+          concurrency: 2,
+        }),
+      );
+
+      expect(result.results).toEqual([
+        { index: 0, outcome: createdOutcome },
+        { index: 1, outcome: createdOutcome },
+        { index: 2, outcome: createdOutcome },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves per-item validation failures while creating valid siblings", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-validation-"));
+    const cliPath = path.join(root, "t3-test");
+    try {
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.createNestedThreadsTool(options(root, cliPath), {
+          children: [child("Valid"), { ...child("Invalid"), title: " " }],
+        }),
+      );
+
+      expect(result.results).toEqual([
+        { index: 0, outcome: createdOutcome },
+        {
+          index: 1,
+          outcome: expect.objectContaining({
+            status: "failed",
+            retryable: false,
+            errorCode: "VALIDATION_FAILED",
+          }),
+        },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects every duplicate branch or canonical path before creating other items", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-collision-"));
+    const cliPath = path.join(root, "t3-test");
+    const sharedPath = `${root}-shared`;
+    const otherPath = `${root}-other`;
+    try {
+      await initGitRepository(root);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+      const withWorkspace = (title: string, branch: string, workspacePath: string) => ({
+        ...child(title),
+        project: root,
+        workspace: { mode: "isolated", branch, path: workspacePath },
+      });
+
+      const result = JSON.parse(
+        await __testing.createNestedThreadsTool(options(root, cliPath), {
+          children: [
+            withWorkspace("Shared path", "feature/path-one", sharedPath),
+            withWorkspace(
+              "Shared path alias",
+              "feature/path-two",
+              path.join(root, "..", path.basename(sharedPath)),
+            ),
+            withWorkspace("Shared branch", "feature/path-one", otherPath),
+            child("Independent"),
+          ],
+          concurrency: 2,
+        }),
+      );
+
+      expect(result.results.slice(0, 3)).toEqual([
+        expect.objectContaining({
+          index: 0,
+          outcome: expect.objectContaining({ errorCode: "VALIDATION_FAILED" }),
+        }),
+        expect.objectContaining({
+          index: 1,
+          outcome: expect.objectContaining({ errorCode: "VALIDATION_FAILED" }),
+        }),
+        expect.objectContaining({
+          index: 2,
+          outcome: expect.objectContaining({ errorCode: "VALIDATION_FAILED" }),
+        }),
+      ]);
+      expect(result.results[3]).toEqual({ index: 3, outcome: createdOutcome });
+      await expect(readFile(sharedPath, "utf8")).rejects.toThrow();
+      await expect(readFile(otherPath, "utf8")).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(sharedPath, { recursive: true, force: true });
+      await rm(otherPath, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps definitive and ambiguous child failures isolated from successful siblings", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-partial-"));
+    const cliPath = path.join(root, "t3-test");
+    const rejectedOutcome = {
+      status: "failed",
+      threadId: null,
+      retryable: true,
+      workspaceCreated: false,
+      cleanupPerformed: false,
+      errorCode: "THREAD_CREATE_REJECTED",
+      message: "Thread creation was rejected before it committed.",
+    };
+    const ambiguousOutcome = {
+      status: "ambiguous",
+      threadId: "child-ambiguous",
+      retryable: false,
+      workspaceCreated: false,
+      cleanupPerformed: false,
+      errorCode: "TURN_START_AMBIGUOUS",
+      message: "The first turn may have committed.",
+    };
+    try {
+      await writeFile(
+        cliPath,
+        nestedCliScriptByPrompt([
+          { prompt: "Reject child.", outcome: rejectedOutcome, exitCode: 1 },
+          { prompt: "Ambiguous child.", outcome: ambiguousOutcome, exitCode: 1 },
+        ]),
+      );
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.createNestedThreadsTool(options(root, cliPath), {
+          children: [
+            child("Success"),
+            child("Rejected", "Reject child."),
+            child("Ambiguous", "Ambiguous child."),
+          ],
+        }),
+      );
+
+      expect(result.results).toEqual([
+        { index: 0, outcome: createdOutcome },
+        { index: 1, outcome: rejectedOutcome },
+        { index: 2, outcome: ambiguousOutcome },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("honors the requested concurrency while preserving result order", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-concurrency-"));
+    const cliPath = path.join(root, "t3-test");
+    let active = 0;
+    let maximumActive = 0;
+    let releaseFirstWave: () => void = () => undefined;
+    const firstWaveReady = new Promise<void>((resolve) => {
+      releaseFirstWave = resolve;
+    });
+    try {
+      await initGitRepository(root);
+      await writeFile(cliPath, nestedCliScript(createdOutcome));
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.createNestedThreadsTool(
+          options(root, cliPath),
+          {
+            children: Array.from({ length: 5 }, (_, index) => ({
+              ...child(`Child ${String(index)}`),
+              project: root,
+              workspace: {
+                mode: "isolated",
+                branch: `feature/batch-${String(index)}`,
+                path: `${root}-child-${String(index)}`,
+              },
+            })),
+            concurrency: 2,
+          },
+          {
+            createWorkspace: async () => {
+              active += 1;
+              maximumActive = Math.max(maximumActive, active);
+              if (active === 2) releaseFirstWave();
+              await Promise.race([
+                firstWaveReady,
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error("batch concurrency did not reach two")), 2_000),
+                ),
+              ]);
+              active -= 1;
+            },
+          },
+        ),
+      );
+
+      expect(maximumActive).toBe(2);
+      expect(result.results.map(({ index }: { readonly index: number }) => index)).toEqual([
+        0, 1, 2, 3, 4,
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          rm(`${root}-child-${String(index)}`, { recursive: true, force: true }),
+        ),
+      );
+    }
+  });
+
+  it("cleans up only a definitively rejected child's workspace", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-nested-batch-cleanup-"));
+    const cliPath = path.join(root, "t3-test");
+    const rejectedPath = `${root}-rejected`;
+    const createdPath = `${root}-created`;
+    try {
+      await initGitRepository(root);
+      await writeFile(
+        cliPath,
+        nestedCliScriptByPrompt([
+          {
+            prompt: "Reject child.",
+            outcome: {
+              status: "failed",
+              threadId: null,
+              retryable: true,
+              workspaceCreated: true,
+              cleanupPerformed: false,
+              errorCode: "THREAD_CREATE_REJECTED",
+              message: "Thread creation was rejected before it committed.",
+            },
+            exitCode: 1,
+          },
+        ]),
+      );
+      await chmod(cliPath, 0o755);
+
+      const result = JSON.parse(
+        await __testing.createNestedThreadsTool(options(root, cliPath), {
+          children: [
+            {
+              ...child("Rejected", "Reject child."),
+              project: root,
+              workspace: {
+                mode: "isolated",
+                branch: "feature/batch-rejected",
+                path: rejectedPath,
+              },
+            },
+            {
+              ...child("Created"),
+              project: root,
+              workspace: {
+                mode: "isolated",
+                branch: "feature/batch-created",
+                path: createdPath,
+              },
+            },
+          ],
+          concurrency: 1,
+        }),
+      );
+
+      expect(result.results[0]).toEqual({
+        index: 0,
+        outcome: expect.objectContaining({
+          status: "failed",
+          retryable: true,
+          workspaceCreated: true,
+          cleanupPerformed: true,
+        }),
+      });
+      expect(result.results[1]).toEqual({
+        index: 1,
+        outcome: expect.objectContaining({
+          status: "created",
+          workspaceCreated: true,
+          cleanupPerformed: false,
+        }),
+      });
+      await expect(readFile(rejectedPath, "utf8")).rejects.toThrow();
+      await expect(readFile(path.join(createdPath, "README.md"), "utf8")).resolves.toBe("base\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(rejectedPath, { recursive: true, force: true });
+      await rm(createdPath, { recursive: true, force: true });
     }
   });
 });
