@@ -1083,6 +1083,7 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           assert.deepStrictEqual(JSON.parse(result.stdout), {
             status: "dry-run",
             threadId: null,
+            threadUrl: null,
             retryable: false,
             workspaceCreated: false,
             cleanupPerformed: false,
