@@ -24,6 +24,7 @@ describe("resolveServerEnvironmentLabel", () => {
         configuredLabel: " Ronak's MacBook Pro (Dev) ",
         platform: "darwin",
         hostname: "macbook-pro",
+        installationLabel: "Alpha",
       }).pipe(Effect.provide(NoopFileSystemLayer));
 
       expect(result).toBe("Ronak's MacBook Pro (Dev)");
