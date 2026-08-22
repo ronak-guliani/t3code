@@ -9,6 +9,8 @@ export const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximu
 
 export const IsoDateTime = Schema.String;
 export type IsoDateTime = typeof IsoDateTime.Type;
+export const ThreadUrl = TrimmedNonEmptyString.pipe(Schema.brand("ThreadUrl"));
+export type ThreadUrl = typeof ThreadUrl.Type;
 
 /**
  * Construct a branded identifier. Enforces non-empty trimmed strings

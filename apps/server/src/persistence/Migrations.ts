@@ -81,6 +81,7 @@ import Migration0076 from "./Migrations/076_PullRequestMonitorRevisionIdentity.t
 import Migration0077 from "./Migrations/077_ProjectionThreadsPinning.ts";
 import Migration0078 from "./Migrations/078_ProjectionThreadTitleRegeneration.ts";
 import Migration0079 from "./Migrations/079_AuthDpopProofKeys.ts";
+import Migration0080 from "./Migrations/080_ChildLifecycleNotifications.ts";
 import Migration0081 from "./Migrations/081_ProjectionThreadActivityBackgroundAgentIndex.ts";
 
 /**
@@ -162,6 +163,7 @@ export const migrationEntries = [
   [77, "ProjectionThreadsPinning", Migration0077],
   [78, "ProjectionThreadTitleRegeneration", Migration0078],
   [79, "AuthDpopProofKeys", Migration0079],
+  [80, "ChildLifecycleNotifications", Migration0080],
   [81, "ProjectionThreadActivityBackgroundAgentIndex", Migration0081],
 ] as const;
 

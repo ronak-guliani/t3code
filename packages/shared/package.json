@@ -220,6 +220,10 @@
       "types": "./src/chatList.ts",
       "import": "./src/chatList.ts"
     },
+    "./threadUrl": {
+      "types": "./src/threadUrl.ts",
+      "import": "./src/threadUrl.ts"
+    },
     "./hostProcess": {
       "types": "./src/hostProcess.ts",
       "import": "./src/hostProcess.ts"

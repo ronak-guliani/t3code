@@ -8,10 +8,54 @@ import {
   EMPTY_REVIEW_OUTPUT_MESSAGE_IDS,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveExternalActionUrl,
+  shouldHandleInternalActionClick,
   resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+
+describe("shouldHandleInternalActionClick", () => {
+  it("handles only unmodified primary clicks", () => {
+    expect(
+      shouldHandleInternalActionClick({
+        button: 0,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+      }),
+    ).toBe(true);
+
+    for (const input of [
+      { button: 1, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false },
+      { button: 0, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: true, shiftKey: false, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: false, shiftKey: true, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: true },
+    ]) {
+      expect(shouldHandleInternalActionClick(input)).toBe(false);
+    }
+  });
+});
+
+describe("resolveExternalActionUrl", () => {
+  it("accepts external HTTPS links", () => {
+    expect(resolveExternalActionUrl("https://github.com/example/repo/pull/1")).toBe(
+      "https://github.com/example/repo/pull/1",
+    );
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,unsafe",
+    "file:///tmp/unsafe",
+    "/env/thread",
+    "http://[malformed",
+  ])("rejects unsafe or invalid action URL %s", (url) => {
+    expect(resolveExternalActionUrl(url)).toBeNull();
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

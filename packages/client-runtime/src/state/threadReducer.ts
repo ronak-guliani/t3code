@@ -13,6 +13,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -563,11 +564,20 @@ export function applyThreadDetailEvent(
     }
 
     // ── Activities ──────────────────────────────────────────────────
-    case "thread.activity-appended": {
+    case "thread.activity-appended":
+    case "thread.child-lifecycle-notified": {
+      const activity =
+        event.type === "thread.activity-appended"
+          ? event.payload.activity
+          : childLifecycleNotificationToActivity({
+              eventId: event.eventId,
+              payload: event.payload,
+              sequence: event.sequence,
+            });
       const activities = pipe(
         thread.activities,
-        Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.filter((entry) => entry.id !== activity.id),
+        Arr.append(activity),
         Arr.sort(activityOrder),
       );
 
