@@ -86,6 +86,10 @@ interface ProjectorDefinition {
 }
 
 interface AttachmentSideEffects {
+  readonly affectedThreadIds: Set<string>;
+}
+
+interface ResolvedAttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
@@ -389,7 +393,7 @@ function collectThreadAttachmentRelativePaths(
 }
 
 const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function* (
-  sideEffects: AttachmentSideEffects,
+  sideEffects: ResolvedAttachmentSideEffects,
 ) {
   const serverConfig = yield* Effect.service(ServerConfig);
   const fileSystem = yield* Effect.service(FileSystem.FileSystem);
@@ -946,7 +950,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.deleted": {
-          attachmentSideEffects.deletedThreadIds.add(event.payload.threadId);
+          attachmentSideEffects.affectedThreadIds.add(event.payload.threadId);
           if (event.payload.worktreeCleanup !== undefined) {
             yield* worktreeCleanupJobRepository.upsert({
               threadId: event.payload.threadId,
@@ -1151,10 +1155,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
-          attachmentSideEffects.prunedThreadRelativePaths.set(
-            event.payload.threadId,
-            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
-          );
+          attachmentSideEffects.affectedThreadIds.add(event.payload.threadId);
           return;
         }
 
@@ -1918,13 +1919,45 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
+    const resolveAttachmentSideEffects = Effect.fn("resolveAttachmentSideEffects")(function* (
+      sideEffects: AttachmentSideEffects,
+    ) {
+      const resolved: ResolvedAttachmentSideEffects = {
+        deletedThreadIds: new Set<string>(),
+        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+      };
+
+      yield* Effect.forEach(
+        sideEffects.affectedThreadIds,
+        (threadId) =>
+          Effect.gen(function* () {
+            const thread = yield* projectionThreadRepository.getById({ threadId });
+            if (Option.isNone(thread) || thread.value.deletedAt !== null) {
+              resolved.deletedThreadIds.add(threadId);
+              return;
+            }
+
+            const messages = yield* projectionThreadMessageRepository.listByThreadId({ threadId });
+            resolved.prunedThreadRelativePaths.set(
+              threadId,
+              collectThreadAttachmentRelativePaths(threadId, messages),
+            );
+          }),
+        { concurrency: 1 },
+      );
+
+      return resolved;
+    });
+
+    const applyAttachmentSideEffects = (sideEffects: AttachmentSideEffects) =>
+      resolveAttachmentSideEffects(sideEffects).pipe(Effect.flatMap(runAttachmentSideEffects));
+
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
     ) {
       const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        affectedThreadIds: new Set<string>(),
       };
 
       yield* sql.withTransaction(
@@ -1939,7 +1972,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+      yield* applyAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
             projector: projector.name,
@@ -1965,8 +1998,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
 
       const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        affectedThreadIds: new Set<string>(),
       };
       const lastAppliedByProjector = new Map<ProjectorName, OrchestrationEvent>();
 
@@ -1993,7 +2025,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }),
       );
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+      yield* applyAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
             cause,

@@ -716,12 +716,11 @@ function rebindCheckpointAssistantMessage(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
   turnId: TurnId,
   messageId: MessageId,
-): OrchestrationCheckpointSummary[] {
+): ReadonlyArray<OrchestrationCheckpointSummary> {
   // Streaming chunks call this per delta; keep the original reference when no
   // checkpoint matches so downstream identity checks stay stable.
   if (!checkpoints.some((entry) => entry.turnId === turnId)) {
-    // Callers only read checkpoints, so the same reference is safe to retype.
-    return checkpoints as OrchestrationCheckpointSummary[];
+    return checkpoints;
   }
   return checkpoints.map((entry) =>
     entry.turnId === turnId ? { ...entry, assistantMessageId: messageId } : entry,
