@@ -14,6 +14,7 @@ import { OrchestrationEventStore } from "../../persistence/Services/Orchestratio
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
+import { REVIEW_HANDOFF_PROJECTOR } from "../../pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import {
@@ -76,6 +77,8 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
 type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
+const BOOTSTRAP_EVENT_BATCH_SIZE = 256;
+
 interface ProjectorDefinition {
   readonly name: ProjectorName;
   readonly apply: (
@@ -85,6 +88,10 @@ interface ProjectorDefinition {
 }
 
 interface AttachmentSideEffects {
+  readonly affectedThreadIds: Set<string>;
+}
+
+interface ResolvedAttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
@@ -388,7 +395,7 @@ function collectThreadAttachmentRelativePaths(
 }
 
 const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function* (
-  sideEffects: AttachmentSideEffects,
+  sideEffects: ResolvedAttachmentSideEffects,
 ) {
   const serverConfig = yield* Effect.service(ServerConfig);
   const fileSystem = yield* Effect.service(FileSystem.FileSystem);
@@ -946,7 +953,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         }
 
         case "thread.deleted": {
-          attachmentSideEffects.deletedThreadIds.add(event.payload.threadId);
+          attachmentSideEffects.affectedThreadIds.add(event.payload.threadId);
           if (event.payload.worktreeCleanup !== undefined) {
             yield* worktreeCleanupJobRepository.upsert({
               threadId: event.payload.threadId,
@@ -1171,10 +1178,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
-          attachmentSideEffects.prunedThreadRelativePaths.set(
-            event.payload.threadId,
-            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
-          );
+          attachmentSideEffects.affectedThreadIds.add(event.payload.threadId);
           return;
         }
 
@@ -1957,13 +1961,45 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       },
     ];
 
+    const resolveAttachmentSideEffects = Effect.fn("resolveAttachmentSideEffects")(function* (
+      sideEffects: AttachmentSideEffects,
+    ) {
+      const resolved: ResolvedAttachmentSideEffects = {
+        deletedThreadIds: new Set<string>(),
+        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+      };
+
+      yield* Effect.forEach(
+        sideEffects.affectedThreadIds,
+        (threadId) =>
+          Effect.gen(function* () {
+            const thread = yield* projectionThreadRepository.getById({ threadId });
+            if (Option.isNone(thread) || thread.value.deletedAt !== null) {
+              resolved.deletedThreadIds.add(threadId);
+              return;
+            }
+
+            const messages = yield* projectionThreadMessageRepository.listByThreadId({ threadId });
+            resolved.prunedThreadRelativePaths.set(
+              threadId,
+              collectThreadAttachmentRelativePaths(threadId, messages),
+            );
+          }),
+        { concurrency: 1 },
+      );
+
+      return resolved;
+    });
+
+    const applyAttachmentSideEffects = (sideEffects: AttachmentSideEffects) =>
+      resolveAttachmentSideEffects(sideEffects).pipe(Effect.flatMap(runAttachmentSideEffects));
+
     const runProjectorForEvent = Effect.fn("runProjectorForEvent")(function* (
       projector: ProjectorDefinition,
       event: OrchestrationEvent,
     ) {
       const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        prunedThreadRelativePaths: new Map<string, Set<string>>(),
+        affectedThreadIds: new Set<string>(),
       };
 
       yield* sql.withTransaction(
@@ -1978,7 +2014,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         ),
       );
 
-      yield* runAttachmentSideEffects(attachmentSideEffects).pipe(
+      yield* applyAttachmentSideEffects(attachmentSideEffects).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
             projector: projector.name,
@@ -1990,40 +2026,82 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       );
     });
 
-    const bootstrapProjector = (projector: ProjectorDefinition) =>
-      projectionStateRepository
-        .getByProjector({
-          projector: projector.name,
-        })
-        .pipe(
-          Effect.flatMap((stateRow) =>
-            Stream.runForEach(
-              eventStore.readFromSequence(
-                Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
-              ),
-              (event) => runProjectorForEvent(projector, event),
-            ),
-          ),
-        );
+    // Bootstrap replays the event stream once for all projectors instead of
+    // once per projector, and commits each batch of events in a single
+    // transaction with one coalesced cursor upsert per projector. Projectors
+    // whose cursor is ahead of an event skip it, so per-projector resume
+    // positions are preserved.
+    const runProjectorsForEventBatch = Effect.fn("runProjectorsForEventBatch")(function* (
+      events: ReadonlyArray<OrchestrationEvent>,
+      cursors: Map<ProjectorName, number>,
+      attachmentSideEffects: AttachmentSideEffects,
+    ) {
+      if (events.length === 0) {
+        return;
+      }
 
-    const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
-      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
-        concurrency: 1,
-      }).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ServerConfig, serverConfig),
-        Effect.asVoid,
-        Effect.catchTag("SqlError", (sqlError) =>
-          Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
-        ),
+      const lastAppliedByProjector = new Map<ProjectorName, OrchestrationEvent>();
+
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          for (const event of events) {
+            for (const projector of projectors) {
+              if (event.sequence <= (cursors.get(projector.name) ?? 0)) {
+                continue;
+              }
+              yield* projector.apply(event, attachmentSideEffects);
+              lastAppliedByProjector.set(projector.name, event);
+            }
+          }
+
+          for (const [projectorName, lastApplied] of lastAppliedByProjector) {
+            cursors.set(projectorName, lastApplied.sequence);
+            yield* projectionStateRepository.upsert({
+              projector: projectorName,
+              lastAppliedSequence: lastApplied.sequence,
+              updatedAt: lastApplied.occurredAt,
+            });
+          }
+        }),
       );
+    });
 
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
       yield* projectionStateRepository.deleteExcept({
-        projectors: projectors.map((projector) => projector.name),
+        // The review handoff reactor shares this cursor store but is not a projector.
+        projectors: [...projectors.map((projector) => projector.name), REVIEW_HANDOFF_PROJECTOR],
       });
-      yield* Effect.forEach(projectors, bootstrapProjector, { concurrency: 1 });
+
+      const cursors = new Map<ProjectorName, number>();
+      for (const projector of projectors) {
+        const stateRow = yield* projectionStateRepository.getByProjector({
+          projector: projector.name,
+        });
+        cursors.set(
+          projector.name,
+          Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+        );
+      }
+      const minCursor = Math.min(...cursors.values());
+      const attachmentSideEffects: AttachmentSideEffects = {
+        affectedThreadIds: new Set<string>(),
+      };
+
+      yield* Stream.runForEach(
+        Stream.grouped(
+          eventStore.readFromSequence(minCursor, Number.MAX_SAFE_INTEGER),
+          BOOTSTRAP_EVENT_BATCH_SIZE,
+        ),
+        (events) => runProjectorsForEventBatch(events, cursors, attachmentSideEffects),
+      );
+
+      yield* applyAttachmentSideEffects(attachmentSideEffects).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to apply projected attachment side-effects", {
+            cause,
+          }),
+        ),
+      );
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
@@ -2038,6 +2116,19 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         Effect.fail(toPersistenceSqlError("ProjectionPipeline.bootstrap:query")(sqlError)),
       ),
     );
+
+    const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
+      Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {
+        concurrency: 1,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(ServerConfig, serverConfig),
+        Effect.asVoid,
+        Effect.catchTag("SqlError", (sqlError) =>
+          Effect.fail(toPersistenceSqlError("ProjectionPipeline.projectEvent:query")(sqlError)),
+        ),
+      );
 
     return {
       bootstrap,

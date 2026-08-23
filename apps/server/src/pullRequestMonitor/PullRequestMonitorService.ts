@@ -781,6 +781,28 @@ export const layer = Layer.effect(
           monitorRecord = yield* resolveMonitor({ reference: input.reference });
         }
 
+        if (input.reviewedHeadSha !== undefined) {
+          // The monitor row can be empty or stale when its opportunistic start poll failed
+          // or lost a lease. Only a fresh provider snapshot can safely reject stale review
+          // findings; snapshot failures remain retryable to the durable handoff reactor.
+          const currentSnapshot = yield* pullRequests
+            .monitorSnapshot(input.reference)
+            .pipe(
+              Effect.mapError((cause) =>
+                monitorError("Could not verify the reviewed pull request revision.", { cause }),
+              ),
+            );
+          if (currentSnapshot.headSha !== input.reviewedHeadSha) {
+            return {
+              monitor: monitorRecord,
+              linkedReviewThreadId: input.reviewThreadId,
+              ownerThreadId: monitorRecord.ownerThreadId,
+              monitoringStarted: startMonitoring,
+              findings: [],
+            };
+          }
+        }
+
         yield* requireProjectThread({
           projectId: monitorRecord.projectId,
           threadId: input.reviewThreadId,

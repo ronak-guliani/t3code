@@ -9,9 +9,10 @@ Delegate work from the current T3 thread through T3's authenticated MCP control 
 
 ## Core rule
 
-Create every helper with `create_nested_thread`. This one call creates the child, records the
-current thread as its parent, selects Copilot, sends the first prompt, and optionally creates the
-child's isolated worktree. Do not assemble those steps with terminal commands or workspace tools.
+Create one helper with `create_nested_thread`, or multiple sibling helpers with
+`create_nested_threads`. These calls create each child, record the current thread as its parent,
+select Copilot, send the first prompt, and optionally create the child's isolated worktree. Do not
+assemble those steps with terminal commands or workspace tools.
 
 ## Quick start
 
@@ -19,7 +20,8 @@ If the MCP tool is deferred, you MUST use the tool-search API to load the `creat
 function definition from the `t3-tools` tool resource, then call the loaded function. Do not use
 MCP resources/list as an availability check: zero non-invokable resources does not mean the server
 exposes zero tools. Do not infer that the authenticated `t3-tools` server lacks the tool from the
-initially loaded tool list or resource count.
+initially loaded tool list or resource count. Search for `create_nested_threads` when delegating
+multiple independent sibling tasks.
 
 Call `create_nested_thread` with:
 
@@ -37,28 +39,97 @@ Call `create_nested_thread` with:
 `low`, `medium`, `high`, or `xhigh` only when the selected model exposes that setting. Set
 `dryRun: true` to validate the request and any workspace collision preflight without mutation.
 
+Use `promptTemplate` to add only the standard blocks the child needs. The server composes selected
+blocks in canonical order and rejects duplicate blocks, unknown fields, missing validation
+commands, and contradictory permissions. Keep `prompt` focused on the task itself:
+
+```json
+{
+  "prompt": "Implement reusable cache invalidation.",
+  "promptTemplate": {
+    "blocks": [
+      "repository",
+      "implementation",
+      "validation",
+      "commit",
+      "push-and-create-pr",
+      "reporting"
+    ],
+    "repository": {
+      "context": "Work in acme/widgets on the current feature branch.",
+      "instructionFiles": ["AGENTS.md", "scars.md"]
+    },
+    "validation": {
+      "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"]
+    },
+    "commit": {
+      "requirements": ["Include the repository's required co-author trailer."]
+    }
+  }
+}
+```
+
+Available blocks are `repository`, `investigation-only`, `implementation`, `validation`, `commit`,
+`push-and-create-pr`, and `reporting`. Omit irrelevant blocks. Use `overrides` to replace the
+standard text for one selected block and `additions` to append block-specific bullet items.
+Repository context, commands, commit/PR requirements, and report items remain structured fields.
+Never combine `investigation-only` with `implementation`, `commit`, or `push-and-create-pr`.
+
 Every call returns `status`, `threadId`, `retryable`, `workspaceCreated`, `cleanupPerformed`,
 `errorCode`, and `message`. A `created` outcome always has a `threadId`. For an `ambiguous`
 outcome with a non-null `threadId`, inspect that exact child before retrying; when it is null,
 inspect the parent's children and any requested workspace state instead. Retry a failed call only
 when `retryable` is true and follow any remediation in `message`.
 
+For multiple siblings, call `create_nested_threads` with `children` containing 1-16 objects using
+the same child fields shown above and optional `concurrency` from 1-4 (default 4). Its `results`
+array is always in input order and contains `{ index, outcome }` for every child, even when only
+some children succeed. Items that share a workspace branch or canonical path are all rejected with
+`VALIDATION_FAILED` before mutation; unrelated items continue. Never retry the whole batch: inspect
+and retry only individual outcomes whose `retryable` field is true. Branch and path collision keys
+are Unicode-normalized and case-folded so case-only variants cannot race on macOS or Windows.
+
+```json
+{
+  "children": [
+    {
+      "project": "/repo",
+      "title": "Implement API",
+      "prompt": "Implement and test the API slice.",
+      "model": "gpt-5.6-sol",
+      "workspace": {
+        "mode": "isolated",
+        "branch": "feature/api",
+        "path": "/repo-worktrees/api"
+      }
+    },
+    {
+      "project": "/repo",
+      "title": "Review docs",
+      "prompt": "Review the relevant documentation without editing.",
+      "model": "gpt-5.6-sol"
+    }
+  ],
+  "concurrency": 2
+}
+```
+
 ## Delegation workflow
 
 1. Decide whether delegation is worthwhile; keep simple lookups and tightly coupled edits local.
 2. Resolve the project and choose an available Copilot model. Pass the model explicitly.
-3. Write a self-contained child prompt with the goal, context, permissions, constraints,
-   validation commands, and expected report.
+3. Put the goal and task-specific constraints in `prompt`; select reusable context, permissions,
+   validation, delivery, and reporting blocks with `promptTemplate`.
 4. If isolation is needed, include `workspace` in the same `create_nested_thread` call.
-5. Call `create_nested_thread` once, check `status`, and capture a non-null `threadId`.
+5. Call the selected creation tool once, check each outcome, and capture every non-null `threadId`.
 6. Monitor by `threadId` only when needed, then consolidate the result in the parent.
 
 ## Workspace ownership
 
 - Parent stays in its current workspace.
 - Child without isolation: omit `workspace`.
-- Child with isolation: pass `workspace: { mode: "isolated", branch, path, baseRef? }` to
-  `create_nested_thread`; `path` must be absolute.
+- Child with isolation: pass `workspace: { mode: "isolated", branch, path, baseRef? }` in its
+  single or batch specification; `path` must be absolute.
 - `create_isolated_workspace` and `switch_workspace` always move the thread that calls them. Use
   them only when the current thread itself must move, never to prepare a future child.
 - Never run raw `git worktree add` or `git worktree move` for T3-managed delegation.

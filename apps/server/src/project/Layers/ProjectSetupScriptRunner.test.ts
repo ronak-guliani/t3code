@@ -47,6 +47,8 @@ describe("ProjectSetupScriptRunner", () => {
                 dispatch: () => Effect.die(new Error("unused")),
                 withWorktreeLock: (effect) => effect,
                 streamDomainEvents: Stream.empty,
+                // Unused by these tests; Effect.never satisfies the scoped subscription type.
+                acquireDomainEventSubscription: Effect.never,
               }),
             ),
             Layer.provideMerge(
@@ -118,6 +120,8 @@ describe("ProjectSetupScriptRunner", () => {
                 dispatch: () => Effect.die(new Error("unused")),
                 withWorktreeLock: (effect) => effect,
                 streamDomainEvents: Stream.empty,
+                // Unused by these tests; Effect.never satisfies the scoped subscription type.
+                acquireDomainEventSubscription: Effect.never,
               }),
             ),
             Layer.provideMerge(

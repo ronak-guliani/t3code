@@ -1448,6 +1448,7 @@ layer("PullRequestMonitorService", (it) => {
       const submitted = yield* monitors.submitFindings({
         reference: { projectId, repository: "acme/app", number: 64 },
         reviewThreadId: reviewer,
+        reviewedHeadSha: "deadbeef",
         ownerThreadId: owner,
         summary: "two findings",
         findings: [
@@ -1496,6 +1497,39 @@ layer("PullRequestMonitorService", (it) => {
         ],
       });
       assert.isFalse(again.findings[0]!.created);
+    }),
+  );
+
+  it.effect("ignores findings reviewed against a stale pull request head", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const reviewer = ThreadId.make("thr_stale_findings_review");
+      seedThread(reviewer);
+
+      const submitted = yield* monitors.submitFindings({
+        reference: { projectId, repository: "acme/app", number: 64 },
+        reviewThreadId: reviewer,
+        reviewedHeadSha: "stale-head",
+        findings: [
+          {
+            key: "stale-finding",
+            title: "Stale finding",
+            detail: "This finding reviewed an earlier revision.",
+            severity: "major",
+          },
+        ],
+      });
+
+      assert.strictEqual(submitted.monitor.headSha, "deadbeef");
+      assert.deepEqual(submitted.findings, []);
+      const context = yield* monitors.context({
+        monitorId: submitted.monitor.id,
+        includeClosed: true,
+      });
+      assert.strictEqual(
+        context.items.some((item) => item.summary.includes("Stale finding")),
+        false,
+      );
     }),
   );
 

@@ -22,6 +22,7 @@ export const ReviewSnapshotScope = Schema.Union([
     url: TrimmedNonEmptyString,
     baseBranch: TrimmedNonEmptyString,
     headBranch: TrimmedNonEmptyString,
+    headSha: Schema.optional(TrimmedNonEmptyString),
   }),
 ]);
 export type ReviewSnapshotScope = typeof ReviewSnapshotScope.Type;

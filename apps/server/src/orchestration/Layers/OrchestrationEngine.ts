@@ -592,6 +592,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     get streamDomainEvents(): OrchestrationEngineShape["streamDomainEvents"] {
       return Stream.fromPubSub(eventPubSub);
     },
+    // Scoped subscribe registers the subscription synchronously during the yield,
+    // giving consumers an explicit attach-before-snapshot handshake.
+    acquireDomainEventSubscription: PubSub.subscribe(eventPubSub),
   } satisfies OrchestrationEngineShape;
 });
 

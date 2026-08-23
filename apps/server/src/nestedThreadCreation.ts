@@ -71,6 +71,16 @@ export const NestedThreadCreationOutcome = Schema.Union([
 ]);
 export type NestedThreadCreationOutcome = typeof NestedThreadCreationOutcome.Type;
 
+export const NestedThreadBatchCreationOutcome = Schema.Struct({
+  results: Schema.Array(
+    Schema.Struct({
+      index: Schema.Int,
+      outcome: NestedThreadCreationOutcome,
+    }),
+  ),
+});
+export type NestedThreadBatchCreationOutcome = typeof NestedThreadBatchCreationOutcome.Type;
+
 export interface NestedThreadPhaseFailure {
   readonly definitive: boolean;
   readonly message: string;
@@ -195,4 +205,8 @@ export const runNestedThreadCreationPhases = <R>(
 
 export const decodeNestedThreadCreationOutcome = Schema.decodeUnknownSync(
   NestedThreadCreationOutcome,
+);
+
+export const decodeNestedThreadBatchCreationOutcome = Schema.decodeUnknownSync(
+  NestedThreadBatchCreationOutcome,
 );

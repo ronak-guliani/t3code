@@ -12,8 +12,11 @@ import { killProcessTree } from "@t3tools/shared/processTree";
 import { ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
+import { composeDelegationPrompt, DELEGATION_PROMPT_BLOCKS } from "./delegationPrompt.ts";
 import {
+  decodeNestedThreadBatchCreationOutcome,
   decodeNestedThreadCreationOutcome,
+  type NestedThreadBatchCreationOutcome,
   type NestedThreadCreationErrorCode,
   type NestedThreadCreationOutcome,
 } from "./nestedThreadCreation.ts";
@@ -59,6 +62,9 @@ const MAX_HTTP_REQUEST_BYTES = 1024 * 1024;
 const MAX_SEARCH_RESULTS = 100;
 const MAX_TERMINAL_OUTPUT_BYTES = 64 * 1024;
 const DEFAULT_TERMINAL_TIMEOUT_MS = 30_000;
+const DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY = 4;
+const MAX_NESTED_THREAD_BATCH_CONCURRENCY = 4;
+const MAX_NESTED_THREAD_BATCH_SIZE = 16;
 const WORKSPACE_HANDOFF_CONTINUATION_PROMPT =
   "Continue the task from the previous user request in the newly bound workspace. Do not merely acknowledge the workspace change; proceed with the requested work.";
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", "dist", ".next", ".turbo"]);
@@ -85,6 +91,7 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["switch_workspace", "switch_workspace"],
   ["use_existing_worktree", "switch_workspace"],
   ["create_nested_thread", "create_nested_thread"],
+  ["create_nested_threads", "create_nested_threads"],
   ["send_to_thread", "send_to_thread"],
   ["associate_pull_request", "associate_pull_request"],
 ] as const);
@@ -534,6 +541,31 @@ class NestedThreadValidationError extends Error {
   }
 }
 
+function validateNestedThreadContext(
+  options: McpServeOptions,
+  toolName: string,
+): asserts options is McpServeOptions & {
+  readonly threadId: string;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly runtimeMode: RuntimeMode;
+} {
+  if (!options.threadId) {
+    throw new NestedThreadValidationError(
+      `${toolName} is only available from a T3 provider session`,
+    );
+  }
+  if (!options.runtimeMode) {
+    throw new NestedThreadValidationError(
+      `${toolName} requires an authenticated parent runtime mode`,
+    );
+  }
+  if (!options.providerInstanceId) {
+    throw new NestedThreadValidationError(
+      `${toolName} requires an authenticated parent provider instance`,
+    );
+  }
+}
+
 function parseIsolatedWorkspaceSpec(
   value: Record<string, unknown>,
   toolName: string,
@@ -962,6 +994,9 @@ const defaultNestedThreadToolDependencies: NestedThreadToolDependencies = {
 const serializeNestedThreadOutcome = (outcome: NestedThreadCreationOutcome): string =>
   JSON.stringify(outcome);
 
+const serializeNestedThreadBatchOutcome = (outcome: NestedThreadBatchCreationOutcome): string =>
+  JSON.stringify(decodeNestedThreadBatchCreationOutcome(outcome));
+
 const nestedThreadFailure = (
   errorCode: NestedThreadCreationErrorCode,
   message: string,
@@ -1114,11 +1149,7 @@ async function createNestedThreadToolImpl(
   args: Record<string, unknown>,
   dependencies: NestedThreadToolDependencies,
 ): Promise<NestedThreadCreationOutcome> {
-  if (!options.threadId) {
-    throw new NestedThreadValidationError(
-      "create_nested_thread is only available from a T3 provider session",
-    );
-  }
+  validateNestedThreadContext(options, "create_nested_thread");
   const project = asString(args.project)?.trim();
   const title = asString(args.title)?.trim();
   const prompt = asString(args.prompt)?.trim();
@@ -1137,16 +1168,10 @@ async function createNestedThreadToolImpl(
   if (!model)
     throw new NestedThreadValidationError("create_nested_thread requires a non-empty model");
 
-  if (!options.runtimeMode) {
-    throw new NestedThreadValidationError(
-      "create_nested_thread requires an authenticated parent runtime mode",
-    );
-  }
-  if (!options.providerInstanceId) {
-    throw new NestedThreadValidationError(
-      "create_nested_thread requires an authenticated parent provider instance",
-    );
-  }
+  const childPrompt =
+    args.promptTemplate === undefined
+      ? prompt
+      : composeDelegationPrompt(prompt, args.promptTemplate);
 
   let workspace: IsolatedWorkspaceSpec | undefined;
   if (args.workspace !== undefined) {
@@ -1177,7 +1202,7 @@ async function createNestedThreadToolImpl(
     nestedThreadCommandArgs(authenticatedOptions, {
       project,
       title,
-      prompt,
+      prompt: childPrompt,
       model,
       reasoning,
       workspace,
@@ -1196,7 +1221,7 @@ async function createNestedThreadToolImpl(
       nestedThreadCommandArgs(authenticatedOptions, {
         project,
         title,
-        prompt,
+        prompt: childPrompt,
         model,
         reasoning,
         workspace,
@@ -1262,7 +1287,7 @@ async function createNestedThreadToolImpl(
     nestedThreadCommandArgs(authenticatedOptions, {
       project,
       title,
-      prompt,
+      prompt: childPrompt,
       model,
       reasoning,
       workspace,
@@ -1347,6 +1372,167 @@ async function createNestedThreadTool(
   }
 }
 
+interface BatchWorkspaceIdentity {
+  readonly branchKey: string;
+  readonly pathKey: string;
+}
+
+// Reject case-only variants everywhere so a batch remains portable and cannot race on
+// case-insensitive Git ref stores or filesystems.
+const portableWorkspaceIdentityKey = (value: string): string =>
+  value.normalize("NFC").toLowerCase();
+
+async function batchWorkspaceIdentity(
+  args: Record<string, unknown>,
+): Promise<BatchWorkspaceIdentity | null> {
+  if (args.workspace === undefined) return null;
+  if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
+    throw new NestedThreadValidationError("create_nested_threads workspace must be an object");
+  }
+  const workspaceInput = asRecord(args.workspace);
+  if (asString(workspaceInput.mode) !== "isolated") {
+    throw new NestedThreadValidationError(
+      "create_nested_threads workspace mode must be 'isolated'",
+    );
+  }
+  const workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_threads");
+  const resolvedPath = await resolvePathThroughExistingAncestor(workspace.path);
+  return {
+    branchKey: portableWorkspaceIdentityKey(workspace.branch),
+    pathKey: portableWorkspaceIdentityKey(resolvedPath),
+  };
+}
+
+const batchItemFailure = (error: unknown): NestedThreadCreationOutcome =>
+  nestedThreadFailure(
+    error instanceof WorkspaceConflictError ? error.errorCode : "VALIDATION_FAILED",
+    toErrorMessage(error),
+    { retryable: error instanceof WorkspaceConflictError },
+  );
+
+async function mapWithConcurrency<T, U>(
+  values: ReadonlyArray<T>,
+  concurrency: number,
+  operation: (value: T, index: number) => Promise<U>,
+): Promise<Array<U>> {
+  const results = Array.from<U>({ length: values.length });
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex++;
+        results[index] = await operation(values[index] as T, index);
+      }
+    }),
+  );
+  return results;
+}
+
+async function createNestedThreadsTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+  dependencyOverrides: Partial<NestedThreadToolDependencies> = {},
+): Promise<string> {
+  validateNestedThreadContext(options, "create_nested_threads");
+  if (!Array.isArray(args.children)) {
+    throw new NestedThreadValidationError("create_nested_threads requires a children array");
+  }
+  if (args.children.length === 0 || args.children.length > MAX_NESTED_THREAD_BATCH_SIZE) {
+    throw new NestedThreadValidationError(
+      `create_nested_threads children must contain between 1 and ${String(MAX_NESTED_THREAD_BATCH_SIZE)} items`,
+    );
+  }
+  const concurrency = args.concurrency ?? DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY;
+  if (
+    typeof concurrency !== "number" ||
+    !Number.isInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > MAX_NESTED_THREAD_BATCH_CONCURRENCY
+  ) {
+    throw new NestedThreadValidationError(
+      `create_nested_threads concurrency must be an integer between 1 and ${String(MAX_NESTED_THREAD_BATCH_CONCURRENCY)}`,
+    );
+  }
+
+  const children = args.children.map((child) => {
+    if (!child || typeof child !== "object" || Array.isArray(child)) {
+      return null;
+    }
+    return asRecord(child);
+  });
+  const identities = await Promise.all(
+    children.map(async (child) => {
+      if (child === null) return new NestedThreadValidationError("Batch child must be an object");
+      try {
+        return await batchWorkspaceIdentity(child);
+      } catch (error) {
+        return error instanceof Error ? error : new Error(String(error));
+      }
+    }),
+  );
+  const branchIndices = new Map<string, Array<number>>();
+  const pathIndices = new Map<string, Array<number>>();
+  for (const [index, identity] of identities.entries()) {
+    if (identity === null || identity instanceof Error) continue;
+    const branches = branchIndices.get(identity.branchKey) ?? [];
+    branches.push(index);
+    branchIndices.set(identity.branchKey, branches);
+    const paths = pathIndices.get(identity.pathKey) ?? [];
+    paths.push(index);
+    pathIndices.set(identity.pathKey, paths);
+  }
+
+  const collisionMessages = new Map<number, Array<string>>();
+  const recordCollisions = (
+    label: "branch" | "path",
+    collisions: ReadonlyMap<string, ReadonlyArray<number>>,
+  ) => {
+    for (const [value, indices] of collisions) {
+      if (indices.length < 2) continue;
+      for (const index of indices) {
+        const messages = collisionMessages.get(index) ?? [];
+        messages.push(
+          `workspace ${label} '${value}' is also requested by batch item(s) ${indices
+            .filter((otherIndex) => otherIndex !== index)
+            .join(", ")}`,
+        );
+        collisionMessages.set(index, messages);
+      }
+    }
+  };
+  recordCollisions("branch", branchIndices);
+  recordCollisions("path", pathIndices);
+
+  const dependencies = {
+    ...defaultNestedThreadToolDependencies,
+    ...dependencyOverrides,
+  };
+  const outcomes = await mapWithConcurrency(children, concurrency, async (child, index) => {
+    const identity = identities[index];
+    if (identity instanceof Error) return batchItemFailure(identity);
+    if (child === null) {
+      return batchItemFailure(new NestedThreadValidationError("Batch child must be an object"));
+    }
+    const collisions = collisionMessages.get(index);
+    if (collisions) {
+      return nestedThreadFailure(
+        "VALIDATION_FAILED",
+        `Batch item ${String(index)} was not started because its ${collisions.join(" and its ")}. Every item sharing a branch or canonical path is rejected before mutation.`,
+        { retryable: true },
+      );
+    }
+    try {
+      return await createNestedThreadToolImpl(options, child, dependencies);
+    } catch (error) {
+      return batchItemFailure(error);
+    }
+  });
+
+  return serializeNestedThreadBatchOutcome({
+    results: outcomes.map((outcome, index) => ({ index, outcome })),
+  });
+}
+
 async function sendToThreadTool(
   options: McpServeOptions,
   args: Record<string, unknown>,
@@ -1398,6 +1584,138 @@ async function associatePullRequestTool(
   ]);
   return result.stdout.trim();
 }
+
+const NESTED_THREAD_WORKSPACE_INPUT_SCHEMA = {
+  type: "object",
+  description: "Optional isolated checkout created and bound to the child before its first turn.",
+  properties: {
+    mode: { type: "string", enum: ["isolated"] },
+    branch: { type: "string" },
+    path: { type: "string", description: "Absolute path for the child worktree." },
+    baseRef: { type: "string", description: "Optional branch or ref to start from." },
+  },
+  required: ["mode", "branch", "path"],
+  additionalProperties: false,
+} as const;
+
+const NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA = {
+  type: "object",
+  description:
+    "Optional reusable prompt blocks. Only selected blocks are emitted; canonical ordering prevents contradictory layout, while overrides replace one standard block and additions append to it.",
+  properties: {
+    blocks: {
+      type: "array",
+      minItems: 1,
+      uniqueItems: true,
+      items: { type: "string", enum: [...DELEGATION_PROMPT_BLOCKS] },
+      description:
+        "Prompt blocks to compose. investigation-only conflicts with implementation, commit, and push-and-create-pr.",
+    },
+    repository: {
+      type: "object",
+      properties: {
+        context: { type: "string", minLength: 1 },
+        instructionFiles: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    validation: {
+      type: "object",
+      description: "Required when the validation block is selected.",
+      properties: {
+        commands: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      required: ["commands"],
+      additionalProperties: false,
+    },
+    commit: {
+      type: "object",
+      properties: {
+        requirements: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    pullRequest: {
+      type: "object",
+      properties: {
+        requirements: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    reporting: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    overrides: {
+      type: "object",
+      description: "Replacement text keyed by a selected block.",
+      properties: Object.fromEntries(
+        DELEGATION_PROMPT_BLOCKS.map((block) => [block, { type: "string", minLength: 1 }]),
+      ),
+      additionalProperties: false,
+    },
+    additions: {
+      type: "object",
+      description: "Additional bullet items keyed by a selected block.",
+      properties: Object.fromEntries(
+        DELEGATION_PROMPT_BLOCKS.map((block) => [
+          block,
+          {
+            type: "array",
+            minItems: 1,
+            items: { type: "string", minLength: 1 },
+          },
+        ]),
+      ),
+      additionalProperties: false,
+    },
+  },
+  required: ["blocks"],
+  additionalProperties: false,
+} as const;
+
+const NESTED_THREAD_INPUT_PROPERTIES = {
+  project: { type: "string", description: "Project id, title, or workspace root." },
+  title: { type: "string" },
+  prompt: { type: "string" },
+  promptTemplate: NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA,
+  model: {
+    type: "string",
+    minLength: 1,
+    description: "Any model slug available through the authenticated Copilot provider.",
+  },
+  reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+  dryRun: {
+    type: "boolean",
+    description: "Validate the request and workspace preflight without making changes.",
+  },
+  workspace: NESTED_THREAD_WORKSPACE_INPUT_SCHEMA,
+} as const;
+
+const NESTED_THREAD_REQUIRED_INPUTS = ["project", "title", "prompt", "model"] as const;
 
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
@@ -1535,35 +1853,37 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
       "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
     inputSchema: {
       type: "object",
+      properties: NESTED_THREAD_INPUT_PROPERTIES,
+      required: NESTED_THREAD_REQUIRED_INPUTS,
+    },
+  },
+  {
+    name: "create_nested_threads",
+    description:
+      "Create and start multiple sibling helper threads under the authenticated current T3 thread. Returns one indexed NestedThreadCreationOutcome per child in input order, including partial failures. Runs at most four creations concurrently. Every item sharing a workspace branch or canonical path with another batch item is rejected before mutation; other items continue. Never retry a non-retryable or ambiguous item.",
+    inputSchema: {
+      type: "object",
       properties: {
-        project: { type: "string", description: "Project id, title, or workspace root." },
-        title: { type: "string" },
-        prompt: { type: "string" },
-        model: {
-          type: "string",
-          minLength: 1,
-          description: "Any model slug available through the authenticated Copilot provider.",
-        },
-        reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
-        dryRun: {
-          type: "boolean",
-          description: "Validate the request and workspace preflight without making changes.",
-        },
-        workspace: {
-          type: "object",
-          description:
-            "Optional isolated checkout created and bound to the child before its first turn.",
-          properties: {
-            mode: { type: "string", enum: ["isolated"] },
-            branch: { type: "string" },
-            path: { type: "string", description: "Absolute path for the child worktree." },
-            baseRef: { type: "string", description: "Optional branch or ref to start from." },
+        children: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_NESTED_THREAD_BATCH_SIZE,
+          items: {
+            type: "object",
+            properties: NESTED_THREAD_INPUT_PROPERTIES,
+            required: NESTED_THREAD_REQUIRED_INPUTS,
+            additionalProperties: false,
           },
-          required: ["mode", "branch", "path"],
-          additionalProperties: false,
+        },
+        concurrency: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_NESTED_THREAD_BATCH_CONCURRENCY,
+          default: DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY,
+          description: "Maximum number of child creations in flight.",
         },
       },
-      required: ["project", "title", "prompt", "model"],
+      required: ["children"],
     },
   },
   {
@@ -1638,6 +1958,8 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await switchWorkspaceTool(options, args);
     case "create_nested_thread":
       return await createNestedThreadTool(options, args);
+    case "create_nested_threads":
+      return await createNestedThreadsTool(options, args);
     case "send_to_thread":
       return await sendToThreadTool(options, args);
     case "associate_pull_request":
@@ -1741,6 +2063,7 @@ export const __testing = {
   cleanupNestedWorkspace,
   createIsolatedWorkspaceTool,
   createNestedThreadTool,
+  createNestedThreadsTool,
   sendToThreadTool,
   switchWorkspaceTool,
 };

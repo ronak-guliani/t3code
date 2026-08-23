@@ -106,7 +106,7 @@ describe("buildCopilotAcpSpawnInput", () => {
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`create_isolated_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`switch_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "call `create_nested_thread` before any workspace operation",
+        "call `create_nested_thread` or `create_nested_threads` before any workspace operation",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
         "search `t3-tools` for `create_isolated_workspace`",
@@ -149,6 +149,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
         ]),
@@ -210,6 +211,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "switch_workspace",
           "associate_pull_request",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
         ]),
       );
@@ -237,6 +239,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
         ]),

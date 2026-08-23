@@ -15,6 +15,7 @@ import {
   buildThreadFeed,
   derivePendingApprovals,
   deriveThreadFeedPresentation,
+  threadFeedEntriesAreEqual,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
@@ -53,6 +54,28 @@ function makeThread(
     ...input,
   };
 }
+
+describe("threadFeedEntriesAreEqual", () => {
+  const workToggle: Extract<ThreadFeedEntry, { type: "work-toggle" }> = {
+    type: "work-toggle",
+    id: "work-toggle-1",
+    createdAt: "2026-04-01T00:00:00.000Z",
+    turnId: TurnId.make("turn-1"),
+    groupId: "work-group-1",
+    hiddenCount: 2,
+    expanded: false,
+    onlyToolActivities: true,
+  };
+
+  it("detects changes to the work-toggle activity label kind", () => {
+    expect(
+      threadFeedEntriesAreEqual(workToggle, {
+        ...workToggle,
+        onlyToolActivities: false,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("buildThreadFeed", () => {
   it("derives approval lifecycle by chronology instead of restarted provider sequences", () => {

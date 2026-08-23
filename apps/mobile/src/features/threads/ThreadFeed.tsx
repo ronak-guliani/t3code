@@ -76,6 +76,7 @@ import { markdownFileIconSource } from "@t3tools/mobile-markdown-text/file-icons
 import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import {
   deriveThreadFeedPresentation,
+  threadFeedEntriesAreEqual,
   type ThreadFeedEntry,
   type ThreadFeedLatestTurn,
 } from "../../lib/threadActivity";
@@ -1213,28 +1214,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const markdownStyles = useMarkdownStyles(onMarkdownLinkPress);
   const reviewCommentColors = useReviewCommentColors();
-  // LegendList does not invalidate visible rows when only the renderItem closure changes.
-  // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
-  const listAppearanceData = useMemo(
-    () => ({
-      copiedRowId,
-      expandedWorkRows,
-      iconSubtleColor,
-      markdownStyles,
-      reviewCommentColors,
-      userBubbleColor,
-      viewportWidth,
-    }),
-    [
-      copiedRowId,
-      expandedWorkRows,
-      iconSubtleColor,
-      markdownStyles,
-      reviewCommentColors,
-      userBubbleColor,
-      viewportWidth,
-    ],
-  );
   const reportHeaderMaterialVisibility = useCallback(
     (visible: boolean) => {
       if (headerMaterialVisibleRef.current === visible) {
@@ -1304,6 +1283,41 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     (props.latestTurn.completedAt === null || props.latestTurn.state === "running")
       ? props.latestTurn.turnId
       : null;
+  // Message rows also render turn state (streaming indicator, terminal meta)
+  // that changes without the message object changing. A changed extraData
+  // forces every visible row through renderItem, so expose stable value
+  // fingerprints in extraData rather than fresh per-derivation collections;
+  // rows invalidate only when the underlying turn state actually changed.
+  const terminalAssistantMessageIdsKey = useMemo(
+    () => Array.from(terminalAssistantMessageIds).sort().join("|"),
+    [terminalAssistantMessageIds],
+  );
+  // LegendList does not invalidate visible rows when only the renderItem closure changes.
+  // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
+  const listAppearanceData = useMemo(
+    () => ({
+      copiedRowId,
+      expandedWorkRows,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      terminalAssistantMessageIdsKey,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+    }),
+    [
+      copiedRowId,
+      expandedWorkRows,
+      iconSubtleColor,
+      markdownStyles,
+      reviewCommentColors,
+      terminalAssistantMessageIdsKey,
+      unsettledTurnId,
+      userBubbleColor,
+      viewportWidth,
+    ],
+  );
 
   useEffect(() => {
     const previous = previousLatestTurnRef.current;
@@ -1549,6 +1563,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             maintainVisibleContentPosition={maintainVisibleContentPosition}
             data={presentedFeed}
             extraData={listAppearanceData}
+            itemsAreEqual={threadFeedEntriesAreEqual}
             renderItem={renderItem}
             keyExtractor={(entry) => entry.id}
             getItemType={(entry) =>

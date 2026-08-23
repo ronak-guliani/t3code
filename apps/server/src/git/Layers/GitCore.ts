@@ -1672,6 +1672,7 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
         url: pullRequest.url,
         baseBranch: pullRequest.baseRefName,
         headBranch: pullRequest.headRefName,
+        headSha: pullRequest.headRefOid,
         state: pullRequest.state ?? "open",
       } as const;
       return {
@@ -1690,6 +1691,9 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
             url: resolvedPullRequest.url,
             baseBranch: resolvedPullRequest.baseBranch,
             headBranch: resolvedPullRequest.headBranch,
+            ...(resolvedPullRequest.headSha === undefined
+              ? {}
+              : { headSha: resolvedPullRequest.headSha }),
           },
           trackedDiff,
           untrackedDiff: "",
