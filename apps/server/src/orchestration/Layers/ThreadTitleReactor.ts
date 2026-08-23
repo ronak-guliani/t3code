@@ -5,7 +5,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { Cause, Effect, Layer, PubSub, Stream } from "effect";
+import { Cause, Effect, Layer, Option, PubSub, Semaphore, Stream, SynchronizedRef } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -27,6 +27,8 @@ const DEFAULT_THREAD_TITLE = "New thread";
 const MAX_REGENERATION_ATTACHMENTS = 4;
 const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
 const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
+const MAX_CONCURRENT_FIRST_TURN_TITLES = 4;
+const MAX_QUEUED_FIRST_TURN_TITLES = 64;
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -98,6 +100,23 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const threadLocks = yield* SynchronizedRef.make(new Map<ThreadId, Semaphore.Semaphore>());
+
+  const getThreadLock = (threadId: ThreadId) =>
+    SynchronizedRef.modifyEffect(threadLocks, (current) => {
+      const existing = Option.fromNullishOr(current.get(threadId));
+      return Option.match(existing, {
+        onNone: () =>
+          Semaphore.make(1).pipe(
+            Effect.map((semaphore) => {
+              const next = new Map(current);
+              next.set(threadId, semaphore);
+              return [semaphore, next] as const;
+            }),
+          ),
+        onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
+      });
+    });
 
   const resolveThread = (threadId: ThreadId) =>
     orchestrationEngine
@@ -282,7 +301,28 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
         }),
       ),
   );
-  const worker = yield* makeDrainableWorker(processEvent);
+  const regenerationWorker = yield* makeDrainableWorker(processEvent);
+  const firstTurnWorker = yield* makeDrainableWorker(
+    (event: FirstTurnTitleEvent) =>
+      Effect.flatMap(getThreadLock(event.payload.threadId), (threadLock) =>
+        threadLock.withPermit(
+          processEvent(event).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("thread title reactor first-turn task failed", {
+                    threadId: event.payload.threadId,
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
+          ),
+        ),
+      ),
+    {
+      capacity: MAX_QUEUED_FIRST_TURN_TITLES,
+      concurrency: MAX_CONCURRENT_FIRST_TURN_TITLES,
+    },
+  );
 
   const clearInterruptedRegenerations = Effect.fn("clearInterruptedThreadTitleRegenerations")(
     function* () {
@@ -318,10 +358,11 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.forever(Stream.fromEffect(PubSub.take(subscription))).pipe(
         Stream.runForEach((event) =>
-          (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
           event.type === "thread.turn-start-requested"
-            ? worker.enqueue(event)
-            : Effect.void,
+            ? firstTurnWorker.enqueue(event)
+            : event.type === "thread.meta-updated" && event.payload.regenerateTitle === true
+              ? regenerationWorker.enqueue(event)
+              : Effect.void,
         ),
       ),
     );
@@ -332,7 +373,10 @@ export const makeThreadTitleReactor = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    drain: Effect.gen(function* () {
+      yield* regenerationWorker.drain;
+      yield* firstTurnWorker.drain;
+    }),
   } satisfies ThreadTitleReactorShape;
 });
 

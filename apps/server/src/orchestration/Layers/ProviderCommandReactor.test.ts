@@ -443,6 +443,7 @@ describe("ProviderCommandReactor", () => {
       checkpointStore,
       turnStartOrder,
       runtimeSessions,
+      modelSelection,
       stateDir,
       drain,
     };
@@ -699,6 +700,93 @@ describe("ProviderCommandReactor", () => {
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread?.title).toBe("Generated title");
+  });
+
+  it("runs first-turn title generation concurrently and tracks it during drain", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const releaseTitles = await Effect.runPromise(Deferred.make<void>());
+    harness.generateThreadTitle.mockImplementation((input) =>
+      Deferred.await(releaseTitles).pipe(Effect.as({ title: `Generated ${input.message}` })),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-create-2"),
+        threadId: ThreadId.make("thread-2"),
+        projectId: asProjectId("project-1"),
+        title: "Thread 2",
+        modelSelection: harness.modelSelection,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      Effect.all([
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-thread-title-seed-1"),
+          threadId: ThreadId.make("thread-1"),
+          title: "First title seed",
+        }),
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("cmd-thread-title-seed-2"),
+          threadId: ThreadId.make("thread-2"),
+          title: "Second title seed",
+        }),
+      ]),
+    );
+    await Effect.runPromise(
+      Effect.all([
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-title-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-title-1"),
+            role: "user",
+            text: "First title",
+            attachments: [],
+          },
+          titleSeed: "First title seed",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-title-2"),
+          threadId: ThreadId.make("thread-2"),
+          message: {
+            messageId: asMessageId("user-message-title-2"),
+            role: "user",
+            text: "Second title",
+            attachments: [],
+          },
+          titleSeed: "Second title seed",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      ]),
+    );
+
+    await waitFor(() => harness.generateThreadTitle.mock.calls.length === 2);
+    let drained = false;
+    const drainPromise = harness.drain().then(() => {
+      drained = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(drained).toBe(false);
+
+    await Effect.runPromise(Deferred.succeed(releaseTitles, undefined));
+    await drainPromise;
+    expect(drained).toBe(true);
   });
 
   it("regenerates a thread title from retained conversation context", async () => {

@@ -303,6 +303,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       if (activeSessionsByThreadId !== null) {
         yield* Ref.set(startupSweepPending, false);
       }
+      return activeSessionsByThreadId !== null;
     });
 
     const runSweepSafely = (includeInactiveDuringStartup: boolean) =>
@@ -311,12 +312,12 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         Effect.catch((error: unknown) =>
           Effect.logWarning("provider.session.reaper.sweep-failed", {
             error,
-          }),
+          }).pipe(Effect.as(false)),
         ),
         Effect.catchDefect((defect: unknown) =>
           Effect.logWarning("provider.session.reaper.sweep-defect", {
             defect,
-          }),
+          }).pipe(Effect.as(false)),
         ),
       );
 
@@ -327,10 +328,22 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             Effect.logWarning("provider.session.reaper.background-reconcile-failed", { cause }),
           ),
         );
-        const startupSweep = yield* runSweepSafely(false).pipe(Effect.timeoutOption("30 seconds"));
-        if (Option.isNone(startupSweep)) {
-          yield* Effect.logWarning("provider.session.reaper.startup-sweep-timed-out");
-        }
+        yield* runSweepSafely(false).pipe(
+          Effect.timeoutOption("30 seconds"),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.logWarning("provider.session.reaper.startup-sweep-timed-out").pipe(
+                  Effect.as(false),
+                ),
+              onSome: Effect.succeed,
+            }),
+          ),
+          Effect.repeat({
+            while: (reconciled) => !reconciled,
+            schedule: Schedule.spaced("100 millis"),
+          }),
+        );
         yield* Ref.set(startupReconciled, true);
       },
     );
