@@ -394,6 +394,7 @@ function disposeThreadDetailSubscriptionByKey(key: string): boolean {
   threadDetailSubscriptions.delete(key);
   entry.unsubscribe();
   entry.unsubscribe = NOOP;
+  useStore.getState().clearThreadDetailHydration(entry.threadId, entry.environmentId);
   return true;
 }
 

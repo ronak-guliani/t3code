@@ -23,7 +23,6 @@ import { ProjectionWorkflowRepositoryLive } from "./persistence/Layers/Projectio
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
-import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointStoreLive } from "./checkpointing/Layers/CheckpointStore.ts";
@@ -39,9 +38,8 @@ import { KeybindingsLive } from "./keybindings.ts";
 import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeStartup.ts";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
-import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
-import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
-import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
+import { TurnLifecycleRuntimeLayerLive } from "./orchestration/Layers/TurnLifecycleRuntime.ts";
+import { ThreadTitleReactorLive } from "./orchestration/Layers/ThreadTitleReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
 import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
@@ -163,9 +161,8 @@ const PlatformServicesLive = Layer.unwrap(
 
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
-  Layer.provideMerge(CheckpointReactorLive),
-  Layer.provideMerge(ProviderRuntimeIngestionLive),
+  Layer.provideMerge(TurnLifecycleRuntimeLayerLive),
+  Layer.provideMerge(ThreadTitleReactorLive),
   Layer.provideMerge(QueuedTurnReactorLive),
   Layer.provideMerge(WorkflowCoordinatorReactorLive),
   Layer.provideMerge(ReviewSnapshotVerifierLive),
@@ -334,11 +331,6 @@ export const CloudRuntimeLayerLive = Layer.effectDiscard(
 
 const ConnectHttpApiRoutesLayerLive = connectHttpApiRoutesLayer as unknown as Layer.Layer<never>;
 
-const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
-  Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive),
-);
-
 const BackgroundLayerLive = BackgroundPolicy.layer.pipe(Layer.provideMerge(HostPowerMonitor.layer));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
@@ -347,7 +339,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(PullRequestLayerLive),
   Layer.provideMerge(PullRequestMonitorLayerLive),
-  Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(ProviderLayerLive),
+  Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),

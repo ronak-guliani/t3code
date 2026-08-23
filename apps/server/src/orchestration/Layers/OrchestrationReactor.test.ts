@@ -1,11 +1,10 @@
 import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
-import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
-import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { QueuedTurnReactor } from "../Services/QueuedTurnReactor.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
+import { ThreadTitleReactor } from "../Services/ThreadTitleReactor.ts";
+import { TurnLifecycleRuntime } from "../Services/TurnLifecycleRuntime.ts";
 import { WorkflowCoordinatorReactor } from "../Services/WorkflowCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
@@ -20,34 +19,24 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it("starts provider ingestion, provider command, checkpoint, workflow, and thread deletion reactors", async () => {
+  it("starts turn lifecycle, workflow, and thread deletion reactors", async () => {
     const started: string[] = [];
 
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
         Layer.provideMerge(
-          Layer.succeed(ProviderRuntimeIngestionService, {
+          Layer.succeed(TurnLifecycleRuntime, {
             start: () => {
-              started.push("provider-runtime-ingestion");
-              return Effect.void;
-            },
-            drain: Effect.void,
-            awaitTurnCompletionProcessed: () => Effect.void,
-          }),
-        ),
-        Layer.provideMerge(
-          Layer.succeed(ProviderCommandReactor, {
-            start: () => {
-              started.push("provider-command-reactor");
+              started.push("turn-lifecycle");
               return Effect.void;
             },
             drain: Effect.void,
           }),
         ),
         Layer.provideMerge(
-          Layer.succeed(CheckpointReactor, {
+          Layer.succeed(ThreadTitleReactor, {
             start: () => {
-              started.push("checkpoint-reactor");
+              started.push("thread-title-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -88,9 +77,8 @@ describe("OrchestrationReactor", () => {
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
 
     expect(started).toEqual([
-      "provider-runtime-ingestion",
-      "provider-command-reactor",
-      "checkpoint-reactor",
+      "turn-lifecycle",
+      "thread-title-reactor",
       "queued-turn-reactor",
       "workflow-coordinator-reactor",
       "thread-deletion-reactor",

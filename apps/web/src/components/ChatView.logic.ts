@@ -371,6 +371,20 @@ export function canStartThreadTurn(input: {
   );
 }
 
+export function deriveTimelineWorkState(input: {
+  isServerThread: boolean;
+  threadDetailHydrated: boolean;
+  isWorking: boolean;
+  latestTurnSettled: boolean;
+}): { isWorking: boolean; latestTurnSettled: boolean; timelineActiveWork: boolean } {
+  const ready = !input.isServerThread || input.threadDetailHydrated;
+  return {
+    isWorking: ready && input.isWorking,
+    latestTurnSettled: ready && input.latestTurnSettled,
+    timelineActiveWork: ready && (input.isWorking || !input.latestTurnSettled),
+  };
+}
+
 export function buildExpiredTerminalContextToastCopy(
   expiredTerminalContextCount: number,
   variant: "omitted" | "empty",

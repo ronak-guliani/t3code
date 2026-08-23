@@ -4,6 +4,8 @@
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
 - Session startup/resume and turn lifecycle require predictable recovery: terminal reconciliation must settle the matching projected turn and clear `session.activeTurnId`; preserve a pre-acknowledgement start failure's `messageId`; and preserve terminal provider-event ordering during normal adapter shutdown.
+- `TurnLifecycleRuntime` owns provider-session reconciliation, provider intent execution, runtime-event ingestion, and completion checkpoint ordering behind one `start`/`drain` interface; reconcile sessions before starting workers, and keep explicit thread-title regeneration outside this module.
+- Startup reconciliation must retry until provider sessions are observable; never defer a timed-out startup sweep behind active lifecycle workers.
 - Startup reaping is expected restart recovery, not a provider failure: interrupt orphaned active turns without `lastError`, finalize persisted streaming assistant messages before clearing `session.activeTurnId`, and repair legacy errors only through a value that live provider failures no longer persist.
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
@@ -21,6 +23,7 @@
 - Retained thread-detail subscriptions can advance session and turn state before the shell summary refreshes; reconcile those activity fields into the sidebar summary, but keep shell metadata authoritative and preserve summary identity for activity-only events.
 - Finalize checkpoints only after ingesting the matching `turn.completed`; a non-streaming assistant message is one segment, not a terminal turn. Always emit a terminal turn-diff event, including missing/error checkpoint status, so a turn cannot remain running.
 - Snapshot-first thread-detail and shell streams must attach and buffer before loading a lightweight initial snapshot; read cursor and rows in one transaction, then discard buffered events through that cursor. This prevents lost/replayed completions and invisible workers; refresh the shell before navigating when a returned worker is not routable.
+- The thread shell and detail projections hydrate independently; gate timeline work and completion state on the authoritative detail snapshot so opening an existing thread cannot briefly render transient shell-only work.
 - Retried sidebar mutations need durable IDs and server deduplication; a lost response can otherwise hide a committed reorder or replay it twice.
 - Parent-visible child lifecycle updates must be emitted transactionally as parent-aggregate events, carry semantic dedupe keys, and persist a shell-level latest timestamp; deriving notifications or unread state from bounded child/parent activity history loses updates across retries and restarts.
 - Packaged Dev builds must write their flavor-specific `productName` into ASAR metadata; Electron derives `app.getName()` from it, and a stale Alpha name makes Dev reuse Alpha's Chromium profile.
@@ -129,3 +132,4 @@
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.
+- Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.

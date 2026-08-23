@@ -5,7 +5,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { Duration, Effect, Layer, Ref, Schedule } from "effect";
+import { Duration, Effect, Layer, Option, Ref, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -90,6 +90,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
     const startupSweepPending = yield* Ref.make(true);
+    const startupReconciled = yield* Ref.make(false);
+    const startupSweepIncludesInactive = yield* Ref.make(false);
 
     const reconcileOrphanedBackgroundAgents = Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
@@ -129,6 +131,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
     const sweep = Effect.gen(function* () {
       const isStartupSweep = yield* Ref.get(startupSweepPending);
+      const includeInactiveDuringStartup = yield* Ref.get(startupSweepIncludesInactive);
       const readModel = yield* orchestrationEngine.getReadModel();
       const threadsById = new Map(readModel.threads.map((thread) => [thread.id, thread] as const));
       const bindings = yield* directory.listBindings();
@@ -243,6 +246,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           continue;
         }
 
+        if (isStartupSweep && !includeInactiveDuringStartup) {
+          continue;
+        }
+
         if (binding.status === "stopped") {
           continue;
         }
@@ -296,27 +303,62 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       if (activeSessionsByThreadId !== null) {
         yield* Ref.set(startupSweepPending, false);
       }
+      return activeSessionsByThreadId !== null;
     });
 
-    const start: ProviderSessionReaperShape["start"] = () =>
-      Effect.gen(function* () {
+    const runSweepSafely = (includeInactiveDuringStartup: boolean) =>
+      Ref.set(startupSweepIncludesInactive, includeInactiveDuringStartup).pipe(
+        Effect.andThen(sweep),
+        Effect.catch((error: unknown) =>
+          Effect.logWarning("provider.session.reaper.sweep-failed", {
+            error,
+          }).pipe(Effect.as(false)),
+        ),
+        Effect.catchDefect((defect: unknown) =>
+          Effect.logWarning("provider.session.reaper.sweep-defect", {
+            defect,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+
+    const reconcileStartup: ProviderSessionReaperShape["reconcileStartup"] = Effect.gen(
+      function* () {
         yield* reconcileOrphanedBackgroundAgents.pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("provider.session.reaper.background-reconcile-failed", { cause }),
           ),
         );
+        yield* runSweepSafely(false).pipe(
+          Effect.timeoutOption("30 seconds"),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.logWarning("provider.session.reaper.startup-sweep-timed-out").pipe(
+                  Effect.as(false),
+                ),
+              onSome: Effect.succeed,
+            }),
+          ),
+          Effect.repeat({
+            while: (reconciled) => !reconciled,
+            schedule: Schedule.spaced("100 millis"),
+          }),
+        );
+        yield* Ref.set(startupReconciled, true);
+      },
+    );
+
+    const start: ProviderSessionReaperShape["start"] = () =>
+      Effect.gen(function* () {
+        if (!(yield* Ref.get(startupReconciled))) {
+          yield* reconcileOrphanedBackgroundAgents.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.reaper.background-reconcile-failed", { cause }),
+            ),
+          );
+        }
         yield* Effect.forkScoped(
-          sweep.pipe(
-            Effect.catch((error: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-failed", {
-                error,
-              }),
-            ),
-            Effect.catchDefect((defect: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-defect", {
-                defect,
-              }),
-            ),
+          runSweepSafely(true).pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
           ),
         );
@@ -328,6 +370,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       });
 
     return {
+      reconcileStartup,
       start,
     } satisfies ProviderSessionReaperShape;
   });

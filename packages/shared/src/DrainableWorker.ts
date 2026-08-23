@@ -34,6 +34,13 @@ export interface DrainableWorkerOptions {
    * without bound.
    */
   readonly capacity: number;
+
+  /**
+   * Maximum number of work items processed at the same time.
+   *
+   * Defaults to one.
+   */
+  readonly concurrency?: number;
 }
 
 /**
@@ -57,15 +64,21 @@ export const makeDrainableWorker = <A, E, R>(
     );
     const outstanding = yield* TxRef.make(0);
 
-    yield* TxQueue.take(queue).pipe(
-      Effect.tap((a) =>
-        Effect.ensuring(
-          process(a),
-          TxRef.update(outstanding, (n) => n - 1),
+    const concurrency = Math.max(1, Math.floor(options?.concurrency ?? 1));
+    yield* Effect.forEach(
+      Array.from({ length: concurrency }),
+      () =>
+        TxQueue.take(queue).pipe(
+          Effect.tap((a) =>
+            Effect.ensuring(
+              process(a),
+              TxRef.update(outstanding, (n) => n - 1),
+            ),
+          ),
+          Effect.forever,
+          Effect.forkScoped,
         ),
-      ),
-      Effect.forever,
-      Effect.forkScoped,
+      { discard: true },
     );
 
     const drain: DrainableWorker<A>["drain"] = TxRef.get(outstanding).pipe(

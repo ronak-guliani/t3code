@@ -103,4 +103,42 @@ describe("makeDrainableWorker", () => {
       }),
     ),
   );
+
+  it.live("processes up to the configured concurrency and drains all work", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const firstStarted = yield* Deferred.make<void>();
+        const secondStarted = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+
+        const worker = yield* makeDrainableWorker(
+          (item: string) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(
+                item === "first" ? firstStarted : secondStarted,
+                undefined,
+              ).pipe(Effect.orDie);
+              yield* Deferred.await(release);
+            }),
+          { capacity: 2, concurrency: 2 },
+        );
+
+        yield* worker.enqueue("first");
+        yield* worker.enqueue("second");
+        yield* Deferred.await(firstStarted);
+        yield* Deferred.await(secondStarted);
+
+        const drained = yield* Deferred.make<void>();
+        yield* Effect.forkChild(
+          worker.drain.pipe(
+            Effect.tap(() => Deferred.succeed(drained, undefined).pipe(Effect.orDie)),
+          ),
+        );
+        expect(yield* Deferred.isDone(drained)).toBe(false);
+
+        yield* Deferred.succeed(release, undefined);
+        yield* Deferred.await(drained);
+      }),
+    ),
+  );
 });

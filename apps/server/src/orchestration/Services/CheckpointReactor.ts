@@ -4,6 +4,8 @@
  * Owns background workers that react to orchestration checkpoint lifecycle
  * events and apply checkpoint side effects.
  *
+ * @internal TurnLifecycleRuntime owns completion ordering at this implementation seam.
+ *
  * @module CheckpointReactor
  */
 import { Context } from "effect";

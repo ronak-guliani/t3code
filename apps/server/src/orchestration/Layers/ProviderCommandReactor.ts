@@ -50,7 +50,6 @@ type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
     type:
-      | "thread.meta-updated"
       | "thread.runtime-mode-set"
       | "thread.provider-fork-requested"
       | "thread.turn-start-requested"
@@ -93,62 +92,6 @@ const serverCommandId = (tag: string): CommandId =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
-const DEFAULT_THREAD_TITLE = "New thread";
-const MAX_REGENERATION_ATTACHMENTS = 4;
-const MAX_THREAD_TITLE_CONTEXT_CHARS = 8_000;
-const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "[Earlier content truncated]\n\n";
-
-function formatThreadTitleContext(
-  messages: ReadonlyArray<{
-    readonly role: "user" | "assistant" | "system";
-    readonly text: string;
-    readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  }>,
-): {
-  readonly message: string;
-  readonly attachments: ReadonlyArray<ChatAttachment>;
-} {
-  let context = "";
-  let truncated = false;
-  const retainedAttachments: Array<ChatAttachment> = [];
-
-  for (const message of messages.toReversed()) {
-    if (message.role === "system") {
-      continue;
-    }
-    const text = message.text.trim();
-    const attachmentSummary = (message.attachments ?? [])
-      .map((attachment) => attachment.name)
-      .join(", ");
-    const contents = [
-      ...(text.length > 0 ? [text] : []),
-      ...(attachmentSummary.length > 0 ? [`[Attachments: ${attachmentSummary}]`] : []),
-    ].join("\n");
-    if (contents.length === 0) {
-      continue;
-    }
-
-    const section = `${message.role.toUpperCase()}:\n${contents}`;
-    const separator = context.length > 0 ? "\n\n" : "";
-    const available = MAX_THREAD_TITLE_CONTEXT_CHARS - context.length - separator.length;
-    if (section.length > available) {
-      if (available > 0) {
-        context = `${section.slice(-available)}${separator}${context}`;
-        retainedAttachments.unshift(...(message.attachments ?? []));
-      }
-      truncated = true;
-      break;
-    }
-    context = `${section}${separator}${context}`;
-    retainedAttachments.unshift(...(message.attachments ?? []));
-  }
-
-  return {
-    message: truncated ? `${THREAD_TITLE_CONTEXT_TRUNCATION_MARKER}${context}` : context,
-    attachments: retainedAttachments.slice(-MAX_REGENERATION_ATTACHMENTS),
-  };
-}
-
 interface PendingTurnStart {
   readonly key: string;
   readonly messageId: MessageId;
@@ -172,18 +115,6 @@ export function providerErrorLabelFromInstanceHint(input: {
   return providerErrorLabel(
     input.instanceId ?? input.modelSelectionInstanceId ?? input.sessionProvider,
   );
-}
-
-function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolean {
-  const trimmedCurrentTitle = currentTitle.trim();
-  if (trimmedCurrentTitle === DEFAULT_THREAD_TITLE) {
-    return true;
-  }
-
-  const trimmedTitleSeed = titleSeed?.trim();
-  return trimmedTitleSeed !== undefined && trimmedTitleSeed.length > 0
-    ? trimmedCurrentTitle === trimmedTitleSeed
-    : false;
 }
 
 function findProviderAdapterRequestError(
@@ -1248,7 +1179,6 @@ const make = Effect.gen(function* () {
       const generationInput = {
         messageText: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-        ...(event.payload.titleSeed !== undefined ? { titleSeed: event.payload.titleSeed } : {}),
       };
 
       yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
@@ -1257,14 +1187,6 @@ const make = Effect.gen(function* () {
         worktreePath: thread.worktreePath,
         ...generationInput,
       }).pipe(Effect.forkScoped);
-
-      if (canReplaceThreadTitle(thread.title, event.payload.titleSeed)) {
-        yield* maybeGenerateThreadTitleForFirstTurn({
-          threadId: event.payload.threadId,
-          cwd: generationCwd,
-          ...generationInput,
-        }).pipe(Effect.forkScoped);
-      }
     }
 
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
@@ -1598,9 +1520,6 @@ const make = Effect.gen(function* () {
       eventType: event.type,
     });
     switch (event.type) {
-      case "thread.meta-updated":
-        yield* threadTitleRegenerationWorker.enqueue(event);
-        return;
       case "thread.provider-fork-requested":
         yield* processProviderForkRequested(event);
         return;
@@ -1671,7 +1590,6 @@ const make = Effect.gen(function* () {
         return;
       }
       if (
-        (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
         event.type === "thread.runtime-mode-set" ||
         event.type === "thread.provider-fork-requested" ||
         event.type === "thread.turn-start-requested" ||
@@ -1687,7 +1605,6 @@ const make = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
     );
-
     yield* projectionTurnRepository.listPendingTurnStarts().pipe(
       Effect.flatMap((durablePendingTurnStarts) =>
         Effect.forEach(
@@ -1734,10 +1651,7 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: Effect.gen(function* () {
-      yield* worker.drain;
-      yield* threadTitleRegenerationWorker.drain;
-    }),
+    drain: worker.drain,
   } satisfies ProviderCommandReactorShape;
 });
 
