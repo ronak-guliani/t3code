@@ -21,6 +21,7 @@ import {
   createLocalDispatchSnapshot,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
+  deriveTimelineWorkState,
   getActivityHistoryKey,
   hasServerAcknowledgedLocalDispatch,
   resolveDraftCanonicalThreadRef,
@@ -35,6 +36,41 @@ import {
 } from "./ChatView.logic";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("deriveTimelineWorkState", () => {
+  it("suppresses transient server work until the detail snapshot is hydrated", () => {
+    expect(
+      deriveTimelineWorkState({
+        isServerThread: true,
+        threadDetailHydrated: false,
+        isWorking: true,
+        latestTurnSettled: false,
+      }),
+    ).toEqual({ isWorking: false, latestTurnSettled: false, timelineActiveWork: false });
+  });
+
+  it("preserves active work after server detail hydration", () => {
+    expect(
+      deriveTimelineWorkState({
+        isServerThread: true,
+        threadDetailHydrated: true,
+        isWorking: true,
+        latestTurnSettled: false,
+      }),
+    ).toEqual({ isWorking: true, latestTurnSettled: false, timelineActiveWork: true });
+  });
+
+  it("does not gate local draft work on server detail hydration", () => {
+    expect(
+      deriveTimelineWorkState({
+        isServerThread: false,
+        threadDetailHydrated: false,
+        isWorking: true,
+        latestTurnSettled: false,
+      }),
+    ).toEqual({ isWorking: true, latestTurnSettled: false, timelineActiveWork: true });
+  });
+});
 
 describe("threadHasStarted", () => {
   it("treats core server threads with persisted messages as started", () => {

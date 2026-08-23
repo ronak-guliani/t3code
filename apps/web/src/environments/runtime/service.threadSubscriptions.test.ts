@@ -522,6 +522,7 @@ describe("retainThreadDetailSubscription", () => {
       startEnvironmentConnectionService,
       resetEnvironmentServiceForTests,
     } = await import("./service");
+    const { selectEnvironmentState, useStore } = await import("~/store");
 
     const stop = startEnvironmentConnectionService(new QueryClient());
     const environmentId = EnvironmentId.make("env-1");
@@ -532,8 +533,29 @@ describe("retainThreadDetailSubscription", () => {
     const release = retainThreadDetailSubscription(environmentId, threadId);
     release();
 
+    const listener = mockSubscribeThread.mock.calls.at(-1)?.[1] as
+      | ((item: OrchestrationThreadStreamItem) => void)
+      | undefined;
+    if (listener === undefined) {
+      throw new Error("subscribeThread listener was not captured");
+    }
+    listener({
+      kind: "snapshot",
+      snapshot: { snapshotSequence: 10, thread: makeOrchestrationThread(threadId, "Hydrated") },
+    });
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadDetailHydratedById?.[
+        threadId
+      ],
+    ).toBe(true);
+
     await resetEnvironmentServiceForTests();
     expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadDetailHydratedById?.[
+        threadId
+      ],
+    ).toBeUndefined();
 
     stop();
   });
