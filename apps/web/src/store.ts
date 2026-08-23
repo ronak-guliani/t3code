@@ -74,6 +74,10 @@ export interface EnvironmentState {
   threadShellById: Record<ThreadId, ThreadShell>;
   threadSessionById: Record<ThreadId, ThreadSession | null>;
   threadTurnStateById: Record<ThreadId, ThreadTurnState>;
+  // Shell state can arrive before the focused thread's detail snapshot.
+  // Keep this separate so the timeline does not render transient work state
+  // while the detail projections are still being hydrated.
+  threadDetailHydratedById?: Record<ThreadId, boolean>;
 
   // ---------------------------------------------------------------------------
   // Thread detail content — written ONLY by the detail stream
@@ -124,6 +128,7 @@ const initialEnvironmentState: EnvironmentState = {
   threadShellById: {},
   threadSessionById: {},
   threadTurnStateById: {},
+  threadDetailHydratedById: {},
   messageIdsByThreadId: {},
   messageByThreadId: {},
   activityIdsByThreadId: {},
@@ -1109,6 +1114,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedShell, ...threadShellById } = state.threadShellById;
   const { [threadId]: _removedSession, ...threadSessionById } = state.threadSessionById;
   const { [threadId]: _removedTurnState, ...threadTurnStateById } = state.threadTurnStateById;
+  const { [threadId]: _removedDetailHydrated, ...threadDetailHydratedById } =
+    state.threadDetailHydratedById ?? {};
   const { [threadId]: _removedMessageIds, ...messageIdsByThreadId } = state.messageIdsByThreadId;
   const { [threadId]: _removedMessages, ...messageByThreadId } = state.messageByThreadId;
   const { [threadId]: _removedActivityIds, ...activityIdsByThreadId } = state.activityIdsByThreadId;
@@ -1142,6 +1149,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     threadShellById,
     threadSessionById,
     threadTurnStateById,
+    threadDetailHydratedById,
     messageIdsByThreadId,
     messageByThreadId,
     activityIdsByThreadId,
@@ -1678,6 +1686,10 @@ function syncEnvironmentShellSnapshot(
     threadShellById,
     threadSessionById,
     threadTurnStateById,
+    threadDetailHydratedById: retainThreadScopedRecord(
+      state.threadDetailHydratedById ?? {},
+      nextThreadIds,
+    ),
     sidebarThreadSummaryById,
     workflowRuntime: createWorkflowRuntimeState(
       snapshot.workflowRuns ?? [],
@@ -1753,11 +1765,18 @@ export function syncServerThreadDetail(
 ): AppState {
   const environmentState = getStoredEnvironmentState(state, environmentId);
   const previousThread = getThreadFromEnvironmentState(environmentState, thread.id);
-  return commitEnvironmentState(
-    state,
-    environmentId,
-    writeThreadState(environmentState, mapThread(thread, environmentId), previousThread),
+  const nextEnvironmentState = writeThreadState(
+    environmentState,
+    mapThread(thread, environmentId),
+    previousThread,
   );
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    threadDetailHydratedById: {
+      ...nextEnvironmentState.threadDetailHydratedById,
+      [thread.id]: true,
+    },
+  });
 }
 
 function applyEnvironmentOrchestrationEvent(

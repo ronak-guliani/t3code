@@ -89,6 +89,7 @@ import {
 } from "../pendingUserInput";
 import {
   selectExistingThreadKeys,
+  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
   selectSidebarThreadSummaryByRef,
   selectWorkflowRunsForParentThread,
@@ -211,6 +212,7 @@ import {
   canStartThreadTurn,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
+  deriveTimelineWorkState,
   getActivityHistoryKey,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -844,6 +846,14 @@ function ChatViewBody(
     useMemo(
       () => createThreadMessageIdsSelectorByRef(routeKind === "server" ? routeThreadRef : null),
       [routeKind, routeThreadRef],
+    ),
+  );
+  const threadDetailHydrated = useStore(
+    useMemo(
+      () => (state) =>
+        routeKind !== "server" ||
+        Boolean(selectEnvironmentState(state, environmentId).threadDetailHydratedById?.[threadId]),
+      [environmentId, routeKind, threadId],
     ),
   );
   const serverThreadSummary = useStore(
@@ -1580,7 +1590,13 @@ function ChatViewBody(
     threadError: activeThread?.error,
   });
   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
-  const timelineActiveWork = isWorking || !latestTurnSettled;
+  const timelineWorkState = deriveTimelineWorkState({
+    isServerThread: routeKind === "server",
+    threadDetailHydrated,
+    isWorking,
+    latestTurnSettled,
+  });
+  const timelineActiveWork = timelineWorkState.timelineActiveWork;
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -4710,10 +4726,10 @@ function ChatViewBody(
                   turnDiffSummaries={activeThread.turnDiffSummaries ?? []}
                   threadActivities={threadActivities}
                   latestTurn={activeLatestTurn}
-                  latestTurnSettled={latestTurnSettled}
+                  latestTurnSettled={timelineWorkState.latestTurnSettled}
                   sessionActivelyWorking={sessionActivelyWorking}
                   isSendBusy={isSendBusy}
-                  isWorking={isWorking}
+                  isWorking={timelineWorkState.isWorking}
                   timelineActiveWork={timelineActiveWork}
                   activeWorkStartedAt={activeWorkStartedAt}
                   copilotResumeCommand={copilotResumeCommand}

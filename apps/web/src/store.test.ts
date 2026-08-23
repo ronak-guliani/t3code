@@ -343,6 +343,10 @@ describe("syncServerShellSnapshot", () => {
     const baseEnvironmentState = localEnvironmentStateOf(baseState);
     const state = withActiveEnvironmentState({
       ...baseEnvironmentState,
+      threadDetailHydratedById: {
+        [keptThread.id]: true,
+        [removedThread.id]: true,
+      },
       threadIds: [keptThread.id, removedThread.id],
       threadIdsByProjectId: {
         [keptThread.projectId]: [keptThread.id, removedThread.id],
@@ -446,6 +450,9 @@ describe("syncServerShellSnapshot", () => {
       baseEnvironmentState.messageIdsByThreadId[keptThread.id],
     );
     expect(nextEnvironmentState.messageIdsByThreadId[removedThread.id]).toBeUndefined();
+    expect(nextEnvironmentState.threadDetailHydratedById).toEqual({
+      [keptThread.id]: true,
+    });
   });
 });
 
@@ -971,6 +978,9 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
     expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
     expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
+    expect(
+      selectEnvironmentState(next, localEnvironmentId).threadDetailHydratedById?.[threadId],
+    ).toBe(true);
   });
 
   it("does not mark bootstrap complete for incremental events", () => {
