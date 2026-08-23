@@ -394,6 +394,37 @@ describe("ProviderSessionReaper", () => {
     expect(Option.isSome(remaining)).toBe(true);
   });
 
+  it("waits for a valid provider session snapshot before completing startup reconciliation", async () => {
+    let listSessionsCalls = 0;
+    let releaseSnapshot!: (sessions: ReadonlyArray<ProviderSession>) => void;
+    const availableSnapshot = new Promise<ReadonlyArray<ProviderSession>>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    await createHarness({
+      readModel: makeReadModel([]),
+      listSessionsImplementation: () => {
+        listSessionsCalls += 1;
+        return listSessionsCalls === 1
+          ? Effect.die(new Error("simulated unavailable session snapshot"))
+          : Effect.promise(() => availableSnapshot);
+      },
+    });
+
+    const reaper = await runtime!.runPromise(Effect.service(ProviderSessionReaper));
+    let reconciled = false;
+    const reconciliation = runtime!.runPromise(reaper.reconcileStartup).then(() => {
+      reconciled = true;
+    });
+
+    await waitFor(() => listSessionsCalls === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(reconciled).toBe(false);
+
+    releaseSnapshot([]);
+    await reconciliation;
+    expect(reconciled).toBe(true);
+  });
+
   it("clears the legacy restart error from already interrupted sessions", async () => {
     const threadId = ThreadId.make("thread-reaper-legacy-restart-error");
     const now = new Date().toISOString();
