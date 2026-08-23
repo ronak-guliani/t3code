@@ -49,21 +49,20 @@ import {
 } from "../src/provider/Layers/ProviderEventLoggers.ts";
 import { ProviderService } from "../src/provider/Services/ProviderService.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
-import { CheckpointReactorLive } from "../src/orchestration/Layers/CheckpointReactor.ts";
 import { RepositoryIdentityResolverLive } from "../src/project/Layers/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
-import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
-import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { TurnLifecycleRuntimeLayerLive } from "../src/orchestration/Layers/TurnLifecycleRuntime.ts";
 import { ReviewSnapshotVerifier } from "../src/orchestration/Services/ReviewSnapshotVerifier.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../src/orchestration/Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
+import { ThreadTitleReactor } from "../src/orchestration/Services/ThreadTitleReactor.ts";
 import { QueuedTurnReactor } from "../src/orchestration/Services/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactor } from "../src/orchestration/Services/WorkflowCoordinatorReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
@@ -308,15 +307,6 @@ export const makeOrchestrationIntegrationHarness = (
       RuntimeReceiptBusTest,
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
-    const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
-      Layer.provideMerge(runtimeServicesLayer),
-      Layer.provideMerge(serverSettingsLayer),
-      Layer.provideMerge(
-        Layer.succeed(ReviewSnapshotVerifier, {
-          currentSnapshot: (input) => Effect.succeed(input.snapshot),
-        }),
-      ),
-    );
     const gitCoreLayer = Layer.succeed(GitCore, {
       renameBranch: (input: Parameters<GitCoreShape["renameBranch"]>[0]) =>
         Effect.succeed({ branch: input.newBranch }),
@@ -325,15 +315,17 @@ export const makeOrchestrationIntegrationHarness = (
       generateBranchName: () => Effect.succeed({ branch: "update" }),
       generateThreadTitle: () => Effect.succeed({ title: "New thread" }),
     } as unknown as TextGenerationShape);
-    const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
+    const turnLifecycleLayer = TurnLifecycleRuntimeLayerLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
+      Layer.provideMerge(providerSessionDirectoryLayer),
+      Layer.provideMerge(serverSettingsLayer),
+      Layer.provideMerge(
+        Layer.succeed(ReviewSnapshotVerifier, {
+          currentSnapshot: (input) => Effect.succeed(input.snapshot),
+        }),
+      ),
       Layer.provideMerge(gitCoreLayer),
       Layer.provideMerge(textGenerationLayer),
-      Layer.provideMerge(serverSettingsLayer),
-    );
-    const checkpointReactorLayer = CheckpointReactorLive.pipe(
-      Layer.provideMerge(runtimeIngestionLayer),
-      Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(
         Layer.succeed(GitStatusBroadcaster, {
           getStatus: () => Effect.die("getStatus should not be called in this test"),
@@ -360,9 +352,13 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(WorkspacePathsLive),
     );
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
-      Layer.provideMerge(runtimeIngestionLayer),
-      Layer.provideMerge(providerCommandReactorLayer),
-      Layer.provideMerge(checkpointReactorLayer),
+      Layer.provideMerge(turnLifecycleLayer),
+      Layer.provideMerge(
+        Layer.succeed(ThreadTitleReactor, {
+          start: () => Effect.void,
+          drain: Effect.void,
+        }),
+      ),
       Layer.provideMerge(
         Layer.succeed(QueuedTurnReactor, {
           start: () => Effect.void,

@@ -54,8 +54,10 @@ import {
   providerErrorLabelFromInstanceHint,
   ProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
+import { ThreadTitleReactorLive } from "./ThreadTitleReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { ThreadTitleReactor } from "../Services/ThreadTitleReactor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
@@ -88,7 +90,7 @@ async function waitFor(
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderCommandReactor,
+    OrchestrationEngineService | ProviderCommandReactor | ThreadTitleReactor,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -359,7 +361,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
     );
-    const layer = ProviderCommandReactorLive.pipe(
+    const layer = Layer.merge(ProviderCommandReactorLive, ThreadTitleReactorLive).pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
@@ -387,9 +389,17 @@ describe("ProviderCommandReactor", () => {
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
+    const titleReactor = await runtime.runPromise(Effect.service(ThreadTitleReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
-    const drain = () => Effect.runPromise(reactor.drain);
+    await Effect.runPromise(titleReactor.start().pipe(Scope.provide(scope)));
+    const drain = () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          yield* reactor.drain;
+          yield* titleReactor.drain;
+        }),
+      );
 
     await Effect.runPromise(
       engine.dispatch({

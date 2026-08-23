@@ -4,6 +4,8 @@
  * Owns background workers that consume provider runtime streams and emit
  * orchestration commands/events.
  *
+ * @internal TurnLifecycleRuntime owns this implementation seam.
+ *
  * @module ProviderRuntimeIngestionService
  */
 import { type EventId } from "@t3tools/contracts";

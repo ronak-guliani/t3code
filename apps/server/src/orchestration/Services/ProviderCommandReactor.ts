@@ -4,6 +4,8 @@
  * Owns background workers that react to orchestration intent events and
  * dispatch provider-side command execution.
  *
+ * @internal TurnLifecycleRuntime owns this implementation seam.
+ *
  * @module ProviderCommandReactor
  */
 import { Context } from "effect";
