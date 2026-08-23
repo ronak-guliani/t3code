@@ -1779,6 +1779,24 @@ export function syncServerThreadDetail(
   });
 }
 
+export function clearThreadDetailHydration(
+  state: AppState,
+  threadId: ThreadId,
+  environmentId: EnvironmentId,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const hydrationByThreadId = environmentState.threadDetailHydratedById;
+  if (!hydrationByThreadId?.[threadId]) {
+    return state;
+  }
+
+  const { [threadId]: _removed, ...threadDetailHydratedById } = hydrationByThreadId;
+  return commitEnvironmentState(state, environmentId, {
+    ...environmentState,
+    threadDetailHydratedById,
+  });
+}
+
 function applyEnvironmentOrchestrationEvent(
   state: EnvironmentState,
   event: OrchestrationEvent,
@@ -2857,6 +2875,7 @@ interface AppStore extends AppState {
     environmentId: EnvironmentId,
   ) => void;
   syncServerThreadDetail: (thread: OrchestrationThread, environmentId: EnvironmentId) => void;
+  clearThreadDetailHydration: (threadId: ThreadId, environmentId: EnvironmentId) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -2880,6 +2899,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerShellSnapshot(state, snapshot, environmentId)),
   syncServerThreadDetail: (thread, environmentId) =>
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
+  clearThreadDetailHydration: (threadId, environmentId) =>
+    set((state) => clearThreadDetailHydration(state, threadId, environmentId)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>
