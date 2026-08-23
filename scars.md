@@ -127,3 +127,4 @@
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
 - Cross-platform subprocess fixtures must use the guaranteed Node runtime (`process.execPath`), not an undeclared Bun dependency; Windows resolves missing commands through `cmd.exe` and obscures the startup failure as exit code 1.
 - Diff route search is thread-local UI state: clear it when sidebar navigation changes threads, but preserve it for the active thread so the split-layout store can restore each chat independently.
+- Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.
