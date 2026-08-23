@@ -195,6 +195,8 @@ async function runReactor(
       }),
     withWorktreeLock: (effect) => effect,
     streamDomainEvents: Stream.never,
+    // Unused by these tests; Effect.never satisfies the scoped subscription type.
+    acquireDomainEventSubscription: Effect.never,
   });
   const feedbackLayer = Layer.succeed(
     PullRequestMonitorFeedbackService,

@@ -218,6 +218,8 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
           ),
         withWorktreeLock: (effect) => effect,
         streamDomainEvents: Stream.empty,
+        // Unused by these tests; Effect.never satisfies the scoped subscription type.
+        acquireDomainEventSubscription: Effect.never,
       } satisfies OrchestrationEngineShape),
       Effect.provide(NodeServices.layer),
     );
@@ -262,6 +264,8 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
           ),
         withWorktreeLock: (effect) => effect,
         streamDomainEvents: Stream.empty,
+        // Unused by these tests; Effect.never satisfies the scoped subscription type.
+        acquireDomainEventSubscription: Effect.never,
       } satisfies OrchestrationEngineShape),
       Effect.provide(NodeServices.layer),
     );

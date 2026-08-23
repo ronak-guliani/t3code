@@ -14,6 +14,7 @@ import { OrchestrationEventStore } from "../../persistence/Services/Orchestratio
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
+import { REVIEW_HANDOFF_PROJECTOR } from "../../pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { type ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import {
@@ -2067,7 +2068,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
       yield* projectionStateRepository.deleteExcept({
-        projectors: projectors.map((projector) => projector.name),
+        // The review handoff reactor shares this cursor store but is not a projector.
+        projectors: [...projectors.map((projector) => projector.name), REVIEW_HANDOFF_PROJECTOR],
       });
 
       const cursors = new Map<ProjectorName, number>();

@@ -69,7 +69,7 @@ layer("GitHubCliLive", (it) => {
           "view",
           "#42",
           "--json",
-          "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+          "number,title,url,baseRefName,headRefName,headRefOid,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
         ],
         expect.objectContaining({ cwd: "/repo" }),
       );

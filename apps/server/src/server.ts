@@ -106,6 +106,8 @@ import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequ
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
+import { layer as pullRequestMonitorReviewHandoffReactorLayer } from "./pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
+import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
@@ -225,6 +227,8 @@ const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
 // Associating a pull request with a chat is the ownership signal, so monitoring follows it.
 // provideMerge keeps one monitor service instance shared with the reactor.
 const PullRequestMonitorLayerLive = pullRequestMonitorAssociationReactorLayer.pipe(
+  Layer.provideMerge(pullRequestMonitorReviewHandoffReactorLayer),
+  Layer.provideMerge(ProjectionStateRepositoryLive),
   Layer.provideMerge(PullRequestMonitorServiceLive),
 );
 

@@ -476,6 +476,8 @@ export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
 export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,
   reviewThreadId: ThreadId,
+  /** Source revision the findings reviewed; stale submissions are ignored. */
+  reviewedHeadSha: Schema.optional(TrimmedNonEmptyString),
   ownerThreadId: Schema.optional(ThreadId),
   summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   startMonitoring: Schema.optional(Schema.Boolean),
