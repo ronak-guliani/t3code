@@ -54,23 +54,20 @@ const truncate = (value: string, max: number) =>
 export const reviewFindingKey = (input: {
   readonly diffHash: string;
   readonly path: string;
+  readonly side: "new" | "old";
   readonly startLine: number;
+  readonly endLine: number;
   readonly title: string;
   readonly body: string;
   readonly priority: string;
-}): string =>
-  createHash("sha1")
-    .update(
-      `${input.diffHash}\n${input.path}:${input.startLine}\n${input.priority}\n${input.title}\n${input.body}`,
-    )
-    .digest("hex")
-    .slice(0, 16);
+}): string => createHash("sha1").update(JSON.stringify(input)).digest("hex").slice(0, 16);
 
 export interface ParsedPullRequestReview {
   readonly reviewThreadId: ThreadId;
   readonly projectId: ProjectId;
   readonly repository: string;
   readonly number: number;
+  readonly headSha: string;
   readonly diffHash: string;
   readonly summary: string;
   readonly findings: readonly {
@@ -78,7 +75,12 @@ export interface ParsedPullRequestReview {
     readonly priority: "critical" | "high" | "medium" | "low";
     readonly title: string;
     readonly body: string;
-    readonly location: { readonly path: string; readonly startLine: number };
+    readonly location: {
+      readonly path: string;
+      readonly side: "new" | "old";
+      readonly startLine: number;
+      readonly endLine: number;
+    };
   }[];
 }
 
@@ -95,6 +97,7 @@ export function handoffFromReviewResult(input: {
   const scope = input.result.snapshot.scope;
   if (scope.kind !== "pull-request") return null;
   if (input.projectId === null) return null;
+  if (scope.headSha === undefined) return null;
   const repository = repositoryFromPullRequestUrl(scope.url);
   if (repository === null) return null;
   return {
@@ -102,6 +105,7 @@ export function handoffFromReviewResult(input: {
     projectId: input.projectId,
     repository,
     number: scope.number,
+    headSha: scope.headSha,
     diffHash: input.result.snapshot.diffHash,
     summary: input.result.summary,
     findings: input.result.findings.map((finding) => ({
@@ -109,7 +113,12 @@ export function handoffFromReviewResult(input: {
       priority: finding.priority,
       title: finding.title,
       body: finding.body,
-      location: { path: finding.location.path, startLine: finding.location.startLine },
+      location: {
+        path: finding.location.path,
+        side: finding.location.side,
+        startLine: finding.location.startLine,
+        endLine: finding.location.endLine,
+      },
     })),
   };
 }
@@ -124,12 +133,15 @@ export function handoffToSubmitInput(
       number: review.number,
     },
     reviewThreadId: review.reviewThreadId,
+    reviewedHeadSha: review.headSha,
     summary: truncate(review.summary, 2_000),
     findings: review.findings.map((finding): PullRequestMonitorFinding => {
       const key = reviewFindingKey({
         diffHash: review.diffHash,
         path: finding.location.path,
+        side: finding.location.side,
         startLine: finding.location.startLine,
+        endLine: finding.location.endLine,
         title: finding.title,
         body: finding.body,
         priority: finding.priority,

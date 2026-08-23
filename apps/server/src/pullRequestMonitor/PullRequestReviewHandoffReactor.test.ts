@@ -33,6 +33,7 @@ const snapshot = {
     url: "https://github.com/acme/app/pull/12",
     baseBranch: "main",
     headBranch: "feat",
+    headSha: "head-sha-1",
   },
   diff: "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n x\n+y\n",
   diffHash: "diffhash-1",
@@ -45,7 +46,9 @@ const finding = (
     title: string;
     body: string;
     path: string;
+    side: "new" | "old";
     startLine: number;
+    endLine: number;
   }> = {},
 ) => ({
   id: overrides.id ?? "finding-1",
@@ -55,9 +58,9 @@ const finding = (
   confidence: 0.9,
   location: {
     path: overrides.path ?? "src/a.ts",
-    side: "new" as const,
+    side: overrides.side ?? ("new" as const),
     startLine: overrides.startLine ?? 2,
-    endLine: overrides.startLine ?? 2,
+    endLine: overrides.endLine ?? overrides.startLine ?? 2,
   },
 });
 
@@ -83,6 +86,7 @@ describe("handoffFromReviewResult", () => {
       projectId: "proj_1",
       repository: "acme/app",
       number: 12,
+      headSha: "head-sha-1",
       summary: "Two issues found.",
     });
     expect(handoff?.findings).toHaveLength(1);
@@ -118,6 +122,17 @@ describe("handoffFromReviewResult", () => {
       }),
     ).toBeNull();
   });
+
+  it("ignores legacy PR snapshots without the reviewed head revision", () => {
+    const { headSha: _headSha, ...legacyScope } = snapshot.scope;
+    expect(
+      handoffFromReviewResult({
+        reviewThreadId: ThreadId.make("thr"),
+        projectId,
+        result: parsed([finding()], { scope: legacyScope }),
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("handoffToSubmitInput", () => {
@@ -140,6 +155,7 @@ describe("handoffToSubmitInput", () => {
       number: 12,
     });
     expect(input.reviewThreadId).toBe("thr_review");
+    expect(input.reviewedHeadSha).toBe("head-sha-1");
     expect(findings.map((entry) => entry.severity)).toEqual(["blocker", "minor", "nit"]);
     expect(findings[0]).toMatchObject({ path: "src/a.ts", line: 2 });
   });
@@ -164,7 +180,7 @@ describe("handoffToSubmitInput", () => {
           priority: "high",
           title: long,
           body: long,
-          location: { path: long, startLine: 1 },
+          location: { path: long, side: "new", startLine: 1, endLine: 1 },
         },
       ],
     });
@@ -180,7 +196,9 @@ describe("handoffToSubmitInput", () => {
       reviewFindingKey({
         diffHash: "h",
         path: "a.ts",
+        side: "new",
         startLine: 2,
+        endLine: 2,
         title: "t",
         body: "b",
         priority: "high",
@@ -191,9 +209,25 @@ describe("handoffToSubmitInput", () => {
     expect(base).not.toBe(keyOf({ body: "other body" }));
     expect(base).not.toBe(keyOf({ priority: "low" }));
     expect(base).not.toBe(keyOf({ path: "b.ts" }));
+    expect(base).not.toBe(keyOf({ side: "old" }));
     expect(base).not.toBe(keyOf({ startLine: 3 }));
+    expect(base).not.toBe(keyOf({ endLine: 3 }));
     expect(base).not.toBe(keyOf({ diffHash: "h2" }));
     expect(keyOf()).toBe(keyOf());
+  });
+
+  it("uses unambiguous structural key encoding", () => {
+    const base = {
+      diffHash: "h",
+      path: "a.ts",
+      side: "new" as const,
+      startLine: 2,
+      endLine: 2,
+      priority: "high",
+    };
+    expect(reviewFindingKey({ ...base, title: "A\nB", body: "C" })).not.toBe(
+      reviewFindingKey({ ...base, title: "A", body: "B\nC" }),
+    );
   });
 
   it("findings sharing title and location but differing in body keep distinct keys", () => {
@@ -222,6 +256,13 @@ const makeEvent = (sequence: number, result: unknown): OrchestrationEvent =>
     causationEventId: null,
     correlationId: null,
     metadata: {},
+  }) as unknown as OrchestrationEvent;
+
+const makeNonReviewEvent = (sequence: number): OrchestrationEvent =>
+  ({
+    ...makeEvent(sequence, parsed()),
+    type: "thread.message-sent",
+    payload: { threadId: "thr_review", messageId: "msg_1" },
   }) as unknown as OrchestrationEvent;
 
 const waitFor = (predicate: () => boolean, attempts = 750) =>
@@ -388,7 +429,7 @@ describe("PullRequestReviewHandoffReactor layer", () => {
       { events: [makeEvent(3, parsed())], autoMonitor: false },
       { events: [makeEvent(3, { status: "invalid-output", snapshot, issues: ["bad"] })] },
       { events: [makeEvent(3, parsed([]))] },
-      { events: [makeEvent(3, { type: "thread.message-sent", payload: {} })] },
+      { events: [makeNonReviewEvent(3)] },
     ]) {
       const harness = makeHarness(options);
       const result = await runWithLayer(
