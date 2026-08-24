@@ -195,9 +195,17 @@ const makeProjectionReconciler = Effect.gen(function* () {
         ) {
           return Effect.void;
         }
-        return fileSystem.remove(path.join(serverConfig.attachmentsDir, relativePath), {
-          force: true,
-        });
+        const absolutePath = path.join(serverConfig.attachmentsDir, relativePath);
+        return fileSystem.stat(absolutePath).pipe(
+          Effect.flatMap((fileInfo) =>
+            fileInfo.type === "File"
+              ? fileSystem.remove(absolutePath, { force: true })
+              : Effect.void,
+          ),
+          Effect.catchTag("PlatformError", (error) =>
+            error.reason._tag === "NotFound" ? Effect.void : Effect.fail(error),
+          ),
+        );
       },
       { concurrency: 1, discard: true },
     );

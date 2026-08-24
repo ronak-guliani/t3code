@@ -55,6 +55,7 @@ import {
 } from "../Services/ProjectionPipeline.ts";
 import {
   emptyProjectionImpact,
+  isActionableApprovalRequest,
   mergeProjectionImpact,
   projectionImpactForEvent,
   type ProjectionImpact,
@@ -109,24 +110,6 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
     detail.includes("stale pending approval request") ||
     detail.includes("unknown pending approval request") ||
     detail.includes("unknown pending permission request")
-  );
-}
-
-function isActionableApprovalRequest(payload: unknown): boolean {
-  if (typeof payload !== "object" || payload === null) {
-    return false;
-  }
-  const request = payload as Record<string, unknown>;
-  return (
-    request.requestKind === "command" ||
-    request.requestKind === "file-read" ||
-    request.requestKind === "file-change" ||
-    request.requestType === "command_execution_approval" ||
-    request.requestType === "exec_command_approval" ||
-    request.requestType === "dynamic_tool_call" ||
-    request.requestType === "file_read_approval" ||
-    request.requestType === "file_change_approval" ||
-    request.requestType === "apply_patch_approval"
   );
 }
 

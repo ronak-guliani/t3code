@@ -192,6 +192,73 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         WHERE thread_id = ${threadId}
       `;
       assert.deepEqual(after, [{ latestUserMessageAt: now, pendingJobs: 0 }]);
+
+      const userInputReceipt = yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-deferred-reconciliation-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-deferred-user-input"),
+            tone: "approval",
+            kind: "user-input.requested",
+            summary: "Input required",
+            payload: { requestId: "request-deferred-user-input" },
+            turnId: null,
+            createdAt: now,
+          },
+        },
+      });
+      yield* userInputReceipt.reconcile;
+
+      const proposedPlanReceipt = yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-deferred-reconciliation-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: "plan-deferred-reconciliation",
+            turnId: null,
+            planMarkdown: "Implement the durable projection split.",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      });
+      yield* proposedPlanReceipt.reconcile;
+
+      const derivedShell = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly hasActionableProposedPlan: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          has_actionable_proposed_plan AS "hasActionableProposedPlan"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(derivedShell, [
+        {
+          pendingUserInputCount: 1,
+          hasActionableProposedPlan: 1,
+        },
+      ]);
     }).pipe(
       Effect.provide(
         Layer.fresh(
@@ -1458,6 +1525,8 @@ it.layer(
       const removeAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000002";
       const otherThreadAttachmentId =
         "thread-revert-files-extra-00000000-0000-4000-8000-000000000003";
+      const matchingDirectoryAttachmentId =
+        "thread-revert-files-00000000-0000-4000-8000-000000000004";
 
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
         eventStore.append(event).pipe(
@@ -1628,10 +1697,16 @@ it.layer(
       yield* fileSystem.writeFileString(keepPath, "keep");
       yield* fileSystem.writeFileString(removePath, "remove");
       const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.png`);
+      const matchingDirectoryPath = path.join(
+        attachmentsDir,
+        `${matchingDirectoryAttachmentId}.png`,
+      );
       yield* fileSystem.writeFileString(otherThreadPath, "other");
+      yield* fileSystem.makeDirectory(matchingDirectoryPath);
       assert.isTrue(yield* exists(keepPath));
       assert.isTrue(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+      assert.isTrue(yield* exists(matchingDirectoryPath));
 
       yield* appendAndProject({
         type: "thread.reverted",
@@ -1652,6 +1727,7 @@ it.layer(
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+      assert.isTrue(yield* exists(matchingDirectoryPath));
     }),
   );
 });
