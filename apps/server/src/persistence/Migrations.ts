@@ -83,6 +83,7 @@ import Migration0078 from "./Migrations/078_ProjectionThreadTitleRegeneration.ts
 import Migration0079 from "./Migrations/079_AuthDpopProofKeys.ts";
 import Migration0080 from "./Migrations/080_ChildLifecycleNotifications.ts";
 import Migration0081 from "./Migrations/081_ProjectionThreadActivityBackgroundAgentIndex.ts";
+import Migration0082 from "./Migrations/082_ProjectionReconciliationJobs.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -165,6 +166,7 @@ export const migrationEntries = [
   [79, "AuthDpopProofKeys", Migration0079],
   [80, "ChildLifecycleNotifications", Migration0080],
   [81, "ProjectionThreadActivityBackgroundAgentIndex", Migration0081],
+  [82, "ProjectionReconciliationJobs", Migration0082],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>
