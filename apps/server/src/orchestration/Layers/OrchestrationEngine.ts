@@ -47,6 +47,7 @@ import {
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
+import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   OrchestrationEngineService,
@@ -330,6 +331,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
               let nextReadModel = contextualReadModel;
+              const projectionReceipts: ProjectionReceipt[] = [];
 
               for (const nextEvent of eventBases) {
                 if (nextEvent.type === "thread.child-lifecycle-notified") {
@@ -353,7 +355,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 }
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
-                yield* projectionPipeline.projectEvent(savedEvent);
+                projectionReceipts.push(yield* projectionPipeline.projectEvent(savedEvent));
                 committedEvents.push(savedEvent);
               }
 
@@ -379,6 +381,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 committedEvents,
                 lastSequence: lastSavedEvent.sequence,
                 nextReadModel,
+                projectionReceipts,
               } as const;
             }),
           )
@@ -391,6 +394,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
         commandReadModel = withoutReadModelBodies(committedCommand.nextReadModel);
+        yield* Effect.forEach(committedCommand.projectionReceipts, (receipt) => receipt.reconcile, {
+          concurrency: 1,
+          discard: true,
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("projection post-commit reconciliation remains pending", {
+              commandId: envelope.command.commandId,
+              error,
+            }),
+          ),
+          Effect.ignore,
+        );
         for (const [index, event] of committedCommand.committedEvents.entries()) {
           yield* PubSub.publish(eventPubSub, event);
           if (index === 0) {

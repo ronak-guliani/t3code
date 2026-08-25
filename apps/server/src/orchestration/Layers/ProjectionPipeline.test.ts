@@ -53,6 +53,221 @@ const exists = (filePath: string) =>
 const BaseTestLayer = makeProjectionPipelinePrefixedTestLayer("t3-projection-pipeline-test-");
 
 it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
+  it.effect("keeps failed post-commit reconciliation durable for bootstrap recovery", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-03-01T12:00:00.000Z";
+      const projectId = ProjectId.make("project-deferred-reconciliation");
+      const threadId = ThreadId.make("thread-deferred-reconciliation");
+
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+
+      yield* appendAndProject({
+        type: "project.created",
+        eventId: EventId.make("evt-deferred-reconciliation-1"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-1"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-1"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Deferred reconciliation",
+          workspaceRoot: "/tmp/deferred-reconciliation",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.created",
+        eventId: EventId.make("evt-deferred-reconciliation-2"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-2"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-2"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Deferred reconciliation",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      const receipt = yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.make("evt-deferred-reconciliation-3"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-3"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-3"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-deferred-reconciliation"),
+          role: "user",
+          text: "Reconcile after commit",
+          turnId: null,
+          streaming: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const before = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          latest_user_message_at AS "latestUserMessageAt",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(before, [{ latestUserMessageAt: null, pendingJobs: 1 }]);
+
+      yield* sql`
+        CREATE TRIGGER fail_deferred_shell_reconciliation
+        BEFORE UPDATE ON projection_threads
+        WHEN NEW.thread_id = 'thread-deferred-reconciliation'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced-shell-reconciliation-failure');
+        END;
+      `;
+      const reconciliationResult = yield* Effect.result(receipt.reconcile);
+      assert.equal(reconciliationResult._tag, "Failure");
+
+      const afterFailure = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          latest_user_message_at AS "latestUserMessageAt",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(afterFailure, [{ latestUserMessageAt: null, pendingJobs: 1 }]);
+
+      yield* sql`DROP TRIGGER fail_deferred_shell_reconciliation`;
+      yield* projectionPipeline.bootstrap;
+
+      const after = yield* sql<{
+        readonly latestUserMessageAt: string | null;
+        readonly pendingJobs: number;
+      }>`
+        SELECT
+          latest_user_message_at AS "latestUserMessageAt",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobs"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(after, [{ latestUserMessageAt: now, pendingJobs: 0 }]);
+
+      const userInputReceipt = yield* appendAndProject({
+        type: "thread.activity-appended",
+        eventId: EventId.make("evt-deferred-reconciliation-4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-4"),
+        metadata: {},
+        payload: {
+          threadId,
+          activity: {
+            id: EventId.make("activity-deferred-user-input"),
+            tone: "approval",
+            kind: "user-input.requested",
+            summary: "Input required",
+            payload: { requestId: "request-deferred-user-input" },
+            turnId: null,
+            createdAt: now,
+          },
+        },
+      });
+      yield* userInputReceipt.reconcile;
+
+      const proposedPlanReceipt = yield* appendAndProject({
+        type: "thread.proposed-plan-upserted",
+        eventId: EventId.make("evt-deferred-reconciliation-5"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.make("cmd-deferred-reconciliation-5"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-deferred-reconciliation-5"),
+        metadata: {},
+        payload: {
+          threadId,
+          proposedPlan: {
+            id: "plan-deferred-reconciliation",
+            turnId: null,
+            planMarkdown: "Implement the durable projection split.",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      });
+      yield* proposedPlanReceipt.reconcile;
+
+      const derivedShell = yield* sql<{
+        readonly pendingUserInputCount: number;
+        readonly hasActionableProposedPlan: number;
+      }>`
+        SELECT
+          pending_user_input_count AS "pendingUserInputCount",
+          has_actionable_proposed_plan AS "hasActionableProposedPlan"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(derivedShell, [
+        {
+          pendingUserInputCount: 1,
+          hasActionableProposedPlan: 1,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.fresh(
+          makeProjectionPipelinePrefixedTestLayer("t3-projection-reconciliation-recovery-"),
+        ),
+      ),
+    ),
+  );
+
   it.effect("bootstraps all projection states and writes projection rows", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -1258,13 +1473,33 @@ it.layer(
       assert.equal(result._tag, "Failure");
 
       const rows = yield* sql<{
-        readonly count: number;
+        readonly messageCount: number;
+        readonly pendingJobCount: number;
+        readonly messageCursor: number;
       }>`
-        SELECT COUNT(*) AS "count"
-        FROM projection_thread_messages
-        WHERE message_id = 'message-rollback'
+        SELECT
+          (
+            SELECT COUNT(*)
+            FROM projection_thread_messages
+            WHERE message_id = 'message-rollback'
+          ) AS "messageCount",
+          (
+            SELECT COUNT(*)
+            FROM projection_reconciliation_jobs
+          ) AS "pendingJobCount",
+          (
+            SELECT last_applied_sequence
+            FROM projection_state
+            WHERE projector = 'projection.thread-messages'
+          ) AS "messageCursor"
       `;
-      assert.equal(rows[0]?.count ?? 0, 0);
+      assert.deepEqual(rows, [
+        {
+          messageCount: 0,
+          pendingJobCount: 0,
+          messageCursor: 2,
+        },
+      ]);
 
       const { attachmentsDir } = yield* ServerConfig;
       const attachmentPath = path.join(attachmentsDir, "thread-rollback-att-1.png");
@@ -1290,11 +1525,14 @@ it.layer(
       const removeAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000002";
       const otherThreadAttachmentId =
         "thread-revert-files-extra-00000000-0000-4000-8000-000000000003";
+      const matchingDirectoryAttachmentId =
+        "thread-revert-files-00000000-0000-4000-8000-000000000004";
 
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
-        eventStore
-          .append(event)
-          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+        eventStore.append(event).pipe(
+          Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)),
+          Effect.flatMap((receipt) => receipt.reconcile),
+        );
 
       yield* appendAndProject({
         type: "project.created",
@@ -1459,10 +1697,16 @@ it.layer(
       yield* fileSystem.writeFileString(keepPath, "keep");
       yield* fileSystem.writeFileString(removePath, "remove");
       const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.png`);
+      const matchingDirectoryPath = path.join(
+        attachmentsDir,
+        `${matchingDirectoryAttachmentId}.png`,
+      );
       yield* fileSystem.writeFileString(otherThreadPath, "other");
+      yield* fileSystem.makeDirectory(matchingDirectoryPath);
       assert.isTrue(yield* exists(keepPath));
       assert.isTrue(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+      assert.isTrue(yield* exists(matchingDirectoryPath));
 
       yield* appendAndProject({
         type: "thread.reverted",
@@ -1483,6 +1727,7 @@ it.layer(
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+      assert.isTrue(yield* exists(matchingDirectoryPath));
     }),
   );
 });
@@ -1504,9 +1749,10 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           "thread-delete-files-extra-00000000-0000-4000-8000-000000000002";
 
         const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
-          eventStore
-            .append(event)
-            .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+          eventStore.append(event).pipe(
+            Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)),
+            Effect.flatMap((receipt) => receipt.reconcile),
+          );
 
         yield* appendAndProject({
           type: "project.created",
@@ -2454,9 +2700,10 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       const eventStore = yield* OrchestrationEventStore;
       const sql = yield* SqlClient.SqlClient;
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
-        eventStore
-          .append(event)
-          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+        eventStore.append(event).pipe(
+          Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)),
+          Effect.flatMap((receipt) => receipt.reconcile),
+        );
 
       yield* appendAndProject({
         type: "project.created",

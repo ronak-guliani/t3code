@@ -11,9 +11,10 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { Deferred, Effect, Layer, ManagedRuntime, Metric, Option, Queue, Stream } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it } from "vitest";
 
-import { PersistenceSqlError } from "../../persistence/Errors.ts";
+import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -350,7 +351,7 @@ describe("OrchestrationEngine", () => {
           bootstrap: Deferred.succeed(bootstrapStarted, undefined).pipe(
             Effect.andThen(Deferred.await(releaseBootstrap)),
           ),
-          projectEvent: () => Effect.void,
+          projectEvent: () => Effect.succeed({ reconcile: Effect.void }),
         } satisfies OrchestrationProjectionPipelineShape),
       ),
       Layer.provide(Layer.succeed(OrchestrationEventStore, failOnHistoricalReplayStore)),
@@ -420,7 +421,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(
           Layer.succeed(OrchestrationProjectionPipeline, {
             bootstrap: Effect.fail(bootstrapError),
-            projectEvent: () => Effect.void,
+            projectEvent: () => Effect.succeed({ reconcile: Effect.void }),
           } satisfies OrchestrationProjectionPipelineShape),
         ),
         Layer.provide(OrchestrationEventStoreLive),
@@ -1059,7 +1060,7 @@ describe("OrchestrationEngine", () => {
             }),
           );
         }
-        return Effect.void;
+        return Effect.succeed({ reconcile: Effect.void });
       },
     };
 
@@ -1160,6 +1161,59 @@ describe("OrchestrationEngine", () => {
     await runtime.dispose();
   });
 
+  it("runs projection reconciliation after the command receipt commits", async () => {
+    let observedCommittedReceipt = false;
+    const projectionPipelineLayer = Layer.effect(
+      OrchestrationProjectionPipeline,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return {
+          bootstrap: Effect.void,
+          projectEvent: (event) =>
+            Effect.succeed({
+              reconcile: sql<{ readonly count: number }>`
+                SELECT COUNT(*) AS count
+                FROM orchestration_command_receipts
+                WHERE command_id = ${event.commandId}
+                  AND status = 'accepted'
+              `.pipe(
+                Effect.map((rows) => {
+                  observedCommittedReceipt = rows[0]?.count === 1;
+                }),
+                Effect.mapError(toPersistenceSqlError("test.postCommitReconciliation")),
+              ),
+            }),
+        } satisfies OrchestrationProjectionPipelineShape;
+      }),
+    );
+    const runtime = ManagedRuntime.make(
+      OrchestrationEngineLive.pipe(
+        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provide(projectionPipelineLayer),
+        Layer.provide(OrchestrationEventStoreLive),
+        Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(SqlitePersistenceMemory),
+      ),
+    );
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-post-commit-reconciliation"),
+        projectId: asProjectId("project-post-commit-reconciliation"),
+        title: "Post-commit reconciliation",
+        workspaceRoot: "/tmp/project-post-commit-reconciliation",
+        defaultModelSelection: null,
+        createdAt: now(),
+      }),
+    );
+
+    expect(observedCommittedReceipt).toBe(true);
+    await runtime.dispose();
+  });
+
   it("reconciles in-memory state when append persists but projection fails", async () => {
     type StoredEvent =
       ReturnType<OrchestrationEventStoreShape["append"]> extends Effect.Effect<infer A, any, any>
@@ -1203,7 +1257,7 @@ describe("OrchestrationEngine", () => {
             }),
           );
         }
-        return Effect.void;
+        return Effect.succeed({ reconcile: Effect.void });
       },
     };
 

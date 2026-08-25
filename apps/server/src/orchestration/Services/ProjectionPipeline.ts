@@ -9,6 +9,7 @@
 import type { OrchestrationEvent } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Effect } from "effect";
+import type * as PlatformError from "effect/PlatformError";
 
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 
@@ -30,7 +31,17 @@ export interface OrchestrationProjectionPipelineShape {
    */
   readonly projectEvent: (
     event: OrchestrationEvent,
-  ) => Effect.Effect<void, ProjectionRepositoryError>;
+  ) => Effect.Effect<ProjectionReceipt, ProjectionRepositoryError>;
+}
+
+export interface ProjectionReceipt {
+  /**
+   * Run durable work that must observe committed projection rows.
+   *
+   * Callers that stage projection inside a larger transaction invoke this only
+   * after that transaction commits.
+   */
+  readonly reconcile: Effect.Effect<void, ProjectionRepositoryError | PlatformError.PlatformError>;
 }
 
 /**
