@@ -1,45 +1,75 @@
-# T3 Code Mobile
+# T3 Code RG Mobile
 
-> [!WARNING]
-> T3 Code Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
+Our independently configured build of the upstream-derived React Native app. It stays in this
+monorepo with the fork server, `packages/contracts`, and `packages/client-runtime`; do not create
+a second copy of those packages for mobile.
+
+This first milestone establishes build ownership, not current-upstream feature parity or a
+signed device release. It retains the fork-compatible mobile source from fork commit
+`262aa38d44130f73e3624b07fd654a4b44330d23` (Expo 56 / React Native 0.85).
+Upstream `pingdotgg/t3code` was compared at
+`940e8233c227a186044078e99e45e1933eb525e4` on September 5, 2026 UTC
+(Expo 57 / React Native 0.86). That revision is an **integration target, not an imported baseline**:
+605 mobile files and the shared runtime/contracts differ. Importing only `apps/mobile` would
+leave its new protocol calls and dependencies out of sync with this server.
+
+The app uses **Direct Connect** with existing pairing/session authentication, preferably over
+Tailscale HTTPS for access across networks. Managed T3 Connect/Clerk, remote APNs/Live Activity
+push, telemetry export, and OTA updates are disabled in this build. Desktop production settings
+in the root environment cannot enable them. Local widgets/Live Activities remain included.
+Configuring an owned Expo project does **not** turn OTA updates back on.
 
 ## Quickstart
 
 > [!NOTE]
 > Uses native modules so using Expo Go is not supported. You need to use the Expo Dev Client.
 
-This app has three variants:
+The variants have independent native identities, widget IDs, app groups, and URL schemes:
 
-- `development`: Expo dev client, installable side-by-side as `T3 Code Dev`
-- `preview`: persistent internal preview build, installable side-by-side as `T3 Code Preview`
-- `production`: store/release build as `T3 Code`
+| Variant       | Display name       | iOS bundle / Android package      | URL scheme          |
+| ------------- | ------------------ | --------------------------------- | ------------------- |
+| `development` | T3 Code RG Dev     | `com.ronakguliani.t3code.dev`     | `t3code-rg-dev`     |
+| `preview`     | T3 Code RG Preview | `com.ronakguliani.t3code.preview` | `t3code-rg-preview` |
+| `production`  | T3 Code RG         | `com.ronakguliani.t3code`         | `t3code-rg`         |
 
-Run commands from `apps/mobile`.
+The development ID intentionally preserves this fork's existing dev installation; preview and
+production no longer use upstream identifiers. Pair each new installation normally. Do not copy
+the official app's credential storage, or change the server's environment ID to match a client.
+Existing fork Dev installations retain their storage; remove obsolete managed-Connect entries
+in that app and pair through Direct Connect. The authorized-client list uses the build's display
+name, so Dev and Preview sessions are distinguishable.
+
+Use the root-pinned Node/pnpm toolchain and run `pnpm install --frozen-lockfile` at the repository
+root. For iOS, install Xcode and CocoaPods; the deployment target is iOS 18. Physical-device
+builds need signing under your Apple team, including the widget extension/app group.
+Android needs the Android SDK/JDK. Run the commands below from `apps/mobile`.
+No Expo account is required for local builds. Unset `APP_VARIANT` selects development;
+unknown variants fail rather than silently selecting a release identity.
 
 ## Development
 
 Start Metro for the dev client:
 
 ```bash
-vp run dev:client
+pnpm dev:client
 ```
 
 Build and run the local iOS dev client:
 
 ```bash
-vp run ios:dev
+pnpm ios:dev
 ```
 
-Build and run the local iOS preview app:
+Build and run the local iOS preview app with an embedded Release bundle (no Metro dependency):
 
 ```bash
-vp run ios:preview
+pnpm ios:preview
 ```
 
 Force the review diff highlighter engine:
 
 ```bash
-EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=javascript vp run ios:dev
+EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=javascript pnpm ios:dev
 ```
 
 `javascript` is the default and recommended setting for the review diff screen. Set `EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=native` only when you explicitly want to test the native Shiki engine.
@@ -47,8 +77,9 @@ EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=javascript vp run ios:dev
 Inspect the resolved Expo config for a variant:
 
 ```bash
-vp run config:dev
-vp run config:preview
+pnpm config:dev
+pnpm config:preview
+pnpm config:prod
 ```
 
 Run static checks for mobile native code:
@@ -57,7 +88,13 @@ Run static checks for mobile native code:
 node ../../scripts/mobile-native-static-check.ts
 ```
 
-The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools are reported as warnings and skipped locally. CI installs the default toolset from `apps/mobile/Brewfile` before running the native checks.
+The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools
+are reported as warnings and skipped locally. The tool list is in `apps/mobile/Brewfile`.
+
+The `ios:*` and `android:*` commands regenerate the ignored native folders; put persistent
+native changes in config plugins/modules, not generated projects. Both prebuild and compilation
+receive the same explicit variant. Android preview/production also bundle JavaScript in Release
+mode. Local release builds are not a substitute for store signing and submission.
 
 ## Direct Connect acceptance
 
@@ -80,7 +117,7 @@ and mobile pairing; the clients derive `wss://` from that origin.
    pnpm --filter t3 start -- pair --tailscale --label "Physical device acceptance"
    ```
 
-4. Open that HTTPS URL in the matching fork browser build, or in **T3 Code Dev** choose
+4. Open that HTTPS URL in the matching fork browser build, or in **T3 Code RG Dev/Preview** choose
    **Add environment** and scan/paste the URL. Pairing persists a bearer session; Clerk and the
    managed relay are not involved.
 5. Open a thread, send a message, then disable and re-enable Wi-Fi (or background/foreground the
@@ -145,21 +182,73 @@ or bearer token in shell history, screenshots, logs, or source control.
 
 ## EAS Builds
 
-Create a cloud dev-client build:
+EAS is optional. It requires an Expo account/project you control, your own Apple signing
+credentials, and (for TestFlight) your own App Store Connect app record.
+
+1. Create an Expo project named `t3-code-rg` under your account/organization.
+2. Put its owner and UUID in **root** `.env.local` (not `apps/mobile/.env.local`):
+
+   ```dotenv
+   MOBILE_EAS_OWNER=your-expo-account
+   MOBILE_EAS_PROJECT_ID=your-expo-project-uuid
+   ```
+
+3. Set the same two public variables in the EAS `development`, `preview`, and `production`
+   environments that you will use. They must be available both when evaluating config locally
+   and on the builder. Keep signing keys, Apple credentials, and Expo access tokens out of files
+   committed to Git.
+4. Install/use EAS CLI, authenticate as your own account, then run a build below. Commands fail
+   if project ownership is missing, malformed, or points to the inherited upstream project.
+
+Create a cloud dev-client build or an internal standalone preview:
 
 ```bash
-vp run eas:ios:dev
+pnpm eas:ios:dev
+pnpm eas:ios:preview
 ```
 
-Create a persistent preview build:
+For daily use through TestFlight, build the **preview bundle ID** with store distribution:
 
 ```bash
-vp run eas:ios:preview
+pnpm eas:ios:testflight
+APP_VARIANT=preview eas submit --platform ios --profile testflight
 ```
 
-Android equivalents:
+Submission deliberately has no committed Apple app ID. Select your own App Store Connect
+record for `com.ronakguliani.t3code.preview` when prompted. Do not choose the upstream app.
+Production uses the separate `com.ronakguliani.t3code` record.
+TestFlight is a rolling beta distribution path, not a permanent installation.
+
+Android internal builds produce APKs:
 
 ```bash
-vp run eas:android:dev
-vp run eas:android:preview
+pnpm eas:android:dev
+pnpm eas:android:preview
 ```
+
+## Next milestones
+
+1. **Current-upstream integration:** port the pinned upstream mobile source, native SDK/dependency
+   changes, and the contracts/runtime it actually needs together. Preserve fork-only RPCs and
+   implement or explicitly gate missing server features; do not replace shared packages wholesale.
+2. **Owned device distribution:** configure signing/EAS/App Store Connect, install a dev client
+   and a standalone preview, and retain the official app only for comparisons.
+3. **Connection acceptance:** pair over Tailscale HTTPS and complete the physical checklist above,
+   including cellular access, attachments, suspension, queued sends, restart, and revocation.
+4. **Diagnostics and reliability:** correlate client build/device/session, command ID, server
+   receipt/acknowledgement, and provider turn without logging credentials or message content.
+   Reproduce the reported mobile quirks before changing queue/reconnect behavior.
+5. **Feature and release ownership:** add desired mobile UX, explicit supported client/server
+   versions, an owned push/Live Activity service if needed, then optional owned OTA channels.
+   Keep native updates and server-protocol compatibility separate from Expo runtime versions.
+
+## Upstream maintenance and license
+
+Keep upstream changes as reviewed imports with a recorded commit, not automatic directory copies.
+Compare `apps/mobile`, its workspace imports, dependency catalogs/patches, and native plugins on
+each update. Release the client and server only after their paired behavior is exercised.
+
+The upstream MIT copyright/license is retained in the root `LICENSE`; native module licenses
+remain in their respective directories. Keep those notices and review additional dependency and
+asset licenses before public distribution. `T3 Code RG` identifies this build as the independent
+fork, not the official App Store client.

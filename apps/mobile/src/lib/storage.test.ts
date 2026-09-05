@@ -24,6 +24,10 @@ vi.mock("react-native", () => ({
   },
 }));
 
+vi.mock("expo-constants", () => ({
+  default: { expoConfig: { name: "T3 Code RG Preview" } },
+}));
+
 vi.mock("./runtime", () => ({
   runtime: {
     runPromise: vi.fn(),

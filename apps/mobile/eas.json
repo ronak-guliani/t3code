@@ -9,7 +9,7 @@
       "env": {
         "APP_VARIANT": "development"
       },
-      "channel": "development",
+      "environment": "development",
       "developmentClient": true,
       "distribution": "internal"
     },
@@ -17,16 +17,16 @@
       "env": {
         "APP_VARIANT": "preview"
       },
-      "channel": "preview",
       "environment": "preview",
-      "distribution": "internal"
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     },
     "preview:dev": {
       "env": {
-        "APP_VARIANT": "preview",
-        "MOBILE_VERSION_POLICY": "fingerprint"
+        "APP_VARIANT": "preview"
       },
-      "channel": "preview",
       "environment": "preview",
       "developmentClient": true,
       "distribution": "internal",
@@ -38,16 +38,20 @@
       "env": {
         "APP_VARIANT": "production"
       },
-      "channel": "production",
       "environment": "production",
+      "distribution": "store",
       "autoIncrement": true
+    },
+    "testflight": {
+      "extends": "production",
+      "env": {
+        "APP_VARIANT": "preview"
+      },
+      "environment": "preview"
     }
   },
   "submit": {
-    "production": {
-      "ios": {
-        "ascAppId": "6761315631"
-      }
-    }
+    "production": {},
+    "testflight": {}
   }
 }
