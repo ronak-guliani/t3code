@@ -100,7 +100,21 @@ describe("buildCopilotAcpSpawnInput", () => {
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`t3-code`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`t3-tools`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_open`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("call `preview_status` first");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "before concluding that the browser is unavailable",
+      );
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_open_and_snapshot`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_snapshot`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("snapshot-provided semantic locators");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("failed network requests");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_recording_start`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("recording alone");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("standalone Playwright");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("capture a final screenshot");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "search `t3-code` for the needed `preview_*` function",
+      );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("Restart the chat/session");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`www-authenticate: Bearer`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`create_isolated_workspace`");
