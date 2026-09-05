@@ -1,0 +1,32 @@
+diff --git a/src/types.tsx b/src/types.tsx
+--- a/src/types.tsx
++++ b/src/types.tsx
+@@ -45,10 +45,10 @@
+ type StaticNavigationConfig = {
+   readonly config: {
+-    readonly screens?: Record<string, any>;
++    readonly screens?: Record<string, unknown>;
+     readonly groups?: {
+       [key: string]: {
+-        screens: Record<string, any>;
++        screens: Record<string, unknown>;
+       };
+     };
+   };
+ };
+diff --git a/lib/typescript/src/types.d.ts b/lib/typescript/src/types.d.ts
+--- a/lib/typescript/src/types.d.ts
++++ b/lib/typescript/src/types.d.ts
+@@ -32,10 +32,10 @@
+ type StaticNavigationConfig = {
+     readonly config: {
+-        readonly screens?: Record<string, any>;
++        readonly screens?: Record<string, unknown>;
+         readonly groups?: {
+             [key: string]: {
+-                screens: Record<string, any>;
++                screens: Record<string, unknown>;
+             };
+         };
+     };
+ };

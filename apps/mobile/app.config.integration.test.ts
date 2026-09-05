@@ -24,7 +24,6 @@ describe("resolved Expo native configuration", () => {
           APP_VARIANT: variant,
           MOBILE_EAS_OWNER: "",
           MOBILE_EAS_PROJECT_ID: "",
-          MOBILE_REQUIRE_EAS_PROJECT: "",
           EAS_BUILD: "",
         },
       },
@@ -37,7 +36,8 @@ describe("resolved Expo native configuration", () => {
       updates: { enabled: false, checkAutomatically: "NEVER" },
     });
     expect(config).not.toHaveProperty("updates.url");
-    expect(config).not.toHaveProperty("extra.eas.projectId");
+    expect(config).toHaveProperty("extra.eas.projectId", "01272cd5-225c-47d4-978e-a7eb97c9e457");
+    expect(config).toHaveProperty("ios.appleTeamId", "235XX73T5A");
     expect(config).toHaveProperty("_internal.modResults.ios.entitlements", {
       "com.apple.security.application-groups": [`group.${id}`],
     });

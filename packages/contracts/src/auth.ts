@@ -248,6 +248,10 @@ export const AuthClientMetadata = Schema.Struct({
 export type AuthClientMetadata = typeof AuthClientMetadata.Type;
 
 export const AuthClientPresentationMetadata = Schema.Struct({
+  surface: Schema.optionalKey(Schema.Literal("mobile")),
+  appVersion: Schema.optionalKey(TrimmedNonEmptyString),
+  deviceModel: Schema.optionalKey(TrimmedNonEmptyString),
+  osMajorVersion: Schema.optionalKey(Schema.Int),
   label: Schema.optionalKey(TrimmedNonEmptyString),
   deviceType: Schema.optionalKey(AuthClientMetadataDeviceType),
   os: Schema.optionalKey(TrimmedNonEmptyString),

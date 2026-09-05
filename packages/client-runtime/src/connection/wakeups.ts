@@ -27,3 +27,7 @@ export const make = (service: ConnectionWakeups["Service"]) => ConnectionWakeups
 
 export const layer = (service: ConnectionWakeups["Service"]) =>
   Layer.succeed(ConnectionWakeups, make(service));
+
+export function shouldResubscribeAfterWakeup(reason: ConnectionWakeup): boolean {
+  return reason === "application-active" || reason === "application-active-probe";
+}

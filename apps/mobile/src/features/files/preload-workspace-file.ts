@@ -1,9 +1,13 @@
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  isWorkspaceBrowserPreviewPath,
+  isWorkspaceImagePreviewPath,
+} from "@t3tools/shared/filePreview";
 
 import { appAtomRegistry } from "../../state/atom-registry";
 import { projectEnvironment } from "../../state/projects";
-import { isBrowserPreviewFile, isImagePreviewFile } from "./filePath";
+import { isVideoPreviewFile } from "./filePath";
 import { prepareSourceFileDocument } from "./source-file-document";
 import { sourceHighlightAtom } from "./sourceHighlightingState";
 import type { ReviewDiffTheme } from "../review/shikiReviewHighlighter";
@@ -14,7 +18,6 @@ const MAX_HIGHLIGHT_PRELOAD_CHARACTERS = 256 * 1024;
 function preloadKey(input: {
   readonly cwd: string;
   readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
   readonly relativePath: string;
 }): string {
   return JSON.stringify([input.environmentId, input.cwd, input.relativePath]);
@@ -23,11 +26,14 @@ function preloadKey(input: {
 export function preloadWorkspaceFileContents(input: {
   readonly cwd: string;
   readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId;
   readonly relativePath: string;
   readonly theme: ReviewDiffTheme;
 }): void {
-  if (isBrowserPreviewFile(input.relativePath) || isImagePreviewFile(input.relativePath)) {
+  if (
+    isWorkspaceBrowserPreviewPath(input.relativePath) ||
+    isWorkspaceImagePreviewPath(input.relativePath) ||
+    isVideoPreviewFile(input.relativePath)
+  ) {
     return;
   }
 
@@ -40,7 +46,7 @@ export function preloadWorkspaceFileContents(input: {
     appAtomRegistry,
     projectEnvironment.readFile({
       environmentId: input.environmentId,
-      input: { threadId: input.threadId, relativePath: input.relativePath },
+      input: { cwd: input.cwd, relativePath: input.relativePath },
     }),
     {
       label: "workspace file preload",

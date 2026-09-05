@@ -2,11 +2,7 @@ import { managedRelaySessionAtom } from "@t3tools/client-runtime/relay";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { appAtomRegistry } from "../../state/atom-registry";
-import {
-  activateCloudRelayAccount,
-  deactivateCloudRelayAccount,
-  shouldEnableCloudAuth,
-} from "./CloudAuthProvider";
+import { activateCloudRelayAccount, deactivateCloudRelayAccount } from "./CloudAuthProvider";
 import { setAgentAwarenessRelayTokenProvider } from "../agent-awareness/remoteRegistration";
 
 vi.mock("@clerk/expo", () => ({
@@ -28,6 +24,12 @@ vi.mock("../../connection/catalog", () => ({
   environmentCatalog: {
     removeRelayEnvironments: {},
   },
+}));
+
+vi.mock("./cloud-drafts", () => ({ removeCloudEnvironments: {} }));
+vi.mock("../../state/use-composer-drafts", () => ({
+  getComposerCloudAccountId: vi.fn(async () => null),
+  restoreCloudComposerDrafts: vi.fn(async () => undefined),
 }));
 
 vi.mock("./publicConfig", () => ({
@@ -60,24 +62,5 @@ describe("CloudAuthProvider relay account isolation", () => {
     expect(appAtomRegistry.get(managedRelaySessionAtom)).toBeNull();
     expect(vi.mocked(setAgentAwarenessRelayTokenProvider)).toHaveBeenLastCalledWith(null);
     await cleanup;
-  });
-});
-
-describe("shouldEnableCloudAuth", () => {
-  it("requires Clerk publishable key, Clerk JWT template, and relay URL", () => {
-    expect(
-      shouldEnableCloudAuth({
-        clerk: { publishableKey: "pk_test_example", jwtTemplate: null },
-        relay: { url: "https://relay.example.test" },
-        observability: { tracesUrl: null, tracesDataset: null, tracesToken: null },
-      }),
-    ).toBe(false);
-    expect(
-      shouldEnableCloudAuth({
-        clerk: { publishableKey: "pk_test_example", jwtTemplate: "t3-relay" },
-        relay: { url: "https://relay.example.test" },
-        observability: { tracesUrl: null, tracesDataset: null, tracesToken: null },
-      }),
-    ).toBe(true);
   });
 });

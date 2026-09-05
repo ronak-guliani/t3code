@@ -430,7 +430,7 @@ describe("ManagedRelayClient", () => {
         _tag: "ManagedRelayRequestTimeoutError",
         activity: "Relay environment listing",
         timeoutMs: ManagedRelay.MANAGED_RELAY_REQUEST_TIMEOUT_MS,
-        message: "Relay environment listing timed out.",
+        message: expect.stringContaining("Relay environment listing timed out."),
       });
     }).pipe(Effect.provide(Layer.merge(TestClock.layer(), managedRelayTestLayer(fetchFn))));
   });

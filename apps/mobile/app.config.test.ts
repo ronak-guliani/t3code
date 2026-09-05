@@ -54,22 +54,23 @@ describe("owned mobile build configuration", () => {
       relay: { url: null },
       clerk: { publishableKey: null, jwtTemplate: null },
       observability: { tracesUrl: null, tracesDataset: null, tracesToken: null },
+      eas: { projectId: "01272cd5-225c-47d4-978e-a7eb97c9e457" },
     });
     expect(config.plugins).not.toContainEqual(expect.arrayContaining(["@clerk/expo"]));
     expect(config.updates).toEqual({ enabled: false, checkAutomatically: "NEVER" });
     expect(config.runtimeVersion).toEqual({ policy: "fingerprint" });
   });
 
-  it("needs no Expo account to resolve a local build", () => {
+  it("resolves the provisioned owned project without an account login or local env file", () => {
     const config = makeMobileConfig({});
-    expect(config.owner).toBeUndefined();
-    expect(config.extra?.eas).toBeUndefined();
+    expect(config.owner).toBe("ronakguliani");
+    expect(config.extra?.eas).toEqual({ projectId: "01272cd5-225c-47d4-978e-a7eb97c9e457" });
+    expect(config.ios?.appleTeamId).toBe("235XX73T5A");
   });
 
   it("links an explicitly owned Expo project without enabling OTA", () => {
     const config = makeMobileConfig({
       ...ownedProject,
-      MOBILE_REQUIRE_EAS_PROJECT: "1",
       EAS_BUILD: "true",
     });
     expect(config.slug).toBe("t3-code-rg");
@@ -101,12 +102,35 @@ describe("owned mobile build configuration", () => {
     expect(() => makeMobileConfig(env)).toThrow("Upstream Expo ownership");
   });
 
-  it.each([{ MOBILE_REQUIRE_EAS_PROJECT: "1" }, { EAS_BUILD: "true" }])(
-    "fails closed for an unconfigured EAS build: %o",
-    (env) => {
-      expect(() => makeMobileConfig(env)).toThrow("EAS builds require your own");
+  it.each(["ARK85ZXQ4Z", "personal", "invalid-team"])(
+    "rejects an invalid Apple team: %s",
+    (team) => {
+      expect(() => makeMobileConfig({ MOBILE_APPLE_TEAM_ID: team })).toThrow(
+        "own 10-character Apple team",
+      );
     },
   );
+
+  it.each(variants)("isolates the %s share extension and permissions", (variant, _name, id) => {
+    const config = makeMobileConfig({ APP_VARIANT: variant });
+    expect(config.plugins).toContainEqual([
+      "expo-sharing",
+      expect.objectContaining({
+        ios: expect.objectContaining({
+          enabled: true,
+          extensionBundleIdentifier: `${id}.sharing`,
+          appGroupId: `group.${id}`,
+        }),
+      }),
+    ]);
+    expect(config.plugins).toContainEqual([
+      "expo-audio",
+      expect.objectContaining({
+        enableBackgroundRecording: false,
+        enableBackgroundPlayback: false,
+      }),
+    ]);
+  });
 });
 
 describe("mobile build entrypoints", () => {
@@ -120,6 +144,9 @@ describe("mobile build entrypoints", () => {
       ] as const) {
         const script = mobilePackage.scripts[`${platform}:${suffix}`];
         const steps = script.split(" && ");
+        if (platform === "ios") {
+          expect(steps.shift()).toBe("node scripts/ios-preflight.mts");
+        }
         expect(steps).toHaveLength(2);
         for (const step of steps) {
           expect(step).toMatch(new RegExp(`^APP_VARIANT=${variant} `));
@@ -138,12 +165,18 @@ describe("mobile build entrypoints", () => {
     expect(mobilePackage.scripts["dev:client"]).toContain(`--scheme ${variants[0][3]}`);
   });
 
-  it("requires owned configuration in every EAS build command", () => {
+  it("uses the project-pinned CLI and profile for every EAS build command", () => {
+    expect(mobilePackage.devDependencies["eas-cli"]).toBe(eas.cli.version);
     for (const [name, script] of Object.entries(mobilePackage.scripts)) {
       if (name.startsWith("eas:")) {
-        expect(script).toMatch(/^MOBILE_REQUIRE_EAS_PROJECT=1 eas build /);
+        expect(script).toMatch(/^eas build --profile /);
       }
     }
+  });
+
+  it("does not link unused hosted-auth native modules into the direct-only iOS build", () => {
+    expect(mobilePackage.expo.autolinking.ios.exclude).toContain("@clerk/expo");
+    expect(mobilePackage.expo.autolinking).not.toHaveProperty("android.exclude");
   });
 
   it("separates internal preview, TestFlight preview, and production", () => {
@@ -154,7 +187,23 @@ describe("mobile build entrypoints", () => {
     expect(eas.build.testflight.env.APP_VARIANT).toBe("preview");
     expect(eas.build.production.distribution).toBe("store");
     expect(eas.build.production.env.APP_VARIANT).toBe("production");
-    expect(eas.submit).toEqual({ production: {}, testflight: {} });
+    expect(eas.build["development:simulator"]).toEqual({
+      extends: "development",
+      ios: { simulator: true },
+    });
+    expect(eas.build["preview:simulator"]).toEqual({
+      extends: "preview",
+      ios: { simulator: true },
+    });
+    expect(eas.build.base).toMatchObject({
+      node: "24.18.0",
+      pnpm: "11.10.0",
+      ios: { image: "macos-tahoe-26.5-xcode-26.6" },
+    });
+    expect(eas.submit).toEqual({
+      production: { ios: { appleTeamId: "235XX73T5A" } },
+      testflight: { ios: { appleTeamId: "235XX73T5A" } },
+    });
     for (const profile of Object.values(eas.build)) {
       expect(profile).not.toHaveProperty("channel");
     }
