@@ -529,6 +529,7 @@ export function TerminalViewport({
                   threadRef,
                   openPreview,
                   localApi,
+                  event,
                   fallbackToBrowser: () => {
                     void localApi.shell.openExternal(match.text).catch((error: unknown) => {
                       writeSystemMessage(

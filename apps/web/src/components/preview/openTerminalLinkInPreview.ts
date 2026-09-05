@@ -4,6 +4,11 @@ import { isPreviewableUrl } from "@t3tools/shared/preview";
 import type { OpenPreviewMutation } from "./openPreviewSession";
 import { applyPreviewServerSnapshot, isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { useRightPanelStore } from "~/rightPanelStore";
+import {
+  canOpenLinksInApp,
+  resolveBrowserLinkTargetPreference,
+  resolveLinkTarget,
+} from "~/browser/browserLinkTarget";
 
 export async function openTerminalLinkInPreview<E>(input: {
   readonly url: string;
@@ -12,24 +17,27 @@ export async function openTerminalLinkInPreview<E>(input: {
   readonly openPreview: OpenPreviewMutation<E>;
   readonly localApi: LocalApi;
   readonly fallbackToBrowser: () => void;
+  readonly event?: {
+    readonly metaKey: boolean;
+    readonly ctrlKey: boolean;
+    readonly shiftKey?: boolean;
+    readonly altKey?: boolean;
+  };
 }): Promise<void> {
   if (!isPreviewableUrl(input.url) || !isPreviewSupportedInRuntime()) {
     input.fallbackToBrowser();
     return;
   }
-
-  const choice = await input.localApi.contextMenu.show(
-    [
-      { id: "open-in-preview", label: "Open in preview" },
-      { id: "open-in-browser", label: "Open in browser" },
-    ],
-    input.position,
-  );
-  if (choice === "open-in-browser") {
+  const target = resolveLinkTarget({
+    url: input.url,
+    event: input.event ?? { metaKey: false, ctrlKey: false },
+    preference: await resolveBrowserLinkTargetPreference(),
+    canOpenInApp: canOpenLinksInApp(true),
+  });
+  if (target === "system") {
     input.fallbackToBrowser();
     return;
   }
-  if (choice !== "open-in-preview") return;
 
   const result = await input.openPreview({
     environmentId: input.threadRef.environmentId,

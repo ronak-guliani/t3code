@@ -184,6 +184,7 @@ const makeTestPreviewWebContents = (
     send: webviewSend,
     navigationHistory: { canGoBack: () => false, canGoForward: () => false },
     setWindowOpenHandler: vi.fn(),
+    setIgnoreMenuShortcuts: vi.fn(),
     setBackgroundThrottling: vi.fn(),
     hostWebContents: host,
     mainFrame: { routingId: id },
@@ -1136,8 +1137,10 @@ describe("PreviewManager", () => {
         );
 
         const captureCause = new Error("capture failed");
-        capturePage.mockRejectedValueOnce(captureCause);
-        const exit = yield* Effect.exit(manager.captureScreenshot("tab_1"));
+        capturePage.mockRejectedValue(captureCause);
+        const exitFiber = yield* Effect.forkChild(Effect.exit(manager.captureScreenshot("tab_1")));
+        yield* TestClock.adjust("1 second");
+        const exit = yield* Fiber.join(exitFiber);
         expect(Exit.isFailure(exit)).toBe(true);
         if (Exit.isSuccess(exit)) return;
         const error = Option.getOrThrow(Cause.findErrorOption(exit.cause));

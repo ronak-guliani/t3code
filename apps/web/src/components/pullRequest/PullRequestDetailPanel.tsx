@@ -40,11 +40,11 @@ import {
   pullRequestSetThreadResolutionMutationOptions,
   pullRequestSubmitReviewMutationOptions,
 } from "~/lib/pullRequestReactQuery";
-import { openExternalPullRequestLink } from "~/lib/openPullRequestLink";
 import { buildPatchCacheKey, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useTheme } from "~/hooks/useTheme";
+import { useOpenLink } from "~/browser/useOpenLink";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -578,6 +578,7 @@ export function PullRequestDetailPanel({
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
   const detail = toDetailView(detailQuery.data, activityQuery.data);
+  const openLink = useOpenLink(null);
   const runAction = useMutation(
     pullRequestRunActionMutationOptions({ environmentId, queryClient }),
   );
@@ -734,8 +735,23 @@ export function PullRequestDetailPanel({
             className="inline-flex items-center gap-1 hover:text-foreground"
             href={detail.url}
             onClick={(event) => {
+              if (
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+              ) {
+                return;
+              }
               event.preventDefault();
-              openExternalPullRequestLink(detail.url);
+              void openLink(detail.url).catch((error: unknown) => {
+                toastManager.add({
+                  type: "error",
+                  title: "Could not open pull request",
+                  description: errorMessage(error),
+                });
+              });
             }}
           >
             GitHub <ExternalLinkIcon className="size-3" />
