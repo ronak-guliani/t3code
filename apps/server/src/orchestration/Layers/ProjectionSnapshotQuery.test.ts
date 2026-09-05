@@ -777,6 +777,29 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           printf('2026-09-01T00:%02d:%02d.000Z', value / 60, value % 60)
         FROM task_sequence
       `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        ) VALUES (
+          'bg-completed-104',
+          'thread-bg-cap',
+          NULL,
+          'info',
+          'task.completed',
+          'background agent 104 completed',
+          '{"taskId":"bg-task-104","status":"completed"}',
+          NULL,
+          '2026-09-01T00:02:00.000Z'
+        )
+      `;
 
       const context = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-bg-cap"));
       assert.equal(context._tag, "Some");
@@ -787,6 +810,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const taskIds = new Set(runs.map((run) => run.taskId));
       assert.isTrue(taskIds.has("bg-task-104"));
       assert.isFalse(taskIds.has("bg-task-000"));
+      assert.equal(runs.find((run) => run.taskId === "bg-task-104")?.status, "completed");
     }),
   );
 

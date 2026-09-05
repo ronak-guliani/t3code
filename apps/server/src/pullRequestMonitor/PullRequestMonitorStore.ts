@@ -213,6 +213,13 @@ export interface PullRequestMonitorStoreApi {
     readonly enabledOnly?: boolean;
     readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<PullRequestMonitorRecord>, PullRequestMonitorError>;
+  readonly listEnabledPage: (input: {
+    readonly limit: number;
+    readonly before?: {
+      readonly updatedAt: string;
+      readonly monitorId: PullRequestMonitorId;
+    };
+  }) => Effect.Effect<ReadonlyArray<PullRequestMonitorRecord>, PullRequestMonitorError>;
   readonly listDue: (
     nowIso: string,
     limit: number,
@@ -448,6 +455,36 @@ export const make = Effect.gen(function* () {
     }).pipe(
       Effect.mapError((cause) =>
         isPullRequestMonitorError(cause) ? cause : storeError("Failed to list monitors.", cause),
+      ),
+    );
+
+  const listEnabledPage: PullRequestMonitorStoreApi["listEnabledPage"] = (input) =>
+    (input.before
+      ? sql<MonitorRow>`
+            SELECT * FROM pull_request_monitors
+            WHERE enabled = 1
+              AND (
+                updated_at < ${input.before.updatedAt}
+                OR (
+                  updated_at = ${input.before.updatedAt}
+                  AND monitor_id < ${input.before.monitorId}
+                )
+              )
+            ORDER BY updated_at DESC, monitor_id DESC
+            LIMIT ${input.limit}
+          `
+      : sql<MonitorRow>`
+            SELECT * FROM pull_request_monitors
+            WHERE enabled = 1
+            ORDER BY updated_at DESC, monitor_id DESC
+            LIMIT ${input.limit}
+          `
+    ).pipe(
+      Effect.flatMap((rows) => Effect.forEach(rows, rowToRecord, { concurrency: 1 })),
+      Effect.mapError((cause) =>
+        isPullRequestMonitorError(cause)
+          ? cause
+          : storeError("Failed to list enabled monitor page.", cause),
       ),
     );
 
@@ -1058,6 +1095,7 @@ export const make = Effect.gen(function* () {
     getByCanonicalKey,
     getByProjectRef,
     list,
+    listEnabledPage,
     listDue,
     insert,
     update,
