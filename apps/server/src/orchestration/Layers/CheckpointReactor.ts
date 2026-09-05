@@ -37,6 +37,7 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { WorkspaceEntries } from "../../workspace/Services/WorkspaceEntries.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 
 type ReactorInput =
   | {
@@ -96,6 +97,7 @@ const make = Effect.gen(function* () {
   const receiptBus = yield* RuntimeReceiptBus;
   const workspaceEntries = yield* WorkspaceEntries;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
+  const coordinator = yield* CheckoutCoordinator;
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -460,7 +462,6 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      yield* runtimeIngestion.awaitTurnCompletionProcessed(event.eventId);
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) {
@@ -967,8 +968,14 @@ const make = Effect.gen(function* () {
 
     if (event.type === "turn.completed") {
       const turnId = toTurnId(event.turnId);
-      yield* refreshLocalGitStatusFromTurnCompletion(event);
-      yield* captureCheckpointFromTurnCompletion(event).pipe(
+      if (turnId) {
+        // Do not hold a checkout mutex while ingestion is awaiting command dispatch.
+        yield* runtimeIngestion.awaitTurnCompletionProcessed(event.eventId);
+      }
+      yield* Effect.gen(function* () {
+        yield* refreshLocalGitStatusFromTurnCompletion(event);
+        yield* captureCheckpointFromTurnCompletion(event);
+      }).pipe(
         Effect.catch((error) =>
           appendCaptureFailureActivity({
             threadId: event.threadId,
@@ -985,6 +992,7 @@ const make = Effect.gen(function* () {
             Effect.catch(() => Effect.void),
           ),
         ),
+        Effect.ensuring(coordinator.endFinalization(event.eventId)),
       );
       return;
     }
@@ -1040,4 +1048,6 @@ const make = Effect.gen(function* () {
   } satisfies CheckpointReactorShape;
 });
 
-export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make);
+export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make).pipe(
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

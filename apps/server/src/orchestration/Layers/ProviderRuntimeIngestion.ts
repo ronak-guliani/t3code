@@ -44,6 +44,7 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/Utils.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -727,6 +728,7 @@ function runtimeEventToActivities(
 }
 
 const make = Effect.gen(function* () {
+  const coordinator = yield* CheckoutCoordinator;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
@@ -1667,6 +1669,23 @@ const make = Effect.gen(function* () {
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) return;
 
+      if (event.type === "turn.completed" && event.turnId !== undefined) {
+        const cwd =
+          thread.worktreePath ??
+          readModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
+        if (cwd) {
+          // Establish exclusion before any command can publish an idle session.
+          // The checkpoint worker releases it after consuming our processed receipt.
+          yield* coordinator.beginFinalization(event.eventId, cwd);
+        }
+        const runtimeSession = (yield* providerService.listSessions()).find(
+          (session) => session.threadId === thread.id,
+        );
+        if (runtimeSession?.cwd) {
+          yield* coordinator.beginFinalization(event.eventId, runtimeSession.cwd);
+        }
+      }
+
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
@@ -2246,4 +2265,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provideMerge(CheckoutCoordinatorLive));

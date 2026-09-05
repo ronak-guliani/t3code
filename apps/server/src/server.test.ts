@@ -75,6 +75,7 @@ import { vi } from "vitest";
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import { attachmentRelativePath } from "./attachmentStore.ts";
 import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
@@ -760,7 +761,7 @@ const buildAppUnderTest = (options?: {
         )
       : appLayer;
 
-    yield* Layer.build(appLayerWithProvider);
+    yield* Layer.build(appLayerWithProvider.pipe(Layer.provideMerge(CheckoutCoordinatorLive)));
     return config;
   });
 

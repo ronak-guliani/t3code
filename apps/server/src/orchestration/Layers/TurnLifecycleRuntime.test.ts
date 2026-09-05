@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
+import { Deferred, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ProviderSessionReaper } from "../../provider/Services/ProviderSessionReaper.ts";
@@ -25,11 +25,16 @@ describe("TurnLifecycleRuntime", () => {
 
   it("reconciles sessions before starting ordered lifecycle workers", async () => {
     const calls: string[] = [];
+    const reconciling = Effect.runSync(Deferred.make<void>());
+    const reconciled = Effect.runSync(Deferred.make<void>());
     runtime = ManagedRuntime.make(
       TurnLifecycleRuntimeLive.pipe(
         Layer.provideMerge(
           Layer.succeed(ProviderSessionReaper, {
-            reconcileStartup: Effect.sync(() => calls.push("reconcile")),
+            reconcileStartup: Effect.sync(() => calls.push("reconcile")).pipe(
+              Effect.andThen(Deferred.succeed(reconciling, undefined)),
+              Effect.andThen(Deferred.await(reconciled)),
+            ),
             start: () => Effect.sync(() => calls.push("reaper")),
           }),
         ),
@@ -57,7 +62,14 @@ describe("TurnLifecycleRuntime", () => {
 
     const lifecycle = await runtime.runPromise(Effect.service(TurnLifecycleRuntime));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(lifecycle.start().pipe(Scope.provide(scope)));
+    const starting = Effect.runPromise(lifecycle.start().pipe(Scope.provide(scope)));
+    try {
+      await Effect.runPromise(Deferred.await(reconciling));
+      expect(calls).toEqual(["reconcile"]);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(reconciled, undefined));
+    }
+    await starting;
     await runtime.runPromise(lifecycle.drain);
 
     expect(calls).toEqual([

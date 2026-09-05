@@ -8,6 +8,8 @@ import {
   ThreadId,
   TurnId,
   type OrchestrationEvent,
+  ProviderDriverKind,
+  type ProviderSession,
 } from "@t3tools/contracts";
 import { Deferred, Effect, Fiber, FileSystem, Layer, PubSub, Ref, Stream } from "effect";
 import { describe } from "vitest";
@@ -19,6 +21,8 @@ import { GitCore } from "./Services/GitCore.ts";
 import { ProjectAutoPull, ProjectAutoPullLive } from "./ProjectAutoPull.ts";
 import { OrchestrationThread } from "@t3tools/contracts";
 import { Schema } from "effect";
+import { CheckoutCoordinator } from "./CheckoutCoordinator.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 
 const decodeThread = Schema.decodeUnknownSync(OrchestrationThread);
 
@@ -71,7 +75,9 @@ const fixture = Effect.gen(function* () {
     ],
   });
   const events = yield* PubSub.unbounded<OrchestrationEvent>();
+  const sessions = yield* Ref.make<ProviderSession[]>([]);
   const serviceLayer = ProjectAutoPullLive.pipe(
+    Layer.provide(Layer.mock(ProviderService)({ listSessions: () => Ref.get(sessions) })),
     Layer.provide(
       Layer.mock(OrchestrationEngineService)({
         getReadModel: () => Ref.get(model),
@@ -79,10 +85,70 @@ const fixture = Effect.gen(function* () {
       }),
     ),
   );
-  return { fs, core, root, cwd, before, after, git, model, events, serviceLayer, projectId, now };
+  return {
+    fs,
+    core,
+    root,
+    cwd,
+    before,
+    after,
+    git,
+    model,
+    events,
+    sessions,
+    serviceLayer,
+    projectId,
+    now,
+  };
 });
 
 describe("ProjectAutoPull", () => {
+  it.effect(
+    "excludes an old provider checkout during handoff even after the thread binding moves",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* Ref.set(f.sessions, [
+          {
+            threadId: ThreadId.make("moving-thread"),
+            provider: ProviderDriverKind.make("codex"),
+            status: "running",
+            runtimeMode: "full-access",
+            cwd: f.cwd,
+            activeTurnId: TurnId.make("old-turn"),
+            createdAt: f.now,
+            updatedAt: f.now,
+          },
+        ]);
+        yield* Effect.gen(function* () {
+          const service = yield* ProjectAutoPull;
+          yield* service.attempt(f.cwd);
+          assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.before);
+          yield* Ref.set(f.sessions, []);
+          yield* service.attempt(f.cwd);
+          assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.after);
+        }).pipe(Effect.provide(f.serviceLayer));
+      }).pipe(Effect.provide(GitLayer)),
+  );
+
+  it.effect("skips reserved and finalizing checkouts then pulls after the terminal outcome", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* Effect.gen(function* () {
+        const coordinator = yield* CheckoutCoordinator;
+        const autoPull = yield* ProjectAutoPull;
+        yield* coordinator.withCheckout(f.cwd, autoPull.attempt(f.cwd));
+        assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.before);
+        yield* coordinator.beginFinalization("completion", f.cwd);
+        yield* autoPull.attempt(f.cwd);
+        assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.before);
+        yield* coordinator.endFinalization("completion");
+        yield* autoPull.attempt(f.cwd);
+        assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.after);
+      }).pipe(Effect.provide(f.serviceLayer));
+    }).pipe(Effect.provide(GitLayer)),
+  );
+
   it.effect("resolves startup project aliases once per sweep", () =>
     Effect.gen(function* () {
       const f = yield* fixture;

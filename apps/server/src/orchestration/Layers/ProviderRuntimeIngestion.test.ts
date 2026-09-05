@@ -23,7 +23,17 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Cause, Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  PubSub,
+  Scope,
+  Stream,
+} from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
@@ -50,6 +60,7 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -215,7 +226,10 @@ type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][nu
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | CheckoutCoordinator,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -248,6 +262,7 @@ describe("ProviderRuntimeIngestion", () => {
       command: OrchestrationCommand,
     ) => boolean | "invariant" | "transient" | "interrupt" | "commit-then-interrupt";
     recordAssistantDeltaDispatches?: boolean;
+    beforeDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
   }) {
     const assistantDeltaDispatchLog: Array<string> = [];
     const workspaceRoot = makeTempDir("t3-provider-project-");
@@ -262,7 +277,9 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const engineLayer =
-      options?.failAssistantDeltaDispatch === undefined && !options?.recordAssistantDeltaDispatches
+      options?.failAssistantDeltaDispatch === undefined &&
+      !options?.recordAssistantDeltaDispatches &&
+      !options?.beforeDispatch
         ? orchestrationLayer
         : Layer.merge(
             orchestrationLayer,
@@ -274,7 +291,9 @@ describe("ProviderRuntimeIngestion", () => {
                   ...real,
                   dispatch: (command: OrchestrationCommand) => {
                     if (command.type !== "thread.message.assistant.delta") {
-                      return real.dispatch(command);
+                      return (options.beforeDispatch?.(command) ?? Effect.void).pipe(
+                        Effect.andThen(real.dispatch(command)),
+                      );
                     }
                     assistantDeltaDispatchLog.push(command.delta);
                     const failure = options.failAssistantDeltaDispatch?.(command) ?? false;
@@ -337,6 +356,7 @@ describe("ProviderRuntimeIngestion", () => {
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
@@ -406,6 +426,8 @@ describe("ProviderRuntimeIngestion", () => {
 
     return {
       engine,
+      coordinator,
+      workspaceRoot,
       ingestion,
       emit: provider.emit,
       setProviderSession: provider.setSession,
@@ -414,6 +436,75 @@ describe("ProviderRuntimeIngestion", () => {
       assistantDeltaDispatchLog,
     };
   }
+
+  it("establishes completion exclusion before publishing idle and retains it for checkpoint capture", async () => {
+    const idleDispatch = Effect.runSync(Deferred.make<void>());
+    const releaseIdle = Effect.runSync(Deferred.make<void>());
+    let completing = false;
+    const harness = await createHarness({
+      beforeDispatch: (command) =>
+        completing && command.type === "thread.session.set" && command.session.activeTurnId === null
+          ? Deferred.succeed(idleDispatch, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseIdle)),
+            )
+          : Effect.void,
+    });
+    const createdAt = new Date().toISOString();
+    const turnId = asTurnId("turn-completion-exclusion");
+    const eventId = asEventId("completion-exclusion");
+    const previousCheckout = `${harness.workspaceRoot}/previous-checkout`;
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      cwd: previousCheckout,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("start-exclusion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await harness.drain();
+    completing = true;
+    harness.emit({
+      type: "turn.completed",
+      eventId,
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      status: "completed",
+    });
+    try {
+      await Effect.runPromise(Deferred.await(idleDispatch));
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.workspaceRoot))).toBe(
+        true,
+      );
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(previousCheckout))).toBe(
+        true,
+      );
+      expect(
+        (await Effect.runPromise(harness.engine.getReadModel())).threads[0]?.session?.activeTurnId,
+      ).toBe(turnId);
+      await Effect.runPromise(Deferred.succeed(releaseIdle, undefined));
+      await Effect.runPromise(harness.ingestion.awaitTurnCompletionProcessed(eventId));
+      expect(
+        (await Effect.runPromise(harness.engine.getReadModel())).threads[0]?.session?.activeTurnId,
+      ).toBeNull();
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.workspaceRoot))).toBe(
+        true,
+      );
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseIdle, undefined));
+    }
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

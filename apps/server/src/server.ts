@@ -75,6 +75,7 @@ import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { AuthControlPlaneLive, AuthCoreLive } from "./auth/Layers/AuthControlPlane.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -318,6 +319,7 @@ const AgentAwarenessRelayLayerLive = AgentAwarenessRelay.layer.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
 );
 
 export const CloudHttpRuntimeLayerLive = Layer.mergeAll(

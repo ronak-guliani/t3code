@@ -1,9 +1,11 @@
-import { Clock, Context, Effect, FileSystem, Layer, PubSub, Ref, Stream } from "effect";
+import { Clock, Context, Effect, FileSystem, Layer, PubSub, Stream } from "effect";
 import type { Scope } from "effect";
 import type { OrchestrationProject, ProjectId } from "@t3tools/contracts";
 import { threadHasInFlightTurn } from "../orchestration/commandInvariants.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { GitCore, type GitStatusDetails } from "./Services/GitCore.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "./CheckoutCoordinator.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 
 function autoPullSkipReason(status: GitStatusDetails): string | null {
   if (!status.isRepo) return "not-a-repository";
@@ -33,7 +35,8 @@ export const ProjectAutoPullLive = Layer.effect(
     const changes = yield* Effect.acquireRelease(PubSub.unbounded<string>(), (pubsub) =>
       PubSub.shutdown(pubsub),
     );
-    const busy = yield* Ref.make(new Set<string>());
+    const coordinator = yield* CheckoutCoordinator;
+    const provider = yield* ProviderService;
     const failures = new Map<string, { count: number; retryAt: number }>();
 
     const enabledProjects = Effect.gen(function* () {
@@ -73,6 +76,7 @@ export const ProjectAutoPullLive = Layer.effect(
 
     const eligible = (cwd: string, projectIds: ReadonlySet<ProjectId>) =>
       Effect.gen(function* () {
+        if (yield* coordinator.isFinalizing(cwd)) return false;
         const model = yield* engine.getReadModel();
         const projects = indexProjects(model.projects);
         let enabled = false;
@@ -104,6 +108,14 @@ export const ProjectAutoPullLive = Layer.effect(
           const path = thread.worktreePath ?? project?.workspaceRoot;
           // An unresolved active owner is not evidence that the checkout is idle.
           if (!path || (yield* fs.realPath(path)) === cwd) return false;
+        }
+        // A handoff can rebind a thread before its old provider session exits.
+        // Keep that session's actual checkout excluded as well as the new binding.
+        const threads = new Map(model.threads.map((thread) => [thread.id, thread]));
+        for (const session of yield* provider.listSessions()) {
+          const thread = threads.get(session.threadId);
+          if (!session.activeTurnId && (!thread || !threadHasInFlightTurn(thread))) continue;
+          if (!session.cwd || (yield* fs.realPath(session.cwd)) === cwd) return false;
         }
         return true;
       });
@@ -144,8 +156,6 @@ export const ProjectAutoPullLive = Layer.effect(
         )
           return;
 
-        // This reservation only serializes automatic pulls. Turn starts, manual
-        // Git actions, and external terminals can still race these final checks.
         yield* git.execute({
           operation: "ProjectAutoPull.pull",
           cwd,
@@ -166,35 +176,22 @@ export const ProjectAutoPullLive = Layer.effect(
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         if ((failures.get(cwd)?.retryAt ?? 0) > now) return;
-        yield* Effect.acquireUseRelease(
-          Ref.modify(busy, (paths) =>
-            paths.has(cwd) ? [false, paths] : [true, new Set([...paths, cwd])],
+        yield* coordinator.tryWithCheckout(
+          cwd,
+          pull(cwd, projectIds).pipe(
+            Effect.tap(() => Effect.sync(() => failures.delete(cwd))),
+            Effect.catch((cause) =>
+              Effect.gen(function* () {
+                const count = (failures.get(cwd)?.count ?? 0) + 1;
+                const failedAt = yield* Clock.currentTimeMillis;
+                failures.set(cwd, {
+                  count,
+                  retryAt: failedAt + Math.min(30_000 * 2 ** (count - 1), 300_000),
+                });
+                yield* Effect.logWarning("Automatic project pull failed", { cwd, cause });
+              }),
+            ),
           ),
-          (acquired) =>
-            acquired
-              ? pull(cwd, projectIds).pipe(
-                  Effect.tap(() => Effect.sync(() => failures.delete(cwd))),
-                  Effect.catch((cause) =>
-                    Effect.gen(function* () {
-                      const count = (failures.get(cwd)?.count ?? 0) + 1;
-                      const failedAt = yield* Clock.currentTimeMillis;
-                      failures.set(cwd, {
-                        count,
-                        retryAt: failedAt + Math.min(30_000 * 2 ** (count - 1), 300_000),
-                      });
-                      yield* Effect.logWarning("Automatic project pull failed", { cwd, cause });
-                    }),
-                  ),
-                )
-              : Effect.void,
-          (acquired) =>
-            acquired
-              ? Ref.update(busy, (paths) => {
-                  const next = new Set(paths);
-                  next.delete(cwd);
-                  return next;
-                })
-              : Effect.void,
         );
       }).pipe(
         Effect.catch((cause) =>
@@ -245,4 +242,4 @@ export const ProjectAutoPullLive = Layer.effect(
 
     return { attempt, start, changes: Stream.fromPubSub(changes) };
   }),
-);
+).pipe(Layer.provideMerge(CheckoutCoordinatorLive));
