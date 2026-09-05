@@ -329,6 +329,7 @@ describe("environment entity projections", () => {
     harness.registry.set(
       harness.threadStateAtom(THREAD_ID),
       AsyncResult.success<EnvironmentThreadState>({
+        page: Option.none(),
         data: Option.some(detail),
         status: "live",
         error: Option.none(),
@@ -346,6 +347,7 @@ describe("environment entity projections", () => {
     harness.registry.set(
       harness.threadStateAtom(THREAD_ID),
       AsyncResult.success<EnvironmentThreadState>({
+        page: Option.none(),
         data: Option.some({
           ...detail,
           session: {

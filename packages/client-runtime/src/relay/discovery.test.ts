@@ -89,6 +89,7 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
   }
 
   const client = ManagedRelay.ManagedRelayClient.of({
+    getAgentActivitySnapshot: () => Effect.succeed({ aggregate: null }),
     relayUrl: "https://relay.example.test",
     listEnvironments: () =>
       Effect.gen(function* () {
@@ -325,6 +326,7 @@ describe("RelayEnvironmentDiscovery", () => {
     Effect.gen(function* () {
       const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
       const client = ManagedRelay.ManagedRelayClient.of({
+        getAgentActivitySnapshot: () => Effect.succeed({ aggregate: null }),
         relayUrl: "https://relay.example.test",
         listEnvironments: () =>
           Effect.fail(
@@ -372,7 +374,7 @@ describe("RelayEnvironmentDiscovery", () => {
         expect(Option.getOrThrow(state.error)).toMatchObject({
           _tag: "ConnectionTransientError",
           reason: "timeout",
-          message: "Relay environment listing timed out.",
+          message: expect.stringContaining("Relay environment listing timed out."),
         });
       }).pipe(Effect.provide(layer));
     }),

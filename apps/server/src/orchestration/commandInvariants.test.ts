@@ -267,6 +267,37 @@ describe("commandInvariants", () => {
     ).toBe(false);
   });
 
+  it("keeps a pending user turn in flight when a later system message is appended", () => {
+    const thread = readModel.threads[0]!;
+    expect(
+      threadHasInFlightTurn({
+        ...thread,
+        messages: [
+          {
+            id: MessageId.make("msg-queued"),
+            role: "user",
+            text: "queued work",
+            attachments: [],
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-09-05T06:00:00.000Z",
+            updatedAt: "2026-09-05T06:00:00.000Z",
+          },
+          {
+            id: MessageId.make("msg-system"),
+            role: "system",
+            text: "Related activity",
+            attachments: [],
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-09-05T06:00:00.001Z",
+            updatedAt: "2026-09-05T06:00:00.001Z",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
   it("requires non-negative integers", async () => {
     await Effect.runPromise(
       requireNonNegativeInteger({

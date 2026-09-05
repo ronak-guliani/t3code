@@ -98,14 +98,14 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
     return true;
   }
 
-  const latestMessage = thread.messages.at(-1);
-  if (latestMessage?.role !== "user") {
+  const latestUserMessage = thread.messages.findLast((message) => message.role === "user");
+  if (!latestUserMessage) {
     return false;
   }
   const failedTurnStart = thread.activities.some((activity) => {
     if (
       activity.kind !== "provider.turn.start.failed" ||
-      activity.createdAt < latestMessage.createdAt
+      activity.createdAt < latestUserMessage.createdAt
     ) {
       return false;
     }
@@ -116,7 +116,7 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
       typeof activity.payload.messageId === "string"
         ? activity.payload.messageId
         : null;
-    return messageId === null || messageId === latestMessage.id;
+    return messageId === null || messageId === latestUserMessage.id;
   });
   if (failedTurnStart) {
     return false;
@@ -124,18 +124,18 @@ export function threadHasInFlightTurn(thread: OrchestrationThread): boolean {
   if (thread.latestTurn === null || thread.latestTurn.completedAt === null) {
     return true;
   }
-  return latestMessage.createdAt >= thread.latestTurn.completedAt;
+  return latestUserMessage.createdAt >= thread.latestTurn.completedAt;
 }
 
 export function threadHasQueuedTurnStart(
   thread: OrchestrationThread,
   options: { readonly now: string },
 ): boolean {
-  const latestMessage = thread.messages.at(-1);
-  if (latestMessage?.role !== "user") {
+  const latestUserMessage = thread.messages.findLast((message) => message.role === "user");
+  if (!latestUserMessage) {
     return false;
   }
-  const latestMessageAt = Date.parse(latestMessage.createdAt);
+  const latestMessageAt = Date.parse(latestUserMessage.createdAt);
   const nowAt = Date.parse(options.now);
   if (
     !Number.isFinite(latestMessageAt) ||
@@ -147,7 +147,7 @@ export function threadHasQueuedTurnStart(
   const failedTurnStart = thread.activities.some((activity) => {
     if (
       activity.kind !== "provider.turn.start.failed" ||
-      activity.createdAt < latestMessage.createdAt
+      activity.createdAt < latestUserMessage.createdAt
     ) {
       return false;
     }
@@ -158,14 +158,14 @@ export function threadHasQueuedTurnStart(
       typeof activity.payload.messageId === "string"
         ? activity.payload.messageId
         : null;
-    return messageId === null || messageId === latestMessage.id;
+    return messageId === null || messageId === latestUserMessage.id;
   });
   if (failedTurnStart) {
     return false;
   }
   return thread.latestTurn === null || thread.latestTurn.completedAt === null
     ? thread.latestTurn?.state !== "running"
-    : latestMessage.createdAt >= thread.latestTurn.completedAt;
+    : latestUserMessage.createdAt >= thread.latestTurn.completedAt;
 }
 
 /**

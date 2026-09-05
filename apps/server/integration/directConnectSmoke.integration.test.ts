@@ -343,6 +343,7 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
         );
         expect(serverConfig.environment.capabilities).toMatchObject({
+          ownedMobileProtocolVersion: 1,
           connectionProbe: true,
           pullRequests: false,
           threadSettlement: true,
@@ -621,6 +622,53 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           }).pipe(Effect.timeout("5 seconds")),
         );
         expect(Exit.isFailure(requestAfterShutdown)).toBe(true);
+
+        const restartedScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(restartedScope, Exit.void));
+        yield* Layer.build(
+          productionServerLayer.pipe(Layer.provide(Layer.succeed(ServerConfig, config))),
+        ).pipe(Scope.provide(restartedScope));
+        const restartedState = yield* retryUntil(
+          readPersistedServerRuntimeState(config.serverRuntimeStatePath),
+          Option.isSome,
+          "the restarted production server",
+        );
+        const restartedOrigin = Option.getOrThrow(restartedState).origin;
+        const persistedSnapshot = yield* fetchJson<{
+          readonly snapshotSequence: number;
+          readonly projects: ReadonlyArray<{ readonly id: string }>;
+        }>(`${restartedOrigin}/api/orchestration/shell-snapshot`, {
+          headers: { authorization: ["Bearer", ownerToken].join(" ") },
+        });
+        expect(
+          persistedSnapshot.body.projects.filter((project) => project.id === projectId),
+        ).toHaveLength(1);
+        const replayAfterRestart = yield* fetchJson<{ readonly sequence: number }>(
+          `${restartedOrigin}/api/orchestration/dispatch`,
+          {
+            method: "POST",
+            headers: {
+              authorization: ["Bearer", ownerToken].join(" "),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              type: "project.create",
+              commandId: CommandId.make("cmd-direct-connect-project-create"),
+              projectId,
+              title: "Direct Connect Project",
+              workspaceRoot: workspaceDir,
+              defaultModelSelection,
+              createdAt: new Date().toISOString(),
+            }),
+          },
+        );
+        expect(replayAfterRestart.body.sequence).toBe(dispatch.body.sequence);
+        const persistedRevocation = yield* Effect.promise(() =>
+          fetch(`${restartedOrigin}/api/orchestration/shell-snapshot`, {
+            headers: { authorization: ["Bearer", registration.credential.token].join(" ") },
+          }),
+        );
+        expect(persistedRevocation.status).toBe(401);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

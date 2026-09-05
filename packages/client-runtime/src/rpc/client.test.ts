@@ -1,5 +1,11 @@
 import {
   EnvironmentId,
+  CommandId,
+  MessageId,
+  ThreadId,
+  ORCHESTRATION_WS_METHODS,
+  type ServerConfig,
+  type CapabilityClientOrchestrationCommand,
   type RelayClientInstallProgressEvent,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -25,7 +31,15 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { EnvironmentRpcRequestObserver, request, runStream, subscribe } from "./client.ts";
+import {
+  EnvironmentRpcRequestObserver,
+  request,
+  requiredRpcCapabilities,
+  runStream,
+  subscribe,
+} from "./client.ts";
+import { TEST_SERVER_CONFIG } from "../../test/fixtures.ts";
+import { EnvironmentRpcDiagnostics, type RpcDiagnostic } from "./diagnostics.ts";
 
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
@@ -43,10 +57,13 @@ const INSTALL_DOWNLOADING: RelayClientInstallProgressEvent = {
   stage: "downloading",
 };
 
-function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
+function session(
+  client: WsRpcProtocolClient,
+  config: ServerConfig = TEST_SERVER_CONFIG,
+): RpcSession.RpcSession {
   return {
     client,
-    initialConfig: Effect.never,
+    initialConfig: Effect.succeed(config),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
@@ -77,9 +94,156 @@ const makeHarness = Effect.fn("TestEnvironmentRpc.makeHarness")(function* () {
 });
 
 describe("environment RPC", () => {
+  it("preserves inline images and requires explicit capabilities for stored attachments", () => {
+    const capabilitiesFor = (attachments: ReadonlyArray<unknown>) =>
+      requiredRpcCapabilities(ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "thread.turn.start",
+        message: { attachments },
+      });
+
+    expect(capabilitiesFor([{ type: "image", dataUrl: "data:image/png;base64,AA==" }])).toEqual([]);
+    expect(capabilitiesFor([{ type: "image", id: "image-1" }])).toEqual(["attachmentUploads"]);
+    expect(capabilitiesFor([{ type: "file", id: "file-1" }])).toEqual([
+      "attachmentUploads",
+      "fileAttachments",
+    ]);
+    expect(
+      requiredRpcCapabilities(WS_METHODS.assetsCreateUrl, {
+        resource: { _tag: "native-app-icon" },
+      }),
+    ).toEqual(["nativeAppIcons"]);
+  });
+
+  it("gates new shared settings without blocking existing fork preferences", () => {
+    expect(
+      requiredRpcCapabilities(WS_METHODS.serverUpdateSettings, {
+        patch: { sidebarAutoSettleAfterDays: 7 },
+      }),
+    ).toEqual(["threadAutoSettlement"]);
+    expect(
+      requiredRpcCapabilities(WS_METHODS.serverUpdateSettings, {
+        patch: { enableAssistantStreaming: false, defaultThreadEnvMode: "local" },
+      }),
+    ).toEqual([]);
+  });
+
+  it.effect("rejects optional methods before touching the wire when capability is absent", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      let dispatches = 0;
+      const client = {
+        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () =>
+          Effect.sync(() => {
+            dispatches += 1;
+            return { sequence: 7 };
+          }),
+        [WS_METHODS.attachmentsDelete]: () =>
+          Effect.sync(() => {
+            calls += 1;
+            return { deleted: true };
+          }),
+      } as unknown as WsRpcProtocolClient;
+      const { activeSession, supervisor } = yield* makeHarness();
+      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
+      const result = yield* request(WS_METHODS.attachmentsDelete, { attachmentId: "file-1" }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
+      expect(result).toMatchObject({
+        _tag: "EnvironmentRpcUnsupportedError",
+        capability: "attachmentUploads",
+      });
+      expect(calls).toBe(0);
+      const command: CapabilityClientOrchestrationCommand = {
+        type: "thread.turn.start",
+        commandId: CommandId.make("command-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("message-1"),
+          role: "user",
+          text: "Inspect this file",
+          attachments: [
+            {
+              type: "file",
+              id: "file-1",
+              name: "notes.txt",
+              mimeType: "text/plain",
+              sizeBytes: 12,
+            },
+          ],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      const dispatchFailure = yield* request(
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        command,
+      ).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
+      expect(dispatchFailure).toMatchObject({
+        _tag: "EnvironmentRpcUnsupportedError",
+        capability: "attachmentUploads",
+      });
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some(
+          session(client, {
+            ...TEST_SERVER_CONFIG,
+            environment: {
+              ...TEST_SERVER_CONFIG.environment,
+              capabilities: {
+                ...TEST_SERVER_CONFIG.environment.capabilities,
+                attachmentUploads: true,
+              },
+            },
+          }),
+        ),
+      );
+      yield* request(WS_METHODS.attachmentsDelete, { attachmentId: "file-1" }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(calls).toBe(1);
+      const filesUnsupported = yield* request(
+        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        command,
+      ).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
+      expect(filesUnsupported).toMatchObject({
+        _tag: "EnvironmentRpcUnsupportedError",
+        capability: "fileAttachments",
+      });
+      expect(dispatches).toBe(0);
+      yield* SubscriptionRef.set(
+        activeSession,
+        Option.some(
+          session(client, {
+            ...TEST_SERVER_CONFIG,
+            environment: {
+              ...TEST_SERVER_CONFIG.environment,
+              capabilities: {
+                ...TEST_SERVER_CONFIG.environment.capabilities,
+                attachmentUploads: true,
+                fileAttachments: { maxUploadBytes: 1024 },
+              },
+            },
+          }),
+        ),
+      );
+      yield* request(ORCHESTRATION_WS_METHODS.dispatchCommand, command).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      );
+      expect(dispatches).toBe(1);
+    }),
+  );
   it.effect("observes unary requests until they complete", () =>
     Effect.gen(function* () {
       const observations: string[] = [];
+      const diagnosticEvents: RpcDiagnostic[] = [];
       const client = {
         [WS_METHODS.cloudGetRelayClientStatus]: () =>
           Effect.succeed({ status: "available", version: "2026.6.0" }),
@@ -89,6 +253,12 @@ describe("environment RPC", () => {
 
       const result = yield* request(WS_METHODS.cloudGetRelayClientStatus, {}).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(EnvironmentRpcDiagnostics, {
+          record: (event) =>
+            Effect.sync(() => {
+              diagnosticEvents.push(event);
+            }),
+        }),
         Effect.provideService(
           EnvironmentRpcRequestObserver,
           EnvironmentRpcRequestObserver.of({
@@ -104,6 +274,13 @@ describe("environment RPC", () => {
       );
 
       expect(result).toEqual({ status: "available", version: "2026.6.0" });
+      expect(diagnosticEvents.map((event) => event.phase)).toEqual(["started", "succeeded"]);
+      expect(diagnosticEvents[1]).toMatchObject({
+        environmentId: TARGET.environmentId,
+        generation: 0,
+        method: WS_METHODS.cloudGetRelayClientStatus,
+        durationMs: 0,
+      });
       expect(observations).toEqual([
         `start:${TARGET.environmentId}:${WS_METHODS.cloudGetRelayClientStatus}`,
         `finish:${TARGET.environmentId}:${WS_METHODS.cloudGetRelayClientStatus}`,
@@ -111,6 +288,29 @@ describe("environment RPC", () => {
     }),
   );
 
+  it.effect("records a failed attempt with command identity even when no session exists", () =>
+    Effect.gen(function* () {
+      const events: RpcDiagnostic[] = [];
+      const { supervisor } = yield* makeHarness();
+      const command = {
+        type: "thread.archive" as const,
+        commandId: CommandId.make("queued-command"),
+        threadId: ThreadId.make("thread-1"),
+      };
+      yield* request(ORCHESTRATION_WS_METHODS.dispatchCommand, command).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(EnvironmentRpcDiagnostics, {
+          record: (event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+        }),
+        Effect.exit,
+      );
+      expect(events.map((event) => event.phase)).toEqual(["started", "failed"]);
+      expect(events[1]).toMatchObject({ commandId: "queued-command", threadId: "thread-1" });
+    }),
+  );
   it.effect("binds finite streaming commands to one active session", () =>
     Effect.gen(function* () {
       const firstEvents = yield* Queue.unbounded<RelayClientInstallProgressEvent>();

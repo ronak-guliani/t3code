@@ -1,7 +1,12 @@
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
+import { WS_METHODS } from "@t3tools/contracts";
 
-import { createAtomCommandScheduler, createEnvironmentCommand } from "./runtime.ts";
+import {
+  createAtomCommandScheduler,
+  createEnvironmentCommand,
+  createEnvironmentRpcCommand,
+} from "./runtime.ts";
 import {
   type ArchiveThreadInput,
   type CreateThreadInput,
@@ -12,13 +17,16 @@ import {
   type RevertThreadCheckpointInput,
   type SetThreadInteractionModeInput,
   type SetThreadRuntimeModeInput,
-  type StartThreadTurnInput,
-  type StopThreadSessionInput,
+  type PinThreadInput,
+  type ReorderPinnedThreadInput,
   type SettleThreadInput,
   type SnoozeThreadInput,
+  type StartThreadTurnInput,
+  type StopThreadSessionInput,
+  type UnarchiveThreadInput,
+  type UnpinThreadInput,
   type UnsettleThreadInput,
   type UnsnoozeThreadInput,
-  type UnarchiveThreadInput,
   type UpdateThreadMetadataInput,
   archiveThread,
   createThread,
@@ -29,13 +37,16 @@ import {
   revertThreadCheckpoint,
   setThreadInteractionMode,
   setThreadRuntimeMode,
-  startThreadTurn,
-  stopThreadSession,
+  pinThread,
+  reorderPinnedThread,
   settleThread,
   snoozeThread,
+  startThreadTurn,
+  stopThreadSession,
+  unarchiveThread,
+  unpinThread,
   unsettleThread,
   unsnoozeThread,
-  unarchiveThread,
   updateThreadMetadata,
 } from "../operations/commands.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -50,13 +61,16 @@ export type {
   RevertThreadCheckpointInput,
   SetThreadInteractionModeInput,
   SetThreadRuntimeModeInput,
-  StartThreadTurnInput,
-  StopThreadSessionInput,
+  PinThreadInput,
+  ReorderPinnedThreadInput,
   SettleThreadInput,
   SnoozeThreadInput,
+  StartThreadTurnInput,
+  StopThreadSessionInput,
+  UnarchiveThreadInput,
+  UnpinThreadInput,
   UnsettleThreadInput,
   UnsnoozeThreadInput,
-  UnarchiveThreadInput,
   UpdateThreadMetadataInput,
 } from "../operations/commands.ts";
 
@@ -118,6 +132,24 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    pin: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:pin",
+      execute: (input: PinThreadInput) => pinThread(input),
+      scheduler,
+      concurrency,
+    }),
+    unpin: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:unpin",
+      execute: (input: UnpinThreadInput) => unpinThread(input),
+      scheduler,
+      concurrency,
+    }),
+    reorderPin: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:reorder-pin",
+      execute: (input: ReorderPinnedThreadInput) => reorderPinnedThread(input),
+      scheduler,
+      concurrency,
+    }),
     updateMetadata: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:update-metadata",
       execute: (input: UpdateThreadMetadataInput) => updateThreadMetadata(input),
@@ -169,6 +201,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     stopSession: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:stop-session",
       execute: (input: StopThreadSessionInput) => stopThreadSession(input),
+      scheduler,
+      concurrency,
+    }),
+    uploadFeedback: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:upload-feedback",
+      tag: WS_METHODS.providerUploadFeedback,
       scheduler,
       concurrency,
     }),

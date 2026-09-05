@@ -1,16 +1,37 @@
 import { describe, expect, it } from "@effect/vitest";
-import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
 import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   createAssetEnvironmentAtoms,
+  compatibleAssetResource,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
 } from "./assets.ts";
 
 describe("asset collection keys", () => {
+  it("uses the authorized workspace-image API when modern media access is unavailable", () => {
+    const resource = {
+      _tag: "media-file",
+      threadId: ThreadId.make("thread-1"),
+      path: "image.png",
+    } as const;
+    expect(
+      compatibleAssetResource(resource, {
+        repositoryIdentity: true,
+        connectionProbe: true,
+      }),
+    ).toEqual({ ...resource, _tag: "workspace-file" });
+    expect(
+      compatibleAssetResource(resource, {
+        repositoryIdentity: true,
+        connectionProbe: true,
+        mediaFiles: true,
+      }),
+    ).toBe(resource);
+  });
   it("preserves malformed JSON and its native cause", () => {
     const key = "not-json";
     let error: unknown;

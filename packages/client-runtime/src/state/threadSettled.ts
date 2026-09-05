@@ -166,3 +166,100 @@ export function effectiveSettled(
   }
   return shell.settledOverride === "settled";
 }
+
+export type SnoozePresetId = "hour" | "three-hours" | "evening" | "tomorrow" | "next-week";
+
+export interface SnoozePreset {
+  readonly id: SnoozePresetId;
+  readonly label: string;
+  /** Menu-row time column. Complements the label instead of repeating it:
+      "Tomorrow" pairs with "9:00 AM", not "tomorrow 9:00 AM". */
+  readonly whenLabel: string;
+  /** ISO wake time. */
+  readonly snoozedUntil: string;
+}
+
+const HOUR_MS = 60 * 60 * 1_000;
+
+function snoozeTimeOfDayLabel(date: Date): string {
+  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function snoozeAtHour(base: Date, hour: number): Date {
+  const next = new Date(base);
+  next.setHours(hour, 0, 0, 0);
+  return next;
+}
+
+const EVENING_HOUR = 18;
+
+function addSnoozeDays(base: Date, days: number): Date {
+  const next = new Date(base);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+const MORNING_HOUR = 9;
+
+export function resolveSnoozePresets(now: Date): ReadonlyArray<SnoozePreset> {
+  const inAnHour = new Date(now.getTime() + HOUR_MS);
+  const inThreeHours = new Date(now.getTime() + 3 * HOUR_MS);
+  const presets: SnoozePreset[] = [
+    {
+      id: "hour",
+      label: "In 1 hour",
+      whenLabel: snoozeTimeOfDayLabel(inAnHour),
+      snoozedUntil: inAnHour.toISOString(),
+    },
+    {
+      id: "three-hours",
+      label: "In 3 hours",
+      whenLabel: snoozeTimeOfDayLabel(inThreeHours),
+      snoozedUntil: inThreeHours.toISOString(),
+    },
+  ];
+
+  const evening = snoozeAtHour(now, EVENING_HOUR);
+  if (evening.getTime() - now.getTime() > HOUR_MS) {
+    presets.push({
+      id: "evening",
+      label: "This evening",
+      whenLabel: snoozeTimeOfDayLabel(evening),
+      snoozedUntil: evening.toISOString(),
+    });
+  }
+
+  const tomorrow = snoozeAtHour(addSnoozeDays(now, 1), MORNING_HOUR);
+  presets.push({
+    id: "tomorrow",
+    label: "Tomorrow",
+    whenLabel: snoozeTimeOfDayLabel(tomorrow),
+    snoozedUntil: tomorrow.toISOString(),
+  });
+
+  const daysUntilMonday = (1 - now.getDay() + 7) % 7 || 7;
+  const nextWeek = snoozeAtHour(addSnoozeDays(now, daysUntilMonday), MORNING_HOUR);
+  if (nextWeek.getTime() !== tomorrow.getTime()) {
+    presets.push({
+      id: "next-week",
+      label: "Next week",
+      whenLabel: `${nextWeek.toLocaleDateString(undefined, { weekday: "short" })} ${snoozeTimeOfDayLabel(nextWeek)}`,
+      snoozedUntil: nextWeek.toISOString(),
+    });
+  }
+
+  return presets;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+export function snoozeWakeLabel(snoozedUntil: string, options: { readonly now: string }): string {
+  const wakeMs = Date.parse(snoozedUntil);
+  const nowMs = Date.parse(options.now);
+  if (Number.isNaN(wakeMs) || Number.isNaN(nowMs)) return "now";
+  const remainingMs = wakeMs - nowMs;
+  if (remainingMs <= 0) return "now";
+  if (remainingMs < HOUR_MS) return `${Math.max(1, Math.ceil(remainingMs / 60_000))}m`;
+  if (remainingMs < DAY_MS) return `${Math.ceil(remainingMs / HOUR_MS)}h`;
+  return `${Math.ceil(remainingMs / DAY_MS)}d`;
+}

@@ -3,7 +3,12 @@ import { Linking } from "react-native";
 
 import { reportClientError } from "./clientLogger";
 
-const ExternalUrlTarget = Schema.Literals(["file-preview", "markdown-link", "pull-request"]);
+const ExternalUrlTarget = Schema.Literals([
+  "file-preview",
+  "markdown-link",
+  "pull-request",
+  "provider-auth",
+]);
 
 export type ExternalUrlTarget = typeof ExternalUrlTarget.Type;
 

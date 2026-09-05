@@ -1,5 +1,5 @@
 import { useRoute, type RouteProp } from "@react-navigation/native";
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import {
   EnvironmentId,
   type OrchestrationThread,
@@ -38,6 +38,7 @@ function threadDetailToShell(
   thread: OrchestrationThread,
 ): EnvironmentThreadShell {
   return {
+    ...thread,
     environmentId,
     id: thread.id,
     projectId: thread.projectId,
@@ -47,16 +48,21 @@ function threadDetailToShell(
     interactionMode: thread.interactionMode,
     branch: thread.branch,
     worktreePath: thread.worktreePath,
+    linkedPullRequest: thread.linkedPullRequest ?? null,
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     archivedAt: thread.archivedAt,
+    settledOverride: thread.settledOverride,
+    settledAt: thread.settledAt,
+    snoozedUntil: thread.snoozedUntil ?? null,
+    snoozedAt: thread.snoozedAt ?? null,
     session: thread.session,
     latestUserMessageAt: latestUserMessageAt(thread),
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    hasPendingQueuedTurn: false,
+    hasPendingQueuedTurn: (thread.queuedTurns ?? []).some((turn) => turn.failedAt === null),
   };
 }
 
@@ -75,12 +81,10 @@ function useResolvedThreadSelection(params: ThreadSelectionRouteParams | undefin
     };
   }, [routeParams.environmentId, routeParams.threadId]);
   const lastRouteThreadRef = useRef<ScopedThreadRef | null>(null);
+  if (routeThreadRef !== null) {
+    lastRouteThreadRef.current = routeThreadRef;
+  }
   const selectedThreadRef = routeThreadRef ?? lastRouteThreadRef.current;
-  useLayoutEffect(() => {
-    if (routeThreadRef !== null) {
-      lastRouteThreadRef.current = routeThreadRef;
-    }
-  }, [routeThreadRef]);
   const selectedThreadShell = useThreadShell(selectedThreadRef);
   const selectedThreadDetailState = useEnvironmentThread(
     selectedThreadRef?.environmentId ?? null,

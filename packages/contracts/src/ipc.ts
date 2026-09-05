@@ -1106,3 +1106,43 @@ export interface EnvironmentApi {
     ) => () => void;
   };
 }
+
+export const DesktopUpdateStatusSchema = Schema.Literals([
+  "disabled",
+  "idle",
+  "checking",
+  "up-to-date",
+  "available",
+  "downloading",
+  "downloaded",
+  "error",
+]);
+
+export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
+
+export const DesktopRuntimeArchSchema = Schema.Literals(["arm64", "x64", "other"]);
+
+export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
+  version: Schema.String,
+  items: Schema.Array(Schema.String),
+  totalItems: Schema.Number,
+});
+
+export const DesktopUpdateStateSchema = Schema.Struct({
+  enabled: Schema.Boolean,
+  status: DesktopUpdateStatusSchema,
+  channel: DesktopUpdateChannelSchema,
+  currentVersion: Schema.String,
+  hostArch: DesktopRuntimeArchSchema,
+  appArch: DesktopRuntimeArchSchema,
+  runningUnderArm64Translation: Schema.Boolean,
+  availableVersion: Schema.NullOr(Schema.String),
+  downloadedVersion: Schema.NullOr(Schema.String),
+  releaseNotes: Schema.Array(DesktopUpdateReleaseNoteSchema),
+  omittedReleaseCount: Schema.Number,
+  downloadPercent: Schema.NullOr(Schema.Number),
+  checkedAt: Schema.NullOr(Schema.String),
+  message: Schema.NullOr(Schema.String),
+  errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
+  canRetry: Schema.Boolean,
+});

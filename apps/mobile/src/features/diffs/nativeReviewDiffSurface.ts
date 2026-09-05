@@ -150,6 +150,10 @@ export interface NativeReviewDiffViewHandle {
   readonly scrollToTop: (animated?: boolean) => Promise<void>;
 }
 
+export function isNativeReviewDiffDrawEvent(payload: Readonly<Record<string, unknown>>): boolean {
+  return payload.message === "draw-metrics" || payload.message === "visible-range";
+}
+
 interface NativeReviewDiffViewRef {
   readonly setRowsJson: (rowsJson: string) => Promise<void>;
   readonly setTokensJson: (tokensJson: string) => Promise<void>;
@@ -171,9 +175,11 @@ let nativeReviewDiffViewResolutionFailed = false;
 type NativeReviewDiffPayloadMethod = "setRowsJson" | "setTokensJson" | "setTokensPatchJson";
 
 export function isPendingNativeViewRegistration(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
   return (
-    error instanceof Error &&
-    error.message.includes(`Unable to find the '${NATIVE_REVIEW_DIFF_MODULE_NAME}' view`)
+    error.message.includes(`Unable to find the '${NATIVE_REVIEW_DIFF_MODULE_NAME}' view`) ||
+    (error.message.includes("Unable to find the class") &&
+      error.message.includes("T3ReviewDiffView view with tag"))
   );
 }
 

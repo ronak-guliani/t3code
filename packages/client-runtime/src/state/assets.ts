@@ -1,10 +1,31 @@
-// @ts-nocheck
-import { AssetResource, EnvironmentId, WS_METHODS } from "@t3tools/contracts";
+import {
+  type AssetCreateUrlResult,
+  type AssetCreateUrlInput,
+  type ExecutionEnvironmentCapabilities,
+  AssetResource,
+  EnvironmentId,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { Atom } from "effect/unstable/reactivity";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import { createEnvironmentQueryAtomFamily } from "./runtime.ts";
+import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import { request } from "../rpc/client.ts";
+
+export function compatibleAssetResource(
+  resource: AssetResource,
+  capabilities: ExecutionEnvironmentCapabilities,
+): AssetResource {
+  if (resource._tag === "media-file" && capabilities.mediaFiles !== true) {
+    return { _tag: "workspace-file", threadId: resource.threadId, path: resource.path };
+  }
+  return resource;
+}
 
 const ASSET_URL_REFRESH_INTERVAL_MS = 30 * 60_000;
 const ASSET_URL_STALE_TIME_MS = 5 * 60_000;
@@ -44,12 +65,53 @@ export function resolveAssetUrl(httpBaseUrl: string, relativeUrl: string): strin
   }
 }
 
+export const EMPTY_ASSET_URL_ATOM = Atom.make(AsyncResult.initial<never, never>(false)).pipe(
+  Atom.withLabel("asset-url:empty"),
+);
+
+export type AssetUrlState =
+  | { readonly _tag: "Loading" }
+  | { readonly _tag: "Failure" }
+  | {
+      readonly _tag: "Success";
+      readonly url: string;
+      /** The host path the server chose to serve, when it differs from what was asked for. */
+      readonly sourcePath?: string;
+    };
+
+export function assetUrlStateFromResult(
+  result: AsyncResult.AsyncResult<AssetCreateUrlResult, unknown>,
+  httpBaseUrl: string | null,
+): AssetUrlState {
+  if (result._tag === "Failure") return { _tag: "Failure" };
+  if (httpBaseUrl === null || result._tag !== "Success") return { _tag: "Loading" };
+  const url = resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+  if (url === null) return { _tag: "Failure" };
+  return {
+    _tag: "Success",
+    url,
+    ...(result.value.sourcePath !== undefined ? { sourcePath: result.value.sourcePath } : {}),
+  };
+}
+
 export function createAssetEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
-  const createUrl = createEnvironmentRpcQueryAtomFamily(runtime, {
+  const createUrl = createEnvironmentQueryAtomFamily(runtime, {
     label: "environment-data:assets:create-url",
-    tag: WS_METHODS.assetsCreateUrl,
+    execute: (input: AssetCreateUrlInput) =>
+      Effect.gen(function* () {
+        let resource = input.resource;
+        if (resource._tag === "media-file") {
+          const supervisor = yield* EnvironmentSupervisor;
+          const session = yield* SubscriptionRef.get(supervisor.session);
+          if (Option.isSome(session)) {
+            const config = yield* session.value.initialConfig;
+            resource = compatibleAssetResource(resource, config.environment.capabilities);
+          }
+        }
+        return yield* request(WS_METHODS.assetsCreateUrl, { ...input, resource });
+      }),
     staleTimeMs: ASSET_URL_STALE_TIME_MS,
     idleTtlMs: ASSET_URL_IDLE_TTL_MS,
     refreshIntervalMs: ASSET_URL_REFRESH_INTERVAL_MS,
