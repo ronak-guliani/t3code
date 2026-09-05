@@ -20,10 +20,16 @@ vi.mock("react-native", () => ({
   },
 }));
 
+vi.mock("expo-constants", () => ({
+  default: {
+    expoConfig: { name: "T3 Code RG Preview" },
+  },
+}));
+
 describe("mobile remote connection records", () => {
   it("identifies mobile token exchanges for authorized-client presentation", () => {
     expect(authClientMetadata()).toEqual({
-      label: "T3 Code Mobile",
+      label: "T3 Code RG Preview",
       deviceType: "mobile",
       os: "iOS",
     });

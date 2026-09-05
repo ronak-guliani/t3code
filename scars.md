@@ -1,6 +1,7 @@
 # Scars
 
 - Agent browser access is a server-authoritative capability: gate credential issuance centrally, revoke stale credentials on denial, attach the resulting session consistently across providers, and derive provider instructions from actual tool availability.
+- Find-in-chat scrolling must follow selected match identity, not the rebuilt match object; message sends and stream updates otherwise yank the viewport back to an old search result.
 - `packages/contracts` stays schema-only; no runtime logic.
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.
@@ -71,6 +72,7 @@
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
 - Workspace dependency patches do not ship in the published CLI manifest; when runtime behavior depends on a patched package, bundle that package into `dist/bin.mjs` and verify the packed artifact contains the patch.
 - T3 Connect release builds and local desktop installers must explicitly inject the public Clerk and relay configuration into package-local Vite builds; root env files are not loaded automatically, `.env.example` is the local installer fallback beneath `.env`/`.env.local`, and loopback OAuth must enter through the hosted `/connect` page so Clerk sign-in cannot discard state or PKCE parameters.
+- Owned mobile builds must isolate every variant's native/widget IDs, URL schemes, EAS project and update feed; desktop cloud env must not enable mobile services. Pass the same variant to both Expo prebuild and run, and compile standalone previews in Release mode.
 - Distinct desktop installations on one host use separate `T3CODE_HOME` environment IDs; suffix their shared machine label with the desktop stage so Connect failures identify the correct installation.
 - `HttpApiBuilder.group` only defines handlers; mount typed HTTP groups through `HttpApiBuilder.layer` or requests fall through to the SPA while clients report JSON decode failures.
 - Official mobile clients report background activity immediately and every 25 seconds; identify leases by authenticated session plus stable device ID, retain a monotonic internal socket generation for ownership, cleanup, and per-socket caps, suppress cross-session heartbeat fanout, expire stale host-power constraints, and reject both late reports and late teardown from superseded sockets.

@@ -5165,6 +5165,109 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it.each([false, true])(
+    "keeps the timeline at the bottom when Enter sends with find open=%s",
+    async (findOpen) => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "scroll-send-target" as MessageId,
+          targetText: "Earlier conversation",
+        }),
+        resolveRpc: (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+            ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+            : undefined,
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [
+              {
+                command: "chat.find",
+                shortcut: {
+                  key: "f",
+                  metaKey: false,
+                  ctrlKey: false,
+                  shiftKey: false,
+                  altKey: false,
+                  modKey: true,
+                },
+              },
+            ],
+          };
+        },
+      });
+      const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await waitForServerConfigToApply();
+        const editor = await waitForComposerEditor();
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain");
+        expect(timeline).not.toBeNull();
+        const distance = () =>
+          timeline!.scrollHeight - timeline!.clientHeight - timeline!.scrollTop;
+        await expect.poll(distance).toBeLessThan(5);
+        if (findOpen) {
+          await waitForServerConfigToApply();
+          dispatchChatFindShortcut();
+          const input = await waitForElement(
+            () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+            "Find input should open",
+          );
+          await page.getByPlaceholder(input.placeholder).fill("Earlier conversation");
+          await expect.element(page.getByText("1 of 1")).toBeVisible();
+          await vi.waitFor(() => {
+            expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+              "Earlier conversation",
+            );
+          });
+          timeline!.scrollTop = timeline!.scrollHeight;
+          await waitForLayout();
+        }
+        await page.getByRole("textbox").last().fill("Please continue");
+        await waitForComposerText("Please continue");
+        await vi.waitFor(async () => {
+          expect((await waitForSendButton()).disabled).toBe(false);
+        });
+        editor.focus();
+        scrollIntoView.mockClear();
+        const scrollTo = vi.spyOn(timeline!, "scrollTo");
+        const initialScrollTop = timeline!.scrollTop;
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => {
+          expect(wsRequests).toContainEqual(
+            expect.objectContaining({
+              _tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+              type: "thread.turn.start",
+            }),
+          );
+          expect(editor.textContent).toBe("");
+        });
+        await expect.element(page.getByText("Please continue", { exact: true })).toBeVisible();
+        await waitForLayout();
+        await expect.poll(distance).toBeLessThan(5);
+        expect(
+          scrollIntoView.mock.contexts.filter(
+            (element) =>
+              element instanceof HTMLElement && element.hasAttribute("data-timeline-row-id"),
+          ),
+        ).toHaveLength(0);
+        expect(
+          scrollTo.mock.calls.every(
+            ([options]: [ScrollToOptions | number, number?]) =>
+              typeof options !== "object" ||
+              options.top === undefined ||
+              options.top > initialScrollTop / 2,
+          ),
+        ).toBe(true);
+        scrollTo.mockRestore();
+      } finally {
+        scrollIntoView.mockRestore();
+        await mounted.cleanup();
+        usePendingTurnStore.getState().clearThreadState(THREAD_REF);
+      }
+    },
+  );
+
   it("opens find in chat from the configured shortcut, prevents native find, and closes on Escape", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

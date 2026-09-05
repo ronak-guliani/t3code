@@ -47,7 +47,7 @@ Create a reviewable PR that accurately describes the branch's changes. Use `gh` 
 
    Add issue-closing keywords, screenshots, rollout notes, or reviewer context only when supported by the changes or supplied by the user. Describe the why and externally observable behavior, not a file-by-file diff.
 
-5. Before creating the PR, present the base branch, title, and complete body for confirmation. Ask only for missing material choices: title/body changes, base branch, draft status, reviewers, or labels.
+5. Treat "create PR" as authorization to create a focused branch if needed, commit the task's changes, push, and create the PR. Do not ask for confirmation of the title, body, base, or these routine steps. Infer sensible defaults from repository context; ask only when a genuine blocker cannot be resolved safely.
 
 6. Check GitHub CLI authentication and an existing PR for the branch:
 
@@ -56,13 +56,13 @@ Create a reviewable PR that accurately describes the branch's changes. Use `gh` 
    gh pr view --json url --jq .url
    ```
 
-   If a PR exists, report its URL and update it only with explicit user approval. If the branch has no upstream, or commits have not been pushed, push it after confirmation:
+   If a PR exists, report its URL and update it only with explicit user approval. Otherwise, commit any task-scoped changes and push if the branch has no upstream or commits have not been pushed:
 
    ```sh
    git push -u origin "$(git branch --show-current)"
    ```
 
-7. Create the confirmed PR:
+7. Create the PR without another confirmation:
 
    ```sh
    gh pr create --base "<base>" --title "<title>" --body "<body>"
@@ -74,6 +74,6 @@ Create a reviewable PR that accurately describes the branch's changes. Use `gh` 
 
 ## Safety rules
 
-- Do not commit, amend, rebase, force-push, or discard changes unless the user explicitly requests it.
+- A request to create a PR authorizes task-scoped commits and a normal push. Do not amend, rebase, force-push, or discard changes unless separately requested.
 - Never include credentials, generated secrets, or unrelated files.
 - Surface authentication, push, base-branch, and existing-PR failures directly; do not fabricate a successful PR.
