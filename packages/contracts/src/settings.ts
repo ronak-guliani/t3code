@@ -346,6 +346,7 @@ export const ServerSettings = Schema.Struct({
   ),
   sourceControlWritingStyle: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
@@ -530,6 +531,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sourceControlWritingStyle: Schema.optionalKey(Schema.String),
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   chatExportDirectory: Schema.optionalKey(Schema.String),

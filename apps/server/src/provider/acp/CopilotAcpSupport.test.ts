@@ -13,6 +13,7 @@ import {
   COPILOT_LEGACY_PLAN_MODE_ID,
   COPILOT_PLAN_MODE_ID,
   COPILOT_WORKSPACE_INSTRUCTIONS,
+  buildCopilotWorkspaceInstructions,
   buildCopilotRuntimeModeArgs,
   buildCopilotAcpSpawnInput,
   buildCopilotMcpServerOptions,
@@ -139,6 +140,16 @@ describe("buildCopilotAcpSpawnInput", () => {
       expect(buildCopilotSessionContractFingerprint({}, false)).not.toBe(
         buildCopilotSessionContractFingerprint({}, true),
       );
+      expect(buildCopilotWorkspaceInstructions(false)).not.toContain("`preview_status`");
+      expect(buildCopilotWorkspaceInstructions(false)).not.toContain("`t3-code`");
+
+      const instructionsWithoutBrowser = yield* prepareCopilotCustomInstructions(stateDir, false);
+      expect(instructionsWithoutBrowser).toBe(
+        path.join(stateDir, "providers", "copilot", "instructions-no-browser"),
+      );
+      expect(
+        yield* fileSystem.readFileString(path.join(instructionsWithoutBrowser, "AGENTS.md")),
+      ).toBe(buildCopilotWorkspaceInstructions(false));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

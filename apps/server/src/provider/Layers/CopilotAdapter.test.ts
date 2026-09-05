@@ -24,7 +24,7 @@ import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
   buildCopilotSessionContractFingerprint,
   COPILOT_PLAN_MODE_ID,
-  COPILOT_WORKSPACE_INSTRUCTIONS,
+  buildCopilotWorkspaceInstructions,
 } from "../acp/CopilotAcpSupport.ts";
 import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
 import { makeCopilotAdapterLive } from "./CopilotAdapter.ts";
@@ -982,10 +982,12 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       ).pipe(Effect.map((contents) => contents.trim().split(",")));
       const t3InstructionsDir = customInstructionsDirs.at(-1);
       assert.isDefined(t3InstructionsDir);
-      assert.isTrue(t3InstructionsDir.endsWith(path.join("providers", "copilot", "instructions")));
+      assert.isTrue(
+        t3InstructionsDir.endsWith(path.join("providers", "copilot", "instructions-no-browser")),
+      );
       assert.equal(
         yield* Effect.promise(() => readFile(path.join(t3InstructionsDir, "AGENTS.md"), "utf8")),
-        COPILOT_WORKSPACE_INSTRUCTIONS,
+        buildCopilotWorkspaceInstructions(false),
       );
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));

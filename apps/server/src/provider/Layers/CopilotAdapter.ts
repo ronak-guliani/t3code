@@ -551,7 +551,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const serverConfig = yield* Effect.service(ServerConfig);
     const serverSettingsService = yield* ServerSettingsService;
-    const customInstructionsDir = yield* prepareCopilotCustomInstructions(serverConfig.stateDir);
+    const customInstructionsDirs = {
+      withBrowser: yield* prepareCopilotCustomInstructions(serverConfig.stateDir, true),
+      withoutBrowser: yield* prepareCopilotCustomInstructions(serverConfig.stateDir, false),
+    };
     const getSessionContractFingerprint = (
       threadId: ThreadId,
       providerInstanceId: ProviderInstanceId,
@@ -877,6 +880,11 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           provider: PROVIDER,
           threadId: input.threadId,
         });
+        const browserToolsAvailable =
+          (yield* McpSessionRegistry.readActiveMcpProviderSession(
+            input.threadId,
+            input.providerInstanceId,
+          )) !== undefined;
 
         const acp = yield* makeCopilotAcpRuntime({
           copilotSettings: input.copilotSettings.binaryPath
@@ -887,7 +895,9 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           providerInstanceId: input.providerInstanceId,
           cwd: input.cwd,
           baseDir: serverConfig.baseDir,
-          customInstructionsDir,
+          customInstructionsDir: browserToolsAvailable
+            ? customInstructionsDirs.withBrowser
+            : customInstructionsDirs.withoutBrowser,
           prewarmPool,
           runtimeMode: input.runtimeMode,
           ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -2067,14 +2077,21 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
     const prewarmSession: CopilotAdapterShape["prewarmSession"] = (input) =>
       Effect.gen(function* () {
         const copilotSettings = yield* serverSettingsService.getSettings.pipe(
-          Effect.map((settings) => settings.providers.copilot),
+          Effect.map((settings) => ({
+            copilot: settings.providers.copilot,
+            enableAgentBrowserAccess: settings.enableAgentBrowserAccess,
+          })),
         );
         yield* prewarmPool.prewarm({
           spawn: buildCopilotAcpSpawnInput(
-            copilotSettings.binaryPath ? { binaryPath: copilotSettings.binaryPath } : undefined,
+            copilotSettings.copilot.binaryPath
+              ? { binaryPath: copilotSettings.copilot.binaryPath }
+              : undefined,
             nodePath.resolve(input.cwd.trim()),
             input.runtimeMode,
-            customInstructionsDir,
+            copilotSettings.enableAgentBrowserAccess
+              ? customInstructionsDirs.withBrowser
+              : customInstructionsDirs.withoutBrowser,
           ),
           runtimeOptions: {
             ...COPILOT_ACP_SHARED_RUNTIME_OPTIONS,

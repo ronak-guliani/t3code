@@ -1,5 +1,6 @@
 # Scars
 
+- Agent browser access is a server-authoritative capability: gate credential issuance centrally, revoke stale credentials on denial, attach the resulting session consistently across providers, and derive provider instructions from actual tool availability. Never install a per-thread credential into an externally managed OpenCode server because its MCP configuration is shared.
 - Find-in-chat scrolling must follow selected match identity, not the rebuilt match object; message sends and stream updates otherwise yank the viewport back to an old search result.
 - `packages/contracts` stays schema-only; no runtime logic.
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
@@ -81,7 +82,7 @@
 - T3 Connect credentials are DPoP-bound end to end: persist the relay-minted proof-key thumbprint through pairing and session issuance, return `token_type=DPoP`, consume each proof `jti` once, verify its key, URL, method, and token hash, and permit proof-bound sessions to mint only single-use `wsTicket` credentials.
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
-- Mount desktop browser hosts at authenticated app lifetime, not thread-route lifetime.
+- Mount exactly one desktop browser host at authenticated app lifetime, not thread-route lifetime. Duplicate hosts register competing native guests for the same tab, letting a blank guest cover or replace the loaded capture target.
 - Floating browser surfaces in fill mode must reflow to the owning slot; reserve `fitSourceContent` for explicit fixed/device viewports or a resized mini-player will keep the old panel aspect ratio.
 - Persisted floating-preview state must survive the empty pre-snapshot render after refresh; only prune a missing tab after `serverEpoch` proves an authoritative preview list has arrived.
 - Desktop zoom menu accelerators must route through the renderer without changing focus: preview chrome and its `<webview>` zoom the active browser tab, while all other focus targets zoom only the sender's T3 window.
