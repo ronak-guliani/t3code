@@ -33,6 +33,7 @@ import {
   DEFAULT_CHAT_FONT_SIZE,
   RECOMMENDED_FONT_SIZES_BY_UI_DENSITY,
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
+  DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   DEFAULT_CODE_FONT,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_INPUT_FONT_SIZE,
@@ -871,6 +872,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
+      ...(settings.browserAutoShowFloatingPreview !==
+      DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview
+        ? ["Agent browser preview"]
+        : []),
+      ...(settings.browserRecordingFrameRate !== DEFAULT_BROWSER_RECORDING_FRAME_RATE
+        ? ["Browser recording frame rate"]
+        : []),
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
@@ -903,6 +911,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       areProviderSettingsDirty,
       isGitWritingModelDirty,
       settings.autoOpenPlanSidebar,
+      settings.browserAutoShowFloatingPreview,
+      settings.browserRecordingFrameRate,
       settings.chatFontSize,
       settings.messagePreviewLineLimits,
       settings.codeFontSize,
@@ -2075,6 +2085,73 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Preferences">
+        <SettingsRow
+          title="Agent browser preview"
+          description="Show a floating browser preview when an agent uses browser automation."
+          resetAction={
+            settings.browserAutoShowFloatingPreview !==
+            DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview ? (
+              <SettingResetButton
+                label="agent browser preview"
+                onClick={() =>
+                  updateSettings({
+                    browserAutoShowFloatingPreview:
+                      DEFAULT_UNIFIED_SETTINGS.browserAutoShowFloatingPreview,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.browserAutoShowFloatingPreview}
+              onCheckedChange={(checked) =>
+                updateSettings({ browserAutoShowFloatingPreview: Boolean(checked) })
+              }
+              aria-label="Show a floating preview during agent browser automation"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Browser recording frame rate"
+          description="Choose the frame rate for browser preview recordings."
+          resetAction={
+            settings.browserRecordingFrameRate !== DEFAULT_BROWSER_RECORDING_FRAME_RATE ? (
+              <SettingResetButton
+                label="browser recording frame rate"
+                onClick={() =>
+                  updateSettings({
+                    browserRecordingFrameRate: DEFAULT_BROWSER_RECORDING_FRAME_RATE,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.browserRecordingFrameRate)}
+              onValueChange={(value) => {
+                if (value === "30" || value === "60") {
+                  updateSettings({ browserRecordingFrameRate: Number(value) as 30 | 60 });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Browser recording frame rate">
+                <SelectValue>{settings.browserRecordingFrameRate} fps</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="30">
+                  30 fps
+                </SelectItem>
+                <SelectItem hideIndicator value="60">
+                  60 fps
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
         <SettingsRow
           title="Diff line wrapping"
           description="Set the default wrap state when the diff panel opens."

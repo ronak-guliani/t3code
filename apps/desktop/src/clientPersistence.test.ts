@@ -50,6 +50,8 @@ function makeSecretStorage(available: boolean): DesktopSecretStorage {
 
 const clientSettings: ClientSettings = {
   autoOpenPlanSidebar: false,
+  browserAutoShowFloatingPreview: false,
+  browserRecordingFrameRate: 60,
   chatFontSize: 14,
   statusLineFontSize: 14,
   codeFontSize: 12,

@@ -24,6 +24,7 @@ import {
   clampPreviewMiniPlayerPosition,
   clampPreviewMiniPlayerSize,
   PREVIEW_MINI_PLAYER_DEFAULT_SIZE,
+  PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX,
 } from "./previewMiniPlayerLayout";
 import { handlePreviewZoomAction } from "./previewZoomAction";
 
@@ -216,7 +217,7 @@ export function ThreadPreviewMiniPlayer(props: {
           : { right: 16, top: 16, width: size.width, height: size.height }
       }
     >
-      <div className="pointer-events-auto absolute right-2 top-2 z-[34] flex items-center gap-1">
+      <div className="pointer-events-auto absolute right-2 top-2 z-[49] flex items-center gap-1">
         <span
           aria-label={overlay === null ? "Preview reconnecting" : "Preview active"}
           className={`size-2 rounded-full border border-background/70 shadow-sm ${
@@ -242,7 +243,6 @@ export function ThreadPreviewMiniPlayer(props: {
               title="Open in panel"
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => {
-                usePreviewMiniPlayerStore.getState().close(threadRef);
                 useRightPanelStore.getState().openBrowser(threadRef, tabId);
               }}
             >
@@ -279,11 +279,12 @@ export function ThreadPreviewMiniPlayer(props: {
         </div>
       </div>
       <div className="relative h-full min-h-0">
-        <div className="absolute inset-0 z-[29] rounded-xl bg-muted shadow-xl" />
+        <div className="absolute inset-0 z-[47] rounded-xl bg-muted shadow-xl" />
         <BrowserSurfaceSlot
           tabId={runtimeTabId}
           visible={overlay !== null}
           cornerRadius={12}
+          zIndex={PREVIEW_MINI_PLAYER_WEBVIEW_Z_INDEX}
           fitSourceContent={preserveSourceViewport}
           layoutVersion={
             position
@@ -292,16 +293,16 @@ export function ThreadPreviewMiniPlayer(props: {
           }
           className="absolute inset-0"
         />
-        <div className="pointer-events-none absolute inset-0 z-[31] rounded-xl ring-1 ring-inset ring-border" />
+        <div className="pointer-events-none absolute inset-0 z-[49] rounded-xl ring-1 ring-inset ring-border" />
         {overlay === null ? (
-          <div className="pointer-events-none absolute inset-0 z-[32] grid place-items-center rounded-xl bg-muted text-xs text-muted-foreground">
+          <div className="pointer-events-none absolute inset-0 z-[49] grid place-items-center rounded-xl bg-muted text-xs text-muted-foreground">
             Reconnecting preview...
           </div>
         ) : null}
         <button
           type="button"
           aria-label="Resize floating preview"
-          className="pointer-events-auto absolute bottom-0 right-0 z-[33] grid size-5 cursor-nwse-resize place-items-end rounded-br-xl p-0.5 text-muted-foreground/80"
+          className="pointer-events-auto absolute bottom-0 right-0 z-[49] grid size-5 cursor-nwse-resize place-items-end rounded-br-xl p-0.5 text-muted-foreground/80"
           onPointerDown={startResize}
           onPointerMove={moveResize}
           onPointerUp={(event) => endPointer(event, resizeRef)}
