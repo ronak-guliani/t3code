@@ -92,7 +92,11 @@ function ChatThreadRouteView() {
     finalizePromotedDraftThreadByRef(threadRef);
   }, [draftThread?.promotedTo, serverThreadStarted, threadRef]);
 
-  if (!threadRef || !routeTarget || !bootstrapComplete || !routeThreadExists) {
+  if (!threadRef || !routeTarget || (bootstrapComplete && !routeThreadExists)) {
+    return null;
+  }
+
+  if (!bootstrapComplete) {
     return (
       <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-chat-background text-foreground md:h-dvh">
         <div
