@@ -19,6 +19,7 @@ const decodeRunStackedActionInput = Schema.decodeUnknownSync(GitRunStackedAction
 const decodeRunStackedActionResult = Schema.decodeUnknownSync(GitRunStackedActionResult);
 const decodeResolvePullRequestResult = Schema.decodeUnknownSync(GitResolvePullRequestResult);
 const decodePullRequestAssociation = Schema.decodeUnknownSync(GitPullRequestAssociation);
+const decodeResolvedPullRequest = Schema.decodeUnknownSync(GitResolvedPullRequest);
 
 describe("GitCreateWorktreeInput", () => {
   it("accepts omitted newBranch for existing-branch worktrees", () => {
@@ -64,7 +65,7 @@ describe("GitResolvePullRequestResult", () => {
   });
 
   it("defaults legacy null pull request states to open", () => {
-    const parsed = Schema.decodeUnknownSync(GitResolvedPullRequest)({
+    const parsed = decodeResolvedPullRequest({
       number: 39,
       title: "Optimize relay snapshot reads",
       url: "https://github.com/ronak-guliani/t3code/pull/39",

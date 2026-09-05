@@ -164,7 +164,8 @@ describe("handoffToSubmitInput", () => {
     const first = (handoffToSubmitInput(review).findings ?? []).map((entry) => entry.key);
     // Same content in a different order must keep each finding's key stable.
     const reordered = (
-      handoffToSubmitInput({ ...review, findings: [...review.findings].reverse() }).findings ?? []
+      handoffToSubmitInput({ ...review, findings: [...review.findings].toReversed() }).findings ??
+      []
     ).map((entry) => entry.key);
     expect([...reordered].sort()).toEqual([...first].sort());
   });

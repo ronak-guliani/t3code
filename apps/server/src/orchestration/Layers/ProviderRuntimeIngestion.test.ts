@@ -4237,7 +4237,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(completedPayload?.summary).toBe(fullSummary);
     expect(completedPayload?.detail).toBe(`${fullSummary.slice(0, 177)}...`);
-    expect((completedPayload?.detail as string).length).toBe(180);
+    expect(typeof completedPayload?.detail === "string" ? completedPayload.detail.length : 0).toBe(
+      180,
+    );
   });
 
   it("projects structured user input request and resolution as thread activities", async () => {
