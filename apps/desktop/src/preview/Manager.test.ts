@@ -151,6 +151,19 @@ const makeTestHostWebContents = () => ({
   setBackgroundThrottling: vi.fn(),
 });
 
+type TestDisplayMediaRequestHandler = (
+  request: { readonly frame?: { readonly frameTreeNodeId: number } },
+  callback: (response: unknown) => void,
+) => void;
+
+const displayMediaRequestHandler = (
+  host: ReturnType<typeof makeTestHostWebContents>,
+): TestDisplayMediaRequestHandler => {
+  const handler = host.session.setDisplayMediaRequestHandler.mock.calls[0]?.[0];
+  if (!handler) throw new Error("Display-media request handler was not installed.");
+  return handler as TestDisplayMediaRequestHandler;
+};
+
 const makeTestPreviewWebContents = (
   capturePage: () => Promise<TestCapturedPreviewImage>,
   id: number,
@@ -1146,7 +1159,8 @@ describe("PreviewManager", () => {
           makeTestCapturedPreviewImage(Buffer.from("warm-frame"), 800, 600),
         );
         const host = makeTestHostWebContents();
-        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage, 42, host));
+        const guest = makeTestPreviewWebContents(capturePage, 42, host);
+        fromId.mockReturnValue(guest);
         const frames: DesktopPreviewRecordingFrame[] = [];
 
         yield* manager.subscribeRecordingFrames((frame) =>
@@ -1163,7 +1177,81 @@ describe("PreviewManager", () => {
         expect(host.executeJavaScript).toHaveBeenCalledWith(expect.stringContaining("tab_1"), true);
         expect(frames).toEqual([]);
 
+        const handler = displayMediaRequestHandler(host);
+        const mismatchedGrant = vi.fn();
+        handler({ frame: { frameTreeNodeId: 2 } }, mismatchedGrant);
+        expect(mismatchedGrant).toHaveBeenCalledWith({});
+
+        const matchingGrant = vi.fn();
+        handler({ frame: { frameTreeNodeId: 1 } }, matchingGrant);
+        expect(matchingGrant).toHaveBeenCalledWith({
+          video: (guest as unknown as { readonly mainFrame: unknown }).mainFrame,
+        });
+
+        const consumedGrant = vi.fn();
+        handler({ frame: { frameTreeNodeId: 1 } }, consumedGrant);
+        expect(consumedGrant).toHaveBeenCalledWith({});
+
         yield* manager.stopRecording("tab_1");
+      }),
+    ),
+  );
+
+  effectIt.effect("denies display-media grants when the armed source is destroyed", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let destroyed = false;
+        const host = makeTestHostWebContents();
+        const guest = makeTestPreviewWebContents(
+          vi.fn(async () => makeTestCapturedPreviewImage(Buffer.from("warm-frame"), 800, 600)),
+          42,
+          host,
+        ) as unknown as {
+          isDestroyed: () => boolean;
+        };
+        guest.isDestroyed = () => destroyed;
+        fromId.mockReturnValue(guest as never);
+
+        yield* manager.createTab("tab_destroyed_capture");
+        yield* manager.registerWebview("tab_destroyed_capture", 42);
+        yield* manager.startRecording("tab_destroyed_capture");
+        destroyed = true;
+
+        const callback = vi.fn();
+        displayMediaRequestHandler(host)({ frame: { frameTreeNodeId: 1 } }, callback);
+        expect(callback).toHaveBeenCalledWith({});
+
+        destroyed = false;
+        const staleCallback = vi.fn();
+        displayMediaRequestHandler(host)({ frame: { frameTreeNodeId: 1 } }, staleCallback);
+        expect(staleCallback).toHaveBeenCalledWith({});
+        yield* manager.stopRecording("tab_destroyed_capture");
+      }),
+    ),
+  );
+
+  effectIt.effect("bounds each recording compositor warm-up attempt", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const capturePage = vi.fn(() => new Promise<TestCapturedPreviewImage>(() => {}));
+        const host = makeTestHostWebContents();
+        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage, 42, host));
+
+        yield* manager.createTab("tab_warm_timeout");
+        yield* manager.registerWebview("tab_warm_timeout", 42);
+        const startFiber = yield* manager
+          .startRecording("tab_warm_timeout")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(capturePage).toHaveBeenCalledOnce();
+
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+        expect(capturePage).toHaveBeenCalledTimes(2);
+
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(startFiber);
+        yield* manager.stopRecording("tab_warm_timeout");
       }),
     ),
   );

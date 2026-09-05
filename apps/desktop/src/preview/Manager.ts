@@ -301,6 +301,7 @@ const normalizeCaptureRect = (value: unknown): PreviewAnnotationRect | null => {
 
 /** `capturePage` never settles when the guest's compositor is wedged. */
 const ANNOTATION_SCREENSHOT_TIMEOUT = "5 seconds";
+const RECORDING_WARM_SOURCE_TIMEOUT = "1 second";
 
 const captureAnnotationScreenshot = (
   tabId: string,
@@ -2896,7 +2897,11 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             webContentsId: wc.id,
           },
           () => wc.capturePage().then(() => undefined),
-        ).pipe(Effect.retry({ times: 1 }), Effect.ignore);
+        ).pipe(
+          Effect.timeout(RECORDING_WARM_SOURCE_TIMEOUT),
+          Effect.retry({ times: 1 }),
+          Effect.ignore,
+        );
         const currentWebContents = yield* requireWebContents(tabId);
         if (currentWebContents !== wc || wc.isDestroyed()) {
           return yield* new PreviewWebContentsNotFoundError({
