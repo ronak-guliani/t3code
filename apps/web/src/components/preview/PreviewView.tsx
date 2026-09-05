@@ -667,7 +667,7 @@ export function PreviewView({
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
-            visible={visible && miniPlayerTabId !== tabId && !isUnreachable}
+            visible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}
