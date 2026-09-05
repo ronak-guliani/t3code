@@ -42,6 +42,11 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  canReplaceThreadTitle,
+  DEFAULT_THREAD_TITLE,
+  formatThreadTitleContext,
+} from "./ThreadTitleReactor.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -50,6 +55,7 @@ type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
     type:
+      | "thread.meta-updated"
       | "thread.runtime-mode-set"
       | "thread.provider-fork-requested"
       | "thread.turn-start-requested"
