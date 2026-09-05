@@ -29,9 +29,8 @@ import { authClientMetadata } from "../lib/authClientMetadata";
 import * as Runtime from "../lib/runtime";
 import * as MobileStorage from "../persistence/mobile-storage";
 import { appAtomRegistry } from "../state/atom-registry";
-import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
-import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 import { mobileApplicationActiveWakeup } from "./app-state-wakeups";
+import { clearMobileEnvironmentOwnedData } from "./environment-owned-data-cleanup";
 import { connectionStorageLayer } from "./storage";
 
 function networkStatus(state: Network.NetworkState): "unknown" | "offline" | "online" {
@@ -213,17 +212,11 @@ const environmentOwnedDataCleanupLayer = Layer.succeed(
   EnvironmentOwnedDataCleanup,
   EnvironmentOwnedDataCleanup.of({
     clear: (environmentId) =>
-      Effect.all(
-        [
-          Effect.promise(() => clearThreadOutboxEnvironment(environmentId)),
-          Effect.promise(() => clearComposerDraftsEnvironment(environmentId)),
-        ],
-        { concurrency: "unbounded", discard: true },
-      ).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not clear mobile environment-owned data.", {
+      clearMobileEnvironmentOwnedData(environmentId).pipe(
+        Effect.tapError((error) =>
+          Effect.logError("Could not clear mobile environment-owned data.", {
             environmentId,
-            cause,
+            error,
           }),
         ),
       ),
