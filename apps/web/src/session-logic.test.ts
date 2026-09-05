@@ -1869,7 +1869,7 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries[0]?.label).toBe("Ran command");
   });
 
-  it("keeps context compaction activities as normal work log entries", () => {
+  it("preserves compaction identity for the dedicated timeline separator", () => {
     const entries = deriveWorkLogEntries(
       [
         makeActivity({
@@ -1884,7 +1884,8 @@ describe("deriveWorkLogEntries context window handling", () => {
     );
 
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.label).toBe("Context compacted");
+    expect(entries[0]?.label).toBe("Compacted context");
+    expect(entries[0]?.sourceActivityKind).toBe("context-compaction");
   });
 });
 

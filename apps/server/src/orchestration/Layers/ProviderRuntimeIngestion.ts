@@ -15,6 +15,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import {
   extractChangedFilePathCandidatesFromToolPayload,
@@ -602,15 +603,21 @@ function runtimeEventToActivities(
         return [];
       }
 
+      const { beforeTokens, afterTokens } = event.payload;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-compaction",
-          summary: "Context compacted",
+          summary:
+            beforeTokens !== undefined && afterTokens !== undefined
+              ? `Compacted context ${formatTokens(beforeTokens)} → ${formatTokens(afterTokens)} tokens`
+              : "Compacted context",
           payload: {
             state: event.payload.state,
+            ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+            ...(afterTokens !== undefined ? { afterTokens } : {}),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,

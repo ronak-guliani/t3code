@@ -713,7 +713,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("yoo what&#x27;s ");
   }, 20_000);
 
-  it("renders context compaction entries in the normal work log", async () => {
+  it("renders context compaction as an accessible divider outside the work log", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -725,7 +725,8 @@ describe("MessagesTimeline", () => {
             entry: {
               id: "work-1",
               createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Context compacted",
+              label: "Compacted context 173K → 5.69K tokens",
+              sourceActivityKind: "context-compaction",
               tone: "info",
             },
           },
@@ -733,8 +734,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work log");
+    expect(markup).toContain("Compacted context 173K → 5.69K tokens");
+    expect(markup).toContain('role="separator"');
+    expect(markup).toContain("lucide-minimize2");
+    expect(markup).not.toContain("Work log");
   });
 
   it("collapses completed tool-call groups to an expandable header", async () => {

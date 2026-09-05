@@ -4025,8 +4025,31 @@ describe("ProviderRuntimeIngestion", () => {
     const activity = thread.activities.find(
       (candidate: ProviderRuntimeTestActivity) => candidate.kind === "context-compaction",
     );
-    expect(activity?.summary).toBe("Context compacted");
+    expect(activity?.summary).toBe("Compacted context");
     expect(activity?.tone).toBe("info");
+  });
+
+  it("projects compaction token counts without estimating missing counts", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-compacted-tokens"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: { state: "compacted", beforeTokens: 173_000, afterTokens: 5_690 },
+    });
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-compacted-tokens",
+      ),
+    );
+    const activity = thread.activities.find(
+      (candidate: ProviderRuntimeTestActivity) => candidate.id === "evt-compacted-tokens",
+    );
+    expect(activity?.summary).toBe("Compacted context 173K → 5.69K tokens");
+    expect(activity?.payload).toMatchObject({ beforeTokens: 173_000, afterTokens: 5_690 });
   });
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {
