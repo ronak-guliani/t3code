@@ -248,7 +248,17 @@ export function shouldClosePreviewMiniPlayer(input: {
   readonly sameTabOpenInPanel: boolean;
   readonly tabExists: boolean;
 }): boolean {
-  return input.sameTabOpenInPanel || (input.hasAuthoritativeServerState && !input.tabExists);
+  return input.hasAuthoritativeServerState && !input.tabExists;
+}
+
+export function shouldRenderPreviewMiniPlayer(input: {
+  readonly floatingTabId: string | null;
+  readonly panelOpen: boolean;
+  readonly panelTabId: string | null;
+}): boolean {
+  return (
+    input.floatingTabId !== null && !(input.panelOpen && input.panelTabId === input.floatingTabId)
+  );
 }
 
 async function ensureRoutableServerThread(threadRef: ScopedThreadRef): Promise<void> {
@@ -1914,7 +1924,6 @@ function ChatViewBody(
     );
     if (floatingPreview) {
       state.openBrowser(activeThreadRef, floatingPreview.tabId);
-      usePreviewMiniPlayerStore.getState().close(activeThreadRef);
       planSidebarDismissedForTurnRef.current =
         activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
       return;
@@ -1933,6 +1942,11 @@ function ChatViewBody(
   const activeBrowserSurface = browserPanel.surfaces.find(
     (surface) => surface.id === browserPanel.activeSurfaceId,
   );
+  const previewMiniPlayerVisible = shouldRenderPreviewMiniPlayer({
+    floatingTabId: activePreviewMiniPlayer?.tabId ?? null,
+    panelOpen: browserPanel.isOpen,
+    panelTabId: activeBrowserSurface?.kind === "preview" ? activeBrowserSurface.resourceId : null,
+  });
   const terminalLabels = useMemo(
     () => terminalLabelsById(terminalState.terminalIds),
     [terminalState.terminalIds],
@@ -4907,7 +4921,7 @@ function ChatViewBody(
                 />
               ) : null}
 
-              {activeThreadRef && activePreviewMiniPlayer ? (
+              {activeThreadRef && activePreviewMiniPlayer && previewMiniPlayerVisible ? (
                 <ThreadPreviewMiniPlayer
                   key={`${activeThreadKey}:${activePreviewMiniPlayer.tabId}`}
                   threadRef={activeThreadRef}
@@ -4972,7 +4986,11 @@ function ChatViewBody(
         {showPanelRail ? <ChatPanelToggles orientation="vertical" {...panelTogglesState} /> : null}
       </div>
       {shouldUseRightPanelSheet && browserPanel.isOpen && activeThreadRef ? (
-        <RightPanelSheet open onClose={closeBrowserPreview}>
+        <RightPanelSheet
+          open
+          underFloatingPreview={previewMiniPlayerVisible}
+          onClose={closeBrowserPreview}
+        >
           <RightPanelTabs
             mode="sheet"
             surfaces={browserPanel.surfaces}

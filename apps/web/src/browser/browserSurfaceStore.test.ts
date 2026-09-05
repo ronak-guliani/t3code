@@ -39,6 +39,7 @@ describe("browserSurfaceStore", () => {
           hidden: {
             rect: staleRect,
             visible: false,
+            zIndex: 30,
             content: null,
             fittedSourceContent: null,
             fitSourceContent: false,
@@ -49,6 +50,7 @@ describe("browserSurfaceStore", () => {
           active: {
             rect: liveRect,
             visible: true,
+            zIndex: 30,
             content: null,
             fittedSourceContent: null,
             fitSourceContent: false,

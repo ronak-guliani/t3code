@@ -99,7 +99,7 @@ export function extractTrailingPreviewAnnotation(prompt: string): ExtractedPrevi
   };
 }
 
-export async function previewAnnotationScreenshotFile(
+async function previewAnnotationScreenshotFile(
   annotation: PreviewAnnotationPayload,
 ): Promise<File | null> {
   if (!annotation.screenshot) return null;
@@ -108,4 +108,32 @@ export async function previewAnnotationScreenshotFile(
   return new File([blob], `preview-annotation-${annotation.id}.png`, {
     type: blob.type || "image/png",
   });
+}
+
+export const PREVIEW_ANNOTATION_CAPTURE_TIMEOUT_MS = 5_000;
+
+export type PreviewAnnotationCapture =
+  | { readonly status: "captured"; readonly file: File }
+  | { readonly status: "none" }
+  | { readonly status: "failed" };
+
+export async function capturePreviewAnnotationScreenshot(
+  annotation: PreviewAnnotationPayload,
+  timeoutMs: number = PREVIEW_ANNOTATION_CAPTURE_TIMEOUT_MS,
+): Promise<PreviewAnnotationCapture> {
+  if (!annotation.screenshot) return { status: "none" };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const file = await Promise.race([
+      previewAnnotationScreenshotFile(annotation),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+    return file ? { status: "captured", file } : { status: "failed" };
+  } catch {
+    return { status: "failed" };
+  } finally {
+    clearTimeout(timer);
+  }
 }

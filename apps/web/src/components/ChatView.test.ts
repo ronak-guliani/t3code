@@ -5,6 +5,7 @@ import {
   getCopilotResumeCommand,
   isScrollMetricsAtEnd,
   shouldClosePreviewMiniPlayer,
+  shouldRenderPreviewMiniPlayer,
 } from "./ChatView";
 import type { Thread } from "../types";
 
@@ -130,12 +131,34 @@ describe("shouldClosePreviewMiniPlayer", () => {
     ).toBe(true);
   });
 
-  it("closes the float when the same tab is explicitly open in the panel", () => {
+  it("keeps floating intent when the same tab is open in the panel", () => {
     expect(
       shouldClosePreviewMiniPlayer({
         hasAuthoritativeServerState: false,
         sameTabOpenInPanel: true,
         tabExists: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldRenderPreviewMiniPlayer", () => {
+  it("hides the duplicate while the same preview is docked", () => {
+    expect(
+      shouldRenderPreviewMiniPlayer({
+        floatingTabId: "tab-1",
+        panelOpen: true,
+        panelTabId: "tab-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("restores the float when the panel moves to another surface", () => {
+    expect(
+      shouldRenderPreviewMiniPlayer({
+        floatingTabId: "tab-1",
+        panelOpen: true,
+        panelTabId: null,
       }),
     ).toBe(true);
   });
