@@ -801,6 +801,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
+            sequence: previousMessage?.sequence ?? event.sequence,
             turnId: event.payload.turnId,
             role: event.payload.role,
             text: nextText,

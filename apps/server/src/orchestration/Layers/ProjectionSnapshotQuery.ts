@@ -562,9 +562,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WITH ranked_messages AS (
           SELECT
             message_id,
+            thread_id,
+            sequence,
+            rowid,
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
-              ORDER BY created_at DESC, message_id DESC
+              ORDER BY
+                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+                sequence DESC,
+                rowid DESC
             ) AS message_rank
           FROM projection_thread_messages
         )
@@ -583,7 +589,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         INNER JOIN projection_thread_messages AS messages
           ON messages.message_id = ranked_messages.message_id
         WHERE ranked_messages.message_rank <= ${MAX_THREAD_MESSAGES}
-        ORDER BY messages.thread_id ASC, messages.created_at ASC, messages.message_id ASC
+        ORDER BY
+          messages.thread_id ASC,
+          CASE WHEN messages.sequence IS NULL THEN 0 ELSE 1 END ASC,
+          messages.sequence ASC,
+          messages.rowid ASC
       `,
   });
 
@@ -1068,25 +1078,42 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadMessageDbRowSchema,
     execute: ({ threadId }) =>
       sql`
-        SELECT
-          message_id AS "messageId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          role,
-          text,
-          attachments_json AS "attachments",
-          origin_json AS "origin",
-          is_streaming AS "isStreaming",
-          created_at AS "createdAt",
-          updated_at AS "updatedAt"
-        FROM (
-          SELECT *
+        WITH ranked_messages AS (
+          SELECT
+            message_id,
+            thread_id,
+            sequence,
+            rowid,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY
+                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+                sequence DESC,
+                rowid DESC
+            ) AS message_rank
           FROM projection_thread_messages
           WHERE thread_id = ${threadId}
-          ORDER BY created_at DESC, message_id DESC
-          LIMIT ${MAX_THREAD_MESSAGES}
         )
-        ORDER BY created_at ASC, message_id ASC
+        SELECT
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.origin_json AS "origin",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
+        FROM ranked_messages
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.message_id = ranked_messages.message_id
+        WHERE ranked_messages.message_rank <= ${MAX_THREAD_MESSAGES}
+        ORDER BY
+          messages.thread_id ASC,
+          CASE WHEN messages.sequence IS NULL THEN 0 ELSE 1 END ASC,
+          messages.sequence ASC,
+          messages.rowid ASC
       `,
   });
 

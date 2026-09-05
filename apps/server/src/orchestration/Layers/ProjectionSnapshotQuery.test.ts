@@ -873,7 +873,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           is_streaming, created_at, updated_at
         )
         SELECT
-          printf('snapshot-message-%04d', value),
+          printf('snapshot-message-%04d', 2006 - value),
           'thread-snapshot-cap',
           NULL,
           'user',
@@ -2332,23 +2332,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           updated_at
         )
         SELECT
-          printf('cap-msg-%05d', value),
+          printf('cap-msg-%05d', 2006 - value),
           'thread-message-cap',
           NULL,
           'user',
           printf('message %d', value),
           CASE WHEN value = 1 THEN 'not-json' ELSE NULL END,
           0,
-          printf(
-            '2026-07-28T00:%02d:%02d.000Z',
-            CAST(value / 60 AS INTEGER),
-            value % 60
-          ),
-          printf(
-            '2026-07-28T00:%02d:%02d.000Z',
-            CAST(value / 60 AS INTEGER),
-            value % 60
-          )
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z'
         FROM message_sequence
       `;
 
