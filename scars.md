@@ -12,6 +12,7 @@
 - Startup reconciliation must retry until provider sessions are observable; never defer a timed-out startup sweep behind active lifecycle workers.
 - Startup reaping is expected restart recovery, not a provider failure: interrupt orphaned active turns without `lastError`, finalize persisted streaming assistant messages before clearing `session.activeTurnId`, and repair legacy errors only through a value that live provider failures no longer persist.
 - SQLite migration IDs are globally append-only, including divergent historical ledgers. New migrations must be idempotent repairs: ensure prerequisite tables exist before `ALTER` and append missing-column/table fixes above every historical ID rather than rewriting skipped IDs.
+- Backfill projection keys from event JSON in one grouped pass, then join by indexed IDs; a correlated event-history lookup per projection row makes startup work quadratic.
 - Materialize FTS5 `rank` before windowing; compute snippets only for selected rows.
 - Bound thread activity reads before decoding payloads; page legacy `NULL` sequences by timestamp and ID.
 - Fast-append projected thread activity only when the current array is comparator-sorted, its ID is new, and it belongs at or after the tail; restart-loaded, duplicate, and out-of-order activity must retain the filter/sort fallback and 500-item cap.
