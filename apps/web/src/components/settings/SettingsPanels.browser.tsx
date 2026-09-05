@@ -824,6 +824,26 @@ describe("GeneralSettingsPanel observability", () => {
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.t3/logs", "cursor");
   });
 
+  it("renders the server-authoritative agent browser access toggle", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    const toggle = page.getByLabelText("Allow agent browser access");
+    await expect.element(toggle).toBeChecked();
+    await expect
+      .element(
+        page.getByText(
+          "Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions.",
+        ),
+      )
+      .toBeInTheDocument();
+  });
+
   it("shows an OpenCode server URL field in provider settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 

@@ -18,6 +18,7 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -1037,6 +1038,25 @@ export function makeOpenCodeAdapter(
                 directory,
                 ...(server.external && serverPassword ? { serverPassword } : {}),
               });
+              const mcpSession = yield* McpSessionRegistry.readActiveMcpProviderSession(
+                input.threadId,
+                boundInstanceId,
+              );
+              if (mcpSession && !server.external) {
+                yield* runOpenCodeSdk("mcp.add", () =>
+                  client.mcp.add({
+                    name: "t3-code",
+                    config: {
+                      type: "remote",
+                      url: mcpSession.endpoint,
+                      headers: {
+                        Authorization: mcpSession.authorizationHeader,
+                      },
+                      oauth: false,
+                    },
+                  }),
+                );
+              }
               const openCodeSession = yield* runOpenCodeSdk("session.create", () =>
                 client.session.create({
                   title: `T3 Code ${input.threadId}`,

@@ -1,5 +1,6 @@
 # Scars
 
+- Agent browser access is a server-authoritative capability: gate credential issuance centrally, revoke stale credentials on denial, attach the resulting session consistently across providers, and derive provider instructions from actual tool availability.
 - `packages/contracts` stays schema-only; no runtime logic.
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.

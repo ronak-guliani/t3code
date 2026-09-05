@@ -20,7 +20,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { it, assert, vi } from "@effect/vitest";
+import { describe, it, assert, vi } from "@effect/vitest";
 
 import { Effect, Exit, Fiber, Layer, Metric, Option, PubSub, Ref, Scope, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -2053,5 +2053,74 @@ validation.layer("ProviderServiceLive validation", (it) => {
         assert.equal(runtime.value.threadId, session.threadId);
       }
     }),
+  );
+});
+
+describe("agent browser access", () => {
+  const startSessionWithBrowserAccess = (enableAgentBrowserAccess: boolean, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const issued: Array<ThreadId> = [];
+      const revoked: Array<readonly [ThreadId, ProviderInstanceId]> = [];
+      const codex = makeFakeCodexAdapter();
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive({
+        issueMcpCredential: (request) =>
+          Effect.sync(() => {
+            issued.push(request.threadId);
+            return undefined;
+          }),
+        revokeMcpCredential: (revokedThreadId, providerInstanceId) =>
+          Effect.sync(() => {
+            revoked.push([revokedThreadId, providerInstanceId]);
+          }),
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+          ),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(ServerSettingsService.layerTest({ enableAgentBrowserAccess })),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+      }).pipe(Effect.provide(providerLayer));
+
+      return { issued, revoked };
+    });
+
+  it.effect("withholds and revokes the MCP credential when browser access is off", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-off");
+      const result = yield* startSessionWithBrowserAccess(false, threadId);
+
+      assert.deepEqual(result.issued, []);
+      assert.deepEqual(result.revoked, [[threadId, codexInstanceId]]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("issues the MCP credential when browser access is on", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-on");
+      const result = yield* startSessionWithBrowserAccess(true, threadId);
+
+      assert.deepEqual(result.issued, [threadId]);
+      assert.deepEqual(result.revoked, []);
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

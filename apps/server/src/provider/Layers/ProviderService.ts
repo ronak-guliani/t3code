@@ -50,6 +50,7 @@ import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { withLogContext } from "../../observability/LogContext.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const isModelSelection = Schema.is(ModelSelection);
 
@@ -60,6 +61,8 @@ const isModelSelection = Schema.is(ModelSelection);
  */
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogger?: EventNdjsonLogger;
+  readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
+  readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpProviderInstance;
 }
 
 const ProviderRollbackConversationInput = Schema.Struct({
@@ -215,12 +218,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  const serverSettings = yield* ServerSettingsService;
+  const issueMcpCredential =
+    options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+  const revokeMcpCredential =
+    options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpProviderInstance;
   const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(
     RUNTIME_EVENT_BUS_CAPACITY,
   );
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId });
+    serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.enableAgentBrowserAccess),
+      Effect.catch((cause) =>
+        Effect.logWarning("provider.mcp.settings-read-failed", {
+          threadId,
+          providerInstanceId,
+          cause,
+        }).pipe(Effect.as(false)),
+      ),
+      Effect.flatMap((enabled) =>
+        enabled
+          ? issueMcpCredential({ threadId, providerInstanceId })
+          : revokeMcpCredential(threadId, providerInstanceId).pipe(Effect.as(undefined)),
+      ),
+    );
 
   const clearMcpSession = (providerSessionId: string | undefined) =>
     providerSessionId
