@@ -6,6 +6,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { SidebarProjectGroupingMode } from "@t3tools/contracts";
+import { reportClientWarning } from "../lib/clientLogger";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
 
 import * as MobileDatabase from "./mobile-database";
@@ -191,7 +192,7 @@ export const make = Effect.fn("MobilePreferencesStore.make")(function* () {
     try {
       parsed = JSON.parse(raw);
     } catch (cause) {
-      console.warn(
+      reportClientWarning(
         "[mobile-storage] ignored invalid JSON",
         new MobileStorageDecodeError({ key: PREFERENCES_KEY, cause }),
       );
@@ -208,7 +209,7 @@ export const make = Effect.fn("MobilePreferencesStore.make")(function* () {
     try {
       parsed = JSON.parse(raw);
     } catch (cause) {
-      console.warn(
+      reportClientWarning(
         "[mobile-storage] ignored invalid JSON",
         new MobileStorageDecodeError({ key: PREFERENCES_FALLBACK_KEY, cause }),
       );

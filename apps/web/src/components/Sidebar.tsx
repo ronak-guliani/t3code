@@ -77,6 +77,7 @@ import {
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { isElectron } from "../env";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { reportClientError } from "../lib/clientLogger";
 import { cn, isMacPlatform, newCommandId, newDraftId, newThreadId } from "../lib/utils";
 import { TITLEBAR_ROW_CLASS, TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS } from "../lib/titlebar";
 import {
@@ -1979,7 +1980,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 })().catch((error) => {
                   const message =
                     error instanceof Error ? error.message : "Unknown error removing project.";
-                  console.error("Failed to remove project", {
+                  reportClientError("Failed to remove project", {
                     projectId: member.id,
                     environmentId: member.environmentId,
                     error,
@@ -2014,7 +2015,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         await removeProject(member);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error removing project.";
-        console.error("Failed to remove project", {
+        reportClientError("Failed to remove project", {
           projectId: member.id,
           environmentId: member.environmentId,
           error,

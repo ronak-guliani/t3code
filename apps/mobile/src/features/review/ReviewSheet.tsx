@@ -35,6 +35,7 @@ import { SymbolView } from "../../components/AppSymbol";
 import { AndroidHeaderIconButton, AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { environmentCatalog } from "../../connection/catalog";
+import { reportClientError } from "../../lib/clientLogger";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
@@ -475,7 +476,7 @@ export function ReviewSheet(props: ReviewSheetProps) {
           ? nativeReviewDiffViewRef.current?.scrollToTop(true)
           : nativeReviewDiffViewRef.current?.scrollToFile(fileId, true);
       void navigation?.catch((error: unknown) => {
-        console.error("[review] Failed to navigate to diff file", error);
+        reportClientError("[review] Failed to navigate to diff file", error);
       });
     },
     [collapsedFileIds, commentSelection, toggleExpandedFile],

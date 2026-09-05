@@ -4,6 +4,7 @@ import { OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 
 import { resolvePrimaryEnvironmentHttpUrl } from "../environments/primary";
 import { isElectron } from "../env";
+import { reportClientWarning } from "../lib/clientLogger";
 import { APP_VERSION } from "~/branding";
 
 const DEFAULT_EXPORT_INTERVAL_MS = 1_000;
@@ -97,7 +98,7 @@ async function applyClientTracingConfig(config: ClientTracingConfig): Promise<vo
     await disposeTracerRuntime(runtime, scope);
 
     if (generation === configurationGeneration) {
-      console.warn("Failed to configure client tracing exporter", {
+      reportClientWarning("Failed to configure client tracing exporter", {
         error: formatError(error),
         otlpTracesUrl,
       });

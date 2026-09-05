@@ -321,10 +321,35 @@ function IosHomeHeader(props: HomeHeaderProps) {
     return searchBarRef.current !== null;
   }, []);
   useHardwareKeyboardCommand("focusSearch", focusSearch);
-  const filterMenu = buildHomeListFilterMenu({
-    ...props,
-    listOrganization: !threadListV2Enabled,
-  });
+  const filterMenu = useMemo(
+    () =>
+      buildHomeListFilterMenu({
+        environments: props.environments,
+        projects: props.projects,
+        selectedEnvironmentId: props.selectedEnvironmentId,
+        selectedProjectKey: props.selectedProjectKey,
+        projectSortOrder: props.projectSortOrder,
+        threadSortOrder: props.threadSortOrder,
+        onEnvironmentChange: props.onEnvironmentChange,
+        onProjectChange: props.onProjectChange,
+        onProjectSortOrderChange: props.onProjectSortOrderChange,
+        onThreadSortOrderChange: props.onThreadSortOrderChange,
+        listOrganization: !threadListV2Enabled,
+      }),
+    [
+      props.environments,
+      props.onEnvironmentChange,
+      props.onProjectChange,
+      props.onProjectSortOrderChange,
+      props.onThreadSortOrderChange,
+      props.projectSortOrder,
+      props.projects,
+      props.selectedEnvironmentId,
+      props.selectedProjectKey,
+      props.threadSortOrder,
+      threadListV2Enabled,
+    ],
+  );
 
   return (
     <>

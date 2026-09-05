@@ -18,6 +18,7 @@ import {
   type ReviewHighlighterEngine,
 } from "./reviewHighlighterEngine";
 import type { ReviewRenderableFile, ReviewRenderableLineRow } from "./reviewModel";
+import { reportClientError } from "../../lib/clientLogger";
 import { applyDiffRangesToTokens, computeWordAltDiffRanges } from "./reviewWordDiffs";
 
 export type ReviewDiffTheme = "light" | "dark";
@@ -241,7 +242,7 @@ function logReviewHighlighterDiagnosticError(message: string, error: unknown): v
   if (!isReviewHighlighterDebugLoggingEnabled()) {
     return;
   }
-  console.error(`[review-highlighter] ${message}`, error);
+  reportClientError(`[review-highlighter] ${message}`, error);
 }
 
 function stripTrailingNewline(value: string): string {

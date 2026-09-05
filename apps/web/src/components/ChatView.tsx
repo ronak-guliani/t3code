@@ -551,14 +551,29 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   onAddTerminalContext,
   onTerminalClosed,
 }: PersistentThreadTerminalDrawerProps) {
-  const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
+  // threadRef may be a fresh object per render; depend on the primitives so
+  // these selectors (and their subscriptions) stay stable.
+  const serverThread = useStore(
+    useMemo(
+      () => createThreadSelectorByRef(threadRef),
+      [threadRef.environmentId, threadRef.threadId],
+    ),
+  );
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
-    : draftThread
-      ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-      : null;
-  const project = useStore(useMemo(() => createProjectSelectorByRef(projectRef), [projectRef]));
+  const projectRef = useMemo(() => {
+    if (serverThread) {
+      return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
+    }
+    if (draftThread) {
+      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
+    }
+    return null;
+  }, [serverThread, draftThread]);
+  const projectEnvironmentId = projectRef?.environmentId;
+  const projectProjectId = projectRef?.projectId;
+  const project = useStore(
+    useMemo(() => createProjectSelectorByRef(projectRef), [projectEnvironmentId, projectProjectId]),
+  );
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, threadRef),
   );
@@ -1047,11 +1062,17 @@ function ChatViewBody(
     [mountedTerminalThreadKeys],
   );
 
-  const fallbackDraftProjectRef = draftThread
-    ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-    : null;
+  const fallbackDraftProjectRef = useMemo(
+    () => (draftThread ? scopeProjectRef(draftThread.environmentId, draftThread.projectId) : null),
+    [draftThread],
+  );
+  const fallbackDraftProjectEnvironmentId = fallbackDraftProjectRef?.environmentId;
+  const fallbackDraftProjectProjectId = fallbackDraftProjectRef?.projectId;
   const fallbackDraftProject = useStore(
-    useMemo(() => createProjectSelectorByRef(fallbackDraftProjectRef), [fallbackDraftProjectRef]),
+    useMemo(
+      () => createProjectSelectorByRef(fallbackDraftProjectRef),
+      [fallbackDraftProjectEnvironmentId, fallbackDraftProjectProjectId],
+    ),
   );
   const localDraftError =
     routeKind === "server" && serverThread
@@ -1132,11 +1153,18 @@ function ChatViewBody(
     activeThread?.session ?? null,
   );
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
-  const activeProjectRef = activeThread
-    ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
-    : null;
+  const activeProjectRef = useMemo(
+    () =>
+      activeThread ? scopeProjectRef(activeThread.environmentId, activeThread.projectId) : null,
+    [activeThread],
+  );
+  const activeProjectEnvironmentId = activeProjectRef?.environmentId;
+  const activeProjectProjectId = activeProjectRef?.projectId;
   const activeProject = useStore(
-    useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
+    useMemo(
+      () => createProjectSelectorByRef(activeProjectRef),
+      [activeProjectEnvironmentId, activeProjectProjectId],
+    ),
   );
 
   useEffect(() => {

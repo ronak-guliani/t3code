@@ -26,6 +26,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
+import { reportClientWarning } from "../lib/clientLogger";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
 import { useTheme } from "../hooks/useTheme";
@@ -419,7 +420,7 @@ function UncachedShikiCodeBlock({
       return highlighter.codeToHtml(code, { lang: language, theme: themeName });
     } catch (error) {
       // Log highlighting failures for debugging while falling back to plain text
-      console.warn(
+      reportClientWarning(
         `Code highlighting failed for language "${language}", falling back to plain text.`,
         error instanceof Error ? error.message : error,
       );

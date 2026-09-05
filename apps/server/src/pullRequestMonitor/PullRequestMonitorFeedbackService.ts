@@ -780,51 +780,62 @@ export const layer = Layer.effect(
 
     const materializePendingBatches = Effect.gen(function* () {
       const now = yield* isoNow();
-      const monitors = yield* monitorStore.list({ enabledOnly: true });
-      for (const monitor of monitors) {
-        if (!monitor.ownerThreadId) continue;
-        const state = yield* feedbackStore.getState(monitor.id);
-        if (state.pendingRevisionIds.length === 0) continue;
-        if (state.debounceUntil && state.debounceUntil > now) continue;
-        if (state.circuitOpenUntil && state.circuitOpenUntil > now) continue;
-
-        const revisionIds = [...state.pendingRevisionIds].sort();
-        const ids = stableDeliveryIds({
-          monitorId: monitor.id,
-          threadId: monitor.ownerThreadId,
-          revisionIds,
-          headSha: monitor.headSha ?? "unknown",
+      let before: { updatedAt: string; monitorId: PullRequestMonitorId } | undefined;
+      while (true) {
+        const monitors = yield* monitorStore.listEnabledPage({
+          limit: 500,
+          ...(before ? { before } : {}),
         });
+        for (const monitor of monitors) {
+          if (!monitor.ownerThreadId) continue;
+          const state = yield* feedbackStore.getState(monitor.id);
+          if (state.pendingRevisionIds.length === 0) continue;
+          if (state.debounceUntil && state.debounceUntil > now) continue;
+          if (state.circuitOpenUntil && state.circuitOpenUntil > now) continue;
 
-        const existing = yield* feedbackStore.getDeliveryByBatchKey(ids.batchKey);
-        if (!existing) {
-          const delivery: PullRequestMonitorFeedbackDelivery = {
-            id: ids.deliveryId,
+          const revisionIds = [...state.pendingRevisionIds].sort();
+          const ids = stableDeliveryIds({
             monitorId: monitor.id,
-            batchKey: ids.batchKey,
-            targetThreadId: monitor.ownerThreadId,
-            commandId: ids.commandId,
-            messageId: ids.messageId,
-            revisionIds:
-              revisionIds as unknown as ReadonlyArray<PullRequestMonitorFeedbackRevisionId>,
-            status: "pending",
-            attemptCount: 0,
-            lastError: null,
-            createdAt: now,
-            deliveredAt: null,
-          };
-          yield* feedbackStore.insertDelivery({
-            ...delivery,
-            nextAttemptAt: now,
-            receiptJson: null,
+            threadId: monitor.ownerThreadId,
+            revisionIds,
+            headSha: monitor.headSha ?? "unknown",
+          });
+
+          const existing = yield* feedbackStore.getDeliveryByBatchKey(ids.batchKey);
+          if (!existing) {
+            const delivery: PullRequestMonitorFeedbackDelivery = {
+              id: ids.deliveryId,
+              monitorId: monitor.id,
+              batchKey: ids.batchKey,
+              targetThreadId: monitor.ownerThreadId,
+              commandId: ids.commandId,
+              messageId: ids.messageId,
+              revisionIds:
+                revisionIds as unknown as ReadonlyArray<PullRequestMonitorFeedbackRevisionId>,
+              status: "pending",
+              attemptCount: 0,
+              lastError: null,
+              createdAt: now,
+              deliveredAt: null,
+            };
+            yield* feedbackStore.insertDelivery({
+              ...delivery,
+              nextAttemptAt: now,
+              receiptJson: null,
+            });
+          }
+
+          yield* feedbackStore.removePendingRevisionIds({
+            monitorId: monitor.id,
+            revisionIds,
+            updatedAt: now,
           });
         }
 
-        yield* feedbackStore.removePendingRevisionIds({
-          monitorId: monitor.id,
-          revisionIds,
-          updatedAt: now,
-        });
+        if (monitors.length < 500) break;
+        const last = monitors[monitors.length - 1];
+        if (!last) break;
+        before = { updatedAt: last.updatedAt, monitorId: last.id };
       }
     }).pipe(Effect.ignore);
 

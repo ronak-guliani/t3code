@@ -1,6 +1,8 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
 import { useEffect } from "react";
 
+import { RootRouteErrorView } from "./__root";
+
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import {
@@ -113,4 +115,5 @@ export const Route = createFileRoute("/_chat")({
     }
   },
   component: ChatRouteLayout,
+  errorComponent: RootRouteErrorView,
 });

@@ -55,6 +55,8 @@ import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/Proje
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import { MAX_THREAD_ACTIVITIES } from "../projector.ts";
+// Per-thread cap for background-agent runs in shell snapshots.
+const MAX_BACKGROUND_AGENT_RUNS_PER_THREAD = 100;
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotCounts,
@@ -683,19 +685,56 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH background_tasks AS (
+          SELECT
+            thread_id,
+            json_extract(payload_json, '$.taskId') AS task_id,
+            MAX(created_at) AS latest_created_at,
+            MAX(activity_id) AS latest_activity_id
+          FROM projection_thread_activities
+          WHERE kind IN ('task.started', 'task.completed')
+            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM projection_thread_activities AS started
+              WHERE started.thread_id = projection_thread_activities.thread_id
+                AND started.kind = 'task.started'
+                AND json_extract(started.payload_json, '$.taskType') = 'background-agent'
+                AND json_extract(started.payload_json, '$.taskId') =
+                  json_extract(projection_thread_activities.payload_json, '$.taskId')
+            )
+          GROUP BY thread_id, task_id
+        ),
+        ranked_tasks AS (
+          SELECT
+            thread_id,
+            task_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY latest_created_at DESC, latest_activity_id DESC
+            ) AS task_rank
+          FROM background_tasks
+        )
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE kind IN ('task.started', 'task.completed')
-        ORDER BY thread_id ASC, created_at ASC, activity_id ASC
+          activities.activity_id AS "activityId",
+          activities.thread_id AS "threadId",
+          activities.turn_id AS "turnId",
+          activities.tone,
+          activities.kind,
+          activities.summary,
+          activities.payload_json AS "payload",
+          activities.sequence,
+          activities.created_at AS "createdAt"
+        FROM ranked_tasks
+        INNER JOIN projection_thread_activities AS activities
+          ON activities.thread_id = ranked_tasks.thread_id
+          AND json_extract(activities.payload_json, '$.taskId') = ranked_tasks.task_id
+        WHERE ranked_tasks.task_rank <= ${MAX_BACKGROUND_AGENT_RUNS_PER_THREAD}
+          AND activities.kind IN ('task.started', 'task.completed')
+        ORDER BY
+          activities.thread_id ASC,
+          activities.created_at ASC,
+          activities.activity_id ASC
       `,
   });
 
@@ -1304,19 +1343,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE thread_id = ${threadId}
-          AND kind IN ('task.started', 'task.completed')
-        ORDER BY created_at ASC, activity_id ASC
+          recent.activity_id AS "activityId",
+          recent.thread_id AS "threadId",
+          recent.turn_id AS "turnId",
+          recent.tone,
+          recent.kind,
+          recent.summary,
+          recent.payload_json AS "payload",
+          recent.sequence,
+          recent.created_at AS "createdAt"
+        FROM projection_thread_activities AS recent
+        INNER JOIN (
+          SELECT
+            json_extract(payload_json, '$.taskId') AS task_id
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND kind IN ('task.started', 'task.completed')
+            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM projection_thread_activities AS started
+              WHERE started.thread_id = ${threadId}
+                AND started.kind = 'task.started'
+                AND json_extract(started.payload_json, '$.taskType') = 'background-agent'
+                AND json_extract(started.payload_json, '$.taskId') =
+                  json_extract(projection_thread_activities.payload_json, '$.taskId')
+            )
+          GROUP BY task_id
+          ORDER BY MAX(created_at) DESC, MAX(activity_id) DESC
+          LIMIT ${MAX_BACKGROUND_AGENT_RUNS_PER_THREAD}
+        ) AS selected_tasks
+          ON json_extract(recent.payload_json, '$.taskId') = selected_tasks.task_id
+        WHERE recent.thread_id = ${threadId}
+          AND recent.kind IN ('task.started', 'task.completed')
+        ORDER BY recent.created_at ASC, recent.activity_id ASC
       `,
   });
 

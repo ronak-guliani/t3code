@@ -25,6 +25,7 @@ import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime"
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
+import { reportClientError } from "../lib/clientLogger";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
 import { resolveProviderInteractionMode } from "../features/threads/legacy-plan-mode";
 import {
@@ -510,7 +511,7 @@ export function useThreadComposerState() {
           appendComposerDraftAttachments(threadKey, images);
         }
       } catch (error) {
-        console.error("[native paste] error converting images", {
+        reportClientError("[native paste] error converting images", {
           environmentId: selectedThreadShell.environmentId,
           threadId: selectedThreadShell.id,
           uriCount: uris.length,

@@ -96,7 +96,7 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
-import { selectSidebarThreadSummaryByRef, useStore } from "../../store";
+import { selectSidebarThreadSummaryByRef, useStore, type AppState } from "../../store";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -821,8 +821,15 @@ function CrossThreadProvenance({
 }) {
   const navigate = useNavigate();
   const ctx = use(TimelineRowCtx);
-  const sourceThreadRef = scopeThreadRef(ctx.activeThreadEnvironmentId, origin.sourceThreadId);
-  const sourceThread = useStore((state) => selectSidebarThreadSummaryByRef(state, sourceThreadRef));
+  // scopeThreadRef allocates a fresh object; memoize the ref on the primitives
+  // so the selector (and its subscription) stays stable across stream chunks.
+  const sourceThreadEnvironmentId = ctx.activeThreadEnvironmentId;
+  const sourceThreadThreadId = origin.sourceThreadId;
+  const sourceThreadSelector = useMemo(() => {
+    const ref = scopeThreadRef(sourceThreadEnvironmentId, sourceThreadThreadId);
+    return (state: AppState) => selectSidebarThreadSummaryByRef(state, ref);
+  }, [sourceThreadEnvironmentId, sourceThreadThreadId]);
+  const sourceThread = useStore(sourceThreadSelector);
   const sourceTitle = sourceThread?.title.trim() || origin.sourceThreadTitle;
   const canNavigate = sourceThread !== null && sourceThread !== undefined;
 
@@ -848,8 +855,8 @@ function CrossThreadProvenance({
         void navigate({
           to: "/$environmentId/$threadId",
           params: {
-            environmentId: sourceThreadRef.environmentId,
-            threadId: sourceThreadRef.threadId,
+            environmentId: sourceThreadEnvironmentId,
+            threadId: sourceThreadThreadId,
           },
           search: (previous) => ({ ...previous, message: origin.sourceMessageId }),
         });

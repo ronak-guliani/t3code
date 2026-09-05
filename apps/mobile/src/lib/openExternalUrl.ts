@@ -1,6 +1,8 @@
 import * as Schema from "effect/Schema";
 import { Linking } from "react-native";
 
+import { reportClientError } from "./clientLogger";
+
 const ExternalUrlTarget = Schema.Literals([
   "file-preview",
   "markdown-link",
@@ -44,7 +46,7 @@ export async function tryOpenExternalUrl(url: string, target: ExternalUrlTarget)
     return true;
   } catch (cause) {
     const error = new ExternalUrlOpenError({ target, ...externalUrlMetadata(url), cause });
-    console.error(error.message, {
+    reportClientError(error.message, {
       _tag: error._tag,
       target: error.target,
       scheme: error.scheme,

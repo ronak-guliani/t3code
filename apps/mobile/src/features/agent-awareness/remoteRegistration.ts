@@ -19,6 +19,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 
 import type { SavedRemoteConnection } from "../../lib/connection";
+import { reportClientWarning } from "../../lib/clientLogger";
 import { runtime } from "../../lib/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentServerConfigsAtom } from "../../state/server";
@@ -585,7 +586,7 @@ function logRegistrationError(context: string, error: unknown): void {
   if (!__DEV__) {
     return;
   }
-  console.warn(`[agent-awareness] ${context}`, {
+  reportClientWarning(`[agent-awareness] ${context}`, {
     message: error instanceof Error ? error.message : String(error),
     traceId: findErrorTraceId(error),
     error,

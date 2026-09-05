@@ -12,6 +12,7 @@ import { SymbolView } from "../../components/AppSymbol";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { ControlPill } from "../../components/ControlPill";
 import { cn } from "../../lib/cn";
+import { reportClientError } from "../../lib/clientLogger";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
 import { useNativePaste } from "../../lib/useNativePaste";
@@ -93,7 +94,7 @@ export function ReviewCommentComposerSheet(props: ReviewCommentComposerSheetProp
           setAttachments((current) => [...current, ...images]);
         }
       } catch (error) {
-        console.error("[review comment] error converting pasted images", error);
+        reportClientError("[review comment] error converting pasted images", error);
       }
     })();
   });

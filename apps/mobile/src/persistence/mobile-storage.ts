@@ -11,6 +11,7 @@ import {
   type SavedRemoteConnection,
   toStableSavedRemoteConnection,
 } from "../lib/connection";
+import { reportClientWarning } from "../lib/clientLogger";
 import * as MobileSecureStorage from "./mobile-secure-storage";
 
 const CONNECTIONS_KEY = "t3code.connections";
@@ -125,7 +126,7 @@ export const make = Effect.fn("MobileStorage.make")(function* () {
     try {
       return JSON.parse(raw) as A;
     } catch (cause) {
-      console.warn(
+      reportClientWarning(
         "[mobile-storage] ignored invalid JSON",
         new MobileStorageDecodeError({ key, cause }),
       );

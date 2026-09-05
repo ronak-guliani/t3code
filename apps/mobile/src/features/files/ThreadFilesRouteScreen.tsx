@@ -30,6 +30,7 @@ import { resolveFileSelectionNavigationAction } from "../../lib/adaptive-navigat
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { isPdfFile } from "../../lib/filePreview";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
+import { firstRouteParam } from "../../lib/routeParams";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import type { MediaVideoPreviewSource } from "../../lib/videoPreviewSource";
 import { useMediaActions, type MediaActionsSource } from "../../lib/mediaActions";
@@ -69,14 +70,6 @@ import {
 import { useWorkspaceFileAssetUrlState } from "./workspaceFileAssetUrl";
 
 type FileViewMode = "preview" | "source";
-
-function firstRouteParam(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-
-  return value ?? null;
-}
 
 function normalizeRoutePath(value: string | string[] | undefined): string | null {
   const path = Array.isArray(value) ? value.join("/") : value;
@@ -370,7 +363,7 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
           onSelectFile={handleSelectFile}
         />
       ) : null,
-    [cwd, environmentId, handleSelectFile, projectName],
+    [cwd, environmentId, handleSelectFile, projectName, threadId],
   );
   const handlePreviewFile = useCallback(
     (relativePath: string) => {
@@ -653,7 +646,15 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           onSelectFile={handleSelectFile}
         />
       ) : undefined,
-    [cwd, environmentId, fileInspector.supported, handleSelectFile, projectName, relativePath],
+    [
+      cwd,
+      environmentId,
+      fileInspector.supported,
+      handleSelectFile,
+      projectName,
+      relativePath,
+      threadId,
+    ],
   );
   // The workspace inspector column spans the full window height. On iOS the
   // pane brings its own nested native header; elsewhere it pads itself below

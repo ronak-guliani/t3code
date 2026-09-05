@@ -2,6 +2,8 @@ import * as Schema from "effect/Schema";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 
+import { reportClientError } from "./clientLogger";
+
 export class CopyTextClipboardWriteError extends Schema.TaggedErrorClass<CopyTextClipboardWriteError>()(
   "CopyTextClipboardWriteError",
   {
@@ -45,7 +47,7 @@ export async function tryCopyTextWithHaptic(
       return true;
     } catch (cause) {
       const error = new CopyTextClipboardWriteError({ target, cause });
-      console.error(error.message, { _tag: error._tag, target, stack: error.stack });
+      reportClientError(error.message, { _tag: error._tag, target, stack: error.stack });
       return false;
     }
   })();
@@ -59,7 +61,7 @@ export async function tryCopyTextWithHaptic(
       }
     } catch (cause) {
       const error = new CopyTextHapticFeedbackError({ target, feedback, cause });
-      console.error(error.message, { _tag: error._tag, target, feedback, stack: error.stack });
+      reportClientError(error.message, { _tag: error._tag, target, feedback, stack: error.stack });
     }
   })();
 

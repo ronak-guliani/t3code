@@ -14,6 +14,7 @@ import { useEffect } from "react";
 import { Atom } from "effect/unstable/reactivity";
 
 import { writeFileAtomically } from "../lib/atomic-file";
+import { reportClientWarning } from "../lib/clientLogger";
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import {
   composerAttachmentFileReferenceKey,
@@ -461,7 +462,7 @@ export async function releaseUnusedComposerAttachmentFiles(
       ),
     );
   } catch (error) {
-    console.warn("[composer-attachments] could not verify incoming share ownership", error);
+    reportClientWarning("[composer-attachments] could not verify incoming share ownership", error);
     return;
   }
 
@@ -493,7 +494,7 @@ export async function releaseUnusedComposerAttachmentFiles(
         } catch (error) {
           // The server expires stale pending uploads. Local discard must still
           // complete when the environment is disconnected or deletion fails.
-          console.warn("[composer-attachments] could not remove pending upload", {
+          reportClientWarning("[composer-attachments] could not remove pending upload", {
             environmentId,
             attachmentId,
             error,
@@ -516,7 +517,7 @@ export function scheduleUnusedComposerAttachmentCleanup(
     return;
   }
   void releaseUnusedComposerAttachmentFiles(attachments).catch((error) => {
-    console.warn("[composer-attachments] could not remove unused files", error);
+    reportClientWarning("[composer-attachments] could not remove unused files", error);
   });
 }
 
@@ -549,7 +550,7 @@ function schedulePersistComposerState(): void {
         // A failed debounce has no timer left. A later final flush must retry
         // these edits after persisted ownership can be read safely.
         persistRetryNeeded = true;
-        console.warn("[composer-drafts] failed to persist drafts", error);
+        reportClientWarning("[composer-drafts] failed to persist drafts", error);
         // Draft persistence is best-effort; in-memory drafts still keep working.
       }
     });
@@ -581,7 +582,7 @@ export function ensureComposerDraftsLoaded(): void {
   // write and cleanup callers that await this same promise. A later call retries.
   void loading.catch((cause) => {
     if (loadPromise === loading) loadPromise = null;
-    console.warn(
+    reportClientWarning(
       "[composer-drafts] failed to hydrate drafts",
       cause instanceof ComposerDraftPersistenceError
         ? cause
