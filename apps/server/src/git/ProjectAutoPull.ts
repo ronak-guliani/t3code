@@ -1,5 +1,7 @@
 import { Clock, Context, Effect, FileSystem, Layer, PubSub, Ref, Stream } from "effect";
 import type { Scope } from "effect";
+import type { OrchestrationProject, ProjectId } from "@t3tools/contracts";
+import { threadHasInFlightTurn } from "../orchestration/commandInvariants.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { GitCore, type GitStatusDetails } from "./Services/GitCore.ts";
 
@@ -34,19 +36,49 @@ export const ProjectAutoPullLive = Layer.effect(
     const busy = yield* Ref.make(new Set<string>());
     const failures = new Map<string, { count: number; retryAt: number }>();
 
-    const enabledRoots = Effect.gen(function* () {
+    const enabledProjects = Effect.gen(function* () {
       const model = yield* engine.getReadModel();
-      return model.projects
-        .filter((project) => !project.deletedAt && project.autoPull === true)
-        .map((project) => project.workspaceRoot);
+      return model.projects.filter((project) => !project.deletedAt && project.autoPull === true);
     });
 
-    const eligible = (cwd: string) =>
+    let indexedProjects: readonly OrchestrationProject[] | undefined;
+    let projectById = new Map<ProjectId, OrchestrationProject>();
+    const indexProjects = (projects: readonly OrchestrationProject[]) => {
+      if (indexedProjects !== projects) {
+        indexedProjects = projects;
+        projectById = new Map(projects.map((project) => [project.id, project]));
+      }
+      return projectById;
+    };
+
+    const resolveEnabledProjects = (projects: readonly OrchestrationProject[]) =>
+      Effect.gen(function* () {
+        const roots = new Map<string, Set<ProjectId>>();
+        for (const project of projects) {
+          const root = yield* fs.realPath(project.workspaceRoot).pipe(
+            Effect.catchTag("PlatformError", (cause) =>
+              Effect.logWarning("Automatic pull project path unavailable", {
+                projectId: project.id,
+                cause,
+              }).pipe(Effect.as(null)),
+            ),
+          );
+          if (root === null) continue;
+          const ids = roots.get(root) ?? new Set<ProjectId>();
+          ids.add(project.id);
+          roots.set(root, ids);
+        }
+        return roots;
+      });
+
+    const eligible = (cwd: string, projectIds: ReadonlySet<ProjectId>) =>
       Effect.gen(function* () {
         const model = yield* engine.getReadModel();
+        const projects = indexProjects(model.projects);
         let enabled = false;
-        for (const project of model.projects) {
-          if (project.deletedAt || project.autoPull !== true) continue;
+        for (const id of projectIds) {
+          const project = projects.get(id);
+          if (!project || project.deletedAt || project.autoPull !== true) continue;
           const root = yield* fs.realPath(project.workspaceRoot).pipe(
             Effect.catchTag("PlatformError", (cause) =>
               Effect.logWarning("Automatic pull project path unavailable", {
@@ -63,12 +95,12 @@ export const ProjectAutoPullLive = Layer.effect(
         if (!enabled) return false;
         for (const thread of model.threads) {
           if (
-            thread.latestTurn?.state !== "running" &&
+            !threadHasInFlightTurn(thread) &&
             !thread.session?.activeTurnId &&
             !(thread.queuedTurns ?? []).some((turn) => turn.failedAt === null)
           )
             continue;
-          const project = model.projects.find((entry) => entry.id === thread.projectId);
+          const project = projects.get(thread.projectId);
           const path = thread.worktreePath ?? project?.workspaceRoot;
           // An unresolved active owner is not evidence that the checkout is idle.
           if (!path || (yield* fs.realPath(path)) === cwd) return false;
@@ -85,9 +117,9 @@ export const ProjectAutoPullLive = Layer.effect(
         })
         .pipe(Effect.map((result) => result.stdout.trim()));
 
-    const pull = (cwd: string) =>
+    const pull = (cwd: string, projectIds: ReadonlySet<ProjectId>) =>
       Effect.gen(function* () {
-        if (!(yield* eligible(cwd))) return;
+        if (!(yield* eligible(cwd, projectIds))) return;
         const status = yield* git.statusDetails(cwd);
         const reason = autoPullSkipReason(status);
         if (reason) {
@@ -108,12 +140,12 @@ export const ProjectAutoPullLive = Layer.effect(
           current.branch !== status.branch ||
           current.upstreamRef !== status.upstreamRef ||
           (yield* head(cwd)) !== expectedHead ||
-          !(yield* eligible(cwd))
+          !(yield* eligible(cwd, projectIds))
         )
           return;
 
-        // External terminals do not share our reservation; Git remains the final
-        // authority and must never merge, rebase, stash, or reset local work.
+        // This reservation only serializes automatic pulls. Turn starts, manual
+        // Git actions, and external terminals can still race these final checks.
         yield* git.execute({
           operation: "ProjectAutoPull.pull",
           cwd,
@@ -130,11 +162,8 @@ export const ProjectAutoPullLive = Layer.effect(
         yield* PubSub.publish(changes, cwd);
       });
 
-    const attempt = (rawCwd: string) =>
+    const attemptCanonical = (cwd: string, projectIds: ReadonlySet<ProjectId>) =>
       Effect.gen(function* () {
-        // Avoid filesystem or Git work when the feature is off everywhere.
-        if ((yield* enabledRoots).length === 0) return;
-        const cwd = yield* fs.realPath(rawCwd);
         const now = yield* Clock.currentTimeMillis;
         if ((failures.get(cwd)?.retryAt ?? 0) > now) return;
         yield* Effect.acquireUseRelease(
@@ -143,7 +172,7 @@ export const ProjectAutoPullLive = Layer.effect(
           ),
           (acquired) =>
             acquired
-              ? pull(cwd).pipe(
+              ? pull(cwd, projectIds).pipe(
                   Effect.tap(() => Effect.sync(() => failures.delete(cwd))),
                   Effect.catch((cause) =>
                     Effect.gen(function* () {
@@ -173,6 +202,25 @@ export const ProjectAutoPullLive = Layer.effect(
         ),
       );
 
+    const attempt = (rawCwd: string) =>
+      Effect.gen(function* () {
+        const projects = yield* enabledProjects;
+        if (projects.length === 0) return;
+        const cwd = yield* fs.realPath(rawCwd);
+        const direct = projects.filter(
+          (project) => project.workspaceRoot === rawCwd || project.workspaceRoot === cwd,
+        );
+        const ids =
+          direct.length > 0
+            ? new Set(direct.map((project) => project.id))
+            : (yield* resolveEnabledProjects(projects)).get(cwd);
+        if (ids) yield* attemptCanonical(cwd, ids);
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Automatic project pull lookup failed", { cause }),
+        ),
+      );
+
     const start = Effect.gen(function* () {
       const subscription = yield* engine.acquireDomainEventSubscription;
       yield* Stream.fromSubscription(subscription).pipe(
@@ -188,7 +236,11 @@ export const ProjectAutoPullLive = Layer.effect(
         ),
         Effect.forkScoped,
       );
-      yield* Effect.forEach(yield* enabledRoots, attempt, { concurrency: 4, discard: true });
+      const roots = yield* resolveEnabledProjects(yield* enabledProjects);
+      yield* Effect.forEach(roots, ([cwd, ids]) => attemptCanonical(cwd, ids), {
+        concurrency: 4,
+        discard: true,
+      });
     });
 
     return { attempt, start, changes: Stream.fromPubSub(changes) };

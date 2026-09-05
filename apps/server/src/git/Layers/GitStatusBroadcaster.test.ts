@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Exit, Layer, Option, Scope, Stream } from "effect";
+import { Deferred, Effect, Exit, Layer, Option, PubSub, Scope, Stream } from "effect";
 import type {
   GitStatusLocalResult,
   GitStatusRemoteResult,
@@ -45,14 +45,17 @@ const baseStatus: GitStatusResult = {
   ...baseRemoteStatus,
 };
 
-function makeTestLayer(state: {
-  currentLocalStatus: GitStatusLocalResult;
-  currentRemoteStatus: GitStatusRemoteResult | null;
-  localStatusCalls: number;
-  remoteStatusCalls: number;
-  localInvalidationCalls: number;
-  remoteInvalidationCalls: number;
-}) {
+function makeTestLayer(
+  state: {
+    currentLocalStatus: GitStatusLocalResult;
+    currentRemoteStatus: GitStatusRemoteResult | null;
+    localStatusCalls: number;
+    remoteStatusCalls: number;
+    localInvalidationCalls: number;
+    remoteInvalidationCalls: number;
+  },
+  changes: Stream.Stream<string> = Stream.empty,
+) {
   const gitManager: GitManagerShape = {
     localStatus: () =>
       Effect.sync(() => {
@@ -73,7 +76,11 @@ function makeTestLayer(state: {
       Effect.sync(() => {
         state.remoteInvalidationCalls += 1;
       }),
-    invalidateStatus: () => Effect.die("invalidateStatus should not be called in this test"),
+    invalidateStatus: () =>
+      Effect.sync(() => {
+        state.localInvalidationCalls += 1;
+        state.remoteInvalidationCalls += 1;
+      }),
     resolvePullRequest: () => Effect.die("resolvePullRequest should not be called in this test"),
     preparePullRequestThread: () =>
       Effect.die("preparePullRequestThread should not be called in this test"),
@@ -82,7 +89,13 @@ function makeTestLayer(state: {
 
   return GitStatusBroadcasterLive.pipe(
     Layer.provide(Layer.succeed(GitManager, gitManager)),
-    Layer.provide(AutoPullTestLayer),
+    Layer.provide(
+      Layer.succeed(ProjectAutoPull, {
+        attempt: () => Effect.void,
+        start: Effect.void,
+        changes,
+      }),
+    ),
   );
 }
 
@@ -118,6 +131,56 @@ function makeBlockingStatusLayer(input: {
 }
 
 describe("GitStatusBroadcasterLive", () => {
+  it.effect("reloads and publishes both status halves after an automatic pull", () =>
+    Effect.gen(function* () {
+      const changes = yield* Effect.acquireRelease(PubSub.unbounded<string>(), PubSub.shutdown);
+      const subscription = yield* PubSub.subscribe(changes);
+      const state = {
+        currentLocalStatus: baseLocalStatus,
+        currentRemoteStatus: baseRemoteStatus,
+        localStatusCalls: 0,
+        remoteStatusCalls: 0,
+        localInvalidationCalls: 0,
+        remoteInvalidationCalls: 0,
+      };
+      yield* Effect.gen(function* () {
+        const broadcaster = yield* GitStatusBroadcaster;
+        const initialRemote = yield* Deferred.make<void>();
+        const localChanged = yield* Deferred.make<GitStatusLocalResult>();
+        const remoteChanged = yield* Deferred.make<GitStatusRemoteResult | null>();
+        yield* broadcaster.streamStatus({ cwd: "/repo" }).pipe(
+          Stream.runForEach((event) => {
+            if (event._tag === "remoteUpdated") {
+              return event.remote?.behindCount === 3
+                ? Deferred.succeed(remoteChanged, event.remote)
+                : Deferred.succeed(initialRemote, undefined);
+            }
+            if (event._tag === "localUpdated") {
+              return Deferred.succeed(localChanged, event.local);
+            }
+            return Effect.void;
+          }),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(initialRemote);
+        const before = { ...state };
+        state.currentLocalStatus = { ...baseLocalStatus, branch: "main" };
+        state.currentRemoteStatus = { ...baseRemoteStatus, behindCount: 3 };
+        yield* PubSub.publish(changes, "/repo");
+        assert.deepStrictEqual(yield* Deferred.await(localChanged), state.currentLocalStatus);
+        assert.deepStrictEqual(yield* Deferred.await(remoteChanged), state.currentRemoteStatus);
+        assert.deepStrictEqual(yield* broadcaster.getStatus({ cwd: "/repo" }), {
+          ...state.currentLocalStatus,
+          ...state.currentRemoteStatus,
+        });
+        assert.equal(state.localStatusCalls, before.localStatusCalls + 1);
+        assert.equal(state.remoteStatusCalls, before.remoteStatusCalls + 1);
+        assert.equal(state.localInvalidationCalls, before.localInvalidationCalls + 1);
+        assert.equal(state.remoteInvalidationCalls, before.remoteInvalidationCalls + 1);
+      }).pipe(Effect.provide(makeTestLayer(state, Stream.fromSubscription(subscription))));
+    }),
+  );
+
   it.effect("loads local and remote git status concurrently", () =>
     Effect.gen(function* () {
       const localStarted = yield* Deferred.make<void>();

@@ -83,6 +83,37 @@ const fixture = Effect.gen(function* () {
 });
 
 describe("ProjectAutoPull", () => {
+  it.effect("resolves startup project aliases once per sweep", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const projectCount = 12;
+      yield* Ref.update(f.model, (model) => ({
+        ...model,
+        projects: Array.from({ length: projectCount }, (_, index) => ({
+          ...model.projects[0]!,
+          id: ProjectId.make(`alias-${index}`),
+          workspaceRoot: `${f.cwd}/${"./".repeat(index)}`,
+        })),
+      }));
+      let pathLookups = 0;
+      yield* Effect.gen(function* () {
+        const service = yield* ProjectAutoPull;
+        yield* service.start;
+      }).pipe(
+        Effect.provide(f.serviceLayer),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...f.fs,
+          realPath: (path) => {
+            pathLookups++;
+            return f.fs.realPath(path);
+          },
+        }),
+      );
+      assert.equal(pathLookups, projectCount + 2);
+      assert.equal(yield* f.git(f.cwd, ["rev-parse", "HEAD"]), f.after);
+    }).pipe(Effect.provide(GitLayer)),
+  );
+
   it.effect("sweeps enabled projects on start", () =>
     Effect.gen(function* () {
       const f = yield* fixture;
@@ -224,6 +255,8 @@ describe("ProjectAutoPull", () => {
     "feature",
     "no-upstream",
     "active",
+    "pending",
+    "pending-with-system-message",
     "other-worktree",
   ] as const) {
     it.effect(`handles ${condition} checkout`, () =>
@@ -248,7 +281,12 @@ describe("ProjectAutoPull", () => {
         }
         if (condition === "feature") yield* f.git(f.cwd, ["checkout", "-b", "feature"]);
         if (condition === "no-upstream") yield* f.git(f.cwd, ["branch", "--unset-upstream"]);
-        if (condition === "active" || condition === "other-worktree") {
+        if (
+          condition === "active" ||
+          condition === "other-worktree" ||
+          condition === "pending" ||
+          condition === "pending-with-system-message"
+        ) {
           const other = `${f.root}/other`;
           yield* f.fs.makeDirectory(other);
           const thread = decodeThread({
@@ -259,7 +297,7 @@ describe("ProjectAutoPull", () => {
             runtimeMode: "full-access",
             interactionMode: "default",
             branch: "main",
-            worktreePath: condition === "active" ? null : other,
+            worktreePath: condition === "other-worktree" ? other : null,
             createdAt: f.now,
             updatedAt: f.now,
             deletedAt: null,
@@ -278,7 +316,46 @@ describe("ProjectAutoPull", () => {
               assistantMessageId: null,
             },
           });
-          yield* Ref.update(f.model, (model) => ({ ...model, threads: [thread] }));
+          const pending = condition === "pending" || condition === "pending-with-system-message";
+          yield* Ref.update(f.model, (model) => ({
+            ...model,
+            threads: [
+              pending
+                ? decodeThread({
+                    ...thread,
+                    latestTurn: {
+                      ...thread.latestTurn,
+                      state: "completed",
+                      completedAt: f.now,
+                    },
+                    messages: [
+                      {
+                        id: "pending-user",
+                        role: "user",
+                        text: "Continue",
+                        turnId: null,
+                        streaming: false,
+                        createdAt: "1970-01-01T00:00:01.000Z",
+                        updatedAt: "1970-01-01T00:00:01.000Z",
+                      },
+                      ...(condition === "pending-with-system-message"
+                        ? [
+                            {
+                              id: "later-system",
+                              role: "system",
+                              text: "System update",
+                              turnId: null,
+                              streaming: false,
+                              createdAt: "1970-01-01T00:00:02.000Z",
+                              updatedAt: "1970-01-01T00:00:02.000Z",
+                            },
+                          ]
+                        : []),
+                    ],
+                  })
+                : thread,
+            ],
+          }));
         }
         const before = yield* f.git(f.cwd, ["rev-parse", "HEAD"]);
         yield* Effect.gen(function* () {
