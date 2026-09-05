@@ -862,6 +862,28 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-08-18T00:00:01.000Z'
         FROM activity_sequence
       `;
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, attachments_json,
+          is_streaming, created_at, updated_at
+        )
+        SELECT
+          printf('snapshot-message-%04d', value),
+          'thread-snapshot-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          CASE WHEN value = 1 THEN 'not-json' ELSE NULL END,
+          0,
+          '2026-08-18T00:00:02.000Z',
+          '2026-08-18T00:00:02.000Z'
+        FROM message_sequence
+      `;
 
       const snapshot = yield* snapshotQuery.getSnapshot();
       const thread = snapshot.threads.find((entry) => entry.id === "thread-snapshot-cap");
@@ -870,6 +892,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(thread.activities.length, 500);
       assert.equal(thread.activities[0]?.id, asEventId("activity-0002"));
       assert.equal(thread.activities.at(-1)?.id, asEventId("activity-0501"));
+      assert.equal(thread.messages.length, 2000);
+      assert.equal(thread.messages[0]?.text, "message 6");
+      assert.equal(thread.messages.at(-1)?.text, "message 2005");
     }),
   );
 

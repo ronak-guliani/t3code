@@ -562,15 +562,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WITH ranked_messages AS (
           SELECT
             message_id,
-            thread_id,
-            turn_id,
-            role,
-            text,
-            attachments_json,
-            origin_json,
-            is_streaming,
-            created_at,
-            updated_at,
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
               ORDER BY created_at DESC, message_id DESC
@@ -578,19 +569,21 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM projection_thread_messages
         )
         SELECT
-          message_id AS "messageId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          role,
-          text,
-          attachments_json AS "attachments",
-          origin_json AS "origin",
-          is_streaming AS "isStreaming",
-          created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.origin_json AS "origin",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
         FROM ranked_messages
-        WHERE message_rank <= ${MAX_THREAD_MESSAGES}
-        ORDER BY thread_id ASC, created_at ASC, message_id ASC
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.message_id = ranked_messages.message_id
+        WHERE ranked_messages.message_rank <= ${MAX_THREAD_MESSAGES}
+        ORDER BY messages.thread_id ASC, messages.created_at ASC, messages.message_id ASC
       `,
   });
 
