@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   CommandId,
+  AuthWebSocketTicketResult,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -31,6 +32,7 @@ import {
   TurnId,
   WS_METHODS,
   WsRpcGroup,
+  WsClientRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
 import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
@@ -74,6 +76,7 @@ import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
+import { attachmentRelativePath } from "./attachmentStore.ts";
 import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
 import {
   CheckpointDiffQuery,
@@ -1060,8 +1063,112 @@ const readNodeWebSocketJson = (socket: NodeWsSocket, onListening?: () => void) =
   );
 
 const decodeMobileServerMessage = Schema.decodeUnknownSync(MobileServerMessage);
+const decodeWebSocketTicket = Schema.decodeUnknownSync(
+  Schema.toCodecJson(AuthWebSocketTicketResult),
+);
+const makeMobileSourceRpcClient = RpcClient.make(WsClientRpcGroup);
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect(
+    "pairs the current mobile protocol, persists inline images, and reconnects with a new ticket",
+    () =>
+      Effect.gen(function* () {
+        const dispatched: OrchestrationCommand[] = [];
+        const config = yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: dispatched.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+        const bearerToken = yield* getAuthenticatedBearerSessionToken();
+        const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
+        const socketUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+        const nextSocketUrl = Effect.gen(function* () {
+          const response = yield* Effect.promise(() =>
+            fetch(ticketUrl, {
+              method: "POST",
+              headers: { authorization: `Bearer ${bearerToken}` },
+            }),
+          );
+          assert.equal(response.status, 200);
+          const ticket = decodeWebSocketTicket(yield* Effect.promise(() => response.json()));
+          return `${socketUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`;
+        });
+        const firstUrl = yield* nextSocketUrl;
+        const image = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9kAAAAASUVORK5CYII=",
+          "base64",
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* makeMobileSourceRpcClient;
+            const server = yield* client[WS_METHODS.serverGetConfig]({});
+            assert.notEqual(server.environment.capabilities.attachmentUploads, true);
+            const response = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.turn.start",
+              commandId: CommandId.make("mobile-source-send"),
+              threadId: defaultThreadId,
+              message: {
+                messageId: MessageId.make("mobile-source-message"),
+                role: "user",
+                text: "Inspect this pixel",
+                attachments: [
+                  {
+                    type: "image",
+                    name: "pixel.png",
+                    mimeType: "image/png",
+                    sizeBytes: image.length,
+                    dataUrl: `data:image/png;base64,${image.toString("base64")}`,
+                  },
+                ],
+              },
+              modelSelection: defaultModelSelection,
+              runtimeMode: "auto-accept-edits",
+              interactionMode: "default",
+              createdAt: new Date().toISOString(),
+            });
+            assert.isAtLeast(response.sequence, 1);
+          }).pipe(Effect.provide(wsRpcProtocolLayer(firstUrl))),
+        );
+
+        const turn = dispatched.find((command) => command.type === "thread.turn.start");
+        assert.isDefined(turn);
+        if (turn?.type !== "thread.turn.start") return yield* Effect.die("No turn was dispatched.");
+        const attachment = turn.message.attachments[0];
+        assert.isDefined(attachment);
+        if (attachment === undefined)
+          return yield* Effect.die("No image attachment was persisted.");
+        const relativePath = attachmentRelativePath(attachment);
+        const attachmentPath = resolveAttachmentRelativePath({
+          attachmentsDir: config.attachmentsDir,
+          relativePath,
+        });
+        assert.isNotNull(attachmentPath);
+        if (attachmentPath === null) return yield* Effect.die("Invalid persisted attachment path.");
+        const fileSystem = yield* FileSystem.FileSystem;
+        assert.deepEqual(Buffer.from(yield* fileSystem.readFile(attachmentPath)), image);
+
+        const secondUrl = yield* nextSocketUrl;
+        assert.notEqual(secondUrl, firstUrl);
+        const reconnected = yield* Effect.scoped(
+          makeMobileSourceRpcClient.pipe(
+            Effect.flatMap((client) => client[WS_METHODS.serverGetConfig]({})),
+            Effect.provide(wsRpcProtocolLayer(secondUrl)),
+          ),
+        );
+        assert.equal(
+          reconnected.environment.environmentId,
+          testEnvironmentDescriptor.environmentId,
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

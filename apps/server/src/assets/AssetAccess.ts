@@ -173,6 +173,9 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let fileName: string;
 
   switch (input.resource._tag) {
+    case "native-app-icon":
+      return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+    case "media-file":
     case "workspace-file": {
       if (!input.workspaceRoot) {
         return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });

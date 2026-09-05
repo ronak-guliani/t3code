@@ -1,4 +1,4 @@
-import { buildRemotePairingUrl, readHostedPairingRequest } from "@t3tools/shared/remote";
+import { readHostedPairingRequest } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
 
 const MOBILE_PAIRING_URL_PARAM = "pairingUrl";
@@ -7,6 +7,7 @@ function isIpLiteral(host: string): boolean {
   try {
     const hostname = new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, "");
     if (hostname.includes(":")) return true;
+
     const octets = hostname.split(".");
     return (
       octets.length === 4 &&
@@ -33,10 +34,9 @@ export function buildPairingUrl(host: string, code: string): string {
   if (!c) return h;
 
   try {
-    return buildRemotePairingUrl(
-      h.includes("://") ? h : `${isIpLiteral(h) ? "http" : "https"}://${h}`,
-      c,
-    );
+    const url = new URL(h.includes("://") ? h : `${isIpLiteral(h) ? "http" : "https"}://${h}`);
+    url.hash = new URLSearchParams([["token", c]]).toString();
+    return url.toString();
   } catch {
     return `${h}#token=${c}`;
   }
@@ -78,7 +78,6 @@ export function extractPairingUrlFromQrPayload(payload: string): string {
 
   try {
     const url = new URL(trimmed);
-    // Keep scanned legacy links usable without registering the official app's native scheme.
     if (url.protocol === "t3code:" || /^t3code-rg(?:-dev|-preview)?:$/.test(url.protocol)) {
       const pairingUrl = url.searchParams.get(MOBILE_PAIRING_URL_PARAM)?.trim() ?? "";
       if (pairingUrl.length > 0) {

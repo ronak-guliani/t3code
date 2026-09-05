@@ -5,6 +5,8 @@ import { Effect, Schema } from "effect";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
+  isProviderSendTurnSupportedImageMimeType,
   ClientOrchestrationCommand,
   DiffState,
   ModelSelection,
@@ -47,6 +49,22 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+
+it("recognizes supported image MIME types without accepting whitespace or parameters", () => {
+  for (const mimeType of PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES) {
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), true);
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType.toUpperCase()), true);
+  }
+  for (const mimeType of [
+    "image/heic",
+    "text/plain",
+    " image/png",
+    "image/png\n",
+    "image/png; charset=utf-8",
+  ]) {
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), false);
+  }
+});
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
