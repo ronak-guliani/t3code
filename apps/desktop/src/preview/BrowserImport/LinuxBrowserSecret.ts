@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import { app } from "electron";
 
 /** Absolute path to the helper shipped with this desktop instance. */
 export const LinuxBrowserSecretPath = Context.Reference<string | undefined>(
@@ -19,18 +20,20 @@ export const layer = Layer.effect(
     const relative = path.join("browser-secret", "t3-browser-secret");
     const candidates = [
       path.join(process.resourcesPath ?? "", relative),
-      path.join(
-        process.cwd(),
-        "native",
-        "browser-secret",
-        "build",
-        process.arch,
-        "t3-browser-secret",
+      ...["../..", "../../.."].map((root) =>
+        path.resolve(
+          app.getAppPath(),
+          root,
+          "native",
+          "browser-secret",
+          "build",
+          process.arch,
+          "t3-browser-secret",
+        ),
       ),
     ];
     for (const candidate of candidates) {
-      if (yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false)))
-        return candidate;
+      if (yield* fileSystem.exists(candidate)) return candidate;
     }
     return undefined;
   }),

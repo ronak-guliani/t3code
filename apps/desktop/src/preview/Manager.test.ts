@@ -20,6 +20,22 @@ import * as BrowserSession from "./BrowserSession.ts";
 import * as PreviewEnvironment from "./PreviewEnvironment.ts";
 import * as PreviewManager from "./Manager.ts";
 
+describe("preview popup policy", () => {
+  it("allows HTTP OAuth windows but never replaces the opener with a denied URL", () => {
+    expect(
+      PreviewManager.previewWindowOpenAction({
+        url: "https://example.com/oauth",
+        disposition: "new-window",
+      }),
+    ).toBe("popup");
+    for (const url of ["about:blank", "", "javascript:alert(1)", "file:///tmp/example"]) {
+      expect(PreviewManager.previewWindowOpenAction({ url, disposition: "new-window" })).toBe(
+        "deny",
+      );
+    }
+  });
+});
+
 describe("fitPictureInPictureContentSize", () => {
   it("preserves the PiP content area across aspect-ratio changes", () => {
     expect(PreviewManager.fitPictureInPictureContentSize([480, 320], 16 / 9)).toEqual([523, 294]);
@@ -782,7 +798,13 @@ describe("PreviewManager", () => {
         expect(states.at(-1)?.zoomFactor).toBe(1);
         expect(setZoomFactor).toHaveBeenCalledWith(1);
 
-        yield* manager.zoomIn("tab_zoom");
+        const preventDefault = vi.fn();
+        listeners.get("before-input-event")?.(
+          { preventDefault },
+          { type: "keyDown", key: "+", meta: true, control: false, alt: false, shift: true },
+        );
+        yield* Effect.yieldNow;
+        expect(preventDefault).toHaveBeenCalledOnce();
         expect(states.at(-1)?.zoomFactor).toBe(1.1);
         expect(effectiveZoom).toBe(1.1);
 

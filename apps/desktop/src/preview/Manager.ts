@@ -396,7 +396,7 @@ interface PictureInPictureSession {
  *
  * `about:blank` stays out: Chromium skips browser-side navigation for it, so the
  * child copies the guest's `contextIsolation: false` preferences and Electron
- * gives no way to override them. Those popups keep loading in the preview tab.
+ * gives no way to override them. Reject those popups without replacing the opener.
  *
  * Deliberately not `ElectronShell.parseSafeExternalUrl`: that also admits
  * `vscode://vscode-remote/...` deep links, which belong in `shell.openExternal`
@@ -443,8 +443,16 @@ const POPUP_WINDOW_OPTIONS = {
 export const previewWindowOpenAction = (details: {
   readonly url: string;
   readonly disposition: Electron.HandlerDetails["disposition"];
-}): "popup" | "navigate" =>
-  details.disposition === "new-window" && isPopupUrl(details.url) ? "popup" : "navigate";
+}): "popup" | "navigate" | "deny" =>
+  !isPopupUrl(details.url) ? "deny" : details.disposition === "new-window" ? "popup" : "navigate";
+
+export const previewZoomShortcut = (input: Electron.Input): "in" | "out" | "reset" | null => {
+  if (input.type !== "keyDown" || !(input.meta || input.control) || input.alt) return null;
+  if (input.key === "+" || input.key === "=") return "in";
+  if (input.key === "-") return "out";
+  if (input.key === "0" && !input.shift) return "reset";
+  return null;
+};
 
 export const isPreviewRefreshShortcut = (input: Electron.Input): boolean =>
   input.type === "keyDown" &&
@@ -1602,6 +1610,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       runFork(handleHumanInput(rawSignal));
     };
     const beforeInput = (event: Electron.Event, input: Electron.Input): void => {
+      const zoom = previewZoomShortcut(input);
+      if (zoom) {
+        event.preventDefault();
+        runFork(
+          applyZoom(tabId, (current) =>
+            zoom === "reset" ? DEFAULT_ZOOM_FACTOR : nextZoomLevel(current, zoom),
+          ),
+        );
+        return;
+      }
       if (isPreviewRefreshShortcut(input)) {
         event.preventDefault();
         runFork(
@@ -1655,7 +1673,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         wc.on("did-fail-load", failed as never);
         wc.ipc.on(HUMAN_INPUT_CHANNEL, humanInput);
         wc.setWindowOpenHandler((details) => {
-          if (previewWindowOpenAction(details) === "popup") {
+          const action = previewWindowOpenAction(details);
+          if (action === "deny") {
+            runFork(Effect.logWarning("Preview popup URL rejected", { tabId }));
+            return { action: "deny" };
+          }
+          if (action === "popup") {
             return { action: "allow", overrideBrowserWindowOptions: POPUP_WINDOW_OPTIONS };
           }
           runFork(

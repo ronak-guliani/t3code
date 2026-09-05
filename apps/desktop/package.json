@@ -5,10 +5,10 @@
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
-    "dev": "vp pack --watch",
-    "dev:bundle": "vp pack --watch",
+    "dev": "node scripts/build-browser-secret.mjs && vp pack --watch",
+    "dev:bundle": "node scripts/build-browser-secret.mjs && vp pack --watch",
     "dev:electron": "node scripts/dev-electron.mjs",
-    "build": "vp pack",
+    "build": "node scripts/build-browser-secret.mjs && vp pack",
     "start": "node scripts/start-electron.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vp test run --passWithNoTests",

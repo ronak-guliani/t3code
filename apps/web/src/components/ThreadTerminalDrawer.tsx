@@ -510,7 +510,7 @@ export function TerminalViewport({
             text: match.text,
             range,
             activate: (event: MouseEvent) => {
-              if (!isTerminalLinkActivation(event)) return;
+              if (match.kind !== "url" && !isTerminalLinkActivation(event)) return;
 
               const latestTerminal = terminalRef.current;
               if (!latestTerminal) return;
@@ -525,10 +525,8 @@ export function TerminalViewport({
                 }
                 void openTerminalLinkInPreview({
                   url: match.text,
-                  position: { x: event.clientX, y: event.clientY },
                   threadRef,
                   openPreview,
-                  localApi,
                   event,
                   fallbackToBrowser: () => {
                     void localApi.shell.openExternal(match.text).catch((error: unknown) => {

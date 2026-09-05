@@ -1,5 +1,6 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useCallback } from "react";
+import { useNavigate } from "@tanstack/react-router";
 
 import { readLocalApi } from "~/localApi";
 import { previewEnvironment } from "~/state/preview";
@@ -15,7 +16,11 @@ import {
 
 const NO_MODIFIER = { metaKey: false, ctrlKey: false, shiftKey: false, altKey: false } as const;
 
-export function useOpenLink(threadRef: ScopedThreadRef | null | undefined) {
+export function useOpenLink(
+  threadRef: ScopedThreadRef | null | undefined,
+  navigateToThread = false,
+) {
+  const navigate = useNavigate();
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
   return useCallback(
     async (
@@ -41,6 +46,12 @@ export function useOpenLink(threadRef: ScopedThreadRef | null | undefined) {
         const result = await openPreviewSession({ threadRef: targetThreadRef, url, openPreview });
         if (result._tag === "Success") {
           useRightPanelStore.getState().openBrowser(targetThreadRef, result.value.tabId);
+          if (navigateToThread) {
+            await navigate({
+              to: "/$environmentId/$threadId",
+              params: targetThreadRef,
+            });
+          }
           return;
         }
         console.error(result.cause);
@@ -49,6 +60,6 @@ export function useOpenLink(threadRef: ScopedThreadRef | null | undefined) {
       if (!api) throw new Error("Link opening is unavailable.");
       await api.shell.openExternal(url);
     },
-    [openPreview, threadRef],
+    [openPreview, threadRef, navigate, navigateToThread],
   );
 }

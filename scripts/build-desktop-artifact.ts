@@ -743,6 +743,11 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       buildResources: "apps/desktop/resources",
     },
     electronFuses: resolveElectronFuses(platform),
+    ...(platform === "linux"
+      ? {
+          extraResources: [{ from: "apps/desktop/resources/browser-secret", to: "browser-secret" }],
+        }
+      : {}),
   };
   if (electronDist) {
     buildConfig.electronDist = electronDist;
@@ -986,6 +991,27 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
   yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
+
+  if (options.platform === "linux") {
+    if (process.platform !== "linux") {
+      return yield* new BuildScriptError({
+        message: "Linux artifacts must be built on Linux to include the browser cookie helper.",
+      });
+    }
+    yield* runCommand(
+      ChildProcess.make(
+        "node",
+        [
+          path.join(repoRoot, "apps/desktop/scripts/build-browser-secret.mjs"),
+          "--arch",
+          options.arch === "arm64" ? "arm64" : "x64",
+          "--output",
+          path.join(stageResourcesDir, "browser-secret", "t3-browser-secret"),
+        ],
+        { cwd: repoRoot, ...commandOutputOptions(options.verbose) },
+      ),
+    );
+  }
 
   yield* assertPlatformBuildResources(
     options.platform,

@@ -21,7 +21,7 @@ import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
   type DesktopLocalRebuildState,
-  EnvironmentId,
+  type EnvironmentId,
   type ModelSelection,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_PREVIEW_APPEARANCE,
@@ -86,6 +86,7 @@ import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
+import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -979,6 +980,7 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
+  const browserEnvironmentId = usePrimaryEnvironmentId();
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -1010,6 +1012,13 @@ export function GeneralSettingsPanel() {
     settings.browserDefaultProfileId,
   );
   const browserProfiles = resolveBrowserProfiles(settings.browserProfiles);
+  const importTargetProfile =
+    browserProfiles.find(
+      (profile) => profile.id === browserImportTargetProfileId && profile.kind !== "incognito",
+    ) ?? browserProfiles.find((profile) => profile.id === DEFAULT_BROWSER_PROFILE_ID)!;
+  useEffect(() => {
+    setBrowserImportConsent(false);
+  }, [importTargetProfile.id, browserImportSourceId, browserImportProfileDirectory]);
   const updateBrowserProfileName = useCallback(
     (profile: BrowserProfile) => {
       const name = (browserProfileNames[profile.id] ?? profile.name).trim();
@@ -1072,6 +1081,7 @@ export function GeneralSettingsPanel() {
     const preview = window.desktopBridge?.preview;
     if (
       !preview ||
+      !browserEnvironmentId ||
       !selectedImportSource ||
       !browserImportProfileDirectory ||
       !browserImportConsent
@@ -1080,10 +1090,10 @@ export function GeneralSettingsPanel() {
     setBrowserImportStatus("Reading cookies...");
     try {
       const result = await preview.importBrowserCookies({
-        environmentId: EnvironmentId.make("default"),
+        environmentId: browserEnvironmentId,
         sourceId: selectedImportSource.id,
         sourceProfileDirectory: browserImportProfileDirectory,
-        targetProfileId: browserImportTargetProfileId,
+        targetProfileId: importTargetProfile.id,
       });
       setBrowserImportStatus(
         `${result.imported} cookies imported${result.skipped > 0 ? `, ${result.skipped} skipped` : ""}.`,
@@ -1101,7 +1111,8 @@ export function GeneralSettingsPanel() {
   }, [
     browserImportProfileDirectory,
     browserImportConsent,
-    browserImportTargetProfileId,
+    browserEnvironmentId,
+    importTargetProfile.id,
     selectedImportSource,
   ]);
   // Collapsible state per provider-instance card, keyed by the instance id.
@@ -2639,18 +2650,13 @@ export function GeneralSettingsPanel() {
                   </Select>
                 ) : null}
                 <Select
-                  value={browserImportTargetProfileId}
+                  value={importTargetProfile.id}
                   onValueChange={(value) => {
                     if (value) setBrowserImportTargetProfileId(value);
                   }}
                 >
                   <SelectTrigger className="w-full" aria-label="Cookie import target profile">
-                    <SelectValue>
-                      Import into{" "}
-                      {browserProfiles.find(
-                        (profile) => profile.id === settings.browserDefaultProfileId,
-                      )?.name ?? "Default"}
-                    </SelectValue>
+                    <SelectValue>Import into {importTargetProfile.name}</SelectValue>
                   </SelectTrigger>
                   <SelectPopup align="start" alignItemWithTrigger={false}>
                     {browserProfiles
@@ -2677,6 +2683,7 @@ export function GeneralSettingsPanel() {
                   size="sm"
                   variant="outline"
                   disabled={
+                    !browserEnvironmentId ||
                     !browserImportConsent ||
                     !selectedImportSource ||
                     selectedImportSource.unavailable !== undefined ||
