@@ -212,6 +212,12 @@ const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
 const THREAD_DETAIL_ACTIVITY_WINDOW = 200;
+// Bounds the thread-detail message hydration in SQL (newest window,
+// chronological order) so a pathological thread cannot blow the V8 heap by
+// decoding unbounded text/attachment JSON in JS. Backed by
+// idx_projection_thread_messages_thread_created. Threads under the bound read
+// identically to before.
+const THREAD_DETAIL_MESSAGE_WINDOW = 2_000;
 const ThreadActivitiesLimitInput = Schema.Struct({
   threadId: ThreadId,
   limit: NonNegativeInt,
@@ -1060,8 +1066,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
-        FROM projection_thread_messages
-        WHERE thread_id = ${threadId}
+        FROM (
+          SELECT *
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+          ORDER BY created_at DESC, message_id DESC
+          LIMIT ${THREAD_DETAIL_MESSAGE_WINDOW}
+        )
         ORDER BY created_at ASC, message_id ASC
       `,
   });
@@ -1114,6 +1125,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Scar #130: the per-thread activity window is applied in SQL (newest
+  // LIMIT over the (thread_id, created_at, activity_id) chronology index)
+  // BEFORE payload_json is decoded, so restart hydration cannot exceed the
+  // V8 heap even when a thread's full history is large. Older windows page
+  // via the (created_at, activity_id) keyset below.
   const listThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadActivitiesLimitInput,
     Result: ProjectionThreadActivityDbRowSchema,

@@ -2224,4 +2224,111 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(remainingLegacyPage.hasMore, false);
     }),
   );
+
+  it.effect("caps thread-detail message hydration to the newest SQL-side window", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-message-cap',
+          'Message cap',
+          '/tmp/project-message-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          '[]',
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-message-cap',
+          'project-message-cap',
+          'Message cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          'approval-required',
+          'default',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      // 2,005 messages: one over THREAD_DETAIL_MESSAGE_WINDOW (2,000) so the
+      // test proves the bound is applied in SQL before text/attachment JSON
+      // is decoded, not in JS after.
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('cap-msg-%05d', value),
+          'thread-message-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          0,
+          printf(
+            '2026-07-28T00:%02d:%02d.000Z',
+            CAST(value / 60 AS INTEGER),
+            value % 60
+          ),
+          printf(
+            '2026-07-28T00:%02d:%02d.000Z',
+            CAST(value / 60 AS INTEGER),
+            value % 60
+          )
+        FROM message_sequence
+      `;
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-message-cap"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "None") return;
+      assert.equal(detail.value.messages.length, 2000);
+      assert.equal(detail.value.messages[0]?.text, "message 6");
+      assert.equal(detail.value.messages.at(-1)?.text, "message 2005");
+    }),
+  );
 });
