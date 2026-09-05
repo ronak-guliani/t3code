@@ -9,7 +9,7 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Ref } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -2272,23 +2272,40 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
       `;
 
-      // Barrier-released fibers contend on the single SQLite connection. Joining them
-      // proves reads and writes both make progress (no deadlock/starvation) — not that
-      // their SELECTs overlap, which a single connection cannot do (scar #148).
+      // Barrier-released fibers contend on the single SQLite connection. Each reader
+      // takes one snapshot, rendezvous at `allArrived`, then blocks on `writerDone`
+      // while the writer commits — so the write must complete while all three
+      // readers remain pending (no deadlock/starvation). Readers then finish their
+      // remaining snapshots after the write, proving reads also progress. This does
+      // not assert SELECT overlap, which a single connection cannot do (scar #148).
       const gate = yield* Deferred.make<void>();
+      const writerDone = yield* Deferred.make<void>();
+      const allArrived = yield* Deferred.make<void>();
+      const arrived = yield* Ref.make(0);
       const readSnapshots = Deferred.await(gate).pipe(
         Effect.andThen(
-          Effect.forEach(
-            [0, 1, 2, 3, 4, 5],
-            (index) =>
-              index % 2 === 0
-                ? snapshotQuery.getShellSnapshot().pipe(Effect.asVoid)
-                : snapshotQuery.getSnapshot().pipe(Effect.asVoid),
-            { discard: true },
-          ),
+          Effect.gen(function* () {
+            yield* snapshotQuery.getShellSnapshot().pipe(Effect.asVoid);
+            const count = yield* Ref.updateAndGet(arrived, (n) => n + 1);
+            if (count === 3) {
+              yield* Deferred.succeed(allArrived, undefined);
+            }
+            // Block until the late write commits: the write must make progress
+            // while this reader is pending.
+            yield* Deferred.await(writerDone);
+            yield* Effect.forEach(
+              [1, 2, 3, 4, 5],
+              (index) =>
+                index % 2 === 0
+                  ? snapshotQuery.getShellSnapshot().pipe(Effect.asVoid)
+                  : snapshotQuery.getSnapshot().pipe(Effect.asVoid),
+              { discard: true },
+            );
+          }),
         ),
       );
       const writeProject = Deferred.await(gate).pipe(
+        Effect.andThen(Deferred.await(allArrived)),
         Effect.andThen(
           sql`
           INSERT INTO projection_projects (
@@ -2301,13 +2318,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           )
         `.pipe(Effect.asVoid),
         ),
+        Effect.andThen(Deferred.succeed(writerDone, undefined)),
       );
 
       const readerFibers = yield* Effect.forEach([0, 1, 2], () => Effect.forkChild(readSnapshots));
       const writerFiber = yield* Effect.forkChild(writeProject);
       yield* Deferred.succeed(gate, undefined);
-      yield* Effect.forEach(readerFibers, (fiber) => Fiber.join(fiber), { discard: true });
+      // The writer must finish while readers are blocked on `writerDone`; an
+      // implementation that delays the write until all snapshots finish deadlocks
+      // here instead of passing. Readers then finish after the write.
       yield* Fiber.join(writerFiber);
+      yield* Effect.forEach(readerFibers, (fiber) => Fiber.join(fiber), { discard: true });
 
       const reread = yield* snapshotQuery.getShellSnapshot();
       assert.isTrue(reread.projects.some((project) => project.id === "project-read-write-late"));
@@ -2397,6 +2418,57 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               `;
             }),
           );
+
+        // Deterministic torn-window proof: split reads around one commit are torn,
+        // so the single read transaction in `getShellSnapshot` is load-bearing. A
+        // single `DatabaseSync` connection cannot commit *inside* a held read
+        // transaction (it would deadlock on `Semaphore(1)` behind `scar #148`), so
+        // mid-snapshot injection is infeasible — the window is proven with split
+        // reads instead, then the concurrent section below asserts every real
+        // snapshot stays a consistent cut.
+        const before = yield* snapshotQuery.getShellSnapshot();
+        assert.equal(before.snapshotSequence, 0);
+        assert.isTrue(before.threads.every((thread) => thread.id !== threadIdFor(1)));
+        const preRows = yield* sql<{ readonly thread_id: string }>`
+          SELECT thread_id FROM projection_threads WHERE project_id = ${projectId}
+        `;
+        assert.equal(preRows.length, 0);
+        yield* commitBatch(1);
+        const postStateRows = yield* sql<{ readonly last_applied_sequence: number }>`
+          SELECT last_applied_sequence FROM projection_state
+        `;
+        const postCursor = Math.min(...postStateRows.map((row) => row.last_applied_sequence));
+        assert.isAtLeast(postCursor, 1);
+        // Rows from before the commit plus the cursor from after it mismatch: thread
+        // 1 is absent while the cursor covers it. Separate reads without one
+        // transaction can observe exactly this cut.
+        assert.isFalse(preRows.some((row) => row.thread_id === threadIdFor(1)));
+        assert.isTrue(postCursor >= 1);
+        const after = yield* snapshotQuery.getShellSnapshot();
+        assert.isAtLeast(after.snapshotSequence, 1);
+        assert.isTrue(after.threads.some((thread) => thread.id === threadIdFor(1)));
+
+        // Reset to sequence 0 so the concurrent stress below covers 1..commitCount.
+        yield* clearRaceTables;
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, default_model_selection_json, scripts_json,
+            created_at, updated_at, deleted_at
+          ) VALUES (
+            ${projectId}, 'Shell race project', '/tmp/shell-race',
+            '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+            '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+          )
+        `;
+        yield* Effect.forEach(
+          requiredProjectors,
+          (projector) =>
+            sql`
+              INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+              VALUES (${projector}, 0, '2026-09-01T00:00:00.000Z')
+            `,
+          { discard: true },
+        );
 
         const gate = yield* Deferred.make<void>();
         // Explicitly sequential: sequences must commit in increasing order.
