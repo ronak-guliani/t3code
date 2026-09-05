@@ -128,7 +128,10 @@ describe("RightPanelTabs", () => {
     try {
       await page.getByLabelText("Add surface").click();
       await page.getByRole("menuitem", { name: "Browser" }).click();
+      expect(callbacks.onAddBrowserInProfile).not.toHaveBeenCalled();
+      await page.getByRole("menuitem", { name: "Default", exact: true }).click();
       expect(callbacks.onAddBrowserInProfile).toHaveBeenCalledOnce();
+      expect(callbacks.onAddBrowserInProfile).toHaveBeenCalledWith("default");
 
       await page.getByLabelText("Add surface").click();
       await page.getByRole("menuitem", { name: "Terminal" }).click();
