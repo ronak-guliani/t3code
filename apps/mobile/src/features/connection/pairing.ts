@@ -78,7 +78,8 @@ export function extractPairingUrlFromQrPayload(payload: string): string {
 
   try {
     const url = new URL(trimmed);
-    if (url.protocol === "t3code:") {
+    // Keep scanned legacy links usable without registering the official app's native scheme.
+    if (url.protocol === "t3code:" || /^t3code-rg(?:-dev|-preview)?:$/.test(url.protocol)) {
       const pairingUrl = url.searchParams.get(MOBILE_PAIRING_URL_PARAM)?.trim() ?? "";
       if (pairingUrl.length > 0) {
         return pairingUrl;
