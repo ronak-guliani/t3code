@@ -1,4 +1,3 @@
-// @ts-nocheck
 import {
   type EnvironmentId,
   type ServerConfig,
@@ -7,6 +6,8 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
@@ -17,6 +18,9 @@ import {
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import { EnvironmentCacheStore } from "../platform/persistence.ts";
+import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 
 export interface ServerConfigProjection {
   readonly config: ServerConfig;
@@ -103,8 +107,53 @@ export function createServerEnvironmentAtoms<R, E>(
     label: "environment-data:server:config-projection",
     tag: WS_METHODS.subscribeServerConfig,
     transform: (stream) =>
-      stream.pipe(Stream.mapAccum(Option.none<ServerConfigProjection>, projectServerConfig)),
+      Stream.unwrap(
+        Effect.gen(function* () {
+          const cache = yield* Effect.serviceOption(EnvironmentCacheStore);
+          const projected = stream.pipe(
+            Stream.mapAccum(Option.none<ServerConfigProjection>, projectServerConfig),
+          );
+          if (Option.isNone(cache)) return projected;
+          const supervisor = yield* EnvironmentSupervisor;
+          const pending = yield* Queue.sliding<ServerConfig>(1);
+          yield* Stream.fromQueue(pending).pipe(
+            Stream.runForEach((config) =>
+              cache.value
+                .saveServerConfig(supervisor.target.environmentId, config)
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Could not persist the server configuration.").pipe(
+                      Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
+                    ),
+                  ),
+                ),
+            ),
+            Effect.forkScoped,
+          );
+          return projected.pipe(
+            Stream.tap((projection) => Queue.offer(pending, projection.config)),
+          );
+        }),
+      ),
   });
+  const cachedConfig = Atom.family((environmentId: EnvironmentId) =>
+    runtime.atom(
+      Effect.gen(function* () {
+        const cache = yield* Effect.serviceOption(EnvironmentCacheStore);
+        if (Option.isNone(cache)) return Option.none<ServerConfig>();
+        return yield* cache.value
+          .loadServerConfig(environmentId)
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Could not load the server configuration cache.").pipe(
+                Effect.annotateLogs({ ...safeErrorLogAttributes(error) }),
+                Effect.as(Option.none<ServerConfig>()),
+              ),
+            ),
+          );
+      }),
+    ),
+  );
   const emptyConfigAtom = Atom.make<ServerConfig | null>(null).pipe(
     Atom.withLabel("environment-data:server:config:empty"),
   );
@@ -116,7 +165,11 @@ export function createServerEnvironmentAtoms<R, E>(
       const projection = Option.getOrNull(
         AsyncResult.value(get(configProjection({ environmentId, input: {} }))),
       );
-      return projection?.config ?? get(options.initialConfigValueAtom(environmentId));
+      return (
+        projection?.config ??
+        get(options.initialConfigValueAtom(environmentId)) ??
+        Option.getOrNull(Option.flatten(AsyncResult.value(get(cachedConfig(environmentId)))))
+      );
     }).pipe(Atom.withLabel(`environment-data:server:config:${environmentId}`));
   });
   const settingsValueAtom = Atom.family((environmentId: EnvironmentId) =>
@@ -132,6 +185,18 @@ export function createServerEnvironmentAtoms<R, E>(
 
   return {
     configValueAtom,
+    usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:usage-summary",
+      tag: WS_METHODS.serverGetUsageSummary,
+    }),
+    refreshUsageRates: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:server:refresh-usage-rates",
+      tag: WS_METHODS.serverRefreshUsageRates,
+    }),
+    consumeResetCredit: createEnvironmentRpcCommand(runtime, {
+      label: "environment-command:provider:consume-reset-credit",
+      tag: WS_METHODS.providerConsumeResetCredit,
+    }),
     settingsValueAtom,
     providersValueAtom,
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {

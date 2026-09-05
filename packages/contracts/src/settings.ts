@@ -7,6 +7,7 @@ import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { AgentWorkflowDestinationMode, ReviewChangesScope } from "./agentWorkflows.ts";
 import { AgentWorkflowSettings, CustomAgentWorkflowAutomationSettings } from "./workflowRuntime.ts";
+import { ThreadEnvMode, EnvironmentMachineKind } from "./environment.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -164,8 +165,18 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
+export const BrowserRecordingFrameRate = Schema.Literals([30, 60]);
+export type BrowserRecordingFrameRate = typeof BrowserRecordingFrameRate.Type;
+export const DEFAULT_BROWSER_RECORDING_FRAME_RATE: BrowserRecordingFrameRate = 30;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  browserAutoShowFloatingPreview: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  browserRecordingFrameRate: BrowserRecordingFrameRate.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_RECORDING_FRAME_RATE)),
+  ),
   chatFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CHAT_FONT_SIZE))),
   statusLineFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_STATUS_LINE_FONT_SIZE)),
@@ -248,8 +259,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 
 // ── Server Settings (server-authoritative) ────────────────────
 
-export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
-export type ThreadEnvMode = typeof ThreadEnvMode.Type;
+export { ThreadEnvMode } from "./environment.ts";
 
 const makeBinaryPathSetting = (fallback: string) =>
   TrimmedString.pipe(
@@ -324,7 +334,19 @@ export const DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS: ChatExportDetailSettings = Sch
 )({});
 
 export const ServerSettings = Schema.Struct({
+  environmentIcon: Schema.NullOr(EnvironmentMachineKind).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sidebarAutoSettleAfterDays: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  newWorktreesStartFromOrigin: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  sourceControlWritingStyle: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
@@ -503,8 +525,13 @@ export const ProviderInstanceMutation = Schema.Struct({
 export type ProviderInstanceMutation = typeof ProviderInstanceMutation.Type;
 
 export const ServerSettingsPatch = Schema.Struct({
+  sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
+  newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
+  sourceControlWritingStyle: Schema.optionalKey(Schema.String),
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   chatExportDirectory: Schema.optionalKey(Schema.String),
@@ -545,6 +572,8 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
+  browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
+  browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
   chatFontSize: Schema.optionalKey(FontSize),
   statusLineFontSize: Schema.optionalKey(FontSize),
   codeFontSize: Schema.optionalKey(FontSize),
@@ -592,3 +621,18 @@ export const ClientSettingsPatch = Schema.Struct({
   uiFont: Schema.optionalKey(UiFont),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
+
+export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
+
+export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
+
+export const SidebarAutoSettleAfterDays = Schema.Number.check(
+  Schema.isBetween({
+    minimum: MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+    maximum: MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+  }),
+);
+
+export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
+
+export const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;

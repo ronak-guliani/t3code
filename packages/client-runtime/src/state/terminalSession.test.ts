@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, it } from "vite-plus/test";
 
 import { EnvironmentId, TerminalSessionSnapshot, ThreadId } from "@t3tools/contracts";
@@ -9,6 +8,7 @@ import {
   combineTerminalSessionState,
   EMPTY_TERMINAL_BUFFER_STATE,
   selectRunningSubprocessTerminalIds,
+  terminalOutputText,
 } from "./terminalSession.ts";
 
 const TARGET = {
@@ -47,12 +47,13 @@ describe("terminal session reducers", () => {
           exitSignal: BASE_SNAPSHOT.exitSignal,
           updatedAt: BASE_SNAPSHOT.updatedAt,
           hasRunningSubprocess: false,
-          label: BASE_SNAPSHOT.label,
+          label: BASE_SNAPSHOT.label ?? "Terminal",
         },
       ],
     })[0]!;
     const attached = applyTerminalAttachStreamEvent(EMPTY_TERMINAL_BUFFER_STATE, {
       type: "error",
+      createdAt: BASE_SNAPSHOT.updatedAt,
       threadId: TARGET.threadId,
       terminalId: TARGET.terminalId,
       message: "Terminal disconnected.",
@@ -80,7 +81,7 @@ describe("terminal session reducers", () => {
           exitSignal: BASE_SNAPSHOT.exitSignal,
           updatedAt: BASE_SNAPSHOT.updatedAt,
           hasRunningSubprocess: false,
-          label: BASE_SNAPSHOT.label,
+          label: BASE_SNAPSHOT.label ?? "Terminal",
         },
       ],
     })[0]!;
@@ -119,6 +120,7 @@ describe("terminal session reducers", () => {
       snapshot,
       {
         type: "output",
+        createdAt: BASE_SNAPSHOT.updatedAt,
         threadId: TARGET.threadId,
         terminalId: TARGET.terminalId,
         data: " world",
@@ -127,11 +129,11 @@ describe("terminal session reducers", () => {
     );
 
     expect(output).toMatchObject({
-      buffer: "lo world",
       status: "running",
       error: null,
       version: 2,
     });
+    expect(terminalOutputText(output.output)).toBe("lo world");
   });
 
   it("reduces terminal metadata snapshots, upserts, and removals", () => {
@@ -149,7 +151,7 @@ describe("terminal session reducers", () => {
           exitSignal: BASE_SNAPSHOT.exitSignal,
           updatedAt: BASE_SNAPSHOT.updatedAt,
           hasRunningSubprocess: false,
-          label: BASE_SNAPSHOT.label,
+          label: BASE_SNAPSHOT.label ?? "Terminal",
         },
       ],
     });
@@ -176,6 +178,7 @@ describe("terminal session reducers", () => {
       EMPTY_TERMINAL_BUFFER_STATE,
       {
         type: "output",
+        createdAt: BASE_SNAPSHOT.updatedAt,
         threadId: TARGET.threadId,
         terminalId: TARGET.terminalId,
         data: "🙂🙂",
@@ -183,6 +186,6 @@ describe("terminal session reducers", () => {
       4,
     );
 
-    expect(state.buffer).toBe("🙂");
+    expect(terminalOutputText(state.output)).toBe("🙂");
   });
 });

@@ -1,39 +1,22 @@
-import { useAuth } from "@clerk/expo";
-import { AuthView, UserProfileView } from "@clerk/expo/native";
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { NativeStackScreenOptions } from "../../native/StackHeader";
-import { useEffect } from "react";
-import { View } from "react-native";
+import { lazy, Suspense, useLayoutEffect } from "react";
 
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
+
+const ConfiguredSettingsAuthRouteScreen = lazy(() => import("./ConfiguredSettingsAuthRouteScreen"));
 
 export function SettingsAuthRouteScreen() {
   const navigation = useNavigation();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!hasCloudPublicConfig()) {
-      navigation.dispatch(StackActions.replace("Settings"));
+      navigation.dispatch(StackActions.replace("SettingsContent"));
     }
   }, [navigation]);
 
-  return hasCloudPublicConfig() ? <ConfiguredSettingsAuthRouteScreen /> : null;
-}
-
-function ConfiguredSettingsAuthRouteScreen() {
-  const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
-
-  return (
-    <>
-      <NativeStackScreenOptions options={{ title: isSignedIn ? "Account" : "Sign in" }} />
-      <View collapsable={false} className="flex-1 overflow-hidden bg-sheet">
-        {isLoaded ? (
-          isSignedIn ? (
-            <UserProfileView isDismissible={false} />
-          ) : (
-            <AuthView isDismissible={false} />
-          )
-        ) : null}
-      </View>
-    </>
-  );
+  return hasCloudPublicConfig() ? (
+    <Suspense fallback={null}>
+      <ConfiguredSettingsAuthRouteScreen />
+    </Suspense>
+  ) : null;
 }

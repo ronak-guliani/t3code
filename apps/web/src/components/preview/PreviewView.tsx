@@ -11,7 +11,7 @@ import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
-import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
+import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
 import { readLocalApi } from "~/localApi";
 import {
   rememberPreviewUrl,
@@ -514,10 +514,24 @@ export function PreviewView({
     setPickActive(true);
     void (async () => {
       try {
-        const annotation = await previewBridge.pickElement(runtimeTabId);
-        if (!annotation) return;
+        const picked = await previewBridge.pickElement(runtimeTabId);
+        if (!picked) return;
+        const capture = await capturePreviewAnnotationScreenshot(picked);
+        const cropExpected =
+          picked.elements.length > 0 || picked.regions.length > 0 || picked.strokes.length > 0;
+        const cropDropped = cropExpected && capture.status !== "captured";
+        const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
         addPreviewAnnotation(threadRef, annotation);
-        const screenshotFile = await previewAnnotationScreenshotFile(annotation);
+        if (cropDropped) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not capture the picked element",
+              description: "The annotation was kept without the screenshot.",
+            }),
+          );
+        }
+        const screenshotFile = capture.status === "captured" ? capture.file : null;
         if (screenshotFile && annotation.screenshot) {
           addImage(threadRef, {
             type: "image",

@@ -1,6 +1,6 @@
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import { ProviderOptionSelections } from "./model.ts";
-import { RepositoryIdentity } from "./environment.ts";
+import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -189,7 +189,19 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt.check(
+    Schema.isGreaterThanOrEqualTo(1),
+    Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES),
+  ),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatFileAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
 const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
@@ -215,6 +227,8 @@ export const ProjectScript = Schema.Struct({
 export type ProjectScript = typeof ProjectScript.Type;
 
 export const OrchestrationProject = Schema.Struct({
+  faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
   id: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
@@ -491,7 +505,17 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
+export const ThreadLinkedPullRequest = Schema.Struct({
+  projectId: ProjectId,
+  repository: TrimmedNonEmptyString,
+  number: PositiveInt,
+  url: TrimmedNonEmptyString,
+});
+export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
+
 export const OrchestrationThread = Schema.Struct({
+  linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
+  unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
@@ -552,6 +576,8 @@ export const OrchestrationReadModel = Schema.Struct({
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
 
 export const OrchestrationProjectShell = Schema.Struct({
+  faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
   id: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
@@ -573,6 +599,8 @@ export const OrchestrationBackgroundAgentRunShell = Schema.Struct({
 export type OrchestrationBackgroundAgentRunShell = typeof OrchestrationBackgroundAgentRunShell.Type;
 
 export const OrchestrationThreadShell = Schema.Struct({
+  linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
+  unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   id: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
@@ -643,6 +671,14 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   thread: OrchestrationThread,
+  page: Schema.optionalKey(
+    Schema.Struct({
+      beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
+      hasMore: Schema.Boolean,
+      snapshotSequence: NonNegativeInt,
+      threadSequence: Schema.optionalKey(NonNegativeInt),
+    }),
+  ),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
@@ -1136,6 +1172,19 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadSessionStopCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
+
+// Client-only additions are sent only after checking the server's advertised capabilities.
+export const CapabilityClientOrchestrationCommand = Schema.Union([
+  ClientOrchestrationCommand,
+  Schema.Struct({
+    ...ClientThreadTurnStartCommand.fields,
+    message: Schema.Struct({
+      ...ClientThreadTurnStartCommand.fields.message.fields,
+      attachments: Schema.Array(Schema.Union([UploadChatImageAttachment, ChatAttachment])),
+    }),
+  }),
+]);
+export type CapabilityClientOrchestrationCommand = typeof CapabilityClientOrchestrationCommand.Type;
 
 const ThreadSessionSetCommand = Schema.Struct({
   type: Schema.Literal("thread.session.set"),
@@ -2378,3 +2427,98 @@ export class OrchestrationReplayEventsError extends Schema.TaggedErrorClass<Orch
     cause: Schema.optional(Schema.Unknown),
   },
 ) {}
+
+export const ProjectFaviconPath = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(1024),
+  Schema.isPattern(/\.(?:avif|gif|ico|jpe?g|png|svg|webp)$/i),
+);
+
+export type ProjectFaviconPath = typeof ProjectFaviconPath.Type;
+
+const ProjectLucideIconName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+);
+
+export const ProjectIconColor = Schema.Literals([
+  "gray",
+  "red",
+  "orange",
+  "amber",
+  "yellow",
+  "lime",
+  "green",
+  "emerald",
+  "teal",
+  "cyan",
+  "sky",
+  "blue",
+  "indigo",
+  "violet",
+  "purple",
+  "fuchsia",
+  "pink",
+  "rose",
+]);
+
+export type ProjectIconColor = typeof ProjectIconColor.Type;
+
+const ProjectEmoji = TrimmedNonEmptyString.check(Schema.isMaxLength(32));
+
+export const ProjectIconOverride = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("lucide"),
+    name: ProjectLucideIconName,
+    color: ProjectIconColor,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("emoji"),
+    emoji: ProjectEmoji,
+  }),
+]);
+
+export type ProjectIconOverride = typeof ProjectIconOverride.Type;
+
+export const PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES = [
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+] as const;
+
+const ProviderSendTurnSupportedImageMimeType = TrimmedNonEmptyString.check(
+  Schema.isPattern(
+    new RegExp(`^(?:${PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES.join("|")})$`, "i"),
+  ),
+);
+
+export const isProviderSendTurnSupportedImageMimeType = Schema.is(
+  ProviderSendTurnSupportedImageMimeType,
+);
+
+export const OrchestrationThreadDetailPage = Schema.Struct({
+  beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
+  hasMore: Schema.Boolean,
+  snapshotSequence: NonNegativeInt,
+  /**
+   * Highest event sequence applied to THIS thread at page read time. The
+   * global `snapshotSequence` advances with every thread's events, so a
+   * client cannot wait for it via its per-thread subscription; this
+   * thread-scoped watermark is reachable. A client merging an older page
+   * must first have applied live events up to it — otherwise a streaming
+   * turn outside the loaded window could have deltas replayed on top of
+   * page content that already includes them, duplicating text.
+   */
+  threadSequence: Schema.optionalKey(NonNegativeInt),
+});
+
+export type OrchestrationThreadDetailPage = typeof OrchestrationThreadDetailPage.Type;
+
+export const ProviderApprovalOption = Schema.Struct({
+  decision: ProviderApprovalDecision,
+  label: TrimmedNonEmptyString,
+  /** Provider-supplied caution shown next to the option, such as a prompt injection warning. */
+  warning: Schema.optional(TrimmedNonEmptyString),
+});
+
+export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;

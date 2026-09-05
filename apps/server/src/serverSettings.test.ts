@@ -24,6 +24,17 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("enables agent browser access by default and accepts patches", () =>
+    Effect.sync(() => {
+      const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+
+      assert.equal(DEFAULT_SERVER_SETTINGS.enableAgentBrowserAccess, true);
+      assert.deepEqual(decodePatch({ enableAgentBrowserAccess: false }), {
+        enableAgentBrowserAccess: false,
+      });
+    }),
+  );
+
   it.effect("decodes nested settings patches", () =>
     Effect.sync(() => {
       const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);

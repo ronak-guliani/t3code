@@ -18,6 +18,7 @@ describe("getPreviewPanelMaxWidth", () => {
       createElement(PreviewPanelShell, {
         mode: "inline",
         maximized: true,
+        // eslint-disable-next-line react/no-children-prop -- .ts test has no JSX children slot
         children: createElement("div", null, "Preview host"),
       }),
     );

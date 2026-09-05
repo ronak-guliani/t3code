@@ -8,7 +8,12 @@ import * as HttpApiSchema from "effect/unstable/httpapi/HttpApiSchema";
 import * as HttpApiSecurity from "effect/unstable/httpapi/HttpApiSecurity";
 import * as OpenApi from "effect/unstable/httpapi/OpenApi";
 
-import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  DpopFailureReason,
+  EnvironmentId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 
 export const RelayAgentAwarenessPlatform = Schema.Literal("ios");
@@ -35,12 +40,21 @@ export const RelayAgentAwarenessPreferences = Schema.Struct({
 });
 export type RelayAgentAwarenessPreferences = typeof RelayAgentAwarenessPreferences.Type;
 
+export const RelayApnsEnvironment = Schema.Literals(["sandbox", "production"]);
+export type RelayApnsEnvironment = typeof RelayApnsEnvironment.Type;
+
 export const RelayDeviceRegistrationRequest = Schema.Struct({
   deviceId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   platform: RelayAgentAwarenessPlatform,
   iosMajorVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(18)),
   appVersion: Schema.optional(TrimmedNonEmptyString),
+  // APNs routing for this install: the topic must match the app's bundle id
+  // (dev/preview/prod variants differ) and development-signed builds receive
+  // sandbox tokens. Optional so older app builds keep registering; the relay
+  // falls back to its configured defaults.
+  bundleId: Schema.optional(TrimmedNonEmptyString),
+  apsEnvironment: Schema.optional(RelayApnsEnvironment),
   pushToken: Schema.optional(TrimmedNonEmptyString),
   pushToStartToken: Schema.optional(TrimmedNonEmptyString),
   preferences: RelayAgentAwarenessPreferences,
@@ -313,6 +327,9 @@ export const RelayAuthInvalidReason = Schema.Literals([
 ]);
 export type RelayAuthInvalidReason = typeof RelayAuthInvalidReason.Type;
 
+export const RelayDpopFailureReason = DpopFailureReason;
+export type RelayDpopFailureReason = typeof RelayDpopFailureReason.Type;
+
 export const RelayInternalErrorReason = Schema.Literals([
   "database_unavailable",
   "persistence_failed",
@@ -326,6 +343,8 @@ export class RelayAuthInvalidError extends Schema.TaggedErrorClass<RelayAuthInva
   {
     code: Schema.Literal("auth_invalid"),
     reason: RelayAuthInvalidReason,
+    // Older relays do not send a DPoP failure category.
+    dpopFailureReason: Schema.optionalKey(RelayDpopFailureReason),
     traceId: TrimmedNonEmptyString,
   },
   { httpApiStatus: 401 },
@@ -362,16 +381,34 @@ export class RelayEnvironmentLinkProofInvalidError extends Schema.TaggedErrorCla
   }
 }
 
+export const RelayEnvironmentConnectNotAuthorizedReason = Schema.Literals([
+  "client_proof_key_thumbprint_missing",
+  "environment_link_not_found",
+  "endpoint_provider_not_managed",
+  "managed_endpoint_allocation_not_found",
+  "managed_endpoint_base_domain_not_configured",
+  "managed_endpoint_allocation_not_ready",
+  "managed_endpoint_hostname_invalid",
+  "managed_endpoint_mismatch",
+]);
+export type RelayEnvironmentConnectNotAuthorizedReason =
+  typeof RelayEnvironmentConnectNotAuthorizedReason.Type;
+
 export class RelayEnvironmentConnectNotAuthorizedError extends Schema.TaggedErrorClass<RelayEnvironmentConnectNotAuthorizedError>()(
   "RelayEnvironmentConnectNotAuthorizedError",
   {
     code: Schema.Literal("environment_connect_not_authorized"),
+    // Optional so responses from relays deployed before the reason was
+    // threaded through still decode.
+    reason: Schema.optional(RelayEnvironmentConnectNotAuthorizedReason),
     traceId: TrimmedNonEmptyString,
   },
   { httpApiStatus: 403 },
 ) {
   override get message(): string {
-    return "Relay environment connection is not authorized";
+    return this.reason
+      ? `Relay environment connection is not authorized: ${this.reason}`
+      : "Relay environment connection is not authorized";
   }
 }
 
@@ -430,6 +467,20 @@ export class RelayEnvironmentLinkUnavailableError extends Schema.TaggedErrorClas
   }
 }
 
+export class RelayEnvironmentLinkLimitExceededError extends Schema.TaggedErrorClass<RelayEnvironmentLinkLimitExceededError>()(
+  "RelayEnvironmentLinkLimitExceededError",
+  {
+    code: Schema.Literal("environment_link_limit_exceeded"),
+    maxTunnels: Schema.Number,
+    traceId: TrimmedNonEmptyString,
+  },
+  { httpApiStatus: 403 },
+) {
+  override get message(): string {
+    return `Relay managed tunnel limit reached: this account allows at most ${this.maxTunnels} tunnels`;
+  }
+}
+
 export class RelayAgentActivityPublishProofExpiredError extends Schema.TaggedErrorClass<RelayAgentActivityPublishProofExpiredError>()(
   "RelayAgentActivityPublishProofExpiredError",
   {
@@ -480,6 +531,7 @@ export const RelayProtectedError = Schema.Union([
   RelayEnvironmentEndpointTimedOutError,
   RelayEnvironmentLinkFailedError,
   RelayEnvironmentLinkUnavailableError,
+  RelayEnvironmentLinkLimitExceededError,
   RelayAgentActivityPublishProofExpiredError,
   RelayAgentActivityPublishProofInvalidError,
   RelayInternalError,
@@ -493,6 +545,7 @@ const RelayEnvironmentLinkErrors = [
   RelayEnvironmentLinkProofExpiredError,
   RelayEnvironmentLinkProofInvalidError,
   RelayEnvironmentLinkUnavailableError,
+  RelayEnvironmentLinkLimitExceededError,
   RelayEnvironmentLinkFailedError,
   RelayInternalError,
 ] as const;
@@ -575,12 +628,6 @@ export class RelayDpopClientAuth extends HttpApiMiddleware.Service<
   security: { relayDpop: RelayDpopAuthorization },
 }) {}
 
-/**
- * The relay catalog contract consumed by browser and mobile connection
- * registries. The endpoint is advisory and may be replaced after a tunnel
- * restart; clients persist only the environment identity and obtain a fresh
- * connect credential before using an updated endpoint.
- */
 export const RelayClientEnvironmentRecord = Schema.Struct({
   environmentId: EnvironmentId,
   label: TrimmedNonEmptyString,
@@ -695,11 +742,6 @@ export const RelayEnvironmentUnlinkParams = Schema.Struct({
 });
 export type RelayEnvironmentUnlinkParams = typeof RelayEnvironmentUnlinkParams.Type;
 
-/**
- * A short-lived, DPoP-bound bootstrap for one relay catalog environment.
- * Clients must verify `environmentId`, exchange `credential` at `endpoint`,
- * and must not place the credential in URLs, UI state, or profile storage.
- */
 export const RelayEnvironmentConnectResponse = Schema.Struct({
   environmentId: EnvironmentId,
   endpoint: RelayManagedEndpoint,
@@ -875,6 +917,24 @@ export const RelayRegisterLiveActivityEndpoint = HttpApiEndpoint.post(
   },
 ).annotate(OpenApi.Summary, "Register a Live Activity push token");
 
+export const RelayAgentActivitySnapshotResponse = Schema.Struct({
+  aggregate: Schema.NullOr(RelayAgentActivityAggregateState),
+});
+export type RelayAgentActivitySnapshotResponse = typeof RelayAgentActivitySnapshotResponse.Type;
+
+// Lets the app decide whether arming a Live Activity is worthwhile before
+// creating one (no empty lock-screen card when nothing is running) and seed
+// the card with the real aggregate instead of a placeholder.
+export const RelayAgentActivitySnapshotEndpoint = HttpApiEndpoint.get(
+  "getAgentActivitySnapshot",
+  "/v1/mobile/agent-activity",
+  {
+    headers: RelayDpopRequestHeaders,
+    success: RelayAgentActivitySnapshotResponse,
+    error: RelayAuthAndInternalErrors,
+  },
+).annotate(OpenApi.Summary, "Read the current Live Activity aggregate");
+
 export const RelayUnregisterDeviceEndpoint = HttpApiEndpoint.delete(
   "unregisterDevice",
   "/v1/mobile/devices/:deviceId",
@@ -890,6 +950,7 @@ export const RelayMobileGroup = HttpApiGroup.make("mobile")
   .add(
     RelayRegisterDeviceEndpoint,
     RelayRegisterLiveActivityEndpoint,
+    RelayAgentActivitySnapshotEndpoint,
     RelayUnregisterDeviceEndpoint,
   )
   .annotate(OpenApi.Description, "Mobile push-notification and Live Activity registration.")
@@ -929,6 +990,21 @@ export const RelayClientGroup = HttpApiGroup.make("client")
       success: RelayOkResponse,
       error: RelayAuthAndInternalErrors,
     }).annotate(OpenApi.Summary, "Unlink an environment"),
+    HttpApiEndpoint.delete(
+      "releaseEnvironmentTunnel",
+      "/v1/client/environment-links/:environmentId/tunnel",
+      {
+        headers: RelayBearerRequestHeaders,
+        params: RelayEnvironmentUnlinkParams,
+        success: RelayOkResponse,
+        error: RelayAuthAndInternalErrors,
+      },
+    )
+      .annotate(OpenApi.Summary, "Release an environment's managed tunnel")
+      .annotate(
+        OpenApi.Description,
+        "Deletes the provisioned Cloudflare tunnel while keeping the environment link and its hostname reservation, so a later link re-provisions the tunnel under the same URL. Environments call this when they shut down; Cloudflare bills per provisioned tunnel, so idle tunnels should not outlive their environment.",
+      ),
   )
   .annotate(OpenApi.Description, "Cloud-user environment links and registered devices.")
   .middleware(RelayClientAuth);

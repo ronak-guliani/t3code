@@ -41,6 +41,7 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -496,6 +497,10 @@ export function makeCursorAdapter(
           const effectiveCursorSettings = options?.resolveSettings
             ? yield* options.resolveSettings
             : cursorSettings;
+          const mcpSession = yield* McpSessionRegistry.readActiveMcpProviderSession(
+            input.threadId,
+            boundInstanceId,
+          );
 
           const acp = yield* makeCursorAcpRuntime({
             cursorSettings: effectiveCursorSettings,
@@ -504,6 +509,23 @@ export function makeCursorAdapter(
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
+            ...(mcpSession
+              ? {
+                  mcpServers: [
+                    {
+                      type: "http" as const,
+                      name: "t3-code",
+                      url: mcpSession.endpoint,
+                      headers: [
+                        {
+                          name: "Authorization",
+                          value: mcpSession.authorizationHeader,
+                        },
+                      ],
+                    },
+                  ],
+                }
+              : {}),
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),

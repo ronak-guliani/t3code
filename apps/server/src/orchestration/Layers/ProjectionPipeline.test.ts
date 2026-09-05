@@ -1527,6 +1527,8 @@ it.layer(
         "thread-revert-files-extra-00000000-0000-4000-8000-000000000003";
       const matchingDirectoryAttachmentId =
         "thread-revert-files-00000000-0000-4000-8000-000000000004";
+      const keepFileAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000005";
+      const removeFileAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000006";
 
       const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
         eventStore.append(event).pipe(
@@ -1628,6 +1630,13 @@ it.layer(
               mimeType: "image/png",
               sizeBytes: 5,
             },
+            {
+              type: "file",
+              id: keepFileAttachmentId,
+              name: "keep.txt",
+              mimeType: "text/plain",
+              sizeBytes: 5,
+            },
           ],
           turnId: TurnId.make("turn-keep"),
           streaming: false,
@@ -1683,6 +1692,13 @@ it.layer(
               mimeType: "image/png",
               sizeBytes: 5,
             },
+            {
+              type: "file",
+              id: removeFileAttachmentId,
+              name: "remove.txt",
+              mimeType: "text/plain",
+              sizeBytes: 5,
+            },
           ],
           turnId: TurnId.make("turn-remove"),
           streaming: false,
@@ -1693,9 +1709,13 @@ it.layer(
 
       const keepPath = path.join(attachmentsDir, `${keepAttachmentId}.png`);
       const removePath = path.join(attachmentsDir, `${removeAttachmentId}.png`);
+      const keepFilePath = path.join(attachmentsDir, `${keepFileAttachmentId}.bin`);
+      const removeFilePath = path.join(attachmentsDir, `${removeFileAttachmentId}.bin`);
       yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
       yield* fileSystem.writeFileString(keepPath, "keep");
       yield* fileSystem.writeFileString(removePath, "remove");
+      yield* fileSystem.writeFileString(keepFilePath, "keep file");
+      yield* fileSystem.writeFileString(removeFilePath, "remove file");
       const otherThreadPath = path.join(attachmentsDir, `${otherThreadAttachmentId}.png`);
       const matchingDirectoryPath = path.join(
         attachmentsDir,
@@ -1726,6 +1746,8 @@ it.layer(
 
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
+      assert.isTrue(yield* exists(keepFilePath));
+      assert.isFalse(yield* exists(removeFilePath));
       assert.isTrue(yield* exists(otherThreadPath));
       assert.isTrue(yield* exists(matchingDirectoryPath));
     }),
@@ -1745,6 +1767,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         const now = new Date().toISOString();
         const threadId = ThreadId.make("Thread Delete.Files");
         const attachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000001";
+        const fileAttachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000003";
         const otherThreadAttachmentId =
           "thread-delete-files-extra-00000000-0000-4000-8000-000000000002";
 
@@ -1824,6 +1847,13 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
                 mimeType: "image/png",
                 sizeBytes: 5,
               },
+              {
+                type: "file",
+                id: fileAttachmentId,
+                name: "delete.txt",
+                mimeType: "text/plain",
+                sizeBytes: 5,
+              },
             ],
             turnId: null,
             streaming: false,
@@ -1833,12 +1863,14 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         });
 
         const threadAttachmentPath = path.join(attachmentsDir, `${attachmentId}.png`);
+        const threadFilePath = path.join(attachmentsDir, `${fileAttachmentId}.bin`);
         const otherThreadAttachmentPath = path.join(
           attachmentsDir,
           `${otherThreadAttachmentId}.png`,
         );
         yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
         yield* fileSystem.writeFileString(threadAttachmentPath, "delete");
+        yield* fileSystem.writeFileString(threadFilePath, "delete file");
         yield* fileSystem.writeFileString(otherThreadAttachmentPath, "other-thread");
         assert.isTrue(yield* exists(threadAttachmentPath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
@@ -1860,6 +1892,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
         });
 
         assert.isFalse(yield* exists(threadAttachmentPath));
+        assert.isFalse(yield* exists(threadFilePath));
         assert.isTrue(yield* exists(otherThreadAttachmentPath));
       }),
     );

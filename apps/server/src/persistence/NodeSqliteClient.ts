@@ -185,7 +185,9 @@ const makeWithDatabase = Effect.fn("makeWithDatabase")(function* (
         return runValues(sql, params);
       },
       executeUnprepared(sql, params, rowTransform) {
-        const effect = runStatement(db.prepare(sql), params ?? [], false);
+        // Route through the shared prepare cache: a fresh db.prepare() per call
+        // leaks native StatementSync handles on this long-lived connection.
+        const effect = run(sql, params ?? [], false);
         return rowTransform ? Effect.map(effect, rowTransform) : effect;
       },
       executeStream(_sql, _params) {

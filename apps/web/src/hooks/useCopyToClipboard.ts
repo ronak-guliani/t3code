@@ -1,4 +1,5 @@
 import * as React from "react";
+import { reportClientError } from "../lib/clientLogger";
 
 export function useCopyToClipboard<TContext = void>({
   timeout = 2000,
@@ -49,7 +50,7 @@ export function useCopyToClipboard<TContext = void>({
         if (onErrorRef.current) {
           onErrorRef.current(error, ctx);
         } else {
-          console.error(error);
+          reportClientError(error);
         }
       },
     );

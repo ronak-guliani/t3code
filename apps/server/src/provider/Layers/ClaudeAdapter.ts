@@ -69,6 +69,7 @@ import {
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -2873,6 +2874,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
         ...(fastMode ? { fastMode: true } : {}),
       };
+      const mcpSession = yield* McpSessionRegistry.readActiveMcpProviderSession(
+        input.threadId,
+        boundInstanceId,
+      );
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -2898,6 +2903,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
+        ...(mcpSession
+          ? {
+              mcpServers: {
+                "t3-code": {
+                  type: "http",
+                  url: mcpSession.endpoint,
+                  headers: {
+                    Authorization: mcpSession.authorizationHeader,
+                  },
+                },
+              },
+            }
+          : {}),
       };
 
       yield* Effect.annotateCurrentSpan({

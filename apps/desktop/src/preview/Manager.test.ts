@@ -142,9 +142,32 @@ interface TestCapturedPreviewImage {
   }) => TestCapturedPreviewImage;
 }
 
+const makeTestHostWebContents = () => ({
+  id: 1,
+  isDestroyed: () => false,
+  mainFrame: { frameTreeNodeId: 1 },
+  session: { setDisplayMediaRequestHandler: vi.fn() },
+  executeJavaScript: vi.fn(async () => true),
+  setBackgroundThrottling: vi.fn(),
+});
+
+type TestDisplayMediaRequestHandler = (
+  request: { readonly frame?: { readonly frameTreeNodeId: number } },
+  callback: (response: unknown) => void,
+) => void;
+
+const displayMediaRequestHandler = (
+  host: ReturnType<typeof makeTestHostWebContents>,
+): TestDisplayMediaRequestHandler => {
+  const handler = host.session.setDisplayMediaRequestHandler.mock.calls[0]?.[0];
+  if (!handler) throw new Error("Display-media request handler was not installed.");
+  return handler as TestDisplayMediaRequestHandler;
+};
+
 const makeTestPreviewWebContents = (
   capturePage: () => Promise<TestCapturedPreviewImage>,
   id: number,
+  host = makeTestHostWebContents(),
 ) =>
   ({
     id,
@@ -161,6 +184,9 @@ const makeTestPreviewWebContents = (
     send: webviewSend,
     navigationHistory: { canGoBack: () => false, canGoForward: () => false },
     setWindowOpenHandler: vi.fn(),
+    setBackgroundThrottling: vi.fn(),
+    hostWebContents: host,
+    mainFrame: { routingId: id },
     debugger: {
       isAttached: () => false,
       attach: vi.fn(),
@@ -234,7 +260,7 @@ describe("PreviewManager", () => {
         yield* manager.registerWebview("tab-pip", 43);
 
         expect(browserWindowConstructor).toHaveBeenCalledOnce();
-        expect(capturePage).toHaveBeenCalledOnce();
+        expect(capturePage).toHaveBeenCalledTimes(2);
         expect(closed).toHaveBeenCalledOnce();
       }),
     ),
@@ -646,6 +672,64 @@ describe("PreviewManager", () => {
 
         expect(loadURL).toHaveBeenCalledOnce();
         expect(loadURL).toHaveBeenCalledWith("http://localhost:3200/");
+      }),
+    ),
+  );
+
+  effectIt.effect("detaches through the pinned debugger after the webview is destroyed", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let destroyed = false;
+        let attached = false;
+        const debuggerOff = vi.fn();
+        const debuggerDetach = vi.fn(() => {
+          attached = false;
+        });
+        const wcDebugger = {
+          isAttached: () => attached,
+          attach: vi.fn(() => {
+            attached = true;
+          }),
+          detach: debuggerDetach,
+          sendCommand: vi.fn(async () => undefined),
+          on: vi.fn(),
+          off: debuggerOff,
+        };
+        fromId.mockReturnValue({
+          id: 42,
+          isDestroyed: () => destroyed,
+          getType: () => "webview",
+          getURL: () => "http://localhost:3200/",
+          getTitle: () => "Preview",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setAudioMuted: vi.fn(),
+          isCurrentlyAudible: () => false,
+          reload: vi.fn(),
+          loadURL: vi.fn(async () => undefined),
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setWindowOpenHandler: vi.fn(),
+          get debugger() {
+            if (destroyed) throw new Error("Object has been destroyed");
+            return wcDebugger;
+          },
+        } as never);
+        yield* manager.createTab("tab_pinned_debugger");
+        yield* manager.registerWebview("tab_pinned_debugger", 42);
+        yield* manager.setColorScheme("tab_pinned_debugger", "dark");
+        expect(attached).toBe(true);
+        destroyed = true;
+
+        yield* manager.navigate("tab_pinned_debugger", "https://example.com/");
+
+        expect(debuggerOff).toHaveBeenCalledWith("message", expect.any(Function));
+        expect(debuggerDetach).toHaveBeenCalledOnce();
       }),
     ),
   );
@@ -1068,24 +1152,15 @@ describe("PreviewManager", () => {
     ),
   );
 
-  effectIt.effect("captures hidden recordings independently for concurrent tabs", () =>
+  effectIt.effect("arms native recording capture without delivering JPEG frames", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        const firstJpeg = Buffer.from("first-recording-frame");
-        const secondJpeg = Buffer.from("second-recording-frame");
-        const firstCapturePage = vi.fn(async () =>
-          makeTestCapturedPreviewImage(firstJpeg, 800, 600),
+        const capturePage = vi.fn(async () =>
+          makeTestCapturedPreviewImage(Buffer.from("warm-frame"), 800, 600),
         );
-        const secondCapturePage = vi.fn(async () =>
-          makeTestCapturedPreviewImage(secondJpeg, 390, 844),
-        );
-        const webContentsById = new Map([
-          [41, makeTestPreviewWebContents(firstCapturePage, 41)],
-          [42, makeTestPreviewWebContents(secondCapturePage, 42)],
-        ]);
-        fromId.mockImplementation((id) =>
-          id === undefined ? null : (webContentsById.get(id) ?? null),
-        );
+        const host = makeTestHostWebContents();
+        const guest = makeTestPreviewWebContents(capturePage, 42, host);
+        fromId.mockReturnValue(guest);
         const frames: DesktopPreviewRecordingFrame[] = [];
 
         yield* manager.subscribeRecordingFrames((frame) =>
@@ -1094,76 +1169,98 @@ describe("PreviewManager", () => {
           }),
         );
         yield* manager.createTab("tab_1");
-        yield* manager.createTab("tab_2");
-        yield* manager.registerWebview("tab_1", 41);
-        yield* manager.registerWebview("tab_2", 42);
-        yield* Effect.all([manager.startRecording("tab_1"), manager.startRecording("tab_2")], {
-          concurrency: 2,
-          discard: true,
+        yield* manager.registerWebview("tab_1", 42);
+        yield* manager.startRecording("tab_1");
+
+        expect(capturePage).toHaveBeenCalledOnce();
+        expect(host.session.setDisplayMediaRequestHandler).toHaveBeenCalledOnce();
+        expect(host.executeJavaScript).toHaveBeenCalledWith(expect.stringContaining("tab_1"), true);
+        expect(frames).toEqual([]);
+
+        const handler = displayMediaRequestHandler(host);
+        const mismatchedGrant = vi.fn();
+        handler({ frame: { frameTreeNodeId: 2 } }, mismatchedGrant);
+        expect(mismatchedGrant).toHaveBeenCalledWith({});
+
+        const matchingGrant = vi.fn();
+        handler({ frame: { frameTreeNodeId: 1 } }, matchingGrant);
+        expect(matchingGrant).toHaveBeenCalledWith({
+          video: (guest as unknown as { readonly mainFrame: unknown }).mainFrame,
         });
 
-        expect(firstCapturePage).toHaveBeenCalledOnce();
-        expect(secondCapturePage).toHaveBeenCalledOnce();
-        expect(frames).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              tabId: "tab_1",
-              data: firstJpeg.toString("base64"),
-              width: 800,
-              height: 600,
-            }),
-            expect.objectContaining({
-              tabId: "tab_2",
-              data: secondJpeg.toString("base64"),
-              width: 390,
-              height: 844,
-            }),
-          ]),
-        );
+        const consumedGrant = vi.fn();
+        handler({ frame: { frameTreeNodeId: 1 } }, consumedGrant);
+        expect(consumedGrant).toHaveBeenCalledWith({});
 
-        yield* Effect.all([manager.stopRecording("tab_1"), manager.stopRecording("tab_2")], {
-          concurrency: 2,
-          discard: true,
-        });
+        yield* manager.stopRecording("tab_1");
       }),
     ),
   );
 
-  effectIt.effect("bounds high-resolution recording frames before delivery", () =>
+  effectIt.effect("denies display-media grants when the armed source is destroyed", () =>
     withManager((manager) =>
       Effect.gen(function* () {
-        const jpeg = Buffer.from("bounded-recording-frame");
-        const sourceImage = makeTestCapturedPreviewImage(jpeg, 3840, 2160);
-        const resize = vi.spyOn(sourceImage, "resize");
-        fromId.mockReturnValue(
-          makeTestPreviewWebContents(
-            vi.fn(async () => sourceImage),
-            42,
-          ),
-        );
-        const frames: DesktopPreviewRecordingFrame[] = [];
-        yield* manager.subscribeRecordingFrames((frame) =>
-          Effect.sync(() => {
-            frames.push(frame);
-          }),
-        );
-        yield* manager.createTab("tab_high_dpi");
-        yield* manager.registerWebview("tab_high_dpi", 42);
+        let destroyed = false;
+        const host = makeTestHostWebContents();
+        const guest = makeTestPreviewWebContents(
+          vi.fn(async () => makeTestCapturedPreviewImage(Buffer.from("warm-frame"), 800, 600)),
+          42,
+          host,
+        ) as unknown as {
+          isDestroyed: () => boolean;
+        };
+        guest.isDestroyed = () => destroyed;
+        fromId.mockReturnValue(guest as never);
 
-        yield* manager.startRecording("tab_high_dpi");
+        yield* manager.createTab("tab_destroyed_capture");
+        yield* manager.registerWebview("tab_destroyed_capture", 42);
+        yield* manager.startRecording("tab_destroyed_capture");
+        destroyed = true;
 
-        expect(resize).toHaveBeenCalledWith({ width: 1600, height: 900 });
-        expect(frames).toEqual([
-          expect.objectContaining({
-            tabId: "tab_high_dpi",
-            width: 1600,
-            height: 900,
-          }),
-        ]);
-        yield* manager.stopRecording("tab_high_dpi");
+        const callback = vi.fn();
+        displayMediaRequestHandler(host)({ frame: { frameTreeNodeId: 1 } }, callback);
+        expect(callback).toHaveBeenCalledWith({});
+
+        destroyed = false;
+        const staleCallback = vi.fn();
+        displayMediaRequestHandler(host)({ frame: { frameTreeNodeId: 1 } }, staleCallback);
+        expect(staleCallback).toHaveBeenCalledWith({});
+        yield* manager.stopRecording("tab_destroyed_capture");
       }),
     ),
   );
+
+  effectIt.effect("bounds each recording compositor warm-up attempt", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const capturePage = vi.fn(() => new Promise<TestCapturedPreviewImage>(() => {}));
+        const host = makeTestHostWebContents();
+        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage, 42, host));
+
+        yield* manager.createTab("tab_warm_timeout");
+        yield* manager.registerWebview("tab_warm_timeout", 42);
+        const startFiber = yield* manager
+          .startRecording("tab_warm_timeout")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(capturePage).toHaveBeenCalledOnce();
+
+        yield* TestClock.adjust("1 second");
+        yield* Effect.yieldNow;
+        expect(capturePage).toHaveBeenCalledTimes(2);
+
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(startFiber);
+        yield* manager.stopRecording("tab_warm_timeout");
+      }),
+    ),
+  );
+
+  it("derives recording extensions from the actual media subtype", () => {
+    expect(PreviewManager.recordingFileExtension("video/mp4;codecs=avc1")).toBe("mp4");
+    expect(PreviewManager.recordingFileExtension("video/x-matroska")).toBe("matroska");
+    expect(PreviewManager.recordingFileExtension("")).toBe("video");
+  });
 
   effectIt.effect("keeps element picking active during subframe navigation", () =>
     withManager((manager) =>

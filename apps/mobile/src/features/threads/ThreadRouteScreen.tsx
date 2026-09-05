@@ -5,30 +5,30 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import {
+  requestOlderThreadTurns,
+  threadHasOlderTurns,
+} from "@t3tools/client-runtime/state/threads";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Platform, Pressable, ScrollView, Text as RNText, View } from "react-native";
+import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
-import { useThemeColor } from "../../lib/useThemeColor";
 import { useEnvironmentQuery } from "../../state/query";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
 import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
+import {
+  AndroidScreenHeader,
+  type AndroidHeaderAction,
+} from "../../components/AndroidScreenHeader";
 import { LoadingScreen } from "../../components/LoadingScreen";
+import { firstRouteParam } from "../../lib/routeParams";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
+import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
 
 import {
@@ -76,7 +76,6 @@ import {
   ThreadInspectorContentStack,
   type ThreadInspectorMode,
 } from "./thread-inspector-content-stack";
-import { useHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -88,14 +87,6 @@ type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
 function InspectorPaneRoleActivation() {
   useAdaptiveWorkspacePaneRole("inspector");
   return null;
-}
-
-function firstRouteParam(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-
-  return value ?? null;
 }
 
 function OpeningThreadLoadingScreen() {
@@ -159,8 +150,9 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
 
   // Render the full thread chrome (header, feed, composer) as soon as the
   // thread SHELL is known — no blocking on message detail. The feed shows a
-  // loading placeholder while messages fetch, and the composer's connection
-  // pill reports connecting/reconnecting/syncing status.
+  // loading placeholder while messages fetch, the floating pill above the
+  // composer reports loading/syncing, and the composer's connection pill
+  // reports connecting/reconnecting status.
   if (selectedThread !== null && selectedThreadKey === routeThreadKey) {
     return <ThreadRouteContent {...props} selectedThreadDetailState={selectedThreadDetailState} />;
   }
@@ -196,6 +188,20 @@ function ThreadRouteContent(
     useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  // "Load earlier turns" header state for windowed (paginated) thread loads.
+  const loadEarlierTurns = useMemo(() => {
+    if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
+      return null;
+    }
+    return {
+      loading:
+        selectedThreadDetailState.page._tag === "Some" &&
+        selectedThreadDetailState.page.value.loadingOlder,
+      onLoadEarlier: () => {
+        requestOlderThreadTurns(selectedThread.environmentId, selectedThread.id);
+      },
+    };
+  }, [selectedThread, selectedThreadDetailState]);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
@@ -285,8 +291,7 @@ function ThreadRouteContent(
   );
 
   /* ─── Native header theming ──────────────────────────────────────── */
-  const foregroundColor = String(useThemeColor("--color-foreground"));
-  const usesNativeHeaderGlass = Platform.OS === "ios";
+  const usesNativeHeaderGlass = NATIVE_LIQUID_GLASS_SUPPORTED;
   const headerSubtitle = [
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
@@ -333,11 +338,28 @@ function ThreadRouteContent(
   const gitActionProgress = useGitActionProgress(gitActionProgressTarget);
 
   const handleOpenGitInspector = useCallback(() => {
+    if (!fileInspector.supported) {
+      if (selectedThread === null) {
+        return;
+      }
+      navigation.navigate("GitOverview", {
+        environmentId: String(selectedThread.environmentId),
+        threadId: String(selectedThread.id),
+      });
+      return;
+    }
     setInspectorSelection({ routeThreadIdentity, mode: "git" });
     showAuxiliaryPane("inspector");
-  }, [routeThreadIdentity, showAuxiliaryPane]);
+  }, [fileInspector.supported, navigation, routeThreadIdentity, selectedThread, showAuxiliaryPane]);
   const handleOpenFilesInspector = useCallback(() => {
-    if (!fileInspector.supported || selectedThread === null || selectedThreadCwd === null) {
+    if (selectedThread === null || selectedThreadCwd === null) {
+      return;
+    }
+    if (!fileInspector.supported) {
+      navigation.navigate("ThreadFiles", {
+        environmentId: String(selectedThread.environmentId),
+        threadId: String(selectedThread.id),
+      });
       return;
     }
     setInspectorSelection({
@@ -347,6 +369,7 @@ function ThreadRouteContent(
     showAuxiliaryPane("inspector");
   }, [
     fileInspector.supported,
+    navigation,
     props.renderInspector,
     routeThreadIdentity,
     selectedThread,
@@ -358,13 +381,11 @@ function ThreadRouteContent(
     openFilesInspector: handleOpenFilesInspector,
     toggleAuxiliaryPane,
   });
-  useLayoutEffect(() => {
-    inspectorToggleActionRef.current = {
-      inspectorMode,
-      openFilesInspector: handleOpenFilesInspector,
-      toggleAuxiliaryPane,
-    };
-  }, [handleOpenFilesInspector, inspectorMode, toggleAuxiliaryPane]);
+  inspectorToggleActionRef.current = {
+    inspectorMode,
+    openFilesInspector: handleOpenFilesInspector,
+    toggleAuxiliaryPane,
+  };
   const handleToggleInspector = useCallback(() => {
     const action = inspectorToggleActionRef.current;
     if (action.inspectorMode === null) {
@@ -412,7 +433,6 @@ function ThreadRouteContent(
         <ThreadFileNavigatorPane
           cwd={selectedThreadCwd}
           environmentId={selectedThread.environmentId}
-          threadId={selectedThread.id}
           headerInset={inspectorHeaderInset}
           projectName={selectedThreadProject?.title ?? "Files"}
           selectedPath={null}
@@ -582,33 +602,58 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
-  const threadGitControlProps = {
-    environmentId: environmentIdRaw ?? "",
-    threadId: threadId ?? "",
-    auxiliaryPaneControl:
-      !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
-        ? {
-            accessibilityLabel: "Toggle inspector",
-            onPress: handleToggleInspector,
-          }
-        : undefined,
-    onOpenFilesInspector:
-      fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
-    onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
-    currentBranch: selectedThread?.branch ?? null,
-    gitStatus: gitStatus.data,
-    gitOperationLabel: gitState.gitOperationLabel,
-    canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
-    canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
-    projectScripts: selectedThreadProject?.scripts ?? [],
-    terminalSessions: terminalMenuSessions,
-    showDirectFileControl: layout.usesSplitView,
-    onOpenTerminal: handleOpenTerminal,
-    onOpenNewTerminal: handleOpenNewTerminal,
-    onRunProjectScript: handleRunProjectScript,
-    onPull: gitActions.onPullSelectedThreadBranch,
-    onRunAction: gitActions.onRunSelectedThreadGitAction,
-  };
+  const threadGitControlProps = useMemo(
+    () => ({
+      environmentId: environmentIdRaw ?? "",
+      threadId: threadId ?? "",
+      auxiliaryPaneControl:
+        !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
+          ? {
+              accessibilityLabel: "Toggle inspector",
+              onPress: handleToggleInspector,
+            }
+          : undefined,
+      onOpenFilesInspector:
+        fileInspector.supported && selectedThreadCwd !== null
+          ? handleOpenFilesInspector
+          : undefined,
+      onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+      currentBranch: selectedThread?.branch ?? null,
+      gitStatus: gitStatus.data,
+      gitOperationLabel: gitState.gitOperationLabel,
+      canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
+      canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
+      projectScripts: selectedThreadProject?.scripts ?? [],
+      terminalSessions: terminalMenuSessions,
+      showDirectFileControl: layout.usesSplitView,
+      onOpenTerminal: handleOpenTerminal,
+      onOpenNewTerminal: handleOpenNewTerminal,
+      onRunProjectScript: handleRunProjectScript,
+      onPull: gitActions.onPullSelectedThreadBranch,
+      onRunAction: gitActions.onRunSelectedThreadGitAction,
+    }),
+    [
+      environmentIdRaw,
+      threadId,
+      fileInspector.supported,
+      gitActions.onPullSelectedThreadBranch,
+      gitActions.onRunSelectedThreadGitAction,
+      gitState.gitOperationLabel,
+      gitStatus.data,
+      handleOpenFilesInspector,
+      handleOpenGitInspector,
+      handleOpenNewTerminal,
+      handleOpenTerminal,
+      handleRunProjectScript,
+      handleToggleInspector,
+      layout.usesSplitView,
+      selectedThread?.branch,
+      selectedThreadCwd,
+      selectedThreadProject?.scripts,
+      selectedThreadProject?.workspaceRoot,
+      terminalMenuSessions,
+    ],
+  );
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
   const compactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(
@@ -652,6 +697,55 @@ function ThreadRouteContent(
     ],
     [panes.primarySidebarVisible, props.onReturnToThread, navigation, togglePrimarySidebar],
   );
+  const androidHeaderActions = useMemo<ReadonlyArray<AndroidHeaderAction>>(() => {
+    if (Platform.OS !== "android") return [];
+
+    const actions: AndroidHeaderAction[] = [];
+    if (props.onReturnToThread) {
+      actions.push({
+        accessibilityLabel: "Return to chat",
+        icon: "chevron.left",
+        onPress: props.onReturnToThread,
+      });
+    }
+    if (selectedThreadCwd !== null) {
+      actions.push({
+        accessibilityLabel: "Open files",
+        icon: "folder",
+        onPress: handleOpenFilesInspector,
+      });
+    }
+    if (selectedThreadProject?.workspaceRoot) {
+      actions.push({
+        accessibilityLabel: "Open terminal",
+        icon: "terminal",
+        onPress: () => handleOpenTerminal(null),
+      });
+    }
+    actions.push({
+      accessibilityLabel: "Open git controls",
+      icon: "point.topleft.down.curvedto.point.bottomright.up",
+      onPress: handleOpenGitInspector,
+    });
+    if (fileInspector.supported && selectedThreadCwd !== null) {
+      actions.push({
+        accessibilityLabel: "Toggle inspector",
+        icon: "sidebar.right",
+        onPress: handleToggleInspector,
+      });
+    }
+    return actions;
+  }, [
+    fileInspector.supported,
+    handleOpenFilesInspector,
+    handleOpenTerminal,
+    handleOpenGitInspector,
+    handleToggleInspector,
+    props.onReturnToThread,
+    selectedThreadCwd,
+    selectedThreadProject?.workspaceRoot,
+  ]);
+
   // Deep links / cold starts land with Thread as the ONLY route, where the
   // native back button does not render. Provide an explicit Home escape for
   // that case; when history exists the native back button is used instead.
@@ -677,7 +771,6 @@ function ThreadRouteContent(
     return <OpeningThreadLoadingScreen />;
   }
 
-  const selectedThreadKey = scopedThreadKey(selectedThread.environmentId, selectedThread.id);
   const contentPresentation = projectThreadContentPresentation({
     hasDetail: selectedThreadDetail !== null,
     detailError: Option.getOrNull(selectedThreadDetailState.error),
@@ -700,6 +793,7 @@ function ThreadRouteContent(
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
           selectedThreadFeed={composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
+          isCompacting={composer.isCompacting}
           activePendingApproval={requests.activePendingApproval}
           respondingApprovalId={requests.respondingApprovalId}
           activePendingUserInput={requests.activePendingUserInput}
@@ -710,7 +804,7 @@ function ThreadRouteContent(
           draftAttachments={composer.draftAttachments}
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
-          activeThreadBusy={composer.activeThreadBusy}
+          loadEarlier={loadEarlierTurns}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
@@ -719,7 +813,8 @@ function ThreadRouteContent(
           usesAutomaticContentInsets={usesNativeHeaderGlass}
           onOpenConnectionEditor={handleOpenConnectionEditor}
           onChangeDraftMessage={composer.onChangeDraftMessage}
-          onPickDraftImages={composer.onPickDraftImages}
+          onPickDraftMedia={composer.onPickDraftMedia}
+          onPickDraftFiles={composer.onPickDraftFiles}
           onNativePasteImages={composer.onNativePasteImages}
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
@@ -743,6 +838,9 @@ function ThreadRouteContent(
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
       <NativeStackScreenOptions
         options={{
+          // Android draws its own in-flow header (AndroidScreenHeader below);
+          // the native stack header stays iOS-only.
+          headerShown: Platform.OS !== "android",
           headerTitle: selectedThread.title,
           headerTitleStyle: usesNativeHeaderGlass
             ? {
@@ -774,7 +872,20 @@ function ThreadRouteContent(
         }}
       />
 
-      {renderThreadRouteBody(!layout.usesSplitView && !usesNativeHeaderGlass)}
+      {Platform.OS === "android" ? (
+        <AndroidScreenHeader
+          title={selectedThread.title}
+          subtitle={headerSubtitle}
+          onBack={layout.usesSplitView ? undefined : () => navigation.goBack()}
+          actions={androidHeaderActions}
+        />
+      ) : null}
+
+      {/* Android surfaces the git/files/inspector actions in its in-flow
+          header above, so the fallback action toolbar stays iOS-only. */}
+      {renderThreadRouteBody(
+        Platform.OS !== "android" && !layout.usesSplitView && !usesNativeHeaderGlass,
+      )}
     </>
   );
 }

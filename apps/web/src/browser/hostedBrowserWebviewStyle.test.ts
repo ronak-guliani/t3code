@@ -45,4 +45,34 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       visibility: "visible",
     });
   });
+
+  it("composites hidden capture surfaces inside the visible viewport", () => {
+    expect(
+      resolveHostedBrowserWebviewWrapperStyle({
+        active: false,
+        renderingActive: true,
+        rect: null,
+        hiddenSize: { width: 1280, height: 800 },
+      }),
+    ).toEqual({
+      left: 0,
+      top: 0,
+      width: 1280,
+      height: 800,
+      zIndex: -1,
+      pointerEvents: "none",
+      visibility: "visible",
+    });
+  });
+
+  it("uses the requested surface layer for active previews", () => {
+    expect(
+      resolveHostedBrowserWebviewWrapperStyle({
+        active: true,
+        zIndex: 47,
+        rect: { x: 0, y: 0, width: 800, height: 600 },
+        hiddenSize: { width: 1280, height: 800 },
+      }).zIndex,
+    ).toBe(47);
+  });
 });

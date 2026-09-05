@@ -381,6 +381,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
       >
         <Tooltip>
           <TooltipTrigger
+            delay={200}
             render={
               <SidebarMenuButton
                 className="h-auto min-h-0 items-start px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.75)] text-[length:var(--app-sidebar-font-size)] transition-none"
@@ -451,6 +452,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
     >
       <Tooltip>
         <TooltipTrigger
+          delay={200}
           render={
             <SidebarMenuButton
               // Height is padding-driven rather than fixed so the row tracks

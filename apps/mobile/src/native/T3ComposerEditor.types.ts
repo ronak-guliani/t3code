@@ -23,11 +23,15 @@ export interface ComposerEditorProps {
   readonly placeholder?: string;
   readonly autoFocus?: boolean;
   readonly editable?: boolean;
+  /** Blocks user edits while preserving focus, selection, and the software keyboard on iOS. */
+  readonly readOnly?: boolean;
   readonly scrollEnabled?: boolean;
   readonly autoCorrect?: boolean;
   readonly spellCheck?: boolean;
   readonly multiline?: boolean;
   readonly contentInsetVertical?: number;
+  /** Android: center a single line vertically (collapsed pill); no-op on iOS. */
+  readonly singleLineCentered?: boolean;
   readonly style?: StyleProp<ViewStyle>;
   readonly textStyle?: StyleProp<TextStyle>;
   readonly onChangeText: (value: string) => void;

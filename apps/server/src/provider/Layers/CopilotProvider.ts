@@ -99,6 +99,7 @@ function makeCopilotBuiltInModel(slug: string, name: string): ServerProviderMode
 
 const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("auto", "Auto"),
+  makeCopilotBuiltInModel("gpt-6-astra", "GPT-6 Astra"),
   makeCopilotBuiltInModel("gpt-5.5", "GPT-5.5"),
   makeCopilotBuiltInModel("gpt-5.4", "GPT-5.4"),
   makeCopilotBuiltInModel("gpt-5.4-mini", "GPT-5.4 Mini"),
@@ -114,6 +115,7 @@ const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("gpt-5-mini", "GPT-5 Mini"),
   makeCopilotBuiltInModel("gpt-5.6-luna", "GPT-5.6 Luna"),
   makeCopilotBuiltInModel("gpt-5.6-sol", "GPT-5.6 Sol"),
+  makeCopilotBuiltInModel("gpt-5.6-sol-fast", "GPT-5.6 Sol Fast"),
   makeCopilotBuiltInModel("gpt-5.6-terra", "GPT-5.6 Terra"),
   makeCopilotBuiltInModel("gpt-4.1", "GPT-4.1"),
   makeCopilotBuiltInModel("gpt-4o", "GPT-4o"),
@@ -129,15 +131,19 @@ const COPILOT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   makeCopilotBuiltInModel("claude-sonnet-4.5", "Claude Sonnet 4.5"),
   makeCopilotBuiltInModel("claude-sonnet-4", "Claude Sonnet 4"),
   makeCopilotBuiltInModel("claude-haiku-4.5", "Claude Haiku 4.5"),
+  makeCopilotBuiltInModel("gemini-3.8-flash", "Gemini 3.8 Flash"),
+  makeCopilotBuiltInModel("gemini-3.7-flash", "Gemini 3.7 Flash"),
   makeCopilotBuiltInModel("gemini-3.6-flash", "Gemini 3.6 Flash"),
   makeCopilotBuiltInModel("gemini-3.5-flash", "Gemini 3.5 Flash"),
   makeCopilotBuiltInModel("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
   makeCopilotBuiltInModel("gemini-3-pro-preview", "Gemini 3 Pro Preview"),
   makeCopilotBuiltInModel("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
   makeCopilotBuiltInModel("gemini-2.5-pro", "Gemini 2.5 Pro"),
+  makeCopilotBuiltInModel("grok-4.6", "Grok 4.6"),
   makeCopilotBuiltInModel("grok-4.5", "Grok 4.5"),
   makeCopilotBuiltInModel("grok-code-fast-1", "Grok Code Fast 1"),
   makeCopilotBuiltInModel("kimi-k2.7-code", "Kimi K2.7 Code"),
+  makeCopilotBuiltInModel("mai-code-1.1-flash", "MAI-Code 1.1 Flash"),
   makeCopilotBuiltInModel("mai-code-1-flash-picker", "MAI-Code-1 Flash Picker"),
 ];
 

@@ -34,6 +34,7 @@ import {
   reconcilePreviewServerSessions,
   updatePreviewServerSnapshot,
 } from "~/previewStateStore";
+import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { resolveBrowserNavigationTarget } from "~/browser/browserTargetResolver";
 import {
@@ -46,7 +47,11 @@ import {
   rewriteBrowserRecordingArtifactTabId,
   type BrowserRecordingStopTarget,
 } from "~/browser/browserRecordingScope";
-import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
+import {
+  acquireBrowserSurfaceActivity,
+  useBrowserSurfaceStore,
+} from "~/browser/browserSurfaceStore";
+import { ensureClientSettingsHydrated, getClientSettings } from "~/hooks/useSettings";
 import { isElectron } from "~/env";
 import { useEnvironmentConnectionEpoch, useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
@@ -63,9 +68,11 @@ import {
 } from "./previewAutomationErrors";
 import {
   PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS,
+  explicitlySuppressesPreview,
   previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
   previewPresentationSettleDecision,
+  shouldAutoShowPreviewForAutomationUse,
   shouldPresentPreview,
 } from "./previewAutomationOpenReadiness";
 import { resolveSnapshotBudgets } from "./previewSnapshotBudgets";
@@ -356,6 +363,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const [automationConnectionAtom] = useState(() => Atom.make<string | null>(null));
   const automationConnectionId = useAtomValue(automationConnectionAtom);
   const synchronizedThreadIdsRef = useRef(new Set<string>());
+  const presentationSuppressedRuntimeTabsRef = useRef(new Map<string, Set<string>>());
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -364,6 +372,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         threadId: request.threadId,
       };
       let tabId = request.tabId ?? null;
+      const browserActivity: { release?: () => void } = {};
       try {
         let state = readThreadPreviewState(threadRef);
         const needsSessionSync = needsPreviewAutomationSessionSync(
@@ -405,6 +414,20 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             readThreadPreviewState(threadRef).serverEpoch,
             readyTabId,
           );
+          await ensureClientSettingsHydrated();
+          if (
+            shouldAutoShowPreviewForAutomationUse({
+              operation: request.operation,
+              autoShowFloatingPreview: getClientSettings().browserAutoShowFloatingPreview,
+              presentationSuppressed:
+                presentationSuppressedRuntimeTabsRef.current
+                  .get(request.threadId)
+                  ?.has(runtimeTabId) ?? false,
+            })
+          ) {
+            usePreviewMiniPlayerStore.getState().open(threadRef, readyTabId);
+          }
+          browserActivity.release ??= acquireBrowserSurfaceActivity(runtimeTabId);
           await waitForDesktopOverlay(
             threadRef,
             request.requestId,
@@ -414,6 +437,45 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             request.timeoutMs,
           );
           return { bridge, tabId: readyTabId, runtimeTabId };
+        };
+        const applyPresentationIntent = async (
+          input: PreviewAutomationOpenInput,
+          activeTabId: string,
+          activeRuntimeTabId: string,
+        ): Promise<boolean> => {
+          await ensureClientSettingsHydrated();
+          const shouldPresent = shouldPresentPreview(
+            input,
+            getClientSettings().browserAutoShowFloatingPreview,
+          );
+          const suppressedTabs = presentationSuppressedRuntimeTabsRef.current.get(request.threadId);
+          if (explicitlySuppressesPreview(input)) {
+            if (suppressedTabs) {
+              suppressedTabs.add(activeRuntimeTabId);
+            } else {
+              presentationSuppressedRuntimeTabsRef.current.set(
+                request.threadId,
+                new Set([activeRuntimeTabId]),
+              );
+            }
+            const miniPlayer = selectThreadPreviewMiniPlayer(
+              usePreviewMiniPlayerStore.getState().byThreadKey,
+              threadRef,
+            );
+            if (miniPlayer?.tabId === activeTabId) {
+              usePreviewMiniPlayerStore.getState().close(threadRef);
+            }
+          } else if (shouldPresent) {
+            suppressedTabs?.delete(activeRuntimeTabId);
+            if (suppressedTabs?.size === 0) {
+              presentationSuppressedRuntimeTabsRef.current.delete(request.threadId);
+            }
+          }
+          if (shouldPresent) {
+            usePreviewMiniPlayerStore.getState().open(threadRef, activeTabId);
+            useRightPanelStore.getState().openBrowser(threadRef, activeTabId);
+          }
+          return shouldPresent;
         };
         switch (request.operation) {
           case "status":
@@ -479,10 +541,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 updatePreviewServerSnapshot(threadRef, resizeResult.value);
               }
             }
-            const shouldPresent = shouldPresentPreview(input);
-            if (shouldPresent) {
-              useRightPanelStore.getState().openBrowser(threadRef, activeTabId);
-            }
+            const shouldPresent = await applyPresentationIntent(
+              input,
+              activeTabId,
+              activeRuntimeTabId,
+            );
             if (activeSnapshot && previewAutomationOpenNeedsOverlay(input, activeSnapshot)) {
               await waitForDesktopOverlay(
                 threadRef,
@@ -729,10 +792,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 updatePreviewServerSnapshot(threadRef, resizeResult.value);
               }
             }
-            const shouldPresent = shouldPresentPreview(openInput);
-            if (shouldPresent) {
-              useRightPanelStore.getState().openBrowser(threadRef, activeTabId);
-            }
+            const shouldPresent = await applyPresentationIntent(
+              openInput,
+              activeTabId,
+              activeRuntimeTabId,
+            );
             if (activeSnapshot && previewAutomationOpenNeedsOverlay(openInput, activeSnapshot)) {
               await waitForDesktopOverlay(
                 threadRef,
@@ -898,6 +962,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
           tabId,
           cause,
         });
+      } finally {
+        browserActivity.release?.();
       }
     },
     [environmentId, listPreviews, open, registry, resize],

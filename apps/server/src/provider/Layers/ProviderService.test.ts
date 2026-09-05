@@ -8,10 +8,12 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
+  ProviderSessionForkInput,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -20,7 +22,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { it, assert, vi } from "@effect/vitest";
+import { describe, it, assert, vi } from "@effect/vitest";
 
 import { Effect, Exit, Fiber, Layer, Metric, Option, PubSub, Ref, Scope, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -298,8 +300,11 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
       }),
   );
   const forkSession = vi.fn(
-    (): Effect.Effect<ProviderSession, ProviderAdapterError> =>
-      Effect.die(new Error("Unsupported provider fork in test adapter")),
+    (input: ProviderSessionForkInput): Effect.Effect<ProviderSession, ProviderAdapterError> =>
+      startSession({
+        ...input,
+        provider,
+      }),
   );
 
   const adapter: ProviderAdapterShape<ProviderAdapterError> = {
@@ -344,6 +349,7 @@ function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
     emit,
     updateSession,
     startSession,
+    forkSession,
     sendTurn,
     interruptTurn,
     respondToRequest,
@@ -2053,5 +2059,200 @@ validation.layer("ProviderServiceLive validation", (it) => {
         assert.equal(runtime.value.threadId, session.threadId);
       }
     }),
+  );
+});
+
+describe("agent browser access", () => {
+  const startSessionWithBrowserAccess = (enableAgentBrowserAccess: boolean, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const issued: Array<ThreadId> = [];
+      const revoked: Array<readonly [ThreadId, ProviderInstanceId]> = [];
+      const codex = makeFakeCodexAdapter();
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive({
+        issueMcpCredential: (request) =>
+          Effect.sync(() => {
+            issued.push(request.threadId);
+            return undefined;
+          }),
+        revokeMcpCredential: (revokedThreadId, providerInstanceId) =>
+          Effect.sync(() => {
+            revoked.push([revokedThreadId, providerInstanceId]);
+          }),
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+          ),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(ServerSettingsService.layerTest({ enableAgentBrowserAccess })),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        yield* provider.startSession(threadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId,
+          runtimeMode: "full-access",
+        });
+      }).pipe(Effect.provide(providerLayer));
+
+      return { issued, revoked };
+    });
+
+  it.effect("withholds and revokes the MCP credential when browser access is off", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-off");
+      const result = yield* startSessionWithBrowserAccess(false, threadId);
+
+      assert.deepEqual(result.issued, []);
+      assert.deepEqual(result.revoked, [[threadId, codexInstanceId]]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("issues the MCP credential when browser access is on", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-browser-on");
+      const result = yield* startSessionWithBrowserAccess(true, threadId);
+
+      assert.deepEqual(result.issued, [threadId]);
+      assert.deepEqual(result.revoked, []);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("issues an MCP credential for the target of a forked session", () =>
+    Effect.gen(function* () {
+      const issued: Array<ThreadId> = [];
+      const codex = makeFakeCodexAdapter();
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive({
+        issueMcpCredential: (request) =>
+          Effect.sync(() => {
+            issued.push(request.threadId);
+            return undefined;
+          }),
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+          ),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+      const sourceThreadId = asThreadId("thread-browser-fork-source");
+      const targetThreadId = asThreadId("thread-browser-fork-target");
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        yield* provider.startSession(sourceThreadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId: sourceThreadId,
+          runtimeMode: "full-access",
+        });
+        yield* provider.forkSession({
+          sourceThreadId,
+          threadId: targetThreadId,
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          runtimeMode: "full-access",
+        });
+      }).pipe(Effect.provide(providerLayer));
+
+      assert.deepEqual(issued, [sourceThreadId, targetThreadId]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("revokes a fork target credential when the adapter fork fails", () =>
+    Effect.gen(function* () {
+      const revokedSessions: Array<string> = [];
+      const codex = makeFakeCodexAdapter();
+      codex.forkSession.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: String(CODEX_DRIVER),
+            method: "forkSession",
+            detail: "simulated fork failure",
+          }),
+        ),
+      );
+      const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+        Layer.provide(SqlitePersistenceMemory),
+      );
+      const directoryLayer = ProviderSessionDirectoryLive.pipe(
+        Layer.provide(runtimeRepositoryLayer),
+      );
+      const providerLayer = makeProviderServiceLive({
+        issueMcpCredential: ({ threadId, providerInstanceId }) =>
+          Effect.succeed({
+            config: {
+              environmentId: EnvironmentId.make("environment-browser-fork"),
+              threadId,
+              providerSessionId: `mcp-${String(threadId)}`,
+              providerInstanceId,
+              endpoint: "http://localhost/mcp",
+              authorizationHeader: "Bearer test",
+            },
+          }),
+        revokeMcpSession: (providerSessionId) =>
+          Effect.sync(() => {
+            revokedSessions.push(providerSessionId);
+          }),
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter }),
+          ),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+      );
+      const sourceThreadId = asThreadId("thread-browser-fork-failure-source");
+      const targetThreadId = asThreadId("thread-browser-fork-failure-target");
+
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        yield* provider.startSession(sourceThreadId, {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          threadId: sourceThreadId,
+          runtimeMode: "full-access",
+        });
+        const exit = yield* Effect.exit(
+          provider.forkSession({
+            sourceThreadId,
+            threadId: targetThreadId,
+            provider: CODEX_DRIVER,
+            providerInstanceId: codexInstanceId,
+            runtimeMode: "full-access",
+          }),
+        );
+        assert.equal(Exit.isFailure(exit), true);
+      }).pipe(Effect.provide(providerLayer));
+
+      assert.deepEqual(revokedSessions, [`mcp-${String(targetThreadId)}`]);
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

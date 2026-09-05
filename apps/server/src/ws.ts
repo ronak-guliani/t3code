@@ -930,6 +930,13 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
+              const correlation = {
+                commandId: command.commandId,
+                commandType: command.type,
+                authSessionId: currentSessionId,
+                ...("threadId" in command ? { threadId: command.threadId } : {}),
+              };
+              yield* Effect.logInfo("client command received", correlation);
               const normalizedCommand = yield* normalizeDispatchCommand(command);
               const threadsToArchive =
                 normalizedCommand.type === "thread.archive"
@@ -961,6 +968,10 @@ const makeWsRpcLayer = (
                     })
                   : [];
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
+              yield* Effect.logInfo("client command committed", {
+                ...correlation,
+                sequence: result.sequence,
+              });
               if (normalizedCommand.type === "thread.archive") {
                 yield* Effect.forEach(
                   threadsToArchive,
@@ -1861,6 +1872,9 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
+              if (input.resource._tag === "native-app-icon") {
+                return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });
+              }
               if (input.resource._tag === "attachment") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }

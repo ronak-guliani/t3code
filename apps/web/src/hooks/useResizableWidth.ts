@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { type PointerEvent as ReactPointerEvent, useCallback, useRef, useState } from "react";
 
 import { getLocalStorageItem, setLocalStorageItem } from "./useLocalStorage";
+import { reportClientError } from "../lib/clientLogger";
 
 const WidthSchema = Schema.Finite;
 
@@ -56,7 +57,7 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
       const stored = getLocalStorageItem(storageKey, WidthSchema);
       return clamp(stored ?? defaultWidth);
     } catch (error) {
-      console.error("Could not read persisted panel width.", error);
+      reportClientError("Could not read persisted panel width.", error);
       return defaultWidth;
     }
   });
@@ -143,7 +144,7 @@ export function useResizableWidth(options: UseResizableWidthOptions): {
       try {
         setLocalStorageItem(storageKey, finalWidth, WidthSchema);
       } catch (error) {
-        console.error("Could not persist panel width.", error);
+        reportClientError("Could not persist panel width.", error);
       }
       setWidth(finalWidth);
     },

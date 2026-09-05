@@ -8,18 +8,21 @@ import {
 } from "./pairing";
 
 describe("buildPairingUrl", () => {
-  it("uses HTTP for bare IPv4 and IPv6 literals", () => {
+  it("uses HTTP for a schemeless IP address", () => {
     expect(buildPairingUrl("192.168.1.100:3773", "pairing-token")).toBe(
-      "http://192.168.1.100:3773/pair#token=pairing-token",
-    );
-    expect(buildPairingUrl("[fd7a:115c:a1e0::1]:3773", "pairing-token")).toBe(
-      "http://[fd7a:115c:a1e0::1]:3773/pair#token=pairing-token",
+      "http://192.168.1.100:3773/#token=pairing-token",
     );
   });
 
-  it("keeps HTTPS as the default for named hosts", () => {
+  it("keeps HTTPS as the default for a schemeless hostname", () => {
     expect(buildPairingUrl("remote.example.com", "pairing-token")).toBe(
-      "https://remote.example.com/pair#token=pairing-token",
+      "https://remote.example.com/#token=pairing-token",
+    );
+  });
+
+  it("preserves an explicit scheme for an IP address", () => {
+    expect(buildPairingUrl("https://192.168.1.100:3773", "pairing-token")).toBe(
+      "https://192.168.1.100:3773/#token=pairing-token",
     );
   });
 });
@@ -31,13 +34,16 @@ describe("extractPairingUrlFromQrPayload", () => {
     ).toBe("https://remote.example.com/pair#token=pairing-token");
   });
 
-  it("unwraps mobile deep links that carry an encoded pairing url", () => {
-    expect(
-      extractPairingUrlFromQrPayload(
-        "t3code://pair?pairingUrl=https%3A%2F%2Fremote.example.com%2Fpair%23token%3Dpairing-token",
-      ),
-    ).toBe("https://remote.example.com/pair#token=pairing-token");
-  });
+  it.each(["t3code", "t3code-rg", "t3code-rg-dev", "t3code-rg-preview"])(
+    "unwraps %s links that carry an encoded pairing URL",
+    (scheme) => {
+      expect(
+        extractPairingUrlFromQrPayload(
+          `${scheme}://pair?pairingUrl=https%3A%2F%2Fremote.example.com%2Fpair%23token%3Dpairing-token`,
+        ),
+      ).toBe("https://remote.example.com/pair#token=pairing-token");
+    },
+  );
 
   it("rejects empty qr payloads", () => {
     expect(() => extractPairingUrlFromQrPayload("   ")).toThrowError(PairingQrPayloadEmptyError);

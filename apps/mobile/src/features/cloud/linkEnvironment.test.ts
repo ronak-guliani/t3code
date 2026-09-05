@@ -4,13 +4,16 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { EnvironmentId } from "@t3tools/contracts";
 import { RelayMobileClientId } from "@t3tools/contracts/relay";
-import { ManagedRelay } from "@t3tools/client-runtime/relay";
+import { DPOP_UNKNOWN_HINT, ManagedRelay } from "@t3tools/client-runtime/relay";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { HttpClient } from "effect/unstable/http";
+import { MobilePreferencesStore } from "../../persistence/mobile-preferences";
+import { MobileStorage } from "../../persistence/mobile-storage";
 
 import {
   cloudEnvironmentsPendingStatus,
   linkEnvironmentToCloud,
+  linkEnvironmentToCloudWithPreference,
   connectCloudEnvironment,
   listCloudEnvironments,
   listCloudEnvironmentsWithStatus,
@@ -30,16 +33,32 @@ vi.mock("expo-constants", () => ({
   },
 }));
 
+vi.mock("expo-device", () => ({
+  deviceType: 1,
+  DeviceType: {
+    UNKNOWN: 0,
+    PHONE: 1,
+    TABLET: 2,
+    DESKTOP: 3,
+    TV: 4,
+  },
+  osVersion: "18.4.1",
+  modelName: "iPhone 15 Pro",
+}));
+
 vi.mock("react-native", () => ({
   Platform: {
     OS: "ios",
   },
 }));
 
-vi.mock("../../lib/storage", () => ({
-  loadOrCreateAgentAwarenessDeviceId: vi.fn(() => Promise.resolve("device-1")),
-  loadPreferences: vi.fn(() => Promise.resolve({})),
+vi.mock("expo-secure-store", () => ({
+  deleteItemAsync: vi.fn(),
+  getItemAsync: vi.fn(),
+  setItemAsync: vi.fn(),
 }));
+
+const loadPreferences = vi.fn(() => Effect.succeed({}));
 
 const savedConnection = {
   environmentId: EnvironmentId.make("env-1"),
@@ -69,6 +88,29 @@ function cloudClientLayer() {
   const httpClientLayer = remoteHttpClientLayer((input, init) => globalThis.fetch(input, init));
   return Layer.mergeAll(
     httpClientLayer,
+    Layer.succeed(
+      MobilePreferencesStore,
+      MobilePreferencesStore.of({
+        load: loadPreferences(),
+        savePatch: (patch) => Effect.succeed(patch),
+        update: () => Effect.succeed({}),
+      }),
+    ),
+    Layer.succeed(
+      MobileStorage,
+      MobileStorage.of({
+        loadSavedConnections: Effect.succeed([]),
+        saveConnection: () => Effect.void,
+        clearSavedConnection: () => Effect.void,
+        loadOrCreateAgentAwarenessDeviceId: Effect.succeed("device-1"),
+        loadAgentAwarenessDeviceId: Effect.succeed("device-1"),
+        loadAgentAwarenessRegistrationRecord: Effect.succeed(null),
+        saveAgentAwarenessRegistrationRecord: () => Effect.void,
+        clearAgentAwarenessRegistrationRecord: Effect.void,
+        loadRecentThreadShortcuts: Effect.succeed([]),
+        saveRecentThreadShortcuts: () => Effect.void,
+      }),
+    ),
     ManagedRelay.layer({
       relayUrl: "https://relay.example.test",
       clientId: RelayMobileClientId,
@@ -80,7 +122,11 @@ const withCloudServices = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    HttpClient.HttpClient | ManagedRelay.ManagedRelayClient | ManagedRelay.ManagedRelayDpopSigner
+    | HttpClient.HttpClient
+    | ManagedRelay.ManagedRelayClient
+    | ManagedRelay.ManagedRelayDpopSigner
+    | MobilePreferencesStore
+    | MobileStorage
   >,
 ) => effect.pipe(Effect.provide(cloudClientLayer()));
 
@@ -146,6 +192,7 @@ describe("mobile cloud link environment client", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     createProofMock.mockClear();
+    loadPreferences.mockClear();
   });
 
   it("normalizes configured relay base URLs before building DPoP-bound requests", () => {
@@ -452,7 +499,7 @@ describe("mobile cloud link environment client", () => {
       const environmentTokenBody = new URLSearchParams(
         requestBodyText(environmentTokenRequest?.body),
       );
-      expect(environmentTokenBody.get("client_label")).toBe("T3 Code Mobile");
+      expect(environmentTokenBody.get("client_label")).toBe("T3 Code RG");
       expect(environmentTokenBody.get("client_device_type")).toBe("mobile");
       expect(environmentTokenBody.get("client_os")).toBe("iOS");
     }),
@@ -705,10 +752,7 @@ describe("mobile cloud link environment client", () => {
 
   it.effect("preserves disabled Live Activity preferences when linking an environment", () =>
     Effect.gen(function* () {
-      const storage = yield* Effect.promise(() => import("../../lib/storage"));
-      vi.mocked(storage.loadPreferences).mockResolvedValueOnce({
-        liveActivitiesEnabled: false,
-      });
+      loadPreferences.mockReturnValueOnce(Effect.succeed({ liveActivitiesEnabled: false }));
       const bodies: Array<unknown> = [];
       const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
         if (init?.body) {
@@ -758,6 +802,45 @@ describe("mobile cloud link environment client", () => {
         cloudUserId: "user_123",
         environmentCredential: "environment-credential",
       });
+    }),
+  );
+
+  it.effect("uses an explicit Live Activity preference when persisted state is unavailable", () =>
+    Effect.gen(function* () {
+      loadPreferences.mockReturnValueOnce(Effect.die("persisted preferences must not be read"));
+      const bodies: Array<Record<string, unknown>> = [];
+      const fetchMock = vi.fn((url: string | URL, init?: RequestInit) => {
+        if (init?.body) {
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          bodies.push(JSON.parse(requestBodyText(init.body)) as Record<string, unknown>);
+        }
+        if (String(url).endsWith("/v1/client/environment-link-challenges")) {
+          return Promise.resolve(Response.json(validLinkChallengeResponse()));
+        }
+        if (String(url).endsWith("/api/connect/link-proof")) {
+          return Promise.resolve(Response.json(validLinkProof()));
+        }
+        if (String(url).endsWith("/v1/client/environment-links")) {
+          return Promise.resolve(Response.json(validLinkResponse()));
+        }
+        return Promise.resolve(
+          Response.json({ ok: true, endpointRuntimeStatus: { status: "disabled" } }),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      yield* withCloudServices(
+        linkEnvironmentToCloudWithPreference({
+          clerkToken: "clerk-token",
+          connection: savedConnection,
+          liveActivitiesEnabled: true,
+        }),
+      );
+
+      expect(bodies.filter((body) => "liveActivitiesEnabled" in body)).toEqual([
+        expect.objectContaining({ liveActivitiesEnabled: true }),
+        expect.objectContaining({ liveActivitiesEnabled: true }),
+      ]);
     }),
   );
 
@@ -1006,11 +1089,86 @@ describe("mobile cloud link environment client", () => {
       ).pipe(Effect.flip);
       expect(error).toMatchObject({
         _tag: "CloudEnvironmentLinkError",
-        message:
-          "https://relay.example.test/v1/environments/env-1/connect failed: Relay rejected the DPoP proof.",
+        message: `https://relay.example.test/v1/environments/env-1/connect failed: Relay rejected the DPoP proof. ${DPOP_UNKNOWN_HINT}`,
         traceId: "trace-connect",
       });
     }),
+  );
+
+  it.effect(
+    "presents clock skew as one possible cause when an older environment rejects DPoP",
+    () =>
+      Effect.gen(function* () {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn((url: string | URL) => {
+            const value = String(url);
+            if (value.endsWith("/v1/client/dpop-token")) {
+              return Promise.resolve(
+                Response.json(validDpopAccessTokenResponse("environment:connect")),
+              );
+            }
+            if (value.endsWith("/v1/environments/env-1/connect")) {
+              return Promise.resolve(
+                Response.json({
+                  environmentId: "env-1",
+                  endpoint: {
+                    httpBaseUrl: "https://desktop.example.test/",
+                    wsBaseUrl: "wss://desktop.example.test/ws",
+                    providerKind: "cloudflare_tunnel",
+                  },
+                  credential: "one-time-cloud-credential",
+                  expiresAt: "2026-05-25T00:05:00.000Z",
+                }),
+              );
+            }
+            if (value.endsWith("/.well-known/t3/environment")) {
+              return Promise.resolve(
+                Response.json({
+                  environmentId: "env-1",
+                  label: "Desktop",
+                  platform: { os: "darwin", arch: "arm64" },
+                  serverVersion: "0.0.0-test",
+                  capabilities: { repositoryIdentity: true },
+                }),
+              );
+            }
+            return Promise.resolve(
+              Response.json(
+                {
+                  _tag: "EnvironmentAuthInvalidError",
+                  code: "auth_invalid",
+                  reason: "invalid_credential",
+                  traceId: "trace-environment",
+                },
+                { status: 401 },
+              ),
+            );
+          }),
+        );
+
+        const error = yield* withCloudServices(
+          connectCloudEnvironment({
+            clerkToken: "clerk-token",
+            environment: {
+              environmentId: EnvironmentId.make("env-1"),
+              label: "Desktop",
+              endpoint: {
+                httpBaseUrl: "https://desktop.example.test/",
+                wsBaseUrl: "wss://desktop.example.test/ws",
+                providerKind: "cloudflare_tunnel",
+              },
+              linkedAt: "2026-05-25T00:00:00.000Z",
+            },
+          }),
+        ).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "CloudEnvironmentLinkError",
+          message: `Could not exchange a managed endpoint DPoP access token. ${DPOP_UNKNOWN_HINT}`,
+          traceId: "trace-environment",
+        });
+      }),
   );
 
   it.effect("rejects relay connect responses for a different endpoint", () =>

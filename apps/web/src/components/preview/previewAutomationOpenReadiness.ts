@@ -1,5 +1,6 @@
 import {
   FILL_PREVIEW_VIEWPORT,
+  type PreviewAutomationOperation,
   type PreviewAutomationOpenInput,
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
@@ -11,8 +12,28 @@ export const DEFAULT_PREVIEW_AUTOMATION_VIEWPORT = {
   height: 800,
 } as const satisfies PreviewViewportSetting;
 
-export function shouldPresentPreview(input: PreviewAutomationOpenInput): boolean {
-  return input.open ?? input.show ?? true;
+export function shouldPresentPreview(
+  input: PreviewAutomationOpenInput,
+  autoShowFloatingPreview = true,
+): boolean {
+  return input.open ?? input.show ?? autoShowFloatingPreview;
+}
+
+export function shouldAutoShowPreviewForAutomationUse(input: {
+  readonly operation: PreviewAutomationOperation;
+  readonly autoShowFloatingPreview: boolean;
+  readonly presentationSuppressed: boolean;
+}): boolean {
+  return (
+    input.operation !== "open" &&
+    input.operation !== "openAndSnapshot" &&
+    input.autoShowFloatingPreview &&
+    !input.presentationSuppressed
+  );
+}
+
+export function explicitlySuppressesPreview(input: PreviewAutomationOpenInput): boolean {
+  return (input.open ?? input.show) === false;
 }
 
 /** Full settle budget while waiting for a routed browser surface to paint. */

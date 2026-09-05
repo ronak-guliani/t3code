@@ -1,7 +1,7 @@
 import {
   CommandId,
   ORCHESTRATION_WS_METHODS,
-  type ClientOrchestrationCommand,
+  type CapabilityClientOrchestrationCommand as ClientOrchestrationCommand,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -296,5 +296,41 @@ export const stopThreadSession: (input: StopThreadSessionInput) => CommandEffect
     type: "thread.session.stop",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
+  });
+});
+
+export type PinThreadInput = CommandInput<"thread.pin">;
+
+export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
+
+export type UnpinThreadInput = CommandInput<"thread.unpin">;
+
+export const pinThread: (input: PinThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.pinThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.pin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const unpinThread: (input: UnpinThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.unpinThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.unpin",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const reorderPinnedThread: (input: ReorderPinnedThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.reorderPinnedThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.pin.reorder",
+    commandId: yield* commandId(input),
   });
 });

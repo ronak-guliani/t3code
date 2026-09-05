@@ -32,8 +32,8 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
-  CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
-  CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  codexDefaultModeDeveloperInstructions,
+  codexPlanModeDeveloperInstructions,
 } from "../CodexDeveloperInstructions.ts";
 
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
@@ -55,6 +55,10 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "unknown thread",
   "does not exist",
 ];
+
+export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
+  return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
+}
 
 export const CodexResumeCursorSchema = Schema.Struct({
   threadId: Schema.String,
@@ -92,6 +96,7 @@ export interface CodexSessionRuntimeOptions {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly appServerArgs?: ReadonlyArray<string>;
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
   readonly model?: string;
@@ -334,6 +339,7 @@ function buildCodexCollaborationMode(input: {
   readonly interactionMode?: ProviderInteractionMode;
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
+  readonly browserToolsAvailable?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -346,8 +352,8 @@ function buildCodexCollaborationMode(input: {
       reasoning_effort: input.effort ?? "medium",
       developer_instructions:
         input.interactionMode === "plan"
-          ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
-          : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
+          ? codexPlanModeDeveloperInstructions(input.browserToolsAvailable ?? false)
+          : codexDefaultModeDeveloperInstructions(input.browserToolsAvailable ?? false),
     },
   };
 }
@@ -364,6 +370,7 @@ export function buildTurnStartParams(input: {
   readonly serviceTier?: CodexServiceTier;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly interactionMode?: ProviderInteractionMode;
+  readonly browserToolsAvailable?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -384,6 +391,7 @@ export function buildTurnStartParams(input: {
     ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
+    browserToolsAvailable: input.browserToolsAvailable ?? false,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({
@@ -743,7 +751,7 @@ export const makeCodexSessionRuntime = (
     const { command: spawnTarget, shell } = resolveWindowsSpawn(options.binaryPath, { env });
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(spawnTarget, ["app-server"], {
+        ChildProcess.make(spawnTarget, ["app-server", ...(options.appServerArgs ?? [])], {
           cwd: options.cwd,
           env,
           shell,
@@ -1305,6 +1313,7 @@ export const makeCodexSessionRuntime = (
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+            browserToolsAvailable: hasConfiguredMcpServer(options.appServerArgs),
           });
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(

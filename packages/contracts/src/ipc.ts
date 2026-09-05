@@ -55,7 +55,7 @@ import {
   PreviewAutomationScrollInput,
   type PreviewAutomationSnapshot,
   PreviewAutomationSnapshotInput,
-  type PreviewAutomationStatus,
+  PreviewAutomationStatus,
   type PreviewAutomationStreamEvent,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
@@ -313,6 +313,12 @@ export interface DesktopPreviewTabState {
 export const DesktopPreviewTabIdSchema = Schema.String.check(Schema.isTrimmed()).check(
   Schema.isNonEmpty(),
 );
+
+export const DesktopPreviewAutomationStatusSchema = Schema.Struct({
+  ...PreviewAutomationStatus.fields,
+  tabId: Schema.NullOr(DesktopPreviewTabIdSchema),
+});
+export type DesktopPreviewAutomationStatus = typeof DesktopPreviewAutomationStatusSchema.Type;
 
 export const DesktopPreviewNavStatusSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("Idle") }),
@@ -756,6 +762,9 @@ export const DesktopPreviewAutomationSnapshotInputSchema = Schema.Struct({
   input: Schema.optional(PreviewAutomationSnapshotInput),
 });
 
+/** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */
+export const DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER = "__t3DesktopPreviewRecordingCapture";
+
 export interface DesktopPreviewBridge {
   createTab: (tabId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
@@ -814,7 +823,7 @@ export interface DesktopPreviewBridge {
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
   automation: {
-    status: (tabId: string) => Promise<PreviewAutomationStatus>;
+    status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (
       tabId: string,
       input?: PreviewAutomationSnapshotInput,
@@ -1097,3 +1106,43 @@ export interface EnvironmentApi {
     ) => () => void;
   };
 }
+
+export const DesktopUpdateStatusSchema = Schema.Literals([
+  "disabled",
+  "idle",
+  "checking",
+  "up-to-date",
+  "available",
+  "downloading",
+  "downloaded",
+  "error",
+]);
+
+export const DesktopUpdateChannelSchema = Schema.Literals(["latest", "nightly"]);
+
+export const DesktopRuntimeArchSchema = Schema.Literals(["arm64", "x64", "other"]);
+
+export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
+  version: Schema.String,
+  items: Schema.Array(Schema.String),
+  totalItems: Schema.Number,
+});
+
+export const DesktopUpdateStateSchema = Schema.Struct({
+  enabled: Schema.Boolean,
+  status: DesktopUpdateStatusSchema,
+  channel: DesktopUpdateChannelSchema,
+  currentVersion: Schema.String,
+  hostArch: DesktopRuntimeArchSchema,
+  appArch: DesktopRuntimeArchSchema,
+  runningUnderArm64Translation: Schema.Boolean,
+  availableVersion: Schema.NullOr(Schema.String),
+  downloadedVersion: Schema.NullOr(Schema.String),
+  releaseNotes: Schema.Array(DesktopUpdateReleaseNoteSchema),
+  omittedReleaseCount: Schema.Number,
+  downloadPercent: Schema.NullOr(Schema.Number),
+  checkedAt: Schema.NullOr(Schema.String),
+  message: Schema.NullOr(Schema.String),
+  errorContext: Schema.NullOr(Schema.Literals(["check", "download", "install"])),
+  canRetry: Schema.Boolean,
+});
