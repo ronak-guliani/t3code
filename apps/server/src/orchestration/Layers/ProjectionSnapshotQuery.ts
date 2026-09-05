@@ -1323,20 +1323,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE thread_id = ${threadId}
-          AND kind IN ('task.started', 'task.completed')
-        ORDER BY created_at ASC, activity_id ASC
-        LIMIT ${MAX_BACKGROUND_AGENT_ACTIVITIES_PER_THREAD}
+          recent.activity_id AS "activityId",
+          recent.thread_id AS "threadId",
+          recent.turn_id AS "turnId",
+          recent.tone,
+          recent.kind,
+          recent.summary,
+          recent.payload_json AS "payload",
+          recent.sequence,
+          recent.created_at AS "createdAt"
+        FROM (
+          SELECT
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND kind IN ('task.started', 'task.completed')
+          ORDER BY created_at DESC, activity_id DESC
+          LIMIT ${MAX_BACKGROUND_AGENT_ACTIVITIES_PER_THREAD}
+        ) AS recent
+        ORDER BY recent.created_at ASC, recent.activity_id ASC
       `,
   });
 

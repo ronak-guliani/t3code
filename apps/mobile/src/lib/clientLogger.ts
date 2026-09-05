@@ -26,7 +26,13 @@ function emit(level: ClientLogEvent["level"], args: Array<unknown>): void {
   } else {
     console.warn(...args);
   }
-  handler?.({ level, args, at: new Date().toISOString() });
+  // Logging stays best-effort: a failing telemetry sink must not turn handled
+  // failures into uncaught errors.
+  try {
+    handler?.({ level, args, at: new Date().toISOString() });
+  } catch (handlerError) {
+    console.error("[clientLogger] log handler failed", handlerError);
+  }
 }
 
 export function reportClientError(...args: Array<unknown>): void {

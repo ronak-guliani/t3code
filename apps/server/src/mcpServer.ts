@@ -530,12 +530,22 @@ function parseTerminalResult(output: string, context: string): TerminalResult {
     typeof parsed !== "object" ||
     parsed === null ||
     !("code" in parsed) ||
+    !("signal" in parsed) ||
     !("stdout" in parsed) ||
-    !("stderr" in parsed)
+    !("stderr" in parsed) ||
+    (parsed.code !== null && typeof parsed.code !== "number") ||
+    (parsed.signal !== null && typeof parsed.signal !== "string") ||
+    typeof parsed.stdout !== "string" ||
+    typeof parsed.stderr !== "string"
   ) {
     throw new Error(`${context} returned a malformed result envelope`);
   }
-  return parsed as TerminalResult;
+  return {
+    code: parsed.code,
+    signal: parsed.signal,
+    stdout: parsed.stdout,
+    stderr: parsed.stderr,
+  };
 }
 
 interface IsolatedWorkspaceSpec {
@@ -2069,6 +2079,16 @@ async function serveMcp(options: McpServeOptions): Promise<void> {
         jsonrpc: "2.0",
         id: null,
         error: { code: -32700, message: "Malformed JSON-RPC line" },
+      });
+      continue;
+    }
+    if (typeof request !== "object" || request === null || Array.isArray(request)) {
+      // Valid JSON but not a request object (e.g. `null`): handleRequest reads
+      // request.id before its try block, so reject here instead of crashing.
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid JSON-RPC request" },
       });
       continue;
     }

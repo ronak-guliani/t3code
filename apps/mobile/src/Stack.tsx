@@ -255,7 +255,10 @@ function RootStackLayout(props: {
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ClerkSettingsSheetDetentProvider initiallyExpanded={false}>
         <AdaptiveWorkspaceLayout pathname={workspacePathname}>
-          <RouteErrorBoundary routeName={workspacePathname}>{props.children}</RouteErrorBoundary>
+          {/* Full pathname (sheets included): an overlay throwing must reset
+              when dismissed or replaced, which the overlay-excluding workspace
+              pathname would not observe. */}
+          <RouteErrorBoundary routeName={pathname}>{props.children}</RouteErrorBoundary>
         </AdaptiveWorkspaceLayout>
       </ClerkSettingsSheetDetentProvider>
     </HardwareKeyboardCommandProvider>

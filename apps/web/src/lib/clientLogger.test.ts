@@ -41,4 +41,19 @@ describe("clientLogger", () => {
       warnSpy.mockRestore();
     }
   });
+
+  it("isolates a throwing handler and falls back to the console", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      setClientLogHandler(() => {
+        throw new Error("sink down");
+      });
+      expect(() => reportClientError("boom")).not.toThrow();
+      expect(errorSpy).toHaveBeenCalledWith("boom");
+      expect(errorSpy).toHaveBeenCalledWith("[clientLogger] log handler failed", expect.any(Error));
+    } finally {
+      setClientLogHandler(null);
+      errorSpy.mockRestore();
+    }
+  });
 });

@@ -712,6 +712,84 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("keeps the newest background-agent runs in the per-thread shell query", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-bg-cap', 'Background cap project', '/tmp/bg-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-bg-cap', 'project-bg-cap', 'Background cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}', 'approval-required', 'default',
+          NULL, 0, 0, 0,
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE task_sequence(value) AS (
+          VALUES (0)
+          UNION ALL
+          SELECT value + 1 FROM task_sequence WHERE value < 104
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('bg-activity-%03d', value),
+          'thread-bg-cap',
+          NULL,
+          'info',
+          'task.started',
+          printf('background agent %d', value),
+          printf(
+            '{"taskId":"bg-task-%03d","taskType":"background-agent","name":"Agent %d"}',
+            value,
+            value,
+            value
+          ),
+          NULL,
+          printf('2026-09-01T00:%02d:%02d.000Z', value / 60, value % 60)
+        FROM task_sequence
+      `;
+
+      const context = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-bg-cap"));
+      assert.equal(context._tag, "Some");
+      if (context._tag === "None") return;
+
+      const runs = context.value.backgroundAgentRuns ?? [];
+      assert.lengthOf(runs, 100);
+      const taskIds = new Set(runs.map((run) => run.taskId));
+      assert.isTrue(taskIds.has("bg-task-104"));
+      assert.isFalse(taskIds.has("bg-task-000"));
+    }),
+  );
+
   it.effect("caps full snapshot activities before decoding payloads", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
