@@ -27,6 +27,7 @@ import { vcsEnvironment } from "../../state/vcs";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { firstRouteParam } from "../../lib/routeParams";
 import { connectionTone } from "../connection/connectionTone";
 
 import {
@@ -85,14 +86,6 @@ type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
 function InspectorPaneRoleActivation() {
   useAdaptiveWorkspacePaneRole("inspector");
   return null;
-}
-
-function firstRouteParam(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-
-  return value ?? null;
 }
 
 function OpeningThreadLoadingScreen() {
@@ -578,33 +571,60 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
-  const threadGitControlProps = {
-    environmentId: environmentIdRaw ?? "",
-    threadId: threadId ?? "",
-    auxiliaryPaneControl:
-      !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
-        ? {
-            accessibilityLabel: "Toggle inspector",
-            onPress: handleToggleInspector,
-          }
-        : undefined,
-    onOpenFilesInspector:
-      fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
-    onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
-    currentBranch: selectedThread?.branch ?? null,
-    gitStatus: gitStatus.data,
-    gitOperationLabel: gitState.gitOperationLabel,
-    canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
-    canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
-    projectScripts: selectedThreadProject?.scripts ?? [],
-    terminalSessions: terminalMenuSessions,
-    showDirectFileControl: layout.usesSplitView,
-    onOpenTerminal: handleOpenTerminal,
-    onOpenNewTerminal: handleOpenNewTerminal,
-    onRunProjectScript: handleRunProjectScript,
-    onPull: gitActions.onPullSelectedThreadBranch,
-    onRunAction: gitActions.onRunSelectedThreadGitAction,
-  };
+  // Memoize the fan-out object: it feeds header-item hooks and controls, and a
+  // fresh identity every render would bust their field-level memos.
+  const threadGitControlProps = useMemo(
+    () => ({
+      environmentId: environmentIdRaw ?? "",
+      threadId: threadId ?? "",
+      auxiliaryPaneControl:
+        !layout.usesSplitView && fileInspector.supported && selectedThreadCwd !== null
+          ? {
+              accessibilityLabel: "Toggle inspector",
+              onPress: handleToggleInspector,
+            }
+          : undefined,
+      onOpenFilesInspector:
+        fileInspector.supported && selectedThreadCwd !== null
+          ? handleOpenFilesInspector
+          : undefined,
+      onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+      currentBranch: selectedThread?.branch ?? null,
+      gitStatus: gitStatus.data,
+      gitOperationLabel: gitState.gitOperationLabel,
+      canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
+      canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
+      projectScripts: selectedThreadProject?.scripts ?? [],
+      terminalSessions: terminalMenuSessions,
+      showDirectFileControl: layout.usesSplitView,
+      onOpenTerminal: handleOpenTerminal,
+      onOpenNewTerminal: handleOpenNewTerminal,
+      onRunProjectScript: handleRunProjectScript,
+      onPull: gitActions.onPullSelectedThreadBranch,
+      onRunAction: gitActions.onRunSelectedThreadGitAction,
+    }),
+    [
+      environmentIdRaw,
+      threadId,
+      fileInspector.supported,
+      gitActions.onPullSelectedThreadBranch,
+      gitActions.onRunSelectedThreadGitAction,
+      gitState.gitOperationLabel,
+      gitStatus.data,
+      handleOpenFilesInspector,
+      handleOpenGitInspector,
+      handleOpenNewTerminal,
+      handleOpenTerminal,
+      handleRunProjectScript,
+      handleToggleInspector,
+      layout.usesSplitView,
+      selectedThread?.branch,
+      selectedThreadCwd,
+      selectedThreadProject?.scripts,
+      selectedThreadProject?.workspaceRoot,
+      terminalMenuSessions,
+    ],
+  );
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(threadGitControlProps);
   const compactRightHeaderItems = useThreadGitRightHeaderItems(threadGitControlProps);
   const splitLeftHeaderItems = useMemo<NativeHeaderItems>(

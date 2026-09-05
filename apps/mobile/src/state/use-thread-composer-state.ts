@@ -14,6 +14,7 @@ import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
+import { reportClientError } from "../lib/clientLogger";
 import {
   convertPastedImagesToAttachments,
   pasteComposerClipboard,
@@ -236,7 +237,7 @@ export function useThreadComposerState() {
           appendComposerDraftAttachments(threadKey, images);
         }
       } catch (error) {
-        console.error("[native paste] error converting images", {
+        reportClientError("[native paste] error converting images", {
           environmentId: selectedThreadShell.environmentId,
           threadId: selectedThreadShell.id,
           uriCount: uris.length,

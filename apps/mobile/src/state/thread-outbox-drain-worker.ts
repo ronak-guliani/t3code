@@ -22,6 +22,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
+import { reportClientWarning } from "../lib/clientLogger";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import {
   isQueuedThreadCreationSendable,
@@ -104,7 +105,7 @@ export function createThreadOutboxDrainWorker(options: ThreadOutboxDrainWorkerOp
   const warn =
     options.warn ??
     ((message: string, details: unknown) => {
-      console.warn(message, details);
+      reportClientWarning(message, details);
     });
 
   const reportFailure = (

@@ -120,6 +120,7 @@ import {
   useRelativeTimeTick,
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { reportClientWarning } from "../../lib/clientLogger";
 import {
   useServerAvailableEditors,
   useServerKeybindingsConfigPath,
@@ -997,7 +998,7 @@ export function GeneralSettingsPanel() {
     void ensureLocalApi()
       .server.refreshProviders()
       .catch((error: unknown) => {
-        console.warn("Failed to refresh providers", error);
+        reportClientWarning("Failed to refresh providers", error);
       })
       .finally(() => {
         refreshingRef.current = false;

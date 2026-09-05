@@ -9,6 +9,7 @@ import {
   type SavedRemoteConnection,
   toStableSavedRemoteConnection,
 } from "./connection";
+import { reportClientWarning } from "./clientLogger";
 
 const CONNECTIONS_KEY = "t3code.connections";
 const PREFERENCES_KEY = "t3code.preferences";
@@ -94,7 +95,7 @@ async function readJsonStorageItem<T>(key: MobileStorageKeyValue): Promise<T | n
   try {
     return JSON.parse(raw) as T;
   } catch (cause) {
-    console.warn(
+    reportClientWarning(
       "[mobile-storage] ignored invalid JSON",
       new MobileStorageDecodeError({ key, cause }),
     );

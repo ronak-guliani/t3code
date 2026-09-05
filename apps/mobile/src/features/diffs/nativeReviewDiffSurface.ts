@@ -10,6 +10,7 @@ import type { NativeSyntheticEvent, ViewProps } from "react-native";
 import { requireNativeView } from "expo";
 
 import { NativeViewResolutionError } from "../../native/nativeViewResolutionError";
+import { reportClientError } from "../../lib/clientLogger";
 
 const NATIVE_REVIEW_DIFF_MODULE_NAME = "T3ReviewDiffSurface";
 const NATIVE_REVIEW_DIFF_PAYLOAD_RETRY_FRAMES = 60;
@@ -215,7 +216,7 @@ function useNativeReviewDiffPayload(
           frame = requestAnimationFrame(dispatch);
           return;
         }
-        console.error(`[native-review-diff] ${method} failed`, error);
+        reportClientError(`[native-review-diff] ${method} failed`, error);
       });
     };
 
@@ -284,7 +285,7 @@ export function resolveNativeReviewDiffView(): ComponentType<NativeReviewDiffVie
     );
   } catch (cause) {
     nativeReviewDiffViewResolutionFailed = true;
-    console.error(
+    reportClientError(
       new NativeViewResolutionError({
         nativeModuleName: NATIVE_REVIEW_DIFF_MODULE_NAME,
         cause,

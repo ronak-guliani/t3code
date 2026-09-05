@@ -19,6 +19,7 @@ import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 
 import { useEnvironmentServerConfig, useProjects, useThreadShells } from "../../state/entities";
+import { reportClientWarning } from "../../lib/clientLogger";
 import type { TurnCommandMetadata } from "../../lib/commandMetadata";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
@@ -786,7 +787,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         .catch((error) => {
           // Keep the drain lock and the draft: delivering the stale payload
           // would silently drop the newer edits. Reopening the task retries.
-          console.warn("[new-task] failed to save edited pending task", error);
+          reportClientWarning("[new-task] failed to save edited pending task", error);
         });
     };
   }, [buildPendingTaskMessage]);

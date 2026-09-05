@@ -36,6 +36,7 @@ import { environmentCatalog } from "../../connection/catalog";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useThemeColor } from "../../lib/useThemeColor";
+import { reportClientError } from "../../lib/clientLogger";
 import { useThreadDraftForThread } from "../../state/use-thread-composer-state";
 import { EnvironmentConnectionNotice } from "../connection/EnvironmentConnectionNotice";
 import {
@@ -441,7 +442,7 @@ export function ReviewSheet(props: ReviewSheetProps) {
           ? nativeReviewDiffViewRef.current?.scrollToTop(true)
           : nativeReviewDiffViewRef.current?.scrollToFile(fileId, true);
       void navigation?.catch((error: unknown) => {
-        console.error("[review] Failed to navigate to diff file", error);
+        reportClientError("[review] Failed to navigate to diff file", error);
       });
     },
     [collapsedFileIds, commentSelection, toggleExpandedFile],

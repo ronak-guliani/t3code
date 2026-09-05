@@ -13,6 +13,7 @@ import { useEffect } from "react";
 import { Atom } from "effect/unstable/reactivity";
 
 import { DraftComposerImageAttachmentSchema } from "../lib/composer-image-schema";
+import { reportClientWarning } from "../lib/clientLogger";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import { appAtomRegistry } from "./atom-registry";
 
@@ -173,7 +174,7 @@ async function loadPersistedComposerDrafts(): Promise<Record<string, ComposerDra
   try {
     return await loadPersistedComposerDraftsStrict();
   } catch (cause) {
-    console.warn("[composer-drafts] ignored persisted draft failure", cause);
+    reportClientWarning("[composer-drafts] ignored persisted draft failure", cause);
     return {};
   }
 }
@@ -212,7 +213,7 @@ async function savePersistedComposerDrafts(): Promise<void> {
       writePersistedComposerDrafts(appAtomRegistry.get(composerDraftsAtom)),
     );
   } catch (error) {
-    console.warn("[composer-drafts] failed to persist drafts", error);
+    reportClientWarning("[composer-drafts] failed to persist drafts", error);
     // Draft persistence is best-effort; in-memory drafts still keep working.
   }
 }
@@ -243,7 +244,7 @@ export function ensureComposerDraftsLoaded(): void {
       });
     })
     .catch((cause) => {
-      console.warn(
+      reportClientWarning(
         "[composer-drafts] failed to hydrate drafts",
         new ComposerDraftPersistenceError({
           operation: "hydrate",

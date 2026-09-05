@@ -3,6 +3,7 @@ import type { NativeSyntheticEvent, ViewProps } from "react-native";
 import { requireNativeView, requireOptionalNativeModule } from "expo";
 
 import { NativeViewResolutionError } from "../../native/nativeViewResolutionError";
+import { reportClientError } from "../../lib/clientLogger";
 
 const NATIVE_TERMINAL_MODULE_NAME = "T3TerminalSurface";
 
@@ -63,7 +64,7 @@ export function resolveNativeTerminalSurfaceView(): ComponentType<NativeTerminal
     );
   } catch (cause) {
     nativeTerminalSurfaceViewResolutionFailed = true;
-    console.error(
+    reportClientError(
       new NativeViewResolutionError({
         nativeModuleName: NATIVE_TERMINAL_MODULE_NAME,
         cause,

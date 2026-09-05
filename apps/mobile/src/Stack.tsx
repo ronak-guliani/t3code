@@ -15,6 +15,7 @@ import { DynamicColorIOS, Platform, Pressable, ScrollView, StyleSheet } from "re
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ClerkSettingsSheetDetentProvider } from "./features/cloud/ClerkSettingsSheetDetent";
@@ -254,7 +255,7 @@ function RootStackLayout(props: {
     <HardwareKeyboardCommandProvider pathname={pathname}>
       <ClerkSettingsSheetDetentProvider initiallyExpanded={false}>
         <AdaptiveWorkspaceLayout pathname={workspacePathname}>
-          {props.children}
+          <RouteErrorBoundary routeName={workspacePathname}>{props.children}</RouteErrorBoundary>
         </AdaptiveWorkspaceLayout>
       </ClerkSettingsSheetDetentProvider>
     </HardwareKeyboardCommandProvider>

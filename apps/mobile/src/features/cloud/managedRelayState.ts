@@ -12,6 +12,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect } from "react";
 
 import { runtimeContextLayer } from "../../lib/runtime";
+import { reportClientError } from "../../lib/clientLogger";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { cloudDebugLog } from "./cloudDebugLog";
 
@@ -40,7 +41,7 @@ export function useManagedRelayEnvironments() {
   const snapshot = readManagedRelaySnapshotState(result);
   useEffect(() => {
     if (snapshot.error) {
-      console.error("[t3-cloud] Relay environment listing failed", {
+      reportClientError("[t3-cloud] Relay environment listing failed", {
         message: snapshot.error,
         traceId: snapshot.errorTraceId,
       });
@@ -69,7 +70,7 @@ export function useManagedRelayEnvironmentStatus(environment: RelayClientEnviron
   const snapshot = readManagedRelaySnapshotState(result);
   useEffect(() => {
     if (snapshot.error) {
-      console.error("[t3-cloud] Relay environment status failed", {
+      reportClientError("[t3-cloud] Relay environment status failed", {
         environmentId: environment.environmentId,
         message: snapshot.error,
         traceId: snapshot.errorTraceId,

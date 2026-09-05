@@ -6,6 +6,7 @@ import {
   encodeQueuedThreadMessage,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
+import { reportClientWarning } from "../lib/clientLogger";
 
 const THREAD_OUTBOX_DIRECTORY = "thread-outbox";
 
@@ -61,7 +62,7 @@ export const expoThreadOutboxStorage: ThreadOutboxStorage = {
         try {
           messages.push(decodeQueuedThreadMessage(JSON.parse(await entry.text()) as unknown));
         } catch (cause) {
-          console.warn(
+          reportClientWarning(
             "[thread-outbox] ignored invalid persisted message",
             new ThreadOutboxStorageError({
               operation: "read-message",

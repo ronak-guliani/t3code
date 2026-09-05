@@ -20,6 +20,9 @@ import { MAX_RETAINED_SNAPSHOTS } from "./pollSchedule.ts";
 
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+// Bound for the dashboard-style list() scan; callers needing more pass limit explicitly.
+const DEFAULT_LIST_LIMIT = 500;
+
 const decodeCursor = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -208,6 +211,7 @@ export interface PullRequestMonitorStoreApi {
   readonly list: (input: {
     readonly projectId?: string;
     readonly enabledOnly?: boolean;
+    readonly limit?: number;
   }) => Effect.Effect<ReadonlyArray<PullRequestMonitorRecord>, PullRequestMonitorError>;
   readonly listDue: (
     nowIso: string,
@@ -410,28 +414,35 @@ export const make = Effect.gen(function* () {
 
   const list: PullRequestMonitorStoreApi["list"] = (input) =>
     Effect.gen(function* () {
+      // Bound an otherwise full-table scan: monitor rows accumulate per project
+      // and this feeds polling snapshot paths.
+      const limit = input.limit ?? DEFAULT_LIST_LIMIT;
       const rows =
         input.projectId !== undefined && input.enabledOnly
           ? yield* sql<MonitorRow>`
               SELECT * FROM pull_request_monitors
               WHERE project_id = ${input.projectId} AND enabled = 1
               ORDER BY updated_at DESC
+              LIMIT ${limit}
             `
           : input.projectId !== undefined
             ? yield* sql<MonitorRow>`
                 SELECT * FROM pull_request_monitors
                 WHERE project_id = ${input.projectId}
                 ORDER BY updated_at DESC
+                LIMIT ${limit}
               `
             : input.enabledOnly
               ? yield* sql<MonitorRow>`
                   SELECT * FROM pull_request_monitors
                   WHERE enabled = 1
                   ORDER BY updated_at DESC
+                  LIMIT ${limit}
                 `
               : yield* sql<MonitorRow>`
                   SELECT * FROM pull_request_monitors
                   ORDER BY updated_at DESC
+                  LIMIT ${limit}
                 `;
       return yield* Effect.forEach(rows, rowToRecord, { concurrency: 1 });
     }).pipe(

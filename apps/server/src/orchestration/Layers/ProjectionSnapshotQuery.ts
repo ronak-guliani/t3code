@@ -55,6 +55,10 @@ import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/Proje
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import { MAX_THREAD_ACTIVITIES } from "../projector.ts";
+// Per-thread cap for background-agent lifecycle rows in shell snapshots; task
+// start/completion pairs accumulate for the server lifetime, so the shell must
+// not decode the full table on every poll.
+const MAX_BACKGROUND_AGENT_ACTIVITIES_PER_THREAD = 100;
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotCounts,
@@ -683,19 +687,34 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH ranked_tasks AS (
+          SELECT
+            activity_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY created_at DESC, activity_id DESC
+            ) AS task_rank
+          FROM projection_thread_activities
+          WHERE kind IN ('task.started', 'task.completed')
+        )
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE kind IN ('task.started', 'task.completed')
-        ORDER BY thread_id ASC, created_at ASC, activity_id ASC
+          activities.activity_id AS "activityId",
+          activities.thread_id AS "threadId",
+          activities.turn_id AS "turnId",
+          activities.tone,
+          activities.kind,
+          activities.summary,
+          activities.payload_json AS "payload",
+          activities.sequence,
+          activities.created_at AS "createdAt"
+        FROM ranked_tasks
+        INNER JOIN projection_thread_activities AS activities
+          ON activities.activity_id = ranked_tasks.activity_id
+        WHERE ranked_tasks.task_rank <= ${MAX_BACKGROUND_AGENT_ACTIVITIES_PER_THREAD}
+        ORDER BY
+          activities.thread_id ASC,
+          activities.created_at ASC,
+          activities.activity_id ASC
       `,
   });
 
@@ -1317,6 +1336,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE thread_id = ${threadId}
           AND kind IN ('task.started', 'task.completed')
         ORDER BY created_at ASC, activity_id ASC
+        LIMIT ${MAX_BACKGROUND_AGENT_ACTIVITIES_PER_THREAD}
       `,
   });
 

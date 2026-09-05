@@ -24,6 +24,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
+import { reportClientError, reportClientWarning } from "../../lib/clientLogger";
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
 import {
   applyProviderOptionMenuEvent,
@@ -451,7 +452,7 @@ export function NewTaskDraftScreen(props: {
           flow.appendAttachments(images);
         }
       } catch (error) {
-        console.error("[native paste] error converting images", error);
+        reportClientError("[native paste] error converting images", error);
       }
     },
     [flow],
@@ -563,7 +564,7 @@ export function NewTaskDraftScreen(props: {
       try {
         await removeThreadOutboxMessage(editingPendingTask);
       } catch (error) {
-        console.warn("[new-task] failed to remove delivered pending task", error);
+        reportClientWarning("[new-task] failed to remove delivered pending task", error);
       }
       flow.finishEditingPendingTask();
     } else {

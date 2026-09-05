@@ -487,7 +487,7 @@ async function runCommand(
   args: ReadonlyArray<string>,
 ): Promise<TerminalResult> {
   const output = await spawnCommand(root, command, args);
-  const result = JSON.parse(output) as TerminalResult;
+  const result = parseTerminalResult(output, `${command} ${args.join(" ")}`.trim());
   if (result.code !== 0) {
     throw new CommandExecutionError(command, args, result);
   }
@@ -512,6 +512,31 @@ const isDefinitiveCommandRejection = (error: unknown): boolean =>
   [error.result.stdout, error.result.stderr].some((output) =>
     output.includes("ORCHESTRATION_COMMAND_REJECTED:"),
   );
+
+/**
+ * Parse a spawnCommand envelope. spawnCommand always resolves JSON, but a
+ * shared guard keeps malformed payloads as plain Errors (never
+ * CommandExecutionError) so commit-ambiguity classification treats them as
+ * ambiguous rather than definitive rejections.
+ */
+function parseTerminalResult(output: string, context: string): TerminalResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error(`${context} returned a non-JSON result envelope`);
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("code" in parsed) ||
+    !("stdout" in parsed) ||
+    !("stderr" in parsed)
+  ) {
+    throw new Error(`${context} returned a malformed result envelope`);
+  }
+  return parsed as TerminalResult;
+}
 
 interface IsolatedWorkspaceSpec {
   readonly branch: string;
@@ -665,7 +690,7 @@ async function findContainingGitRoot(
 async function findContainingGitCommonDir(targetPath: string): Promise<string | null> {
   const gitRoot = await findContainingGitRoot(targetPath);
   if (gitRoot === null) return null;
-  const result = JSON.parse(
+  const result = parseTerminalResult(
     await spawnCommand(
       gitRoot.path,
       "git",
@@ -673,7 +698,8 @@ async function findContainingGitCommonDir(targetPath: string): Promise<string | 
         ? ["--git-dir=.", "rev-parse", "--git-common-dir"]
         : ["rev-parse", "--git-common-dir"],
     ),
-  ) as TerminalResult;
+    "git rev-parse --git-common-dir",
+  );
   if (result.code !== 0) {
     throw new WorkspaceConflictError(
       "WORKSPACE_PREFLIGHT_FAILED",
@@ -715,7 +741,7 @@ async function inspectWorkspaceSideEffects(
     runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
   ]);
   return {
-    branchCreated: (JSON.parse(branchCheck) as TerminalResult).code === 0,
+    branchCreated: parseTerminalResult(branchCheck, "git show-ref").code === 0,
     pathCreated: pathStat !== null,
     worktreeRegistered: registeredWorktreePaths(worktreeList.stdout).includes(workspace.path),
   };
@@ -796,7 +822,7 @@ async function preflightGitWorktree(
       runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
       findContainingGitCommonDir(path.dirname(workspace.path)),
     ]);
-  const branchFormatResult = JSON.parse(branchFormat) as TerminalResult;
+  const branchFormatResult = parseTerminalResult(branchFormat, "git check-ref-format");
   if (branchFormatResult.code !== 0) {
     throw new WorkspaceConflictError(
       "WORKSPACE_BRANCH_INVALID",
@@ -809,7 +835,7 @@ async function preflightGitWorktree(
       `Workspace path is already occupied: ${workspace.path}. Choose an unused absolute path or remove the stale worktree first.`,
     );
   }
-  const branchResult = JSON.parse(branchCheck) as TerminalResult;
+  const branchResult = parseTerminalResult(branchCheck, "git show-ref");
   if (branchResult.code === 0) {
     throw new WorkspaceConflictError(
       "WORKSPACE_BRANCH_EXISTS",
@@ -822,7 +848,7 @@ async function preflightGitWorktree(
       `Git could not check whether branch '${workspace.branch}' is available. Resolve the repository error and retry: ${branchResult.stderr.trim() || `exit ${String(branchResult.code)}`}`,
     );
   }
-  const baseResult = JSON.parse(baseRefCheck) as TerminalResult;
+  const baseResult = parseTerminalResult(baseRefCheck, "git rev-parse");
   if (baseResult.code !== 0) {
     throw new WorkspaceConflictError(
       "WORKSPACE_BASE_REF_MISSING",
@@ -2033,7 +2059,20 @@ async function serveMcp(options: McpServeOptions): Promise<void> {
     if (!trimmed) {
       continue;
     }
-    await handleRequest(options, JSON.parse(trimmed) as JsonRpcRequest);
+    let request: JsonRpcRequest;
+    try {
+      request = JSON.parse(trimmed) as JsonRpcRequest;
+    } catch {
+      // A malformed line must not kill the stdio server; answer with a
+      // parse error and keep serving subsequent requests.
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Malformed JSON-RPC line" },
+      });
+      continue;
+    }
+    await handleRequest(options, request);
   }
 }
 
@@ -2047,7 +2086,12 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
       cliArgsPrefix: (() => {
         const raw = process.env.T3_MCP_CLI_ARGS_PREFIX?.trim();
         if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error("T3_MCP_CLI_ARGS_PREFIX must be a JSON array of strings");
+        }
         if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
           throw new Error("T3_MCP_CLI_ARGS_PREFIX must be a JSON array of strings");
         }

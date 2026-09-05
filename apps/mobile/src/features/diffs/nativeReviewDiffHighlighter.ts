@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 
 import type { NativeReviewDiffFile, NativeReviewDiffLanguage } from "./nativeReviewDiffTypes";
 import type { NativeReviewDiffRow, NativeReviewDiffToken } from "./nativeReviewDiffSurface";
+import { reportClientWarning } from "../../lib/clientLogger";
 
 export type NativeReviewDiffHighlightScheme = "light" | "dark";
 export type NativeReviewDiffHighlightEngine = "native" | "javascript";
@@ -278,7 +279,7 @@ export async function getNativeReviewDiffHighlighter(
             attemptedEngine: "native",
             cause,
           });
-      console.warn("[debug-native-diff] native highlighter unavailable", {
+      reportClientWarning("[debug-native-diff] native highlighter unavailable", {
         error: nativeError,
       });
       try {

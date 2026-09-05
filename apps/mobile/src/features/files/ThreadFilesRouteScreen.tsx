@@ -1,6 +1,7 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
+import type { AppNativeStackNavigationOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Platform, useColorScheme, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
@@ -12,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 
 import { AppText as Text } from "../../components/AppText";
+import { firstRouteParam } from "../../lib/routeParams";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { resolveFileSelectionNavigationAction } from "../../lib/adaptive-navigation";
@@ -48,14 +50,6 @@ import {
 import { useWorkspaceFileAssetUrl } from "./workspaceFileAssetUrl";
 
 type FileViewMode = "preview" | "source";
-
-function firstRouteParam(value: string | string[] | undefined): string | null {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-
-  return value ?? null;
-}
 
 function normalizeRoutePath(value: string | string[] | undefined): string | null {
   const path = Array.isArray(value) ? value.join("/") : value;
@@ -308,7 +302,7 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
           onSelectFile={handleSelectFile}
         />
       ) : null,
-    [cwd, environmentId, handleSelectFile, projectName],
+    [cwd, environmentId, handleSelectFile, projectName, threadId],
   );
   const handlePreviewFile = useCallback(
     (relativePath: string) => {
@@ -360,41 +354,45 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
   }
 
   const usesCompactMailToolbar = Platform.OS === "ios" && !layout.usesSplitView;
+  // Memoize header options: inline closures would otherwise reconfigure the
+  // native header on every render.
+  const treeScreenOptions = useMemo<AppNativeStackNavigationOptions>(
+    () => ({
+      unstable_headerSubtitle:
+        Platform.OS === "ios" && projectName.length > 0 ? projectName : undefined,
+      // No refresh button: the list already supports pull-to-refresh.
+      unstable_headerToolbarItems: usesCompactMailToolbar
+        ? () => [
+            createNativeMailSearchToolbarItem({
+              onSearchTextChange: setSearchQuery,
+              placeholder: "Search files",
+              searchTextChangeId: "files-search-text",
+            }),
+          ]
+        : undefined,
+      headerSearchBarOptions: usesCompactMailToolbar
+        ? undefined
+        : {
+            allowToolbarIntegration: true,
+            autoCapitalize: "none",
+            hideNavigationBar: false,
+            placeholder: "Search files",
+            onChangeText: (event) => {
+              setSearchQuery(event.nativeEvent.text);
+            },
+            onCancelButtonPress: () => {
+              setSearchQuery("");
+            },
+          },
+    }),
+    [projectName, usesCompactMailToolbar],
+  );
 
   return (
     <>
       {/* Static header config (glass preset, title, contentStyle) lives in Stack.tsx.
           Only genuinely dynamic options are set here. */}
-      <NativeStackScreenOptions
-        options={{
-          unstable_headerSubtitle:
-            Platform.OS === "ios" && projectName.length > 0 ? projectName : undefined,
-          // No refresh button: the list already supports pull-to-refresh.
-          unstable_headerToolbarItems: usesCompactMailToolbar
-            ? () => [
-                createNativeMailSearchToolbarItem({
-                  onSearchTextChange: setSearchQuery,
-                  placeholder: "Search files",
-                  searchTextChangeId: "files-search-text",
-                }),
-              ]
-            : undefined,
-          headerSearchBarOptions: usesCompactMailToolbar
-            ? undefined
-            : {
-                allowToolbarIntegration: true,
-                autoCapitalize: "none",
-                hideNavigationBar: false,
-                placeholder: "Search files",
-                onChangeText: (event) => {
-                  setSearchQuery(event.nativeEvent.text);
-                },
-                onCancelButtonPress: () => {
-                  setSearchQuery("");
-                },
-              },
-        }}
-      />
+      <NativeStackScreenOptions options={treeScreenOptions} />
       {layout.usesSplitView ? (
         <NativeHeaderToolbar placement="left">
           <NativeHeaderToolbar.Button
@@ -503,7 +501,15 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           onSelectFile={handleSelectFile}
         />
       ) : undefined,
-    [cwd, environmentId, fileInspector.supported, handleSelectFile, projectName, relativePath],
+    [
+      cwd,
+      environmentId,
+      fileInspector.supported,
+      handleSelectFile,
+      projectName,
+      relativePath,
+      threadId,
+    ],
   );
   // The workspace inspector column spans the full window height. On iOS the
   // pane brings its own nested native header; elsewhere it pads itself below
@@ -537,22 +543,25 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
 
   const parentDir = relativePath.split("/").slice(0, -1).join("/");
   const headerSubtitle = [projectName, parentDir].filter(Boolean).join(" · ");
+  const fileTitle = basename(relativePath);
+  const fileScreenOptions = useMemo<AppNativeStackNavigationOptions>(
+    () => ({
+      // Static header config lives in Stack.tsx (SOLID_HEADER_OPTIONS: solid
+      // sheet-colored header — this route's content scrolls internally, so
+      // there is nothing for glass to sample). Only dynamic values here.
+      headerTintColor: iconColor,
+      headerTitle: fileTitle,
+      title: fileTitle,
+      unstable_headerSubtitle:
+        Platform.OS === "ios" && headerSubtitle.length > 0 ? headerSubtitle : undefined,
+    }),
+    [fileTitle, headerSubtitle, iconColor],
+  );
 
   return (
     <ReviewHighlighterProvider>
       <View className="flex-1 bg-sheet">
-        <NativeStackScreenOptions
-          options={{
-            // Static header config lives in Stack.tsx (SOLID_HEADER_OPTIONS: solid
-            // sheet-colored header — this route's content scrolls internally, so
-            // there is nothing for glass to sample). Only dynamic values here.
-            headerTintColor: iconColor,
-            headerTitle: basename(relativePath),
-            title: basename(relativePath),
-            unstable_headerSubtitle:
-              Platform.OS === "ios" && headerSubtitle.length > 0 ? headerSubtitle : undefined,
-          }}
-        />
+        <NativeStackScreenOptions options={fileScreenOptions} />
         <WorkspaceSidebarToolbar>
           {fileInspector.supported ? (
             <NativeHeaderToolbar.Button

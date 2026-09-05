@@ -4,6 +4,7 @@ import {
   type UploadChatImageAttachment,
 } from "@t3tools/contracts";
 import { uuidv4 } from "./uuid";
+import { reportClientWarning } from "./clientLogger";
 
 export interface DraftComposerImageAttachment extends UploadChatImageAttachment {
   readonly id: string;
@@ -261,7 +262,7 @@ export async function convertPastedImagesToAttachments(input: {
         previewUri: ownedTemporaryFile ? `data:${mimeType};base64,${base64}` : uri,
       });
     } catch (error) {
-      console.warn("Failed to read pasted image", uri, error);
+      reportClientWarning("Failed to read pasted image", uri, error);
     } finally {
       if (ownedTemporaryFile) {
         try {
@@ -270,7 +271,7 @@ export async function convertPastedImagesToAttachments(input: {
             file.delete();
           }
         } catch (error) {
-          console.warn("Failed to remove temporary pasted image", uri, error);
+          reportClientWarning("Failed to remove temporary pasted image", uri, error);
         }
       }
     }

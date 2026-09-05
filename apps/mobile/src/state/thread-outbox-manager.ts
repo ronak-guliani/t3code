@@ -8,6 +8,7 @@ import {
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
 import type { ThreadOutboxStorage } from "./thread-outbox-storage";
+import { reportClientWarning } from "../lib/clientLogger";
 
 export class ThreadOutboxManagerError extends Schema.TaggedErrorClass<ThreadOutboxManagerError>()(
   "ThreadOutboxManagerError",
@@ -44,7 +45,7 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
   const warn =
     options.warn ??
     ((message: string, error: unknown) => {
-      console.warn(message, error);
+      reportClientWarning(message, error);
     });
   let loadPromise: Promise<boolean> | null = null;
   let mutationQueue: Promise<void> = Promise.resolve();

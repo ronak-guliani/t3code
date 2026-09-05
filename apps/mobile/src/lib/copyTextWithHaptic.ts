@@ -2,6 +2,8 @@ import * as Schema from "effect/Schema";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 
+import { reportClientError } from "./clientLogger";
+
 export class CopyTextClipboardWriteError extends Schema.TaggedErrorClass<CopyTextClipboardWriteError>()(
   "CopyTextClipboardWriteError",
   {
@@ -41,7 +43,7 @@ export function copyTextWithHaptic(
     try {
       await Clipboard.setStringAsync(value);
     } catch (cause) {
-      console.error(
+      reportClientError(
         new CopyTextClipboardWriteError({
           target,
           cause,
@@ -58,7 +60,7 @@ export function copyTextWithHaptic(
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     } catch (cause) {
-      console.error(
+      reportClientError(
         new CopyTextHapticFeedbackError({
           target,
           feedback,
