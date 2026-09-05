@@ -27,6 +27,7 @@ describe("TurnLifecycleRuntime", () => {
     const calls: string[] = [];
     const reconciling = Effect.runSync(Deferred.make<void>());
     const reconciled = Effect.runSync(Deferred.make<void>());
+    const enqueueRuntimeEvent = () => Effect.void;
     runtime = ManagedRuntime.make(
       TurnLifecycleRuntimeLive.pipe(
         Layer.provideMerge(
@@ -40,7 +41,11 @@ describe("TurnLifecycleRuntime", () => {
         ),
         Layer.provideMerge(
           Layer.succeed(ProviderRuntimeIngestionService, {
-            start: () => Effect.sync(() => calls.push("ingestion")),
+            start: (enqueueCheckpointEvent) =>
+              Effect.sync(() => {
+                expect(enqueueCheckpointEvent).toBe(enqueueRuntimeEvent);
+                calls.push("ingestion");
+              }),
             drain: Effect.sync(() => calls.push("drain-ingestion")),
             awaitTurnCompletionProcessed: () => Effect.void,
           }),
@@ -54,6 +59,7 @@ describe("TurnLifecycleRuntime", () => {
         Layer.provideMerge(
           Layer.succeed(CheckpointReactor, {
             start: () => Effect.sync(() => calls.push("checkpoints")),
+            enqueueRuntimeEvent,
             drain: Effect.sync(() => calls.push("drain-checkpoints")),
           }),
         ),
@@ -74,9 +80,9 @@ describe("TurnLifecycleRuntime", () => {
 
     expect(calls).toEqual([
       "reconcile",
+      "checkpoints",
       "ingestion",
       "commands",
-      "checkpoints",
       "reaper",
       "drain-commands",
       "drain-ingestion",

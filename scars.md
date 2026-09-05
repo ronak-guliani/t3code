@@ -146,3 +146,4 @@
 - Composer skill discovery must map shared `~/.agents/skills` installations to every provider that reads them; otherwise live project skills appear while global skills silently disappear from `$` suggestions.
 - Electron native preview recording serializes only the display-media grant, not the recording lifetime; keep hidden guests composited and unthrottled until their activity lease ends, and pin each attached debugger wrapper until its control scope closes.
 - `CheckpointReactor.ts` carries `// @ts-nocheck`, so Effect API renames (e.g. `tapErrorCause` → `tapCause`) fail only at runtime; verify changes against its test suite, not typecheck.
+- Completion ingestion and checkpointing must share one provider subscription with an owned queue handoff; independent hot subscribers lose startup-gap events. Release checkout exclusions on failed handoff and worker cancellation, including queued completions.

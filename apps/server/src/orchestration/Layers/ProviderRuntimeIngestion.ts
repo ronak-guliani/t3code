@@ -27,6 +27,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Exit,
   Layer,
   Option,
   Ref,
@@ -1675,7 +1676,7 @@ const make = Effect.gen(function* () {
           readModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
         if (cwd) {
           // Establish exclusion before any command can publish an idle session.
-          // The checkpoint worker releases it after consuming our processed receipt.
+          // The owned checkpoint handoff releases it after terminal processing.
           yield* coordinator.beginFinalization(event.eventId, cwd);
         }
         const runtimeSession = (yield* providerService.listSessions()).find(
@@ -2205,15 +2206,41 @@ const make = Effect.gen(function* () {
     assistantTextDeltaFromEvent(event) !== undefined;
 
   const worker = yield* makeDrainableWorker(
-    (event: ProviderRuntimeEvent) =>
-      Effect.andThen(
-        // Non-delta events may finalize or complete a message, so any buffered
-        // deltas must reach the engine first to preserve ordering. The strict
-        // variant retries through transient dispatch failures instead of
-        // letting a completion overtake undelivered text.
-        isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
-        processRuntimeEventSafely(event),
-      ).pipe(Effect.andThen(markProcessed(event))),
+    ({
+      event,
+      enqueueCheckpointEvent,
+    }: {
+      event: ProviderRuntimeEvent;
+      enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
+    }) =>
+      Effect.gen(function* () {
+        let handedOff = false;
+        yield* Effect.andThen(
+          // Non-delta events may finalize or complete a message, so any buffered
+          // deltas must reach the engine first to preserve ordering. The strict
+          // variant retries through transient dispatch failures instead of
+          // letting a completion overtake undelivered text.
+          isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
+          processRuntimeEventSafely(event),
+        ).pipe(
+          Effect.andThen(markProcessed(event)),
+          Effect.andThen(
+            enqueueCheckpointEvent(event).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  handedOff = true;
+                }),
+              ),
+              Effect.uninterruptible,
+            ),
+          ),
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) && !handedOff
+              ? coordinator.endFinalization(event.eventId)
+              : Effect.void,
+          ),
+        );
+      }),
     {
       capacity: RUNTIME_INGESTION_QUEUE_CAPACITY,
     },
@@ -2250,9 +2277,13 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const start: ProviderRuntimeIngestionShape["start"] = () =>
+  const start: ProviderRuntimeIngestionShape["start"] = (enqueueCheckpointEvent) =>
     Effect.gen(function* () {
-      yield* Effect.forkScoped(Stream.runForEach(providerService.streamEvents, worker.enqueue));
+      yield* Effect.forkScoped(
+        Stream.runForEach(providerService.streamEvents, (event) =>
+          worker.enqueue({ event, enqueueCheckpointEvent }),
+        ),
+      );
     });
 
   return {

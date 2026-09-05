@@ -99,6 +99,7 @@ function createProviderServiceHarness(
 ) {
   const now = new Date().toISOString();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
+  let runtimeSubscriptions = 0;
   const rollbackConversation = vi.fn(
     (_input: { readonly threadId: ThreadId; readonly numTurns: number }) =>
       failRollback
@@ -152,6 +153,7 @@ function createProviderServiceHarness(
       }),
     rollbackConversation,
     get streamEvents() {
+      runtimeSubscriptions++;
       return Stream.fromPubSub(runtimeEventPubSub);
     },
   };
@@ -164,6 +166,7 @@ function createProviderServiceHarness(
     service,
     rollbackConversation,
     emit,
+    runtimeSubscriptions: () => runtimeSubscriptions,
   };
 }
 
@@ -324,6 +327,7 @@ describe("CheckpointReactor", () => {
     readonly beforeCheckpointCapture?: (ref: CheckpointRef) => Effect.Effect<void>;
     readonly awaitRuntimeEventProcessed?: (eventId: EventId) => Effect.Effect<void>;
     readonly useRuntimeIngestion?: boolean;
+    readonly deferCheckpointStart?: boolean;
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
@@ -417,7 +421,10 @@ describe("CheckpointReactor", () => {
           ),
         )
       : Layer.succeed(ProviderRuntimeIngestionService, {
-          start: () => Effect.void,
+          start: (enqueueCheckpointEvent) =>
+            Effect.forkScoped(
+              Stream.runForEach(provider.service.streamEvents, enqueueCheckpointEvent),
+            ).pipe(Effect.asVoid),
           drain: Effect.void,
           awaitTurnCompletionProcessed: options?.awaitRuntimeEventProcessed ?? (() => Effect.void),
         });
@@ -442,8 +449,12 @@ describe("CheckpointReactor", () => {
     const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
-    await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(
+      ingestion.start(reactor.enqueueRuntimeEvent).pipe(Scope.provide(scope)),
+    );
+    if (!options?.deferCheckpointStart) {
+      await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
+    }
     const drain = () => Effect.runPromise(reactor.drain);
 
     const createdAt = new Date().toISOString();
@@ -509,9 +520,138 @@ describe("CheckpointReactor", () => {
       checkpointStore,
       coordinator,
       ingestion,
+      reactor,
       cwd,
       drain,
     };
+  }
+
+  for (const failCheckpointCapture of [false, true]) {
+    it(`hands off completion before checkpoint subscriptions start, capture ${failCheckpointCapture ? "failure" : "success"}`, async () => {
+      const captureEntered = Effect.runSync(Deferred.make<void>());
+      const releaseCapture = Effect.runSync(Deferred.make<void>());
+      let captureCount = 0;
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        useRuntimeIngestion: true,
+        deferCheckpointStart: true,
+        failCheckpointCapture,
+        beforeCheckpointCapture: (ref) =>
+          ref === checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1)
+            ? Effect.sync(() => {
+                captureCount++;
+              }).pipe(
+                Effect.andThen(Deferred.succeed(captureEntered, undefined)),
+                Effect.andThen(Deferred.await(releaseCapture)),
+              )
+            : Effect.void,
+      });
+      const threadId = ThreadId.make("thread-1");
+      const turnId = asTurnId("turn-startup-gap");
+      const createdAt = new Date().toISOString();
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.make("start-startup-gap"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId,
+        turnId,
+        payload: {},
+      });
+      await Effect.runPromise(harness.ingestion.drain);
+      await harness.drain();
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.make("completion-startup-gap"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId,
+        turnId,
+        payload: { state: "completed" },
+      });
+      try {
+        await Effect.runPromise(harness.ingestion.drain);
+        await Effect.runPromise(Deferred.await(captureEntered));
+        expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.cwd))).toBe(true);
+        expect(
+          (await Effect.runPromise(harness.engine.getReadModel())).threads[0]?.session
+            ?.activeTurnId,
+        ).toBeNull();
+        await Effect.runPromise(harness.reactor.start().pipe(Scope.provide(scope!)));
+        expect(harness.provider.runtimeSubscriptions()).toBe(1);
+        await Effect.runPromise(Deferred.succeed(releaseCapture, undefined));
+        await harness.drain();
+        expect(captureCount).toBe(1);
+        expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.cwd))).toBe(false);
+        const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+        expect(thread?.checkpoints.find((entry) => entry.turnId === turnId)?.status).toBe(
+          failCheckpointCapture ? "error" : "ready",
+        );
+      } finally {
+        await Effect.runPromise(Deferred.succeed(releaseCapture, undefined));
+      }
+    });
+  }
+
+  for (const cancelAt of ["receipt", "capture"] as const) {
+    it(`releases active and queued completion exclusions when cancelled during ${cancelAt}`, async () => {
+      const awaitingReceipt = Effect.runSync(Deferred.make<void>());
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        useRuntimeIngestion: true,
+        awaitRuntimeEventProcessed: () =>
+          cancelAt === "receipt"
+            ? Deferred.succeed(awaitingReceipt, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+        beforeCheckpointCapture: (ref) =>
+          cancelAt === "capture" && ref === checkpointRefForThreadTurn(ThreadId.make("thread-1"), 1)
+            ? Deferred.succeed(awaitingReceipt, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+      });
+      const createdAt = new Date().toISOString();
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.make("start-cancel"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-cancel"),
+        payload: {},
+      });
+      await Effect.runPromise(harness.ingestion.drain);
+      await harness.drain();
+      for (const id of ["completion-cancel-active", "completion-cancel-queued"]) {
+        harness.provider.emit({
+          type: "turn.completed",
+          eventId: EventId.make(id),
+          provider: ProviderDriverKind.make("codex"),
+          createdAt,
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-cancel"),
+          payload: { state: "completed" },
+        });
+        await Effect.runPromise(harness.ingestion.drain);
+      }
+      await Effect.runPromise(Deferred.await(awaitingReceipt));
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.cwd))).toBe(true);
+      await runtime!.dispose();
+      runtime = null;
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.cwd))).toBe(false);
+      const lateEventId = EventId.make("completion-after-shutdown");
+      await Effect.runPromise(harness.coordinator.beginFinalization(lateEventId, harness.cwd));
+      await Effect.runPromise(
+        harness.reactor.enqueueRuntimeEvent({
+          type: "turn.completed",
+          eventId: lateEventId,
+          provider: ProviderDriverKind.make("codex"),
+          createdAt,
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-cancel"),
+          payload: { state: "completed" },
+        }),
+      );
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.cwd))).toBe(false);
+    });
   }
 
   for (const failCheckpointCapture of [false, true]) {

@@ -263,6 +263,7 @@ describe("ProviderRuntimeIngestion", () => {
     ) => boolean | "invariant" | "transient" | "interrupt" | "commit-then-interrupt";
     recordAssistantDeltaDispatches?: boolean;
     beforeDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
+    enqueueCheckpointEvent?: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
   }) {
     const assistantDeltaDispatchLog: Array<string> = [];
     const workspaceRoot = makeTempDir("t3-provider-project-");
@@ -359,7 +360,11 @@ describe("ProviderRuntimeIngestion", () => {
     const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(
+      ingestion
+        .start(options?.enqueueCheckpointEvent ?? (() => Effect.void))
+        .pipe(Scope.provide(scope)),
+    );
     const drain = () => Effect.runPromise(ingestion.drain);
 
     const createdAt = new Date().toISOString();
@@ -435,6 +440,51 @@ describe("ProviderRuntimeIngestion", () => {
       snapshotQuery,
       assistantDeltaDispatchLog,
     };
+  }
+
+  for (const failure of ["handoff", "ingestion"] as const) {
+    it(`releases completion exclusion when ${failure} is interrupted before handoff`, async () => {
+      let completing = false;
+      const harness = await createHarness({
+        beforeDispatch: (command) =>
+          failure === "ingestion" && completing && command.type === "thread.session.set"
+            ? Effect.interrupt
+            : Effect.void,
+        enqueueCheckpointEvent: (event) =>
+          failure === "handoff" && event.type === "turn.completed" ? Effect.interrupt : Effect.void,
+      });
+      const beginFinalization = vi.spyOn(harness.coordinator, "beginFinalization");
+      const createdAt = new Date().toISOString();
+      const turnId = asTurnId("turn-cancel-handoff");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("start-cancel-handoff"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: {},
+      });
+      await harness.drain();
+      completing = true;
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("complete-cancel-handoff"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+      expect(beginFinalization).toHaveBeenCalledWith(
+        asEventId("complete-cancel-handoff"),
+        harness.workspaceRoot,
+      );
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.workspaceRoot))).toBe(
+        false,
+      );
+    });
   }
 
   it("establishes completion exclusion before publishing idle and retains it for checkpoint capture", async () => {
