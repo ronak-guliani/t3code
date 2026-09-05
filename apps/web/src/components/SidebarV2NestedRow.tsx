@@ -112,6 +112,7 @@ export const SidebarV2NestedRow = memo(function SidebarV2NestedRow({
     >
       <Tooltip>
         <TooltipTrigger
+          delay={200}
           render={
             <SidebarMenuButton
               className="h-auto min-h-0 gap-[var(--app-sidebar-row-line-gap)] px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.6)] text-[length:var(--app-sidebar-font-size)] transition-none"

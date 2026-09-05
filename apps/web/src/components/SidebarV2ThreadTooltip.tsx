@@ -1,6 +1,7 @@
 import {
   CircleAlertIcon,
   ClockIcon,
+  FolderIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   ServerIcon,
@@ -16,7 +17,6 @@ import {
 import { sanitizeThreadErrorMessage } from "../rpc/transportError";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import type { SidebarThreadSummary } from "../types";
-import { ProjectFavicon } from "./ProjectFavicon";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { prStatusIndicator } from "./ThreadStatusIndicators";
 import { TooltipPopup } from "./ui/tooltip";
@@ -65,48 +65,36 @@ export function ThreadDetailsTooltip({
   // Transport drops are connection noise, not a thread failure; the same
   // sanitizer the chat surface uses keeps them out of the tooltip.
   const sessionError = sanitizeThreadErrorMessage(thread.session?.lastError);
+  const workspacePath = thread.worktreePath ?? projectCwd;
   return (
-    <TooltipPopup align="start" className="max-w-80 whitespace-normal text-left" side="right">
-      <div className="flex min-w-0 max-w-80 flex-col gap-2 px-0.5 py-1.5">
-        <div className="min-w-0 truncate text-xs font-medium leading-none text-foreground">
+    <TooltipPopup
+      align="start"
+      className="max-w-72 rounded-lg whitespace-normal text-left transition-opacity duration-100 ease-out motion-reduce:transition-none"
+      side="right"
+      sideOffset={8}
+    >
+      <div className="flex min-w-0 flex-col gap-2 px-1 py-1.5 text-[11px] leading-4 text-muted-foreground">
+        <div className="line-clamp-2 min-w-0 text-xs font-medium leading-4 wrap-break-word text-foreground">
           {thread.title}
         </div>
-        <div className="grid gap-1.5 pl-0.5 text-xs text-muted-foreground">
-          <div className="flex min-w-0 items-center gap-2">
-            <ProjectFavicon
-              className="size-3 shrink-0"
-              cwd={projectCwd ?? ""}
-              environmentId={thread.environmentId}
-            />
-            <div className="min-w-0 truncate text-foreground/75">{projectName}</div>
+        <div className="grid min-w-0 gap-1.5">
+          <div className="flex min-w-0 items-start gap-2">
+            <GitBranchIcon className="mt-0.5 size-3 shrink-0" />
+            <div className="min-w-0">
+              <div className="truncate text-foreground/80">{projectName}</div>
+              {thread.branch ? <div className="truncate">{thread.branch}</div> : null}
+            </div>
           </div>
-          {projectCwd ? (
-            <div className="min-w-0 truncate pl-5 text-foreground/60">
-              {thread.worktreePath ?? projectCwd}
+          {workspacePath ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <FolderIcon className="size-3 shrink-0" />
+              <div className="min-w-0 truncate">{workspacePath}</div>
             </div>
           ) : null}
           {environmentLabel ? (
             <div className="flex min-w-0 items-center gap-2">
               <ServerIcon className="size-3 shrink-0 stroke-muted-foreground" />
               <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
-            </div>
-          ) : null}
-          {thread.branch ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
-              <div className="min-w-0 truncate text-foreground/75">{thread.branch}</div>
-            </div>
-          ) : null}
-          {driverKind ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <ProviderInstanceIcon
-                displayName={providerEntry?.displayName ?? driverKind}
-                driverKind={driverKind}
-                iconClassName="size-3 shrink-0 grayscale opacity-60"
-              />
-              <div className="min-w-0 truncate text-foreground/75">
-                {providerEntry?.displayName ?? driverKind}
-              </div>
             </div>
           ) : null}
           {terminalProcessCount > 0 ? (
@@ -123,11 +111,19 @@ export function ThreadDetailsTooltip({
               <div className="min-w-0 truncate text-foreground/75">{prStatus.tooltip}</div>
             </div>
           ) : null}
-          {/* The row itself only reveals its timestamp on hover, so the tooltip
-              is where "when was this last touched" always lives. */}
-          <div className="flex min-w-0 items-center gap-2">
-            <ClockIcon className="size-3 shrink-0 stroke-muted-foreground" />
-            <div className="min-w-0 truncate text-foreground/75">
+          <div className="flex min-w-0 items-center gap-3 text-[10px]">
+            {driverKind ? (
+              <div className="flex min-w-0 items-center gap-1.5">
+                <ProviderInstanceIcon
+                  displayName={providerEntry?.displayName ?? driverKind}
+                  driverKind={driverKind}
+                  iconClassName="size-3 shrink-0 grayscale opacity-60"
+                />
+                <span className="truncate">{providerEntry?.displayName ?? driverKind}</span>
+              </div>
+            ) : null}
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <ClockIcon className="size-3" />
               {formatRelativeTimeLabel(
                 thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
               )}

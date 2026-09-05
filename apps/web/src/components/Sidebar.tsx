@@ -843,6 +843,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             <span className="flex min-w-0 flex-1 items-center gap-[var(--app-sidebar-row-line-gap)]">
               <Tooltip>
                 <TooltipTrigger
+                  delay={200}
                   render={
                     <span
                       className="min-w-0 truncate font-medium text-foreground/90"
