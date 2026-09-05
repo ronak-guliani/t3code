@@ -49,6 +49,7 @@
 - Cross-thread dispatch must carry the source thread ID through the client HTTP schema while deriving message provenance server-side; projection session upserts must preserve an omitted active message while the same turn remains active.
 - System-authored user turns need explicit server-only message provenance at creation; never infer UI indicators from message ID prefixes or prompt text.
 - Provider-backed queued turns must revalidate at dispatch, refresh mixed batches, and return terminal recheck failures to durable delivery retry before unblocking the queue.
+- Queue readiness must find the latest user message rather than inspect only the final timeline message; a later system message can otherwise hide an unacknowledged turn start and dispatch the next queued item concurrently.
 - PR base distance is telemetry, not remediation; wake owners for merge conflicts or concrete failures, never routine commit drift.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
 - Delegation prompt policy belongs in one server-side composer exposed through structured MCP input; keep blocks opt-in, reject contradictory permissions and orphaned overrides, and leave repository-specific context in call arguments rather than canonical template text.
