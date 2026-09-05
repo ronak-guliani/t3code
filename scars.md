@@ -1,5 +1,6 @@
 # Scars
 
+- Find-in-chat scrolling must follow selected match identity, not the rebuilt match object; message sends and stream updates otherwise yank the viewport back to an old search result.
 - `packages/contracts` stays schema-only; no runtime logic.
 - `packages/shared` uses explicit subpath exports; do not add a barrel index.
 - Provider runtime activity is projected into orchestration domain events server-side before the web app consumes it.

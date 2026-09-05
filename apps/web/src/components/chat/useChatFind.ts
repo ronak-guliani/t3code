@@ -148,21 +148,6 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
     [activeMatchIndex, matches],
   );
 
-  const scrollMatchIntoView = useCallback(
-    (match: ChatFindMatch | null) => {
-      if (!match) {
-        return;
-      }
-
-      scrollTimelineRowIntoView({
-        rowId: match.rowId,
-        rowIndex: match.rowIndex,
-        legendListRef,
-      });
-    },
-    [legendListRef],
-  );
-
   // Focus the input whenever the bar opens.
   useEffect(() => {
     if (!open) {
@@ -198,13 +183,21 @@ export function useChatFind(input: UseChatFindInput): ChatFindController {
     setActiveMatchId(matches[0]?.id ?? null);
   }, [activeMatchId, matches, open]);
 
-  // Scroll the active match into view.
+  // New messages rebuild match objects without changing the selected result.
+  // Only search navigation should pull the viewport back to that result.
+  const activeMatchKey = activeMatch?.id ?? null;
+  const activeMatchRowId = activeMatch?.rowId;
+  const activeMatchRowIndex = activeMatch?.rowIndex;
   useEffect(() => {
-    if (!open) {
+    if (!open || activeMatchRowId === undefined || activeMatchRowIndex === undefined) {
       return;
     }
-    scrollMatchIntoView(activeMatch);
-  }, [activeMatch, open, scrollMatchIntoView]);
+    scrollTimelineRowIntoView({
+      rowId: activeMatchRowId,
+      rowIndex: activeMatchRowIndex,
+      legendListRef,
+    });
+  }, [activeMatchKey, activeMatchRowId, activeMatchRowIndex, legendListRef, open]);
 
   // Reset whenever the active thread changes.
   useEffect(() => {
