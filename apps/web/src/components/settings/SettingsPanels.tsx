@@ -879,6 +879,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.browserRecordingFrameRate !== DEFAULT_BROWSER_RECORDING_FRAME_RATE
         ? ["Browser recording frame rate"]
         : []),
+      ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
+        ? ["Agent browser access"]
+        : []),
       ...(settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar
         ? ["Auto-open task panel"]
         : []),
@@ -913,6 +916,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.autoOpenPlanSidebar,
       settings.browserAutoShowFloatingPreview,
       settings.browserRecordingFrameRate,
+      settings.enableAgentBrowserAccess,
       settings.chatFontSize,
       settings.messagePreviewLineLimits,
       settings.codeFontSize,
@@ -2085,6 +2089,33 @@ export function GeneralSettingsPanel() {
       </SettingsSection>
 
       <SettingsSection title="Preferences">
+        <SettingsRow
+          title="Agent browser access"
+          description="Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions. Externally managed OpenCode servers cannot receive per-thread browser credentials."
+          resetAction={
+            settings.enableAgentBrowserAccess !==
+            DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess ? (
+              <SettingResetButton
+                label="agent browser access"
+                onClick={() =>
+                  updateSettings({
+                    enableAgentBrowserAccess: DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.enableAgentBrowserAccess}
+              onCheckedChange={(checked) =>
+                updateSettings({ enableAgentBrowserAccess: Boolean(checked) })
+              }
+              aria-label="Allow agent browser access"
+            />
+          }
+        />
+
         <SettingsRow
           title="Agent browser preview"
           description="Show a floating browser preview when an agent uses browser automation."
