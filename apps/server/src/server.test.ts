@@ -86,6 +86,7 @@ import { DiffStateQuery, type DiffStateQueryShape } from "./diffState/Services/D
 import { GitCore, type GitCoreShape } from "./git/Services/GitCore.ts";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcasterLive } from "./git/Layers/GitStatusBroadcaster.ts";
+import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   GitStatusBroadcaster,
   type GitStatusBroadcasterShape,
@@ -466,7 +467,16 @@ const buildAppUnderTest = (options?: {
       ? Layer.mock(GitStatusBroadcaster)({
           ...options.layers.gitStatusBroadcaster,
         })
-      : GitStatusBroadcasterLive.pipe(Layer.provide(gitManagerLayer));
+      : GitStatusBroadcasterLive.pipe(
+          Layer.provide(gitManagerLayer),
+          Layer.provide(
+            Layer.succeed(ProjectAutoPull, {
+              attempt: () => Effect.void,
+              start: Effect.void,
+              changes: Stream.empty,
+            }),
+          ),
+        );
 
     const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
       disableListenLog: true,

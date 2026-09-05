@@ -9,7 +9,7 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -32,6 +32,31 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("hydrates auto-pull through full, shell, and targeted project reads", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, auto_pull, scripts_json, created_at, updated_at)
+        VALUES ('auto-pull-project', 'Auto pull', '/tmp/auto-pull-project', 1, '[]',
+          '2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+      `;
+      const full = yield* query.getSnapshot();
+      const shell = yield* query.getShellSnapshot();
+      const targeted = yield* query.getActiveProjectByWorkspaceRoot("/tmp/auto-pull-project");
+      assert.equal(
+        full.projects.find((project) => project.id === "auto-pull-project")?.autoPull,
+        true,
+      );
+      assert.equal(
+        shell.projects.find((project) => project.id === "auto-pull-project")?.autoPull,
+        true,
+      );
+      assert.equal(Option.getOrThrow(targeted).autoPull, true);
+      yield* sql`DELETE FROM projection_projects WHERE project_id = 'auto-pull-project'`;
+    }),
+  );
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -268,6 +293,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(snapshot.updatedAt, "2026-02-24T00:00:09.000Z");
       assert.deepEqual(snapshot.projects, [
         {
+          autoPull: false,
           id: asProjectId("project-1"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
@@ -398,6 +424,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(yield* snapshotQuery.getSnapshotSequence(), 5);
       assert.deepEqual(shellSnapshot.projects, [
         {
+          autoPull: false,
           id: asProjectId("project-1"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",

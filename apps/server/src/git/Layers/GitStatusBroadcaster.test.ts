@@ -11,6 +11,13 @@ import { describe } from "vitest";
 import { GitStatusBroadcaster } from "../Services/GitStatusBroadcaster.ts";
 import { GitStatusBroadcasterLive } from "./GitStatusBroadcaster.ts";
 import { type GitManagerShape, GitManager } from "../Services/GitManager.ts";
+import { ProjectAutoPull } from "../ProjectAutoPull.ts";
+
+const AutoPullTestLayer = Layer.succeed(ProjectAutoPull, {
+  attempt: () => Effect.void,
+  start: Effect.void,
+  changes: Stream.empty,
+});
 
 const baseLocalStatus: GitStatusLocalResult = {
   isRepo: true,
@@ -73,7 +80,10 @@ function makeTestLayer(state: {
     runStackedAction: () => Effect.die("runStackedAction should not be called in this test"),
   };
 
-  return GitStatusBroadcasterLive.pipe(Layer.provide(Layer.succeed(GitManager, gitManager)));
+  return GitStatusBroadcasterLive.pipe(
+    Layer.provide(Layer.succeed(GitManager, gitManager)),
+    Layer.provide(AutoPullTestLayer),
+  );
 }
 
 function makeBlockingStatusLayer(input: {
@@ -101,7 +111,10 @@ function makeBlockingStatusLayer(input: {
     runStackedAction: () => Effect.die("runStackedAction should not be called in this test"),
   };
 
-  return GitStatusBroadcasterLive.pipe(Layer.provide(Layer.succeed(GitManager, gitManager)));
+  return GitStatusBroadcasterLive.pipe(
+    Layer.provide(Layer.succeed(GitManager, gitManager)),
+    Layer.provide(AutoPullTestLayer),
+  );
 }
 
 describe("GitStatusBroadcasterLive", () => {
@@ -293,6 +306,7 @@ describe("GitStatusBroadcasterLive", () => {
     let remoteInterruptedDeferred: Deferred.Deferred<void, never> | null = null;
     let remoteStartedDeferred: Deferred.Deferred<void, never> | null = null;
     const testLayer = GitStatusBroadcasterLive.pipe(
+      Layer.provide(AutoPullTestLayer),
       Layer.provide(
         Layer.succeed(GitManager, {
           localStatus: () =>

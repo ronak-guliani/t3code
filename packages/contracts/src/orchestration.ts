@@ -227,6 +227,7 @@ export const ProjectScript = Schema.Struct({
 export type ProjectScript = typeof ProjectScript.Type;
 
 export const OrchestrationProject = Schema.Struct({
+  autoPull: Schema.optional(Schema.Boolean),
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
   id: ProjectId,
@@ -576,6 +577,7 @@ export const OrchestrationReadModel = Schema.Struct({
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
 
 export const OrchestrationProjectShell = Schema.Struct({
+  autoPull: Schema.optional(Schema.Boolean),
   faviconPath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultThreadEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
   id: ProjectId,
@@ -694,6 +696,7 @@ export const ProjectCreateCommand = Schema.Struct({
 });
 
 const ProjectMetaUpdateCommand = Schema.Struct({
+  autoPull: Schema.optional(Schema.Boolean),
   type: Schema.Literal("project.meta.update"),
   commandId: CommandId,
   projectId: ProjectId,
@@ -1360,6 +1363,7 @@ export const ProjectCreatedPayload = Schema.Struct({
 });
 
 export const ProjectMetaUpdatedPayload = Schema.Struct({
+  autoPull: Schema.optional(Schema.Boolean),
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
