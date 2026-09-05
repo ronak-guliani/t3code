@@ -81,6 +81,7 @@
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - Mount exactly one desktop browser host at authenticated app lifetime, not thread-route lifetime. Duplicate hosts register competing native guests for the same tab, letting a blank guest cover or replace the loaded capture target.
 - Floating browser surfaces in fill mode must reflow to the owning slot; reserve `fitSourceContent` for explicit fixed/device viewports or a resized mini-player will keep the old panel aspect ratio.
+- A retained floating-preview preference is not surface ownership: the visible panel must present its browser while the matching mini-player is suppressed, then return it to the mini-player when closed.
 - Persisted floating-preview state must survive the empty pre-snapshot render after refresh; only prune a missing tab after `serverEpoch` proves an authoritative preview list has arrived.
 - Desktop zoom menu accelerators must route through the renderer without changing focus: preview chrome and its `<webview>` zoom the active browser tab, while all other focus targets zoom only the sender's T3 window.
 - Preview zoom is manager-owned state; reapply it after webview registration and navigation, and keep same-origin tabs in one shared factor because Chromium propagates zoom within a session partition.
