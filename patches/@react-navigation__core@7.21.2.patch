@@ -1,32 +1,33 @@
 diff --git a/src/types.tsx b/src/types.tsx
 --- a/src/types.tsx
 +++ b/src/types.tsx
-@@ -45,10 +45,10 @@
- type StaticNavigationConfig = {
-   readonly config: {
--    readonly screens?: Record<string, any>;
-+    readonly screens?: Record<string, unknown>;
-     readonly groups?: {
-       [key: string]: {
--        screens: Record<string, any>;
-+        screens: Record<string, unknown>;
-       };
-     };
-   };
- };
+@@ -86,9 +86,12 @@
+ /**
+  * Infer the param list from the static navigation config.
+  */
+-export type StaticParamList<T extends StaticNavigationConfig> = FlatType<
+-  ParamListForScreens<T['config']['screens']> &
+-    ParamListForGroups<T['config']['groups']>
+->;
++export type StaticParamList<T extends StaticNavigationConfig> =
++  [T] extends [StaticNavigationConfig]
++    ? FlatType<
++        ParamListForScreens<T['config']['screens']> &
++          ParamListForGroups<T['config']['groups']>
++      >
++    : never;
+-
++
+ type ParamListForStaticNavigator<T> = T extends StaticNavigationConfig
 diff --git a/lib/typescript/src/types.d.ts b/lib/typescript/src/types.d.ts
 --- a/lib/typescript/src/types.d.ts
 +++ b/lib/typescript/src/types.d.ts
-@@ -32,10 +32,10 @@
- type StaticNavigationConfig = {
-     readonly config: {
--        readonly screens?: Record<string, any>;
-+        readonly screens?: Record<string, unknown>;
-         readonly groups?: {
-             [key: string]: {
--                screens: Record<string, any>;
-+                screens: Record<string, unknown>;
-             };
-         };
-     };
- };
+@@ -57,7 +57,7 @@
+ /**
+  * Infer the param list from the static navigation config.
+  */
+-export type StaticParamList<T extends StaticNavigationConfig> = FlatType<ParamListForScreens<T['config']['screens']> & ParamListForGroups<T['config']['groups']>>;
++export type StaticParamList<T extends StaticNavigationConfig> = [T] extends [StaticNavigationConfig] ? FlatType<ParamListForScreens<T['config']['screens']> & ParamListForGroups<T['config']['groups']>> : never;
+ type ParamListForStaticNavigator<T> = T extends StaticNavigationConfig ? StaticParamList<T> : {};
+ type ParamListForTypedNavigator<T> = T extends {
+     Screen: any;
