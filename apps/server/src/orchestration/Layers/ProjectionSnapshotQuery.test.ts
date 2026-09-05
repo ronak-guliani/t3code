@@ -9,7 +9,7 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -2222,6 +2222,235 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ["legacy-1", "legacy-2", "legacy-3"],
       );
       assert.equal(remainingLegacyPage.hasMore, false);
+    }),
+  );
+
+  // Regression coverage for the snapshot-parallelism review (PR #289):
+  // `NodeSqliteClient` is one `DatabaseSync` connection behind `Semaphore(1)`, so
+  // read fan-outs cannot overlap SELECTs — and shell/full snapshot row reads must
+  // stay in one read transaction with `projection_state`, otherwise `subscribeShell`
+  // drops buffered live events through a mismatched `snapshotSequence` (scars #29,
+  // #148). The tests below therefore assert completion under contention (no read
+  // starvation) and per-snapshot cursor/row consistency — never overlap. They use a
+  // barrier `Deferred` plus joined fibers instead of clock sleeps (scar #135).
+  it.effect("snapshot reads do not starve concurrent writes", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_thread_proposed_plans`;
+      yield* sql`DELETE FROM projection_queued_turns`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM provider_session_runtime`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-read-write', 'Read/write project', '/tmp/read-write',
+          '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-read-write', 'project-read-write', 'Read/write thread',
+          '{"provider":"copilot","model":"gpt-5.4"}', 'approval-required', 'default',
+          NULL, 0, 0, 0,
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+
+      // Barrier-released fibers contend on the single SQLite connection. Joining them
+      // proves reads and writes both make progress (no deadlock/starvation) — not that
+      // their SELECTs overlap, which a single connection cannot do (scar #148).
+      const gate = yield* Deferred.make<void>();
+      const readSnapshots = Deferred.await(gate).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            [0, 1, 2, 3, 4, 5],
+            (index) =>
+              index % 2 === 0
+                ? snapshotQuery.getShellSnapshot().pipe(Effect.asVoid)
+                : snapshotQuery.getSnapshot().pipe(Effect.asVoid),
+            { discard: true },
+          ),
+        ),
+      );
+      const writeProject = Deferred.await(gate).pipe(
+        Effect.andThen(
+          sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, default_model_selection_json, scripts_json,
+            created_at, updated_at, deleted_at
+          ) VALUES (
+            'project-read-write-late', 'Late write', '/tmp/read-write-late',
+            '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+            '2026-09-01T00:00:01.000Z', '2026-09-01T00:00:01.000Z', NULL
+          )
+        `.pipe(Effect.asVoid),
+        ),
+      );
+
+      const readerFibers = yield* Effect.forEach([0, 1, 2], () => Effect.forkChild(readSnapshots));
+      const writerFiber = yield* Effect.forkChild(writeProject);
+      yield* Deferred.succeed(gate, undefined);
+      yield* Effect.forEach(readerFibers, (fiber) => Fiber.join(fiber), { discard: true });
+      yield* Fiber.join(writerFiber);
+
+      const reread = yield* snapshotQuery.getShellSnapshot();
+      assert.isTrue(reread.projects.some((project) => project.id === "project-read-write-late"));
+    }),
+  );
+
+  it.effect("shell snapshots stay consistent with their cursor under concurrent commits", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      const projectId = "project-shell-race";
+      const commitCount = 25;
+      const readerCount = 3;
+      const snapshotsPerReader = 12;
+      const threadIdFor = (sequence: number): string => `thread-shell-race-${sequence}`;
+      // `computeSnapshotSequence` takes the minimum over every required projector, so each
+      // simulated projection commit must advance all of them together.
+      const requiredProjectors = [
+        ORCHESTRATION_PROJECTOR_NAMES.projects,
+        ORCHESTRATION_PROJECTOR_NAMES.threads,
+        ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+        ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans,
+        ORCHESTRATION_PROJECTOR_NAMES.queuedTurns,
+        ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+        ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
+        ORCHESTRATION_PROJECTOR_NAMES.checkpoints,
+        ORCHESTRATION_PROJECTOR_NAMES.workflows,
+      ] as const;
+
+      const clearRaceTables = Effect.gen(function* () {
+        yield* sql`DELETE FROM projection_turns`;
+        yield* sql`DELETE FROM projection_thread_messages`;
+        yield* sql`DELETE FROM projection_thread_proposed_plans`;
+        yield* sql`DELETE FROM projection_queued_turns`;
+        yield* sql`DELETE FROM projection_thread_activities`;
+        yield* sql`DELETE FROM projection_thread_sessions`;
+        yield* sql`DELETE FROM provider_session_runtime`;
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_projects`;
+        yield* sql`DELETE FROM projection_state`;
+      });
+
+      const body = Effect.gen(function* () {
+        yield* clearRaceTables;
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, default_model_selection_json, scripts_json,
+            created_at, updated_at, deleted_at
+          ) VALUES (
+            ${projectId}, 'Shell race project', '/tmp/shell-race',
+            '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+            '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+          )
+        `;
+        // Explicitly sequential: every projector row starts at sequence 0.
+        yield* Effect.forEach(
+          requiredProjectors,
+          (projector) =>
+            sql`
+              INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+              VALUES (${projector}, 0, '2026-09-01T00:00:00.000Z')
+            `,
+          { discard: true },
+        );
+
+        // One simulated projection commit: the new thread row and its cursor advance
+        // commit together, exactly like the real projector.
+        const commitBatch = (sequence: number) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                UPDATE projection_state
+                SET last_applied_sequence = ${sequence}, updated_at = '2026-09-01T00:00:00.000Z'
+              `;
+              yield* sql`
+                INSERT INTO projection_threads (
+                  thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+                  latest_user_message_at, pending_approval_count, pending_user_input_count,
+                  has_actionable_proposed_plan, created_at, updated_at, deleted_at
+                ) VALUES (
+                  ${threadIdFor(sequence)}, ${projectId}, ${`Race thread ${sequence}`},
+                  '{"provider":"copilot","model":"gpt-5.4"}', 'approval-required', 'default',
+                  NULL, 0, 0, 0,
+                  '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+                )
+              `;
+            }),
+          );
+
+        const gate = yield* Deferred.make<void>();
+        // Explicitly sequential: sequences must commit in increasing order.
+        const writer = Deferred.await(gate).pipe(
+          Effect.andThen(
+            Effect.forEach(
+              Array.from({ length: commitCount }, (_unused, index) => index + 1),
+              commitBatch,
+              { discard: true },
+            ),
+          ),
+        );
+        const reader = Deferred.await(gate).pipe(
+          Effect.andThen(
+            Effect.forEach(
+              Array.from({ length: snapshotsPerReader }, () => 0),
+              () => snapshotQuery.getShellSnapshot(),
+            ),
+          ),
+        );
+
+        const writerFiber = yield* Effect.forkChild(writer);
+        const readerFibers = yield* Effect.forEach(
+          Array.from({ length: readerCount }, () => 0),
+          () => Effect.forkChild(reader),
+        );
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(writerFiber);
+        const observed = yield* Effect.forEach(readerFibers, (fiber) => Fiber.join(fiber));
+
+        const snapshots = observed.flat();
+        assert.equal(snapshots.length, readerCount * snapshotsPerReader);
+        const mismatches: Array<string> = [];
+        for (const snapshot of snapshots) {
+          assert.isTrue(snapshot.snapshotSequence >= 0 && snapshot.snapshotSequence <= commitCount);
+          const threadIds = new Set<string>(snapshot.threads.map((thread) => thread.id));
+          for (let sequence = 1; sequence <= commitCount; sequence += 1) {
+            // Atomic commits plus one read transaction mean every snapshot observes a
+            // consistent cut: thread N is present exactly when the cursor covers it. A
+            // torn read (cursor after the commit but rows before it, or vice versa)
+            // drops or duplicates a buffered live event in `subscribeShell` (scar #29).
+            const present = threadIds.has(threadIdFor(sequence));
+            const covered = snapshot.snapshotSequence >= sequence;
+            if (present !== covered) {
+              mismatches.push(
+                `cursor=${snapshot.snapshotSequence} thread=${threadIdFor(sequence)} present=${present}`,
+              );
+            }
+          }
+        }
+        assert.deepStrictEqual(mismatches.slice(0, 10), []);
+      });
+
+      yield* Effect.ensuring(body, Effect.ignore(clearRaceTables));
     }),
   );
 });
