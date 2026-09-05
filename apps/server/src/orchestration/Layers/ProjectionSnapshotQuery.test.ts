@@ -2273,15 +2273,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       `;
 
       // Barrier-released fibers contend on the single SQLite connection. Each reader
-      // takes one snapshot, rendezvous at `allArrived`, then blocks on `writerDone`
-      // while the writer commits — so the write must complete while all three
-      // readers remain pending (no deadlock/starvation). Readers then finish their
-      // remaining snapshots after the write, proving reads also progress. This does
-      // not assert SELECT overlap, which a single connection cannot do (scar #148).
+      // takes one snapshot, rendezvous at `allArrived`, then keeps issuing
+      // snapshots until it observes the late write — so the writer must acquire
+      // the SQLite semaphore amid live read transactions (no deadlock/starvation).
+      // Readers then finish more snapshots after the write, proving reads also
+      // progress. This does not assert SELECT overlap, which a single connection
+      // cannot do (scar #148).
       const gate = yield* Deferred.make<void>();
-      const writerDone = yield* Deferred.make<void>();
       const allArrived = yield* Deferred.make<void>();
       const arrived = yield* Ref.make(0);
+      const writeVisible = yield* Ref.make(false);
+      const contentionRounds = 25;
       const readSnapshots = Deferred.await(gate).pipe(
         Effect.andThen(
           Effect.gen(function* () {
@@ -2290,11 +2292,23 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             if (count === 3) {
               yield* Deferred.succeed(allArrived, undefined);
             }
-            // Block until the late write commits: the write must make progress
-            // while this reader is pending.
-            yield* Deferred.await(writerDone);
+            // Contention loop, not a memory park: parking on a `Deferred` holds no
+            // database semaphore, so the writer would run uncontended. Polling a
+            // `Ref` between snapshots keeps read transactions arriving while the
+            // writer waits for the semaphore. `yieldNow` is load-bearing: every
+            // SQLite step below is synchronous, so without a cooperative yield the
+            // first scheduled fiber would run its whole stream to completion and
+            // the writer would never be scheduled amid the reads. Bounded so a
+            // missing write fails fast instead of hanging the suite.
+            let sawWrite = false;
+            for (let round = 0; round < contentionRounds && !sawWrite; round += 1) {
+              yield* Effect.yieldNow;
+              yield* snapshotQuery.getShellSnapshot().pipe(Effect.asVoid);
+              sawWrite = yield* Ref.get(writeVisible);
+            }
+            assert.isTrue(sawWrite, "late write must commit while snapshot reads keep arriving");
             yield* Effect.forEach(
-              [1, 2, 3, 4, 5],
+              [1, 2, 3],
               (index) =>
                 index % 2 === 0
                   ? snapshotQuery.getShellSnapshot().pipe(Effect.asVoid)
@@ -2318,15 +2332,16 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           )
         `.pipe(Effect.asVoid),
         ),
-        Effect.andThen(Deferred.succeed(writerDone, undefined)),
+        Effect.andThen(Ref.set(writeVisible, true)),
       );
 
       const readerFibers = yield* Effect.forEach([0, 1, 2], () => Effect.forkChild(readSnapshots));
       const writerFiber = yield* Effect.forkChild(writeProject);
       yield* Deferred.succeed(gate, undefined);
-      // The writer must finish while readers are blocked on `writerDone`; an
-      // implementation that delays the write until all snapshots finish deadlocks
-      // here instead of passing. Readers then finish after the write.
+      // The writer must finish while readers are still looping snapshots; an
+      // implementation that delays the write until all reads finish exhausts the
+      // contention bound and fails instead of passing. Readers then finish after
+      // the write.
       yield* Fiber.join(writerFiber);
       yield* Effect.forEach(readerFibers, (fiber) => Fiber.join(fiber), { discard: true });
 
@@ -2471,7 +2486,13 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         );
 
         const gate = yield* Deferred.make<void>();
-        // Explicitly sequential: sequences must commit in increasing order.
+        // Explicitly sequential: sequences must commit in increasing order. This
+        // gate races whole snapshots against whole commits — it cannot land a
+        // commit *between* one snapshot's row reads and its `projection_state`
+        // read, because the single `:memory:` connection serializes each snapshot
+        // transaction (pausing mid-snapshot while committing on the same client
+        // would deadlock on `Semaphore(1)`). That in-window cut is pinned
+        // deterministically by the split-read proof above instead.
         const writer = Deferred.await(gate).pipe(
           Effect.andThen(
             Effect.forEach(
