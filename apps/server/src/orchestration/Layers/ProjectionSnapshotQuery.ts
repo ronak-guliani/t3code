@@ -54,7 +54,7 @@ import { ProjectionWorkflowRepository } from "../../persistence/Services/Project
 import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionWorkflows.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
-import { MAX_THREAD_ACTIVITIES } from "../projector.ts";
+import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projector.ts";
 // Per-thread cap for background-agent runs in shell snapshots.
 const MAX_BACKGROUND_AGENT_RUNS_PER_THREAD = 100;
 import {
@@ -212,12 +212,13 @@ const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
 const THREAD_DETAIL_ACTIVITY_WINDOW = 200;
-// Bounds the thread-detail message hydration in SQL (newest window,
-// chronological order) so a pathological thread cannot blow the V8 heap by
-// decoding unbounded text/attachment JSON in JS. Backed by
+// The thread-detail message window is the live projector's
+// MAX_THREAD_MESSAGES cap, applied in SQL (newest window, chronological
+// order) so a pathological thread cannot blow the V8 heap by decoding
+// unbounded text/attachment JSON in JS. Backed by
 // idx_projection_thread_messages_thread_created. Threads under the bound read
-// identically to before.
-const THREAD_DETAIL_MESSAGE_WINDOW = 2_000;
+// identically to before. Full-history reads (chat exports) use the unbounded
+// query below instead.
 const ThreadActivitiesLimitInput = Schema.Struct({
   threadId: ThreadId,
   limit: NonNegativeInt,
@@ -1071,8 +1072,30 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM projection_thread_messages
           WHERE thread_id = ${threadId}
           ORDER BY created_at DESC, message_id DESC
-          LIMIT ${THREAD_DETAIL_MESSAGE_WINDOW}
+          LIMIT ${MAX_THREAD_MESSAGES}
         )
+        ORDER BY created_at ASC, message_id ASC
+      `,
+  });
+
+  const listAllThreadMessageRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          message_id AS "messageId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          role,
+          text,
+          attachments_json AS "attachments",
+          origin_json AS "origin",
+          is_streaming AS "isStreaming",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM projection_thread_messages
+        WHERE thread_id = ${threadId}
         ORDER BY created_at ASC, message_id ASC
       `,
   });
@@ -2287,8 +2310,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
+      const listMessageRows =
+        options?.unboundedMessages === true
+          ? listAllThreadMessageRowsByThread
+          : listThreadMessageRowsByThread;
       const [
         threadRow,
         messageRows,
@@ -2308,7 +2338,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listThreadMessageRowsByThread({ threadId }).pipe(
+        listMessageRows({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:listMessages:query",

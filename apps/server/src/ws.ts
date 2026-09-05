@@ -1538,8 +1538,10 @@ const makeWsRpcLayer = (
                 });
               }
 
+              // Exports need full history: the default thread-detail read caps
+              // message hydration to the newest MAX_THREAD_MESSAGES window.
               const threadOption = yield* projectionSnapshotQuery
-                .getThreadDetailById(input.threadId)
+                .getThreadDetailById(input.threadId, { unboundedMessages: true })
                 .pipe(
                   Effect.mapError(
                     (cause) =>

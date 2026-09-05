@@ -127,9 +127,17 @@ export interface ProjectionSnapshotQueryShape {
 
   /**
    * Read a single active thread detail snapshot by id.
+   *
+   * Message hydration is capped to the newest `MAX_THREAD_MESSAGES` window
+   * (shared with the live projector) so pathological threads cannot blow the
+   * heap during decode. Pass `{ unboundedMessages: true }` only for full-
+   * history reads such as chat exports.
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
+    options?: {
+      readonly unboundedMessages?: boolean;
+    },
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
   readonly getThreadDetailSnapshotById: (
     threadId: ThreadId,
