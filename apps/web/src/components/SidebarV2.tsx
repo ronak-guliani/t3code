@@ -74,6 +74,7 @@ import {
   type SidebarV2ThreadRow,
 } from "./SidebarV2.logic";
 import { SidebarV2NestedRow } from "./SidebarV2NestedRow";
+import { ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { SidebarV2Row, type SidebarV2RowProps } from "./SidebarV2Row";
 import { SidebarHoverThreadPrewarmer } from "./SidebarThreadPrewarmer";
 import { Button } from "./ui/button";
@@ -731,7 +732,7 @@ export default function SidebarV2() {
   }, [defaultProjectRef, handleNewThread]);
 
   return (
-    <>
+    <ThreadDetailsTooltipProvider value={threadsWithAgentRuns}>
       {/* The desktop app hides the OS title bar, so this row is the only place
           a collapse control can live beside the window controls. It has to
           exist on every Electron platform, not just the ones that reserve
@@ -850,6 +851,6 @@ export default function SidebarV2() {
           ) : null}
         </Shelf>
       </SidebarContent>
-    </>
+    </ThreadDetailsTooltipProvider>
   );
 }

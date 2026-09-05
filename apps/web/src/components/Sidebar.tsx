@@ -20,7 +20,7 @@ import {
   ThreadBrowserOpenStatus,
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
-import { ThreadDetailsTooltip } from "./SidebarV2ThreadTooltip";
+import { ThreadDetailsTooltip, ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { autoAnimate } from "@formkit/auto-animate";
@@ -2580,7 +2580,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   );
 
   return (
-    <>
+    <ThreadDetailsTooltipProvider value={projectThreads}>
       {hideProjectHeader ? null : (
         <div className="group/project-header relative">
           <SidebarMenuButton
@@ -2743,7 +2743,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         onClose={closeProjectGroupingDialog}
         onSave={saveProjectGroupingPreference}
       />
-    </>
+    </ThreadDetailsTooltipProvider>
   );
 });
 

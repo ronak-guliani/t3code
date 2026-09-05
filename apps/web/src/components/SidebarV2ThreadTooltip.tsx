@@ -1,4 +1,5 @@
 import {
+  CheckIcon,
   CircleAlertIcon,
   ClockIcon,
   FolderIcon,
@@ -7,6 +8,7 @@ import {
   ServerIcon,
   TerminalIcon,
 } from "lucide-react";
+import { createContext, use, useMemo } from "react";
 
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { formatRelativeTimeLabel } from "../timestampFormat";
@@ -17,9 +19,121 @@ import {
 import { sanitizeThreadErrorMessage } from "../rpc/transportError";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import type { SidebarThreadSummary } from "../types";
+import { usePendingTurnStore } from "../pendingTurnStore";
+import { sidebarThreadKey } from "../sidebarThreadTree";
+import { useUiStateStore } from "../uiStateStore";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { prStatusIndicator } from "./ThreadStatusIndicators";
+import {
+  buildThreadTooltipActivity,
+  selectThreadTooltipChildren,
+  type ThreadTooltipStatus,
+} from "./SidebarV2ThreadTooltip.logic";
 import { TooltipPopup } from "./ui/tooltip";
+
+const ThreadTooltipThreadsContext = createContext<readonly SidebarThreadSummary[] | null>(null);
+export const ThreadDetailsTooltipProvider = ThreadTooltipThreadsContext.Provider;
+
+const CHILD_STATUS: Record<ThreadTooltipStatus, { label: string; className: string }> = {
+  approval: { label: "Approval", className: "text-amber-600 dark:text-amber-300" },
+  input: { label: "Needs input", className: "text-indigo-600 dark:text-indigo-300" },
+  plan: { label: "Review plan", className: "text-indigo-600 dark:text-indigo-300" },
+  working: { label: "Working", className: "text-sky-600 dark:text-sky-400" },
+  connecting: { label: "Connecting", className: "text-sky-600 dark:text-sky-400" },
+  failed: { label: "Failed", className: "text-red-600 dark:text-red-400" },
+  stopped: { label: "Stopped", className: "text-muted-foreground" },
+  done: { label: "Done", className: "text-emerald-600 dark:text-emerald-400" },
+  idle: { label: "Idle", className: "text-muted-foreground" },
+};
+
+// The popup mounts this only while open, avoiding per-row subscriptions and
+// child-tree scans across the resting sidebar.
+function ThreadTooltipActivity({ thread }: { readonly thread: SidebarThreadSummary }) {
+  const threads = use(ThreadTooltipThreadsContext);
+  if (threads === null) {
+    throw new Error("ThreadTooltipActivity requires ThreadDetailsTooltipProvider");
+  }
+  const parentKey = sidebarThreadKey(thread);
+  const children = useMemo(
+    () => selectThreadTooltipChildren(threads, parentKey),
+    [threads, parentKey],
+  );
+  const lastVisitedAtByThreadKey = useUiStateStore((state) => state.threadLastVisitedAtById);
+  const pendingByThreadKey = usePendingTurnStore((state) => state.pendingByThreadKey);
+  const pendingThreadKeys = useMemo(
+    () => new Set(Object.keys(pendingByThreadKey)),
+    [pendingByThreadKey],
+  );
+  const activity = buildThreadTooltipActivity({
+    thread,
+    children,
+    lastVisitedAtByThreadKey,
+    pendingThreadKeys,
+  });
+
+  return (
+    <>
+      {activity.blocker ? (
+        <div className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
+          <CircleAlertIcon className="size-3 shrink-0" />
+          <span>{activity.blocker}</span>
+        </div>
+      ) : null}
+      {activity.hasUnreadChildUpdate ? (
+        <div className="flex items-center gap-2 text-sky-600 dark:text-sky-400">
+          <span className="mx-0.75 size-1.5 shrink-0 rounded-full bg-current" />
+          <span>New child update</span>
+        </div>
+      ) : null}
+      {activity.childCount > 0 ? (
+        <section
+          aria-label="Child chats"
+          className="grid min-w-0 gap-1.5 border-t border-border/60 pt-2"
+        >
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="font-medium text-foreground/75">Child chats</span>
+            {activity.unreadResultCount > 0 ? (
+              <span className="text-sky-600 dark:text-sky-400">
+                {activity.unreadResultCount} unread{" "}
+                {activity.unreadResultCount === 1 ? "result" : "results"}
+              </span>
+            ) : null}
+            <span className="ml-auto tabular-nums">{activity.childCount}</span>
+          </div>
+          <ul className="grid min-w-0 gap-1">
+            {activity.children.map((child) => {
+              const status = CHILD_STATUS[child.status];
+              return (
+                <li key={child.key} className="flex min-w-0 items-center gap-1.5">
+                  {child.status === "done" ? (
+                    <CheckIcon className={`size-3 shrink-0 ${status.className}`} />
+                  ) : (
+                    <span
+                      className={`mx-0.75 size-1.5 shrink-0 rounded-full bg-current ${status.className}`}
+                    />
+                  )}
+                  <span className="min-w-0 flex-1 truncate text-foreground/80">
+                    {child.thread.title}
+                  </span>
+                  {child.unread ? (
+                    <span
+                      aria-label="Unread result"
+                      className="size-1 shrink-0 rounded-full bg-sky-500 dark:bg-sky-400"
+                    />
+                  ) : null}
+                  <span className={`shrink-0 text-[10px] ${status.className}`}>{status.label}</span>
+                </li>
+              );
+            })}
+          </ul>
+          {activity.remainingChildCount > 0 ? (
+            <div className="pl-4.5 text-[10px]">+{activity.remainingChildCount} more</div>
+          ) : null}
+        </section>
+      ) : null}
+    </>
+  );
+}
 
 export function terminalProcessLabel(count: number): string {
   return `${count} terminal ${count === 1 ? "process" : "processes"} running`;
@@ -111,6 +225,7 @@ export function ThreadDetailsTooltip({
               <div className="min-w-0 truncate text-foreground/75">{prStatus.tooltip}</div>
             </div>
           ) : null}
+          <ThreadTooltipActivity thread={thread} />
           <div className="flex min-w-0 items-center gap-3 text-[10px]">
             {driverKind ? (
               <div className="flex min-w-0 items-center gap-1.5">
