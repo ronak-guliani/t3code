@@ -838,7 +838,7 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(
         page.getByText(
-          "Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions.",
+          "Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions. Externally managed OpenCode servers cannot receive per-thread browser credentials.",
         ),
       )
       .toBeInTheDocument();

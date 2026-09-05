@@ -2091,7 +2091,7 @@ export function GeneralSettingsPanel() {
       <SettingsSection title="Preferences">
         <SettingsRow
           title="Agent browser access"
-          description="Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions."
+          description="Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions. Externally managed OpenCode servers cannot receive per-thread browser credentials."
           resetAction={
             settings.enableAgentBrowserAccess !==
             DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess ? (

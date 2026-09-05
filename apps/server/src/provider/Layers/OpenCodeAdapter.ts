@@ -1042,20 +1042,29 @@ export function makeOpenCodeAdapter(
                 input.threadId,
                 boundInstanceId,
               );
-              if (mcpSession && !server.external) {
-                yield* runOpenCodeSdk("mcp.add", () =>
-                  client.mcp.add({
-                    name: "t3-code",
-                    config: {
-                      type: "remote",
-                      url: mcpSession.endpoint,
-                      headers: {
-                        Authorization: mcpSession.authorizationHeader,
+              if (mcpSession) {
+                if (server.external) {
+                  // External OpenCode servers share MCP configuration across clients,
+                  // so a per-thread bearer credential cannot be installed safely.
+                  yield* McpSessionRegistry.revokeActiveMcpProviderInstance(
+                    input.threadId,
+                    boundInstanceId,
+                  );
+                } else {
+                  yield* runOpenCodeSdk("mcp.add", () =>
+                    client.mcp.add({
+                      name: "t3-code",
+                      config: {
+                        type: "remote",
+                        url: mcpSession.endpoint,
+                        headers: {
+                          Authorization: mcpSession.authorizationHeader,
+                        },
+                        oauth: false,
                       },
-                      oauth: false,
-                    },
-                  }),
-                );
+                    }),
+                  );
+                }
               }
               const openCodeSession = yield* runOpenCodeSdk("session.create", () =>
                 client.session.create({
