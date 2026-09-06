@@ -129,4 +129,28 @@ describe("FilePreviewPanel", () => {
       await screen.unmount();
     }
   });
+
+  it("renders binary files as read-only unsupported previews", async () => {
+    readFileMock.mockResolvedValueOnce({
+      relativePath: "assets/logo.png",
+      contents: "",
+      binary: true,
+    });
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/binary-preview"
+        relativePath="assets/logo.png"
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect
+        .element(page.getByText("This binary file cannot be previewed or edited as text."))
+        .toBeInTheDocument();
+      expect(page.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

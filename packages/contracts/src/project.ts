@@ -87,6 +87,7 @@ export const ProjectReadFileResult = Schema.Struct({
   contents: Schema.String,
   byteLength: Schema.optionalKey(NonNegativeInt),
   truncated: Schema.optionalKey(Schema.Boolean),
+  binary: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
 

@@ -49,6 +49,10 @@ interface EditableFileSurfaceProps {
   onPendingChange: (relativePath: string, pending: boolean) => void;
 }
 
+function formatSaveError(cause: unknown): string {
+  return cause instanceof Error ? cause.message : "Unable to save file.";
+}
+
 function EditableFileSurface({
   environmentId,
   cwd,
@@ -57,6 +61,7 @@ function EditableFileSurface({
   resolvedTheme,
   onPendingChange,
 }: EditableFileSurfaceProps) {
+  const [saveError, setSaveError] = useState<string | null>(null);
   const saveCoordinator = useMemo(
     () =>
       new FileSaveCoordinator({
@@ -72,6 +77,7 @@ function EditableFileSurface({
         onConfirmed: (confirmedContents) => {
           confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
         },
+        onError: (cause) => setSaveError(cause === null ? null : formatSaveError(cause)),
       }),
     [cwd, environmentId, onPendingChange, relativePath],
   );
@@ -95,31 +101,45 @@ function EditableFileSurface({
   );
 
   return (
-    <EditorProvider editor={editor}>
-      <Virtualizer
-        className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
-        config={{
-          overscrollSize: 600,
-          intersectionObserverMargin: 1200,
-        }}
-      >
-        <File
-          file={{
-            name: relativePath,
-            contents,
-            cacheKey: projectFileCacheKey(cwd, relativePath, contents),
+    <div className="flex min-h-0 flex-1 flex-col">
+      {saveError ? (
+        <div className="flex shrink-0 items-center gap-2 border-b border-destructive/20 bg-destructive/8 px-3 py-1.5 text-[11px] text-destructive">
+          <span className="min-w-0 flex-1 truncate">Save failed: {saveError}</span>
+          <button
+            type="button"
+            className="shrink-0 rounded px-2 py-1 font-medium hover:bg-destructive/10"
+            onClick={() => saveCoordinator.retry()}
+          >
+            Retry
+          </button>
+        </div>
+      ) : null}
+      <EditorProvider editor={editor}>
+        <Virtualizer
+          className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
+          config={{
+            overscrollSize: 600,
+            intersectionObserverMargin: 1200,
           }}
-          options={{
-            disableFileHeader: true,
-            overflow: "scroll",
-            theme: resolveDiffThemeName(resolvedTheme),
-            themeType: resolvedTheme,
-          }}
-          className="min-h-full"
-          contentEditable
-        />
-      </Virtualizer>
-    </EditorProvider>
+        >
+          <File
+            file={{
+              name: relativePath,
+              contents,
+              cacheKey: projectFileCacheKey(cwd, relativePath, contents),
+            }}
+            options={{
+              disableFileHeader: true,
+              overflow: "scroll",
+              theme: resolveDiffThemeName(resolvedTheme),
+              themeType: resolvedTheme,
+            }}
+            className="min-h-full"
+            contentEditable
+          />
+        </Virtualizer>
+      </EditorProvider>
+    </div>
   );
 }
 
@@ -277,7 +297,11 @@ export function FilePreviewPanel({
               <LoaderCircle className="size-5 animate-spin" />
             </div>
           ) : relativePath && file.data ? (
-            file.data.truncated ? (
+            file.data.binary ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs text-muted-foreground">
+                This binary file cannot be previewed or edited as text.
+              </div>
+            ) : file.data.truncated ? (
               <Virtualizer
                 key={`${relativePath}:${resolvedTheme}:${file.data.byteLength}`}
                 className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"

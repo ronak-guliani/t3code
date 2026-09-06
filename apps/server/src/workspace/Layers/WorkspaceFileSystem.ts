@@ -11,6 +11,20 @@ import { WorkspacePaths } from "../Services/WorkspacePaths.ts";
 
 const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
 
+function decodeWorkspacePreview(bytes: Uint8Array): { contents: string; binary: boolean } {
+  if (bytes.includes(0)) {
+    return { contents: "", binary: true };
+  }
+  try {
+    return {
+      contents: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      binary: false,
+    };
+  } catch {
+    return { contents: "", binary: true };
+  }
+}
+
 export const makeWorkspaceFileSystem = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -128,10 +142,17 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
             cause,
           }),
       });
-      const contents = new TextDecoder().decode(
-        truncated ? fileBytes.subarray(0, WORKSPACE_FILE_PREVIEW_MAX_BYTES) : fileBytes,
-      );
-      return { relativePath: target.relativePath, contents, byteLength, truncated };
+      const previewBytes = truncated
+        ? fileBytes.subarray(0, WORKSPACE_FILE_PREVIEW_MAX_BYTES)
+        : fileBytes;
+      const { contents, binary } = decodeWorkspacePreview(previewBytes);
+      return {
+        relativePath: target.relativePath,
+        contents,
+        byteLength,
+        truncated,
+        ...(binary ? { binary: true } : {}),
+      };
     },
   );
   return { readFile, writeFile } satisfies WorkspaceFileSystemShape;

@@ -20,11 +20,13 @@ describe("FileSaveCoordinator", () => {
     const persist = vi.fn<(contents: string) => Promise<void>>().mockResolvedValue(undefined);
     const onPendingChange = vi.fn();
     const onConfirmed = vi.fn();
+    const onError = vi.fn();
     const coordinator = new FileSaveCoordinator({
       debounceMs: 500,
       persist,
       onPendingChange,
       onConfirmed,
+      onError,
     });
 
     coordinator.change("first");
@@ -48,11 +50,13 @@ describe("FileSaveCoordinator", () => {
       .mockReturnValueOnce(firstWrite.promise)
       .mockResolvedValueOnce(undefined);
     const onPendingChange = vi.fn();
+    const onError = vi.fn();
     const coordinator = new FileSaveCoordinator({
       debounceMs: 500,
       persist,
       onPendingChange,
       onConfirmed: vi.fn(),
+      onError,
     });
 
     coordinator.change("first");
@@ -71,11 +75,13 @@ describe("FileSaveCoordinator", () => {
   it("leaves the file pending when the latest write fails", async () => {
     vi.useFakeTimers();
     const onPendingChange = vi.fn();
+    const onError = vi.fn();
     const coordinator = new FileSaveCoordinator({
       debounceMs: 500,
       persist: vi.fn().mockRejectedValue(new Error("write failed")),
       onPendingChange,
       onConfirmed: vi.fn(),
+      onError,
     });
 
     coordinator.change("latest");
@@ -83,5 +89,35 @@ describe("FileSaveCoordinator", () => {
     await Promise.resolve();
     expect(onPendingChange).toHaveBeenCalledWith(true);
     expect(onPendingChange).not.toHaveBeenCalledWith(false);
+    expect(onError).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it("retries a failed write and confirms the retained draft", async () => {
+    vi.useFakeTimers();
+    const persist = vi
+      .fn<(contents: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("write failed"))
+      .mockResolvedValueOnce(undefined);
+    const onPendingChange = vi.fn();
+    const onConfirmed = vi.fn();
+    const onError = vi.fn();
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange,
+      onConfirmed,
+      onError,
+    });
+
+    coordinator.change("retained draft");
+    await vi.advanceTimersByTimeAsync(500);
+    await Promise.resolve();
+    coordinator.retry();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenLastCalledWith("retained draft");
+    expect(onConfirmed).toHaveBeenCalledWith("retained draft");
+    expect(onPendingChange).toHaveBeenLastCalledWith(false);
   });
 });

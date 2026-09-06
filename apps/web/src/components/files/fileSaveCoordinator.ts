@@ -3,6 +3,7 @@ export interface FileSaveCoordinatorOptions {
   readonly persist: (contents: string) => Promise<void>;
   readonly onPendingChange: (pending: boolean) => void;
   readonly onConfirmed: (contents: string) => void;
+  readonly onError: (cause: unknown) => void;
 }
 
 export class FileSaveCoordinator {
@@ -19,8 +20,14 @@ export class FileSaveCoordinator {
     this.latestContents = contents;
     this.latestRevision += 1;
     this.lastChangeAt = Date.now();
+    this.options.onError(null);
     this.options.onPendingChange(true);
     this.schedule(this.options.debounceMs);
+  }
+
+  retry(): void {
+    if (this.latestRevision === 0) return;
+    this.schedule(0);
   }
 
   dispose(): void {
@@ -54,7 +61,9 @@ export class FileSaveCoordinator {
       await this.options.persist(contents);
       succeeded = true;
       this.options.onConfirmed(contents);
-    } catch {}
+    } catch (cause) {
+      this.options.onError(cause);
+    }
 
     this.saving = false;
     if (revision === this.latestRevision) {

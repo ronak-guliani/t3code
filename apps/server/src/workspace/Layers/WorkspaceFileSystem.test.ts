@@ -172,6 +172,32 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
 
+    it.effect("marks binary files as non-editable previews", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        yield* fileSystem.writeFile(
+          path.join(cwd, "image.png"),
+          new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]),
+        );
+
+        const result = yield* workspaceFileSystem.readFile({
+          cwd,
+          relativePath: "image.png",
+        });
+
+        expect(result).toMatchObject({
+          relativePath: "image.png",
+          contents: "",
+          byteLength: 6,
+          truncated: false,
+          binary: true,
+        });
+      }),
+    );
+
     it.effect("rejects a symbolic link that escapes the workspace root", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;
