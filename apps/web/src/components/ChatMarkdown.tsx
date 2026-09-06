@@ -81,7 +81,7 @@ type MarkdownFunctionComponentProps<K extends keyof Components> = Parameters<
 >[0];
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
-const WEB_CITATION_TOKEN_PATTERN = /\uE200cite\uE202turn\d+[A-Za-z]+\d+\uE201/g;
+const WEB_CITATION_TOKEN_PATTERN = /\uE200cite(?:\uE202turn\d+[A-Za-z]+\d+)+\uE201/g;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(

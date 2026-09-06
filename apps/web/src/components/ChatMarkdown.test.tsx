@@ -56,6 +56,19 @@ describe("ChatMarkdown", () => {
     expect(markup).not.toContain("turn0search1");
   });
 
+  it("removes grouped leaked web citation tokens", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={"Sources included. \uE200cite\uE202turn0search0\uE202turn0search1\uE201"}
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("Sources included.");
+    expect(markup).not.toContain("turn0search0");
+    expect(markup).not.toContain("turn0search1");
+  });
+
   it("renders inline code file paths as file links", () => {
     const markup = renderToStaticMarkup(
       <ChatMarkdown
