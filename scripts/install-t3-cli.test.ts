@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, expect, it } from "vite-plus/test";
 
-import { installCliPackage, resolveCliLink, waitForConnect } from "./install-t3-cli.ts";
+import {
+  assertConnectConfig,
+  installCliPackage,
+  resolveCliLink,
+  waitForConnect,
+} from "./install-t3-cli.ts";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -47,7 +52,7 @@ it("rejects incomplete authorization and malformed status", async () => {
   await expect(waitForConnect(() => "{}")).rejects.toThrow("invalid Connect status");
 });
 
-it.skipIf(process.platform !== "darwin")(
+it.skipIf(process.platform === "win32")(
   "replaces the actual shell symlink rather than pnpm's injected workspace command",
   async () => {
     const { home, bin, link } = await fixture();
@@ -70,7 +75,7 @@ it("refuses to replace regular executable files", async () => {
   await expect(resolveCliLink(bin, home)).rejects.toThrow("Refusing to replace");
 });
 
-it.skipIf(process.platform !== "darwin")(
+it.skipIf(process.platform === "win32")(
   "activates only a runnable snapshot that survives removal of its source",
   async () => {
     const { home, link } = await fixture();
@@ -96,7 +101,7 @@ it.skipIf(process.platform !== "darwin")(
   },
 );
 
-it.skipIf(process.platform !== "darwin")(
+it.skipIf(process.platform === "win32")(
   "leaves the previous CLI intact if the copied bundle cannot load",
   async () => {
     const { home, link } = await fixture();
@@ -109,3 +114,33 @@ it.skipIf(process.platform !== "darwin")(
     expect(await readlink(link)).toBe("/previous/cli");
   },
 );
+
+it.skipIf(process.platform === "win32")(
+  "refuses a bin directory that resolves outside the home directory",
+  async () => {
+    const { home } = await fixture();
+    const outside = await mkdtemp(join(tmpdir(), "t3-cli-outside-"));
+    directories.push(outside);
+    const escaped = join(home, "escaped-bin");
+    await symlink(outside, escaped);
+    await expect(resolveCliLink(escaped, home)).rejects.toThrow("No user-owned bin directory");
+  },
+);
+
+it("rejects relay URLs and Clerk keys the runtime would refuse", () => {
+  const valid = {
+    relayUrl: "https://relay.example.test",
+    clerkPublishableKey: `pk_test_${btoa("clerk.example.test$")}`,
+    clerkCliOAuthClientId: "client-id",
+  };
+  expect(() => assertConnectConfig(valid)).not.toThrow();
+  expect(() => assertConnectConfig({ ...valid, relayUrl: "http://relay.example.test" })).toThrow(
+    "T3CODE_RELAY_URL",
+  );
+  expect(() =>
+    assertConnectConfig({ ...valid, relayUrl: "https://relay.example.test/path" }),
+  ).toThrow("T3CODE_RELAY_URL");
+  expect(() => assertConnectConfig({ ...valid, clerkPublishableKey: "not-a-key" })).toThrow(
+    "T3CODE_CLERK_PUBLISHABLE_KEY",
+  );
+});

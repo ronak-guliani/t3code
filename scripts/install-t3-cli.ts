@@ -1,6 +1,17 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, rename, rm, symlink } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,7 +19,10 @@ import { parseArgs } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { copyCliRuntime } from "@t3tools/shared/cliRuntime";
+import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
+import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import { loadRepoEnv, resolvePublicConfig } from "./lib/public-config.ts";
+import type { T3CodePublicConfig } from "./lib/public-config.ts";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -21,18 +35,42 @@ async function inspect(path: string) {
   }
 }
 
+async function canonical(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+async function isOwnedDirectory(directory: string, home: string): Promise<boolean> {
+  const canonicalHome = await canonical(home);
+  const canonicalDir = await canonical(directory);
+  const fromHome = relative(canonicalHome, join(canonicalDir, "t3"));
+  if (fromHome.startsWith(`..${sep}`) || isAbsolute(fromHome)) return false;
+  // Lexical containment is not enough: a symlinked bin directory can still
+  // resolve outside the home directory, so require matching ownership of the
+  // real target as well.
+  try {
+    const [dirStat, homeStat] = await Promise.all([stat(canonicalDir), stat(canonicalHome)]);
+    if ("uid" in dirStat && "uid" in homeStat && dirStat.uid !== homeStat.uid) return false;
+  } catch {
+    // Missing directories fall back to the canonical-path check above.
+  }
+  return true;
+}
+
 export async function resolveCliLink(path: string, home: string): Promise<string> {
   let available: string | undefined;
   for (const directory of path.split(delimiter)) {
     // pnpm injects workspace bin directories ahead of the user's shell PATH.
     if (!isAbsolute(directory) || directory.split(sep).includes("node_modules")) continue;
     const candidate = join(directory, "t3");
-    const fromHome = relative(home, candidate);
-    const ownedPath = !fromHome.startsWith(`..${sep}`) && !isAbsolute(fromHome);
+    const ownedPath = await isOwnedDirectory(directory, home);
     if (ownedPath) available ??= candidate;
-    const stat = await inspect(candidate);
-    if (!stat) continue;
-    if (!ownedPath || !stat.isSymbolicLink()) {
+    const existing = await inspect(candidate);
+    if (!existing) continue;
+    if (!ownedPath || !existing.isSymbolicLink()) {
       throw new Error(
         `Refusing to replace ${candidate}: expected a user-owned symlink. Remove or relocate that installation explicitly, then retry.`,
       );
@@ -46,6 +84,29 @@ export async function resolveCliLink(path: string, home: string): Promise<string
 }
 
 export async function installCliPackage(source: string, installations: string, link: string) {
+  // Serialize validation and activation across cooperating installers: the
+  // pre-activation ownership check below is only meaningful while no other
+  // installer can replace `link` before `rename`.
+  const lockDir = `${link}.install.lock`;
+  try {
+    await mkdir(lockDir);
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "EEXIST") {
+      throw new Error(
+        `Another CLI installation is in progress for ${link}; wait for it to finish, or remove ${lockDir} if it is stale, then retry.`,
+        { cause },
+      );
+    }
+    throw cause;
+  }
+  try {
+    return await installCliPackageLocked(source, installations, link);
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
+}
+
+async function installCliPackageLocked(source: string, installations: string, link: string) {
   const original = await inspect(link);
   if (original && !original.isSymbolicLink()) throw new Error(`Refusing to overwrite ${link}.`);
   await mkdir(dirname(link), { recursive: true });
@@ -97,6 +158,33 @@ export async function waitForConnect(
   );
 }
 
+export function assertConnectConfig(
+  config: Pick<T3CodePublicConfig, "relayUrl" | "clerkPublishableKey">,
+): void {
+  // Mirror the runtime validators so an invalid deployment fails before the
+  // build, not after an unusable candidate has been activated.
+  if (normalizeSecureRelayUrl(config.relayUrl ?? "") === null) {
+    throw new Error(
+      "Invalid T3CODE_RELAY_URL: expected a secure absolute HTTPS origin (no path, query, or fragment).",
+    );
+  }
+  try {
+    clerkFrontendApiUrlFromPublishableKey(config.clerkPublishableKey ?? "");
+  } catch {
+    throw new Error(
+      "Invalid T3CODE_CLERK_PUBLISHABLE_KEY: the CLI cannot derive a Clerk Frontend API URL from it.",
+    );
+  }
+}
+
+function toProcessEnv(env: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
 async function main() {
   const { values } = parseArgs({
     options: {
@@ -112,14 +200,15 @@ async function main() {
   if (process.platform !== "darwin") throw new Error("This installer currently supports macOS.");
   const home = homedir();
   const link = await resolveCliLink(process.env.PATH ?? "", home);
-  const env = {
+  const env = toProcessEnv({
     ...loadRepoEnv({ includeExample: true }),
     PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false",
-  };
+  });
   const config = resolvePublicConfig(env);
   if (!config.relayUrl || !config.clerkPublishableKey || !config.clerkCliOAuthClientId) {
     throw new Error("Configure the complete public Connect deployment before building the CLI.");
   }
+  assertConnectConfig(config);
   for (const name of ["@t3tools/web", "t3"]) {
     execFileSync("pnpm", ["--filter", name, "build"], { cwd: repoRoot, env, stdio: "inherit" });
   }
@@ -133,16 +222,18 @@ async function main() {
   );
   if (values.connect) {
     const baseDir = resolve(values["base-dir"] ?? process.env.T3CODE_HOME ?? join(home, ".t3"));
+    // Run setup with the same normalized build environment so deployments
+    // configured only in repo env files resolve identically at setup time.
     execFileSync(process.execPath, [entry, "connect", "--base-dir", baseDir], {
       cwd: repoRoot,
-      env: process.env,
+      env,
       stdio: "inherit",
     });
     await waitForConnect(() =>
       execFileSync(
         process.execPath,
         [entry, "connect", "status", "--base-dir", baseDir, "--json"],
-        { encoding: "utf8", timeout: 10_000 },
+        { encoding: "utf8", timeout: 10_000, env },
       ),
     );
     console.log(
