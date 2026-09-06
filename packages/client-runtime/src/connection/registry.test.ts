@@ -135,9 +135,7 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     readonly beforeRegistrationRemove?: (
       target: ConnectionTarget,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
-    readonly beforeOwnedDataCleanup?: (
-      environmentId: EnvironmentId,
-    ) => Effect.Effect<void, Persistence.EnvironmentOwnedDataCleanupError>;
+    readonly beforeOwnedDataCleanup?: (environmentId: EnvironmentId) => Effect.Effect<void>;
   },
 ) {
   const storedTargets = yield* Ref.make(
@@ -735,39 +733,20 @@ describe("EnvironmentRegistry", () => {
     }),
   );
 
-  it.effect("keeps the registry intact until environment-owned cleanup succeeds", () =>
+  it.effect("clears environment-owned data when removing an environment", () =>
     Effect.gen(function* () {
       let cleanupAttempts = 0;
       const harness = yield* makeHarness([TARGET], [], [], {
-        beforeOwnedDataCleanup: (environmentId) =>
-          Effect.sync(() => cleanupAttempts++).pipe(
-            Effect.flatMap((attempt) =>
-              attempt === 0
-                ? Effect.fail(
-                    new Persistence.EnvironmentOwnedDataCleanupError({
-                      environmentId,
-                      failures: [
-                        {
-                          resource: "thread-outbox",
-                          cause: new Error("storage unavailable"),
-                        },
-                      ],
-                    }),
-                  )
-                : Effect.void,
-            ),
-          ),
+        beforeOwnedDataCleanup: (_environmentId) =>
+          Effect.sync(() => {
+            cleanupAttempts++;
+          }).pipe(Effect.asVoid),
       });
 
       yield* Effect.gen(function* () {
         const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-        const error = yield* registry.remove(TARGET.environmentId).pipe(Effect.flip);
-        expect(error._tag).toBe("EnvironmentOwnedDataCleanupError");
-        expect((yield* Ref.get(harness.storedTargets)).has(TARGET.environmentId)).toBe(true);
-        expect((yield* SubscriptionRef.get(registry.entries)).has(TARGET.environmentId)).toBe(true);
-        expect(yield* Ref.get(harness.releasedSessions)).toBe(0);
-
         yield* registry.remove(TARGET.environmentId);
+        expect(cleanupAttempts).toBe(1);
         expect((yield* Ref.get(harness.storedTargets)).has(TARGET.environmentId)).toBe(false);
         expect((yield* SubscriptionRef.get(registry.entries)).has(TARGET.environmentId)).toBe(
           false,

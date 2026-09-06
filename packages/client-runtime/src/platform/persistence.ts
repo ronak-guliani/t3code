@@ -1,7 +1,7 @@
 import {
   EnvironmentId,
-  type OrchestrationThreadDetailSnapshot,
   type OrchestrationShellSnapshot,
+  type OrchestrationThreadDetailSnapshot,
   type ServerConfig,
   type ThreadId,
   type VcsListRefsResult,
@@ -38,6 +38,10 @@ export class ConnectionPersistenceError extends Schema.TaggedErrorClass<Connecti
   },
 ) {}
 
+/**
+ * Retained for existing cleanup call sites and tests. New code should prefer
+ * per-resource removal; the aggregate clear lives behind this error channel.
+ */
 export class EnvironmentOwnedDataCleanupError extends Schema.TaggedErrorClass<EnvironmentOwnedDataCleanupError>()(
   "EnvironmentOwnedDataCleanupError",
   {
@@ -91,15 +95,16 @@ export class EnvironmentCacheStore extends Context.Service<
     >;
     readonly saveThread: (
       environmentId: EnvironmentId,
-      thread: OrchestrationThreadDetailSnapshot,
+      snapshot: OrchestrationThreadDetailSnapshot,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
     readonly removeThread: (
       environmentId: EnvironmentId,
       threadId: ThreadId,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
-    readonly clear: (
-      environmentId: EnvironmentId,
-    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    /**
+     * The last complete server configuration. This deliberately includes provider
+     * metadata so offline task creation can still offer the models a user last saw.
+     */
     readonly loadServerConfig: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<Option.Option<ServerConfig>, ConnectionPersistenceError>;
@@ -107,6 +112,10 @@ export class EnvironmentCacheStore extends Context.Service<
       environmentId: EnvironmentId,
       config: ServerConfig,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
+    /**
+     * The unfiltered branch list for a workspace. Query-specific lists are not
+     * cached because they are incomplete and unsafe to present as a full picker.
+     */
     readonly loadVcsRefs: (
       environmentId: EnvironmentId,
       cwd: string,
@@ -120,7 +129,15 @@ export class EnvironmentCacheStore extends Context.Service<
       environmentId: EnvironmentId,
       cwd: string,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
+    /**
+     * Removes every persisted branch-list snapshot for an environment. Git ref
+     * mutations are repository-wide, and linked worktrees may have cached the
+     * same refs under different working-directory keys.
+     */
     readonly clearVcsRefs: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly clear: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
   }

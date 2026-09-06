@@ -4,15 +4,14 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { RelatedThreadsScreen } from "./RelatedThreadsScreen";
-import type { CompactThreadRow } from "./compact-thread-row";
 import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
-import type { ThreadSwipeable } from "../home/thread-swipe-actions";
+import type { ThreadListRow } from "./thread-list-items";
+import type { ThreadListV2Row } from "./thread-list-v2-items";
 
 const harness = vi.hoisted(() => ({
   threads: [] as MobileThreadShell[],
-  rows: [] as ComponentProps<typeof CompactThreadRow>[],
-  swipes: [] as ComponentProps<typeof ThreadSwipeable>[],
-  legacy: [] as string[],
+  rows: [] as ComponentProps<typeof ThreadListV2Row>[],
+  legacyRows: [] as ComponentProps<typeof ThreadListRow>[],
   v2: true,
   capabilities: {
     threadSettlement: true,
@@ -31,7 +30,7 @@ const harness = vi.hoisted(() => ({
     unsnoozeThread: vi.fn(),
     pinThread: vi.fn(),
     unpinThread: vi.fn(),
-    movePinnedThread: vi.fn(),
+    moveThread: vi.fn(),
   },
   markRead: vi.fn(),
   openParent: vi.fn(),
@@ -90,21 +89,15 @@ vi.mock("./use-nested-thread-actions", () => ({
   }),
 }));
 vi.mock("./thread-list-items", () => ({
-  ThreadListRow: (props: { thread: MobileThreadShell }) => {
-    harness.legacy.push(props.thread.title);
+  ThreadListRow: (props: ComponentProps<typeof ThreadListRow>) => {
+    harness.legacyRows.push(props);
     return null;
   },
 }));
-vi.mock("./compact-thread-row", () => ({
-  CompactThreadRow: (props: ComponentProps<typeof CompactThreadRow>) => {
+vi.mock("./thread-list-v2-items", () => ({
+  ThreadListV2Row: (props: ComponentProps<typeof ThreadListV2Row>) => {
     harness.rows.push(props);
     return null;
-  },
-}));
-vi.mock("../home/thread-swipe-actions", () => ({
-  ThreadSwipeable: (props: ComponentProps<typeof ThreadSwipeable>) => {
-    harness.swipes.push(props);
-    return props.children(() => {});
   },
 }));
 
@@ -122,6 +115,7 @@ const parent: MobileThreadShell = {
   createdAt: "2026-09-06T10:00:00.000Z",
   updatedAt: "2026-09-06T10:00:00.000Z",
   archivedAt: null,
+  snoozedUntil: null,
   session: null,
   settledOverride: null,
   settledAt: null,
@@ -137,16 +131,12 @@ function render(threadId = parent.id) {
     <RelatedThreadsScreen route={{ params: { environmentId: "local", threadId } }} />,
   );
 }
-function titles(index = 0) {
-  return harness.rows[index]?.menu?.actions.map((action) => action.title);
-}
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-06T20:00:00.000Z"));
   harness.threads = [parent, child];
   harness.rows.length = 0;
-  harness.swipes.length = 0;
-  harness.legacy.length = 0;
+  harness.legacyRows.length = 0;
   harness.v2 = true;
   for (const key of Object.keys(harness.capabilities) as Array<keyof typeof harness.capabilities>) {
     harness.capabilities[key] = true;
@@ -156,16 +146,31 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("related screen lifecycle parity", () => {
-  it("keeps V2 root menus and swipe actions while descendants retain archive", () => {
+  it("passes V2 lifecycle actions to root and descendant rows", () => {
     render();
-    expect(titles()).toEqual(
-      expect.arrayContaining(["Settle", "Snooze", "Pin", "Regenerate title"]),
-    );
-    expect(titles(1)).toEqual(["Archive", "Delete"]);
-    expect(harness.rows.every((row) => row.related === undefined)).toBe(true);
-    harness.swipes[0]?.primaryAction?.onPress();
+    expect(harness.rows).toHaveLength(2);
+    expect(harness.rows[0]).toMatchObject({
+      thread: parent,
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      settlementSupported: true,
+      snoozeSupported: true,
+      pinningSupported: true,
+      reorderSupported: true,
+      titleRegenerationSupported: true,
+      showTrailingDivider: true,
+    });
+    expect(harness.rows[1]).toMatchObject({
+      thread: child,
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      showTrailingDivider: false,
+    });
+    harness.rows[0]?.onSettleThread(parent);
     expect(harness.actions.settleThread).toHaveBeenCalledWith(parent);
-    harness.swipes[1]?.primaryAction?.onPress();
+    harness.rows[1]?.onArchiveThread(child);
     expect(harness.actions.archiveThread).toHaveBeenCalledWith(child);
     expect(harness.markRead).toHaveBeenCalledWith(
       expect.arrayContaining([
@@ -186,12 +191,19 @@ describe("related screen lifecycle parity", () => {
       title: "Wake thread",
       action: "unsnoozeThread",
     },
-  ] as const)("preserves $title on the root", ({ patch, title, action }) => {
+  ] as const)("preserves $title on the root", ({ patch, action }) => {
     const root = { ...parent, ...patch };
     harness.threads = [root, child];
     render();
-    expect(titles()).toContain(title);
-    harness.swipes[0]?.primaryAction?.onPress();
+    expect(harness.rows[0]).toMatchObject({
+      thread: root,
+      snoozed: action === "unsnoozeThread",
+    });
+    const rowAction =
+      action === "unsettleThread"
+        ? harness.rows[0]?.onUnsettleThread
+        : harness.rows[0]?.onUnsnoozeThread;
+    rowAction?.(root);
     expect(harness.actions[action]).toHaveBeenCalledWith(root);
   });
 
@@ -205,24 +217,34 @@ describe("related screen lifecycle parity", () => {
     };
     harness.threads = [root, other, child];
     render();
-    expect(titles()).toEqual(expect.arrayContaining(["Move up", "Move down", "Unpin"]));
-    const actions = harness.rows[0]?.menu?.actions;
-    expect(actions?.find((item) => item.title === "Move up")?.attributes?.disabled).toBe(false);
-    expect(actions?.find((item) => item.title === "Move down")?.attributes?.disabled).toBe(true);
-    harness.rows[0]?.menu?.onPressAction?.({ nativeEvent: { event: "unpin" } });
+    expect(harness.rows[0]).toMatchObject({
+      pinned: true,
+      reorderSupported: true,
+      canMoveUp: true,
+      canMoveDown: false,
+    });
+    harness.rows[0]?.onMoveThread?.(root, "up");
+    expect(harness.actions.moveThread).toHaveBeenCalledWith(root, "up");
+    harness.rows[0]?.onUnpinThread(root);
     expect(harness.actions.unpinThread).toHaveBeenCalledWith(root);
   });
 
-  it("does not grant root-only actions when opening a subgroup", () => {
+  it("treats the first subgroup row as that screen's root", () => {
     harness.threads = [
       parent,
       child,
       { ...child, id: ThreadId.make("leaf"), parentThreadId: child.id },
     ];
     render(child.id);
-    expect(titles()).toEqual(["Archive", "Delete"]);
-    harness.swipes[0]?.primaryAction?.onPress();
-    expect(harness.actions.archiveThread).toHaveBeenCalledWith(child);
+    expect(harness.rows[0]).toMatchObject({
+      thread: child,
+      variant: "card",
+      settlementSupported: true,
+      snoozeSupported: true,
+      pinningSupported: true,
+    });
+    harness.rows[0]?.onSettleThread(child);
+    expect(harness.actions.settleThread).toHaveBeenCalledWith(child);
   });
 
   it("honors older server capabilities and the legacy list preference", () => {
@@ -230,12 +252,21 @@ describe("related screen lifecycle parity", () => {
     harness.capabilities.threadSnooze = false;
     harness.capabilities.threadPinning = false;
     render();
-    expect(titles()).toEqual(expect.arrayContaining(["Archive", "Delete"]));
-    expect(titles()).not.toContain("Settle");
-    expect(titles()).not.toContain("Snooze");
-    expect(titles()).not.toContain("Pin");
+    expect(harness.rows[0]).toMatchObject({
+      settlementSupported: false,
+      snoozeSupported: false,
+      pinningSupported: false,
+    });
     harness.v2 = false;
     render();
-    expect(harness.legacy).toEqual(["Parent", "Child"]);
+    expect(harness.legacyRows.map((row) => row.thread.title)).toEqual(["Parent", "Child"]);
+    expect(harness.legacyRows[0]).toMatchObject({
+      variant: "compact",
+      environmentLabel: null,
+      isLast: false,
+      titleRegenerationSupported: true,
+    });
+    harness.legacyRows[0]?.onArchiveThread(parent);
+    expect(harness.actions.archiveThread).toHaveBeenCalledWith(parent);
   });
 });

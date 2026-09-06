@@ -18,7 +18,7 @@ describe("application navigation across independent sidebar chrome", () => {
       openSubchat = () =>
         navigation.navigate("NewTaskSheet", {
           screen: "NewTaskDraft",
-          params: { environmentId: "local", projectId: "project", parentThreadId: "parent" },
+          params: { environmentId: "local", projectId: "project" },
         });
       openParent = () =>
         navigation.navigate("Thread", { environmentId: "local", threadId: "parent" });
@@ -36,7 +36,7 @@ describe("application navigation across independent sidebar chrome", () => {
     openRelated();
     expect(navigate).toHaveBeenNthCalledWith(1, "NewTaskSheet", {
       screen: "NewTaskDraft",
-      params: { environmentId: "local", projectId: "project", parentThreadId: "parent" },
+      params: { environmentId: "local", projectId: "project" },
     });
     expect(navigate).toHaveBeenNthCalledWith(2, "Thread", {
       environmentId: "local",

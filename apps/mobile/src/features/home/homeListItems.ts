@@ -1,13 +1,7 @@
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { HomeThreadGroup } from "./homeThreadList";
-import {
-  buildMobileThreadTree,
-  mobileThreadTreeRows,
-  type MobileThreadTreeRow,
-  type MobileThreadShell,
-  compareNestedThreads,
-  selectMatchingThreadTree,
-} from "../threads/mobile-thread-hierarchy";
 
 /** Threads shown per project before the "Show more" affordance appears. */
 export const HOME_INITIAL_VISIBLE_THREADS = 6;
@@ -36,8 +30,7 @@ export interface HomeHeaderListItem {
 export interface HomeThreadListItem {
   readonly type: "thread";
   readonly key: string;
-  readonly thread: MobileThreadShell;
-  readonly hierarchy?: MobileThreadTreeRow;
+  readonly thread: EnvironmentThreadShell;
   readonly isLast: boolean;
 }
 
@@ -90,7 +83,8 @@ export function nextGroupDisplayState(
 /**
  * Structural equality for list items. Item objects are rebuilt on every
  * collapse/show-more toggle; without this the lists would consider every
- * mounted row changed and re-render all of their swipeables. Group/thread references are stable across
+ * mounted row changed and re-render all of them (each carrying a swipeable +
+ * a vcs-status subscription). Group/thread references are stable across
  * toggles.
  */
 export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem): boolean {
@@ -112,14 +106,6 @@ export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem
       return (
         previous.type === "thread" &&
         previous.thread === item.thread &&
-        previous.hierarchy?.depth === item.hierarchy?.depth &&
-        previous.hierarchy?.isExpanded === item.hierarchy?.isExpanded &&
-        previous.hierarchy?.childCount === item.hierarchy?.childCount &&
-        previous.hierarchy?.displayStatus === item.hierarchy?.displayStatus &&
-        previous.hierarchy?.relatedStatus === item.hierarchy?.relatedStatus &&
-        previous.hierarchy?.archiveBlocked === item.hierarchy?.archiveBlocked &&
-        previous.hierarchy?.latestRelatedNotificationAt ===
-          item.hierarchy?.latestRelatedNotificationAt &&
         previous.isLast === item.isLast
       );
     case "show-more":
@@ -139,8 +125,6 @@ export function buildHomeListLayout(input: {
    * When searching, pagination is suspended so every match stays visible.
    */
   readonly showAllThreads?: boolean;
-  readonly dismissedAgentRunKeys?: readonly string[];
-  readonly selectedThreadKey?: string | null;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
   const stickyHeaderIndices: number[] = [];
@@ -162,40 +146,14 @@ export function buildHomeListLayout(input: {
       continue;
     }
 
-    const allThreads = group.allThreads ?? group.threads;
-    const ordinalByThreadKey = new Map(
-      allThreads.map((thread, index) => [`${thread.environmentId}:${thread.id}`, index]),
-    );
-    const ordinal = (thread: MobileThreadShell) =>
-      ordinalByThreadKey.get(
-        `${thread.environmentId}:${thread.virtualAgentRun?.parentThreadId ?? thread.id}`,
-      ) ?? Number.POSITIVE_INFINITY;
-    // Synthetic rows share their parent's position; never mix two different
-    // comparators for real and synthetic rows, which makes sorting non-transitive.
-    const tree = buildMobileThreadTree(
-      allThreads,
-      (left, right) => ordinal(left) - ordinal(right) || compareNestedThreads(left, right),
-      input.dismissedAgentRunKeys,
-    ).sort((left, right) => ordinal(left.mostRecentThread) - ordinal(right.mostRecentThread));
-    const matchingThreadKeys = input.showAllThreads
-      ? new Set(group.threads.map((thread) => `${thread.environmentId}:${thread.id}`))
-      : undefined;
-    const roots = matchingThreadKeys ? selectMatchingThreadTree(tree, matchingThreadKeys) : tree;
-    const totalCount = roots.length;
+    const totalCount = group.threads.length;
     // Default to the group's recent-activity window (last few days, or a small
     // fallback for stale projects), capped at the initial page size. Until the
     // user taps "Show more", older threads stay hidden to save vertical space;
     // "Show less" resets visibleCount to the initial constant, which lands back
     // here at the recency baseline.
-    const recentThreadKeys = new Set(
-      group.recentThreads.map((thread) => `${thread.environmentId}:${thread.id}`),
-    );
     const baselineCount = Math.min(
-      roots.filter((node) =>
-        recentThreadKeys.has(
-          `${node.mostRecentThread.environmentId}:${node.mostRecentThread.virtualAgentRun?.parentThreadId ?? node.mostRecentThread.id}`,
-        ),
-      ).length,
+      group.recentThreads.length,
       HOME_INITIAL_VISIBLE_THREADS,
       totalCount,
     );
@@ -207,30 +165,15 @@ export function buildHomeListLayout(input: {
             : baselineCount,
           totalCount,
         );
-    const rows = roots.map((root) =>
-      mobileThreadTreeRows([root], {
-        selectedThreadKey: input.selectedThreadKey,
-        revealThreadKeys: matchingThreadKeys,
-      }),
-    );
-    const visibleThreads = rows
-      .filter(
-        (rootRows, index) =>
-          index < visibleCount || rootRows.some((row) => row.threadKey === input.selectedThreadKey),
-      )
-      .flat();
-    const visibleRootCount = rows.filter(
-      (rootRows, index) =>
-        index < visibleCount || rootRows.some((row) => row.threadKey === input.selectedThreadKey),
-    ).length;
-    const hiddenCount = totalCount - visibleRootCount;
+    const visibleThreads = group.threads.slice(0, visibleCount);
+    const hiddenCount = totalCount - visibleCount;
     const hasShowMoreRow = !input.showAllThreads && totalCount > baselineCount;
 
     // Pending (unsent) tasks lead the group and are never paginated away.
     for (const [pendingIndex, pendingTask] of group.pendingTasks.entries()) {
       items.push({
         type: "pending-task",
-        key: `pending-task:${pendingTask.message.messageId}`,
+        key: pendingTask.key,
         pendingTask,
         isLast:
           pendingIndex === group.pendingTasks.length - 1 &&
@@ -239,13 +182,11 @@ export function buildHomeListLayout(input: {
       });
     }
 
-    for (const [threadIndex, hierarchy] of visibleThreads.entries()) {
-      const thread = hierarchy.thread;
+    for (const [threadIndex, thread] of visibleThreads.entries()) {
       items.push({
         type: "thread",
         key: `thread:${thread.environmentId}:${thread.id}`,
         thread,
-        hierarchy,
         isLast: threadIndex === visibleThreads.length - 1 && !hasShowMoreRow,
       });
     }

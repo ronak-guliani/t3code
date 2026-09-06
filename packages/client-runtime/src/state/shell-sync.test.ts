@@ -21,6 +21,7 @@ import * as Persistence from "../platform/persistence.ts";
 import { TEST_SERVER_CONFIG } from "../../test/fixtures.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
+import { ShellSnapshotLoader } from "./shellSnapshotHttp.ts";
 import { makeEnvironmentShellState } from "./shell.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -62,7 +63,16 @@ describe("environment shell synchronization", () => {
         target: TARGET,
         state: supervisorState,
         session: activeSession,
-        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+        prepared: yield* SubscriptionRef.make(
+          Option.some<PreparedConnection>({
+            environmentId: TARGET.environmentId,
+            label: TARGET.label,
+            httpBaseUrl: TARGET.httpBaseUrl,
+            socketUrl: TARGET.wsBaseUrl,
+            httpAuthorization: null,
+            target: TARGET,
+          }),
+        ),
         connect: Effect.void,
         disconnect: Effect.void,
         retryNow: Effect.void,
@@ -84,6 +94,9 @@ describe("environment shell synchronization", () => {
       const shellState = yield* makeEnvironmentShellState().pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(ShellSnapshotLoader, {
+          load: () => Effect.succeed(Option.none()),
+        }),
       );
 
       yield* SubscriptionRef.set(supervisorState, {

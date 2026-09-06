@@ -10,7 +10,6 @@ import {
   DEFAULT_RUNTIME_MODE,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type MessageId,
-  type ThreadId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
@@ -18,13 +17,10 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 
-import { reportClientWarning } from "../lib/clientLogger";
-import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
+import { scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { nestedThreadParentError } from "../features/threads/mobile-thread-hierarchy";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
-import { recordOutboxDiagnostic } from "../connection/diagnostic-store";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
 import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useServerConfigs, useThreadShells } from "./entities";
@@ -57,6 +53,7 @@ import {
   type ComposerDraft,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
+  newTaskDraftKey,
   replaceComposerDraftAttachments,
   removeDeliveredCloudQueuedMessage,
   undoComposerDraftMerge,
@@ -188,7 +185,7 @@ export async function completeQueuedMessageDelivery(
 ): Promise<"removed" | "edited" | "failed"> {
   try {
     await removeDeliveredCloudQueuedMessage(queuedMessage).catch((error) => {
-      reportClientWarning("[thread-outbox] could not update sign-out snapshot after delivery", {
+      console.warn("[thread-outbox] could not update sign-out snapshot after delivery", {
         messageId: queuedMessage.messageId,
         error,
       });
@@ -206,7 +203,7 @@ export async function completeQueuedMessageDelivery(
       () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
     );
     if (!removed) {
-      reportClientWarning(
+      console.warn(
         "[thread-outbox] delivered message was edited before cleanup; keeping the newer message",
         {
           environmentId: queuedMessage.environmentId,
@@ -218,7 +215,7 @@ export async function completeQueuedMessageDelivery(
     }
     return "removed";
   } catch (error) {
-    reportClientWarning("[thread-outbox] failed to remove delivered queued message", {
+    console.warn("[thread-outbox] failed to remove delivered queued message", {
       environmentId: queuedMessage.environmentId,
       threadId: queuedMessage.threadId,
       messageId: queuedMessage.messageId,
@@ -235,7 +232,7 @@ export async function removeAcknowledgedExistingThreadMessage(
 ): Promise<boolean> {
   try {
     await removeDeliveredCloudQueuedMessage(queuedMessage).catch((error) => {
-      reportClientWarning("[thread-outbox] could not update sign-out snapshot after delivery", {
+      console.warn("[thread-outbox] could not update sign-out snapshot after delivery", {
         messageId: queuedMessage.messageId,
         error,
       });
@@ -246,7 +243,7 @@ export async function removeAcknowledgedExistingThreadMessage(
     }
     return removed;
   } catch (error) {
-    reportClientWarning("[thread-outbox] failed to remove acknowledged queued message", {
+    console.warn("[thread-outbox] failed to remove acknowledged queued message", {
       environmentId: queuedMessage.environmentId,
       threadId: queuedMessage.threadId,
       messageId: queuedMessage.messageId,
@@ -312,10 +309,7 @@ export async function recoverEditedCreationAfterDelivery(
   } catch (error) {
     // Keep the entry queued. The drain retries with backoff, and the merge is
     // idempotent so content that persisted before the failure is not repeated.
-    reportClientWarning(
-      "[thread-outbox] could not hand an edited pending task to the composer",
-      error,
-    );
+    console.warn("[thread-outbox] could not hand an edited pending task to the composer", error);
     return false;
   }
   if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId]) {
@@ -328,7 +322,7 @@ export async function recoverEditedCreationAfterDelivery(
       () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId],
     );
   } catch (error) {
-    reportClientWarning("[thread-outbox] could not remove recovered pending task", error);
+    console.warn("[thread-outbox] could not remove recovered pending task", error);
     return false;
   }
 }
@@ -338,8 +332,7 @@ export async function restoreRejectedQueuedMessage(
   queuedMessage: QueuedThreadMessage,
   message: string,
 ): Promise<"restored" | "deferred" | "blocked" | "retry"> {
-  const recovery = recoveryDraft(queuedMessage);
-  const draftKey = recovery.key;
+  const draftKey = recoveryDraftKey(queuedMessage);
   // Set once the merge publishes, cleared once the queued message is removed.
   // The catch below uses it to take the merged content back out, so a retry
   // after a mid-recovery failure cannot append the recovered text again.
@@ -377,6 +370,7 @@ export async function restoreRejectedQueuedMessage(
 
     let mergedDraft: ComposerDraft;
     try {
+      stampRecoveryDraftProject(queuedMessage, draftKey);
       await mergeComposerDraftContent(draftKey, {
         text: queuedMessage.text,
         attachments: queuedMessage.attachments,
@@ -401,7 +395,6 @@ export async function restoreRejectedQueuedMessage(
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
         ? {
-            parentThreadId: recovery.parentThreadId,
             workspaceSelection: {
               mode: queuedMessage.creation.workspaceMode,
               branch: queuedMessage.creation.branch,
@@ -416,10 +409,6 @@ export async function restoreRejectedQueuedMessage(
     const restoredDraft = getComposerDraftSnapshot(draftKey);
     rollback = { snapshot: originalDraft, merged: restoredDraft };
     await flushComposerDrafts();
-    if (recoveryDraft(queuedMessage).key !== draftKey) {
-      await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
-      return "retry";
-    }
     if (
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
       !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
@@ -434,22 +423,16 @@ export async function restoreRejectedQueuedMessage(
       !(await removeThreadOutboxMessage(
         queuedMessage,
         revision,
-        () =>
-          !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] &&
-          recoveryDraft(queuedMessage).key === draftKey,
+        () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
       ))
     ) {
       await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
-      return recoveryDraft(queuedMessage).key === draftKey ? "deferred" : "retry";
+      return "deferred";
     }
     // The queued message is gone; from here the draft owns the content and
     // must never be rolled back.
     rollback = null;
-    setPendingConnectionError(
-      queuedMessage.creation?.parentThreadId && recovery.parentThreadId === undefined
-        ? `${message} Recovered to the project's new-chat draft without a parent. Open New chat to review and send it.`
-        : message,
-    );
+    setPendingConnectionError(message);
     return "restored";
   } catch (error) {
     if (rollback !== null) {
@@ -458,11 +441,11 @@ export async function restoreRejectedQueuedMessage(
       // in-memory rollback lands even when its own persistence write fails.
       await undoComposerDraftMerge(draftKey, rollback.snapshot, rollback.merged).catch(
         (undoError) => {
-          reportClientWarning("[thread-outbox] failed to persist a recovery rollback", undoError);
+          console.warn("[thread-outbox] failed to persist a recovery rollback", undoError);
         },
       );
     }
-    reportClientWarning("[thread-outbox] failed to restore an undeliverable message", error);
+    console.warn("[thread-outbox] failed to restore an undeliverable message", error);
     setPendingConnectionError(
       error instanceof Error ? error.message : "The unsent message could not be restored.",
     );
@@ -470,28 +453,29 @@ export async function restoreRejectedQueuedMessage(
   }
 }
 
-function recoveryDraft(queuedMessage: QueuedThreadMessage): {
-  readonly key: string;
-  readonly parentThreadId?: ThreadId;
-} {
-  const creation = queuedMessage.creation;
-  if (!creation)
-    return { key: scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId) };
-  if (creation.parentThreadId) {
-    const parent = appAtomRegistry.get(
-      environmentThreadShells.threadShellAtom({
-        environmentId: queuedMessage.environmentId,
-        threadId: creation.parentThreadId,
-      }),
-    );
-    if (parent?.archivedAt === null && parent.projectId === creation.projectId) {
-      return {
-        key: `subchat:${queuedMessage.environmentId}:${creation.parentThreadId}`,
-        parentThreadId: creation.parentThreadId,
-      };
-    }
+/**
+ * A rejected creation becomes its own new-task draft rather than merging into
+ * whatever the user is typing for that project. The key derives from the
+ * message id so a retry after a mid-recovery failure lands on the same draft
+ * instead of minting another.
+ */
+function recoveryDraftKey(queuedMessage: QueuedThreadMessage): string {
+  return queuedMessage.creation
+    ? newTaskDraftKey(`restored-${queuedMessage.messageId}`)
+    : scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
+}
+
+function stampRecoveryDraftProject(queuedMessage: QueuedThreadMessage, draftKey: string): void {
+  if (!queuedMessage.creation) {
+    return;
   }
-  return { key: `new-task:${scopedProjectKey(queuedMessage.environmentId, creation.projectId)}` };
+  updateComposerDraftSettings(draftKey, {
+    project: {
+      environmentId: queuedMessage.environmentId,
+      projectId: queuedMessage.creation.projectId,
+      createdAt: queuedMessage.createdAt,
+    },
+  });
 }
 
 async function preserveUploadedAttachmentsForEditor(
@@ -586,7 +570,7 @@ export function useThreadOutboxDrain(): void {
       }
 
       if (!blockedRecoverySubscriptionsRef.current.has(queuedMessage.messageId)) {
-        const draftKey = recoveryDraft(queuedMessage).key;
+        const draftKey = recoveryDraftKey(queuedMessage);
         const editorDraftKey = queuedMessage.creation
           ? `pending-task:${queuedMessage.messageId}`
           : null;
@@ -660,7 +644,7 @@ export function useThreadOutboxDrain(): void {
         error,
         interrupted: Cause.hasInterruptsOnly(commandResult.cause),
       });
-      reportClientWarning("[thread-outbox] queued message delivery failed", {
+      console.warn("[thread-outbox] queued message delivery failed", {
         environmentId: queuedMessage.environmentId,
         threadId: queuedMessage.threadId,
         messageId: queuedMessage.messageId,
@@ -760,7 +744,7 @@ export function useThreadOutboxDrain(): void {
           return true;
         }
       } catch (error) {
-        reportClientWarning("[thread-outbox] failed to upload attachments", error);
+        console.warn("[thread-outbox] failed to upload attachments", error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
           return restoreQueuedMessage(
             queuedMessage,
@@ -787,7 +771,6 @@ export function useThreadOutboxDrain(): void {
         settings,
         currentConfig.providers,
       );
-      recordOutboxDiagnostic(queuedMessage, "dispatching");
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: {
@@ -806,10 +789,6 @@ export function useThreadOutboxDrain(): void {
         },
       });
       const failure = reportFailure(deliveryResult, "start-turn");
-      recordOutboxDiagnostic(
-        queuedMessage,
-        failure === null ? "acknowledged" : failure.action === "retry" ? "retry" : "cancelled",
-      );
       if (failure?.action === "retry") {
         return false;
       }
@@ -885,7 +864,7 @@ export function useThreadOutboxDrain(): void {
           return true;
         }
       } catch (error) {
-        reportClientWarning("[thread-outbox] failed to upload attachments", error);
+        console.warn("[thread-outbox] failed to upload attachments", error);
         if (!shouldRetryThreadOutboxDelivery(error)) {
           return restoreQueuedMessage(
             queuedMessage,
@@ -912,20 +891,10 @@ export function useThreadOutboxDrain(): void {
         settings,
         currentConfig.providers,
       );
-      recordOutboxDiagnostic(queuedMessage, "dispatching");
-      const parentError = nestedThreadParentError(
-        creation.parentThreadId,
-        creation.projectId,
-        appAtomRegistry
-          .get(environmentThreadShells.threadShellsAtom)
-          .filter((thread) => thread.environmentId === queuedMessage.environmentId),
-      );
-      if (parentError !== null) return restoreQueuedMessage(persistedMessage, parentError);
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
           projectId: creation.projectId,
-          parentThreadId: creation.parentThreadId,
           projectCwd,
           threadId: queuedMessage.threadId,
           commandId: queuedMessage.commandId,
@@ -945,10 +914,6 @@ export function useThreadOutboxDrain(): void {
       });
       const { reportFailure } = makeDeliveryHelpers(queuedMessage);
       const failure = reportFailure(deliveryResult, "start-turn");
-      recordOutboxDiagnostic(
-        queuedMessage,
-        failure === null ? "acknowledged" : failure.action === "retry" ? "retry" : "cancelled",
-      );
       if (failure?.action === "retry") {
         return false;
       }
@@ -1127,7 +1092,7 @@ export function useThreadOutboxDrain(): void {
         removeThreadOutboxMessage(nextQueuedMessage).then(
           () => true,
           (error) => {
-            reportClientWarning(warning, {
+            console.warn(warning, {
               environmentId: nextQueuedMessage.environmentId,
               threadId: nextQueuedMessage.threadId,
               messageId: nextQueuedMessage.messageId,
