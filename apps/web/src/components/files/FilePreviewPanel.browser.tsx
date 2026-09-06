@@ -9,29 +9,29 @@ import { render } from "vitest-browser-react";
 const {
   openFileInPreviewMock,
   openPreviewMock,
+  listEntriesMock,
   readFileMock,
-  searchEntriesMock,
   createAssetUrlMock,
 } = vi.hoisted(() => ({
   openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openPreviewMock: vi.fn(),
+  listEntriesMock: vi.fn(async () => ({
+    entries: [
+      { path: "src", kind: "directory" as const },
+      { path: "src/index.ts", kind: "file" as const, parentPath: "src" },
+    ],
+    truncated: false,
+  })),
   readFileMock: vi.fn(async () => ({
     relativePath: "src/index.ts",
     contents: "export const covered = true;",
-  })),
-  searchEntriesMock: vi.fn(async () => ({
-    entries: [
-      { path: "src/index.ts", kind: "file" as const, parentPath: "src" },
-      { path: "src", kind: "directory" as const },
-    ],
-    truncated: false,
   })),
   createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
 }));
 
 vi.mock("~/environmentApi", () => ({
-  readEnvironmentApi: vi.fn(() => ({
-    projects: { searchEntries: searchEntriesMock, readFile: readFileMock },
+  ensureEnvironmentApi: vi.fn(() => ({
+    projects: { listEntries: listEntriesMock, readFile: readFileMock, writeFile: vi.fn() },
     assets: { createUrl: createAssetUrlMock },
   })),
 }));
@@ -70,27 +70,22 @@ describe("FilePreviewPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("searches the thread-authorized workspace and opens selected files", async () => {
-    const onOpenFile = vi.fn();
+  it("renders the workspace tree", async () => {
     const screen = await render(
       <FilePreviewPanel
         cwd="/caller/cannot-control-this"
         relativePath={null}
         threadRef={threadRef}
-        onOpenFile={onOpenFile}
+        onOpenFile={vi.fn()}
       />,
     );
     try {
-      await page.getByLabelText("Search workspace files").fill("index");
       await vi.waitFor(() => {
-        expect(searchEntriesMock).toHaveBeenCalledWith({
-          scope: { _tag: "thread", threadId: threadRef.threadId },
-          query: "index",
-          limit: 100,
+        expect(listEntriesMock).toHaveBeenCalledWith({
+          cwd: "/caller/cannot-control-this",
         });
+        expect(document.querySelector("[data-file-browser-panel]")).not.toBeNull();
       });
-      await page.getByRole("button", { name: "src/index.ts" }).click();
-      expect(onOpenFile).toHaveBeenCalledWith("src/index.ts");
     } finally {
       await screen.unmount();
     }
@@ -108,7 +103,7 @@ describe("FilePreviewPanel", () => {
     try {
       await expect.element(page.getByText("export const covered = true;")).toBeInTheDocument();
       expect(readFileMock).toHaveBeenCalledWith({
-        threadId: threadRef.threadId,
+        cwd: "/repo/project",
         relativePath: "src/index.ts",
       });
 

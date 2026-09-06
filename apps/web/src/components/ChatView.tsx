@@ -4671,6 +4671,7 @@ function ChatViewBody(
               visible={visible}
               kind={surface.kind}
               cwd={activeWorkspaceRoot ?? activeProject?.cwd ?? ""}
+              projectName={activeProject?.name}
               relativePath={surface.kind === "file" ? surface.relativePath : null}
               threadRef={activeThreadRef}
               onOpenFile={openRightPanelFile}
