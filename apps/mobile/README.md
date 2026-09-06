@@ -73,14 +73,19 @@ If a rejected queued subchat's parent is unavailable, its content and settings a
 to the project's new-chat draft without parentage. Review and send it explicitly; recovery
 never sends it automatically.
 
-Home and the iPad sidebar keep descendants with their root in both list modes. Quiet trees
-start collapsed; active work and selected descendants reveal their ancestors. Expansion
-preferences persist on the device. Logical depth is unlimited; indentation stops increasing
-after four levels to keep narrow screens usable. Approval, input and work status roll up to
-ancestors. Durable child lifecycle updates show a **Child update** indicator until the parent
-is viewed in the foreground.
-Search reveals matching descendants on collapsed shelves and keeps their ancestry without
-showing unmatched sibling branches.
+Home and the iPad sidebar use compact, single-line rows in both list modes. Device, checkout
+and PR details stay inside the chat rather than repeating in the inbox. A related-chat count
+opens a focused, flat group view; active descendants never expand the inbox into a tree.
+The leading status indicator belongs to the chat itself. Activity and attention within its
+group appear on the related-chat control, including an unread marker for lifecycle updates.
+Viewing a parent acknowledges its direct child updates; opening the related group acknowledges
+activity throughout that group.
+The related view keeps the selected inbox mode's actions: V2 root chats retain settle, snooze
+and pin controls, while nested chats retain their root-only lifecycle restrictions.
+Search reveals matching descendants on collapsed shelves without indentation or unmatched
+siblings. Content search can show a matching excerpt. The selected iPad conversation remains
+directly reachable even when it belongs to a group. On iPhone, search lives below the header;
+filter, settings and compose actions no longer float over the list.
 
 **Go to parent chat** navigates up one level. **Decouple chat** makes the selected chat a root
 without changing its checkout. Archive includes active descendants and is blocked while that

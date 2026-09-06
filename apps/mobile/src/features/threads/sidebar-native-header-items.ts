@@ -31,6 +31,22 @@ function toNativeHeaderMenuItems(items: HomeListFilterMenu["items"]): NativeHead
   );
 }
 
+export function createThreadListFilterHeaderItem(input: {
+  readonly filterIcon: string;
+  readonly filterMenu: HomeListFilterMenu;
+}): NativeStackHeaderItem {
+  return withNativeGlassHeaderItem({
+    type: "menu",
+    label: "",
+    accessibilityLabel: "Filter and sort threads",
+    icon: sfSymbolIcon(input.filterIcon),
+    menu: {
+      title: input.filterMenu.title,
+      items: toNativeHeaderMenuItems(input.filterMenu.items),
+    },
+  });
+}
+
 /**
  * Right-side UINavigationBar items for the sidebar column: the thread list
  * filter/sort menu plus the settings button, sharing one glass capsule —
@@ -42,16 +58,7 @@ export function createSidebarHeaderItems(input: {
   readonly onOpenSettings: () => void;
 }): NativeStackHeaderItem[] {
   return [
-    withNativeGlassHeaderItem({
-      type: "menu",
-      label: "",
-      accessibilityLabel: "Filter and sort threads",
-      icon: sfSymbolIcon(input.filterIcon),
-      menu: {
-        title: input.filterMenu.title,
-        items: toNativeHeaderMenuItems(input.filterMenu.items),
-      },
-    }),
+    createThreadListFilterHeaderItem(input),
     withNativeGlassHeaderItem({
       type: "button",
       label: "",
