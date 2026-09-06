@@ -1,6 +1,16 @@
 # Background service
 
-`t3 service install` installs the exact packaged CLI that ran the command as a per-user service and starts it immediately. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
+`t3 service install` installs the exact packaged CLI and its installed production dependencies as a per-user service and starts it immediately. The private snapshot includes native assets, does not depend on the original checkout's `node_modules`, and is checked before replacing a working service. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
+
+For T3 Connect, start with `t3 connect`: sign in and accept the background-service prompt. You do
+not need to start `t3 serve` first or configure a domain, VPN, or a second connector. Once
+`t3 connect status` says **linked and online**, sign into the same account on each client and
+select the host in its T3 Connect environments.
+
+If a foreground server already uses the intended base directory, stop it before installing.
+The installer reports its PID rather than silently running two servers against the same data.
+Keep `--base-dir` consistent across `connect`, `service`, and `serve` commands; account
+authorization and paired-device data remain there. New services bind to loopback by default.
 
 ```sh
 t3 service install --base-dir ~/.t3 --cwd ~/code --host 127.0.0.1 --port 13773
@@ -18,6 +28,12 @@ On macOS this creates a per-base-directory LaunchAgent. It starts when that user
 Linux and Windows are currently reported as unsupported and no supervisor state is changed. Linux support is intentionally deferred until systemd user-manager and linger behavior can be production-tested across supported distributions.
 
 The instance-specific definition path and rotating server log are shown by `t3 service status`. The log is the normal bounded `userdata/logs/server.log`; launchd stdout and stderr are discarded instead of appending a second unbounded log. Each service instance writes health discovery state inside its private runtime directory, so a foreground server using the same base directory cannot satisfy or lose the service health record. Status reports launchd loaded state, process state/PID, and HTTP responsiveness rather than treating a definition file as proof of availability. Uninstall stops and disables that base-directory instance and removes only that instance's definition and runtime artifacts.
+
+Startup waits for launchd to publish a running PID before checking that PID's HTTP endpoint.
+Restart waits for the previous job to unload before bootstrapping its replacement; it does not
+kill the process that `RunAtLoad` has just started. A failed candidate restores the previous
+service when shutdown succeeds. If launchd cannot confirm shutdown, the installer reports that
+failure and retains the runtime rather than deleting files a process might still be using.
 
 ## Owned Remote Access (no phone VPN)
 

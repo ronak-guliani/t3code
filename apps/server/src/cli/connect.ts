@@ -732,7 +732,7 @@ const connectLinkCommand = Command.make("link", {
         const identity = yield* authorizeCli(flags);
         yield* CliState.setCliDesiredCloudLink(true);
         yield* Console.log(
-          `This T3 environment${identity ? ` (${identity})` : ""} will be available through T3 Connect the next time T3 starts.`,
+          `This T3 environment${identity ? ` (${identity})` : ""} will be available through T3 Connect the next time T3 starts.\nFor guided background setup, run \`t3 connect\` with the same --base-dir.`,
         );
       }),
       { configuration: "full" },
@@ -844,7 +844,7 @@ const connectSetupCommand = Command.make("connect", {
         }
         const identity = yield* authorizeCli(flags);
         yield* CliState.setCliDesiredCloudLink(true);
-        yield* Console.log(`Connected${identity ? ` as ${identity}` : ""}.`);
+        yield* Console.log(`T3 Connect authorization saved${identity ? ` for ${identity}` : ""}.`);
         const config = yield* ServerConfig.ServerConfig;
         const background = yield* recoverServiceOnboardingOffer(
           offerServiceDuringOnboarding({
@@ -855,9 +855,11 @@ const connectSetupCommand = Command.make("connect", {
             ),
           ),
         );
-        if (!background) {
-          yield* Console.log("Start T3 to provision this environment.");
-        }
+        yield* Console.log(
+          background
+            ? "T3 is running in the background. Sign in to the same T3 account on your other devices and select this environment.\nUse `t3 connect status` with the same --base-dir to check relay readiness. Keep this host awake and online; after reboot, sign in to macOS."
+            : "Run `t3 connect` again to retry background setup, or start T3 to provision this environment. Use the same --base-dir to keep your account link.",
+        );
       }),
       { configuration: "full" },
     ),

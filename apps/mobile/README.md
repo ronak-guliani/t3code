@@ -37,8 +37,10 @@ that precedence order. To use another deployment, configure all three together:
 The relay must be an HTTPS origin and trust the matching Clerk instance/JWT template.
 No Clerk secret key belongs in mobile configuration.
 
-1. Keep the desired host server running, then run `t3 connect link` and `t3 connect status`
-   against that host's home directory. Wait for linked and online.
+1. On the host, run `t3 connect`, sign in, and accept background setup. No separately started
+   `t3 serve` process is needed. If one already uses this host's base directory, stop it first;
+   do not run two servers against the same data. Use the same `--base-dir` throughout to retain
+   the environment identity and account link. Run `t3 connect status` and wait for linked and online.
 2. Rebuild and install this mobile app. Existing Direct Connect-only binaries lack the iOS
    auth module; restarting Metro or refreshing JavaScript is not sufficient.
 3. Open **Settings**, choose the account **Sign in** row, and sign into the same account used

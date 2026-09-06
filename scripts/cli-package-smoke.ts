@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { parsePnpmWorkspaceConfig } from "./lib/pnpm-workspace.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { copyCliRuntime } from "@t3tools/shared/cliRuntime";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverDir = resolve(repoRoot, "apps/server");
@@ -12,6 +14,7 @@ const webDir = resolve(repoRoot, "apps/web");
 const serverManifestPath = resolve(serverDir, "package.json");
 let tempDir: string | undefined;
 let originalManifest: string | undefined;
+let runtimeTempDir: string | undefined;
 
 function run(
   command: string,
@@ -115,6 +118,7 @@ try {
     ["t3", "connect", "login", "--headless", "--help"],
     ["t3", "connect", "link", "--headless", "--help"],
     ["t3", "connect", "status", "--help"],
+    ["t3", "service", "install", "--help"],
   ]) {
     const output = run("npx", ["--offline", "--no-install", ...args], tempDir);
     assertContains(output, `t3 ${args[1]}`);
@@ -123,12 +127,22 @@ try {
     run("npx", ["--offline", "--no-install", "t3", "connect", "--help"], tempDir),
     "logout",
   );
-  console.log("Packaged T3 Connect CLI smoke passed.");
+  runtimeTempDir = mkdtempSync(join(tmpdir(), "t3-cli-service-smoke-"));
+  const isolatedRuntime = join(runtimeTempDir, "runtime");
+  await copyCliRuntime(resolve(tempDir, "node_modules/t3/dist"), isolatedRuntime);
+  assertContains(
+    run(process.execPath, [join(isolatedRuntime, "bin.mjs"), "service", "--help"], runtimeTempDir),
+    "Install or repair",
+  );
+  console.log("Packaged T3 Connect CLI and isolated service runtime smoke passed.");
 } finally {
   if (originalManifest !== undefined) {
     writeFileSync(serverManifestPath, originalManifest);
   }
   if (tempDir !== undefined) {
     rmSync(tempDir, { recursive: true, force: true });
+  }
+  if (runtimeTempDir !== undefined) {
+    rmSync(runtimeTempDir, { recursive: true, force: true });
   }
 }

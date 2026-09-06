@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import { TestClock } from "effect/testing";
 
 import {
   liveServiceHost,
@@ -62,6 +64,11 @@ const makeHost = (options?: { readonly canonicalize?: ServiceHost["canonicalize"
   let lockAttempts = 0;
   let activeCriticalSections = 0;
   let maxCriticalSections = 0;
+  let startupPolls = 0;
+  let shutdownPolls = 0;
+  let stopping = false;
+  let foregroundPid: number | undefined;
+  let preflightFails = false;
   let copyGate:
     | {
         readonly entered: ReturnType<typeof makeDeferred>;
@@ -89,7 +96,7 @@ const makeHost = (options?: { readonly canonicalize?: ServiceHost["canonicalize"
         .filter((entry) => entry.startsWith(`${path}/`))
         .map((entry) => entry.slice(path.length + 1).split("/")[0]!)
         .filter((entry, index, entries) => entries.indexOf(entry) === index),
-    copyDirectory: async (_source, destination) => {
+    copyRuntime: async (_source, destination) => {
       if (failCopy) throw new Error("copy failed");
       const gate = copyGate;
       copyGate = undefined;
@@ -101,6 +108,7 @@ const makeHost = (options?: { readonly canonicalize?: ServiceHost["canonicalize"
       files.set(`${destination}/bin.mjs`, "bundle");
       files.set(`${destination}/client/index.html`, "client");
     },
+    activeRuntimePid: async () => foregroundPid,
     rename: async (source, destination) => {
       const value = files.get(source);
       if (value !== undefined) files.set(destination, value);
@@ -151,9 +159,25 @@ const makeHost = (options?: { readonly canonicalize?: ServiceHost["canonicalize"
     },
     run: async (command, args) => {
       commands.push({ command, args });
+      if (command !== "/bin/launchctl") {
+        return preflightFails ? result(1, "", "Cannot find package 'effect'") : result();
+      }
       const override = commandResults.get(args[0] ?? "");
       if (override !== undefined) return override;
       if (args[0] === "print") {
+        if (stopping) {
+          if (shutdownPolls > 0) {
+            shutdownPolls -= 1;
+            return result(0, `state = SIGTERMed\npid = ${pid}\n`);
+          }
+          stopping = false;
+          loaded = false;
+          pid = 0;
+        }
+        if (loaded && startupPolls > 0) {
+          startupPolls -= 1;
+          return result(0, "state = spawn scheduled\n");
+        }
         return loaded
           ? result(0, `state = ${pid > 0 ? "running" : "waiting"}\npid = ${pid}\n`)
           : result(113, "", `Could not find service "${args[1]}" in domain`);
@@ -164,11 +188,18 @@ const makeHost = (options?: { readonly canonicalize?: ServiceHost["canonicalize"
           .findLast((argument) => argument.includes("com.t3tools.t3code.server."));
         return result(0, disabled && label ? `"${label.split("/").at(-1)}" => disabled\n` : "");
       }
-      if (args[0] === "bootstrap") loaded = true;
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        pid = 4321;
+      }
       if (args[0] === "bootout") {
         if (!loaded) return result(3, "", "Boot-out failed: 3: No such process");
-        loaded = false;
-        pid = 0;
+        if (shutdownPolls > 0) {
+          stopping = true;
+        } else {
+          loaded = false;
+          pid = 0;
+        }
         bootoutHook?.();
       }
       if (args[0] === "kickstart") {
@@ -203,6 +234,18 @@ const makeHost = (options?: { readonly canonicalize?: ServiceHost["canonicalize"
     canonical,
     modes,
     commands,
+    setStartupPolls: (value: number) => {
+      startupPolls = value;
+    },
+    setShutdownPolls: (value: number) => {
+      shutdownPolls = value;
+    },
+    setForegroundPid: (value: number | undefined) => {
+      foregroundPid = value;
+    },
+    setPreflightFails: () => {
+      preflightFails = true;
+    },
     setProbe: (value: boolean) => {
       probe = value;
     },
@@ -582,6 +625,93 @@ it.effect("rejects health from a runtime state owned by a different pid", () =>
     const service = yield* makeTestService(fake);
     const error = yield* service.install({ cwd: "/Users/me/code" }).pipe(Effect.flip);
     assert.equal(error._tag, "BootServiceError");
+  }),
+);
+
+it.effect("waits for delayed launchd startup without killing the just-bootstrapped process", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    fake.setStartupPolls(4);
+    const service = yield* makeTestService(fake);
+    const fiber = yield* service.install({ cwd: "/Users/me/code" }).pipe(Effect.forkChild);
+    yield* TestClock.adjust("2 seconds");
+    yield* Fiber.join(fiber);
+    assert.isFalse(fake.commands.some(({ args }) => args[0] === "kickstart"));
+    assert.isTrue(yield* service.status.pipe(Effect.map((status) => status.responsive)));
+  }),
+);
+
+it.effect("bounds launchd startup waits and removes failed candidates", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    fake.setStartupPolls(1_000);
+    const service = yield* makeTestService(fake);
+    const fiber = yield* service
+      .install({ cwd: "/Users/me/code" })
+      .pipe(Effect.flip, Effect.forkChild);
+    yield* TestClock.adjust("21 seconds");
+    const error = yield* Fiber.join(fiber);
+    assert.include(error.message, "within 20 seconds");
+    assert.isFalse([...fake.files.keys()].some((path) => path.endsWith(".plist")));
+  }),
+);
+
+it.effect("waits for asynchronous bootout before bootstrapping a replacement", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    const service = yield* makeTestService(fake);
+    yield* service.install({ cwd: "/Users/me/code" });
+    fake.setShutdownPolls(4);
+    const fiber = yield* service.restart.pipe(Effect.forkChild);
+    yield* TestClock.adjust("2 seconds");
+    yield* Fiber.join(fiber);
+    assert.equal(fake.commands.filter(({ args }) => args[0] === "bootstrap").length, 2);
+    assert.isFalse(fake.commands.some(({ args }) => args[0] === "kickstart"));
+    assert.isTrue(yield* service.status.pipe(Effect.map((status) => status.responsive)));
+  }),
+);
+
+it.effect("retains the candidate when rollback cannot confirm that launchd stopped it", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    fake.setProbe(false);
+    fake.setShutdownPolls(1_000);
+    const service = yield* makeTestService(fake);
+    const fiber = yield* service
+      .install({ cwd: "/Users/me/code" })
+      .pipe(Effect.flip, Effect.forkChild);
+    yield* TestClock.adjust("21 seconds");
+    const error = yield* Fiber.join(fiber);
+    assert.include(error.message, "waiting for launchd to unload");
+    assert.isTrue([...fake.files.keys()].some((path) => path.endsWith(".plist")));
+    assert.isTrue([...fake.files.keys()].some((path) => path.includes("/runtimes/")));
+  }),
+);
+
+it.effect("rejects an incomplete runtime before disturbing an existing service", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    const service = yield* makeTestService(fake);
+    yield* service.install({ cwd: "/Users/me/code" });
+    const before = [...fake.files.entries()];
+    const bootouts = fake.commands.filter(({ args }) => args[0] === "bootout").length;
+    fake.setPreflightFails();
+    const error = yield* service.install({ cwd: "/Users/me/code" }).pipe(Effect.flip);
+    assert.include(error.message, "Cannot find package 'effect'");
+    assert.deepEqual([...fake.files.entries()], before);
+    assert.equal(fake.commands.filter(({ args }) => args[0] === "bootout").length, bootouts);
+  }),
+);
+
+it.effect("refuses to start a second server for a foreground host's data directory", () =>
+  Effect.gen(function* () {
+    const fake = makeHost();
+    fake.setForegroundPid(9001);
+    const service = yield* makeTestService(fake);
+    const error = yield* service.install({ cwd: "/Users/me/code" }).pipe(Effect.flip);
+    assert.include(error.message, "Stop the foreground T3 server (pid 9001)");
+    assert.isFalse(fake.commands.some(({ args }) => args[0] === "bootstrap"));
+    assert.equal(fake.directories.size, 0);
   }),
 );
 
