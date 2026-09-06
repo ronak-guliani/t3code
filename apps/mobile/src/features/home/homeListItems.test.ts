@@ -88,54 +88,6 @@ function displayStates(
 }
 
 describe("buildHomeListLayout", () => {
-  it("pages whole root groups, retains selected grandchildren and orders virtual runs consistently", () => {
-    const group = makeGroup("nested", 2);
-    const parent = group.threads[0]!;
-    const child = { ...makeThread("child", parent.projectId), parentThreadId: parent.id };
-    const leaf = { ...makeThread("leaf", parent.projectId), parentThreadId: child.id };
-    const nestedGroup = { ...group, threads: [parent, child, leaf, group.threads[1]!] };
-    const collapsed = buildHomeListLayout({ groups: [nestedGroup], displayStates: new Map() });
-    expect(
-      collapsed.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
-    ).toEqual([parent.id, group.threads[1]!.id]);
-    const selected = buildHomeListLayout({
-      groups: [nestedGroup],
-      displayStates: new Map(),
-      selectedThreadKey: `${environmentId}:leaf`,
-      expandedOverrideByThreadKey: new Map([[`${environmentId}:${parent.id}`, false]]),
-    });
-    expect(
-      selected.items.filter((item) => item.type === "thread").map((item) => item.hierarchy?.depth),
-    ).toEqual([0, 1, 2, 0]);
-    const virtual = buildHomeListLayout({
-      groups: [
-        {
-          ...nestedGroup,
-          threads: [
-            {
-              ...parent,
-              backgroundAgentRuns: [
-                {
-                  taskId: "run",
-                  name: "Agent",
-                  status: "running",
-                  startedAt: parent.createdAt,
-                },
-              ],
-            },
-            child,
-            leaf,
-            group.threads[1]!,
-          ],
-        },
-      ],
-      displayStates: new Map(),
-    });
-    expect(
-      virtual.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
-    ).toEqual([parent.id, `agent-run:${parent.id}:run`, child.id, group.threads[1]!.id]);
-  });
-
   it("renders a header plus all threads for a small group without a show-more row", () => {
     const layout = buildHomeListLayout({
       groups: [makeGroup("alpha", 3)],

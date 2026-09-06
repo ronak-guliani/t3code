@@ -1,4 +1,5 @@
 import type { EnvironmentId, ProviderInteractionMode, ServerProvider } from "@t3tools/contracts";
+import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   detectComposerTrigger,
   replaceTextRange,
@@ -20,7 +21,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { serverEnvironment } from "../../state/server";
-import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useComposerPathSearch } from "../../state/queries";
 import type { ComposerCommandItem } from "./ComposerCommandPopover";
@@ -28,7 +28,7 @@ import { matchesSlashSkillQuery } from "./composerSlashSkillSearch";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
 
-export function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
+function composerSelectionAtEnd(draftMessage: string): ComposerEditorSelection {
   return { start: draftMessage.length, end: draftMessage.length };
 }
 
@@ -37,6 +37,8 @@ export function buildComposerSlashCommandItems(input: {
   readonly atMessageStart: boolean;
   readonly hasThread: boolean;
   readonly hasCompactableConversation?: boolean;
+  /** Whether T3 itself offers /usage-limits for the selected provider. */
+  readonly offersUsageLimits?: boolean;
   readonly allowInteractionMode: boolean;
   readonly selectedProviderStatus: Pick<
     ServerProvider,
@@ -79,6 +81,11 @@ export function buildComposerSlashCommandItems(input: {
   for (const command of input.selectedProviderStatus?.slashCommands ?? []) {
     if (!command.name.toLowerCase().includes(query)) continue;
     if (command.name === "compact" && !input.hasCompactableConversation) continue;
+    // T3's own limits command is answered by the thread composer; New Task has
+    // nowhere to show it. A provider's same-named command is left alone.
+    if (command.name === USAGE_LIMITS_COMMAND.name && input.offersUsageLimits && !input.hasThread) {
+      continue;
+    }
     if (
       !input.hasThread &&
       input.selectedProviderStatus?.driver === "codex" &&
@@ -144,9 +151,11 @@ export function useComposerCommandMenu({
   selectedProviderStatus,
   hasThread,
   hasCompactableConversation,
+  offersUsageLimits = false,
   enabled = true,
   onChangeDraftMessage,
   onUpdateInteractionMode,
+  onUsageLimits,
 }: {
   readonly draftMessage: string;
   readonly ownerKey: string | null;
@@ -155,9 +164,13 @@ export function useComposerCommandMenu({
   readonly selectedProviderStatus: ServerProvider | null;
   readonly hasThread: boolean;
   readonly hasCompactableConversation: boolean;
+  /** Whether T3 itself offers /usage-limits for the selected provider. */
+  readonly offersUsageLimits?: boolean;
   readonly enabled?: boolean;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onUpdateInteractionMode?: (mode: ProviderInteractionMode) => void;
+  /** Picking /usage-limits is the action itself; the draft keeps nothing of it. */
+  readonly onUsageLimits?: () => void;
 }) {
   const [selection, setSelection] = useState(() => composerSelectionAtEnd(draftMessage));
   const previousOwnerKeyRef = useRef(ownerKey);
@@ -190,9 +203,6 @@ export function useComposerCommandMenu({
     reportFailure: false,
   });
   const selectedProviderInstanceId = selectedProviderStatus?.instanceId;
-  const supportsWorkspaceSnapshots =
-    useAtomValue(serverEnvironment.configValueAtom(environmentId))?.environment.capabilities
-      .providerWorkspaceSnapshots === true;
   const hasWorkspaceSnapshot = Boolean(
     projectCwd &&
     selectedProviderStatus?.workspaceSnapshots?.some((snapshot) => snapshot.cwd === projectCwd),
@@ -208,8 +218,7 @@ export function useComposerCommandMenu({
     hadWorkspaceSnapshotRef.current = hasWorkspaceSnapshot;
   }, [hasWorkspaceSnapshot]);
   useEffect(() => {
-    if (!supportsWorkspaceSnapshots || !environmentId || !projectCwd || !selectedProviderInstanceId)
-      return;
+    if (!environmentId || !projectCwd || !selectedProviderInstanceId) return;
     const key = `${environmentId}:${selectedProviderInstanceId}:${projectCwd}`;
     if (workspaceRefreshKeyRef.current === key) return;
     if (hasWorkspaceSnapshot) {
@@ -242,7 +251,6 @@ export function useComposerCommandMenu({
       }
     }, retryLater);
   }, [
-    supportsWorkspaceSnapshots,
     draftMessage,
     environmentId,
     hasWorkspaceSnapshot,
@@ -273,6 +281,7 @@ export function useComposerCommandMenu({
         atMessageStart: trigger.rangeStart === 0,
         hasThread,
         hasCompactableConversation,
+        offersUsageLimits,
         allowInteractionMode: onUpdateInteractionMode !== undefined,
         selectedProviderStatus,
       });
@@ -396,11 +405,24 @@ export function useComposerCommandMenu({
     selectedProviderStatus,
     skills,
     trigger,
+    offersUsageLimits,
   ]);
 
   const onSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!trigger) return;
+
+      if (
+        item.type === "provider-slash-command" &&
+        item.command.name === USAGE_LIMITS_COMMAND.name &&
+        onUsageLimits
+      ) {
+        const cleared = replaceTextRange(draftMessage, trigger.rangeStart, trigger.rangeEnd, "");
+        setSelection({ start: cleared.cursor, end: cleared.cursor });
+        onChangeDraftMessage(cleared.text);
+        onUsageLimits();
+        return;
+      }
 
       const result = resolveComposerCommandSelection({
         draftMessage,
@@ -420,6 +442,7 @@ export function useComposerCommandMenu({
       draftMessage,
       onChangeDraftMessage,
       onUpdateInteractionMode,
+      onUsageLimits,
       selectedProviderStatus?.showInteractionModeToggle,
       trigger,
     ],

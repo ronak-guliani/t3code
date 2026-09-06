@@ -11,7 +11,6 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import * as Option from "effect/Option";
 
 import { useProject, useThreadShell } from "../state/entities";
-import { firstRouteParam } from "../lib/routeParams";
 import { useEnvironmentThread } from "../state/threads";
 import {
   useRemoteEnvironmentRuntime,
@@ -21,6 +20,14 @@ type ThreadSelectionRouteParams = {
   readonly environmentId?: string | string[];
   readonly threadId?: string | string[];
 };
+
+function firstRouteParam(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
 
 function latestUserMessageAt(thread: OrchestrationThread): OrchestrationThread["updatedAt"] | null {
   for (let index = thread.messages.length - 1; index >= 0; index -= 1) {
@@ -38,7 +45,6 @@ function threadDetailToShell(
   thread: OrchestrationThread,
 ): EnvironmentThreadShell {
   return {
-    ...thread,
     environmentId,
     id: thread.id,
     projectId: thread.projectId,
@@ -49,12 +55,17 @@ function threadDetailToShell(
     branch: thread.branch,
     worktreePath: thread.worktreePath,
     linkedPullRequest: thread.linkedPullRequest ?? null,
+    branchPullRequest: thread.branchPullRequest ?? null,
     latestTurn: thread.latestTurn,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
     archivedAt: thread.archivedAt,
     settledOverride: thread.settledOverride,
     settledAt: thread.settledAt,
+    unsettledAt: thread.unsettledAt,
+    activeOrderKey: thread.activeOrderKey,
+    pinnedAt: thread.pinnedAt,
+    pinOrderKey: thread.pinOrderKey,
     snoozedUntil: thread.snoozedUntil ?? null,
     snoozedAt: thread.snoozedAt ?? null,
     session: thread.session,
@@ -62,7 +73,7 @@ function threadDetailToShell(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    hasPendingQueuedTurn: (thread.queuedTurns ?? []).some((turn) => turn.failedAt === null),
+    hasPendingQueuedTurn: false,
   };
 }
 

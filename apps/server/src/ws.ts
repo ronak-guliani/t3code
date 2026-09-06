@@ -1877,7 +1877,7 @@ const makeWsRpcLayer = (
               }
               if (input.resource._tag === "project-favicon") {
                 const project = yield* projectionSnapshotQuery
-                  .getProjectShellById(input.resource.projectId)
+                  .getActiveProjectByWorkspaceRoot(input.resource.cwd)
                   .pipe(
                     Effect.mapError(
                       (cause) =>

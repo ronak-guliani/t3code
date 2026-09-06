@@ -52,7 +52,7 @@ const SHELL_SYNCHRONIZATION_ERROR_MESSAGE = "Could not synchronize environment d
 export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")(function* () {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
-  const snapshotLoader = Option.getOrUndefined(yield* Effect.serviceOption(ShellSnapshotLoader));
+  const snapshotLoader = yield* ShellSnapshotLoader;
   const wakeups = yield* Effect.serviceOption(ConnectionWakeups.ConnectionWakeups);
   const environmentId = supervisor.target.environmentId;
   const cachedSnapshot = yield* cache.loadShell(environmentId).pipe(
@@ -203,10 +203,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         const hasAuthoritativeSnapshot = (yield* Ref.get(lastAuthoritativeSession)) === session;
         let canResume = hasAuthoritativeSnapshot;
         let current = yield* SubscriptionRef.get(state);
-        if (
-          snapshotLoader !== undefined &&
-          (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot))
-        ) {
+        if (!hasAuthoritativeSnapshot || Option.isNone(current.snapshot)) {
           const prepared = yield* SubscriptionRef.get(supervisor.prepared).pipe(
             Effect.flatMap(
               Option.match({
@@ -272,7 +269,7 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
   return state;
 });
 
-export function shellStateChanges(environmentId: EnvironmentId) {
+function shellStateChanges(environmentId: EnvironmentId) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(makeEnvironmentShellState().pipe(Effect.map(SubscriptionRef.changes))),
@@ -394,7 +391,10 @@ export function createEnvironmentServerConfigsAtom(input: {
 }
 
 export function createEnvironmentShellAtoms<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | EnvironmentCacheStore | R, E>,
+  runtime: Atom.AtomRuntime<
+    EnvironmentRegistry | EnvironmentCacheStore | ShellSnapshotLoader | R,
+    E
+  >,
 ) {
   const stateAtom = Atom.family((environmentId: EnvironmentId) =>
     runtime.atom(shellStateChanges(environmentId), {

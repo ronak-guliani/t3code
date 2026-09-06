@@ -24,8 +24,10 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { EnvironmentId, PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
-import { resolveEnvironmentMachineKind } from "@t3tools/shared/environmentMachine";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  resolveEnvironmentMachineKind,
+} from "@t3tools/contracts";
 
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
 import {
@@ -47,6 +49,7 @@ import { VideoPreviewModal, type VideoPreviewSource } from "../../components/Vid
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
+import { hasProviderUsageLimits, isUsageLimitsCommand } from "@t3tools/shared/usageLimits";
 import { COMPOSER_LAYOUT_TRANSITION, ComposerSurface } from "./ThreadComposer";
 import { ShimmeringWorkContent } from "./thread-work-log";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
@@ -65,7 +68,6 @@ import {
 } from "./use-thread-settings-sheet-presentation";
 
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
-import { reportClientError, reportClientWarning } from "../../lib/clientLogger";
 import {
   convertPastedImagesToAttachments,
   pickComposerFiles,
@@ -75,20 +77,15 @@ import {
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import {
   clearComposerDraftContent,
-  clearComposerDraft,
   flushComposerDrafts,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
   scheduleUnusedComposerAttachmentCleanup,
   type ComposerDraft,
+  waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
-import {
-  useEnvironmentServerConfig,
-  useEnvironmentShellState,
-  useProjects,
-  useThreadShells,
-} from "../../state/entities";
+import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import {
   isModelSelectionUnavailable,
   resolveSelectableModelSelection,
@@ -148,23 +145,18 @@ function NewTaskWorkspaceIcon(props: {
 }
 
 export function NewTaskDraftScreen(props: {
-  readonly parentThreadId?: string | undefined;
   readonly initialProjectRef?: {
     readonly environmentId?: string;
     readonly projectId?: string;
   };
   /** Queued outbox message id when editing an existing pending task. */
   readonly pendingTaskId?: string;
+  /** Existing new-task draft key to resume (a Draft row in the thread list). */
+  readonly draftId?: string;
   /** Durable native share inbox item to merge into this project draft. */
   readonly incomingShareId?: string;
 }) {
   const projects = useProjects();
-  const threads = useThreadShells();
-  const initialShellState = useEnvironmentShellState(
-    props.initialProjectRef?.environmentId
-      ? EnvironmentId.make(props.initialProjectRef.environmentId)
-      : null,
-  );
   const createProjectThread = useCreateProjectThread();
   const flow = useNewTaskFlow();
   const navigation = useNavigation();
@@ -318,12 +310,17 @@ export function NewTaskDraftScreen(props: {
     cancelledIncomingShareId !== props.incomingShareId &&
     !isIncomingShareAwaitingServerConfig,
   );
-  const isComposerInteractionLocked =
-    isIncomingShareTransferPending ||
-    flow.submitting ||
-    (props.parentThreadId !== undefined && flow.parentThreadId !== props.parentThreadId);
+  const isComposerInteractionLocked = isIncomingShareTransferPending || flow.submitting;
   // Also guard while a submit is in flight: an Android back press or iOS
   // Cancel would otherwise abandon the screen while the task still starts.
+  // T3 owns /usage-limits only where Limits has data for the selected provider.
+  const offersUsageLimits =
+    flow.selectedProviderStatus !== null &&
+    hasProviderUsageLimits(
+      flow.selectedProviderStatus.driver,
+      selectedEnvironmentServerConfig?.providers ?? [],
+      selectedEnvironmentServerConfig?.usageLimitSources ?? [],
+    );
   const composerMenu = useComposerCommandMenu({
     draftMessage: flow.prompt,
     ownerKey: flow.draftKey,
@@ -335,6 +332,7 @@ export function NewTaskDraftScreen(props: {
     selectedProviderStatus: flow.selectedProviderStatus,
     hasThread: false,
     hasCompactableConversation: false,
+    offersUsageLimits: offersUsageLimits,
     enabled: isComposerFocused && !isComposerInteractionLocked,
     onChangeDraftMessage: flow.setPrompt,
     onUpdateInteractionMode: flow.planModeEnabled ? flow.setInteractionMode : undefined,
@@ -425,7 +423,44 @@ export function NewTaskDraftScreen(props: {
     };
   }, []);
 
-  const { beginEditingPendingTask, cancelEditingPendingTask, editingPendingTask } = flow;
+  const { beginEditingPendingTask, cancelEditingPendingTask, editingPendingTask, openDraft } = flow;
+  // A Draft row opens its own draft; a fresh New Task never reuses one.
+  // Drafts hydrate from disk and projects arrive with the shell snapshot, so
+  // on a cold launch the draft or its project can be missing for a moment;
+  // wait for hydration and retry while projects load. Attempt each id once
+  // after that so a draft discarded mid-session does not keep bouncing to
+  // the picker.
+  const attemptedDraftIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!props.draftId || props.pendingTaskId) {
+      return;
+    }
+    const draftId = props.draftId;
+    if (attemptedDraftIdRef.current === draftId) {
+      return;
+    }
+    let cancelled = false;
+    void waitForComposerDraftsLoaded().then(() => {
+      if (cancelled || attemptedDraftIdRef.current === draftId) {
+        return;
+      }
+      if (openDraft(draftId)) {
+        attemptedDraftIdRef.current = draftId;
+        return;
+      }
+      if (getComposerDraftSnapshot(draftId).project !== undefined && projects.length === 0) {
+        // The draft exists; its project has not arrived yet. Retry on the
+        // next projects change instead of giving up.
+        return;
+      }
+      attemptedDraftIdRef.current = draftId;
+      navigation.dispatch(StackActions.replace("NewTask"));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [navigation, openDraft, projects, props.draftId, props.pendingTaskId]);
+
   const attemptedPendingTaskIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!props.pendingTaskId || editingPendingTask?.messageId === props.pendingTaskId) {
@@ -462,9 +497,10 @@ export function NewTaskDraftScreen(props: {
   const lastInitialProjectRefRef = useRef(props.initialProjectRef);
 
   useEffect(() => {
-    // Pending-task editing owns project selection (and must not fall through
-    // to the replace("NewTask") fallback while its hydration is in flight).
-    if (props.pendingTaskId) {
+    // Pending-task editing and draft resumption own project selection (and
+    // must not fall through to the replace("NewTask") fallback while their
+    // hydration is in flight).
+    if (props.pendingTaskId || props.draftId) {
       return;
     }
     if (lastInitialProjectRefRef.current !== props.initialProjectRef) {
@@ -483,24 +519,8 @@ export function NewTaskDraftScreen(props: {
       if (directProject) {
         // Apply the route's project once. Re-applying on every change would
         // instantly revert environment/project switches made in the picker.
-        const directProjectKey = `${directProject.environmentId}:${directProject.id}:${props.parentThreadId ?? ""}`;
+        const directProjectKey = `${directProject.environmentId}:${directProject.id}`;
         if (appliedInitialProjectKeyRef.current === directProjectKey) {
-          return;
-        }
-        if (props.parentThreadId) {
-          const parent = threads.find(
-            (thread) =>
-              thread.environmentId === directProject.environmentId &&
-              thread.id === props.parentThreadId,
-          );
-          if (!parent && initialShellState?.status !== "live") return;
-          if (!parent || parent.archivedAt !== null) {
-            Alert.alert("Parent chat unavailable", "The parent chat is no longer active.");
-            navigation.goBack();
-            return;
-          }
-          appliedInitialProjectKeyRef.current = directProjectKey;
-          flow.beginSubchat(directProject, parent);
           return;
         }
         appliedInitialProjectKeyRef.current = directProjectKey;
@@ -539,10 +559,7 @@ export function NewTaskDraftScreen(props: {
     props.initialProjectRef,
     props.incomingShareId,
     props.pendingTaskId,
-    props.parentThreadId,
-    threads,
-    initialShellState?.status,
-    flow.beginSubchat,
+    props.draftId,
     navigation,
     selectedProject,
     selectedProjectKey,
@@ -889,14 +906,14 @@ export function NewTaskDraftScreen(props: {
           flow.appendAttachments(images);
         }
       } catch (error) {
-        reportClientError("[native paste] error converting images", error);
+        console.error("[native paste] error converting images", error);
       }
     },
     [flow],
   );
 
   async function handleStart(): Promise<void> {
-    if (voiceInput.blocksSubmission || isComposerInteractionLocked) return;
+    if (voiceInput.blocksSubmission) return;
     const selectedProject = flow.selectedProject;
     const draftKey = flow.draftKey;
     if (!selectedProject || !draftKey) {
@@ -906,12 +923,10 @@ export function NewTaskDraftScreen(props: {
     // Read the latest explicit pick. Antigravity selections stay unchanged
     // when setup or a catalog change makes them unavailable.
     const modelSelection =
-      (draft.parentThreadId
-        ? draft.modelSelection
-        : resolveSelectableModelSelection(
-            selectedEnvironmentServerConfig,
-            draft.modelSelection ?? null,
-          )) ?? flow.selectedModel;
+      resolveSelectableModelSelection(
+        selectedEnvironmentServerConfig,
+        draft.modelSelection ?? null,
+      ) ?? flow.selectedModel;
     const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
     const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
     const selectedWorktreePath =
@@ -942,6 +957,20 @@ export function NewTaskDraftScreen(props: {
       Alert.alert(
         "Antigravity model unavailable",
         "Set up Antigravity on web or desktop, or choose another model.",
+      );
+      return;
+    }
+    // T3's own limits command is answered by the thread composer; a new task would
+    // send it to the agent. A provider's same-named command, or a prompt carrying
+    // attachments, goes through as usual.
+    if (
+      offersUsageLimits &&
+      isUsageLimitsCommand(initialMessageText) &&
+      draft.attachments.length === 0
+    ) {
+      Alert.alert(
+        "Usage limits",
+        "Send /usage-limits inside a thread, or open Settings → Usage → Limits.",
       );
       return;
     }
@@ -988,8 +1017,6 @@ export function NewTaskDraftScreen(props: {
       }
       if (editingPendingTask) {
         flow.finishEditingPendingTask();
-      } else if (flow.parentThreadId) {
-        clearComposerDraft(draftKey);
       } else {
         // Drop draft-local model/workspace selections with the content. The
         // next task re-resolves project defaults before sticky app defaults.
@@ -1019,7 +1046,6 @@ export function NewTaskDraftScreen(props: {
     });
     const result = await createProjectThread({
       project: selectedProject,
-      parentThreadId: draft.parentThreadId,
       modelSelection,
       envMode: workspaceMode,
       branch: creationBranch,
@@ -1061,11 +1087,9 @@ export function NewTaskDraftScreen(props: {
       try {
         await removeThreadOutboxMessage(editingPendingTask);
       } catch (error) {
-        reportClientWarning("[new-task] failed to remove delivered pending task", error);
+        console.warn("[new-task] failed to remove delivered pending task", error);
       }
       flow.finishEditingPendingTask();
-    } else if (flow.parentThreadId) {
-      clearComposerDraft(draftKey);
     } else {
       clearComposerDraftContent(draftKey, {
         clearModelSelection: true,
@@ -1175,7 +1199,7 @@ export function NewTaskDraftScreen(props: {
             accessibilityHint="Opens the project picker"
             accessibilityLabel={`Change project from ${selectedProject.title}`}
             accessibilityRole="button"
-            disabled={isComposerInteractionLocked || flow.parentThreadId !== null}
+            disabled={isComposerInteractionLocked}
             onPress={chooseProject}
             className="min-w-0 max-w-[250px] border-b border-foreground-muted active:opacity-65"
           >
@@ -1190,20 +1214,10 @@ export function NewTaskDraftScreen(props: {
         </View>
       </View>
 
-      {flow.parentThreadId ? (
-        <Text className="text-center text-sm text-foreground-muted">
-          Subchat of{" "}
-          {threads.find(
-            (thread) =>
-              thread.environmentId === selectedProject.environmentId &&
-              thread.id === flow.parentThreadId,
-          )?.title ?? "parent chat"}
-        </Text>
-      ) : null}
       <ComposerInlineControl
         accessibilityLabel={`Environment: ${selectedEnvironmentLabel}`}
         chevronDirection="right"
-        disabled={isComposerInteractionLocked || voiceInput.isBusy || flow.parentThreadId !== null}
+        disabled={isComposerInteractionLocked || voiceInput.isBusy}
         iconNode={
           <EnvironmentMachineSymbol
             kind={resolveEnvironmentMachineKind(selectedEnvironmentServerConfig)}

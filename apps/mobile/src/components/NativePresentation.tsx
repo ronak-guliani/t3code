@@ -1,8 +1,8 @@
-import type { ReactElement } from "react";
+import type { ReactNode } from "react";
 import { View, type ViewProps } from "react-native";
 
 export interface PresentationSourceProps extends ViewProps {
-  readonly children: ReactElement;
+  readonly children: ReactNode;
   /** Stable across remounts so dismissal can find a recycled attachment thumbnail. */
   readonly identifier: string;
 }

@@ -1,4 +1,5 @@
 import { videoMimeType } from "./video.ts";
+
 export const WORKSPACE_BROWSER_PREVIEW_EXTENSIONS = [".htm", ".html", ".pdf"] as const;
 
 export const WORKSPACE_IMAGE_PREVIEW_EXTENSIONS = [
@@ -12,23 +13,6 @@ export const WORKSPACE_IMAGE_PREVIEW_EXTENSIONS = [
   ".webp",
 ] as const;
 
-function hasPreviewExtension(path: string, extensions: ReadonlyArray<string>): boolean {
-  const pathWithoutQuery = path.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
-  return extensions.some((extension) => pathWithoutQuery.endsWith(extension));
-}
-
-export function isWorkspaceBrowserPreviewPath(path: string): boolean {
-  return hasPreviewExtension(path, WORKSPACE_BROWSER_PREVIEW_EXTENSIONS);
-}
-
-export function isWorkspaceImagePreviewPath(path: string): boolean {
-  return hasPreviewExtension(path, WORKSPACE_IMAGE_PREVIEW_EXTENSIONS);
-}
-
-export function isWorkspacePreviewEntryPath(path: string): boolean {
-  return isWorkspaceBrowserPreviewPath(path) || isWorkspaceImagePreviewPath(path);
-}
-
 const IMAGE_MIME_TYPE_BY_EXTENSION = new Map([
   [".avif", "image/avif"],
   [".gif", "image/gif"],
@@ -40,6 +24,13 @@ const IMAGE_MIME_TYPE_BY_EXTENSION = new Map([
   [".webp", "image/webp"],
 ]);
 
+const BROWSER_MIME_TYPE_BY_EXTENSION = new Map([
+  [".htm", "text/html"],
+  [".html", "text/html"],
+  [".pdf", "application/pdf"],
+]);
+
+/** Classifies a literal filesystem extension, without URL decoding or suffix removal. */
 export function mediaMimeTypeFromExtension(extension: string): string | null {
   if (!/^\.[a-z0-9]+$/i.test(extension)) return null;
   return (
@@ -48,6 +39,17 @@ export function mediaMimeTypeFromExtension(extension: string): string | null {
   );
 }
 
+/** Files the server serves in place from anywhere on its host: media plus browser documents. */
+export function hostPreviewMimeTypeFromExtension(extension: string): string | null {
+  if (!/^\.[a-z0-9]+$/i.test(extension)) return null;
+  return (
+    mediaMimeTypeFromExtension(extension) ??
+    BROWSER_MIME_TYPE_BY_EXTENSION.get(extension.toLowerCase()) ??
+    null
+  );
+}
+
+/** Classifies an authored media path or URL. Filesystem validation uses the literal extension. */
 export function mediaMimeType(path: string): string | null {
   const trimmed = path.trim();
   const source = trimmed.startsWith("<") && trimmed.endsWith(">") ? trimmed.slice(1, -1) : trimmed;
@@ -72,6 +74,30 @@ export function mediaMimeType(path: string): string | null {
   return extensionIndex < 0 ? null : mediaMimeTypeFromExtension(basename.slice(extensionIndex));
 }
 
+export function mediaKindFromPath(path: string): "image" | "video" | null {
+  const mimeType = mediaMimeType(path);
+  if (mimeType === null) return null;
+  return mimeType.startsWith("video/") ? "video" : "image";
+}
+
+function hasPreviewExtension(path: string, extensions: ReadonlyArray<string>): boolean {
+  const pathWithoutQuery = path.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
+  return extensions.some((extension) => pathWithoutQuery.endsWith(extension));
+}
+
+export function isWorkspaceBrowserPreviewPath(path: string): boolean {
+  return hasPreviewExtension(path, WORKSPACE_BROWSER_PREVIEW_EXTENSIONS);
+}
+
+export function isWorkspaceImagePreviewPath(path: string): boolean {
+  return hasPreviewExtension(path, WORKSPACE_IMAGE_PREVIEW_EXTENSIONS);
+}
+
+/** File viewers receive literal filesystem paths, not Markdown URLs. */
 export function isWorkspaceVideoPreviewPath(path: string): boolean {
   return videoMimeType({ name: path, mimeType: "" }) !== null;
+}
+
+export function isWorkspacePreviewEntryPath(path: string): boolean {
+  return isWorkspaceBrowserPreviewPath(path) || isWorkspaceImagePreviewPath(path);
 }

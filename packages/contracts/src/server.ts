@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { EnvironmentMachineKind, ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
   IsoDateTime,
@@ -285,8 +285,26 @@ export const ServerConfig = Schema.Struct({
   threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   threadSnapshotPagination: Schema.optionalKey(Schema.Boolean),
   lifecycleVersion: Schema.optionalKey(NonNegativeInt),
+  /**
+   * Quota reported by configured usage-limit sources. Never sent in a config
+   * snapshot: the source stream emits the current set on subscribe, and it
+   * stays absent for subscribers that did not opt in.
+   */
+  usageLimitSources: Schema.optional(UsageLimitSourceSnapshots),
 });
 export type ServerConfig = typeof ServerConfig.Type;
+
+/**
+ * The machine an environment should be drawn as: the user's pick, else what
+ * the server detected, else a generic server. A null config (not connected
+ * yet, or an older server) resolves to the same generic so rows never
+ * flicker between glyphs.
+ */
+export function resolveEnvironmentMachineKind(
+  config: Pick<ServerConfig, "environment" | "settings"> | null,
+): EnvironmentMachineKind {
+  return config?.settings.environmentIcon ?? config?.environment.platform.machine ?? "server";
+}
 
 export const ServerUpsertKeybindingInput = KeybindingRule;
 export type ServerUpsertKeybindingInput = typeof ServerUpsertKeybindingInput.Type;
@@ -628,4 +646,4 @@ export const ServerSignalProcessResult = Schema.Struct({
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
-import { ServerProviderUsageLimits } from "./providerUsageLimits.ts";
+import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
