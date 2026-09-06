@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { makeMobileConfig } from "./app.config";
+import { makeMobileConfig as makeConfig } from "./app.config";
 import eas from "./eas.json";
 import mobilePackage from "./package.json";
+import repoPackage from "../../package.json";
 
 const variants = [
   ["development", "T3 Code RG Dev", "com.ronakguliani.t3code.dev", "t3code-rg-dev"],
@@ -13,6 +14,13 @@ const ownedProject = {
   MOBILE_EAS_OWNER: "my-account",
   MOBILE_EAS_PROJECT_ID: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
 };
+const connectConfig = {
+  T3CODE_RELAY_URL: "https://relay.example.test",
+  T3CODE_CLERK_PUBLISHABLE_KEY: "pk_test_mobile",
+  T3CODE_CLERK_JWT_TEMPLATE: "t3-relay",
+};
+const makeMobileConfig = (env: Readonly<Record<string, string | undefined>>) =>
+  makeConfig({ ...connectConfig, ...env });
 
 describe("owned mobile build configuration", () => {
   it.each(variants)("isolates the %s app and widget identities", (variant, name, id, scheme) => {
@@ -39,7 +47,7 @@ describe("owned mobile build configuration", () => {
     expect(() => makeMobileConfig({ APP_VARIANT })).toThrow("Unknown APP_VARIANT");
   });
 
-  it("does not inherit desktop cloud or telemetry configuration", () => {
+  it("restores Connect without enabling hosted push, telemetry, or OTA", () => {
     const config = makeMobileConfig({
       T3CODE_RELAY_URL: "https://relay.t3.codes",
       EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_test_not_for_mobile",
@@ -51,14 +59,98 @@ describe("owned mobile build configuration", () => {
     });
     expect(config.extra).toEqual({
       appVariant: "development",
-      relay: { url: null },
-      clerk: { publishableKey: null, jwtTemplate: null },
+      agentAwarenessPushEnabled: false,
+      relay: { url: "https://relay.t3.codes" },
+      clerk: { publishableKey: "pk_test_mobile", jwtTemplate: "t3-relay" },
       observability: { tracesUrl: null, tracesDataset: null, tracesToken: null },
       eas: { projectId: "01272cd5-225c-47d4-978e-a7eb97c9e457" },
     });
-    expect(config.plugins).not.toContainEqual(expect.arrayContaining(["@clerk/expo"]));
+    expect(config.plugins).toContainEqual(["@clerk/expo", { theme: "./clerk-theme.json" }]);
     expect(config.updates).toEqual({ enabled: false, checkAutomatically: "NEVER" });
     expect(config.runtimeVersion).toEqual({ policy: "fingerprint" });
+  });
+
+  it("preserves an explicit Direct Connect-only build", () => {
+    const config = makeConfig({
+      MOBILE_CONNECT_ENABLED: "false",
+      MOBILE_CLERK_IOS_REDIRECT_URL: "com.t3tools.t3code://callback",
+    });
+    expect(config.extra).toMatchObject({
+      relay: { url: null },
+      clerk: { publishableKey: null, jwtTemplate: null },
+      agentAwarenessPushEnabled: false,
+    });
+    expect(config.plugins).not.toContainEqual(expect.arrayContaining(["@clerk/expo"]));
+    expect(config.ios?.infoPlist).not.toHaveProperty("ClerkRedirectUrl");
+    expect(config.ios?.infoPlist).not.toHaveProperty("CFBundleURLTypes");
+  });
+
+  it.each(variants)(
+    "overrides only the %s OAuth callback, not app or keychain identity",
+    (variant, _name, id, scheme) => {
+      const config = makeMobileConfig({
+        APP_VARIANT: variant,
+        MOBILE_CLERK_IOS_REDIRECT_URL: "com.t3tools.t3code://callback",
+      });
+      expect(config.ios?.bundleIdentifier).toBe(id);
+      expect(config.android?.package).toBe(id);
+      expect(config.scheme).toBe(scheme);
+      expect(config.ios?.infoPlist).toMatchObject({
+        ClerkRedirectUrl: "com.t3tools.t3code://callback",
+        CFBundleURLTypes: [{ CFBundleURLSchemes: [scheme, id, "com.t3tools.t3code"] }],
+      });
+      expect(config.ios?.infoPlist).not.toHaveProperty("ClerkKeychainService");
+    },
+  );
+
+  it("retains SDK callback defaults when no override is configured", () => {
+    expect(makeMobileConfig({}).ios?.infoPlist).not.toHaveProperty("ClerkRedirectUrl");
+  });
+
+  it.each([
+    "https://example.com/callback",
+    "http://localhost/callback",
+    "missing-scheme",
+    "app://callback?token=secret",
+    "app://callback#fragment",
+    "app://user:password@callback",
+  ])("rejects an invalid native callback override: %s", (url) => {
+    expect(() => makeMobileConfig({ MOBILE_CLERK_IOS_REDIRECT_URL: url })).toThrow(
+      "MOBILE_CLERK_IOS_REDIRECT_URL",
+    );
+  });
+
+  it.each(Object.keys(connectConfig))("rejects incomplete Connect config without %s", (key) => {
+    expect(() => makeMobileConfig({ [key]: "" })).toThrow("T3 Connect requires");
+  });
+
+  it.each(["http://relay.example.test", "not-a-url", "https://relay.example.test/path"])(
+    "rejects an invalid relay origin: %s",
+    (url) => {
+      expect(() => makeMobileConfig({ T3CODE_RELAY_URL: url })).toThrow("secure T3CODE_RELAY_URL");
+    },
+  );
+
+  it("rejects an ambiguous Connect flag", () => {
+    expect(() => makeMobileConfig({ MOBILE_CONNECT_ENABLED: "yes" })).toThrow(
+      "MOBILE_CONNECT_ENABLED must be true or false",
+    );
+  });
+
+  it("accepts the shared framework aliases for Connect configuration", () => {
+    expect(
+      makeConfig({
+        VITE_T3CODE_RELAY_URL: connectConfig.T3CODE_RELAY_URL,
+        EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: connectConfig.T3CODE_CLERK_PUBLISHABLE_KEY,
+        EXPO_PUBLIC_CLERK_JWT_TEMPLATE: connectConfig.T3CODE_CLERK_JWT_TEMPLATE,
+      }).extra,
+    ).toMatchObject({
+      relay: { url: connectConfig.T3CODE_RELAY_URL },
+      clerk: {
+        publishableKey: connectConfig.T3CODE_CLERK_PUBLISHABLE_KEY,
+        jwtTemplate: connectConfig.T3CODE_CLERK_JWT_TEMPLATE,
+      },
+    });
   });
 
   it("resolves the provisioned owned project without an account login or local env file", () => {
@@ -134,6 +226,22 @@ describe("owned mobile build configuration", () => {
 });
 
 describe("mobile build entrypoints", () => {
+  it("updates the installed Preview app through cable-free internal distribution", () => {
+    expect(repoPackage.scripts["ios:update"]).toBe("pnpm --filter @t3tools/mobile ios:update");
+    expect(mobilePackage.scripts["ios:update"]).toBe(
+      "eas build --profile preview --platform ios --wait",
+    );
+    expect(eas.build.preview).toMatchObject({
+      env: { APP_VARIANT: "preview" },
+      distribution: "internal",
+    });
+    expect(eas.build.preview).not.toHaveProperty("developmentClient", true);
+    expect(eas.build.preview).not.toHaveProperty("ios.simulator", true);
+    expect(
+      makeMobileConfig({ APP_VARIANT: eas.build.preview.env.APP_VARIANT }).ios?.bundleIdentifier,
+    ).toBe("com.ronakguliani.t3code.preview");
+  });
+
   it.each(["ios", "android"] as const)(
     "keeps the same %s variant through prebuild and compilation",
     (platform) => {
@@ -174,8 +282,8 @@ describe("mobile build entrypoints", () => {
     }
   });
 
-  it("does not link unused hosted-auth native modules into the direct-only iOS build", () => {
-    expect(mobilePackage.expo.autolinking.ios.exclude).toContain("@clerk/expo");
+  it("links native authentication on both platforms", () => {
+    expect(mobilePackage.expo.autolinking).not.toHaveProperty("ios.exclude");
     expect(mobilePackage.expo.autolinking).not.toHaveProperty("android.exclude");
   });
 

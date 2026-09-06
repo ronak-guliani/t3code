@@ -1,0 +1,26 @@
+diff --git a/ios/ClerkNativeBridge.swift b/ios/ClerkNativeBridge.swift
+index fcbf1c9ecddcb9a478f5404b6700c1be8d26ffc4..6d3809ae37dd2872ce45ffad4e696031fb946603 100644
+--- a/ios/ClerkNativeBridge.swift
++++ b/ios/ClerkNativeBridge.swift
+@@ -194,10 +194,19 @@ final class ClerkNativeBridge {
+ 
+   private static func makeClerkOptions() -> Clerk.Options {
+     let middleware = Clerk.Options.MiddlewareConfig(request: [ClerkExpoHeaderMiddleware()])
++    let redirectConfig: Clerk.Options.RedirectConfig
++    if let redirectUrl = Bundle.main.object(forInfoDictionaryKey: "ClerkRedirectUrl") as? String {
++      guard let scheme = URL(string: redirectUrl)?.scheme, !scheme.isEmpty else {
++        preconditionFailure("ClerkRedirectUrl must contain a callback URL scheme.")
++      }
++      redirectConfig = .init(redirectUrl: redirectUrl, callbackUrlScheme: scheme)
++    } else {
++      redirectConfig = .init()
++    }
+     guard let service = keychainService else {
+-      return .init(middleware: middleware)
++      return .init(redirectConfig: redirectConfig, middleware: middleware)
+     }
+-    return .init(keychainConfig: .init(service: service), middleware: middleware)
++    return .init(keychainConfig: .init(service: service), redirectConfig: redirectConfig, middleware: middleware)
+   }
+ 
+   @MainActor

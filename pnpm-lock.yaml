@@ -77,6 +77,7 @@ overrides:
 packageExtensionsChecksum: sha256-FV3+2NW/9MFbunJaPsMxvO0LAzyfccoPtPiKoIXAwUU=
 
 patchedDependencies:
+  '@clerk/expo@3.6.2': 03495e425377040a3fb282c1bb7652dbd6990a54fe108a4470bfa31ae96669ca
   '@effect/platform-bun@4.0.0-beta.78': 17326e206d468ac4ad84f787d2c5a6b3856c44c21deef99c05f205e350272af4
   '@effect/platform-node@4.0.0-beta.78': 53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba
   '@effect/vitest@4.0.0-beta.78': 42b87cc47e70d74e62496e7a8261b3fd298ecad4464d209348ab04b96f853a5f
@@ -192,7 +193,7 @@ importers:
     dependencies:
       '@clerk/expo':
         specifier: 3.6.2
-        version: 3.6.2(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+        version: 3.6.2(patch_hash=03495e425377040a3fb282c1bb7652dbd6990a54fe108a4470bfa31ae96669ca)(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
       '@effect/atom-react':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(react@19.2.3)(scheduler@0.27.0)
@@ -10645,7 +10646,7 @@ snapshots:
       - react
       - react-dom
 
-  '@clerk/expo@3.6.2(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)':
+  '@clerk/expo@3.6.2(patch_hash=03495e425377040a3fb282c1bb7652dbd6990a54fe108a4470bfa31ae96669ca)(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)':
     dependencies:
       '@clerk/clerk-js': 6.22.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@clerk/react': 6.11.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
