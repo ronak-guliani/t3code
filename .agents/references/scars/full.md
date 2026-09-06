@@ -167,6 +167,8 @@
 
 ## Client state and completion
 
+- Child lifecycle notifications are not parent execution status. Keep unread child updates in activity/tooltip surfaces, not sidebar status dots or badges; they must not override the parent's own completion.
+
 - Thread PR provenance must never be inferred from mutable workspace checkout state or branch-name equality; only an explicit durable association may render a PR badge.
 - Optimistic turn state must live outside the routed chat component: draft-to-server promotion remounts `ChatView`, so component-local pending state makes the message and Working indicators disappear until projection catches up. Clear shared pending state only after the server thread/session acknowledges it.
 - Mark a draft as promoting as soon as `thread.turn.start` is accepted, and keep its normal project-thread row until the shell publishes the server thread; waiting for lifecycle projection makes sent drafts look stuck or disappear.
