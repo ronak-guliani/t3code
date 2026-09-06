@@ -107,6 +107,7 @@ packageExtensions:
       vite: "catalog:"
 
 patchedDependencies:
+  "@clerk/expo@3.6.2": patches/@clerk__expo@3.6.2.patch
   "@effect/platform-bun@4.0.0-beta.78": patches/@effect__platform-bun@4.0.0-beta.78.patch
   "@effect/platform-node@4.0.0-beta.78": patches/@effect__platform-node@4.0.0-beta.78.patch
   "@effect/vitest@4.0.0-beta.78": patches/@effect__vitest@4.0.0-beta.78.patch
