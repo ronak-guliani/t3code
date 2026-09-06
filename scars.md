@@ -1,5 +1,7 @@
 # Scars
 
+- Workspace autosave sessions belong to the environment/workspace/file, not the preview mount: retain failed drafts and retry state across remounts, flush only unsaved revisions, and let a post-confirmation read retire only the draft it captured. Content-only autosaves must not rebuild the file tree.
+
 - Agent browser access is a server-authoritative capability: gate credential issuance centrally, revoke stale credentials on denial, attach the resulting session consistently across providers, and derive provider instructions from actual tool availability. Never install a per-thread credential into an externally managed OpenCode server because its MCP configuration is shared.
 - Find-in-chat scrolling must follow selected match identity, not the rebuilt match object; message sends and stream updates otherwise yank the viewport back to an old search result.
 - `packages/contracts` stays schema-only; no runtime logic.

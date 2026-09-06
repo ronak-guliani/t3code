@@ -198,6 +198,40 @@ it.layer(TestLayer)("WorkspaceFileSystemLive", (it) => {
       }),
     );
 
+    it.effect("keeps truncated multibyte UTF-8 text previewable", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        for (const character of ["\u00e9", "\u20ac", "\u{1f600}"]) {
+          for (let cut = 1; cut < new TextEncoder().encode(character).length; cut++) {
+            const prefix = "a".repeat(1024 * 1024 - cut);
+            yield* writeTextFile(cwd, "large.txt", `${prefix}${character}tail`);
+            const result = yield* workspaceFileSystem.readFile({ cwd, relativePath: "large.txt" });
+            expect(result.binary).not.toBe(true);
+            expect(result.truncated).toBe(true);
+            expect(result.contents).toBe(prefix);
+          }
+        }
+      }),
+    );
+
+    it.effect("still rejects malformed UTF-8 inside truncated previews and at EOF", () =>
+      Effect.gen(function* () {
+        const workspaceFileSystem = yield* WorkspaceFileSystem;
+        const cwd = yield* makeTempDir;
+        const path = yield* Path.Path;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const malformedLargeFile = new Uint8Array(1024 * 1024 + 1).fill(0x61);
+        malformedLargeFile[0] = 0xff;
+        for (const bytes of [new Uint8Array([0xe2, 0x82]), malformedLargeFile]) {
+          yield* fileSystem.writeFile(path.join(cwd, "invalid.txt"), bytes);
+          const result = yield* workspaceFileSystem.readFile({ cwd, relativePath: "invalid.txt" });
+          expect(result.binary).toBe(true);
+          expect(result.contents).toBe("");
+        }
+      }),
+    );
+
     it.effect("rejects a symbolic link that escapes the workspace root", () =>
       Effect.gen(function* () {
         const workspaceFileSystem = yield* WorkspaceFileSystem;

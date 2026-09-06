@@ -9,7 +9,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 
 import { ensureEnvironmentApi } from "~/environmentApi";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -67,10 +67,23 @@ const projectEntriesQueryAtom = Atom.family((key: string) =>
 const projectFileQueryAtom = Atom.family((key: string) =>
   Atom.make(
     Effect.tryPromise({
-      try: () => {
+      try: async (signal) => {
         const [environmentId, cwd, relativePath] = keyParts(key) as [EnvironmentId, string, string];
-        if (relativePath === EMPTY_PROJECT_FILE_PATH) return Promise.resolve(null);
-        return ensureEnvironmentApi(environmentId).projects.readFile({ cwd, relativePath });
+        if (relativePath === EMPTY_PROJECT_FILE_PATH) return null;
+        const optimisticFile = optimisticProjectFiles.get(key);
+        const data = await ensureEnvironmentApi(environmentId).projects.readFile({
+          cwd,
+          relativePath,
+        });
+        // Only a read started after this draft was confirmed can retire it.
+        if (
+          !signal.aborted &&
+          optimisticFile?.confirmed &&
+          optimisticProjectFiles.get(key) === optimisticFile
+        ) {
+          optimisticProjectFiles.delete(key);
+        }
+        return data;
       },
       catch: (cause) => queryError("Could not read workspace file.", cause),
     }),
@@ -184,18 +197,6 @@ export function useProjectFileQuery(
     relativePath === null
       ? undefined
       : optimisticProjectFiles.get(fileKey(environmentId, cwd, relativePath));
-
-  useEffect(() => {
-    if (
-      relativePath === null ||
-      optimisticFile === undefined ||
-      !optimisticFile.confirmed ||
-      data?.contents !== optimisticFile.data.contents
-    ) {
-      return;
-    }
-    optimisticProjectFiles.delete(fileKey(environmentId, cwd, relativePath));
-  }, [cwd, data?.contents, environmentId, optimisticFile, relativePath]);
 
   return {
     data: optimisticFile?.data ?? data,

@@ -2,7 +2,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { Editor } from "@pierre/diffs/editor";
 import { EditorProvider, File, Virtualizer } from "@pierre/diffs/react";
 import { BookOpen, ChevronRight, Code2, Eye, FolderTree, LoaderCircle } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { ensureEnvironmentApi } from "~/environmentApi";
@@ -16,18 +16,12 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Toggle } from "~/components/ui/toggle";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import FileBrowserPanel from "./FileBrowserPanel";
 import { projectFileCacheKey } from "./fileContentRevision";
 import { fileBreadcrumbs } from "./filePath";
-import { FileSaveCoordinator } from "./fileSaveCoordinator";
-import {
-  confirmProjectFileQueryData,
-  getProjectEntriesQueryAtom,
-  setProjectFileQueryData,
-  useProjectFileQuery,
-} from "./projectFilesQueryState";
+import { getProjectFileSaveSession } from "./projectFileSaveSession";
+import { useProjectFileQuery } from "./projectFilesQueryState";
 
 const ChatMarkdown = lazy(() => import("~/components/ChatMarkdown"));
 
@@ -42,7 +36,6 @@ interface FilePreviewPanelProps {
 }
 
 const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
-const FILE_SAVE_DEBOUNCE_MS = 500;
 const NOOP_PENDING_CHANGE = () => {};
 
 function stripQueryAndFragment(path: string): string {
@@ -70,10 +63,6 @@ interface EditableFileSurfaceProps {
   onPendingChange: (relativePath: string, pending: boolean) => void;
 }
 
-function formatSaveError(cause: unknown): string {
-  return cause instanceof Error ? cause.message : "Unable to save file.";
-}
-
 function EditableFileSurface({
   environmentId,
   cwd,
@@ -82,56 +71,41 @@ function EditableFileSurface({
   resolvedTheme,
   onPendingChange,
 }: EditableFileSurfaceProps) {
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const saveCoordinator = useMemo(
-    () =>
-      new FileSaveCoordinator({
-        debounceMs: FILE_SAVE_DEBOUNCE_MS,
-        onPendingChange: (pending) => onPendingChange(relativePath, pending),
-        persist: async (nextContents) => {
-          await ensureEnvironmentApi(environmentId).projects.writeFile({
-            cwd,
-            relativePath,
-            contents: nextContents,
-          });
-        },
-        onConfirmed: (confirmedContents) => {
-          confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
-          // Writes can create parent directories; refresh the tree listing.
-          appAtomRegistry.refresh(getProjectEntriesQueryAtom(environmentId, cwd));
-        },
-        onError: (cause) => setSaveError(cause === null ? null : formatSaveError(cause)),
-      }),
-    [cwd, environmentId, onPendingChange, relativePath],
+  const saveSession = useMemo(
+    () => getProjectFileSaveSession(environmentId, cwd, relativePath),
+    [cwd, environmentId, relativePath],
   );
+  const saveState = useSyncExternalStore(saveSession.subscribe, saveSession.getSnapshot);
+  const file = useProjectFileQuery(environmentId, cwd, relativePath);
+  useEffect(() => {
+    onPendingChange(relativePath, saveState.pending);
+  }, [onPendingChange, relativePath, saveState.pending]);
   const editor = useMemo(
     () =>
       new Editor({
         onChange: (file) => {
-          setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
-          saveCoordinator.change(file.contents);
+          saveSession.change(file.contents);
         },
       }),
-    [cwd, environmentId, relativePath, saveCoordinator],
+    [saveSession],
   );
 
   useEffect(
     () => () => {
       editor.cleanUp();
-      saveCoordinator.dispose();
     },
-    [editor, saveCoordinator],
+    [editor],
   );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {saveError ? (
+      {saveState.error ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-destructive/20 bg-destructive/8 px-3 py-1.5 text-[11px] text-destructive">
-          <span className="min-w-0 flex-1 truncate">Save failed: {saveError}</span>
+          <span className="min-w-0 flex-1 truncate">Save failed: {saveState.error}</span>
           <button
             type="button"
             className="shrink-0 rounded px-2 py-1 font-medium hover:bg-destructive/10"
-            onClick={() => saveCoordinator.retry()}
+            onClick={saveSession.retry}
           >
             Retry
           </button>
@@ -148,8 +122,8 @@ function EditableFileSurface({
           <File
             file={{
               name: relativePath,
-              contents,
-              cacheKey: projectFileCacheKey(cwd, relativePath, contents),
+              contents: file.data?.contents ?? contents,
+              cacheKey: projectFileCacheKey(cwd, relativePath, file.data?.contents ?? contents),
             }}
             options={{
               disableFileHeader: true,
@@ -414,7 +388,10 @@ export function FilePreviewPanel({
       : null;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+    <div
+      className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background"
+      data-right-panel-files-surface
+    >
       {relativePath ? (
         <div className="flex h-11 shrink-0 items-center gap-2 border-y border-border/60 px-3">
           <ScrollArea

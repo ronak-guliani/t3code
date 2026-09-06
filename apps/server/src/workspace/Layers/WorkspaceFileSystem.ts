@@ -11,13 +11,16 @@ import { WorkspacePaths } from "../Services/WorkspacePaths.ts";
 
 const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 1024 * 1024;
 
-function decodeWorkspacePreview(bytes: Uint8Array): { contents: string; binary: boolean } {
+function decodeWorkspacePreview(
+  bytes: Uint8Array,
+  truncated: boolean,
+): { contents: string; binary: boolean } {
   if (bytes.includes(0)) {
     return { contents: "", binary: true };
   }
   try {
     return {
-      contents: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      contents: new TextDecoder("utf-8", { fatal: true }).decode(bytes, { stream: truncated }),
       binary: false,
     };
   } catch {
@@ -145,7 +148,7 @@ export const makeWorkspaceFileSystem = Effect.gen(function* () {
       const previewBytes = truncated
         ? fileBytes.subarray(0, WORKSPACE_FILE_PREVIEW_MAX_BYTES)
         : fileBytes;
-      const { contents, binary } = decodeWorkspacePreview(previewBytes);
+      const { contents, binary } = decodeWorkspacePreview(previewBytes, truncated);
       return {
         relativePath: target.relativePath,
         contents,

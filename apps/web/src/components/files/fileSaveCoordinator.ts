@@ -10,6 +10,7 @@ export class FileSaveCoordinator {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private latestContents = "";
   private latestRevision = 0;
+  private persistedRevision = 0;
   private lastChangeAt = 0;
   private saving = false;
   private disposed = false;
@@ -27,14 +28,18 @@ export class FileSaveCoordinator {
   }
 
   retry(): void {
-    if (this.latestRevision === 0) return;
+    if (this.latestRevision === this.persistedRevision) return;
     this.schedule(0);
+  }
+
+  flush(): void {
+    this.clearTimer();
+    void this.persistLatest();
   }
 
   dispose(): void {
     this.disposed = true;
-    this.clearTimer();
-    if (this.latestRevision > 0) void this.persistLatest();
+    this.flush();
   }
 
   private schedule(delay: number): void {
@@ -52,7 +57,7 @@ export class FileSaveCoordinator {
   }
 
   private async persistLatest(): Promise<void> {
-    if (this.saving || this.latestRevision === 0) return;
+    if (this.saving || this.latestRevision === this.persistedRevision) return;
 
     this.saving = true;
     const contents = this.latestContents;
@@ -61,6 +66,7 @@ export class FileSaveCoordinator {
     try {
       await this.options.persist(contents);
       succeeded = true;
+      this.persistedRevision = revision;
       this.options.onConfirmed(contents);
     } catch (cause) {
       this.options.onError(cause);
@@ -68,7 +74,10 @@ export class FileSaveCoordinator {
 
     this.saving = false;
     if (revision === this.latestRevision) {
-      if (succeeded) this.options.onPendingChange(false);
+      if (succeeded) {
+        this.options.onError(null);
+        this.options.onPendingChange(false);
+      }
       return;
     }
 

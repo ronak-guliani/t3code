@@ -40,6 +40,43 @@ describe("project files queries", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([false, true])(
+    "retires only the confirmed draft captured by a post-save read (new edit: %s)",
+    async (editDuringRead) => {
+      vi.stubGlobal("window", {});
+      const cwd = `/repo/revalidate-${editDuringRead}`;
+      const relativePath = "file.ts";
+      const initial = { relativePath, contents: "initial" };
+      const revalidation = deferred<ProjectReadFileResult>();
+      const readFile = vi
+        .fn<EnvironmentApi["projects"]["readFile"]>()
+        .mockResolvedValueOnce(initial)
+        .mockReturnValueOnce(revalidation.promise);
+      __setEnvironmentApiOverrideForTests(environmentId, {
+        projects: { readFile },
+      } as unknown as EnvironmentApi);
+      const atom = getProjectFileQueryAtom(environmentId, cwd, relativePath);
+      appAtomRegistry.get(atom);
+      await vi.waitFor(() =>
+        expect(Option.getOrNull(AsyncResult.value(appAtomRegistry.get(atom)))).toEqual(initial),
+      );
+      setProjectFileQueryData(environmentId, cwd, relativePath, "saved");
+      confirmProjectFileQueryData(environmentId, cwd, relativePath, "saved");
+      await vi.waitFor(() => expect(readFile).toHaveBeenCalledTimes(2));
+      if (editDuringRead) setProjectFileQueryData(environmentId, cwd, relativePath, "new draft");
+      const authoritative = { relativePath, contents: "formatter output" };
+      revalidation.resolve(authoritative);
+      await vi.waitFor(() =>
+        expect(Option.getOrNull(AsyncResult.value(appAtomRegistry.get(atom)))).toEqual(
+          authoritative,
+        ),
+      );
+      expect(
+        resolveProjectFileQueryData(environmentId, cwd, relativePath, authoritative)?.contents,
+      ).toBe(editDuringRead ? "new draft" : "formatter output");
+    },
+  );
+
   it("retains cached entries while explicitly revalidating", async () => {
     vi.stubGlobal("window", {});
     const first = {

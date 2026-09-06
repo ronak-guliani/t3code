@@ -40,6 +40,9 @@ describe("FileSaveCoordinator", () => {
     expect(persist).toHaveBeenCalledWith("latest");
     expect(onConfirmed).toHaveBeenCalledWith("latest");
     expect(onPendingChange.mock.calls).toEqual([[true], [true], [false]]);
+    coordinator.dispose();
+    await vi.runAllTimersAsync();
+    expect(persist).toHaveBeenCalledOnce();
   });
 
   it("keeps pending state until an edit made during a write is also saved", async () => {
@@ -70,6 +73,28 @@ describe("FileSaveCoordinator", () => {
     expect(persist).toHaveBeenCalledTimes(2);
     expect(persist).toHaveBeenLastCalledWith("latest");
     expect(onPendingChange.mock.calls.at(-1)).toEqual([false]);
+  });
+
+  it("flushes an unsaved edit on disposal without replaying a completed write", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn<(contents: string) => Promise<void>>().mockResolvedValue(undefined);
+    const coordinator = new FileSaveCoordinator({
+      debounceMs: 500,
+      persist,
+      onPendingChange: vi.fn(),
+      onConfirmed: vi.fn(),
+      onError: vi.fn(),
+    });
+    coordinator.change("first");
+    await vi.advanceTimersByTimeAsync(500);
+    coordinator.change("second");
+    coordinator.dispose();
+    await vi.runAllTimersAsync();
+    expect(persist.mock.calls).toEqual([["first"], ["second"]]);
+    coordinator.dispose();
+    coordinator.retry();
+    await vi.runAllTimersAsync();
+    expect(persist).toHaveBeenCalledTimes(2);
   });
 
   it("leaves the file pending when the latest write fails", async () => {
