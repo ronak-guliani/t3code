@@ -33,8 +33,8 @@ Write only the small, concise amount of code needed to solve the problem; avoid 
 
 ## Scars
 
-Read and follow [scars.md](scars.md) for hard-earned project constraints.
+Read the universal invariants in [scars.md](scars.md), then load the matching detailed subsystem section from [.agents/references/scars/full.md](.agents/references/scars/full.md) for the task at hand.
 
 ## Keep This File Updated
 
-- Add hard-earned lessons to [scars.md](scars.md); keep each scar short, actionable, and specific.
+- Add hard-earned lessons to [.agents/references/scars/full.md](.agents/references/scars/full.md); keep each scar short, actionable, and specific, and update [scars.md](scars.md) when a new subsystem needs an index entry.

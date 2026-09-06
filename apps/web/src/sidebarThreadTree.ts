@@ -9,6 +9,12 @@ import {
 } from "./components/Sidebar.logic";
 import { deriveAgentRuns, type AgentRun } from "./session-logic";
 import type { SidebarThreadSummary } from "./types";
+export {
+  normalizeParentThreadKeys,
+  selectVisibleThreads as selectVisibleSidebarThreads,
+  isThreadInSubtree,
+} from "@t3tools/client-runtime/state/thread-hierarchy";
+import { normalizeParentThreadKeys } from "@t3tools/client-runtime/state/thread-hierarchy";
 
 /**
  * Stable key identifying an archived (dismissed) background-agent run. Combines
@@ -92,63 +98,6 @@ export function deriveSidebarThreadsWithAgentRuns(input: {
   });
 }
 
-export function selectVisibleSidebarThreads(
-  threads: readonly SidebarThreadSummary[],
-): SidebarThreadSummary[] {
-  const threadByKey = new Map(threads.map((thread) => [getThreadKey(thread), thread] as const));
-  const visibilityByKey = new Map<string, boolean>();
-  const resolvingKeys = new Set<string>();
-
-  const isVisible = (thread: SidebarThreadSummary): boolean => {
-    const threadKey = getThreadKey(thread);
-    const cached = visibilityByKey.get(threadKey);
-    if (cached !== undefined) {
-      return cached;
-    }
-    if (thread.archivedAt !== null) {
-      visibilityByKey.set(threadKey, false);
-      return false;
-    }
-    if (resolvingKeys.has(threadKey)) {
-      return true;
-    }
-
-    resolvingKeys.add(threadKey);
-    const parent =
-      thread.parentThreadId === null
-        ? undefined
-        : threadByKey.get(
-            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId)),
-          );
-    const visible = parent === undefined || isVisible(parent);
-    resolvingKeys.delete(threadKey);
-    visibilityByKey.set(threadKey, visible);
-    return visible;
-  };
-
-  return threads.filter(isVisible);
-}
-
-export function isThreadInSubtree(
-  threads: readonly Pick<SidebarThreadSummary, "id" | "parentThreadId">[],
-  rootThreadId: SidebarThreadSummary["id"],
-  threadId: SidebarThreadSummary["id"],
-): boolean {
-  const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
-  const visited = new Set<SidebarThreadSummary["id"]>();
-  let candidateId: SidebarThreadSummary["id"] | null = threadId;
-
-  while (candidateId !== null && !visited.has(candidateId)) {
-    if (candidateId === rootThreadId) {
-      return true;
-    }
-    visited.add(candidateId);
-    candidateId = threadById.get(candidateId)?.parentThreadId ?? null;
-  }
-
-  return false;
-}
-
 export interface SidebarThreadRowView {
   thread: SidebarThreadSummary;
   threadKey: string;
@@ -199,47 +148,6 @@ export function sidebarThreadKey(
 }
 
 const getThreadKey = sidebarThreadKey;
-
-/**
- * Maps each thread key to its effective parent key, dropping references that
- * would escape the visible set (missing/self parents) or form a cycle so every
- * thread resolves to exactly one root. Keys are environment-scoped so a thread
- * never adopts a same-id parent from another environment.
- */
-export function normalizeParentThreadKeys(
-  threads: readonly SidebarThreadSummary[],
-): Map<string, string> {
-  const threadKeys = new Set(threads.map(getThreadKey));
-  const parentByKey = new Map<string, string>();
-
-  for (const thread of threads) {
-    const threadKey = getThreadKey(thread);
-    if (thread.parentThreadId === null) {
-      continue;
-    }
-    const parentKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.parentThreadId));
-    if (parentKey === threadKey || !threadKeys.has(parentKey)) {
-      continue;
-    }
-    parentByKey.set(threadKey, parentKey);
-  }
-
-  // Deleting only the key currently being visited is safe while iterating.
-  for (const threadKey of parentByKey.keys()) {
-    const seen = new Set<string>([threadKey]);
-    let currentParentKey = parentByKey.get(threadKey);
-    while (currentParentKey) {
-      if (seen.has(currentParentKey)) {
-        parentByKey.delete(threadKey);
-        break;
-      }
-      seen.add(currentParentKey);
-      currentParentKey = parentByKey.get(currentParentKey);
-    }
-  }
-
-  return parentByKey;
-}
 
 /** Reorders already-sorted roots so pinned threads lead, preserving pin order. */
 function applyPinnedFirst(

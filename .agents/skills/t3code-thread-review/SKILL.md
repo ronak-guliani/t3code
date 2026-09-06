@@ -1,6 +1,6 @@
 ---
 name: t3code-thread-review
-description: Reviews and summarizes T3 Code threads through the t3 CLI, including messages, activities, checkpoints, diffs, exports, and archived threads. Use when the user asks to read another thread, summarize previous work, inspect a thread's state, compare changes, or export a conversation.
+description: Read-only review and summarization of T3 Code threads through the t3 CLI, including messages, activities, checkpoints, diffs, exports, and archived threads. Use when the user asks to inspect or export thread history; do not use it to send prompts, change lifecycle state, or delegate work.
 ---
 
 # T3 Code Thread Review

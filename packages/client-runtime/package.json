@@ -132,6 +132,10 @@
       "types": "./src/state/threadSort.ts",
       "default": "./src/state/threadSort.ts"
     },
+    "./state/thread-hierarchy": {
+      "types": "./src/state/threadHierarchy.ts",
+      "default": "./src/state/threadHierarchy.ts"
+    },
     "./state/thread-settled": {
       "types": "./src/state/threadSettled.ts",
       "default": "./src/state/threadSettled.ts"

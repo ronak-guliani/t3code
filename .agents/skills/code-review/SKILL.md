@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: 'Review committed, staged, unstaged, or relevant untracked changes along two axes: Standards (does the code follow this repo''s documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to "review since X".'
+description: Review a branch, PR, or work-in-progress diff against repository standards and the requested behavior. Report concrete defects and missing requirements.
 ---
 
 Two-axis review of an explicitly selected change scope:
@@ -8,7 +8,7 @@ Two-axis review of an explicitly selected change scope:
 - **Standards**: does the code conform to this repo's documented coding standards?
 - **Spec**: does the code faithfully implement the originating issue / spec?
 
-Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+Review both axes locally by default. Delegate only substantial independent scopes or an explicitly requested second opinion; a small diff does not need multiple agents. Keep Standards and Spec findings separate regardless of how the review runs.
 
 The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
 
@@ -67,7 +67,9 @@ Each smell reads _what it is_ → _how to fix_; match it against the diff:
 - **Middle Man**: a class or function that mostly just delegates onward. → cut it, call the real target direct.
 - **Refused Bequest**: a subclass or implementer that ignores or overrides most of what it inherits. → drop the inheritance, use composition.
 
-### 4. Spawn both sub-agents in parallel
+### 4. Review both axes
+
+Use the briefs below for local review or justified delegation. Share the captured scope and relevant context with any helper; do not send multiple helpers over the same small diff.
 
 **Standards sub-agent prompt** should include:
 
@@ -81,7 +83,7 @@ Each smell reads _what it is_ → _how to fix_; match it against the diff:
 - The path or fetched contents of the spec.
 - The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
 
-If the spec is missing, skip the Spec sub-agent and note this in the final report.
+If the spec is missing, skip the Spec review and note this in the final report.
 
 ### 5. Aggregate
 
