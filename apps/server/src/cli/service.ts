@@ -214,7 +214,7 @@ export const recoverServiceOnboardingOffer = <R>(offer: Effect.Effect<boolean, u
       typeof error === "object" && error !== null && "_tag" in error && error._tag === "QuitError"
         ? Effect.succeed(false)
         : Console.warn(
-            `T3 Connect succeeded, but background setup did not finish: ${
+            `T3 Connect authorization is saved, but background setup did not finish: ${
               error instanceof Error ? error.message : String(error)
             }`,
           ).pipe(Effect.as(false)),

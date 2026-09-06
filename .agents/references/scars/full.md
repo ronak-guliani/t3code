@@ -119,6 +119,7 @@
 - T3 Connect credentials are DPoP-bound end to end: persist the relay-minted proof-key thumbprint through pairing and session issuance, return `token_type=DPoP`, consume each proof `jti` once, verify its key, URL, method, and token hash, and permit proof-bound sessions to mint only single-use `wsTicket` credentials.
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
+- LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
 
 ## Desktop browser surfaces
 
