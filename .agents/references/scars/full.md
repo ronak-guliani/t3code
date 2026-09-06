@@ -32,6 +32,7 @@
 - Before a Copilot session exits, emit `task.completed` with `status = stopped` for every running background agent, and reconcile unmatched starts on server startup so crashes cannot leave sidebar runs permanently active.
 - Copilot ACP `end_turn` can precede attached-shell completion and autonomous follow-up edits. Keep automatic PR feedback opt-in, surface unowned activity without reassigning it, and never use quiet time or log-file tailing as completion authority. This is containment, not a checkpoint/completion fix; track upstream [completion](https://github.com/github/copilot-cli/issues/4743) and [follow-up abort](https://github.com/github/copilot-cli/issues/4555).
 - Copilot ACP events do not reliably identify their originating prompt. Once a follow-up is active, old continuation events can still be attributed to it by existing handlers; no-active-turn warnings do not solve that ambiguity. Do not claim cross-turn attribution safety without an upstream correlation/completion contract.
+- Automatic PR fallback bypasses the owner-thread queue. Apply the same provider opt-in before fallback takeover side effects, using the selected fallback model's instance; keep explicit fallback requests distinct and record blocked attempts durably.
 
 ## Desktop packaging and React state
 

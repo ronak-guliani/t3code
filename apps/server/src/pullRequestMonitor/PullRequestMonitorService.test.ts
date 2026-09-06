@@ -2,12 +2,15 @@ import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   PullRequestMonitorError,
   PullRequestOperationError,
   ThreadId,
   type ModelSelection,
   type PullRequestMonitorFeedbackDeliveryId,
   type PullRequestMonitorSnapshot,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -293,16 +296,19 @@ const fakeGit = {
     }),
 } as unknown as GitManager["Service"];
 
+const defaultSettings: ServerSettings = {
+  ...DEFAULT_SERVER_SETTINGS,
+  autoMonitorPullRequestsOnCreate: true,
+  autoLaunchPrMonitorFallback: true,
+  textGenerationModelSelection: {
+    instanceId: "openai",
+    model: "gpt-test",
+  } as ModelSelection,
+};
+let currentSettings = defaultSettings;
+
 const fakeSettings = {
-  getSettings: Effect.succeed({
-    ...DEFAULT_SERVER_SETTINGS,
-    autoMonitorPullRequestsOnCreate: true,
-    autoLaunchPrMonitorFallback: true,
-    textGenerationModelSelection: {
-      instanceId: "openai",
-      model: "gpt-test",
-    } as ModelSelection,
-  }),
+  getSettings: Effect.sync(() => currentSettings),
   updateSettings: () => Effect.die("unused"),
   streamChanges: Stream.empty,
 } as unknown as ServerSettingsService["Service"];
@@ -807,6 +813,146 @@ layer("PullRequestMonitorService", (it) => {
       assert.strictEqual(again.skippedReason, "recent-fallback-cooldown");
       assert.strictEqual(again.fallbackThreadId, fallback.fallbackThreadId);
     }),
+  );
+
+  for (const [index, scenario] of [
+    { name: "legacy Copilot default-off", instanceId: "copilot", config: undefined, launch: false },
+    { name: "custom Copilot default-off", driver: "copilot", config: {}, launch: false },
+    { name: "native ACP default-off", driver: "copilot-acp-native", config: null, launch: false },
+    {
+      name: "malformed opt-in",
+      driver: "copilot",
+      config: { allowAutomaticPrFeedback: "true" },
+      launch: false,
+    },
+    {
+      name: "explicit opt-in",
+      driver: "copilot",
+      config: { allowAutomaticPrFeedback: true, customModels: "invalid" },
+      launch: true,
+    },
+    { name: "other provider", driver: "codex", config: {}, launch: true },
+  ].entries()) {
+    it.effect(`automatic fallback respects ${scenario.name}`, () =>
+      Effect.gen(function* () {
+        const service = yield* PullRequestMonitorService;
+        const store = yield* PullRequestMonitorStore.make;
+        const instanceId = ProviderInstanceId.make(scenario.instanceId ?? "fallback-provider");
+        currentSettings = {
+          ...defaultSettings,
+          textGenerationModelSelection: { instanceId, model: "gpt-test" },
+          providerInstances: scenario.driver
+            ? {
+                [instanceId]: {
+                  driver: ProviderDriverKind.make(scenario.driver),
+                  displayName: "Fallback provider",
+                  enabled: true,
+                  config: scenario.config,
+                },
+              }
+            : {},
+        };
+        currentSnapshot = sampleSnapshot({
+          checkRuns: [
+            {
+              id: "fallback-check",
+              name: "ci",
+              status: "failure",
+              headSha: "deadbeef",
+              url: null,
+              description: null,
+            },
+          ],
+        });
+        const before = dispatchedCommands.length;
+        const refsBefore = preparedPrReferences.length;
+        const started = yield* service.start({
+          projectId,
+          repository: "acme/app",
+          number: 300 + index,
+        });
+        const launch = yield* store.latestFallbackLaunch(started.monitor.id);
+        assert.strictEqual(launch?.status, scenario.launch ? "launched" : "failed");
+        const commands = dispatchedCommands.slice(before);
+        if (scenario.launch) {
+          assert.isTrue(commands.some((command) => command.type === "thread.turn.start"));
+          assert.strictEqual(preparedPrReferences.length, refsBefore + 1);
+        } else {
+          assert.deepStrictEqual(commands, []);
+          assert.strictEqual(preparedPrReferences.length, refsBefore);
+          assert.include(launch?.error ?? "", "Automatic PR fallback is paused");
+          const status = yield* service.status({ monitorId: started.monitor.id });
+          assert.isNull(status.monitor?.ownerThreadId);
+          assert.isAbove(status.openFeedback.length, 0);
+
+          // Explicit operator requests remain possible without enabling automation.
+          const explicit = yield* service.launchFallback({ monitorId: started.monitor.id });
+          assert.isTrue(explicit.launched);
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            currentSettings = defaultSettings;
+            currentSnapshot = sampleSnapshot();
+          }),
+        ),
+      ),
+    );
+  }
+
+  it.effect("blocks automatic Copilot fallback before interrupting an unavailable busy owner", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const store = yield* PullRequestMonitorStore.make;
+      const owner = ThreadId.make("copilot-fallback-busy-owner");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 310,
+        ownerThreadId: owner,
+      });
+      const row = knownThreads.get(owner)!;
+      knownThreads.set(owner, { ...row, archivedAt: "1970-01-01T00:00:00.000Z", busy: true });
+      currentSettings = {
+        ...defaultSettings,
+        providerInstances: {},
+        textGenerationModelSelection: {
+          instanceId: ProviderInstanceId.make("copilot"),
+          model: "gpt-test",
+        },
+      };
+      currentSnapshot = sampleSnapshot({
+        checkRuns: [
+          {
+            id: "busy-owner-check",
+            name: "ci",
+            status: "failure",
+            headSha: "deadbeef",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      const before = dispatchedCommands.length;
+      const refsBefore = preparedPrReferences.length;
+      yield* service.start({ projectId, repository: "acme/app", number: 310 });
+      assert.deepStrictEqual(dispatchedCommands.slice(before), []);
+      assert.strictEqual(preparedPrReferences.length, refsBefore);
+      assert.isTrue(knownThreads.get(owner)?.busy);
+      const status = yield* service.status({ monitorId: started.monitor.id });
+      assert.strictEqual(status.monitor?.ownerThreadId, owner);
+      const launch = yield* store.latestFallbackLaunch(started.monitor.id);
+      assert.strictEqual(launch?.status, "failed");
+      assert.include(launch?.error ?? "", "Automatic PR fallback is paused");
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          currentSettings = defaultSettings;
+          currentSnapshot = sampleSnapshot();
+        }),
+      ),
+    ),
   );
 
   it.effect("launchFallback relaunches when cooldown owner is deleted", () =>

@@ -44,6 +44,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { allowsAutomaticPrFeedback } from "./automaticFeedback.ts";
 import {
   formatPullRequestMonitorCanonicalKey,
   repositoryFromPullRequestUrl,
@@ -603,10 +604,13 @@ export const layer = Layer.effect(
               Result.isSuccess(settingsResult) &&
               settingsResult.success.autoLaunchPrMonitorFallback === true
             ) {
-              yield* launchFallback({
-                monitorId: updated.id,
-                reason: availability.reason,
-              }).pipe(Effect.ignore);
+              yield* launchFallback(
+                {
+                  monitorId: updated.id,
+                  reason: availability.reason,
+                },
+                "automatic",
+              ).pipe(Effect.ignore);
             }
           }
         }
@@ -881,6 +885,7 @@ export const layer = Layer.effect(
 
     const launchFallback = (
       input: PullRequestMonitorLaunchFallbackInput,
+      source: "automatic" | "explicit",
     ): Effect.Effect<PullRequestMonitorLaunchFallbackResult, PullRequestMonitorError> =>
       Effect.gen(function* () {
         const monitor = yield* resolveMonitor(input);
@@ -1005,6 +1010,26 @@ export const layer = Layer.effect(
               });
             });
 
+          const settingsResult = yield* Effect.result(serverSettings.getSettings);
+          if (Result.isFailure(settingsResult)) {
+            return yield* failLaunch({
+              message: "Could not read settings for fallback launch.",
+              threadId: null,
+              cause: settingsResult.failure,
+            });
+          }
+          const settings = settingsResult.success;
+          if (
+            source === "automatic" &&
+            !allowsAutomaticPrFeedback(settings, settings.textGenerationModelSelection.instanceId)
+          ) {
+            return yield* failLaunch({
+              message:
+                "Automatic PR fallback is paused for Copilot ACP because prompt completion may precede background work. Review the session, then enable automatic PR feedback in the fallback provider's settings or explicitly launch a fallback. This containment does not fix background completion or checkpoints.",
+              threadId: null,
+            });
+          }
+
           // Never run two modifying agents on one PR: the previous owner must be settled
           // before ownership moves, and an unavailable owner mid-turn is interrupted first.
           if (previousOwner !== null) {
@@ -1065,16 +1090,6 @@ export const layer = Layer.effect(
             label: "blocked" as const,
             blockers: [{ kind: "checks-missing" as const, detail: "No readiness yet" }],
           };
-          const settingsResult = yield* Effect.result(serverSettings.getSettings);
-          if (Result.isFailure(settingsResult)) {
-            return yield* failLaunch({
-              message: "Could not read settings for fallback launch.",
-              threadId: null,
-              cause: settingsResult.failure,
-            });
-          }
-          const settings = settingsResult.success;
-
           const projectShellResult = yield* Effect.result(
             projections.getProjectShellById(monitor.projectId),
           );
@@ -1299,7 +1314,7 @@ export const layer = Layer.effect(
       report,
       transferOwnership,
       submitFindings,
-      launchFallback,
+      launchFallback: (input) => launchFallback(input, "explicit"),
     });
   }),
 );
