@@ -12,6 +12,7 @@ it("infers root routes without losing required thread and file parameters", () =
   expectTypeOf<keyof RootParams>().toEqualTypeOf<
     | "Home"
     | "Thread"
+    | "RelatedThreads"
     | "ThreadTerminal"
     | "ThreadReview"
     | "ThreadReviewComment"
@@ -35,6 +36,7 @@ it("infers root routes without losing required thread and file parameters", () =
     readonly environmentId: string;
     readonly threadId: string;
   }>();
+  expectTypeOf<RootParams["RelatedThreads"]>().toEqualTypeOf<RootParams["Thread"]>();
   expectTypeOf<{ threadId: string }>().not.toMatchTypeOf<RootParams["Thread"]>();
   expectTypeOf<undefined>().not.toMatchTypeOf<RootParams["Thread"]>();
   expectTypeOf<RootParams["ThreadFile"]>().toEqualTypeOf<{

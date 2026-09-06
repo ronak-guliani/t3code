@@ -239,6 +239,7 @@
 
 ## Mobile drafts and navigation
 
+- Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.
 - Independent iPad sidebar stacks own header chrome only; carry app navigation across that boundary for chat and queued-draft actions.
 - Rejected subchats must recover to a reachable project draft when their parent disappears; recheck the recovery destination before removing the outbox entry.

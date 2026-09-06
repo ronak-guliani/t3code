@@ -330,7 +330,6 @@ export function buildThreadListV2Items(input: {
   /** The selected thread remains visible on an otherwise collapsed shelf so
       a split-view detail can never lose its navigation row. */
   readonly selectedThreadKey?: string | null;
-  readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean>;
   readonly dismissedAgentRunKeys?: readonly string[];
 }): ThreadListV2Layout {
   const now = input.now;
@@ -370,7 +369,6 @@ export function buildThreadListV2Items(input: {
     roots.map((node) => [
       node.threadKey,
       mobileThreadTreeRows([node], {
-        expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
         selectedThreadKey: input.selectedThreadKey,
         ...(query.length > 0 ? { revealThreadKeys: matchingKeys } : {}),
       }),
