@@ -319,7 +319,7 @@ export const makeWithRestartDelay = (restartDelay: string) =>
       const executable =
         resolvedExecutable.status === "missing"
           ? yield* relayClient.install.pipe(
-              Effect.timeout("20 seconds"),
+              Effect.timeout("5 minutes"),
               Effect.catch((cause) =>
                 Effect.logWarning("Failed to install relay client", { cause }).pipe(
                   Effect.as(resolvedExecutable),

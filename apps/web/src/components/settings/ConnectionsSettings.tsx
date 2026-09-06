@@ -523,6 +523,7 @@ type AuthorizedClientsHeaderActionProps = {
   isRevokingOtherClients: boolean;
   onRevokeOtherClients: () => void;
   isCreatingMobilePairing: boolean;
+  canCreateMobilePairing: boolean;
   onCreateMobilePairing: () => void;
 };
 
@@ -531,6 +532,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
   isRevokingOtherClients,
   onRevokeOtherClients,
   isCreatingMobilePairing,
+  canCreateMobilePairing,
   onCreateMobilePairing,
 }: AuthorizedClientsHeaderActionProps) {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -572,7 +574,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
       <Button
         size="xs"
         variant="default"
-        disabled={isCreatingMobilePairing}
+        disabled={isCreatingMobilePairing || !canCreateMobilePairing}
         onClick={onCreateMobilePairing}
       >
         {isCreatingMobilePairing ? (
@@ -1320,6 +1322,7 @@ export function ConnectionsSettings() {
                   isRevokingOtherClients={isRevokingOtherDesktopClients}
                   onRevokeOtherClients={handleRevokeOtherDesktopClients}
                   isCreatingMobilePairing={isCreatingMobilePairing}
+                  canCreateMobilePairing={!!desktopBridge || isLocalBackendNetworkAccessible}
                   onCreateMobilePairing={() => void handleCreateMobilePairing()}
                 />
               }

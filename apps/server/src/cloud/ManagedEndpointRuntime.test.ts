@@ -941,6 +941,62 @@ describe("CloudManagedEndpointRuntime", () => {
     }),
   );
 
+  for (const stalled of [false, true]) {
+    it.effect(`handles ${stalled ? "stalled" : "slow"} relay-client installation`, () =>
+      Effect.gen(function* () {
+        const spawn = vi.fn(() =>
+          Effect.succeed(makeHandle({ pid: 610, onKill: () => undefined })),
+        );
+        const installEntered = yield* Deferred.make<void>();
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(spawn),
+          Layer.succeed(
+            RelayClient.RelayClient,
+            RelayClient.RelayClient.of({
+              resolve: Effect.succeed({
+                status: "missing",
+                version: RelayClient.CLOUDFLARED_VERSION,
+              }),
+              install: Deferred.succeed(installEntered, undefined).pipe(
+                Effect.andThen(stalled ? Effect.never : Effect.sleep("45 seconds")),
+                Effect.as({
+                  status: "available",
+                  executablePath: "managed-cloudflared",
+                  source: "managed",
+                  version: RelayClient.CLOUDFLARED_VERSION,
+                }),
+              ),
+              installWithProgress: () => Effect.die("unused"),
+            }),
+          ),
+        );
+        let completed = false;
+        const starting = yield* runtime
+          .applyConfig({
+            providerKind: "cloudflare_tunnel",
+            connectorToken: "token",
+          })
+          .pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                completed = true;
+              }),
+            ),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(installEntered);
+        yield* TestClock.adjust("30 seconds");
+        expect(completed).toBe(false);
+        expect(spawn).not.toHaveBeenCalled();
+        yield* TestClock.adjust(stalled ? "270 seconds" : "15 seconds");
+        expect(yield* Fiber.join(starting)).toMatchObject({
+          status: stalled ? "failed" : "starting",
+        });
+        expect(spawn).toHaveBeenCalledTimes(stalled ? 0 : 1);
+      }),
+    );
+  }
+
   it.effect("does not launch a tunnel when managed relay-client installation fails", () =>
     Effect.gen(function* () {
       const spawn = vi.fn();

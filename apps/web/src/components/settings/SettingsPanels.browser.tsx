@@ -421,7 +421,7 @@ describe("GeneralSettingsPanel observability", () => {
     authAccessHarness.reset();
   });
 
-  it("hides owner pairing tools in browser-served loopback builds without remote exposure", async () => {
+  it("keeps revocation visible but disables LAN pairing in browser-served loopback builds", async () => {
     Reflect.deleteProperty(window, "desktopBridge");
     authAccessHarness.setSnapshot({
       pairingLinks: [],
@@ -447,6 +447,15 @@ describe("GeneralSettingsPanel observability", () => {
     });
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = String(input);
+      if (url.endsWith("/api/remote-access")) {
+        return Response.json({
+          enabled: false,
+          publicUrl: null,
+          status: "disabled",
+          message: "Remote Access is disabled.",
+          checkedAt: null,
+        });
+      }
       if (url.endsWith("/api/auth/session")) {
         return new Response(
           JSON.stringify({
@@ -478,12 +487,16 @@ describe("GeneralSettingsPanel observability", () => {
     await expect
       .element(
         page.getByText(
-          "This backend is only reachable on this machine. Restart it with a non-loopback host to enable remote pairing.",
+          "LAN access is disabled. Use Remote Access above to connect through the tunnel without opening a LAN port.",
         ),
       )
       .toBeInTheDocument();
-    await expect.element(page.getByText("Authorized clients")).not.toBeInTheDocument();
-    await expect.element(page.getByText("Chrome on Mac")).not.toBeInTheDocument();
+    await expect.element(page.getByText("Authorized clients")).toBeInTheDocument();
+    await expect.element(page.getByText("Chrome on Mac")).toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Revoke others" })).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Pair over LAN", exact: true }))
+      .toBeDisabled();
     await expect
       .element(page.getByRole("heading", { name: "Remote environments", exact: true }))
       .toBeInTheDocument();
@@ -722,7 +735,7 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await page.getByRole("button", { name: "Connect new device", exact: true }).click();
+    await page.getByRole("button", { name: "Pair over LAN", exact: true }).click();
 
     await expect
       .element(page.getByRole("heading", { name: "Connect new device", exact: true }))
@@ -732,8 +745,9 @@ describe("GeneralSettingsPanel observability", () => {
       .toBeInTheDocument();
     await vi.waitFor(() => {
       expect(
-        [...document.querySelectorAll("textarea")].some((textarea) =>
-          textarea.value.startsWith("t3code://mobile/pair"),
+        [...document.querySelectorAll("textarea")].some(
+          (textarea) =>
+            textarea.value === "http://192.168.1.44:3773/pair#token=mobile-pairing-token",
         ),
       ).toBe(true);
     });
