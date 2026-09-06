@@ -158,3 +158,4 @@
 - Revert projection commits precede Git ref pruning; integration assertions must wait for the final revert-guard deletion before checking pruned refs. Session readiness alone does not prove a turn's checkpoint is finalized.
 - No-argument MCP parameters need an object-only schema, such as `Schema.Record(Schema.String, Schema.Never)`; `Schema.Struct({})` exports an object/array union. Do not add unused parameters to satisfy provider schema checks.
 - Auth bootstrap cache writes must belong to the current in-flight promise so reset cannot be undone by an older completion. Import auth test dependencies before test execution, not inside a timed test or its cleanup.
+- Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.

@@ -582,6 +582,45 @@ describe("thread outbox delivered creation recovery", () => {
 });
 
 describe("thread outbox recovery rollback", () => {
+  it("restores a rejected subchat to its own draft without losing parent, model options or checkout", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({
+        messageId: "nested-rejection",
+        text: "subchat instructions",
+        fileUri: "file:///child.pdf",
+      }),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("copilot"),
+        model: "gpt-6-astra",
+        options: [{ id: "reasoning", value: "high" }],
+      },
+      creation: {
+        projectId: ProjectId.make("project"),
+        parentThreadId: ThreadId.make("parent"),
+        workspaceMode: "local",
+        branch: "feature",
+        worktreePath: "/repo-child",
+      },
+    };
+    composerDrafts.setComposerDraftText(
+      "new-task:environment-1:project",
+      "untouched project draft",
+    );
+    await harness.manager.enqueue(message);
+    expect(await restoreRejectedQueuedMessage(message, "Parent archived")).toBe("restored");
+    expect(composerDrafts.getComposerDraftSnapshot("subchat:environment-1:parent")).toMatchObject({
+      text: message.text,
+      attachments: message.attachments,
+      parentThreadId: "parent",
+      modelSelection: message.modelSelection,
+      workspaceSelection: { mode: "local", branch: "feature", worktreePath: "/repo-child" },
+    });
+    expect(composerDrafts.getComposerDraftSnapshot("new-task:environment-1:project").text).toBe(
+      "untouched project draft",
+    );
+    expect(remainingMessages()).toEqual([]);
+  });
+
   it("restores a rejected new task into its durable project draft", async () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),

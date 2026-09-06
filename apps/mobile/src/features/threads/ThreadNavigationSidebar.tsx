@@ -30,6 +30,7 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
+import { useThreadExpandedOverrides, useDismissedAgentRunKeys } from "./thread-hierarchy-controls";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -163,6 +164,8 @@ function ThreadNavigationSidebarPane(
     regenerateThreadTitle,
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
+  const expandedOverrideByThreadKey = useThreadExpandedOverrides();
+  const dismissedAgentRunKeys = useDismissedAgentRunKeys();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(
@@ -351,8 +354,19 @@ function ThreadNavigationSidebarPane(
             groups,
             displayStates: groupDisplayStates,
             showAllThreads: hasSearchQuery,
+            expandedOverrideByThreadKey,
+            dismissedAgentRunKeys,
+            selectedThreadKey: props.selectedThreadKey,
           }),
-    [threadListV2Enabled, groups, groupDisplayStates, hasSearchQuery],
+    [
+      threadListV2Enabled,
+      groups,
+      groupDisplayStates,
+      hasSearchQuery,
+      expandedOverrideByThreadKey,
+      props.selectedThreadKey,
+      dismissedAgentRunKeys,
+    ],
   );
   const projectCwdByKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -489,7 +503,9 @@ function ThreadNavigationSidebarPane(
         nextSnoozeWakeAt: null,
       };
     return buildThreadListV2Items({
-      threads: threads.filter((thread) => thread.archivedAt === null),
+      threads,
+      expandedOverrideByThreadKey,
+      dismissedAgentRunKeys,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -504,6 +520,8 @@ function ThreadNavigationSidebarPane(
     });
   }, [
     nowMinute,
+    expandedOverrideByThreadKey,
+    dismissedAgentRunKeys,
     snoozeWakeTick,
     snoozedShelfExpanded,
     settledShelfExpanded,
@@ -767,6 +785,11 @@ function ThreadNavigationSidebarPane(
         return (
           previous.key === item.key &&
           previous.item.thread === item.item.thread &&
+          previous.item.hierarchy?.depth === item.item.hierarchy?.depth &&
+          previous.item.hierarchy?.isExpanded === item.item.hierarchy?.isExpanded &&
+          previous.item.hierarchy?.childCount === item.item.hierarchy?.childCount &&
+          previous.item.hierarchy?.displayStatus === item.item.hierarchy?.displayStatus &&
+          previous.item.hierarchy?.archiveBlocked === item.item.hierarchy?.archiveBlocked &&
           previous.item.variant === item.item.variant &&
           previous.item.snoozed === item.item.snoozed &&
           previous.item.pinned === item.item.pinned &&
@@ -857,6 +880,7 @@ function ThreadNavigationSidebarPane(
           const scopeKey = scopedProjectKey(thread.environmentId, thread.projectId);
           return (
             <ThreadListV2Row
+              hierarchy={item.item.hierarchy}
               thread={thread}
               variant={item.item.variant}
               snoozed={item.item.snoozed}
@@ -995,6 +1019,7 @@ function ThreadNavigationSidebarPane(
           const thread = item.thread;
           return (
             <ThreadListRow
+              hierarchy={item.hierarchy}
               variant="sidebar"
               thread={thread}
               environmentLabel={

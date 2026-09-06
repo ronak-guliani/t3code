@@ -13,6 +13,8 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import { buildMobileThreadTree, nestedThreadParentError } from "./mobile-thread-hierarchy";
+import { applyShellStreamEvent } from "@t3tools/client-runtime";
 import {
   buildThreadListV2Items,
   buildThreadListV2ListItems,
@@ -60,6 +62,175 @@ const linkedPullRequest = {
   number: 42,
   url: "https://github.com/pingdotgg/t3code/pull/42",
 };
+
+describe("mobile nested threads", () => {
+  const parent = makeThread({ id: ThreadId.make("parent"), title: "Parent" });
+  const child = makeThread({
+    id: ThreadId.make("child"),
+    title: "Child",
+    parentThreadId: parent.id,
+  });
+  const leaf = makeThread({ id: ThreadId.make("leaf"), title: "Leaf", parentThreadId: child.id });
+  const layout = (
+    threads: readonly EnvironmentThreadShell[],
+    extra: Partial<Parameters<typeof buildThreadListV2Items>[0]> = {},
+  ) =>
+    buildThreadListV2Items({ threads, environmentId: null, searchQuery: "", now: NOW, ...extra });
+
+  it("defaults quiet trees closed and keeps a selected grandchild visible after collapse", () => {
+    expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual(["parent"]);
+    const items = layout([leaf, parent, child], {
+      selectedThreadKey: `${environmentId}:leaf`,
+      expandedOverrideByThreadKey: new Map([[`${environmentId}:parent`, false]]),
+    }).items;
+    expect(items.map((item) => [item.thread.id, item.hierarchy?.depth])).toEqual([
+      ["parent", 0],
+      ["child", 1],
+      ["leaf", 2],
+    ]);
+  });
+
+  it("promotes a shelved parent for blocked or queued descendant work and rolls up archive guards", () => {
+    const result = layout([
+      { ...parent, settledOverride: "settled", snoozedUntil: "2026-06-03T00:00:00Z" },
+      { ...child, hasPendingQueuedTurn: true },
+      { ...leaf, hasPendingApprovals: true },
+    ]);
+    expect(result.settledCount).toBe(0);
+    expect(result.snoozedCount).toBe(0);
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      displayStatus: "approval",
+      archiveBlocked: true,
+    });
+    expect(result.items).toHaveLength(3);
+  });
+
+  it("sorts siblings and roots by subtree activity without detaching children", () => {
+    const newer = makeThread({
+      id: ThreadId.make("newer"),
+      title: "Newer",
+      parentThreadId: parent.id,
+      updatedAt: NOW,
+    });
+    const other = makeThread({
+      id: ThreadId.make("other"),
+      title: "Other",
+      updatedAt: "2026-06-01T12:00:00Z",
+    });
+    expect(
+      layout([parent, child, newer, other], {
+        expandedOverrideByThreadKey: new Map([[`${environmentId}:parent`, true]]),
+      }).items.map((item) => item.thread.id),
+    ).toEqual(["parent", "newer", "child", "other"]);
+  });
+
+  it("keeps ancestry during content search and roots the child only after parent deletion", () => {
+    expect(
+      layout([parent, child, leaf], {
+        searchQuery: "needle",
+        matchedThreadKeys: new Set([threadSearchMatchKey({ environmentId, threadId: leaf.id })]),
+      }).items.map((item) => item.thread.id),
+    ).toEqual(["parent", "child", "leaf"]);
+    expect(layout([child]).items[0]?.hierarchy?.depth).toBe(0);
+    expect(layout([{ ...parent, archivedAt: NOW }, child, leaf]).items).toEqual([]);
+  });
+
+  it("pages root groups rather than children and keeps selected descendants on closed shelves", () => {
+    const other = makeThread({
+      id: ThreadId.make("other"),
+      title: "Other",
+      settledOverride: "settled",
+      settledAt: NOW,
+    });
+    const result = layout([{ ...parent, settledOverride: "settled" }, child, leaf, other], {
+      settledLimit: 0,
+      settledShelfExpanded: false,
+      selectedThreadKey: `${environmentId}:leaf`,
+    });
+    expect(result.settledCount).toBe(2);
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
+  });
+
+  it("shows provider background runs as local children, never as independent server threads", () => {
+    const result = layout([
+      {
+        ...parent,
+        backgroundAgentRuns: [
+          {
+            taskId: "task-1",
+            name: "Checking native state",
+            status: "running",
+            startedAt: NOW,
+          },
+        ],
+      },
+    ]);
+    expect(result.items.map((item) => item.thread.id)).toEqual([
+      "parent",
+      "agent-run:parent:task-1",
+    ]);
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      displayStatus: "working",
+      archiveBlocked: true,
+    });
+    expect(result.items[1]?.thread.virtualAgentRun?.parentThreadId).toBe(parent.id);
+    const finished = {
+      ...parent,
+      backgroundAgentRuns: [
+        {
+          taskId: "task-1",
+          name: "Checking native state",
+          status: "completed" as const,
+          startedAt: NOW,
+        },
+      ],
+    };
+    expect(
+      layout([finished], { dismissedAgentRunKeys: [`${environmentId}:agent-run:parent:task-1`] })
+        .items,
+    ).toHaveLength(1);
+  });
+
+  it("keeps parentage and child notification timestamps through live shell replacement and resnapshot", () => {
+    const snapshot = {
+      snapshotSequence: 0,
+      projects: [],
+      threads: [parent, child],
+      updatedAt: NOW,
+    };
+    const next = applyShellStreamEvent(snapshot, {
+      kind: "thread-upserted",
+      sequence: 1,
+      thread: { ...parent, latestChildNotificationAt: NOW },
+    });
+    expect(next.threads[0]?.latestChildNotificationAt).toBe(NOW);
+    const resnapshot = JSON.parse(JSON.stringify(next));
+    expect(
+      layout(resnapshot.threads, { selectedThreadKey: `${environmentId}:child` }).items.map(
+        (item) => item.thread.id,
+      ),
+    ).toEqual(["parent", "child"]);
+    const decoupled = applyShellStreamEvent(next, {
+      kind: "thread-upserted",
+      sequence: 2,
+      thread: { ...child, parentThreadId: null },
+    });
+    expect(
+      buildMobileThreadTree(decoupled.threads.map((thread) => ({ ...thread, environmentId }))),
+    ).toHaveLength(2);
+  });
+
+  it("rejects removed, archived and cross-project parents without substituting a root", () => {
+    expect(nestedThreadParentError(parent.id, parent.projectId, [])).toContain("no longer active");
+    expect(
+      nestedThreadParentError(parent.id, parent.projectId, [{ ...parent, archivedAt: NOW }]),
+    ).toContain("no longer active");
+    expect(nestedThreadParentError(parent.id, ProjectId.make("different"), [parent])).toContain(
+      "different project",
+    );
+    expect(nestedThreadParentError(parent.id, parent.projectId, [parent])).toBeNull();
+  });
+});
 
 describe("resolveThreadListV2SnoozeMenuSelection", () => {
   it("accepts a displayed evening preset while its wake time is still future", () => {
@@ -619,14 +790,14 @@ describe("buildThreadListV2Items", () => {
     expect(layout.settledShelfHeaderIndex).toBe(0);
   });
 
-  it("keeps cards in creation order while settled sorts by recency", () => {
+  it("orders active roots by recent activity like the fork sidebar", () => {
     const { items } = buildThreadListV2Items({
       threads: [
         makeThread({
           id: ThreadId.make("older-created"),
           title: "Older",
           createdAt: "2026-06-01T08:00:00.000Z",
-          updatedAt: NOW, // recent activity must NOT promote it
+          updatedAt: NOW,
         }),
         makeThread({
           id: ThreadId.make("newer-created"),
@@ -639,7 +810,7 @@ describe("buildThreadListV2Items", () => {
       now: NOW,
     });
 
-    expect(items.map((item) => item.thread.id)).toEqual(["newer-created", "older-created"]);
+    expect(items.map((item) => item.thread.id)).toEqual(["older-created", "newer-created"]);
   });
 
   it("sorts settled threads by their persisted settlement timestamp", () => {

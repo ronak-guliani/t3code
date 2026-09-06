@@ -20,6 +20,7 @@ import { Alert } from "react-native";
 import { reportClientWarning } from "../lib/clientLogger";
 import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
+import { nestedThreadParentError } from "../features/threads/mobile-thread-hierarchy";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import { recordOutboxDiagnostic } from "../connection/diagnostic-store";
@@ -398,6 +399,7 @@ export async function restoreRejectedQueuedMessage(
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
         ? {
+            parentThreadId: queuedMessage.creation.parentThreadId,
             workspaceSelection: {
               mode: queuedMessage.creation.workspaceMode,
               branch: queuedMessage.creation.branch,
@@ -458,7 +460,9 @@ export async function restoreRejectedQueuedMessage(
 
 function recoveryDraftKey(queuedMessage: QueuedThreadMessage): string {
   return queuedMessage.creation
-    ? `new-task:${scopedProjectKey(queuedMessage.environmentId, queuedMessage.creation.projectId)}`
+    ? queuedMessage.creation.parentThreadId
+      ? `subchat:${queuedMessage.environmentId}:${queuedMessage.creation.parentThreadId}`
+      : `new-task:${scopedProjectKey(queuedMessage.environmentId, queuedMessage.creation.projectId)}`
     : scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
 }
 
@@ -881,10 +885,19 @@ export function useThreadOutboxDrain(): void {
         currentConfig.providers,
       );
       recordOutboxDiagnostic(queuedMessage, "dispatching");
+      const parentError = nestedThreadParentError(
+        creation.parentThreadId,
+        creation.projectId,
+        appAtomRegistry
+          .get(environmentThreadShells.threadShellsAtom)
+          .filter((thread) => thread.environmentId === queuedMessage.environmentId),
+      );
+      if (parentError !== null) return restoreQueuedMessage(persistedMessage, parentError);
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
           projectId: creation.projectId,
+          parentThreadId: creation.parentThreadId,
           projectCwd,
           threadId: queuedMessage.threadId,
           commandId: queuedMessage.commandId,
