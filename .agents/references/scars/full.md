@@ -170,6 +170,8 @@
 
 ## Client state and completion
 
+- Workspace autosave sessions belong to the environment/workspace/file, not the preview mount: retain failed drafts and retry state across remounts, flush only unsaved revisions, and let a post-confirmation read retire only the draft it captured. Content-only autosaves must not rebuild the file tree.
+
 - Child lifecycle notifications are not parent execution status. Keep unread child updates in activity/tooltip surfaces, not sidebar status dots or badges; they must not override the parent's own completion.
 
 - Thread PR provenance must never be inferred from mutable workspace checkout state or branch-name equality; only an explicit durable association may render a PR badge.
