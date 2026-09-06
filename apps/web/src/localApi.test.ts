@@ -654,6 +654,12 @@ describe("wsApi", () => {
   it("reads and writes persistence through the desktop bridge when available", async () => {
     const clientSettings = {
       autoOpenPlanSidebar: false,
+      browserDefaultViewport: { _tag: "fill" as const },
+      browserDefaultZoomFactor: 1 as const,
+      browserDefaultAppearance: "system" as const,
+      browserLinkTarget: "system" as const,
+      browserProfiles: [],
+      browserDefaultProfileId: "default",
       browserAutoShowFloatingPreview: false,
       browserRecordingFrameRate: 60 as const,
       chatFontSize: 14,
@@ -735,6 +741,12 @@ describe("wsApi", () => {
     const api = createLocalApi(rpcClientMock as never);
     const clientSettings = {
       autoOpenPlanSidebar: false,
+      browserDefaultViewport: { _tag: "fill" as const },
+      browserDefaultZoomFactor: 1 as const,
+      browserDefaultAppearance: "system" as const,
+      browserLinkTarget: "system" as const,
+      browserProfiles: [],
+      browserDefaultProfileId: "default",
       browserAutoShowFloatingPreview: false,
       browserRecordingFrameRate: 60 as const,
       chatFontSize: 14,

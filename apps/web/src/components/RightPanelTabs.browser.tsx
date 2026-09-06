@@ -47,7 +47,7 @@ async function mountTabs(
     onCloseAll: vi.fn(),
     onClosePanel: vi.fn(),
     onCopyPath: vi.fn(),
-    onAddBrowser: vi.fn(),
+    onAddBrowserInProfile: vi.fn(),
     onAddTerminal: vi.fn(),
     onAddFiles: vi.fn(),
     onAddDiff: vi.fn(),
@@ -128,7 +128,10 @@ describe("RightPanelTabs", () => {
     try {
       await page.getByLabelText("Add surface").click();
       await page.getByRole("menuitem", { name: "Browser" }).click();
-      expect(callbacks.onAddBrowser).toHaveBeenCalledOnce();
+      expect(callbacks.onAddBrowserInProfile).not.toHaveBeenCalled();
+      await page.getByRole("menuitem", { name: "Default", exact: true }).click();
+      expect(callbacks.onAddBrowserInProfile).toHaveBeenCalledOnce();
+      expect(callbacks.onAddBrowserInProfile).toHaveBeenCalledWith("default");
 
       await page.getByLabelText("Add surface").click();
       await page.getByRole("menuitem", { name: "Terminal" }).click();

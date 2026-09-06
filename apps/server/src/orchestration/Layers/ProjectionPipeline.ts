@@ -801,6 +801,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadMessageRepository.upsert({
             messageId: event.payload.messageId,
             threadId: event.payload.threadId,
+            sequence: previousMessage?.sequence ?? event.sequence,
             turnId: event.payload.turnId,
             role: event.payload.role,
             text: nextText,
@@ -1684,22 +1685,37 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     });
 
     const bootstrap: OrchestrationProjectionPipelineShape["bootstrap"] = Effect.gen(function* () {
+      // Scar #131: prune retired projector cursor rows BEFORE computing
+      // minCursor. A renamed projector left behind at sequence 0 would
+      // otherwise pin the global minimum and replay gigabytes of event
+      // history on every startup.
       yield* projectionStateRepository.deleteExcept({
         // The review handoff reactor shares this cursor store but is not a projector.
         projectors: [...projectors.map((projector) => projector.name), REVIEW_HANDOFF_PROJECTOR],
       });
 
-      const cursors = new Map<ProjectorName, number>();
-      for (const projector of projectors) {
-        const stateRow = yield* projectionStateRepository.getByProjector({
-          projector: projector.name,
-        });
-        cursors.set(
-          projector.name,
-          Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
-        );
-      }
-      const minCursor = Math.min(...cursors.values());
+      // Cursor reads are independent, so fan them out. Replay still commits
+      // per BOOTSTRAP_EVENT_BATCH_SIZE batch (rows + cursors + intent
+      // together per scar #10) and attachment cleanup still waits for the
+      // entire replay via reconciler.drain below (scar #132).
+      const cursorEntries = yield* Effect.all(
+        projectors.map((projector) =>
+          projectionStateRepository
+            .getByProjector({ projector: projector.name })
+            .pipe(
+              Effect.map(
+                (stateRow) =>
+                  [
+                    projector.name,
+                    Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+                  ] as const,
+              ),
+            ),
+        ),
+        { concurrency: "unbounded" },
+      );
+      const cursors = new Map<ProjectorName, number>(cursorEntries);
+      const minCursor = cursors.size === 0 ? 0 : Math.min(...cursors.values());
       yield* Stream.runForEach(
         Stream.grouped(
           eventStore.readFromSequence(minCursor, Number.MAX_SAFE_INTEGER),

@@ -2117,10 +2117,13 @@ function ChatViewBody(
     },
     [activeThreadRef],
   );
-  const createBrowserSurface = useCallback(() => {
-    if (!activeThreadRef) return;
-    void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
-  }, [activeThreadRef, openPreview]);
+  const createBrowserSurface = useCallback(
+    (profileId?: string) => {
+      if (!activeThreadRef) return;
+      void addBrowserSurface({ threadRef: activeThreadRef, openPreview, profileId });
+    },
+    [activeThreadRef, openPreview],
+  );
   const toggleInsights = useCallback(() => {
     if (!activeThreadRef) return;
     const state = useRightPanelStore.getState();
@@ -4974,7 +4977,7 @@ function ChatViewBody(
                 onCloseAll={closeAllRightPanelSurfaces}
                 onClosePanel={closeBrowserPreview}
                 onCopyPath={copyRightPanelFilePath}
-                onAddBrowser={createBrowserSurface}
+                onAddBrowserInProfile={createBrowserSurface}
                 onAddTerminal={addTerminalSurface}
                 onAddFiles={addFilesSurface}
                 onAddDiff={addDiffSurface}
@@ -5032,7 +5035,7 @@ function ChatViewBody(
             onCloseAll={closeAllRightPanelSurfaces}
             onClosePanel={closeBrowserPreview}
             onCopyPath={copyRightPanelFilePath}
-            onAddBrowser={createBrowserSurface}
+            onAddBrowserInProfile={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddFiles={addFilesSurface}
             onAddDiff={addDiffSurface}

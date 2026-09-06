@@ -23,6 +23,18 @@ import {
   type DesktopLocalRebuildState,
   type EnvironmentId,
   type ModelSelection,
+  DEFAULT_BROWSER_PROFILE_ID,
+  DEFAULT_PREVIEW_APPEARANCE,
+  DEFAULT_PREVIEW_ZOOM_FACTOR,
+  FILL_PREVIEW_VIEWPORT,
+  resolveBrowserProfiles,
+  type BrowserProfile,
+  type BrowserImportSource,
+  type BrowserImportSourceId,
+  BROWSER_IMPORT_FAILURE_COPY,
+  BROWSER_IMPORT_UNAVAILABLE_COPY,
+  type PreviewAppearancePreference,
+  type PreviewViewportSetting,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
@@ -34,6 +46,7 @@ import {
   RECOMMENDED_FONT_SIZES_BY_UI_DENSITY,
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
+  DEFAULT_BROWSER_LINK_TARGET,
   DEFAULT_CODE_FONT,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_INPUT_FONT_SIZE,
@@ -73,6 +86,7 @@ import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { resolveAndPersistPreferredEditor } from "../../editorPreferences";
 import { isElectron } from "../../env";
+import { usePrimaryEnvironmentId } from "../../environments/primary";
 import { useTheme } from "../../hooks/useTheme";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
@@ -966,6 +980,7 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
+  const browserEnvironmentId = usePrimaryEnvironmentId();
   const { theme, setTheme } = useTheme();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -982,6 +997,124 @@ export function GeneralSettingsPanel() {
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isPickingChatExportDirectory, setIsPickingChatExportDirectory] = useState(false);
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [newBrowserProfileName, setNewBrowserProfileName] = useState("");
+  const [browserProfileNames, setBrowserProfileNames] = useState<Record<string, string>>({});
+  const [browserImportSources, setBrowserImportSources] = useState<
+    ReadonlyArray<BrowserImportSource>
+  >([]);
+  const [browserImportSourceId, setBrowserImportSourceId] = useState<BrowserImportSourceId | "">(
+    "",
+  );
+  const [browserImportProfileDirectory, setBrowserImportProfileDirectory] = useState("");
+  const [browserImportStatus, setBrowserImportStatus] = useState<string | null>(null);
+  const [browserImportConsent, setBrowserImportConsent] = useState(false);
+  const [browserImportTargetProfileId, setBrowserImportTargetProfileId] = useState(
+    settings.browserDefaultProfileId,
+  );
+  const browserProfiles = resolveBrowserProfiles(settings.browserProfiles);
+  const importTargetProfile =
+    browserProfiles.find(
+      (profile) => profile.id === browserImportTargetProfileId && profile.kind !== "incognito",
+    ) ?? browserProfiles.find((profile) => profile.id === DEFAULT_BROWSER_PROFILE_ID)!;
+  useEffect(() => {
+    setBrowserImportConsent(false);
+  }, [importTargetProfile.id, browserImportSourceId, browserImportProfileDirectory]);
+  const updateBrowserProfileName = useCallback(
+    (profile: BrowserProfile) => {
+      const name = (browserProfileNames[profile.id] ?? profile.name).trim();
+      if (!name || name === profile.name) return;
+      updateSettings({
+        browserProfiles: settings.browserProfiles.map((candidate) =>
+          candidate.id === profile.id ? { ...candidate, name } : candidate,
+        ),
+      });
+    },
+    [browserProfileNames, settings.browserProfiles, updateSettings],
+  );
+  const addBrowserProfile = useCallback(() => {
+    const name = newBrowserProfileName.trim();
+    if (!name) return;
+    const id = `profile-${crypto.randomUUID()}`;
+    updateSettings({
+      browserProfiles: [...settings.browserProfiles, { id, name, kind: "persistent" as const }],
+    });
+    setNewBrowserProfileName("");
+  }, [newBrowserProfileName, settings.browserProfiles, updateSettings]);
+  const removeBrowserProfile = useCallback(
+    (id: string) => {
+      updateSettings({
+        browserProfiles: settings.browserProfiles.filter((profile) => profile.id !== id),
+        ...(settings.browserDefaultProfileId === id
+          ? { browserDefaultProfileId: DEFAULT_BROWSER_PROFILE_ID }
+          : {}),
+      });
+      setBrowserProfileNames((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    },
+    [settings.browserDefaultProfileId, settings.browserProfiles, updateSettings],
+  );
+  const selectedImportSource = browserImportSources.find(
+    (source) => source.id === browserImportSourceId,
+  );
+  const loadBrowserImportSources = useCallback(async () => {
+    const preview = window.desktopBridge?.preview;
+    if (!preview) return;
+    const sources = await preview.listBrowserImportSources();
+    setBrowserImportSources(sources);
+    const first = sources.find(
+      (source) => source.unavailable === undefined && source.profiles.length > 0,
+    );
+    if (first) {
+      setBrowserImportSourceId(first.id);
+      setBrowserImportProfileDirectory(first.profiles[0]?.directory ?? "");
+    }
+  }, []);
+  useEffect(() => {
+    void loadBrowserImportSources().catch((error: unknown) => {
+      reportClientWarning("Failed to list browser cookie import sources", error);
+    });
+  }, [loadBrowserImportSources]);
+  const importBrowserCookies = useCallback(async () => {
+    const preview = window.desktopBridge?.preview;
+    if (
+      !preview ||
+      !browserEnvironmentId ||
+      !selectedImportSource ||
+      !browserImportProfileDirectory ||
+      !browserImportConsent
+    )
+      return;
+    setBrowserImportStatus("Reading cookies...");
+    try {
+      const result = await preview.importBrowserCookies({
+        environmentId: browserEnvironmentId,
+        sourceId: selectedImportSource.id,
+        sourceProfileDirectory: browserImportProfileDirectory,
+        targetProfileId: importTargetProfile.id,
+      });
+      setBrowserImportStatus(
+        `${result.imported} cookies imported${result.skipped > 0 ? `, ${result.skipped} skipped` : ""}.`,
+      );
+    } catch (error) {
+      const reason = String(error).match(/: ([a-zA-Z]+)\.?$/)?.[1] as
+        | keyof typeof BROWSER_IMPORT_FAILURE_COPY
+        | undefined;
+      setBrowserImportStatus(
+        reason
+          ? BROWSER_IMPORT_FAILURE_COPY[reason]
+          : "Cookie import failed. Nothing was changed in the source browser.",
+      );
+    }
+  }, [
+    browserImportProfileDirectory,
+    browserImportConsent,
+    browserEnvironmentId,
+    importTargetProfile.id,
+    selectedImportSource,
+  ]);
   // Collapsible state per provider-instance card, keyed by the instance id.
   // `Record<string, boolean>` so we don't need to preseed an entry for every
   // configured instance — an absent key reads as collapsed. Default-slot
@@ -2183,6 +2316,390 @@ export function GeneralSettingsPanel() {
             </Select>
           }
         />
+
+        <SettingsRow
+          title="Browser default viewport"
+          description="Choose the viewport size used by new browser tabs unless an entry point provides an explicit size."
+          resetAction={
+            settings.browserDefaultViewport._tag !== FILL_PREVIEW_VIEWPORT._tag ? (
+              <SettingResetButton
+                label="browser default viewport"
+                onClick={() => updateSettings({ browserDefaultViewport: FILL_PREVIEW_VIEWPORT })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={
+                settings.browserDefaultViewport._tag === "fill"
+                  ? "fill"
+                  : `${settings.browserDefaultViewport.width}x${settings.browserDefaultViewport.height}`
+              }
+              onValueChange={(value) => {
+                if (value === null) return;
+                const next: Record<string, PreviewViewportSetting> = {
+                  fill: FILL_PREVIEW_VIEWPORT,
+                  "1440x900": { _tag: "freeform", width: 1440, height: 900 },
+                  "1024x768": { _tag: "freeform", width: 1024, height: 768 },
+                  "390x844": { _tag: "freeform", width: 390, height: 844 },
+                };
+                const viewport = next[value];
+                if (viewport) updateSettings({ browserDefaultViewport: viewport });
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Browser default viewport">
+                <SelectValue>
+                  {settings.browserDefaultViewport._tag === "fill"
+                    ? "Panel size"
+                    : `${settings.browserDefaultViewport.width} x ${settings.browserDefaultViewport.height}`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="fill">
+                  Panel size
+                </SelectItem>
+                <SelectItem hideIndicator value="1440x900">
+                  Desktop (1440 x 900)
+                </SelectItem>
+                <SelectItem hideIndicator value="1024x768">
+                  Tablet (1024 x 768)
+                </SelectItem>
+                <SelectItem hideIndicator value="390x844">
+                  Mobile (390 x 844)
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Browser default zoom"
+          description="Set the initial zoom factor for human and agent browser tabs."
+          resetAction={
+            settings.browserDefaultZoomFactor !== DEFAULT_PREVIEW_ZOOM_FACTOR ? (
+              <SettingResetButton
+                label="browser default zoom"
+                onClick={() =>
+                  updateSettings({ browserDefaultZoomFactor: DEFAULT_PREVIEW_ZOOM_FACTOR })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={String(settings.browserDefaultZoomFactor)}
+              onValueChange={(value) => {
+                const zoom = Number(value);
+                if ([0.8, 1, 1.25, 1.5].includes(zoom)) {
+                  updateSettings({
+                    browserDefaultZoomFactor: zoom as typeof settings.browserDefaultZoomFactor,
+                  });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Browser default zoom">
+                <SelectValue>{Math.round(settings.browserDefaultZoomFactor * 100)}%</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {[0.8, 1, 1.25, 1.5].map((zoom) => (
+                  <SelectItem hideIndicator key={zoom} value={String(zoom)}>
+                    {Math.round(zoom * 100)}%
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Browser default appearance"
+          description="Choose the color scheme applied when a new browser tab is created."
+          resetAction={
+            settings.browserDefaultAppearance !== DEFAULT_PREVIEW_APPEARANCE ? (
+              <SettingResetButton
+                label="browser default appearance"
+                onClick={() =>
+                  updateSettings({ browserDefaultAppearance: DEFAULT_PREVIEW_APPEARANCE })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.browserDefaultAppearance}
+              onValueChange={(value) => {
+                if (value === "system" || value === "light" || value === "dark") {
+                  updateSettings({
+                    browserDefaultAppearance: value as PreviewAppearancePreference,
+                  });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Browser default appearance">
+                <SelectValue>
+                  {settings.browserDefaultAppearance === "system"
+                    ? "System"
+                    : settings.browserDefaultAppearance === "light"
+                      ? "Light"
+                      : "Dark"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="system">
+                  System
+                </SelectItem>
+                <SelectItem hideIndicator value="light">
+                  Light
+                </SelectItem>
+                <SelectItem hideIndicator value="dark">
+                  Dark
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Open links in"
+          description="Choose whether HTTP(S) links open in T3 Code or your system browser. Cmd/Ctrl/Shift/Alt-click always opens externally."
+          resetAction={
+            settings.browserLinkTarget !== DEFAULT_BROWSER_LINK_TARGET ? (
+              <SettingResetButton
+                label="link destination"
+                onClick={() => updateSettings({ browserLinkTarget: DEFAULT_BROWSER_LINK_TARGET })}
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.browserLinkTarget}
+              onValueChange={(value) => {
+                if (value === "system" || value === "app") {
+                  updateSettings({ browserLinkTarget: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Open links in">
+                <SelectValue>
+                  {settings.browserLinkTarget === "app" ? "T3 Code" : "System browser"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="app">
+                  T3 Code
+                </SelectItem>
+                <SelectItem hideIndicator value="system">
+                  System browser
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Browser profiles"
+          description="Keep cookies and site storage separate between named profiles. Incognito tabs are cleared when the app closes."
+          control={
+            <Select
+              value={settings.browserDefaultProfileId}
+              onValueChange={(value) => {
+                if (value !== null) updateSettings({ browserDefaultProfileId: value });
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Default browser profile">
+                <SelectValue>
+                  {browserProfiles.find(
+                    (profile) => profile.id === settings.browserDefaultProfileId,
+                  )?.name ?? "Default"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {browserProfiles
+                  .filter((profile) => profile.kind !== "incognito")
+                  .map((profile) => (
+                    <SelectItem hideIndicator key={profile.id} value={profile.id}>
+                      {profile.name}
+                    </SelectItem>
+                  ))}
+              </SelectPopup>
+            </Select>
+          }
+        >
+          <div className="space-y-2 pb-4 pt-3">
+            {browserProfiles.map((profile) => {
+              const builtIn =
+                profile.id === DEFAULT_BROWSER_PROFILE_ID || profile.kind === "incognito";
+              return (
+                <div key={profile.id} className="flex items-center gap-2">
+                  <Input
+                    className="min-w-0 flex-1"
+                    value={browserProfileNames[profile.id] ?? profile.name}
+                    disabled={builtIn}
+                    aria-label={`${profile.name} profile name`}
+                    onChange={(event) =>
+                      setBrowserProfileNames((current) => ({
+                        ...current,
+                        [profile.id]: event.target.value,
+                      }))
+                    }
+                    onBlur={() => updateBrowserProfileName(profile)}
+                  />
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                    {profile.kind === "incognito"
+                      ? "Incognito"
+                      : profile.id === settings.browserDefaultProfileId
+                        ? "Default"
+                        : ""}
+                  </span>
+                  {!builtIn ? (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      aria-label={`Delete ${profile.name} profile`}
+                      onClick={() => removeBrowserProfile(profile.id)}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </Button>
+                  ) : null}
+                </div>
+              );
+            })}
+            <div className="flex items-center gap-2">
+              <Input
+                className="min-w-0 flex-1"
+                value={newBrowserProfileName}
+                onChange={(event) => setNewBrowserProfileName(event.target.value)}
+                placeholder="New profile name"
+                aria-label="New browser profile name"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") addBrowserProfile();
+                }}
+              />
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={addBrowserProfile}
+                disabled={!newBrowserProfileName.trim()}
+              >
+                <PlusIcon className="size-3.5" />
+                Add
+              </Button>
+            </div>
+            <div className="border-t border-border pt-3">
+              <div className="text-xs font-medium">Import cookies from another browser</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Imports cookies only into the selected T3 Code profile. Passwords and browser
+                history are never copied. Quit the source browser before importing.
+              </p>
+              <div className="mt-3 space-y-2">
+                <Select
+                  value={browserImportSourceId}
+                  onValueChange={(value) => {
+                    if (!value) return;
+                    const source = browserImportSources.find((candidate) => candidate.id === value);
+                    setBrowserImportSourceId(value as BrowserImportSourceId);
+                    setBrowserImportProfileDirectory(source?.profiles[0]?.directory ?? "");
+                    setBrowserImportStatus(null);
+                  }}
+                >
+                  <SelectTrigger className="w-full" aria-label="Cookie import source browser">
+                    <SelectValue placeholder="Choose source browser">
+                      {selectedImportSource?.name ?? "Choose source browser"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {browserImportSources.map((source) => (
+                      <SelectItem hideIndicator key={source.id} value={source.id}>
+                        {source.name}
+                        {source.unavailable
+                          ? ` — ${BROWSER_IMPORT_UNAVAILABLE_COPY[source.unavailable]}`
+                          : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+                {selectedImportSource?.unavailable ? (
+                  <p className="text-xs text-muted-foreground">
+                    {BROWSER_IMPORT_UNAVAILABLE_COPY[selectedImportSource.unavailable]}
+                  </p>
+                ) : null}
+                {selectedImportSource && selectedImportSource.profiles.length > 0 ? (
+                  <Select
+                    value={browserImportProfileDirectory}
+                    onValueChange={(value) => {
+                      if (value) setBrowserImportProfileDirectory(value);
+                    }}
+                  >
+                    <SelectTrigger className="w-full" aria-label="Cookie import source profile">
+                      <SelectValue placeholder="Choose source profile">
+                        {selectedImportSource.profiles.find(
+                          (profile) => profile.directory === browserImportProfileDirectory,
+                        )?.name ?? "Choose source profile"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="start" alignItemWithTrigger={false}>
+                      {selectedImportSource.profiles.map((profile) => (
+                        <SelectItem hideIndicator key={profile.directory} value={profile.directory}>
+                          {profile.name}
+                          {profile.cookieCount === undefined
+                            ? ""
+                            : ` (${profile.cookieCount} cookies)`}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                ) : null}
+                <Select
+                  value={importTargetProfile.id}
+                  onValueChange={(value) => {
+                    if (value) setBrowserImportTargetProfileId(value);
+                  }}
+                >
+                  <SelectTrigger className="w-full" aria-label="Cookie import target profile">
+                    <SelectValue>Import into {importTargetProfile.name}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start" alignItemWithTrigger={false}>
+                    {browserProfiles
+                      .filter((profile) => profile.kind !== "incognito")
+                      .map((profile) => (
+                        <SelectItem hideIndicator key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </SelectItem>
+                      ))}
+                  </SelectPopup>
+                </Select>
+                <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <Checkbox
+                    checked={browserImportConsent}
+                    onCheckedChange={(checked) => setBrowserImportConsent(checked === true)}
+                    aria-label="Allow cookie import"
+                  />
+                  <span>
+                    I understand this reads cookies from the selected browser profile and adds them
+                    to T3 Code.
+                  </span>
+                </label>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    !browserEnvironmentId ||
+                    !browserImportConsent ||
+                    !selectedImportSource ||
+                    selectedImportSource.unavailable !== undefined ||
+                    !browserImportProfileDirectory
+                  }
+                  onClick={() => void importBrowserCookies()}
+                >
+                  Import cookies
+                </Button>
+                {browserImportStatus ? (
+                  <p className="text-xs text-muted-foreground">{browserImportStatus}</p>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </SettingsRow>
 
         <SettingsRow
           title="Diff line wrapping"
