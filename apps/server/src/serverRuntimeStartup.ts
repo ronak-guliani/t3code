@@ -295,13 +295,22 @@ const maybeOpenBrowser = (target: string) =>
     );
   });
 
-const resolveListeningLocalOrigin = Effect.gen(function* () {
+export const resolveListeningLocalOrigin = Effect.gen(function* () {
   const server = yield* HttpServer.HttpServer;
-  const serverConfig = yield* ServerConfig;
   const address = server.address;
-  const port =
-    typeof address === "string" || !("port" in address) ? serverConfig.port : address.port;
-  return `http://localhost:${port}`;
+  if (address._tag !== "TcpAddress") {
+    return yield* new ServerRuntimeStartupError({
+      message: "T3 Connect requires a TCP listener; a local socket cannot be used as its origin.",
+    });
+  }
+  // localhost can resolve to a different T3 process listening on the other address family.
+  const hostname =
+    address.hostname === "0.0.0.0"
+      ? "127.0.0.1"
+      : address.hostname === "::" || address.hostname === "[::]"
+        ? "::1"
+        : address.hostname;
+  return `http://${formatHostForUrl(hostname)}:${address.port}`;
 });
 
 export const reconcileDesiredConnectLink = Effect.gen(function* () {
