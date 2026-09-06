@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, expect, it } from "vite-plus/test";
@@ -8,8 +8,18 @@ import {
   assertConnectConfig,
   installCliPackage,
   resolveCliLink,
+  resolveInstallEnv,
   waitForConnect,
 } from "./install-t3-cli.ts";
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -98,6 +108,7 @@ it.skipIf(process.platform === "win32")(
     expect(execFileSync(process.execPath, [entry], { encoding: "utf8" })).toContain(
       "installed-cli",
     );
+    expect(await exists(`${link}.install.lock`)).toBe(false);
   },
 );
 
@@ -112,8 +123,30 @@ it.skipIf(process.platform === "win32")(
     await symlink("/previous/cli", link);
     await expect(installCliPackage(source, join(home, "installs"), link)).rejects.toThrow();
     expect(await readlink(link)).toBe("/previous/cli");
+    expect(await exists(`${link}.install.lock`)).toBe(false);
   },
 );
+
+it.skipIf(process.platform === "win32")(
+  "refuses installation while another installer holds the lock",
+  async () => {
+    const { home, link } = await fixture();
+    const source = join(home, "source");
+    await mkdir(join(source, "dist"), { recursive: true });
+    await symlink("/previous/cli", link);
+    await mkdir(`${link}.install.lock`);
+    await expect(installCliPackage(source, join(home, "installs"), link)).rejects.toThrow(
+      "in progress",
+    );
+    expect(await readlink(link)).toBe("/previous/cli");
+  },
+);
+
+it("accepts a not-yet-created bin directory under an owned home", async () => {
+  const { home } = await fixture();
+  const link = join(home, "newbin", "t3");
+  expect(await resolveCliLink(join(home, "newbin"), home)).toBe(link);
+});
 
 it.skipIf(process.platform === "win32")(
   "refuses a bin directory that resolves outside the home directory",
@@ -131,7 +164,7 @@ it("rejects relay URLs and Clerk keys the runtime would refuse", () => {
   const valid = {
     relayUrl: "https://relay.example.test",
     clerkPublishableKey: `pk_test_${btoa("clerk.example.test$")}`,
-    clerkCliOAuthClientId: "client-id",
+    hostedAppUrl: undefined,
   };
   expect(() => assertConnectConfig(valid)).not.toThrow();
   expect(() => assertConnectConfig({ ...valid, relayUrl: "http://relay.example.test" })).toThrow(
@@ -143,4 +176,35 @@ it("rejects relay URLs and Clerk keys the runtime would refuse", () => {
   expect(() => assertConnectConfig({ ...valid, clerkPublishableKey: "not-a-key" })).toThrow(
     "T3CODE_CLERK_PUBLISHABLE_KEY",
   );
+});
+
+it("rejects hosted app URLs the login flow would refuse", () => {
+  const valid = {
+    relayUrl: "https://relay.example.test",
+    clerkPublishableKey: `pk_test_${btoa("clerk.example.test$")}`,
+    hostedAppUrl: "https://connect.example.test",
+  };
+  expect(() => assertConnectConfig(valid)).not.toThrow();
+  expect(() =>
+    assertConnectConfig({ ...valid, hostedAppUrl: "http://127.0.0.1:5733" }),
+  ).not.toThrow();
+  for (const hostedAppUrl of [
+    "http://connect.example.test",
+    "https://connect.example.test/path",
+    "https://connect.example.test?query=1",
+    "https://connect.example.test#fragment",
+    "not-a-url",
+  ]) {
+    expect(() => assertConnectConfig({ ...valid, hostedAppUrl })).toThrow("T3CODE_HOSTED_APP_URL");
+  }
+});
+
+it("normalizes the install environment for both build and setup", () => {
+  const env = resolveInstallEnv({
+    T3CODE_RELAY_URL: "https://relay.example.test",
+    T3CODE_EMPTY: undefined,
+  });
+  expect(env.T3CODE_RELAY_URL).toBe("https://relay.example.test");
+  expect("T3CODE_EMPTY" in env).toBe(false);
+  expect(env.PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN).toBe("false");
 });

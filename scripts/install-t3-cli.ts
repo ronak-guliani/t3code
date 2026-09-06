@@ -35,27 +35,42 @@ async function inspect(path: string) {
   }
 }
 
-async function canonical(path: string): Promise<string> {
+async function canonicalExisting(path: string): Promise<string | undefined> {
   try {
     return await realpath(path);
   } catch {
-    return resolve(path);
+    return undefined;
   }
 }
 
 async function isOwnedDirectory(directory: string, home: string): Promise<boolean> {
-  const canonicalHome = await canonical(home);
-  const canonicalDir = await canonical(directory);
+  const canonicalHome = await canonicalExisting(home);
+  if (!canonicalHome) return false;
+  // Resolve the nearest existing ancestor so missing directories (first
+  // install) still verify against a real on-disk target instead of a lexical
+  // path. Anything that cannot be resolved to a real target is not owned.
+  let ancestor = directory;
+  const rest: string[] = [];
+  let canonicalAncestor: string | undefined;
+  while (true) {
+    canonicalAncestor = await canonicalExisting(ancestor);
+    if (canonicalAncestor) break;
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return false;
+    rest.unshift(ancestor.slice(parent.length + 1));
+    ancestor = parent;
+  }
+  const canonicalDir = join(canonicalAncestor, ...rest);
   const fromHome = relative(canonicalHome, join(canonicalDir, "t3"));
   if (fromHome.startsWith(`..${sep}`) || isAbsolute(fromHome)) return false;
   // Lexical containment is not enough: a symlinked bin directory can still
   // resolve outside the home directory, so require matching ownership of the
-  // real target as well.
+  // real target as well. Unverifiable entries fail closed.
   try {
-    const [dirStat, homeStat] = await Promise.all([stat(canonicalDir), stat(canonicalHome)]);
+    const [dirStat, homeStat] = await Promise.all([stat(canonicalAncestor), stat(canonicalHome)]);
     if ("uid" in dirStat && "uid" in homeStat && dirStat.uid !== homeStat.uid) return false;
   } catch {
-    // Missing directories fall back to the canonical-path check above.
+    return false;
   }
   return true;
 }
@@ -159,7 +174,7 @@ export async function waitForConnect(
 }
 
 export function assertConnectConfig(
-  config: Pick<T3CodePublicConfig, "relayUrl" | "clerkPublishableKey">,
+  config: Pick<T3CodePublicConfig, "relayUrl" | "clerkPublishableKey" | "hostedAppUrl">,
 ): void {
   // Mirror the runtime validators so an invalid deployment fails before the
   // build, not after an unusable candidate has been activated.
@@ -175,6 +190,48 @@ export function assertConnectConfig(
       "Invalid T3CODE_CLERK_PUBLISHABLE_KEY: the CLI cannot derive a Clerk Frontend API URL from it.",
     );
   }
+  assertHostedAppUrl(config.hostedAppUrl);
+}
+
+function assertHostedAppUrl(value: string | undefined): void {
+  const hosted = value?.trim();
+  // Unset falls back to the default hosted app at runtime; only validate an
+  // explicit override with the same rule as hostedAppUrlConfig, which login
+  // enforces before opening the authorization page.
+  if (!hosted) return;
+  let url: URL;
+  try {
+    url = new URL(hosted);
+  } catch (cause) {
+    throw new Error(
+      "Invalid T3CODE_HOSTED_APP_URL: expected an absolute HTTPS origin (or HTTP loopback origin) with no path, query, or fragment.",
+      { cause },
+    );
+  }
+  const isLoopbackHttp =
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+  if (
+    (url.protocol !== "https:" && !isLoopbackHttp) ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(
+      "Invalid T3CODE_HOSTED_APP_URL: expected an absolute HTTPS origin (or HTTP loopback origin) with no path, query, or fragment.",
+    );
+  }
+}
+
+export function resolveInstallEnv(
+  baseEnv: Record<string, string | undefined> = loadRepoEnv({ includeExample: true }),
+): NodeJS.ProcessEnv {
+  // Normalize once so the build and Connect setup resolve identical values;
+  // deployments configured only in repo env files must not diverge at setup.
+  return toProcessEnv({
+    ...baseEnv,
+    PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false",
+  });
 }
 
 function toProcessEnv(env: Record<string, string | undefined>): NodeJS.ProcessEnv {
@@ -200,10 +257,7 @@ async function main() {
   if (process.platform !== "darwin") throw new Error("This installer currently supports macOS.");
   const home = homedir();
   const link = await resolveCliLink(process.env.PATH ?? "", home);
-  const env = toProcessEnv({
-    ...loadRepoEnv({ includeExample: true }),
-    PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false",
-  });
+  const env = resolveInstallEnv();
   const config = resolvePublicConfig(env);
   if (!config.relayUrl || !config.clerkPublishableKey || !config.clerkCliOAuthClientId) {
     throw new Error("Configure the complete public Connect deployment before building the CLI.");
