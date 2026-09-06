@@ -36,17 +36,13 @@ async function inspect(path: string) {
   }
 }
 
-async function canonicalExisting(path: string): Promise<string | undefined> {
-  try {
-    return await realpath(path);
-  } catch {
-    return undefined;
-  }
-}
-
 async function isOwnedDirectory(directory: string, home: string): Promise<boolean> {
-  const canonicalHome = await canonicalExisting(home);
-  if (!canonicalHome) return false;
+  let canonicalHome: string;
+  try {
+    canonicalHome = await realpath(home);
+  } catch {
+    return false;
+  }
   // Resolve the nearest existing ancestor so missing directories (first
   // install) still verify against a real on-disk target instead of a lexical
   // path. Anything that cannot be resolved to a real target is not owned.
@@ -54,8 +50,20 @@ async function isOwnedDirectory(directory: string, home: string): Promise<boolea
   const rest: string[] = [];
   let canonicalAncestor: string | undefined;
   while (true) {
-    canonicalAncestor = await canonicalExisting(ancestor);
-    if (canonicalAncestor) break;
+    try {
+      canonicalAncestor = await realpath(ancestor);
+      break;
+    } catch (cause) {
+      if (!(cause instanceof Error) || !("code" in cause) || cause.code !== "ENOENT") {
+        return false;
+      }
+      // A dangling symlink is not a missing directory that we can safely create.
+      try {
+        if (await inspect(ancestor)) return false;
+      } catch {
+        return false;
+      }
+    }
     const parent = dirname(ancestor);
     if (parent === ancestor) return false;
     rest.unshift(basename(ancestor));
@@ -84,7 +92,13 @@ export async function resolveCliLink(path: string, home: string): Promise<string
     const candidate = join(directory, "t3");
     const ownedPath = await isOwnedDirectory(directory, home);
     if (ownedPath) available ??= candidate;
-    const existing = await inspect(candidate);
+    let existing: Awaited<ReturnType<typeof inspect>>;
+    try {
+      existing = await inspect(candidate);
+    } catch (cause) {
+      if (!ownedPath) continue;
+      throw cause;
+    }
     if (!existing) continue;
     if (!ownedPath || !existing.isSymbolicLink()) {
       throw new Error(

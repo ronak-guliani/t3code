@@ -2,7 +2,21 @@ import { execFileSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, sep } from "node:path";
-import { afterEach, expect, it } from "vite-plus/test";
+import { afterEach, expect, it, vi } from "vite-plus/test";
+
+const realpathFailures = vi.hoisted(() => new Map<string, string>());
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    realpath: (path: string) => {
+      const code = realpathFailures.get(path);
+      return code
+        ? Promise.reject(Object.assign(new Error(`Cannot resolve path: ${code}`), { code }))
+        : actual.realpath(path);
+    },
+  };
+});
 
 import {
   assertConnectConfig,
@@ -24,6 +38,7 @@ async function exists(path: string): Promise<boolean> {
 
 const directories: string[] = [];
 afterEach(async () => {
+  realpathFailures.clear();
   for (const directory of directories.splice(0))
     await rm(directory, { recursive: true, force: true });
 });
@@ -175,6 +190,37 @@ it("accepts nested missing directories under an owned home", async () => {
   const directory = join(home, "missing", "nested", "bin");
   expect(await resolveCliLink(directory, home)).toBe(join(directory, "t3"));
 });
+
+it.each(["EACCES", "EPERM", "EIO", "ELOOP"])(
+  "does not treat a %s canonicalization failure as a missing directory",
+  async (code) => {
+    const { home, bin, link } = await fixture();
+    const unavailable = join(home, "unverifiable");
+    realpathFailures.set(unavailable, code);
+    expect(await resolveCliLink([unavailable, bin].join(delimiter), home)).toBe(link);
+    await expect(resolveCliLink(unavailable, home)).rejects.toThrow("No user-owned bin directory");
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "does not treat a dangling bin symlink as a missing directory",
+  async () => {
+    const { home, bin, link } = await fixture();
+    const unavailable = join(home, "dangling");
+    await symlink(join(home, "not-created"), unavailable);
+    expect(await resolveCliLink([unavailable, bin].join(delimiter), home)).toBe(link);
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "skips a bin symlink loop without blocking a usable PATH entry",
+  async () => {
+    const { home, bin, link } = await fixture();
+    const unavailable = join(home, "loop");
+    await symlink(unavailable, unavailable);
+    expect(await resolveCliLink([unavailable, bin].join(delimiter), home)).toBe(link);
+  },
+);
 
 it.skipIf(process.platform === "win32")("refuses a missing root-level bin directory", async () => {
   const { home } = await fixture();

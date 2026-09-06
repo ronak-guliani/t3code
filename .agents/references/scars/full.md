@@ -102,6 +102,7 @@
 
 ## Release builds and mobile integration
 
+- Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
 - Desktop browser tests must mock Electron mode before module evaluation and supply the real query provider; installing a bridge fixture later cannot change `env.ts`'s captured desktop flag.
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
 - Workspace dependency patches do not ship in the published CLI manifest; when runtime behavior depends on a patched package, bundle that package into `dist/bin.mjs` and verify the packed artifact contains the patch.
