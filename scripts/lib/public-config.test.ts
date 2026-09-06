@@ -34,12 +34,81 @@ describe("loadRepoEnv", () => {
       "https://local.example.test",
     );
     expect(
+      loadRepoEnv({ baseEnv: {}, repoRoot, includeExample: true }).T3CODE_CLERK_PUBLISHABLE_KEY,
+    ).toBeUndefined();
+    expect(
       loadRepoEnv({
         baseEnv: { VITE_T3CODE_RELAY_URL: "https://process.example.test" },
         repoRoot,
         includeExample: true,
       }).T3CODE_RELAY_URL,
     ).toBe("https://process.example.test");
+  });
+
+  it.each([
+    "T3CODE_RELAY_URL",
+    "VITE_T3CODE_RELAY_URL",
+    "T3CODE_CLERK_PUBLISHABLE_KEY",
+    "VITE_CLERK_PUBLISHABLE_KEY",
+    "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    "T3CODE_CLERK_JWT_TEMPLATE",
+    "VITE_CLERK_JWT_TEMPLATE",
+    "EXPO_PUBLIC_CLERK_JWT_TEMPLATE",
+  ])("does not mix example defaults with an explicit %s override", (key) => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.example"),
+      "T3CODE_RELAY_URL=https://production.example.test\nT3CODE_CLERK_PUBLISHABLE_KEY=pk_production\nT3CODE_CLERK_JWT_TEMPLATE=production\nMOBILE_CLERK_IOS_REDIRECT_URL=production://callback\n",
+    );
+    for (const source of ["process", ".env", ".env.local"]) {
+      for (const value of ["custom", ""]) {
+        const baseEnv = source === "process" ? { [key]: value } : {};
+        if (source !== "process") {
+          NodeFS.writeFileSync(NodePath.join(repoRoot, source), `${key}=${value}\n`);
+        }
+        const env = loadRepoEnv({ baseEnv, repoRoot, includeExample: true });
+        expect(env).toEqual({
+          ...loadRepoEnv({ baseEnv, repoRoot }),
+          MOBILE_CLERK_IOS_REDIRECT_URL: "production://callback",
+        });
+        expect(Object.values(env)).not.toContain("pk_production");
+        expect(Object.values(env)).not.toContain("https://production.example.test");
+        expect(Object.values(env)).not.toContain("production");
+        if (source !== "process") {
+          NodeFS.unlinkSync(NodePath.join(repoRoot, source));
+        }
+      }
+    }
+  });
+
+  it("resolves a complete deployment across explicit sources and preserves callback overrides", () => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.example"),
+      "T3CODE_RELAY_URL=https://production.example.test\nMOBILE_CLERK_IOS_REDIRECT_URL=production://callback\n",
+    );
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env"),
+      "T3CODE_CLERK_PUBLISHABLE_KEY=pk_custom\nT3CODE_CLERK_JWT_TEMPLATE=custom\n",
+    );
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.local"),
+      "VITE_T3CODE_RELAY_URL=https://custom.example.test\n",
+    );
+    const env = loadRepoEnv({
+      baseEnv: {
+        EXPO_PUBLIC_CLERK_JWT_TEMPLATE: "process-template",
+        MOBILE_CLERK_IOS_REDIRECT_URL: "custom://callback",
+      },
+      repoRoot,
+      includeExample: true,
+    });
+    expect(resolvePublicConfig(env)).toMatchObject({
+      clerkPublishableKey: "pk_custom",
+      clerkJwtTemplate: "process-template",
+      relayUrl: "https://custom.example.test",
+    });
+    expect(env.MOBILE_CLERK_IOS_REDIRECT_URL).toBe("custom://callback");
   });
 
   it("does not project cloud configuration for an unconfigured clone", () => {

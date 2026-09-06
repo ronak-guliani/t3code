@@ -29,8 +29,10 @@ sign-in screen. Set `MOBILE_CONNECT_ENABLED=false` to hide Connect and keep Dire
 ## T3 Connect
 
 Mobile builds use the public Connect identifiers in the root `.env.example` by default.
-Root `.env`, `.env.local`, and process/EAS environment variables override those defaults, in that
-order. To use another deployment, configure all three together:
+Setting any Connect key or framework alias in root `.env`, `.env.local`, or process/EAS environment
+variables disables fallback for the entire example Connect triplet. Partial custom
+configuration fails validation instead of inheriting production settings. Explicit sources retain
+that precedence order. To use another deployment, configure all three together:
 `T3CODE_CLERK_PUBLISHABLE_KEY`, `T3CODE_CLERK_JWT_TEMPLATE`, and `T3CODE_RELAY_URL`.
 The relay must be an HTTPS origin and trust the matching Clerk instance/JWT template.
 No Clerk secret key belongs in mobile configuration.
