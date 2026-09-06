@@ -35,6 +35,7 @@
     "install:t3:dev": "bash scripts/install-t3-dev.sh",
     "install:t3:alpha": "bash scripts/install-t3-alpha.sh",
     "install:t3:official": "bash scripts/install-t3-official.sh",
+    "ios:update": "pnpm --filter @t3tools/mobile ios:update",
     "release:smoke": "node scripts/release-smoke.ts",
     "release:cli-smoke": "node scripts/cli-package-smoke.ts",
     "release:connect-smoke": "node apps/server/integration/connect-release-smoke.ts && vp test run packages/client-runtime/src/connection/supervisor.test.ts apps/mobile/src/state/thread-outbox.test.ts apps/mobile/src/connection/environment-owned-data-cleanup.test.ts apps/mobile/src/features/settings/environmentDiscoveryPresentation.test.ts --no-file-parallelism",

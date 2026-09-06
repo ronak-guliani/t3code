@@ -19,6 +19,7 @@
     "eas:android:preview:dev": "eas build --profile preview:dev -p android",
     "eas:android:prod": "eas build --profile production -p android",
     "ios": "pnpm run ios:dev",
+    "ios:update": "eas build --profile preview --platform ios --wait",
     "ios:dev": "node scripts/ios-preflight.mts && APP_VARIANT=development EXPO_NO_GIT_STATUS=1 expo prebuild --clean --platform ios && APP_VARIANT=development expo run:ios",
     "ios:preview": "node scripts/ios-preflight.mts && APP_VARIANT=preview EXPO_NO_GIT_STATUS=1 expo prebuild --clean --platform ios && APP_VARIANT=preview expo run:ios --configuration Release --no-bundler",
     "ios:prod": "node scripts/ios-preflight.mts && APP_VARIANT=production EXPO_NO_GIT_STATUS=1 expo prebuild --clean --platform ios && APP_VARIANT=production expo run:ios --configuration Release --no-bundler",
@@ -146,11 +147,6 @@
       ]
     },
     "autolinking": {
-      "ios": {
-        "exclude": [
-          "@clerk/expo"
-        ]
-      },
       "buildFromSource": [
         "react-native-screens",
         "@react-native-menu/menu",

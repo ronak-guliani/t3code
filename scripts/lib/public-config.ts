@@ -29,15 +29,19 @@ const REPO_ROOT = NodePath.dirname(
 export function loadRepoEnv({
   baseEnv = process.env,
   repoRoot = REPO_ROOT,
+  includeExample = false,
 }: {
   readonly baseEnv?: Environment;
   readonly repoRoot?: string;
+  readonly includeExample?: boolean;
 } = {}): Record<string, string | undefined> {
+  const exampleEnv = includeExample ? readEnvFile(NodePath.join(repoRoot, ".env.example")) : {};
   const rootEnv = readEnvFile(NodePath.join(repoRoot, ".env"));
   const localEnv = readEnvFile(NodePath.join(repoRoot, ".env.local"));
-  const config = resolvePublicConfig(baseEnv, localEnv, rootEnv);
+  const config = resolvePublicConfig(baseEnv, localEnv, rootEnv, exampleEnv);
 
   return {
+    ...exampleEnv,
     ...rootEnv,
     ...localEnv,
     ...baseEnv,

@@ -15,17 +15,48 @@ The client RPC schema includes capability-dependent upstream methods without add
 handlers to the fork server. Older servers retain inline image uploads and socket snapshots;
 file uploads, usage, provider feedback, and other optional APIs require explicit capability support.
 
-The app uses **Direct Connect** with existing pairing/session authentication. For access across
+The app supports **T3 Connect** account sign-in and **Direct Connect** pairing/session authentication.
+Connect uses the managed relay without requiring a domain or phone VPN. For Direct Connect across
 networks without a phone VPN, configure the fork's [owned Remote Access](../../docs/background-service.md#owned-remote-access-no-phone-vpn)
 and pair through its permanent HTTPS hostname. Tailscale HTTPS remains an alternative.
 Multiple clients can pair independently, and each client can save multiple host environments.
-Managed T3 Connect/Clerk, remote APNs/Live Activity
-push, telemetry export, and OTA updates are disabled in this build. Desktop production settings
-in the root environment cannot enable them. Local widgets/Live Activities remain included.
+Remote APNs/Live Activity push, telemetry export, and OTA updates remain disabled independently
+of Connect. Desktop production settings cannot enable them. Local widgets/Live Activities remain included.
 Configuring an owned Expo project does **not** turn OTA updates back on.
-The iOS binary excludes Clerk's unused native modules; hosted-auth native views are lazy-loaded
-behind the disabled cloud configuration. Android retains the installed SDK's strict native
-bindings, but cloud services remain disabled there too.
+Both native binaries include Clerk's auth modules; configured builds expose the existing native
+sign-in screen. Set `MOBILE_CONNECT_ENABLED=false` to hide Connect and keep Direct Connect only.
+
+## T3 Connect
+
+Mobile builds use the public Connect identifiers in the root `.env.example` by default.
+Root `.env`, `.env.local`, and process/EAS environment variables override those defaults, in that
+order. To use another deployment, configure all three together:
+`T3CODE_CLERK_PUBLISHABLE_KEY`, `T3CODE_CLERK_JWT_TEMPLATE`, and `T3CODE_RELAY_URL`.
+The relay must be an HTTPS origin and trust the matching Clerk instance/JWT template.
+No Clerk secret key belongs in mobile configuration.
+
+1. Keep the desired host server running, then run `t3 connect link` and `t3 connect status`
+   against that host's home directory. Wait for linked and online.
+2. Rebuild and install this mobile app. Existing Direct Connect-only binaries lack the iOS
+   auth module; restarting Metro or refreshing JavaScript is not sufficient.
+3. Open **Settings**, choose the account **Sign in** row, and sign into the same account used
+   on the host. The Connect onboarding sheet lists the account's environments.
+4. Select the host and connect. Existing Direct Connect environments remain available without
+   requiring account sign-in.
+
+The native Clerk plugin adds Sign in with Apple to the app entitlement. Device distribution needs
+an updated provisioning profile for this fork's bundle identifier.
+
+For the production Connect deployment, `.env.example` sets
+`MOBILE_CLERK_IOS_REDIRECT_URL=com.t3tools.t3code://callback`. The pinned Clerk Expo patch forwards
+this callback to the native SDK and registers its scheme as an additional iOS callback alias.
+The fork retains its own bundle identifier, primary URL scheme, signing team, and keychain service;
+it does not read the official app's stored credentials. This is an iOS-only override.
+
+When using another Clerk deployment, set that variable to its authorized custom-scheme callback
+or set it to an empty string to use the SDK's default `{bundleIdentifier}://callback`. Merely adding
+a URI locally does not authorize it on Clerk. Changing the native callback requires a new binary;
+use `pnpm ios:update` and install the resulting Preview build.
 
 ## Nested chats
 
@@ -73,8 +104,7 @@ The variants have independent native identities, widget IDs, app groups, and URL
 The development ID intentionally preserves this fork's existing dev installation; preview and
 production no longer use upstream identifiers. Pair each new installation normally. Do not copy
 the official app's credential storage, or change the server's environment ID to match a client.
-Existing fork Dev installations retain their storage; remove obsolete managed-Connect entries
-in that app and pair through Direct Connect. The authorized-client list uses the build's display
+Existing fork Dev installations retain their storage. The authorized-client list uses the build's display
 name, so Dev and Preview sessions are distinguishable.
 
 Use the root-pinned Node/pnpm toolchain and run `pnpm install --frozen-lockfile` at the repository
@@ -86,6 +116,30 @@ unknown variants fail rather than silently selecting a release identity.
 Local iOS commands check the active Xcode version before regenerating native projects.
 Use `DEVELOPER_DIR` to select a compatible installation without changing the machine-wide
 Xcode selection. The EAS profiles use Xcode 26.6, Node 24.18.0, and pnpm 11.10.0.
+
+## Update your iPhone without a cable
+
+From the repository root or `apps/mobile`, run:
+
+```bash
+pnpm ios:update
+```
+
+This builds the current source using the standalone ad hoc `preview` profile, waits for the
+cloud build, and prints an installation link and QR code. Scan the QR code with your iPhone,
+open the link, and confirm **Install**. It replaces **T3 Code RG Preview** using the same bundle
+identifier; do not delete the old app first if you want to keep its local data.
+
+No cable, local Xcode, Metro, or TestFlight is needed. The Mac and phone do not need to be on
+the same network. You need Internet access, an Expo account with access to this project, and
+your iPhone registered in the ad hoc profile (`ronniefone` is already registered). EAS may ask
+for Apple authentication when signing credentials need refreshing; enter it directly in your
+terminal, not in chat.
+
+The command creates a new cloud build and uses EAS build quota; it is not an instant JavaScript
+update. iOS requires installation confirmation, so the script cannot silently replace the app.
+OTA updates remain disabled. To reinstall an existing build without rebuilding, open that build's
+installation page in the Expo project dashboard on your phone.
 
 ## Development
 

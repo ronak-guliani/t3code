@@ -15,6 +15,33 @@ afterEach(() => {
 });
 
 describe("loadRepoEnv", () => {
+  it("only uses example public defaults when requested and keeps overrides higher priority", () => {
+    const repoRoot = makeTemporaryDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.example"),
+      "T3CODE_RELAY_URL=https://default.example.test\nT3CODE_CLERK_PUBLISHABLE_KEY=pk_example\n",
+    );
+    expect(loadRepoEnv({ baseEnv: {}, repoRoot }).T3CODE_RELAY_URL).toBeUndefined();
+    expect(loadRepoEnv({ baseEnv: {}, repoRoot, includeExample: true })).toMatchObject({
+      T3CODE_RELAY_URL: "https://default.example.test",
+      EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: "pk_example",
+    });
+    NodeFS.writeFileSync(
+      NodePath.join(repoRoot, ".env.local"),
+      "VITE_T3CODE_RELAY_URL=https://local.example.test\n",
+    );
+    expect(loadRepoEnv({ baseEnv: {}, repoRoot, includeExample: true }).T3CODE_RELAY_URL).toBe(
+      "https://local.example.test",
+    );
+    expect(
+      loadRepoEnv({
+        baseEnv: { VITE_T3CODE_RELAY_URL: "https://process.example.test" },
+        repoRoot,
+        includeExample: true,
+      }).T3CODE_RELAY_URL,
+    ).toBe("https://process.example.test");
+  });
+
   it("does not project cloud configuration for an unconfigured clone", () => {
     const env = loadRepoEnv({ baseEnv: {}, repoRoot: makeTemporaryDirectory() });
 
