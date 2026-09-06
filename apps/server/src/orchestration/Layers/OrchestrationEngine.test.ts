@@ -2,17 +2,22 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  EventId,
   MessageId,
   ProjectId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
   ProviderInstanceId,
+  QueuedTurnId,
 } from "@t3tools/contracts";
 import { Deferred, Effect, Layer, ManagedRuntime, Metric, Option, Queue, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { describe, expect, it, vi } from "vitest";
+import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
+import { threadHasInFlightTurn } from "../commandInvariants.ts";
 
-import { PersistenceSqlError } from "../../persistence/Errors.ts";
+import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -39,13 +44,27 @@ const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
-async function createOrchestrationSystem() {
+async function createOrchestrationSystem(
+  beforeProject: (event: OrchestrationEvent) => Effect.Effect<void> = () => Effect.void,
+) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(OrchestrationProjectionSnapshotQueryLive),
-    Layer.provide(OrchestrationProjectionPipelineLive),
+    Layer.provide(
+      Layer.effect(
+        OrchestrationProjectionPipeline,
+        Effect.gen(function* () {
+          const real = yield* OrchestrationProjectionPipeline;
+          return {
+            ...real,
+            projectEvent: (event: OrchestrationEvent) =>
+              beforeProject(event).pipe(Effect.andThen(real.projectEvent(event))),
+          };
+        }),
+      ).pipe(Layer.provide(OrchestrationProjectionPipelineLive)),
+    ),
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolverLive),
@@ -55,11 +74,13 @@ async function createOrchestrationSystem() {
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+  const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
   const worktreeCleanupJobs = await runtime.runPromise(
     Effect.service(WorktreeCleanupJobRepository),
   );
   return {
     engine,
+    coordinator,
     worktreeCleanupJobs,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
@@ -82,6 +103,249 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  for (const queued of [false, true]) {
+    for (const first of ["manual", "admission"] as const) {
+      it(`serializes ${queued ? "queued" : "direct"} admission through pending commit when ${first} acquires first`, async () => {
+        const projecting = Effect.runSync(Deferred.make<void>());
+        const releaseProjection = Effect.runSync(Deferred.make<void>());
+        const manualEntered = Effect.runSync(Deferred.make<void>());
+        const releaseManual = Effect.runSync(Deferred.make<void>());
+        const admissionAttempted = Effect.runSync(Deferred.make<void>());
+        const commandId = CommandId.make("coordinated-admission");
+        const system = await createOrchestrationSystem((event) =>
+          event.commandId === commandId && event.type === "thread.turn-start-requested"
+            ? Deferred.succeed(projecting, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseProjection)),
+              )
+            : Effect.void,
+        );
+        const cwd = "/tmp/coordinated-admission";
+        const threadId = ThreadId.make("coordinated-thread");
+        const projectId = ProjectId.make("coordinated-project");
+        const createdAt = now();
+        const queuedTurnId = QueuedTurnId.make("coordinated-queue");
+        const message = {
+          messageId: MessageId.make("coordinated-message"),
+          role: "user" as const,
+          text: "hello",
+          attachments: [],
+        };
+        let admission: Promise<unknown> | undefined;
+        let manual: Promise<unknown> | undefined;
+        try {
+          await system.run(
+            system.engine.dispatch({
+              type: "project.create",
+              commandId: CommandId.make("coordinated-project"),
+              projectId,
+              title: "Coordination",
+              workspaceRoot: cwd,
+              defaultModelSelection: null,
+              createdAt,
+            }),
+          );
+          await system.run(
+            system.engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("coordinated-thread"),
+              threadId,
+              projectId,
+              title: "Coordination",
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              runtimeMode: "approval-required",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            }),
+          );
+          if (queued) {
+            await system.run(
+              system.engine.dispatch({
+                type: "thread.queued-turn.create",
+                commandId: CommandId.make("coordinated-enqueue"),
+                threadId,
+                queuedTurnId,
+                message,
+                runtimeMode: "approval-required",
+                interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+                createdAt,
+              }),
+            );
+          }
+          const dispatch = () =>
+            system.run(
+              system.engine.dispatch(
+                queued
+                  ? {
+                      type: "thread.queued-turn.dispatch",
+                      commandId,
+                      threadId,
+                      queuedTurnId,
+                      dispatchedAt: createdAt,
+                    }
+                  : {
+                      type: "thread.turn.start",
+                      commandId,
+                      threadId,
+                      message,
+                      runtimeMode: "approval-required",
+                      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+                      createdAt,
+                    },
+              ),
+            );
+          if (first === "manual") {
+            manual = system.run(
+              system.coordinator.withCheckout(
+                cwd,
+                Deferred.succeed(manualEntered, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseManual)),
+                ),
+              ),
+            );
+            await system.run(Deferred.await(manualEntered));
+            const withCheckout = system.coordinator.withCheckout;
+            vi.spyOn(system.coordinator, "withCheckout").mockImplementation((path, effect) =>
+              Deferred.succeed(admissionAttempted, undefined).pipe(
+                Effect.andThen(withCheckout(path, effect)),
+              ),
+            );
+            admission = dispatch();
+            await system.run(Deferred.await(admissionAttempted));
+            expect(await system.run(Deferred.isDone(projecting))).toBe(false);
+            expect(
+              (await system.run(system.engine.getReadModel())).threads[0]?.latestTurn,
+            ).toBeNull();
+            await system.run(Deferred.succeed(releaseManual, undefined));
+            await manual;
+          } else {
+            admission = dispatch();
+          }
+          await system.run(Deferred.await(projecting));
+          expect(
+            Option.isNone(await system.run(system.coordinator.tryWithCheckout(cwd, Effect.void))),
+          ).toBe(true);
+          expect(
+            (await system.run(system.engine.getReadModel())).threads[0]?.latestTurn,
+          ).toBeNull();
+          await system.run(Deferred.succeed(releaseProjection, undefined));
+          await admission;
+          const observed = await system.run(
+            system.coordinator.withCheckout(cwd, system.engine.getReadModel()),
+          );
+          expect(observed.threads[0]).toBeDefined();
+          expect(observed.threads.some(threadHasInFlightTurn)).toBe(true);
+          expect(
+            observed.threads[0]?.messages.some((entry) => entry.id === message.messageId),
+          ).toBe(true);
+          if (queued) expect(observed.threads[0]?.queuedTurns).toEqual([]);
+        } finally {
+          await system.run(Deferred.succeed(releaseManual, undefined));
+          await system.run(Deferred.succeed(releaseProjection, undefined));
+          await Promise.allSettled([admission, manual]);
+          vi.restoreAllMocks();
+          await system.dispose();
+        }
+      });
+    }
+  }
+
+  it("deduplicates semantic child lifecycle notifications transactionally", async () => {
+    const system = await createOrchestrationSystem();
+    const projectId = asProjectId("project-lifecycle-dedup");
+    const parentThreadId = ThreadId.make("parent-lifecycle-dedup");
+    const childThreadId = ThreadId.make("child-lifecycle-dedup");
+    const modelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    };
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-lifecycle-dedup"),
+          projectId,
+          title: "Lifecycle dedup",
+          workspaceRoot: "/tmp/project-lifecycle-dedup",
+          defaultModelSelection: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-parent-lifecycle-dedup"),
+          threadId: parentThreadId,
+          projectId,
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-child-lifecycle-dedup"),
+          threadId: childThreadId,
+          projectId,
+          parentThreadId,
+          title: "Child",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+
+      for (const suffix of ["first", "retry"] as const) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-approval-${suffix}`),
+            threadId: childThreadId,
+            activity: {
+              id: EventId.make(`activity-approval-${suffix}`),
+              tone: "approval",
+              kind: "approval.requested",
+              summary: "Approval required",
+              payload: { requestId: "approval-42" },
+              turnId: TurnId.make("turn-approval"),
+              createdAt: now(),
+            },
+            createdAt: now(),
+          }),
+        );
+      }
+
+      const events = await system.run(
+        Stream.runCollect(system.engine.readEvents(0)).pipe(
+          Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)),
+        ),
+      );
+      expect(
+        events.filter(
+          (event) =>
+            event.type === "thread.child-lifecycle-notified" &&
+            event.payload.lifecycle === "approval-required",
+        ),
+      ).toHaveLength(1);
+      expect(events.filter((event) => event.type === "thread.activity-appended")).toHaveLength(2);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("rejects assigning a worktree while its cleanup job is pending", async () => {
     const system = await createOrchestrationSystem();
     const createdAt = now();
@@ -255,7 +519,7 @@ describe("OrchestrationEngine", () => {
           bootstrap: Deferred.succeed(bootstrapStarted, undefined).pipe(
             Effect.andThen(Deferred.await(releaseBootstrap)),
           ),
-          projectEvent: () => Effect.void,
+          projectEvent: () => Effect.succeed({ reconcile: Effect.void }),
         } satisfies OrchestrationProjectionPipelineShape),
       ),
       Layer.provide(Layer.succeed(OrchestrationEventStore, failOnHistoricalReplayStore)),
@@ -301,7 +565,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(
           Layer.succeed(OrchestrationProjectionPipeline, {
             bootstrap: Effect.fail(bootstrapError),
-            projectEvent: () => Effect.void,
+            projectEvent: () => Effect.succeed({ reconcile: Effect.void }),
           } satisfies OrchestrationProjectionPipelineShape),
         ),
         Layer.provide(OrchestrationEventStoreLive),
@@ -929,7 +1193,7 @@ describe("OrchestrationEngine", () => {
             }),
           );
         }
-        return Effect.void;
+        return Effect.succeed({ reconcile: Effect.void });
       },
     };
 
@@ -1030,6 +1294,59 @@ describe("OrchestrationEngine", () => {
     await runtime.dispose();
   });
 
+  it("runs projection reconciliation after the command receipt commits", async () => {
+    let observedCommittedReceipt = false;
+    const projectionPipelineLayer = Layer.effect(
+      OrchestrationProjectionPipeline,
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return {
+          bootstrap: Effect.void,
+          projectEvent: (event) =>
+            Effect.succeed({
+              reconcile: sql<{ readonly count: number }>`
+                SELECT COUNT(*) AS count
+                FROM orchestration_command_receipts
+                WHERE command_id = ${event.commandId}
+                  AND status = 'accepted'
+              `.pipe(
+                Effect.map((rows) => {
+                  observedCommittedReceipt = rows[0]?.count === 1;
+                }),
+                Effect.mapError(toPersistenceSqlError("test.postCommitReconciliation")),
+              ),
+            }),
+        } satisfies OrchestrationProjectionPipelineShape;
+      }),
+    );
+    const runtime = ManagedRuntime.make(
+      OrchestrationEngineLive.pipe(
+        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+        Layer.provide(projectionPipelineLayer),
+        Layer.provide(OrchestrationEventStoreLive),
+        Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+        Layer.provide(RepositoryIdentityResolverLive),
+        Layer.provide(SqlitePersistenceMemory),
+      ),
+    );
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+
+    await runtime.runPromise(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-post-commit-reconciliation"),
+        projectId: asProjectId("project-post-commit-reconciliation"),
+        title: "Post-commit reconciliation",
+        workspaceRoot: "/tmp/project-post-commit-reconciliation",
+        defaultModelSelection: null,
+        createdAt: now(),
+      }),
+    );
+
+    expect(observedCommittedReceipt).toBe(true);
+    await runtime.dispose();
+  });
+
   it("reconciles in-memory state when append persists but projection fails", async () => {
     type StoredEvent =
       ReturnType<OrchestrationEventStoreShape["append"]> extends Effect.Effect<infer A, any, any>
@@ -1072,7 +1389,7 @@ describe("OrchestrationEngine", () => {
             }),
           );
         }
-        return Effect.void;
+        return Effect.succeed({ reconcile: Effect.void });
       },
     };
 

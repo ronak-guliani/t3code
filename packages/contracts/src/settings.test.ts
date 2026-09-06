@@ -8,6 +8,7 @@ import {
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT,
+  DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
   DEFAULT_SIDEBAR_FONT_SIZE,
   DEFAULT_SIDEBAR_META_FONT_SIZE,
   DEFAULT_SIDEBAR_ROW_SPACING,
@@ -52,6 +53,25 @@ describe("ServerSettings.agentWorkflows", () => {
   });
 });
 
+describe("ServerSettings.pullRequestMonitoring", () => {
+  it("defaults automatic monitoring and maintenance chats on", () => {
+    expect(DEFAULT_SERVER_SETTINGS.autoMonitorPullRequestsOnCreate).toBe(true);
+    expect(DEFAULT_SERVER_SETTINGS.autoLaunchPrMonitorFallback).toBe(true);
+  });
+
+  it("accepts patches for both monitoring controls", () => {
+    expect(
+      decodeServerSettingsPatch({
+        autoMonitorPullRequestsOnCreate: false,
+        autoLaunchPrMonitorFallback: false,
+      }),
+    ).toEqual({
+      autoMonitorPullRequestsOnCreate: false,
+      autoLaunchPrMonitorFallback: false,
+    });
+  });
+});
+
 describe("ClientSettings.codeFont", () => {
   it("defaults to the existing monospace stack selection", () => {
     expect(DEFAULT_CLIENT_SETTINGS.codeFont).toBe(DEFAULT_CODE_FONT);
@@ -82,6 +102,33 @@ describe("ClientSettings.uiFont", () => {
 
   it("rejects unknown interface font options in patches", () => {
     expect(() => decodeClientSettingsPatch({ uiFont: "not-a-font" })).toThrow();
+  });
+});
+
+describe("ClientSettings.messagePreviewLineLimits", () => {
+  it("defaults monitoring messages to four lines and other messages to ten", () => {
+    expect(DEFAULT_CLIENT_SETTINGS.messagePreviewLineLimits).toEqual(
+      DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
+    );
+    expect(decodeClientSettings({}).messagePreviewLineLimits).toEqual({
+      normal: 10,
+      crossThread: 10,
+      monitoring: 4,
+    });
+  });
+
+  it("accepts valid line limit patches and rejects out-of-range values", () => {
+    expect(
+      decodeClientSettingsPatch({
+        messagePreviewLineLimits: { normal: 8, crossThread: 6, monitoring: 3 },
+      }).messagePreviewLineLimits,
+    ).toEqual({ normal: 8, crossThread: 6, monitoring: 3 });
+
+    expect(() =>
+      decodeClientSettingsPatch({
+        messagePreviewLineLimits: { normal: 0, crossThread: 6, monitoring: 3 },
+      }),
+    ).toThrow();
   });
 });
 

@@ -158,6 +158,8 @@ describe("orchestration projector", () => {
         settledAt: null,
         snoozedUntil: null,
         snoozedAt: null,
+        pinnedAt: null,
+        pinOrderKey: null,
         deletedAt: null,
         messages: [],
         queuedTurns: [],
@@ -667,6 +669,12 @@ describe("orchestration projector", () => {
                 text: "first queued prompt",
                 attachments: [],
               },
+              origin: {
+                kind: "pull-request-monitor",
+                repository: "acme/app",
+                number: 42,
+                headSha: "head-old",
+              },
               runtimeMode: "approval-required",
               interactionMode: "default",
               createdAt,
@@ -716,12 +724,22 @@ describe("orchestration projector", () => {
             threadId: "thread-queue",
             queuedTurnId: "queued-turn-1",
             text: "edited queued prompt",
+            origin: {
+              kind: "pull-request-monitor",
+              repository: "acme/app",
+              number: 42,
+              headSha: "head-new",
+            },
             updatedAt,
           },
         }),
       ),
     );
     expect(edited.threads[0]?.queuedTurns?.[0]?.message.text).toBe("edited queued prompt");
+    expect(edited.threads[0]?.queuedTurns?.[0]?.origin).toMatchObject({
+      kind: "pull-request-monitor",
+      headSha: "head-new",
+    });
     expect(edited.threads[0]?.queuedTurns?.[0]?.failedAt).toBeNull();
     expect(edited.threads[0]?.queuedTurns?.[0]?.failureMessage).toBeNull();
 

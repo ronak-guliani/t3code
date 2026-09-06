@@ -23,20 +23,41 @@ export const HOSTED_BROWSER_WEBVIEW_Z_INDEX = 30;
 
 export function resolveHostedBrowserWebviewWrapperStyle(input: {
   readonly active: boolean;
+  readonly renderingActive?: boolean;
   readonly cornerRadius?: number;
+  readonly zIndex?: number;
   readonly rect: BrowserSurfaceRect | null;
   readonly hiddenSize: HostedBrowserWebviewSize;
 }): HostedBrowserWebviewWrapperStyle {
-  const { active, cornerRadius = 0, hiddenSize, rect } = input;
+  const {
+    active,
+    cornerRadius = 0,
+    hiddenSize,
+    rect,
+    renderingActive = active,
+    zIndex = HOSTED_BROWSER_WEBVIEW_Z_INDEX,
+  } = input;
   if (active && rect) {
     return {
       left: rect.x,
       top: rect.y,
       width: rect.width,
       height: rect.height,
-      zIndex: HOSTED_BROWSER_WEBVIEW_Z_INDEX,
+      zIndex,
       pointerEvents: "auto",
       ...(cornerRadius > 0 ? { borderRadius: cornerRadius } : {}),
+    };
+  }
+
+  if (renderingActive) {
+    return {
+      left: 0,
+      top: 0,
+      width: hiddenSize.width,
+      height: hiddenSize.height,
+      zIndex: -1,
+      pointerEvents: "none",
+      visibility: "visible",
     };
   }
 

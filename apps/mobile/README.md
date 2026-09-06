@@ -1,45 +1,83 @@
-# T3 Code Mobile
+# T3 Code RG Mobile
 
-> [!WARNING]
-> T3 Code Mobile is currently in development and is not distributed yet. If you want to try it out, you can build it from source.
+Our independently configured build of the upstream-derived React Native app. It stays in this
+monorepo with the fork server, `packages/contracts`, and `packages/client-runtime`; do not create
+a second copy of those packages for mobile.
+
+The mobile source import is pinned to `pingdotgg/t3code` commit
+`de1b798c6ed4223cabd64f56eadcc8f512963043` (September 5, 2026 UTC),
+using Expo SDK 57 and React Native 0.86.3. This includes the mobile fixes after the earlier
+comparison target `940e8233c227a186044078e99e45e1933eb525e4`.
+Owned build configuration and app icons are retained from the fork.
+Source import, client/server compatibility, and signed device acceptance are separate gates;
+an imported directory or successful JavaScript export alone is not a release.
+The client RPC schema includes capability-dependent upstream methods without adding unsupported
+handlers to the fork server. Older servers retain inline image uploads and socket snapshots;
+file uploads, usage, provider feedback, and other optional APIs require explicit capability support.
+
+The app uses **Direct Connect** with existing pairing/session authentication, preferably over
+Tailscale HTTPS for access across networks. Managed T3 Connect/Clerk, remote APNs/Live Activity
+push, telemetry export, and OTA updates are disabled in this build. Desktop production settings
+in the root environment cannot enable them. Local widgets/Live Activities remain included.
+Configuring an owned Expo project does **not** turn OTA updates back on.
+The iOS binary excludes Clerk's unused native modules; hosted-auth native views are lazy-loaded
+behind the disabled cloud configuration. Android retains the installed SDK's strict native
+bindings, but cloud services remain disabled there too.
 
 ## Quickstart
 
 > [!NOTE]
 > Uses native modules so using Expo Go is not supported. You need to use the Expo Dev Client.
 
-This app has three variants:
+The variants have independent native identities, widget IDs, app groups, and URL schemes:
 
-- `development`: Expo dev client, installable side-by-side as `T3 Code Dev`
-- `preview`: persistent internal preview build, installable side-by-side as `T3 Code Preview`
-- `production`: store/release build as `T3 Code`
+| Variant       | Display name       | iOS bundle / Android package      | URL scheme          |
+| ------------- | ------------------ | --------------------------------- | ------------------- |
+| `development` | T3 Code RG Dev     | `com.ronakguliani.t3code.dev`     | `t3code-rg-dev`     |
+| `preview`     | T3 Code RG Preview | `com.ronakguliani.t3code.preview` | `t3code-rg-preview` |
+| `production`  | T3 Code RG         | `com.ronakguliani.t3code`         | `t3code-rg`         |
 
-Run commands from `apps/mobile`.
+The development ID intentionally preserves this fork's existing dev installation; preview and
+production no longer use upstream identifiers. Pair each new installation normally. Do not copy
+the official app's credential storage, or change the server's environment ID to match a client.
+Existing fork Dev installations retain their storage; remove obsolete managed-Connect entries
+in that app and pair through Direct Connect. The authorized-client list uses the build's display
+name, so Dev and Preview sessions are distinguishable.
+
+Use the root-pinned Node/pnpm toolchain and run `pnpm install --frozen-lockfile` at the repository
+root. For iOS, install **Xcode 26.4 or newer** and CocoaPods; the deployment target is iOS 18. Physical-device
+builds need signing under your Apple team, including the widget extension/app group.
+Android needs the Android SDK/JDK. Run the commands below from `apps/mobile`.
+No Expo account is required for local builds. Unset `APP_VARIANT` selects development;
+unknown variants fail rather than silently selecting a release identity.
+Local iOS commands check the active Xcode version before regenerating native projects.
+Use `DEVELOPER_DIR` to select a compatible installation without changing the machine-wide
+Xcode selection. The EAS profiles use Xcode 26.6, Node 24.18.0, and pnpm 11.10.0.
 
 ## Development
 
 Start Metro for the dev client:
 
 ```bash
-vp run dev:client
+pnpm dev:client
 ```
 
 Build and run the local iOS dev client:
 
 ```bash
-vp run ios:dev
+pnpm ios:dev
 ```
 
-Build and run the local iOS preview app:
+Build and run the local iOS preview app with an embedded Release bundle (no Metro dependency):
 
 ```bash
-vp run ios:preview
+pnpm ios:preview
 ```
 
 Force the review diff highlighter engine:
 
 ```bash
-EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=javascript vp run ios:dev
+EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=javascript pnpm ios:dev
 ```
 
 `javascript` is the default and recommended setting for the review diff screen. Set `EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=native` only when you explicitly want to test the native Shiki engine.
@@ -47,8 +85,9 @@ EXPO_PUBLIC_REVIEW_HIGHLIGHTER_ENGINE=javascript vp run ios:dev
 Inspect the resolved Expo config for a variant:
 
 ```bash
-vp run config:dev
-vp run config:preview
+pnpm config:dev
+pnpm config:preview
+pnpm config:prod
 ```
 
 Run static checks for mobile native code:
@@ -57,7 +96,13 @@ Run static checks for mobile native code:
 node ../../scripts/mobile-native-static-check.ts
 ```
 
-The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools are reported as warnings and skipped locally. CI installs the default toolset from `apps/mobile/Brewfile` before running the native checks.
+The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools
+are reported as warnings and skipped locally. The tool list is in `apps/mobile/Brewfile`.
+
+The `ios:*` and `android:*` commands regenerate the ignored native folders; put persistent
+native changes in config plugins/modules, not generated projects. Both prebuild and compilation
+receive the same explicit variant. Android preview/production also bundle JavaScript in Release
+mode. Local release builds are not a substitute for store signing and submission.
 
 ## Direct Connect acceptance
 
@@ -80,7 +125,7 @@ and mobile pairing; the clients derive `wss://` from that origin.
    pnpm --filter t3 start -- pair --tailscale --label "Physical device acceptance"
    ```
 
-4. Open that HTTPS URL in the matching fork browser build, or in **T3 Code Dev** choose
+4. Open that HTTPS URL in the matching fork browser build, or in **T3 Code RG Dev/Preview** choose
    **Add environment** and scan/paste the URL. Pairing persists a bearer session; Clerk and the
    managed relay are not involved.
 5. Open a thread, send a message, then disable and re-enable Wi-Fi (or background/foreground the
@@ -97,6 +142,8 @@ It builds the production browser app, starts the production server runtime, and 
 browser and shared mobile-runtime pairing, persisted bearer sessions, client-scoped HTTP snapshots
 and mutations, involuntary socket loss, fresh-ticket reconnect through the shared `WsTransport`,
 duplicate-free resnapshot, browser cookie persistence, and owner-side client-session revocation.
+It also restarts the server against the same isolated state, replays a committed command ID
+without duplicating its mutation, and confirms revocation survives the restart.
 The Connect release smoke enforces wakeup probe-versus-replacement behavior, reconnect
 subscriptions, environment removal cleanup, and outbox drain. Production acceptance rewrites a
 deterministic HTTPS/WSS public shape onto the loopback server, so CI does not require external
@@ -127,13 +174,19 @@ the steps were actually run.
    cached/outbox data is cleared. Pair again, run `pnpm --filter t3 start -- auth session list`,
    revoke that client with `pnpm --filter t3 start -- auth session revoke <session-id>`, and expect
    the device to disconnect and fail authenticated snapshot/ticket requests.
+7. **Cellular and restart:** with Wi-Fi disabled and Tailscale connected on both devices, send an
+   image and a message. Restart the isolated server while a message is queued, then confirm the
+   queue drains once and the server retains the thread. Repeat revocation while on cellular.
 
-After acceptance, stop the server with `Ctrl-C`, remove the persistent Serve mapping, and revoke the
+Before testing, confirm `tailscale status` reports a connected tailnet on both devices. A stopped
+Tailscale service or a simulator on the host is not cellular evidence. Do not change an existing
+shared Serve mapping to run acceptance; use a task-owned endpoint.
+
+After acceptance, stop the server with `Ctrl-C`, remove only the Serve mapping created for this test, and revoke the
 acceptance session so its bearer credential cannot be reused:
 
 ```bash
 tailscale serve status
-tailscale serve --https=443 off
 pnpm --filter t3 start -- auth session list
 pnpm --filter t3 start -- auth session revoke <session-id>
 pnpm --filter t3 start -- auth pairing list
@@ -143,23 +196,157 @@ Revoke any still-active pairing credential shown by the final command with
 `pnpm --filter t3 start -- auth pairing revoke <pairing-id>`. Do not store the printed pairing URL
 or bearer token in shell history, screenshots, logs, or source control.
 
+## Supported server contract
+
+The owned app checks compatibility after fetching the initial server config and before marking
+the connection ready. A rejected server remains blocked with an update message, rather than
+repeatedly reconnecting or attempting unsupported mutations.
+
+| Server advertisement                                    | Owned app behavior                                                     |
+| ------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `ownedMobileProtocolVersion: 1`                         | Accept when the probe and both snapshot completion markers are present |
+| No owned version                                        | Accept the existing fork through those same capability checks          |
+| Any other owned version                                 | Block and request a matching app/server release                        |
+| Missing connection probe or shell/thread resume markers | Block and request a server update                                      |
+
+Package versions alone are not wire compatibility. Bump the owned protocol version when a
+required request/response shape changes incompatibly. Keep optional capabilities separately gated.
+The server does not impose this policy on the official app or web client. Push, remote Live
+Activity delivery, and OTA require separate owned services and remain disabled.
+
+## Connection diagnostics
+
+In Settings, select **Share connection diagnostics** after reproducing a problem. The confirmation
+opens the native share sheet with a JSON report containing app/native build, variant, device model
+and OS, a random app-session ID, the existing random installation ID, and the last 200 events.
+Events live in memory only. Restarting the app or selecting **Clear connection diagnostics** removes
+them; nothing uploads automatically. Reports exclude credentials, server URLs, filesystem paths,
+prompts, attachment bytes, and raw error bodies.
+
+Use the command ID to match outbox and RPC events to the server's `client command received` and
+`client command committed` logs. Server logs include the authenticated session ID and committed
+sequence. Connection events include the socket generation, network state, attempt, and failure
+category. The app-session ID changes on launch; the installation ID remains stable.
+
+1. A `queued` event without `dispatching` means the local queue has not attempted delivery.
+2. `dispatching` and RPC `started` without server receipt indicate a connection/delivery problem.
+3. Server commit without client `succeeded` is an ambiguous acknowledgement. Keep the same
+   command ID on retry so server deduplication can recover it.
+4. Client `acknowledged` means the server accepted the command, not that a provider turn finished.
+   Use the thread ID to inspect provider-session and turn lifecycle logs next.
+
+Do not change queue semantics based on a spinner alone. Reproduce the failure and compare this
+evidence first. Physical backgrounding, cellular routing, and provider acceptance remain release
+checks even when protocol tests pass.
+
 ## EAS Builds
 
-Create a cloud dev-client build:
+The owned project has been created and linked:
+
+| Setting        | Value                                  |
+| -------------- | -------------------------------------- |
+| Expo project   | `@ronakguliani/t3-code-rg`             |
+| EAS project ID | `01272cd5-225c-47d4-978e-a7eb97c9e457` |
+| Apple team     | `235XX73T5A`                           |
+| EAS CLI        | `23.2.0` (project dependency)          |
+
+These are public identifiers, not credentials. The same owner, project, and team are configured
+in the EAS `development`, `preview`, and `production` environments. No root `.env.local` is
+needed to select this project's build identity. Local builds still do not require an Expo login.
+
+For a different owned account, override **both** `MOBILE_EAS_OWNER` and
+`MOBILE_EAS_PROJECT_ID` in root `.env.local` and the matching EAS environments.
+`MOBILE_APPLE_TEAM_ID` overrides the native signing team; also update the submit profile's
+`ios.appleTeamId` when distributing under a different team. Partial Expo ownership overrides,
+invalid team/project IDs, and upstream ownership are rejected.
+Keep signing keys, Apple credentials, and Expo access tokens out of Git.
+
+Use the project-pinned CLI from `apps/mobile`, not an older global `eas` installation:
 
 ```bash
-vp run eas:ios:dev
+pnpm exec eas whoami
+pnpm exec eas project:info
 ```
 
-Create a persistent preview build:
+### Apple authentication and signing
+
+Native configuration selects the owned team for the main app, widget extension, and share
+extension. A development certificate does **not** by itself provision these bundle IDs or
+create an App Store Connect app. Complete Apple's authentication and signing prompts in an
+interactive terminal; never paste passwords, two-factor codes, or API private keys into chat:
 
 ```bash
-vp run eas:ios:preview
+pnpm exec eas credentials:configure-build --platform ios --profile development
+pnpm exec eas credentials:configure-build --platform ios --profile testflight
 ```
 
-Android equivalents:
+Select team `235XX73T5A`. Register/select your device for internal distribution, and create/select
+the App Store Connect record for `com.ronakguliani.t3code.preview` for TestFlight.
+The share and widget extensions require the corresponding owned app group.
+No App Store Connect numeric app ID is guessed or inherited from upstream.
+
+Create a cloud dev-client build or an internal standalone preview:
 
 ```bash
-vp run eas:android:dev
-vp run eas:android:preview
+pnpm eas:ios:dev
+pnpm eas:ios:preview
 ```
+
+For daily use through TestFlight, build the **preview bundle ID** with store distribution:
+
+```bash
+pnpm eas:ios:testflight
+APP_VARIANT=preview pnpm exec eas submit --platform ios --profile testflight
+```
+
+Submission deliberately has no committed Apple app ID. Select your own App Store Connect
+record for `com.ronakguliani.t3code.preview` when prompted. Do not choose the upstream app.
+Production uses the separate `com.ronakguliani.t3code` record.
+TestFlight is a rolling beta distribution path, not a permanent installation.
+
+### Simulator builds without Apple signing
+
+Use these profiles when the local Xcode is older than 26.4 or before device signing is complete:
+
+```bash
+pnpm eas:ios:dev:simulator
+pnpm eas:ios:preview:simulator
+pnpm exec eas build:run --platform ios
+```
+
+The development simulator build uses Metro; the preview simulator build contains its JavaScript
+bundle. Simulator artifacts cannot be installed on a physical iPhone or submitted to TestFlight.
+They require an Apple silicon Mac because the vendored terminal library has no Intel simulator slice.
+EAS build commands may consume the account's build quota.
+
+Android internal builds produce APKs:
+
+```bash
+pnpm eas:android:dev
+pnpm eas:android:preview
+```
+
+## Next milestones
+
+1. **Source updates:** keep the pinned upstream import and fork runtime together; rerun the
+   compatibility and Direct Connect regressions before advancing the pin.
+2. **Owned device distribution:** complete interactive Apple signing/App Store Connect setup,
+   install a dev client and a standalone preview, and retain the official app only for comparisons.
+3. **Connection acceptance:** pair over Tailscale HTTPS and complete the physical checklist above,
+   including cellular access, attachments, suspension, queued sends, restart, and revocation.
+4. **Diagnostics and reliability:** collect the new connection report on a signed physical build,
+   then fix reproduced mobile quirks rather than guessing at queue/reconnect behavior.
+5. **Feature and release ownership:** add the next specified mobile UX, an owned push/Live Activity
+   service if needed, then optional owned OTA channels.
+   Keep native updates and server-protocol compatibility separate from Expo runtime versions.
+
+## Upstream maintenance and license
+
+Keep upstream changes as reviewed imports with a recorded commit, not automatic directory copies.
+Compare `apps/mobile`, its workspace imports, dependency catalogs/patches, and native plugins on
+each update. Release the client and server only after their paired behavior is exercised.
+
+The upstream MIT copyright/license is retained in the root `LICENSE`; native module licenses
+remain in their respective directories. Keep those notices and review additional dependency and
+asset licenses before public distribution. `T3 Code RG` identifies this build as the independent
+fork, not the official App Store client.

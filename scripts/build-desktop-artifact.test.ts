@@ -156,6 +156,15 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  it("ships the Linux cookie helper outside the application archive", async () => {
+    const config = await Effect.runPromise(
+      createBuildConfig("linux", "AppImage", "0.0.17", "dev", false, false, undefined, undefined),
+    );
+    assert.deepStrictEqual(config.extraResources, [
+      { from: "apps/desktop/resources/browser-secret", to: "browser-secret" },
+    ]);
+  });
+
   it("keys staged dependencies by dependency and toolchain inputs, not app code", () => {
     const base = {
       platform: "mac" as const,

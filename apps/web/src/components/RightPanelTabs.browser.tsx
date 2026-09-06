@@ -31,7 +31,10 @@ const previewSessions: Readonly<Record<string, PreviewSessionSnapshot>> = {
   },
 };
 
-async function mountTabs(mounted: readonly RightPanelSurface[] = surfaces) {
+async function mountTabs(
+  mounted: readonly RightPanelSurface[] = surfaces,
+  activeSurfaceId = "files",
+) {
   // Panel width is clamped to a share of the viewport, and the tab strip
   // scrolls once tabs overflow. Pin a desktop viewport so layout assertions
   // do not depend on the runner's default window size.
@@ -42,8 +45,9 @@ async function mountTabs(mounted: readonly RightPanelSurface[] = surfaces) {
     onCloseOthers: vi.fn(),
     onCloseToRight: vi.fn(),
     onCloseAll: vi.fn(),
+    onClosePanel: vi.fn(),
     onCopyPath: vi.fn(),
-    onAddBrowser: vi.fn(),
+    onAddBrowserInProfile: vi.fn(),
     onAddTerminal: vi.fn(),
     onAddFiles: vi.fn(),
     onAddDiff: vi.fn(),
@@ -54,7 +58,7 @@ async function mountTabs(mounted: readonly RightPanelSurface[] = surfaces) {
     <RightPanelTabs
       mode="inline"
       surfaces={mounted}
-      activeSurfaceId="files"
+      activeSurfaceId={activeSurfaceId}
       previewSessions={previewSessions}
       terminalLabels={{ "terminal-a": "Terminal 2" }}
       {...callbacks}
@@ -100,12 +104,34 @@ describe("RightPanelTabs", () => {
     }
   });
 
+  it("keeps the browser close control in the tab header and uses compact tab text", async () => {
+    const { callbacks, screen } = await mountTabs(surfaces, "browser:preview-a");
+    try {
+      const tabBar = document.querySelector<HTMLElement>("[data-right-panel-tabbar]")!;
+      const closeButton = await page.getByLabelText("Close browser panel").element();
+      const browserTab = await page.getByTitle("Local dashboard").element();
+      const fileTab = await page.getByTitle("index.ts").element();
+
+      expect(closeButton.parentElement).toBe(tabBar);
+      expect(getComputedStyle(browserTab.parentElement!).fontSize).toBe("10px");
+      expect(getComputedStyle(fileTab.parentElement!).fontSize).toBe("11px");
+
+      await page.getByLabelText("Close browser panel").click();
+      expect(callbacks.onClosePanel).toHaveBeenCalledOnce();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("dispatches add-menu and maximize actions", async () => {
     const { callbacks, screen } = await mountTabs();
     try {
       await page.getByLabelText("Add surface").click();
       await page.getByRole("menuitem", { name: "Browser" }).click();
-      expect(callbacks.onAddBrowser).toHaveBeenCalledOnce();
+      expect(callbacks.onAddBrowserInProfile).not.toHaveBeenCalled();
+      await page.getByRole("menuitem", { name: "Default", exact: true }).click();
+      expect(callbacks.onAddBrowserInProfile).toHaveBeenCalledOnce();
+      expect(callbacks.onAddBrowserInProfile).toHaveBeenCalledWith("default");
 
       await page.getByLabelText("Add surface").click();
       await page.getByRole("menuitem", { name: "Terminal" }).click();

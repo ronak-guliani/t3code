@@ -1,12 +1,16 @@
 import { QueryClient } from "@tanstack/react-query";
 import {
   EnvironmentId,
+  EventId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
+  type OrchestrationEvent,
   type OrchestrationShellSnapshot,
+  type OrchestrationThread,
+  type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -152,6 +156,52 @@ function makeShellSnapshotForThreads(
     ...makeThreadShellSnapshot({ threadId: ThreadId.make("placeholder") }),
     snapshotSequence,
     threads: threadIds.flatMap((threadId) => makeThreadShellSnapshot({ threadId }).threads),
+  };
+}
+
+function makeOrchestrationThread(threadId: ThreadId, title: string): OrchestrationThread {
+  return {
+    id: threadId,
+    projectId: ProjectId.make("project-1"),
+    title,
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    latestTurn: null,
+    createdAt: "2026-04-13T00:00:00.000Z",
+    updatedAt: "2026-04-13T00:00:00.000Z",
+    archivedAt: null,
+    deletedAt: null,
+    messages: [],
+    proposedPlans: [],
+    activities: [],
+    checkpoints: [],
+    session: null,
+  };
+}
+
+function metaUpdatedEvent(threadId: ThreadId, sequence: number, title: string): OrchestrationEvent {
+  return {
+    eventId: EventId.make(`event-${sequence}`),
+    sequence,
+    occurredAt: "2026-04-13T00:01:00.000Z",
+    commandId: null,
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    type: "thread.meta-updated",
+    payload: {
+      threadId,
+      title,
+      updatedAt: "2026-04-13T00:01:00.000Z",
+    },
   };
 }
 
@@ -472,6 +522,7 @@ describe("retainThreadDetailSubscription", () => {
       startEnvironmentConnectionService,
       resetEnvironmentServiceForTests,
     } = await import("./service");
+    const { selectEnvironmentState, useStore } = await import("~/store");
 
     const stop = startEnvironmentConnectionService(new QueryClient());
     const environmentId = EnvironmentId.make("env-1");
@@ -482,9 +533,84 @@ describe("retainThreadDetailSubscription", () => {
     const release = retainThreadDetailSubscription(environmentId, threadId);
     release();
 
+    const listener = mockSubscribeThread.mock.calls.at(-1)?.[1] as
+      | ((item: OrchestrationThreadStreamItem) => void)
+      | undefined;
+    if (listener === undefined) {
+      throw new Error("subscribeThread listener was not captured");
+    }
+    listener({
+      kind: "snapshot",
+      snapshot: { snapshotSequence: 10, thread: makeOrchestrationThread(threadId, "Hydrated") },
+    });
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadDetailHydratedById?.[
+        threadId
+      ],
+    ).toBe(true);
+
     await resetEnvironmentServiceForTests();
     expect(mockThreadUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(
+      selectEnvironmentState(useStore.getState(), environmentId).threadDetailHydratedById?.[
+        threadId
+      ],
+    ).toBeUndefined();
 
     stop();
+  });
+
+  it("applies streamed thread events immediately, then buffered bursts once", async () => {
+    const {
+      retainThreadDetailSubscription,
+      startEnvironmentConnectionService,
+      resetEnvironmentServiceForTests,
+    } = await import("./service");
+    const { selectThreadByRef, useStore } = await import("~/store");
+
+    const stop = startEnvironmentConnectionService(new QueryClient());
+    const environmentId = EnvironmentId.make("env-1");
+    const threadId = ThreadId.make("thread-stream");
+    const threadRef = { environmentId, threadId };
+    const connectionInput = mockCreateEnvironmentConnection.mock.calls[0]?.[0];
+    connectionInput.syncShellSnapshot(makeShellSnapshotForThreads([threadId]), environmentId);
+
+    retainThreadDetailSubscription(environmentId, threadId);
+    expect(mockSubscribeThread).toHaveBeenCalledTimes(1);
+    const listener = mockSubscribeThread.mock.calls.at(-1)?.[1] as
+      | ((item: OrchestrationThreadStreamItem) => void)
+      | undefined;
+    if (listener === undefined) {
+      throw new Error("subscribeThread listener was not captured");
+    }
+
+    listener({
+      kind: "snapshot",
+      snapshot: { snapshotSequence: 10, thread: makeOrchestrationThread(threadId, "Base title") },
+    });
+    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("Base title");
+
+    // The first event of a burst applies synchronously.
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 11, "First title") });
+    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("First title");
+
+    // Trailing burst events are held for the coalescing window.
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 12, "Second title") });
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 13, "Third title") });
+    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("First title");
+
+    await vi.advanceTimersByTimeAsync(32);
+    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("Third title");
+
+    // A snapshot flushes buffered events before replacing state.
+    listener({ kind: "event", event: metaUpdatedEvent(threadId, 14, "Buffered title") });
+    listener({
+      kind: "snapshot",
+      snapshot: { snapshotSequence: 15, thread: makeOrchestrationThread(threadId, "Snapshotted") },
+    });
+    expect(selectThreadByRef(useStore.getState(), threadRef)?.title).toBe("Snapshotted");
+
+    stop();
+    await resetEnvironmentServiceForTests();
   });
 });

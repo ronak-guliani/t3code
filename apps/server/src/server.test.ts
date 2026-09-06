@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   CommandId,
+  AuthWebSocketTicketResult,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -31,6 +32,7 @@ import {
   TurnId,
   WS_METHODS,
   WsRpcGroup,
+  WsClientRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
 import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
@@ -43,6 +45,7 @@ import {
 import { assert, it } from "@effect/vitest";
 import { assertFailure, assertInclude, assertTrue } from "@effect/vitest/utils";
 import {
+  DateTime,
   Deferred,
   Duration,
   Effect,
@@ -72,7 +75,9 @@ import { vi } from "vitest";
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
+import { attachmentRelativePath } from "./attachmentStore.ts";
 import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
 import {
   CheckpointDiffQuery,
@@ -82,6 +87,7 @@ import { DiffStateQuery, type DiffStateQueryShape } from "./diffState/Services/D
 import { GitCore, type GitCoreShape } from "./git/Services/GitCore.ts";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcasterLive } from "./git/Layers/GitStatusBroadcaster.ts";
+import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   GitStatusBroadcaster,
   type GitStatusBroadcasterShape,
@@ -115,6 +121,8 @@ import {
   BrowserTraceCollector,
   type BrowserTraceCollectorShape,
 } from "./observability/Services/BrowserTraceCollector.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import { ProjectFaviconResolverLive } from "./project/Layers/ProjectFaviconResolver.ts";
 import {
   ProjectSetupScriptRunner,
@@ -460,7 +468,16 @@ const buildAppUnderTest = (options?: {
       ? Layer.mock(GitStatusBroadcaster)({
           ...options.layers.gitStatusBroadcaster,
         })
-      : GitStatusBroadcasterLive.pipe(Layer.provide(gitManagerLayer));
+      : GitStatusBroadcasterLive.pipe(
+          Layer.provide(gitManagerLayer),
+          Layer.provide(
+            Layer.succeed(ProjectAutoPull, {
+              attempt: () => Effect.void,
+              start: Effect.void,
+              changes: Stream.empty,
+            }),
+          ),
+        );
 
     const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
       disableListenLog: true,
@@ -494,6 +511,7 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.serverSettings,
         }),
       ),
+      Layer.provide(BackgroundPolicy.layer.pipe(Layer.provide(HostPowerMonitor.layer))),
       Layer.provide(
         Layer.mock(Open)({
           ...options?.layers?.open,
@@ -743,7 +761,7 @@ const buildAppUnderTest = (options?: {
         )
       : appLayer;
 
-    yield* Layer.build(appLayerWithProvider);
+    yield* Layer.build(appLayerWithProvider.pipe(Layer.provideMerge(CheckoutCoordinatorLive)));
     return config;
   });
 
@@ -1029,7 +1047,7 @@ const connectNodeWebSocket = (url: string) =>
       }),
   );
 
-const readNodeWebSocketJson = (socket: NodeWsSocket) =>
+const readNodeWebSocketJson = (socket: NodeWsSocket, onListening?: () => void) =>
   Effect.promise(
     () =>
       new Promise<unknown>((resolve, reject) => {
@@ -1051,12 +1069,117 @@ const readNodeWebSocketJson = (socket: NodeWsSocket) =>
         };
         socket.once("message", handleMessage);
         socket.once("error", handleError);
+        onListening?.();
       }),
   );
 
 const decodeMobileServerMessage = Schema.decodeUnknownSync(MobileServerMessage);
+const decodeWebSocketTicket = Schema.decodeUnknownSync(
+  Schema.toCodecJson(AuthWebSocketTicketResult),
+);
+const makeMobileSourceRpcClient = RpcClient.make(WsClientRpcGroup);
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect(
+    "pairs the current mobile protocol, persists inline images, and reconnects with a new ticket",
+    () =>
+      Effect.gen(function* () {
+        const dispatched: OrchestrationCommand[] = [];
+        const config = yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: dispatched.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+        const bearerToken = yield* getAuthenticatedBearerSessionToken();
+        const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
+        const socketUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+        const nextSocketUrl = Effect.gen(function* () {
+          const response = yield* Effect.promise(() =>
+            fetch(ticketUrl, {
+              method: "POST",
+              headers: { authorization: `Bearer ${bearerToken}` },
+            }),
+          );
+          assert.equal(response.status, 200);
+          const ticket = decodeWebSocketTicket(yield* Effect.promise(() => response.json()));
+          return `${socketUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`;
+        });
+        const firstUrl = yield* nextSocketUrl;
+        const image = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9kAAAAASUVORK5CYII=",
+          "base64",
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* makeMobileSourceRpcClient;
+            const server = yield* client[WS_METHODS.serverGetConfig]({});
+            assert.notEqual(server.environment.capabilities.attachmentUploads, true);
+            const response = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.turn.start",
+              commandId: CommandId.make("mobile-source-send"),
+              threadId: defaultThreadId,
+              message: {
+                messageId: MessageId.make("mobile-source-message"),
+                role: "user",
+                text: "Inspect this pixel",
+                attachments: [
+                  {
+                    type: "image",
+                    name: "pixel.png",
+                    mimeType: "image/png",
+                    sizeBytes: image.length,
+                    dataUrl: `data:image/png;base64,${image.toString("base64")}`,
+                  },
+                ],
+              },
+              modelSelection: defaultModelSelection,
+              runtimeMode: "auto-accept-edits",
+              interactionMode: "default",
+              createdAt: new Date().toISOString(),
+            });
+            assert.isAtLeast(response.sequence, 1);
+          }).pipe(Effect.provide(wsRpcProtocolLayer(firstUrl))),
+        );
+
+        const turn = dispatched.find((command) => command.type === "thread.turn.start");
+        assert.isDefined(turn);
+        if (turn?.type !== "thread.turn.start") return yield* Effect.die("No turn was dispatched.");
+        const attachment = turn.message.attachments[0];
+        assert.isDefined(attachment);
+        if (attachment === undefined)
+          return yield* Effect.die("No image attachment was persisted.");
+        const relativePath = attachmentRelativePath(attachment);
+        const attachmentPath = resolveAttachmentRelativePath({
+          attachmentsDir: config.attachmentsDir,
+          relativePath,
+        });
+        assert.isNotNull(attachmentPath);
+        if (attachmentPath === null) return yield* Effect.die("Invalid persisted attachment path.");
+        const fileSystem = yield* FileSystem.FileSystem;
+        assert.deepEqual(Buffer.from(yield* fileSystem.readFile(attachmentPath)), image);
+
+        const secondUrl = yield* nextSocketUrl;
+        assert.notEqual(secondUrl, firstUrl);
+        const reconnected = yield* Effect.scoped(
+          makeMobileSourceRpcClient.pipe(
+            Effect.flatMap((client) => client[WS_METHODS.serverGetConfig]({})),
+            Effect.provide(wsRpcProtocolLayer(secondUrl)),
+          ),
+        );
+        assert.equal(
+          reconnected.environment.environmentId,
+          testEnvironmentDescriptor.environmentId,
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1182,6 +1305,32 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       assert.equal(response.status, 503);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("mounts the authenticated Connect link-state endpoint", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const url = yield* getHttpServerUrl("/api/connect/link-state");
+      const token = yield* getAuthenticatedBearerSessionToken();
+      const response = yield* Effect.promise(() =>
+        fetch(url, {
+          headers: {
+            authorization: `Bearer ${token}`,
+          },
+        }),
+      );
+      const body = (yield* Effect.promise(() => response.json())) as {
+        readonly cloudUserId: string | null;
+        readonly endpointRuntimeStatus: {
+          readonly status: string;
+        };
+      };
+
+      assert.equal(response.status, 200);
+      assert.equal(body.cloudUserId, null);
+      assert.equal(body.endpointRuntimeStatus.status, "disabled");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -1847,6 +1996,103 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("preserves numeric request ids from official Effect RPC clients", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+      const request = JSON.stringify({
+        _tag: "Request",
+        id: 0,
+        tag: WS_METHODS.serverGetConfig,
+        payload: {},
+        headers: [],
+      });
+      const response = (yield* Effect.scoped(
+        Effect.gen(function* () {
+          const socket = yield* connectNodeWebSocket(wsUrl);
+          return yield* readNodeWebSocketJson(socket, () => socket.send(request)).pipe(
+            Effect.timeout("5 seconds"),
+          );
+        }),
+      )) as {
+        readonly _tag: string;
+        readonly requestId: unknown;
+        readonly exit?: { readonly _tag: string };
+      };
+
+      assert.equal(response._tag, "Exit");
+      assert.equal(response.requestId, 0);
+      assert.equal(response.exit?._tag, "Success");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("clears numeric request id mappings after connection defects", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const accessToken = yield* exchangeAccessToken(["orchestration:read"]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const [defect, exit] = (yield* Effect.scoped(
+        Effect.gen(function* () {
+          const socket = yield* connectNodeWebSocket(wsUrl);
+          const defect = yield* readNodeWebSocketJson(socket, () =>
+            socket.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: 0,
+                tag: "unknown.request",
+                payload: {},
+                headers: [],
+              }),
+            ),
+          );
+          const exit = yield* readNodeWebSocketJson(socket, () =>
+            socket.send(
+              JSON.stringify({
+                _tag: "Request",
+                id: "0",
+                tag: WS_METHODS.serverGetConfig,
+                payload: {},
+                headers: [],
+              }),
+            ),
+          );
+          return [defect, exit] as const;
+        }),
+      )) as readonly [
+        { readonly _tag: string },
+        { readonly _tag: string; readonly requestId: unknown },
+      ];
+
+      assert.equal(defect._tag, "Defect");
+      assert.equal(exit._tag, "Exit");
+      assert.equal(exit.requestId, "0");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("consumes an official websocket ticket exactly once", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();
@@ -1887,6 +2133,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.isFalse(legacyParameterConnected);
       assert.isTrue(firstConnected);
       assert.isFalse(replayConnected);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("accepts official mobile activity reports over an OAuth websocket session", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const accessToken = yield* exchangeAccessToken([
+        "orchestration:read",
+        "orchestration:operate",
+      ]);
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: {
+          authorization: ["Bearer", accessToken].join(" "),
+        },
+      });
+      const ticketBody = (yield* ticketResponse.json) as {
+        readonly ticket: string;
+      };
+      const wsUrl = `${yield* getWsServerUrl("/ws", {
+        authenticated: false,
+      })}?wsTicket=${encodeURIComponent(ticketBody.ticket)}`;
+
+      const snapshot = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.serverReportClientActivity]({
+            clientId: "official-ios-device",
+            clientKind: "mobile",
+            visible: true,
+            focused: true,
+            recentlyInteracted: true,
+            appState: "active",
+            scopes: [{ type: "provider-status" }],
+            ttlMs: 45_000,
+            observedAt: DateTime.makeUnsafe(Date.now()),
+          }).pipe(Effect.andThen(client[WS_METHODS.serverGetBackgroundPolicy]({}))),
+        ),
+      );
+
+      assert.equal(ticketResponse.status, 200);
+      assert.equal(snapshot.activeForegroundLeaseCount, 1);
+      assert.deepStrictEqual(snapshot.activeScopeKeys, ["provider-status"]);
+      assert.equal(snapshot.leases[0]?.clientId, "official-ios-device");
+      assert.equal(snapshot.leases[0]?.clientKind, "mobile");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -2806,6 +3095,62 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.equal(dispatchCount, 1);
           assert.equal(startupGateCount, 1);
 
+          for (const [id, payload] of [
+            [
+              "dispatch-pin-1",
+              {
+                type: "thread.pin",
+                commandId: CommandId.make("mobile-pin-1"),
+                threadId: defaultThreadId,
+                orderKey: "a",
+              },
+            ],
+            [
+              "dispatch-pin-reorder-1",
+              {
+                type: "thread.pin.reorder",
+                commandId: CommandId.make("mobile-pin-reorder-1"),
+                threadId: defaultThreadId,
+                orderKey: "b",
+              },
+            ],
+            [
+              "dispatch-unpin-1",
+              {
+                type: "thread.unpin",
+                commandId: CommandId.make("mobile-unpin-1"),
+                threadId: defaultThreadId,
+              },
+            ],
+            [
+              "dispatch-title-regenerate-1",
+              {
+                type: "thread.meta.update",
+                commandId: CommandId.make("mobile-title-regenerate-1"),
+                threadId: defaultThreadId,
+                regenerateTitle: true,
+              },
+            ],
+          ] as const) {
+            socket.send(
+              JSON.stringify({
+                id,
+                type: "request",
+                protocolVersion: MOBILE_PROTOCOL_VERSION,
+                method: "orchestration.dispatchCommand",
+                payload,
+              }),
+            );
+            const pinResponse = decodeMobileServerMessage(yield* readNodeWebSocketJson(socket));
+            if (pinResponse.type !== "response" || !("commandId" in pinResponse.payload)) {
+              assert.fail(`Expected accepted command receipt for ${payload.type}`);
+            }
+            assert.equal(pinResponse.id, id);
+            assert.equal(pinResponse.payload.status, "accepted");
+          }
+          assert.equal(dispatchCount, 5);
+          assert.equal(startupGateCount, 5);
+
           socket.send(
             JSON.stringify({
               id: "dispatch-archive-1",
@@ -2826,7 +3171,32 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }
           assert.equal(rejectedArchive.id, "dispatch-archive-1");
           assert.equal(rejectedArchive.error.code, "invalid-message");
-          assert.equal(dispatchCount, 1);
+          assert.equal(dispatchCount, 5);
+
+          socket.send(
+            JSON.stringify({
+              id: "dispatch-title-regenerate-with-branch",
+              type: "request",
+              protocolVersion: MOBILE_PROTOCOL_VERSION,
+              method: "orchestration.dispatchCommand",
+              payload: {
+                type: "thread.meta.update",
+                commandId: CommandId.make("mobile-title-regenerate-with-branch"),
+                threadId: defaultThreadId,
+                regenerateTitle: true,
+                branch: null,
+              },
+            }),
+          );
+          const rejectedMetadataMutation = decodeMobileServerMessage(
+            yield* readNodeWebSocketJson(socket),
+          );
+          if (rejectedMetadataMutation.type !== "error") {
+            assert.fail("Expected metadata mutation validation error");
+          }
+          assert.equal(rejectedMetadataMutation.id, "dispatch-title-regenerate-with-branch");
+          assert.equal(rejectedMetadataMutation.error.code, "invalid-message");
+          assert.equal(dispatchCount, 5);
 
           socket.send(
             JSON.stringify({
@@ -3580,7 +3950,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(second, {
         version: 1,
         type: "keybindingsUpdated",
-        payload: { issues: [] },
+        payload: { keybindings: [], issues: [] },
       });
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

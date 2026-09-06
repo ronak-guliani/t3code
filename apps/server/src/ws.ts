@@ -29,6 +29,7 @@ import {
   GitHubCliError,
   PullRequestUnavailableError,
   PullRequestMonitorError,
+  RpcClientId,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -97,13 +98,14 @@ import {
 } from "./git/VcsBridge.ts";
 import { clamp } from "effect/Number";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
+import { RpcServer } from "effect/unstable/rpc";
 
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery.ts";
 import { DiffStateQuery } from "./diffState/Services/DiffStateQuery.ts";
 import { ServerConfig } from "./config.ts";
 import { loadAuthAccessSnapshot } from "./auth/authAccessSnapshot.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
+import { CheckoutCoordinator } from "./git/CheckoutCoordinator.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
@@ -116,6 +118,7 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeClientCommandDispatcher } from "./orchestration/clientCommandDispatcher.ts";
+import { crossVersionRpcSerializationLayer } from "./rpc/crossVersionRpcSerialization.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { WorkflowCoordinatorReactor } from "./orchestration/Services/WorkflowCoordinatorReactor.ts";
@@ -171,6 +174,7 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { repositoryFromPullRequestUrl } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
 import * as PullRequestMonitors from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isWorkspacePathOutsideRootError = Schema.is(WorkspacePathOutsideRootError);
@@ -242,10 +246,26 @@ function toAuthAccessStreamEvent(
   }
 }
 
-const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
+let nextBackgroundConnectionGeneration = 0n;
+const RPC_CLIENT_ID_MODULUS = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+
+function allocateBackgroundConnectionIdentity(): BackgroundPolicy.BackgroundConnectionIdentity {
+  const generation = nextBackgroundConnectionGeneration;
+  nextBackgroundConnectionGeneration += 1n;
+  return {
+    generation,
+    rpcClientId: RpcClientId.make(Number(generation % RPC_CLIENT_ID_MODULUS)),
+  };
+}
+
+const makeWsRpcLayer = (
+  currentSession: AuthenticatedSession,
+  backgroundConnection: BackgroundPolicy.BackgroundConnectionIdentity,
+) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -254,6 +274,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
       const open = yield* Open;
       const gitManager = yield* GitManager;
       const git = yield* GitCore;
+      const checkoutCoordinator = yield* CheckoutCoordinator;
       const gitHubCli = yield* Effect.serviceOption(GitHubCli);
       const gitStatusBroadcaster = yield* GitStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
@@ -908,6 +929,13 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
+              const correlation = {
+                commandId: command.commandId,
+                commandType: command.type,
+                authSessionId: currentSessionId,
+                ...("threadId" in command ? { threadId: command.threadId } : {}),
+              };
+              yield* Effect.logInfo("client command received", correlation);
               const normalizedCommand = yield* normalizeDispatchCommand(command);
               const threadsToArchive =
                 normalizedCommand.type === "thread.archive"
@@ -939,6 +967,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                     })
                   : [];
               const result = yield* dispatchNormalizedCommand(normalizedCommand);
+              yield* Effect.logInfo("client command committed", {
+                ...correlation,
+                sequence: result.sequence,
+              });
               if (normalizedCommand.type === "thread.archive") {
                 yield* Effect.forEach(
                   threadsToArchive,
@@ -1398,6 +1430,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "orchestration" },
           ),
+        [WS_METHODS.serverProbe]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverProbe, Effect.succeed({}), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverGetConfig]: (_input) =>
           observeRpcEffect(WS_METHODS.serverGetConfig, loadServerConfig, {
             "rpc.aggregate": "server",
@@ -1504,8 +1540,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 });
               }
 
+              // Exports need full history: the default thread-detail read caps
+              // message hydration to the newest MAX_THREAD_MESSAGES window.
               const threadOption = yield* projectionSnapshotQuery
-                .getThreadDetailById(input.threadId)
+                .getThreadDetailById(input.threadId, { unboundedMessages: true })
                 .pipe(
                   Effect.mapError(
                     (cause) =>
@@ -1831,6 +1869,9 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,
             Effect.gen(function* () {
+              if (input.resource._tag === "native-app-icon") {
+                return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });
+              }
               if (input.resource._tag === "attachment") {
                 return yield* issueAssetUrl({ resource: input.resource });
               }
@@ -2097,7 +2138,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.gitPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitPull,
-            git.pullCurrentBranch(input.cwd).pipe(
+            checkoutCoordinator.withCheckout(input.cwd, git.pullCurrentBranch(input.cwd)).pipe(
               Effect.matchCauseEffect({
                 onFailure: (cause) => Effect.failCause(cause),
                 onSuccess: (result) =>
@@ -2213,33 +2254,41 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.gitCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitCreateWorktree,
-            git.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createWorktree(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitRemoveWorktree,
-            git.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(NodePath.resolve(input.cwd, input.path), git.removeWorktree(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitCreateBranch]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitCreateBranch,
-            git.createBranch(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createBranch(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitCheckout]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitCheckout,
-            Effect.scoped(git.checkoutBranch(input)).pipe(
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(input.cwd, Effect.scoped(git.checkoutBranch(input)))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitInit,
-            git.initRepo(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.initRepo(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
@@ -2274,7 +2323,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
-            git.pullCurrentBranch(input.cwd).pipe(
+            checkoutCoordinator.withCheckout(input.cwd, git.pullCurrentBranch(input.cwd)).pipe(
               Effect.map(gitPullResultToVcs),
               Effect.matchCauseEffect({
                 onFailure: (cause) => Effect.failCause(cause),
@@ -2293,40 +2342,51 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            git.createWorktree(vcsCreateWorktreeInputToGit(input)).pipe(
-              Effect.map(gitCreateWorktreeResultToVcs),
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createWorktree(vcsCreateWorktreeInputToGit(input)))
+              .pipe(
+                Effect.map(gitCreateWorktreeResultToVcs),
+                Effect.tap(() => refreshGitStatus(input.cwd)),
+              ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
-            git.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(NodePath.resolve(input.cwd, input.path), git.removeWorktree(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,
-            git.createBranch(vcsCreateRefInputToGit(input)).pipe(
-              Effect.map(gitCreateBranchResultToVcs),
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createBranch(vcsCreateRefInputToGit(input)))
+              .pipe(
+                Effect.map(gitCreateBranchResultToVcs),
+                Effect.tap(() => refreshGitStatus(input.cwd)),
+              ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,
-            Effect.scoped(git.checkoutBranch({ cwd: input.cwd, branch: input.refName })).pipe(
-              Effect.map(gitCheckoutResultToVcs),
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(
+                input.cwd,
+                Effect.scoped(git.checkoutBranch({ cwd: input.cwd, branch: input.refName })),
+              )
+              .pipe(
+                Effect.map(gitCheckoutResultToVcs),
+                Effect.tap(() => refreshGitStatus(input.cwd)),
+              ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsInit,
-            git.initRepo({ cwd: input.cwd }).pipe(
+            checkoutCoordinator.withCheckout(input.cwd, git.initRepo({ cwd: input.cwd })).pipe(
               Effect.mapError((error): VcsError => gitCommandErrorToVcs(error)),
               Effect.tap(() => refreshGitStatus(input.cwd)),
             ),
@@ -2488,6 +2548,26 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "server" },
           ),
+        [WS_METHODS.serverReportClientActivity]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReportClientActivity,
+            backgroundPolicy.reportClientActivity(currentSessionId, backgroundConnection, input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverReportHostPowerState]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverReportHostPowerState,
+            backgroundPolicy.reportHostPowerState(input),
+            { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.serverGetBackgroundPolicy]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetBackgroundPolicy,
+            backgroundPolicy.snapshotForSession(currentSessionId),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           observeRpcStream(
             WS_METHODS.terminalAttach,
@@ -2575,6 +2655,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                   version: 1 as const,
                   type: "keybindingsUpdated" as const,
                   payload: {
+                    keybindings: event.keybindings,
                     issues: event.issues,
                   },
                 })),
@@ -2667,6 +2748,17 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             }),
             { "rpc.aggregate": "auth" },
           ),
+        [WS_METHODS.subscribeBackgroundPolicy]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.subscribeBackgroundPolicy,
+            Stream.unwrap(
+              Effect.map(
+                backgroundPolicy.subscribeForSession(currentSessionId),
+                ({ latest, changes }) => Stream.concat(Stream.make(latest), changes),
+              ),
+            ),
+            { "rpc.aggregate": "server" },
+          ),
       });
     }),
   );
@@ -2681,6 +2773,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         const serverAuth = yield* ServerAuth;
         const sessions = yield* SessionCredentialService;
         const session = yield* serverAuth.authenticateWebSocketUpgrade(request);
+        const backgroundConnection = allocateBackgroundConnectionIdentity();
+        const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
+        const connectionId = crypto.randomUUID();
         const rpcWebSocketHttpEffect = yield* RpcServer.toHttpEffectWebsocket(WsRpcGroup, {
           spanPrefix: "ws.rpc",
           spanAttributes: {
@@ -2690,9 +2785,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         }).pipe(
           Effect.provide(
             Layer.mergeAll(
-              makeWsRpcLayer(session),
-              RpcSerialization.layerJson,
-              rpcAuthorizationLayer(new Set(session.scopes)),
+              makeWsRpcLayer(session, backgroundConnection),
+              crossVersionRpcSerializationLayer,
+              rpcAuthorizationLayer(new Set(session.scopes), session.role),
             ),
           ),
         );
@@ -2702,10 +2797,15 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         // A silently replaced socket leaves every subscription on the old
         // connection dead, so connection open/close is the anchor every stream
         // log below correlates against.
-        const connectionId = crypto.randomUUID();
         const connectedAt = Date.now();
         return yield* Effect.acquireUseRelease(
-          sessions.markConnected(session.sessionId),
+          Effect.all(
+            [
+              sessions.markConnected(session.sessionId),
+              backgroundPolicy.registerConnection(session.sessionId, backgroundConnection),
+            ],
+            { discard: true },
+          ),
           () =>
             Effect.logInfo("websocket connected", {
               userAgent: request.headers["user-agent"],
@@ -2720,7 +2820,14 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               ),
               withLogContext({ sessionId: session.sessionId, connectionId }),
             ),
-          () => sessions.markDisconnected(session.sessionId),
+          () =>
+            Effect.all(
+              [
+                backgroundPolicy.removeConnection(session.sessionId, backgroundConnection),
+                sessions.markDisconnected(session.sessionId),
+              ],
+              { discard: true },
+            ),
         );
       }).pipe(Effect.catchTag("AuthError", respondToAuthError)),
     ),

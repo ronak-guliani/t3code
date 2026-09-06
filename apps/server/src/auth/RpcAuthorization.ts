@@ -20,6 +20,7 @@ import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 export const RPC_REQUIRED_SCOPES = {
+  [WS_METHODS.serverProbe]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.serverRefreshProviders]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverListProviderCommands]: AuthOrchestrationReadScope,
@@ -29,13 +30,16 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRemoveKeybinding]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverExportThreadMarkdown]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverExportThreadMarkdown]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDiscoverSourceControl]: AuthOrchestrationReadScope,
   [WS_METHODS.serverUpdateProvider]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverGetTraceDiagnostics]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetProcessDiagnostics]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetProcessResourceHistory]: AuthOrchestrationReadScope,
   [WS_METHODS.serverSignalProcess]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverReportClientActivity]: AuthOrchestrationReadScope,
+  [WS_METHODS.serverReportHostPowerState]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverGetBackgroundPolicy]: AuthOrchestrationReadScope,
   [WS_METHODS.sidebarGetState]: AuthOrchestrationReadScope,
   [WS_METHODS.sidebarUpdateState]: AuthOrchestrationOperateScope,
   [WS_METHODS.projectsSearchEntries]: AuthOrchestrationReadScope,
@@ -122,6 +126,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
+  [WS_METHODS.subscribeBackgroundPolicy]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeSidebarState]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribePreviewEvents]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
@@ -149,11 +154,20 @@ const isWsRpcMethod = (method: string): method is WsRpcMethod =>
 export const authorizeRpcMethod = (
   scopes: ReadonlySet<AuthEnvironmentScope>,
   method: string,
+  role: "owner" | "client",
 ): Effect.Effect<void, EnvironmentAuthorizationError> => {
   if (!isWsRpcMethod(method)) {
     throw new Error(`RPC method ${method} has no declared authorization scope.`);
   }
   const requiredScope = requiredScopeForRpcMethod(method);
+  if (method === WS_METHODS.serverReportHostPowerState && role !== "owner") {
+    return Effect.fail(
+      new EnvironmentAuthorizationError({
+        message: "Only the local owner session may report host power state.",
+        requiredScope,
+      }),
+    );
+  }
   return scopes.has(requiredScope)
     ? Effect.void
     : Effect.fail(
@@ -166,7 +180,8 @@ export const authorizeRpcMethod = (
 
 export const rpcAuthorizationLayer = (
   scopes: ReadonlySet<AuthEnvironmentScope>,
+  role: "owner" | "client",
 ): Layer.Layer<EnvironmentRpcAuthorization> =>
   Layer.succeed(EnvironmentRpcAuthorization, (effect, { rpc }) =>
-    authorizeRpcMethod(scopes, rpc._tag).pipe(Effect.andThen(effect)),
+    authorizeRpcMethod(scopes, rpc._tag, role).pipe(Effect.andThen(effect)),
   );

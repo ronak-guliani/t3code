@@ -26,6 +26,7 @@ const AGENT_ROOTS: ReadonlyArray<AgentRootDefinition> = [
     agentName: "Copilot CLI",
     primaryRelativePath: ".copilot/skills",
     additionalReadableAgentIds: ["claude-code"],
+    readsShared: true,
   },
   {
     agentId: "opencode",

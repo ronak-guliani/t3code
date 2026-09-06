@@ -1,4 +1,5 @@
 import * as nodePath from "node:path";
+import { createHash } from "node:crypto";
 
 import {
   ThreadId,
@@ -14,9 +15,15 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import type { CopilotPrewarmPoolShape } from "./CopilotSessionPrewarmPool.ts";
-import { startMcpHttpServer, type McpHttpServer, type McpServeOptions } from "../../mcpServer.ts";
+import {
+  fingerprintMcpToolContract,
+  startMcpHttpServer,
+  type McpHttpServer,
+  type McpServeOptions,
+} from "../../mcpServer.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import type { McpProviderSessionConfig } from "../../mcp/McpSessionRegistry.ts";
+import { fingerprintProviderMcpToolContract } from "../../mcp/providerToolContract.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
@@ -24,6 +31,7 @@ import {
   type AcpSessionRuntimeShape,
   type AcpSpawnInput,
 } from "./AcpSessionRuntime.ts";
+import { buildBrowserToolInstructions } from "../BrowserToolInstructions.ts";
 
 export const COPILOT_AUTH_METHOD_ID = "copilot-login";
 
@@ -40,16 +48,16 @@ export const COPILOT_LEGACY_AUTOPILOT_MODE_ID =
   "https://github.com/github/copilot-cli/mode#autopilot";
 export const COPILOT_LEGACY_PLAN_MODE_ID = "https://github.com/github/copilot-cli/mode#plan";
 
-export const COPILOT_WORKSPACE_INSTRUCTIONS = `# T3 Code tools
+export const buildCopilotWorkspaceInstructions = (
+  browserToolsAvailable: boolean,
+): string => `# T3 Code tools
 
-- MCP boundary: \`t3-code\` is the collaborative browser automation server. Use the canonical browser tools there: \`preview_open\`, \`preview_open_and_snapshot\`, \`preview_tabs\`, \`preview_status\`, \`preview_navigate\`, \`preview_snapshot\`, \`preview_click\`, \`preview_type\`, and the related \`preview_*\` tools.
+${buildBrowserToolInstructions(browserToolsAvailable)}
 - MCP boundary: \`t3-tools\` is the workspace, terminal, skills, web, memory, handoff, nested-thread, cross-thread, and PR-association server.
-- Never use the legacy \`t3-tools\` preview stubs (\`preview_screenshot\`, \`preview_click\`, \`preview_type\`, \`preview_annotate\`) when \`t3-code\` is available.
-- If a \`t3-code\` browser tool fails with \`401\` and \`www-authenticate: Bearer\`, its per-session MCP credential is invalid or expired. Restart the chat/session to reconnect browser automation.
 - \`t3-tools\` uses this T3 process's bearer token for its local loopback HTTP MCP server.
-- MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load the matching function definition (search the \`t3-tools\` tool resource with query \`create_nested_thread\`), then call the loaded function. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing based only on the initially loaded tools or resources.
+- MCP tools may be deferred instead of appearing in the initially loaded tool list. When a requested \`t3-tools\` tool is deferred, you MUST use the tool-search API to load that exact function definition, then call it. For a new workspace for the current thread, search \`t3-tools\` for \`create_isolated_workspace\`; for one delegated child, search for \`create_nested_thread\`; for multiple sibling children, search for \`create_nested_threads\`. Do not use an MCP resources/list result as an availability check: zero non-invokable resources does not mean the server exposes zero tools. Never report a deferred tool missing based only on the initially loaded tools or resources.
 - NEVER run \`git worktree add\` or \`git worktree move\` through a terminal or shell tool.
-- When delegating work, call \`create_nested_thread\` before any workspace operation. If the child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread.
+- When delegating work, call \`create_nested_thread\` or \`create_nested_threads\` before any workspace operation. If a child needs an isolated checkout, pass its \`workspace\` input so T3 binds the child without moving this thread.
 - Workspace handoff tools affect only the calling thread. Never call them to prepare a workspace for a future delegated thread.
 - When a task needs a new isolated checkout, call the \`create_isolated_workspace\` tool instead.
 - When a task needs to use an existing worktree, call the \`switch_workspace\` tool instead.
@@ -58,6 +66,8 @@ export const COPILOT_WORKSPACE_INSTRUCTIONS = `# T3 Code tools
 - \`git worktree remove\` is allowed for cleaning up unneeded worktrees. Prefer removing only clean, unshared checkouts.
 - After successfully creating or explicitly opening a pull request for this thread, call \`associate_pull_request\` with its URL or number so the sidebar association is durable.
 `;
+
+export const COPILOT_WORKSPACE_INSTRUCTIONS = buildCopilotWorkspaceInstructions(true);
 
 export const COPILOT_CLIENT_CAPABILITIES = {
   fs: {
@@ -149,18 +159,24 @@ export function buildCopilotAcpSpawnInput(
 }
 
 export const prepareCopilotCustomInstructions = Effect.fn("prepareCopilotCustomInstructions")(
-  function* (stateDir: string) {
+  function* (stateDir: string, browserToolsAvailable = true) {
     const fileSystem = yield* FileSystem.FileSystem;
-    const instructionsDir = nodePath.join(stateDir, "providers", "copilot", "instructions");
+    const instructionsDir = nodePath.join(
+      stateDir,
+      "providers",
+      "copilot",
+      browserToolsAvailable ? "instructions" : "instructions-no-browser",
+    );
     const instructionsPath = nodePath.join(instructionsDir, "AGENTS.md");
+    const contents = buildCopilotWorkspaceInstructions(browserToolsAvailable);
     const currentContents = yield* fileSystem
       .readFileString(instructionsPath)
       .pipe(Effect.orElseSucceed(() => undefined));
 
-    if (currentContents !== COPILOT_WORKSPACE_INSTRUCTIONS) {
+    if (currentContents !== contents) {
       yield* writeFileStringAtomically({
         filePath: instructionsPath,
-        contents: COPILOT_WORKSPACE_INSTRUCTIONS,
+        contents,
       });
     }
 
@@ -198,6 +214,7 @@ export function buildCopilotMcpServerOptions(
   toolsetNames.add("create_isolated_workspace");
   toolsetNames.add("switch_workspace");
   toolsetNames.add("create_nested_thread");
+  toolsetNames.add("create_nested_threads");
   toolsetNames.add("send_to_thread");
   toolsetNames.add("associate_pull_request");
   return {
@@ -210,6 +227,26 @@ export function buildCopilotMcpServerOptions(
     ...(commandArgsPrefix.length > 0 ? { cliArgsPrefix: commandArgsPrefix } : {}),
     ...(cliBaseDir ? { cliBaseDir } : {}),
   };
+}
+
+export function buildCopilotSessionContractFingerprint(
+  env: NodeJS.ProcessEnv = process.env,
+  providerMcpEnabled = false,
+): string {
+  const options = buildCopilotMcpServerOptions(
+    "/",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    env,
+    { execPath: process.execPath, entryPath: undefined },
+  );
+  return createHash("sha256")
+    .update(buildCopilotWorkspaceInstructions(providerMcpEnabled))
+    .update(fingerprintMcpToolContract(options.toolsets))
+    .update(providerMcpEnabled ? fingerprintProviderMcpToolContract() : "t3-code:absent")
+    .digest("hex");
 }
 
 export function buildCopilotMcpServers(

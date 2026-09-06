@@ -1,7 +1,7 @@
 import {
-  type EnvironmentId,
+  EnvironmentId,
   type MessageId,
-  type ThreadId,
+  ThreadId,
   type TurnDiffScope,
   type TurnId,
 } from "@t3tools/contracts";
@@ -12,6 +12,7 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -19,6 +20,7 @@ import {
 } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatElapsed, type AgentRun } from "../../session-logic";
+import { buildThreadPath } from "@t3tools/shared/threadUrl";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -37,7 +39,9 @@ import {
   GlobeIcon,
   HammerIcon,
   InfoIcon,
+  Minimize2Icon,
   PaintbrushIcon,
+  RadarIcon,
   type LucideIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -58,7 +62,9 @@ import {
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveExternalActionUrl,
   resolveWorkGroupExpanded,
+  shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
@@ -75,7 +81,12 @@ import {
   extractTrailingPreviewAnnotation,
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
-import { type TimestampFormat } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
+  type MessagePreviewLineCount,
+  type MessagePreviewLineLimits,
+  type TimestampFormat,
+} from "@t3tools/contracts/settings";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { formatTimestamp } from "../../timestampFormat";
@@ -86,7 +97,7 @@ import {
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
-import { selectSidebarThreadSummaryByRef, useStore } from "../../store";
+import { selectSidebarThreadSummaryByRef, useStore, type AppState } from "../../store";
 
 // ---------------------------------------------------------------------------
 // Context — shared state consumed by every row component via useContext.
@@ -103,6 +114,7 @@ interface TimelineRowSharedState {
   completionSummary: string | null;
   copilotResumeCommand: string | null;
   timestampFormat: TimestampFormat;
+  messagePreviewLineLimits: MessagePreviewLineLimits;
   routeThreadKey: string;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
@@ -152,6 +164,7 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
+  messagePreviewLineLimits?: MessagePreviewLineLimits;
   workspaceRoot: string | undefined;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   activeChatFindRowId?: string | null;
@@ -171,7 +184,6 @@ export interface AssistantResponseMeta {
   };
 }
 
-const USER_MESSAGE_COLLAPSE_LINE_THRESHOLD = 8;
 const USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD = 900;
 const AUTOLOAD_OLDER_OVERFLOW_PX = 8;
 
@@ -230,6 +242,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   timestampFormat,
+  messagePreviewLineLimits = DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS,
   workspaceRoot,
   onIsAtEndChange,
   activeChatFindRowId = null,
@@ -332,6 +345,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionSummary,
       copilotResumeCommand,
       timestampFormat,
+      messagePreviewLineLimits,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -355,6 +369,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       completionSummary,
       copilotResumeCommand,
       timestampFormat,
+      messagePreviewLineLimits,
       routeThreadKey,
       markdownCwd,
       resolvedTheme,
@@ -472,6 +487,20 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         row.kind === "message" && row.message.id === ctx.highlightedMessageId ? "true" : undefined
       }
     >
+      {row.kind === "context-compaction" && (
+        <div
+          role="separator"
+          aria-label={row.label}
+          className="mx-auto flex w-full max-w-3xl items-center gap-3 py-1 text-xs text-muted-foreground"
+        >
+          <span className="h-px min-w-4 flex-1 bg-border/70" />
+          <span className="flex min-w-0 items-center justify-center gap-1.5 text-center">
+            <Minimize2Icon aria-hidden="true" className="size-3 shrink-0" />
+            {row.label}
+          </span>
+          <span className="h-px min-w-4 flex-1 bg-border/70" />
+        </div>
+      )}
       {row.kind === "work" && (
         <WorkGroupSection
           groupedEntries={row.groupedEntries}
@@ -506,12 +535,16 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
+              ) : row.message.origin?.kind === "pull-request-monitor" ? (
+                <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}
               <div
                 className={cn(
                   "group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3",
                   row.message.origin?.kind === "cross-thread" &&
                     "border-violet-400/30 bg-gradient-to-br from-violet-500/[0.07] via-violet-500/[0.02] to-transparent",
+                  row.message.origin?.kind === "pull-request-monitor" &&
+                    "border-sky-400/30 bg-gradient-to-br from-sky-500/[0.07] via-sky-500/[0.02] to-transparent",
                 )}
               >
                 {regularImages.length > 0 && (
@@ -562,6 +595,10 @@ function TimelineRowContent(props: { row: TimelineRow }) {
                   rowId={row.id}
                   text={visibleText}
                   terminalContexts={terminalContexts}
+                  collapsedLineLimit={resolveMessagePreviewLineLimit(
+                    row.message.origin?.kind,
+                    ctx.messagePreviewLineLimits,
+                  )}
                   forceExpanded={ctx.activeChatFindRowId === row.id}
                 />
               </div>
@@ -799,8 +836,15 @@ function CrossThreadProvenance({
 }) {
   const navigate = useNavigate();
   const ctx = use(TimelineRowCtx);
-  const sourceThreadRef = scopeThreadRef(ctx.activeThreadEnvironmentId, origin.sourceThreadId);
-  const sourceThread = useStore((state) => selectSidebarThreadSummaryByRef(state, sourceThreadRef));
+  // scopeThreadRef allocates a fresh object; memoize the ref on the primitives
+  // so the selector (and its subscription) stays stable across stream chunks.
+  const sourceThreadEnvironmentId = ctx.activeThreadEnvironmentId;
+  const sourceThreadThreadId = origin.sourceThreadId;
+  const sourceThreadSelector = useMemo(() => {
+    const ref = scopeThreadRef(sourceThreadEnvironmentId, sourceThreadThreadId);
+    return (state: AppState) => selectSidebarThreadSummaryByRef(state, ref);
+  }, [sourceThreadEnvironmentId, sourceThreadThreadId]);
+  const sourceThread = useStore(sourceThreadSelector);
   const sourceTitle = sourceThread?.title.trim() || origin.sourceThreadTitle;
   const canNavigate = sourceThread !== null && sourceThread !== undefined;
 
@@ -826,8 +870,8 @@ function CrossThreadProvenance({
         void navigate({
           to: "/$environmentId/$threadId",
           params: {
-            environmentId: sourceThreadRef.environmentId,
-            threadId: sourceThreadRef.threadId,
+            environmentId: sourceThreadEnvironmentId,
+            threadId: sourceThreadThreadId,
           },
           search: (previous) => ({ ...previous, message: origin.sourceMessageId }),
         });
@@ -841,6 +885,24 @@ function CrossThreadProvenance({
         {sourceTitle}
       </span>
     </button>
+  );
+}
+
+function PullRequestMonitorProvenance({
+  origin,
+}: {
+  origin: Extract<NonNullable<TimelineMessage["origin"]>, { kind: "pull-request-monitor" }>;
+}) {
+  return (
+    <span
+      className="mb-1 mr-2 inline-flex max-w-[80%] items-center gap-1 text-[length:var(--app-status-line-font-size)] text-muted-foreground/45"
+      title={`Sent by pull request monitor for ${origin.repository}#${origin.number}`}
+    >
+      <RadarIcon className="size-2.5 shrink-0 text-sky-400/60" aria-hidden="true" />
+      <span className="truncate">
+        PR monitor · {origin.repository}#{origin.number}
+      </span>
+    </span>
   );
 }
 
@@ -1173,10 +1235,46 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   rowId: string;
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
+  collapsedLineLimit: MessagePreviewLineCount;
   forceExpanded: boolean;
 }) {
   const hasBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
-  const isCollapsible = shouldCollapseUserMessage(props.text, props.terminalContexts);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const previewHeightRef = useRef<HTMLDivElement>(null);
+  const [hasRenderedOverflow, setHasRenderedOverflow] = useState(false);
+  const measureRenderedOverflow = useCallback(() => {
+    const content = contentRef.current;
+    const previewHeight = previewHeightRef.current;
+    if (!content || !previewHeight) return;
+
+    const nextHasRenderedOverflow = exceedsMessagePreviewHeight(
+      content.scrollHeight,
+      previewHeight.getBoundingClientRect().height,
+    );
+    setHasRenderedOverflow((current) =>
+      current === nextHasRenderedOverflow ? current : nextHasRenderedOverflow,
+    );
+  }, []);
+  useLayoutEffect(measureRenderedOverflow);
+  useEffect(() => {
+    const content = contentRef.current;
+    const previewHeight = previewHeightRef.current;
+    if (!content || !previewHeight) return;
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measureRenderedOverflow);
+      return () => window.removeEventListener("resize", measureRenderedOverflow);
+    }
+
+    const observer = new ResizeObserver(measureRenderedOverflow);
+    observer.observe(content);
+    observer.observe(previewHeight);
+    return () => observer.disconnect();
+  }, [measureRenderedOverflow]);
+
+  const isCollapsible =
+    hasRenderedOverflow ||
+    shouldCollapseUserMessage(props.text, props.terminalContexts, props.collapsedLineLimit);
   const [isExpandedOverride, setIsExpandedOverride] = useState<boolean | null>(null);
   const isExpanded = props.forceExpanded || !isCollapsible || isExpandedOverride === true;
   const isCollapsed = isCollapsible && !isExpanded;
@@ -1189,18 +1287,28 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           data-user-message-row-id={props.rowId}
           data-user-message-collapsible={String(isCollapsible)}
           data-user-message-collapsed={String(isCollapsed)}
+          data-user-message-collapsed-line-limit={props.collapsedLineLimit}
           data-user-message-fade={String(isCollapsed)}
-          className={cn("relative", isCollapsed ? "max-h-44 overflow-hidden" : null)}
+          className={cn("relative", isCollapsed ? "overflow-hidden" : null)}
           style={
             isCollapsed
               ? {
+                  maxHeight: `${props.collapsedLineLimit}lh`,
                   maskImage: "linear-gradient(to bottom, black 65%, transparent 100%)",
                   WebkitMaskImage: "linear-gradient(to bottom, black 65%, transparent 100%)",
                 }
               : undefined
           }
         >
-          <UserMessageBody text={props.text} terminalContexts={props.terminalContexts} />
+          <div
+            ref={previewHeightRef}
+            aria-hidden="true"
+            className="pointer-events-none invisible absolute h-auto w-px"
+            style={{ height: `${props.collapsedLineLimit}lh` }}
+          />
+          <div ref={contentRef}>
+            <UserMessageBody text={props.text} terminalContexts={props.terminalContexts} />
+          </div>
         </div>
       ) : null}
       {isCollapsible ? (
@@ -1364,13 +1472,27 @@ function formatWorkingTimer(startIso: string, endIso: string): string | null {
 function shouldCollapseUserMessage(
   text: string,
   terminalContexts: ReadonlyArray<ParsedTerminalContextEntry>,
+  collapsedLineLimit: MessagePreviewLineCount,
 ): boolean {
   const trimmedText = text.trim();
   if (trimmedText.length >= USER_MESSAGE_COLLAPSE_CHAR_THRESHOLD) {
     return true;
   }
   const lineCount = trimmedText.length === 0 ? 0 : trimmedText.split(/\r\n|\r|\n/).length;
-  return lineCount > USER_MESSAGE_COLLAPSE_LINE_THRESHOLD || terminalContexts.length > 2;
+  return lineCount > collapsedLineLimit || terminalContexts.length > 2;
+}
+
+export function exceedsMessagePreviewHeight(contentHeight: number, previewHeight: number): boolean {
+  return contentHeight > previewHeight + 1;
+}
+
+function resolveMessagePreviewLineLimit(
+  originKind: NonNullable<TimelineMessage["origin"]>["kind"] | undefined,
+  limits: MessagePreviewLineLimits,
+): MessagePreviewLineCount {
+  if (originKind === "cross-thread") return limits.crossThread;
+  if (originKind === "pull-request-monitor") return limits.monitoring;
+  return limits.normal;
 }
 
 function formatMessageMeta(
@@ -1486,6 +1608,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 }) {
   const { canExpandCommand = false, workEntry, workspaceRoot } = props;
   const [isCommandExpanded, setIsCommandExpanded] = useState(false);
+  const navigate = useNavigate();
+  const { activeThreadEnvironmentId } = use(TimelineRowCtx);
   if (workEntry.agentRun) {
     return <AgentRunRow agentRun={workEntry.agentRun} workspaceRoot={workspaceRoot} />;
   }
@@ -1505,6 +1629,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const previewIsChangedFiles = hasChangedFiles && !workEntry.command && !workEntry.detail;
   const CommandToggleIcon = isCommandExpanded ? ChevronDownIcon : ChevronRightIcon;
   const expandableCommand = canExpandCommand ? fullCommand : null;
+  const actionHref =
+    workEntry.action?.kind === "thread"
+      ? buildThreadPath({
+          environmentId: activeThreadEnvironmentId,
+          threadId: workEntry.action.threadId,
+        })
+      : workEntry.action?.kind === "external"
+        ? resolveExternalActionUrl(workEntry.action.url)
+        : null;
 
   return (
     <div className="rounded-lg px-1 py-1">
@@ -1579,6 +1712,29 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </Tooltip>
           )}
         </div>
+        {workEntry.action && actionHref ? (
+          <a
+            href={actionHref}
+            {...(workEntry.action.kind === "external"
+              ? { target: "_blank", rel: "noopener noreferrer" }
+              : {})}
+            onClick={(event) => {
+              if (workEntry.action?.kind !== "thread") return;
+              if (!shouldHandleInternalActionClick(event)) return;
+              event.preventDefault();
+              void navigate({
+                to: "/$environmentId/$threadId",
+                params: {
+                  environmentId: activeThreadEnvironmentId,
+                  threadId: workEntry.action.threadId,
+                },
+              });
+            }}
+            className="shrink-0 text-[0.9em] font-medium text-primary hover:underline"
+          >
+            {workEntry.action.label}
+          </a>
+        ) : null}
       </div>
       {hasChangedFiles && !previewIsChangedFiles && (
         <div className="mt-1 flex flex-wrap gap-1 pl-6">

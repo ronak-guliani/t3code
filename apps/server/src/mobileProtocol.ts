@@ -18,6 +18,7 @@ import {
   type MobileAuthWebSocketTokenResult,
   type MobileClientCapability,
   type MobileClientOrchestrationCommand,
+  isMobileThreadTitleRegenerationCommand,
   type MobileCommandReceipt,
   MobileClientMessage,
   type MobileDescriptorResult,
@@ -165,7 +166,12 @@ function isMobileClientOrchestrationCommand(
     case "thread.user-input.respond":
     case "thread.checkpoint.revert":
     case "thread.session.stop":
+    case "thread.pin":
+    case "thread.unpin":
+    case "thread.pin.reorder":
       return true;
+    case "thread.meta.update":
+      return isMobileThreadTitleRegenerationCommand(command);
     default:
       return false;
   }
@@ -482,10 +488,13 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                 return;
               }
               case "orchestration.subscribeThread": {
-                const [threadDetail, readModel] = yield* Effect.all([
-                  projectionSnapshotQuery.getThreadDetailById(message.payload.threadId),
-                  orchestrationEngine.getReadModel(),
-                ]);
+                const [threadDetail, readModel] = yield* Effect.all(
+                  [
+                    projectionSnapshotQuery.getThreadDetailById(message.payload.threadId),
+                    orchestrationEngine.getReadModel(),
+                  ],
+                  { concurrency: "unbounded" },
+                );
                 if (Option.isNone(threadDetail)) {
                   yield* sendError(
                     message.id,
@@ -561,7 +570,7 @@ export const mobileWebSocketRouteLayer = Layer.unwrap(
                   yield* sendError(
                     message.id,
                     "invalid-message",
-                    "Mobile dispatch only supports read+chat MVP commands.",
+                    "Mobile dispatch only supports read+chat, thread pinning, and metadata commands.",
                   );
                   return;
                 }

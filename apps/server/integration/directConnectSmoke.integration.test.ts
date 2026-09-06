@@ -12,6 +12,7 @@ import { chromium } from "playwright";
 import {
   Deferred,
   Data,
+  DateTime,
   Effect,
   Exit,
   FileSystem,
@@ -341,7 +342,51 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         const serverConfig = yield* Effect.promise(() =>
           transport.request((client) => client[WS_METHODS.serverGetConfig]({})),
         );
-        expect(serverConfig.environment.capabilities.connectionProbe).toBeUndefined();
+        expect(serverConfig.environment.capabilities).toMatchObject({
+          ownedMobileProtocolVersion: 1,
+          connectionProbe: true,
+          pullRequests: false,
+          threadSettlement: true,
+          threadSnooze: true,
+          threadPinning: true,
+          threadPinReorder: true,
+          threadTitleRegeneration: true,
+          agentActivityPublishing: false,
+        });
+        yield* Effect.promise(() =>
+          transport.request((client) => client[WS_METHODS.serverProbe]({})),
+        );
+        yield* Effect.promise(() =>
+          transport.request((client) =>
+            client[WS_METHODS.serverReportClientActivity]({
+              environmentId: serverConfig.environment.environmentId,
+              clientId: "mobile-direct-connect-smoke",
+              clientKind: "mobile",
+              visible: true,
+              focused: true,
+              recentlyInteracted: true,
+              appState: "active",
+              scopes: [{ type: "provider-status" }],
+              ttlMs: 45_000,
+              observedAt: DateTime.makeUnsafe(Date.now()),
+            }),
+          ),
+        );
+        const backgroundPolicy = yield* Effect.promise(() =>
+          transport.request((client) => client[WS_METHODS.serverGetBackgroundPolicy]({})),
+        );
+        expect(backgroundPolicy).toMatchObject({
+          activeForegroundLeaseCount: 1,
+          activeScopeKeys: ["provider-status"],
+          shouldRunOpportunisticWork: true,
+          leases: [
+            {
+              clientId: "mobile-direct-connect-smoke",
+              clientKind: "mobile",
+              appState: "active",
+            },
+          ],
+        });
         expect(serverConfig.shellResumeCompletionMarker).toBe(true);
         expect(serverConfig.threadResumeCompletionMarker).toBe(true);
         const unsubscribeLifecycle = transport.subscribe(
@@ -421,6 +466,32 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         yield* Deferred.await(disconnected).pipe(Effect.timeout("10 seconds"));
         yield* Deferred.await(reconnected).pipe(Effect.timeout("10 seconds"));
         yield* Deferred.await(resnapshot).pipe(Effect.timeout("10 seconds"));
+        yield* Effect.promise(() =>
+          transport.request((client) =>
+            client[WS_METHODS.serverReportClientActivity]({
+              environmentId: serverConfig.environment.environmentId,
+              clientId: "mobile-direct-connect-smoke",
+              clientKind: "mobile",
+              visible: true,
+              focused: true,
+              recentlyInteracted: true,
+              appState: "active",
+              scopes: [{ type: "provider-status" }],
+              ttlMs: 45_000,
+              observedAt: DateTime.makeUnsafe(Date.now()),
+            }),
+          ),
+        );
+        const reconnectedBackgroundPolicy = yield* retryUntil(
+          Effect.promise(() =>
+            transport.request((client) => client[WS_METHODS.serverGetBackgroundPolicy]({})),
+          ),
+          (snapshot) =>
+            snapshot.leases.length === 1 &&
+            snapshot.leases[0]?.clientId === "mobile-direct-connect-smoke",
+          "the disconnected socket lease to be removed without removing its replacement",
+        );
+        expect(reconnectedBackgroundPolicy.leases).toHaveLength(1);
         expect(wsTokenIssueCount).toBeGreaterThanOrEqual(2);
         expect(snapshots).toEqual([0, 1]);
         expect(liveProjectSequences).toEqual([1]);
@@ -435,6 +506,15 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           (browserContext) => Effect.promise(() => browserContext.close()),
         );
         const page = yield* Effect.promise(() => context.newPage());
+        const browserDiagnostics: string[] = [];
+        page.on("console", (message) => {
+          if (message.type() === "error" || message.type() === "warning") {
+            browserDiagnostics.push(`${message.type()}: ${message.text()}`);
+          }
+        });
+        page.on("pageerror", (error) => {
+          browserDiagnostics.push(`pageerror: ${error.message}`);
+        });
         let browserWebSocketCount = 0;
         page.on("websocket", (socket) => {
           if (new URL(socket.url()).pathname === "/ws") {
@@ -444,17 +524,28 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
         yield* Effect.promise(() =>
           page.goto(`${origin}/pair#token=${encodeURIComponent(browserCredential)}`),
         );
-        yield* Effect.promise(() =>
-          page.waitForURL((url) => url.pathname === "/" && url.hash === "", {
-            timeout: 10_000,
-          }),
-        );
-        yield* Effect.promise(() =>
-          page.getByText("Direct Connect Project", { exact: true }).waitFor({
-            state: "visible",
-            timeout: 10_000,
-          }),
-        );
+        yield* Effect.promise(async () => {
+          try {
+            await page.getByText("Direct Connect Project", { exact: true }).waitFor({
+              state: "visible",
+              timeout: 10_000,
+            });
+          } catch (cause) {
+            const body = await page
+              .locator("body")
+              .innerText()
+              .catch(() => "<unavailable>");
+            throw new Error(
+              [
+                `Browser pairing did not expose the connected environment at ${page.url()}.`,
+                `Body: ${body}`,
+                `Diagnostics: ${browserDiagnostics.join("\n") || "<none>"}`,
+              ].join("\n"),
+              { cause },
+            );
+          }
+        });
+        expect(new URL(page.url()).hash).toBe("");
         const cookies = yield* Effect.promise(() => context.cookies(origin));
         expect(cookies.some((cookie) => cookie.name.startsWith("t3_session"))).toBe(true);
         expect(browserWebSocketCount).toBeGreaterThan(0);
@@ -531,6 +622,53 @@ it("runs production direct pairing, browser bootstrap, live sync, and involuntar
           }).pipe(Effect.timeout("5 seconds")),
         );
         expect(Exit.isFailure(requestAfterShutdown)).toBe(true);
+
+        const restartedScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() => Scope.close(restartedScope, Exit.void));
+        yield* Layer.build(
+          productionServerLayer.pipe(Layer.provide(Layer.succeed(ServerConfig, config))),
+        ).pipe(Scope.provide(restartedScope));
+        const restartedState = yield* retryUntil(
+          readPersistedServerRuntimeState(config.serverRuntimeStatePath),
+          Option.isSome,
+          "the restarted production server",
+        );
+        const restartedOrigin = Option.getOrThrow(restartedState).origin;
+        const persistedSnapshot = yield* fetchJson<{
+          readonly snapshotSequence: number;
+          readonly projects: ReadonlyArray<{ readonly id: string }>;
+        }>(`${restartedOrigin}/api/orchestration/shell-snapshot`, {
+          headers: { authorization: ["Bearer", ownerToken].join(" ") },
+        });
+        expect(
+          persistedSnapshot.body.projects.filter((project) => project.id === projectId),
+        ).toHaveLength(1);
+        const replayAfterRestart = yield* fetchJson<{ readonly sequence: number }>(
+          `${restartedOrigin}/api/orchestration/dispatch`,
+          {
+            method: "POST",
+            headers: {
+              authorization: ["Bearer", ownerToken].join(" "),
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              type: "project.create",
+              commandId: CommandId.make("cmd-direct-connect-project-create"),
+              projectId,
+              title: "Direct Connect Project",
+              workspaceRoot: workspaceDir,
+              defaultModelSelection,
+              createdAt: new Date().toISOString(),
+            }),
+          },
+        );
+        expect(replayAfterRestart.body.sequence).toBe(dispatch.body.sequence);
+        const persistedRevocation = yield* Effect.promise(() =>
+          fetch(`${restartedOrigin}/api/orchestration/shell-snapshot`, {
+            headers: { authorization: ["Bearer", registration.credential.token].join(" ") },
+          }),
+        );
+        expect(persistedRevocation.status).toBe(401);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

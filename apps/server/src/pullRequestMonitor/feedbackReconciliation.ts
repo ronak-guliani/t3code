@@ -1,4 +1,5 @@
 import type {
+  PullRequestMonitorActionableEvent,
   PullRequestMonitorActionableEventKind,
   PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
@@ -19,7 +20,11 @@ export interface ReconcilableFeedbackItem {
   readonly stableKey: string;
 }
 
-/** `${kind}:${sourceId ?? detail ?? "na"}` — see eventStableKey in the feedback service. */
+export function feedbackStableKeyOf(event: PullRequestMonitorActionableEvent): string {
+  return `${event.kind}:${event.sourceId ?? event.detail ?? "na"}`;
+}
+
+/** `${kind}:${sourceId ?? detail ?? "na"}` — see feedbackStableKeyOf. */
 export function feedbackSourceIdOf(stableKey: string): string | null {
   const separator = stableKey.indexOf(":");
   if (separator < 0) return null;
@@ -85,8 +90,12 @@ function reconcileChangesRequested(
 function reconcileCheck(
   sourceId: string | null,
   detailName: string | null,
+  observedHeadSha: string | null,
   snapshot: PullRequestMonitorSnapshot,
 ): FeedbackActionability {
+  if (observedHeadSha !== null && observedHeadSha !== snapshot.headSha) {
+    return { kind: "superseded", detail: "check run belongs to an older head" };
+  }
   const atHead = snapshot.checkRuns.filter((check) => check.headSha === snapshot.headSha);
   const byId = sourceId === null ? undefined : atHead.find((check) => check.id === sourceId);
   const candidate =
@@ -116,6 +125,8 @@ export function reconcileFeedbackItem(
   snapshot: PullRequestMonitorSnapshot,
   options?: {
     readonly checkName?: string | null;
+    /** Head the provider finding was observed against, when the finding is head-scoped. */
+    readonly observedHeadSha?: string | null;
     /**
      * Head the item was observed against, supplied only while a claimed fix awaits
      * verification. A moved head is the evidence that a claim was actually pushed.
@@ -130,15 +141,18 @@ export function reconcileFeedbackItem(
     case "changes-requested-review":
       return reconcileChangesRequested(sourceId, snapshot);
     case "check-failed":
-      return reconcileCheck(sourceId, options?.checkName ?? null, snapshot);
+      return reconcileCheck(
+        sourceId,
+        options?.checkName ?? null,
+        options?.observedHeadSha ?? null,
+        snapshot,
+      );
     case "behind-base":
-      // A failed compare proves nothing: never resolve a finding on evidence we did not read.
-      if (!snapshot.completeness.baseComparisonKnown || snapshot.behindBaseBy === null) {
-        return ACTIONABLE;
-      }
-      return snapshot.behindBaseBy > 0
-        ? ACTIONABLE
-        : { kind: "resolved-upstream", detail: "branch is no longer behind base" };
+      return { kind: "superseded", detail: "base distance is informational" };
+    case "merge-conflict":
+      return snapshot.mergeability === "mergeable"
+        ? { kind: "resolved-upstream", detail: "merge conflict resolved" }
+        : ACTIONABLE;
     case "review-finding": {
       // A reviewer-submitted finding has no host state to observe: only new commits can
       // show that a claimed fix landed.

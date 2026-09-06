@@ -11,6 +11,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { Switch } from "../ui/switch";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
   PROJECT_GROUPING_MODE_LABELS,
@@ -23,6 +24,69 @@ interface ProjectRenameDialogProps {
   onTitleChange: (value: string) => void;
   onClose: () => void;
   onSubmit: () => void;
+}
+
+export function ProjectSettingsDialog({
+  target,
+  enabled,
+  saving,
+  onChange,
+  onClose,
+}: {
+  target: SidebarProjectGroupMember | null;
+  enabled: boolean;
+  saving: boolean;
+  onChange: (enabled: boolean) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog
+      open={target !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <DialogPopup className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Project settings</DialogTitle>
+          <DialogDescription>
+            {target?.name}
+            {target?.environmentLabel ? ` (${target.environmentLabel})` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel className="space-y-4">
+          <div className="flex items-center justify-between gap-6">
+            <div className="space-y-1">
+              <label htmlFor="project-auto-pull" className="text-sm font-medium">
+                Automatically pull
+              </label>
+              <p id="project-auto-pull-description" className="text-sm text-muted-foreground">
+                Keeps the default branch current when this checkout has no local changes, local
+                commits, or active agent turns.
+              </p>
+            </div>
+            <Switch
+              id="project-auto-pull"
+              aria-label="Automatically pull"
+              aria-describedby="project-auto-pull-description"
+              checked={enabled}
+              disabled={saving}
+              onCheckedChange={onChange}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Checks at startup and while the checkout is monitored. Uses fast-forward pulls only.
+            Other worktrees are not updated.
+          </p>
+        </DialogPanel>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
 }
 
 export function ProjectRenameDialog({

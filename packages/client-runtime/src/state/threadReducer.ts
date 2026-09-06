@@ -13,6 +13,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 
 export type ThreadDetailReducerResult =
   | { readonly kind: "updated"; readonly thread: OrchestrationThread }
@@ -86,6 +87,8 @@ export function applyThreadDetailEvent(
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          pinnedAt: null,
+          pinOrderKey: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -104,6 +107,7 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           archivedAt: event.payload.archivedAt,
+          titleRegeneration: null,
           updatedAt: event.payload.updatedAt,
         },
       };
@@ -158,6 +162,40 @@ export function applyThreadDetailEvent(
         },
       };
 
+    case "thread.pinned":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinnedAt: event.payload.pinnedAt,
+          ...(event.payload.pinOrderKey !== undefined
+            ? { pinOrderKey: event.payload.pinOrderKey }
+            : {}),
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.unpinned":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinnedAt: null,
+          pinOrderKey: null,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.pin-reordered":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinOrderKey: event.payload.orderKey,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
     case "thread.decoupled":
       return {
         kind: "updated",
@@ -171,6 +209,9 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+          ...(event.payload.titleRegeneration !== undefined
+            ? { titleRegeneration: event.payload.titleRegeneration }
+            : {}),
           ...(event.payload.modelSelection !== undefined
             ? { modelSelection: event.payload.modelSelection }
             : {}),
@@ -523,11 +564,20 @@ export function applyThreadDetailEvent(
     }
 
     // ── Activities ──────────────────────────────────────────────────
-    case "thread.activity-appended": {
+    case "thread.activity-appended":
+    case "thread.child-lifecycle-notified": {
+      const activity =
+        event.type === "thread.activity-appended"
+          ? event.payload.activity
+          : childLifecycleNotificationToActivity({
+              eventId: event.eventId,
+              payload: event.payload,
+              sequence: event.sequence,
+            });
       const activities = pipe(
         thread.activities,
-        Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.filter((entry) => entry.id !== activity.id),
+        Arr.append(activity),
         Arr.sort(activityOrder),
       );
 
@@ -587,11 +637,16 @@ function checkpointStatusToTurnState(
 }
 
 function rebindCheckpointAssistantMessage(
-  checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
+  checkpoints: OrchestrationCheckpointSummary[],
   turnId: TurnId,
   messageId: MessageId,
 ): OrchestrationCheckpointSummary[] {
-  return Arr.map(checkpoints, (entry) =>
+  // Streaming chunks call this per delta; keep the original reference when no
+  // checkpoint matches so downstream identity checks stay stable.
+  if (!checkpoints.some((entry) => entry.turnId === turnId)) {
+    return checkpoints;
+  }
+  return checkpoints.map((entry) =>
     entry.turnId === turnId ? { ...entry, assistantMessageId: messageId } : entry,
   );
 }

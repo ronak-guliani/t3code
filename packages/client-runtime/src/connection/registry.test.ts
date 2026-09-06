@@ -237,6 +237,12 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
       }),
   });
   const cacheStore = Persistence.EnvironmentCacheStore.of({
+    loadServerConfig: () => Effect.succeed(Option.none()),
+    saveServerConfig: () => Effect.void,
+    loadVcsRefs: () => Effect.succeed(Option.none()),
+    saveVcsRefs: () => Effect.void,
+    removeVcsRefs: () => Effect.void,
+    clearVcsRefs: () => Effect.void,
     loadShell: (environmentId) =>
       Ref.get(shellCache).pipe(
         Effect.map((cache) => Option.fromUndefinedOr(cache.get(environmentId))),

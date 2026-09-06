@@ -310,6 +310,49 @@ function makeEvent<T extends OrchestrationEvent["type"]>(
 }
 
 describe("syncServerShellSnapshot", () => {
+  it("preserves auto-pull through hydration and explicit enable/disable events", () => {
+    const thread = makeThread();
+    const updatedAt = "2026-09-05T00:00:00.000Z";
+    let state = syncServerShellSnapshot(
+      makeState(thread),
+      {
+        snapshotSequence: 1,
+        projects: [
+          {
+            id: thread.projectId,
+            title: "Project",
+            workspaceRoot: "/tmp/project",
+            defaultModelSelection: null,
+            scripts: [],
+            autoPull: true,
+            createdAt: updatedAt,
+            updatedAt,
+          },
+        ],
+        threads: [],
+        updatedAt,
+      },
+      localEnvironmentId,
+    );
+    expect(localEnvironmentStateOf(state).projectById[thread.projectId]?.autoPull).toBe(true);
+    for (const [index, autoPull] of [false, true].entries()) {
+      state = applyOrchestrationEvent(
+        state,
+        makeEvent(
+          "project.meta-updated",
+          {
+            projectId: thread.projectId,
+            autoPull,
+            updatedAt,
+          },
+          { sequence: index + 2 },
+        ),
+        localEnvironmentId,
+      );
+      expect(localEnvironmentStateOf(state).projectById[thread.projectId]?.autoPull).toBe(autoPull);
+    }
+  });
+
   it("rebuilds shell indexes while retaining detail slices for threads still in the snapshot", () => {
     const createdAt = "2026-02-13T00:00:00.000Z";
     const updatedAt = "2026-02-13T00:03:00.000Z";
@@ -343,6 +386,10 @@ describe("syncServerShellSnapshot", () => {
     const baseEnvironmentState = localEnvironmentStateOf(baseState);
     const state = withActiveEnvironmentState({
       ...baseEnvironmentState,
+      threadDetailHydratedById: {
+        [keptThread.id]: true,
+        [removedThread.id]: true,
+      },
       threadIds: [keptThread.id, removedThread.id],
       threadIdsByProjectId: {
         [keptThread.projectId]: [keptThread.id, removedThread.id],
@@ -446,6 +493,9 @@ describe("syncServerShellSnapshot", () => {
       baseEnvironmentState.messageIdsByThreadId[keptThread.id],
     );
     expect(nextEnvironmentState.messageIdsByThreadId[removedThread.id]).toBeUndefined();
+    expect(nextEnvironmentState.threadDetailHydratedById).toEqual({
+      [keptThread.id]: true,
+    });
   });
 });
 
@@ -971,6 +1021,9 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.session?.resumeCursor).toEqual(resumeCursor);
     expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
     expect(threadsOf(next)[0]?.hasMoreCurrentTurnActivities).toBe(true);
+    expect(
+      selectEnvironmentState(next, localEnvironmentId).threadDetailHydratedById?.[threadId],
+    ).toBe(true);
   });
 
   it("does not mark bootstrap complete for incremental events", () => {
@@ -2054,8 +2107,10 @@ function activityAppendedEvent(input: {
   kind: string;
   turnId: string;
   payload?: Record<string, unknown>;
+  createdAt?: string;
 }): Extract<OrchestrationEvent, { type: "thread.activity-appended" }> {
-  const occurredAt = new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
+  const occurredAt =
+    input.createdAt ?? new Date(1_700_000_000_000 + input.sequence * 1_000).toISOString();
   return makeEvent(
     "thread.activity-appended",
     {
@@ -2074,6 +2129,132 @@ function activityAppendedEvent(input: {
     { sequence: input.sequence, eventId: EventId.make(`event-${input.sequence}`) },
   );
 }
+
+describe("activity append ordering", () => {
+  it("caps an ordered append without reordering the retained window", () => {
+    const activities = Array.from(
+      { length: 500 },
+      (_unused, index) =>
+        activityAppendedEvent({
+          sequence: index + 1,
+          id: `activity-${index}`,
+          kind: "step",
+          turnId: "turn-1",
+        }).payload.activity,
+    );
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities })),
+      activityAppendedEvent({
+        sequence: 501,
+        id: "activity-500",
+        kind: "step",
+        turnId: "turn-1",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      ...activities.slice(1).map((activity) => activity.id),
+      EventId.make("activity-500"),
+    ]);
+    expect(threadsOf(next)[0]?.hasMoreActivities).toBe(true);
+  });
+
+  it("replaces a duplicate activity and restores comparator ordering", () => {
+    const duplicate = activityAppendedEvent({
+      sequence: 1,
+      id: "activity-duplicate",
+      kind: "step",
+      turnId: "turn-1",
+    }).payload.activity;
+    const later = activityAppendedEvent({
+      sequence: 3,
+      id: "activity-later",
+      kind: "step",
+      turnId: "turn-1",
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [duplicate, later] })),
+      activityAppendedEvent({
+        sequence: 2,
+        id: "activity-duplicate",
+        kind: "step.updated",
+        turnId: "turn-1",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities).toMatchObject([
+      { id: "activity-duplicate", kind: "step.updated" },
+      { id: "activity-later", kind: "step" },
+    ]);
+  });
+
+  it("sorts an out-of-order append using lifecycle and id tie-breaks", () => {
+    const createdAt = "2026-08-17T12:00:00.000Z";
+    const completed = activityAppendedEvent({
+      sequence: 2,
+      id: "activity-completed",
+      kind: "tool.completed",
+      turnId: "turn-1",
+      createdAt,
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [completed] })),
+      activityAppendedEvent({
+        sequence: 1,
+        id: "activity-started",
+        kind: "tool.started",
+        turnId: "turn-1",
+        createdAt,
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      EventId.make("activity-started"),
+      EventId.make("activity-completed"),
+    ]);
+  });
+
+  it("sorts an unsorted restored window before appending a later activity", () => {
+    const later = activityAppendedEvent({
+      sequence: 2,
+      id: "activity-later",
+      kind: "step",
+      turnId: "turn-1",
+      createdAt: "2026-08-17T12:00:02.000Z",
+    }).payload.activity;
+    const earlier = activityAppendedEvent({
+      sequence: 1,
+      id: "activity-earlier",
+      kind: "step",
+      turnId: "turn-1",
+      createdAt: "2026-08-17T12:00:01.000Z",
+    }).payload.activity;
+
+    const next = applyOrchestrationEvent(
+      makeState(makeThread({ activities: [later, earlier] })),
+      activityAppendedEvent({
+        sequence: 3,
+        id: "activity-new-tail",
+        kind: "step",
+        turnId: "turn-1",
+        createdAt: "2026-08-17T12:00:03.000Z",
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities.map((activity) => activity.id)).toEqual([
+      EventId.make("activity-earlier"),
+      EventId.make("activity-later"),
+      EventId.make("activity-new-tail"),
+    ]);
+  });
+});
 
 describe("activity pagination state", () => {
   it("does not offer older current-turn history when live updates only evict prior turns", () => {

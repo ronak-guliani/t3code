@@ -9,13 +9,13 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useShallow } from "zustand/react/shallow";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import { DesktopBrowserRuntime } from "../browser/DesktopBrowserRuntime";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { PreviewAutomationHosts } from "../components/preview/PreviewAutomationHosts";
-import { ElectronBrowserHost } from "../browser/ElectronBrowserHost";
 import {
   SlowRpcAckToastCoordinator,
   WebSocketConnectionCoordinator,
@@ -62,6 +62,7 @@ import {
   collectStaleActiveTurnToastRequests,
   collectThreadCompletionNotifications,
 } from "../threadCompletionNotifications";
+import { reportClientError } from "../lib/clientLogger";
 import {
   findGitHubPullRequestProject,
   INTERNAL_PULL_REQUEST_NAVIGATION_EVENT,
@@ -126,7 +127,6 @@ function RootRouteView() {
         <InternalPullRequestNavigationHandler />
         <DesktopBrowserRuntime authenticated />
         <PreviewAutomationHosts />
-        <ElectronBrowserHost />
         <WebSocketConnectionCoordinator />
         <SlowRpcAckToastCoordinator />
         <WebSocketConnectionSurface>
@@ -193,7 +193,9 @@ function InternalPullRequestNavigationHandler() {
 function ThreadCompletionNotificationCoordinator() {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
-  const environmentStateById = useStore((store) => store.environmentStateById);
+  // Shallow-compare the environment map: these coordinators render null, so
+  // they only need to recompute when an environment entry identity changes.
+  const environmentStateById = useStore(useShallow((store) => store.environmentStateById));
   const notificationMode = useSettings((settings) => settings.threadCompletionNotifications);
   const notifiedTurnKeysRef = useRef(new Set<string>());
   const bootstrappedEnvironmentIdsRef = useRef(new Set<string>());
@@ -236,7 +238,7 @@ function ThreadCompletionNotificationCoordinator() {
     });
     for (const request of requests) {
       void api.notifications.show(request).catch((error) => {
-        console.error("[THREAD_COMPLETION_NOTIFICATION] show failed", error);
+        reportClientError("[THREAD_COMPLETION_NOTIFICATION] show failed", error);
       });
     }
 
@@ -254,7 +256,7 @@ function ThreadCompletionNotificationCoordinator() {
 }
 
 function StaleActiveTurnToastCoordinator() {
-  const environmentStateById = useStore((store) => store.environmentStateById);
+  const environmentStateById = useStore(useShallow((store) => store.environmentStateById));
   const notifiedTurnKeysRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -291,7 +293,7 @@ function parseActiveThreadRouteKey(pathname: string): string | null {
   return `${decodeURIComponent(environmentId)}:${decodeURIComponent(threadId)}`;
 }
 
-function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
+export function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
   const message = errorMessage(error);
   const details = errorDetails(error);
 

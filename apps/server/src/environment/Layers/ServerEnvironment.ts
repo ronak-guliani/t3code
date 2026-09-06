@@ -2,6 +2,11 @@ import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/con
 import { Effect, FileSystem, Layer, Path } from "effect";
 
 import { ServerConfig } from "../../config.ts";
+import {
+  ServerSecretStore,
+  layer as ServerSecretStoreLayer,
+} from "../../auth/ServerSecretStore.ts";
+import { readAgentActivityPublishingActive } from "../../cloud/config.ts";
 import { ServerEnvironment, type ServerEnvironmentShape } from "../Services/ServerEnvironment.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
@@ -34,6 +39,7 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
+  const secrets = yield* ServerSecretStore;
 
   const readPersistedEnvironmentId = Effect.gen(function* () {
     const exists = yield* fileSystem
@@ -66,8 +72,17 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
 
   const environmentId = EnvironmentId.make(environmentIdRaw);
   const cwdBaseName = path.basename(serverConfig.cwd).trim();
+  const configuredLabel = yield* fileSystem.readFileString(serverConfig.environmentLabelPath).pipe(
+    Effect.map((value) => value.trim()),
+    Effect.catch((cause) =>
+      cause.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(cause),
+    ),
+  );
+  const installationLabel = process.env.T3CODE_ENVIRONMENT_LABEL_SUFFIX;
   const label = yield* resolveServerEnvironmentLabel({
     cwdBaseName,
+    configuredLabel,
+    ...(installationLabel === undefined ? {} : { installationLabel }),
   });
 
   const descriptor: ExecutionEnvironmentDescriptor = {
@@ -79,17 +94,32 @@ export const makeServerEnvironment = Effect.fn("makeServerEnvironment")(function
     },
     serverVersion: packageJson.version,
     capabilities: {
+      ownedMobileProtocolVersion: 1,
       repositoryIdentity: true,
-      pullRequests: true,
+      connectionProbe: true,
+      pullRequests: false,
       threadSettlement: true,
       threadSnooze: true,
+      threadPinning: true,
+      threadPinReorder: true,
+      threadTitleRegeneration: true,
     },
   };
 
   return {
     getEnvironmentId: Effect.succeed(environmentId),
-    getDescriptor: Effect.succeed(descriptor),
+    getDescriptor: readAgentActivityPublishingActive(secrets).pipe(
+      Effect.map((agentActivityPublishing) => ({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          agentActivityPublishing,
+        },
+      })),
+    ),
   } satisfies ServerEnvironmentShape;
 });
 
-export const ServerEnvironmentLive = Layer.effect(ServerEnvironment, makeServerEnvironment());
+export const ServerEnvironmentLive = Layer.effect(ServerEnvironment, makeServerEnvironment()).pipe(
+  Layer.provide(ServerSecretStoreLayer),
+);

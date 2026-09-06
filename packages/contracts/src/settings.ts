@@ -4,9 +4,19 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
+import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { AgentWorkflowDestinationMode, ReviewChangesScope } from "./agentWorkflows.ts";
 import { AgentWorkflowSettings, CustomAgentWorkflowAutomationSettings } from "./workflowRuntime.ts";
+import { ThreadEnvMode, EnvironmentMachineKind } from "./environment.ts";
+import {
+  DEFAULT_PREVIEW_APPEARANCE,
+  DEFAULT_PREVIEW_ZOOM_FACTOR,
+  FILL_PREVIEW_VIEWPORT,
+  PreviewAppearancePreference,
+  PreviewViewportSetting,
+  PreviewZoomFactor,
+} from "./preview.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -35,6 +45,35 @@ export const DEFAULT_SIDEBAR_FONT_SIZE: FontSize = 11 as FontSize;
     below the thread title so the title stays the row's anchor. */
 export const DEFAULT_SIDEBAR_META_FONT_SIZE: FontSize = 10 as FontSize;
 export const DEFAULT_INPUT_FONT_SIZE: FontSize = 14 as FontSize;
+
+export const MessagePreviewLineCount = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).check(
+  Schema.isLessThanOrEqualTo(30),
+);
+export type MessagePreviewLineCount = typeof MessagePreviewLineCount.Type;
+
+export interface MessagePreviewLineLimits {
+  readonly normal: MessagePreviewLineCount;
+  readonly crossThread: MessagePreviewLineCount;
+  readonly monitoring: MessagePreviewLineCount;
+}
+
+export const DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS: MessagePreviewLineLimits = {
+  normal: 10 as MessagePreviewLineCount,
+  crossThread: 10 as MessagePreviewLineCount,
+  monitoring: 4 as MessagePreviewLineCount,
+};
+
+export const MessagePreviewLineLimits = Schema.Struct({
+  normal: MessagePreviewLineCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS.normal)),
+  ),
+  crossThread: MessagePreviewLineCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS.crossThread)),
+  ),
+  monitoring: MessagePreviewLineCount.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS.monitoring)),
+  ),
+});
 
 export const SidebarRowSpacing = Schema.Literals(["compact", "default", "relaxed"]);
 export type SidebarRowSpacing = typeof SidebarRowSpacing.Type;
@@ -135,14 +174,51 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
+export const BrowserRecordingFrameRate = Schema.Literals([30, 60]);
+export type BrowserRecordingFrameRate = typeof BrowserRecordingFrameRate.Type;
+export const DEFAULT_BROWSER_RECORDING_FRAME_RATE: BrowserRecordingFrameRate = 30;
+export const DEFAULT_BROWSER_VIEWPORT: PreviewViewportSetting = FILL_PREVIEW_VIEWPORT;
+export const BrowserLinkTarget = Schema.Literals(["system", "app"]);
+export type BrowserLinkTarget = typeof BrowserLinkTarget.Type;
+export const DEFAULT_BROWSER_LINK_TARGET: BrowserLinkTarget = "system";
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  browserDefaultViewport: PreviewViewportSetting.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_VIEWPORT)),
+  ),
+  browserDefaultZoomFactor: PreviewZoomFactor.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PREVIEW_ZOOM_FACTOR)),
+  ),
+  browserDefaultAppearance: PreviewAppearancePreference.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PREVIEW_APPEARANCE)),
+  ),
+  browserLinkTarget: BrowserLinkTarget.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_LINK_TARGET)),
+  ),
+  browserAutoShowFloatingPreview: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  browserRecordingFrameRate: BrowserRecordingFrameRate.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_RECORDING_FRAME_RATE)),
+  ),
+  /** User-created browser profiles; built-ins are synthesized at read time. */
+  browserProfiles: Schema.Array(BrowserProfile).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  /** Profile used for new tabs when a caller does not specify one. */
+  browserDefaultProfileId: BrowserProfileId.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BROWSER_PROFILE_ID)),
+  ),
   chatFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CHAT_FONT_SIZE))),
   statusLineFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_STATUS_LINE_FONT_SIZE)),
   ),
   codeFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_CODE_FONT_SIZE))),
   inputFontSize: FontSize.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_INPUT_FONT_SIZE))),
+  messagePreviewLineLimits: MessagePreviewLineLimits.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_MESSAGE_PREVIEW_LINE_LIMITS)),
+  ),
   sidebarFontSize: FontSize.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_FONT_SIZE)),
   ),
@@ -216,8 +292,7 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 
 // ── Server Settings (server-authoritative) ────────────────────
 
-export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
-export type ThreadEnvMode = typeof ThreadEnvMode.Type;
+export { ThreadEnvMode } from "./environment.ts";
 
 const makeBinaryPathSetting = (fallback: string) =>
   TrimmedString.pipe(
@@ -292,7 +367,19 @@ export const DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS: ChatExportDetailSettings = Sch
 )({});
 
 export const ServerSettings = Schema.Struct({
+  environmentIcon: Schema.NullOr(EnvironmentMachineKind).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sidebarAutoSettleAfterDays: Schema.NullOr(Schema.Number).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  newWorktreesStartFromOrigin: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  sourceControlWritingStyle: Schema.String.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
@@ -471,8 +558,13 @@ export const ProviderInstanceMutation = Schema.Struct({
 export type ProviderInstanceMutation = typeof ProviderInstanceMutation.Type;
 
 export const ServerSettingsPatch = Schema.Struct({
+  sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
+  newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
+  sourceControlWritingStyle: Schema.optionalKey(Schema.String),
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   chatExportDirectory: Schema.optionalKey(Schema.String),
@@ -485,6 +577,8 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
     }),
   ),
+  autoMonitorPullRequestsOnCreate: Schema.optionalKey(Schema.Boolean),
+  autoLaunchPrMonitorFallback: Schema.optionalKey(Schema.Boolean),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
@@ -511,10 +605,19 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
+  browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
+  browserDefaultZoomFactor: Schema.optionalKey(PreviewZoomFactor),
+  browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),
+  browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
+  browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
+  browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
+  browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
   chatFontSize: Schema.optionalKey(FontSize),
   statusLineFontSize: Schema.optionalKey(FontSize),
   codeFontSize: Schema.optionalKey(FontSize),
   inputFontSize: Schema.optionalKey(FontSize),
+  messagePreviewLineLimits: Schema.optionalKey(MessagePreviewLineLimits),
   sidebarFontSize: Schema.optionalKey(FontSize),
   sidebarMetaFontSize: Schema.optionalKey(FontSize),
   sidebarRowSpacing: Schema.optionalKey(SidebarRowSpacing),
@@ -557,3 +660,18 @@ export const ClientSettingsPatch = Schema.Struct({
   uiFont: Schema.optionalKey(UiFont),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
+
+export const MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 1;
+
+export const MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS = 90;
+
+export const SidebarAutoSettleAfterDays = Schema.Number.check(
+  Schema.isBetween({
+    minimum: MIN_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+    maximum: MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS,
+  }),
+);
+
+export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
+
+export const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;

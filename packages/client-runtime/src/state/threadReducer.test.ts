@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   CheckpointRef,
+  CommandId,
   EventId,
   MessageId,
   ProjectId,
@@ -121,8 +122,15 @@ describe("applyThreadDetailEvent", () => {
   });
 
   describe("thread.archived / thread.unarchived", () => {
-    it("sets archivedAt", () => {
-      const result = applyThreadDetailEvent(baseThread, {
+    it("sets archivedAt and clears title regeneration", () => {
+      const regeneratingThread: OrchestrationThread = {
+        ...baseThread,
+        titleRegeneration: {
+          requestId: CommandId.make("regenerate-title"),
+          startedAt: "2026-04-01T02:00:00.000Z",
+        },
+      };
+      const result = applyThreadDetailEvent(regeneratingThread, {
         ...baseEventFields,
         sequence: 3,
         occurredAt: "2026-04-01T03:00:00.000Z",
@@ -139,6 +147,7 @@ describe("applyThreadDetailEvent", () => {
       expect(result.kind).toBe("updated");
       if (result.kind === "updated") {
         expect(result.thread.archivedAt).toBe("2026-04-01T03:00:00.000Z");
+        expect(result.thread.titleRegeneration).toBeNull();
       }
     });
 
@@ -160,6 +169,70 @@ describe("applyThreadDetailEvent", () => {
       expect(result.kind).toBe("updated");
       if (result.kind === "updated") {
         expect(result.thread.archivedAt).toBeNull();
+      }
+    });
+  });
+
+  describe("thread pinning", () => {
+    it("applies pin, reorder, and unpin events", () => {
+      const pinned = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.pinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          pinnedAt: "2026-04-01T05:00:00.000Z",
+          pinOrderKey: "a",
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+      expect(pinned.kind).toBe("updated");
+      if (pinned.kind !== "updated") {
+        return;
+      }
+      expect(pinned.thread).toMatchObject({
+        pinnedAt: "2026-04-01T05:00:00.000Z",
+        pinOrderKey: "a",
+      });
+
+      const reordered = applyThreadDetailEvent(pinned.thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T06:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.pin-reordered",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          orderKey: "b",
+          updatedAt: "2026-04-01T06:00:00.000Z",
+        },
+      });
+      expect(reordered.kind).toBe("updated");
+      if (reordered.kind !== "updated") {
+        return;
+      }
+      expect(reordered.thread.pinOrderKey).toBe("b");
+
+      const unpinned = applyThreadDetailEvent(reordered.thread, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T07:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.unpinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          updatedAt: "2026-04-01T07:00:00.000Z",
+        },
+      });
+      expect(unpinned.kind).toBe("updated");
+      if (unpinned.kind === "updated") {
+        expect(unpinned.thread.pinnedAt).toBeNull();
+        expect(unpinned.thread.pinOrderKey).toBeNull();
       }
     });
   });
@@ -564,6 +637,45 @@ describe("applyThreadDetailEvent", () => {
       if (result.kind === "updated") {
         expect(result.thread.activities).toHaveLength(130);
         expect(result.thread.activities[0]?.id).toBe("activity-0");
+      }
+    });
+  });
+
+  describe("thread.child-lifecycle-notified", () => {
+    it("projects and deduplicates the child lifecycle activity", () => {
+      const event = {
+        ...baseEventFields,
+        eventId: EventId.make("event-child-completed"),
+        sequence: 131,
+        occurredAt: "2026-04-01T12:00:00.000Z",
+        aggregateKind: "thread" as const,
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.child-lifecycle-notified" as const,
+        payload: {
+          parentThreadId: ThreadId.make("thread-1"),
+          childThreadId: ThreadId.make("thread-2"),
+          childTitle: "Release assistant",
+          lifecycle: "completed" as const,
+          dedupeKey: "child:thread-2:completed:turn-2",
+          createdAt: "2026-04-01T12:00:00.000Z",
+        },
+      };
+
+      const projected = applyThreadDetailEvent(baseThread, event);
+      expect(projected.kind).toBe("updated");
+      if (projected.kind !== "updated") return;
+      expect(projected.thread.activities).toEqual([
+        expect.objectContaining({
+          id: "event-child-completed",
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+        }),
+      ]);
+
+      const replayed = applyThreadDetailEvent(projected.thread, event);
+      expect(replayed.kind).toBe("updated");
+      if (replayed.kind === "updated") {
+        expect(replayed.thread.activities).toHaveLength(1);
       }
     });
   });

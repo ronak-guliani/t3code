@@ -78,6 +78,14 @@ import Migration0073 from "./Migrations/073_PullRequestMonitorOwnership.ts";
 import Migration0074 from "./Migrations/074_PullRequestMonitorFallback.ts";
 import Migration0075 from "./Migrations/075_RepairSkippedPullRequestMonitorLedger.ts";
 import Migration0076 from "./Migrations/076_PullRequestMonitorRevisionIdentity.ts";
+import Migration0077 from "./Migrations/077_ProjectionThreadsPinning.ts";
+import Migration0078 from "./Migrations/078_ProjectionThreadTitleRegeneration.ts";
+import Migration0079 from "./Migrations/079_AuthDpopProofKeys.ts";
+import Migration0080 from "./Migrations/080_ChildLifecycleNotifications.ts";
+import Migration0081 from "./Migrations/081_ProjectionThreadActivityBackgroundAgentIndex.ts";
+import Migration0082 from "./Migrations/082_ProjectionReconciliationJobs.ts";
+import Migration0083 from "./Migrations/083_ProjectionThreadMessageSequence.ts";
+import Migration0084 from "./Migrations/084_RepairDivergentProjectAndMessageSchema.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -155,6 +163,14 @@ export const migrationEntries = [
   [74, "PullRequestMonitorFallback", Migration0074],
   [75, "RepairSkippedPullRequestMonitorLedger", Migration0075],
   [76, "PullRequestMonitorRevisionIdentity", Migration0076],
+  [77, "ProjectionThreadsPinning", Migration0077],
+  [78, "ProjectionThreadTitleRegeneration", Migration0078],
+  [79, "AuthDpopProofKeys", Migration0079],
+  [80, "ChildLifecycleNotifications", Migration0080],
+  [81, "ProjectionThreadActivityBackgroundAgentIndex", Migration0081],
+  [82, "ProjectionReconciliationJobs", Migration0082],
+  [83, "ProjectionThreadMessageSequence", Migration0083],
+  [84, "RepairDivergentProjectAndMessageSchema", Migration0084],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

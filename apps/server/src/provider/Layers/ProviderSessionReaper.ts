@@ -5,7 +5,7 @@ import {
   type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { Duration, Effect, Layer, Schedule } from "effect";
+import { Duration, Effect, Layer, Option, Ref, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -17,6 +17,8 @@ import { ProviderService } from "../Services/ProviderService.ts";
 
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const LEGACY_RESTART_PROVIDER_SESSION_ERROR = "Provider session is no longer active.";
+const PROVIDER_SESSION_LOST_ERROR = "Provider session was lost unexpectedly.";
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -87,6 +89,9 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
     );
     const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
+    const startupSweepPending = yield* Ref.make(true);
+    const startupReconciled = yield* Ref.make(false);
+    const startupSweepIncludesInactive = yield* Ref.make(false);
 
     const reconcileOrphanedBackgroundAgents = Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
@@ -125,6 +130,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     });
 
     const sweep = Effect.gen(function* () {
+      const isStartupSweep = yield* Ref.get(startupSweepPending);
+      const includeInactiveDuringStartup = yield* Ref.get(startupSweepIncludesInactive);
       const readModel = yield* orchestrationEngine.getReadModel();
       const threadsById = new Map(readModel.threads.map((thread) => [thread.id, thread] as const));
       const bindings = yield* directory.listBindings();
@@ -148,6 +155,30 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
 
       for (const binding of bindings) {
         const thread = threadsById.get(binding.threadId);
+        if (
+          isStartupSweep &&
+          thread?.session?.status === "interrupted" &&
+          thread.session.activeTurnId === null &&
+          thread.session.lastError === LEGACY_RESTART_PROVIDER_SESSION_ERROR
+        ) {
+          const updatedAt = new Date().toISOString();
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: serverCommandId("provider-session-reaper-clear-legacy-restart-error"),
+            threadId: binding.threadId,
+            session: {
+              ...thread.session,
+              lastError: null,
+              updatedAt,
+            },
+            createdAt: updatedAt,
+          });
+          yield* Effect.logInfo("provider.session.reaper.cleared-legacy-restart-error", {
+            threadId: binding.threadId,
+            provider: binding.provider,
+          });
+          continue;
+        }
         if (thread?.session?.activeTurnId != null) {
           if (activeSessionsByThreadId === null) {
             yield* Effect.logDebug("provider.session.reaper.skipped-active-turn-reconcile", {
@@ -159,8 +190,30 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           }
           const activeSession = activeSessionsByThreadId.get(binding.threadId);
           if (!sessionKeepsTurnActive(activeSession, thread.session.activeTurnId)) {
+            const activeTurnId = thread.session.activeTurnId;
             const updatedAt = new Date().toISOString();
             const lastSeenMs = Date.parse(binding.lastSeenAt);
+            const streamingAssistantMessages = thread.messages.filter(
+              (message) =>
+                message.role === "assistant" &&
+                message.turnId === activeTurnId &&
+                message.streaming,
+            );
+            yield* Effect.forEach(
+              streamingAssistantMessages,
+              (message) =>
+                orchestrationEngine.dispatch({
+                  type: "thread.message.assistant.complete",
+                  commandId: serverCommandId(
+                    "provider-session-reaper-stale-active-turn-assistant-complete",
+                  ),
+                  threadId: binding.threadId,
+                  messageId: message.id,
+                  turnId: activeTurnId,
+                  createdAt: updatedAt,
+                }),
+              { discard: true },
+            );
             yield* orchestrationEngine.dispatch({
               type: "thread.session.set",
               commandId: serverCommandId("provider-session-reaper-stale-active-turn"),
@@ -169,7 +222,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
                 ...thread.session,
                 status: "interrupted",
                 activeTurnId: null,
-                lastError: "Provider session is no longer active.",
+                lastError: isStartupSweep ? null : PROVIDER_SESSION_LOST_ERROR,
                 updatedAt,
               },
               createdAt: updatedAt,
@@ -181,6 +234,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
               idleDurationMs: Number.isNaN(lastSeenMs) ? null : now - lastSeenMs,
               activeProviderSessionStatus: activeSession?.status ?? null,
               activeProviderSessionTurnId: activeSession?.activeTurnId ?? null,
+              reason: isStartupSweep ? "server_restart" : "provider_session_mismatch",
+              finalizedAssistantMessageCount: streamingAssistantMessages.length,
             });
             continue;
           }
@@ -188,6 +243,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             threadId: binding.threadId,
             activeTurnId: thread.session.activeTurnId,
           });
+          continue;
+        }
+
+        if (isStartupSweep && !includeInactiveDuringStartup) {
           continue;
         }
 
@@ -241,27 +300,65 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           totalBindings: bindings.length,
         });
       }
+      if (activeSessionsByThreadId !== null) {
+        yield* Ref.set(startupSweepPending, false);
+      }
+      return activeSessionsByThreadId !== null;
     });
 
-    const start: ProviderSessionReaperShape["start"] = () =>
-      Effect.gen(function* () {
+    const runSweepSafely = (includeInactiveDuringStartup: boolean) =>
+      Ref.set(startupSweepIncludesInactive, includeInactiveDuringStartup).pipe(
+        Effect.andThen(sweep),
+        Effect.catch((error: unknown) =>
+          Effect.logWarning("provider.session.reaper.sweep-failed", {
+            error,
+          }).pipe(Effect.as(false)),
+        ),
+        Effect.catchDefect((defect: unknown) =>
+          Effect.logWarning("provider.session.reaper.sweep-defect", {
+            defect,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+
+    const reconcileStartup: ProviderSessionReaperShape["reconcileStartup"] = Effect.gen(
+      function* () {
         yield* reconcileOrphanedBackgroundAgents.pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("provider.session.reaper.background-reconcile-failed", { cause }),
           ),
         );
+        yield* runSweepSafely(false).pipe(
+          Effect.timeoutOption("30 seconds"),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.logWarning("provider.session.reaper.startup-sweep-timed-out").pipe(
+                  Effect.as(false),
+                ),
+              onSome: Effect.succeed,
+            }),
+          ),
+          Effect.repeat({
+            while: (reconciled) => !reconciled,
+            schedule: Schedule.spaced("100 millis"),
+          }),
+        );
+        yield* Ref.set(startupReconciled, true);
+      },
+    );
+
+    const start: ProviderSessionReaperShape["start"] = () =>
+      Effect.gen(function* () {
+        if (!(yield* Ref.get(startupReconciled))) {
+          yield* reconcileOrphanedBackgroundAgents.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider.session.reaper.background-reconcile-failed", { cause }),
+            ),
+          );
+        }
         yield* Effect.forkScoped(
-          sweep.pipe(
-            Effect.catch((error: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-failed", {
-                error,
-              }),
-            ),
-            Effect.catchDefect((defect: unknown) =>
-              Effect.logWarning("provider.session.reaper.sweep-defect", {
-                defect,
-              }),
-            ),
+          runSweepSafely(true).pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(sweepIntervalMs))),
           ),
         );
@@ -273,6 +370,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       });
 
     return {
+      reconcileStartup,
       start,
     } satisfies ProviderSessionReaperShape;
   });

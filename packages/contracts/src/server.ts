@@ -54,6 +54,8 @@ export const ServerProviderAuth = Schema.Struct({
 export type ServerProviderAuth = typeof ServerProviderAuth.Type;
 
 export const ServerProviderModel = Schema.Struct({
+  isLegacy: Schema.optionalKey(Schema.Boolean),
+  isDefault: Schema.optionalKey(Schema.Boolean),
   slug: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
   shortName: Schema.optional(TrimmedNonEmptyString),
@@ -111,6 +113,7 @@ export class ServerProviderListCommandsError extends Schema.TaggedErrorClass<Ser
 ) {}
 
 export const ServerProviderSkill = Schema.Struct({
+  userInvocable: Schema.optional(Schema.Boolean),
   name: TrimmedNonEmptyString,
   description: Schema.optional(TrimmedNonEmptyString),
   path: TrimmedNonEmptyString,
@@ -147,6 +150,17 @@ export const ServerProviderContinuation = Schema.Struct({
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 
 export const ServerProvider = Schema.Struct({
+  usageLimits: Schema.optional(ServerProviderUsageLimits),
+  workspaceSnapshots: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        cwd: TrimmedNonEmptyString,
+        checkedAt: Schema.optional(IsoDateTime),
+        skills: Schema.Array(ServerProviderSkill),
+        slashCommands: Schema.Array(ServerProviderSlashCommand),
+      }),
+    ),
+  ),
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
   instanceId: ProviderInstanceId,
@@ -269,6 +283,8 @@ export const ServerConfig = Schema.Struct({
   settings: ServerSettings,
   shellResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  threadSnapshotPagination: Schema.optionalKey(Schema.Boolean),
+  lifecycleVersion: Schema.optionalKey(NonNegativeInt),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
@@ -309,6 +325,7 @@ export const ServerConfigUpdatedPayload = Schema.Struct({
 export type ServerConfigUpdatedPayload = typeof ServerConfigUpdatedPayload.Type;
 
 export const ServerConfigKeybindingsUpdatedPayload = Schema.Struct({
+  keybindings: ResolvedKeybindingsConfig,
   issues: ServerConfigIssues,
 });
 export type ServerConfigKeybindingsUpdatedPayload =
@@ -610,3 +627,5 @@ export const ServerSignalProcessResult = Schema.Struct({
   message: Schema.Option(TrimmedNonEmptyString),
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
+
+import { ServerProviderUsageLimits } from "./providerUsageLimits.ts";

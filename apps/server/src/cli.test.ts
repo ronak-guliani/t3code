@@ -2,10 +2,10 @@ import * as NodeHttp from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { NetService } from "@t3tools/shared/Net";
 import {
   ApprovalRequestId,
   CommandId,
@@ -24,6 +24,7 @@ import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/unstable/cli";
 
 import { cli } from "./cli.ts";
+import { CliRuntimeLayerLive } from "./cliRuntime.ts";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "./config.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -46,13 +47,12 @@ import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
+import { runProcess } from "./processRunner.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
-
-const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
 const runCliWithRuntime = (args: ReadonlyArray<string>) =>
-  runCli(args).pipe(Effect.provide(CliRuntimeLayer));
+  runCli(args).pipe(Effect.provide(CliRuntimeLayerLive));
 
 const captureStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -61,7 +61,16 @@ const captureStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       (yield* TestConsole.logLines).findLast((line): line is string => typeof line === "string") ??
       "";
     return { result, output };
-  }).pipe(Effect.provide(Layer.mergeAll(CliRuntimeLayer, TestConsole.layer)));
+  }).pipe(Effect.provide(Layer.mergeAll(CliRuntimeLayerLive, TestConsole.layer)));
+
+const captureExitAndStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const exit = yield* Effect.exit(effect);
+    const output =
+      (yield* TestConsole.logLines).findLast((line): line is string => typeof line === "string") ??
+      "";
+    return { exit, output };
+  }).pipe(Effect.provide(Layer.mergeAll(CliRuntimeLayerLive, TestConsole.layer)));
 
 const makeCliTestServerConfig = (baseDir: string) =>
   Effect.gen(function* () {
@@ -625,7 +634,11 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               baseDir,
             ]),
           );
-          const created = JSON.parse(createdOutput.output) as { readonly threadId: string };
+          const created = JSON.parse(createdOutput.output) as {
+            readonly threadId: string;
+            readonly threadUrl: string;
+          };
+          assert.equal(new URL(created.threadUrl).pathname.split("/").at(-1), created.threadId);
 
           yield* runCliWithRuntime([
             "chat",
@@ -817,7 +830,61 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               baseDir,
             ]),
           );
-          const newChat = JSON.parse(newChatOutput.output) as { readonly threadId: string };
+          const newChat = JSON.parse(newChatOutput.output) as {
+            readonly threadId: string;
+            readonly threadUrl: string;
+          };
+          assert.equal(new URL(newChat.threadUrl).pathname.split("/").at(-1), newChat.threadId);
+
+          const invalidNew = yield* captureExitAndStdout(
+            runCli([
+              "chat",
+              "new",
+              "--project",
+              "missing-project",
+              "--parent",
+              created.threadId,
+              "invalid-prompt",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          assert.equal(invalidNew.exit._tag, "Failure");
+          assert.deepStrictEqual(JSON.parse(invalidNew.output), {
+            status: "failed",
+            threadId: null,
+            threadUrl: null,
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: "VALIDATION_FAILED",
+            message: "No active project found for 'missing-project'.",
+          });
+
+          const dryRun = yield* captureStdout(
+            runCli([
+              "chat",
+              "new",
+              "--project",
+              workspaceRoot,
+              "--parent",
+              created.threadId,
+              "--dry-run",
+              "dry-run-prompt",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          assert.deepStrictEqual(JSON.parse(dryRun.output), {
+            status: "dry-run",
+            threadId: null,
+            threadUrl: null,
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: null,
+            message: "Nested-thread inputs are valid; no thread or workspace was created.",
+          });
 
           const allChatsOutput = yield* captureStdout(
             runCli(["chat", "list", "--base-dir", baseDir]),
@@ -954,6 +1021,83 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             dispatchedThread?.messages.some((message) => message.text === "dispatch-queued-prompt"),
           );
         }),
+      );
+    }),
+  );
+
+  it.effect("resolves workspace paths through the production CLI entrypoint", () =>
+    Effect.gen(function* () {
+      const baseDir = mkdtempSync(join(tmpdir(), "t3-cli-production-runtime-test-"));
+      const workspaceRoot = mkdtempSync(join(tmpdir(), "t3-cli-production-runtime-workspace-"));
+
+      yield* withLiveProjectCliServer(baseDir, () =>
+        Effect.gen(function* () {
+          yield* runCliWithRuntime([
+            "project",
+            "add",
+            workspaceRoot,
+            "--title",
+            "Production Runtime Project",
+            "--base-dir",
+            baseDir,
+          ]);
+          const parentOutput = yield* captureStdout(
+            runCli([
+              "chat",
+              "create",
+              "--project",
+              workspaceRoot,
+              "--title",
+              "Production Runtime Parent",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          const parent = JSON.parse(parentOutput.output) as { readonly threadId: string };
+          const result = yield* Effect.promise(() =>
+            runProcess(
+              process.execPath,
+              [
+                fileURLToPath(new URL("./bin.ts", import.meta.url)),
+                "--log-level",
+                "error",
+                "chat",
+                "new",
+                "--project",
+                workspaceRoot,
+                "--parent",
+                parent.threadId,
+                "--dry-run",
+                "production-runtime-probe",
+                "--base-dir",
+                baseDir,
+              ],
+              {
+                cwd: process.cwd(),
+                allowNonZeroExit: true,
+              },
+            ),
+          );
+
+          assert.equal(result.code, 0, result.stderr);
+          assert.deepStrictEqual(JSON.parse(result.stdout), {
+            status: "dry-run",
+            threadId: null,
+            threadUrl: null,
+            retryable: false,
+            workspaceCreated: false,
+            cleanupPerformed: false,
+            errorCode: null,
+            message: "Nested-thread inputs are valid; no thread or workspace was created.",
+          });
+        }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            rmSync(baseDir, { recursive: true, force: true });
+            rmSync(workspaceRoot, { recursive: true, force: true });
+          }),
+        ),
       );
     }),
   );

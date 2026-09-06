@@ -1,0 +1,16 @@
+{
+  "environmentId": "env-official-ios",
+  "clientId": "mobile-7d4f0ca6-465f-4d9c-b8d7-164cf9872e63",
+  "clientKind": "mobile",
+  "visible": true,
+  "focused": true,
+  "recentlyInteracted": true,
+  "appState": "active",
+  "scopes": [
+    {
+      "type": "provider-status"
+    }
+  ],
+  "ttlMs": 45000,
+  "observedAt": "2026-08-20T00:00:00.000Z"
+}

@@ -8,6 +8,7 @@ import { toPersistenceSqlError } from "../Errors.ts";
 import {
   ProjectionStateRepository,
   type ProjectionStateRepositoryShape,
+  DeleteProjectionStatesExceptInput,
   GetProjectionStateInput,
   ProjectionState,
 } from "../Services/ProjectionState.ts";
@@ -68,6 +69,14 @@ const makeProjectionStateRepository = Effect.gen(function* () {
       `,
   });
 
+  const deleteProjectionStateRowsExcept = SqlSchema.void({
+    Request: DeleteProjectionStatesExceptInput,
+    execute: ({ projectors }) =>
+      projectors.length === 0
+        ? sql`DELETE FROM projection_state`
+        : sql`DELETE FROM projection_state WHERE projector NOT IN ${sql.in(projectors)}`,
+  });
+
   const readMinLastAppliedSequence = SqlSchema.findOne({
     Request: Schema.Void,
     Result: MinLastAppliedSequenceRowSchema,
@@ -94,6 +103,11 @@ const makeProjectionStateRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.listAll:query")),
     );
 
+  const deleteExcept: ProjectionStateRepositoryShape["deleteExcept"] = (input) =>
+    deleteProjectionStateRowsExcept(input).pipe(
+      Effect.mapError(toPersistenceSqlError("ProjectionStateRepository.deleteExcept:query")),
+    );
+
   const minLastAppliedSequence: ProjectionStateRepositoryShape["minLastAppliedSequence"] = () =>
     readMinLastAppliedSequence(undefined).pipe(
       Effect.mapError(
@@ -106,6 +120,7 @@ const makeProjectionStateRepository = Effect.gen(function* () {
     upsert,
     getByProjector,
     listAll,
+    deleteExcept,
     minLastAppliedSequence,
   } satisfies ProjectionStateRepositoryShape;
 });

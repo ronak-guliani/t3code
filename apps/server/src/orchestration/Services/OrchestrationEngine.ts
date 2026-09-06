@@ -11,12 +11,13 @@
  * @module OrchestrationEngineService
  */
 import type {
+  DispatchResult,
   OrchestrationCommand,
   OrchestrationEvent,
   OrchestrationReadModel,
 } from "@t3tools/contracts";
 import { Context } from "effect";
-import type { Effect, Stream } from "effect";
+import type { Effect, PubSub, Scope, Stream } from "effect";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
@@ -53,7 +54,7 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-  ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
+  ) => Effect.Effect<DispatchResult, OrchestrationDispatchError, never>;
 
   /**
    * Serialize worktree binding and cleanup operations to prevent ownership races.
@@ -66,6 +67,20 @@ export interface OrchestrationEngineShape {
    * This is a hot runtime stream (new events only), not a historical replay.
    */
   readonly streamDomainEvents: Stream.Stream<OrchestrationEvent>;
+
+  /**
+   * Attach a scoped subscription to domain events. The subscription is registered
+   * synchronously while this effect yields — events published after it resolves are
+   * guaranteed buffered in the subscription, unlike `streamDomainEvents`, whose
+   * subscription is deferred to the first pull and therefore races with any snapshot
+   * taken after forking it. Consume via `PubSub.take`; the subscription detaches when
+   * the scope closes.
+   */
+  readonly acquireDomainEventSubscription: Effect.Effect<
+    PubSub.Subscription<OrchestrationEvent>,
+    never,
+    Scope.Scope
+  >;
 }
 
 /**

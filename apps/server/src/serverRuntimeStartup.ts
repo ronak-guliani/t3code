@@ -34,10 +34,10 @@ import { ServerSettingsService } from "./serverSettings.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { ServerAuth } from "./auth/Services/ServerAuth.ts";
-import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
 import { readCliDesiredCloudLink } from "./cloud/CliState.ts";
 import { reconcileDesiredCloudLink } from "./cloud/http.ts";
 import { AgentAwarenessRelay } from "./relay/AgentAwarenessRelay.ts";
+import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -333,7 +333,6 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const keybindings = yield* Keybindings;
   const orchestrationReactor = yield* OrchestrationReactor;
-  const providerSessionReaper = yield* ProviderSessionReaper;
   const lifecycleEvents = yield* ServerLifecycleEvents;
   const serverSettings = yield* ServerSettingsService;
   const serverEnvironment = yield* ServerEnvironment;
@@ -393,7 +392,6 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
       "reactors.start",
       Effect.gen(function* () {
         yield* orchestrationReactor.start().pipe(Scope.provide(reactorScope));
-        yield* providerSessionReaper.start().pipe(Scope.provide(reactorScope));
         yield* agentAwarenessRelay.start().pipe(Scope.provide(reactorScope));
       }),
     );
@@ -478,6 +476,8 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
 
       yield* Effect.logDebug("Accepting commands");
       yield* commandGate.signalCommandReady;
+      const autoPull = yield* ProjectAutoPull;
+      yield* Effect.forkScoped(autoPull.start);
       yield* Effect.logDebug("startup phase: waiting for http listener");
       yield* runStartupPhase("http.wait", Deferred.await(httpListening));
       yield* Effect.forkScoped(runStartupPhase("connect.reconcile", reconcileDesiredConnectLink));

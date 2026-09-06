@@ -38,7 +38,7 @@ describe("listServerSkills", () => {
       result.skills
         .find((skill) => skill.id === "code-review")
         ?.installations.map((i) => i.agentId),
-    ).toEqual(["codex", "opencode", "shared"]);
+    ).toEqual(["codex", "copilot-cli", "opencode", "shared"]);
   });
 
   it("merges symlinked installations into one skill", async () => {
@@ -56,6 +56,7 @@ describe("listServerSkills", () => {
     expect(result.skills).toHaveLength(1);
     expect(result.skills[0]?.installations.map((i) => i.source).toSorted()).toEqual([
       "primary",
+      "readable",
       "readable",
       "readable",
       "shared",

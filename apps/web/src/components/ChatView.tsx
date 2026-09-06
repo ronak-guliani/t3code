@@ -89,7 +89,9 @@ import {
 } from "../pendingUserInput";
 import {
   selectExistingThreadKeys,
+  selectEnvironmentState,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadSummaryByRef,
   selectWorkflowRunsForParentThread,
   useStore,
 } from "../store";
@@ -210,6 +212,7 @@ import {
   canStartThreadTurn,
   createThreadPlanCatalogSelector,
   deriveComposerSendState,
+  deriveTimelineWorkState,
   getActivityHistoryKey,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
   LastInvokedScriptByProjectSchema,
@@ -245,7 +248,17 @@ export function shouldClosePreviewMiniPlayer(input: {
   readonly sameTabOpenInPanel: boolean;
   readonly tabExists: boolean;
 }): boolean {
-  return input.sameTabOpenInPanel || (input.hasAuthoritativeServerState && !input.tabExists);
+  return input.hasAuthoritativeServerState && !input.tabExists;
+}
+
+export function shouldRenderPreviewMiniPlayer(input: {
+  readonly floatingTabId: string | null;
+  readonly panelOpen: boolean;
+  readonly panelTabId: string | null;
+}): boolean {
+  return (
+    input.floatingTabId !== null && !(input.panelOpen && input.panelTabId === input.floatingTabId)
+  );
 }
 
 async function ensureRoutableServerThread(threadRef: ScopedThreadRef): Promise<void> {
@@ -538,14 +551,29 @@ const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerminalDra
   onAddTerminalContext,
   onTerminalClosed,
 }: PersistentThreadTerminalDrawerProps) {
-  const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
+  // threadRef may be a fresh object per render; depend on the primitives so
+  // these selectors (and their subscriptions) stay stable.
+  const serverThread = useStore(
+    useMemo(
+      () => createThreadSelectorByRef(threadRef),
+      [threadRef.environmentId, threadRef.threadId],
+    ),
+  );
   const draftThread = useComposerDraftStore((store) => store.getDraftThreadByRef(threadRef));
-  const projectRef = serverThread
-    ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
-    : draftThread
-      ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-      : null;
-  const project = useStore(useMemo(() => createProjectSelectorByRef(projectRef), [projectRef]));
+  const projectRef = useMemo(() => {
+    if (serverThread) {
+      return scopeProjectRef(serverThread.environmentId, serverThread.projectId);
+    }
+    if (draftThread) {
+      return scopeProjectRef(draftThread.environmentId, draftThread.projectId);
+    }
+    return null;
+  }, [serverThread, draftThread]);
+  const projectEnvironmentId = projectRef?.environmentId;
+  const projectProjectId = projectRef?.projectId;
+  const project = useStore(
+    useMemo(() => createProjectSelectorByRef(projectRef), [projectEnvironmentId, projectProjectId]),
+  );
   const terminalState = useTerminalStateStore((state) =>
     selectThreadTerminalState(state.terminalStateByThreadKey, threadRef),
   );
@@ -845,12 +873,28 @@ function ChatViewBody(
       [routeKind, routeThreadRef],
     ),
   );
+  const threadDetailHydrated = useStore(
+    useMemo(
+      () => (state) =>
+        routeKind !== "server" ||
+        Boolean(selectEnvironmentState(state, environmentId).threadDetailHydratedById?.[threadId]),
+      [environmentId, routeKind, threadId],
+    ),
+  );
+  const serverThreadSummary = useStore(
+    useMemo(
+      () => (state) =>
+        selectSidebarThreadSummaryByRef(state, routeKind === "server" ? routeThreadRef : null),
+      [routeKind, routeThreadRef],
+    ),
+  );
   const chatTimelineSectionRef = useRef<ChatTimelineSectionHandle | null>(null);
   const setStoreThreadError = useStore((store) => store.setError);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
   const activeThreadLastVisitedAt = useUiStateStore((store) =>
     routeKind === "server" ? store.threadLastVisitedAtById[routeThreadKey] : undefined,
   );
+  const latestChildNotificationAt = serverThreadSummary?.latestChildNotificationAt;
   const settings = useSettings();
   const setStickyComposerModelSelection = useComposerDraftStore(
     (store) => store.setStickyModelSelection,
@@ -1018,11 +1062,17 @@ function ChatViewBody(
     [mountedTerminalThreadKeys],
   );
 
-  const fallbackDraftProjectRef = draftThread
-    ? scopeProjectRef(draftThread.environmentId, draftThread.projectId)
-    : null;
+  const fallbackDraftProjectRef = useMemo(
+    () => (draftThread ? scopeProjectRef(draftThread.environmentId, draftThread.projectId) : null),
+    [draftThread],
+  );
+  const fallbackDraftProjectEnvironmentId = fallbackDraftProjectRef?.environmentId;
+  const fallbackDraftProjectProjectId = fallbackDraftProjectRef?.projectId;
   const fallbackDraftProject = useStore(
-    useMemo(() => createProjectSelectorByRef(fallbackDraftProjectRef), [fallbackDraftProjectRef]),
+    useMemo(
+      () => createProjectSelectorByRef(fallbackDraftProjectRef),
+      [fallbackDraftProjectEnvironmentId, fallbackDraftProjectProjectId],
+    ),
   );
   const localDraftError =
     routeKind === "server" && serverThread
@@ -1103,11 +1153,18 @@ function ChatViewBody(
     activeThread?.session ?? null,
   );
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
-  const activeProjectRef = activeThread
-    ? scopeProjectRef(activeThread.environmentId, activeThread.projectId)
-    : null;
+  const activeProjectRef = useMemo(
+    () =>
+      activeThread ? scopeProjectRef(activeThread.environmentId, activeThread.projectId) : null,
+    [activeThread],
+  );
+  const activeProjectEnvironmentId = activeProjectRef?.environmentId;
+  const activeProjectProjectId = activeProjectRef?.projectId;
   const activeProject = useStore(
-    useMemo(() => createProjectSelectorByRef(activeProjectRef), [activeProjectRef]),
+    useMemo(
+      () => createProjectSelectorByRef(activeProjectRef),
+      [activeProjectEnvironmentId, activeProjectProjectId],
+    ),
   );
 
   useEffect(() => {
@@ -1311,6 +1368,19 @@ function ChatViewBody(
     serverThread?.environmentId,
     serverThread?.id,
   ]);
+
+  useEffect(() => {
+    if (!serverThread || !latestChildNotificationAt) return;
+    const notificationAt = Date.parse(latestChildNotificationAt);
+    if (Number.isNaN(notificationAt)) return;
+    const lastVisitedAt = activeThreadLastVisitedAt ? Date.parse(activeThreadLastVisitedAt) : NaN;
+    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= notificationAt) return;
+
+    markThreadVisited(
+      scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
+      latestChildNotificationAt,
+    );
+  }, [activeThreadLastVisitedAt, latestChildNotificationAt, markThreadVisited, serverThread]);
 
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
@@ -1558,7 +1628,13 @@ function ChatViewBody(
     threadError: activeThread?.error,
   });
   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
-  const timelineActiveWork = isWorking || !latestTurnSettled;
+  const timelineWorkState = deriveTimelineWorkState({
+    isServerThread: routeKind === "server",
+    threadDetailHydrated,
+    isWorking,
+    latestTurnSettled,
+  });
+  const timelineActiveWork = timelineWorkState.timelineActiveWork;
   const activeWorkStartedAt = deriveActiveWorkStartedAt(
     activeLatestTurn,
     activeThread?.session ?? null,
@@ -1876,7 +1952,6 @@ function ChatViewBody(
     );
     if (floatingPreview) {
       state.openBrowser(activeThreadRef, floatingPreview.tabId);
-      usePreviewMiniPlayerStore.getState().close(activeThreadRef);
       planSidebarDismissedForTurnRef.current =
         activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
       return;
@@ -1895,6 +1970,11 @@ function ChatViewBody(
   const activeBrowserSurface = browserPanel.surfaces.find(
     (surface) => surface.id === browserPanel.activeSurfaceId,
   );
+  const previewMiniPlayerVisible = shouldRenderPreviewMiniPlayer({
+    floatingTabId: activePreviewMiniPlayer?.tabId ?? null,
+    panelOpen: browserPanel.isOpen,
+    panelTabId: activeBrowserSurface?.kind === "preview" ? activeBrowserSurface.resourceId : null,
+  });
   const terminalLabels = useMemo(
     () => terminalLabelsById(terminalState.terminalIds),
     [terminalState.terminalIds],
@@ -2037,10 +2117,13 @@ function ChatViewBody(
     },
     [activeThreadRef],
   );
-  const createBrowserSurface = useCallback(() => {
-    if (!activeThreadRef) return;
-    void addBrowserSurface({ threadRef: activeThreadRef, openPreview });
-  }, [activeThreadRef, openPreview]);
+  const createBrowserSurface = useCallback(
+    (profileId?: string) => {
+      if (!activeThreadRef) return;
+      void addBrowserSurface({ threadRef: activeThreadRef, openPreview, profileId });
+    },
+    [activeThreadRef, openPreview],
+  );
   const toggleInsights = useCallback(() => {
     if (!activeThreadRef) return;
     const state = useRightPanelStore.getState();
@@ -4688,10 +4771,10 @@ function ChatViewBody(
                   turnDiffSummaries={activeThread.turnDiffSummaries ?? []}
                   threadActivities={threadActivities}
                   latestTurn={activeLatestTurn}
-                  latestTurnSettled={latestTurnSettled}
+                  latestTurnSettled={timelineWorkState.latestTurnSettled}
                   sessionActivelyWorking={sessionActivelyWorking}
                   isSendBusy={isSendBusy}
-                  isWorking={isWorking}
+                  isWorking={timelineWorkState.isWorking}
                   timelineActiveWork={timelineActiveWork}
                   activeWorkStartedAt={activeWorkStartedAt}
                   copilotResumeCommand={copilotResumeCommand}
@@ -4702,6 +4785,7 @@ function ChatViewBody(
                   gitCwd={gitCwd ?? undefined}
                   resolvedTheme={resolvedTheme}
                   timestampFormat={timestampFormat}
+                  messagePreviewLineLimits={settings.messagePreviewLineLimits}
                   workspaceRoot={activeWorkspaceRoot}
                   chatFindShortcutLabel={chatFindShortcutLabel}
                   hasMoreOlder={hasMoreOlderActivities}
@@ -4868,7 +4952,7 @@ function ChatViewBody(
                 />
               ) : null}
 
-              {activeThreadRef && activePreviewMiniPlayer ? (
+              {activeThreadRef && activePreviewMiniPlayer && previewMiniPlayerVisible ? (
                 <ThreadPreviewMiniPlayer
                   key={`${activeThreadKey}:${activePreviewMiniPlayer.tabId}`}
                   threadRef={activeThreadRef}
@@ -4891,8 +4975,9 @@ function ChatViewBody(
                 onCloseOthers={closeOtherRightPanelSurfaces}
                 onCloseToRight={closeRightPanelSurfacesToRight}
                 onCloseAll={closeAllRightPanelSurfaces}
+                onClosePanel={closeBrowserPreview}
                 onCopyPath={copyRightPanelFilePath}
-                onAddBrowser={createBrowserSurface}
+                onAddBrowserInProfile={createBrowserSurface}
                 onAddTerminal={addTerminalSurface}
                 onAddFiles={addFilesSurface}
                 onAddDiff={addDiffSurface}
@@ -4932,7 +5017,11 @@ function ChatViewBody(
         {showPanelRail ? <ChatPanelToggles orientation="vertical" {...panelTogglesState} /> : null}
       </div>
       {shouldUseRightPanelSheet && browserPanel.isOpen && activeThreadRef ? (
-        <RightPanelSheet open onClose={closeBrowserPreview}>
+        <RightPanelSheet
+          open
+          underFloatingPreview={previewMiniPlayerVisible}
+          onClose={closeBrowserPreview}
+        >
           <RightPanelTabs
             mode="sheet"
             surfaces={browserPanel.surfaces}
@@ -4944,8 +5033,9 @@ function ChatViewBody(
             onCloseOthers={closeOtherRightPanelSurfaces}
             onCloseToRight={closeRightPanelSurfacesToRight}
             onCloseAll={closeAllRightPanelSurfaces}
+            onClosePanel={closeBrowserPreview}
             onCopyPath={copyRightPanelFilePath}
-            onAddBrowser={createBrowserSurface}
+            onAddBrowserInProfile={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddFiles={addFilesSurface}
             onAddDiff={addDiffSurface}

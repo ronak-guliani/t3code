@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createInterface } from "node:readline";
 import * as fs from "node:fs/promises";
@@ -12,7 +12,14 @@ import { killProcessTree } from "@t3tools/shared/processTree";
 import { ThreadId } from "@t3tools/contracts";
 
 import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
-import { CHAT_NEW_WORKSPACE_CLEANUP_SAFE } from "./cliProtocol.ts";
+import { composeDelegationPrompt, DELEGATION_PROMPT_BLOCKS } from "./delegationPrompt.ts";
+import {
+  decodeNestedThreadBatchCreationOutcome,
+  decodeNestedThreadCreationOutcome,
+  type NestedThreadBatchCreationOutcome,
+  type NestedThreadCreationErrorCode,
+  type NestedThreadCreationOutcome,
+} from "./nestedThreadCreation.ts";
 
 type JsonRpcId = string | number | null;
 
@@ -55,6 +62,9 @@ const MAX_HTTP_REQUEST_BYTES = 1024 * 1024;
 const MAX_SEARCH_RESULTS = 100;
 const MAX_TERMINAL_OUTPUT_BYTES = 64 * 1024;
 const DEFAULT_TERMINAL_TIMEOUT_MS = 30_000;
+const DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY = 4;
+const MAX_NESTED_THREAD_BATCH_CONCURRENCY = 4;
+const MAX_NESTED_THREAD_BATCH_SIZE = 16;
 const WORKSPACE_HANDOFF_CONTINUATION_PROMPT =
   "Continue the task from the previous user request in the newly bound workspace. Do not merely acknowledge the workspace change; proceed with the requested work.";
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", "dist", ".next", ".turbo"]);
@@ -81,6 +91,7 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["switch_workspace", "switch_workspace"],
   ["use_existing_worktree", "switch_workspace"],
   ["create_nested_thread", "create_nested_thread"],
+  ["create_nested_threads", "create_nested_threads"],
   ["send_to_thread", "send_to_thread"],
   ["associate_pull_request", "associate_pull_request"],
 ] as const);
@@ -476,7 +487,7 @@ async function runCommand(
   args: ReadonlyArray<string>,
 ): Promise<TerminalResult> {
   const output = await spawnCommand(root, command, args);
-  const result = JSON.parse(output) as TerminalResult;
+  const result = parseTerminalResult(output, `${command} ${args.join(" ")}`.trim());
   if (result.code !== 0) {
     throw new CommandExecutionError(command, args, result);
   }
@@ -502,16 +513,92 @@ const isDefinitiveCommandRejection = (error: unknown): boolean =>
     output.includes("ORCHESTRATION_COMMAND_REJECTED:"),
   );
 
-const isSafeNestedThreadCleanup = (error: unknown, cleanupToken: string): boolean =>
-  error instanceof CommandExecutionError &&
-  [error.result.stdout, error.result.stderr].some((output) =>
-    output.includes(`${CHAT_NEW_WORKSPACE_CLEANUP_SAFE}${cleanupToken}`),
-  );
+/**
+ * Parse a spawnCommand envelope. spawnCommand always resolves JSON, but a
+ * shared guard keeps malformed payloads as plain Errors (never
+ * CommandExecutionError) so commit-ambiguity classification treats them as
+ * ambiguous rather than definitive rejections.
+ */
+function parseTerminalResult(output: string, context: string): TerminalResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error(`${context} returned a non-JSON result envelope`);
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("code" in parsed) ||
+    !("signal" in parsed) ||
+    !("stdout" in parsed) ||
+    !("stderr" in parsed) ||
+    (parsed.code !== null && typeof parsed.code !== "number") ||
+    (parsed.signal !== null && typeof parsed.signal !== "string") ||
+    typeof parsed.stdout !== "string" ||
+    typeof parsed.stderr !== "string"
+  ) {
+    throw new Error(`${context} returned a malformed result envelope`);
+  }
+  return {
+    code: parsed.code,
+    signal: parsed.signal,
+    stdout: parsed.stdout,
+    stderr: parsed.stderr,
+  };
+}
 
 interface IsolatedWorkspaceSpec {
   readonly branch: string;
   readonly path: string;
   readonly baseRef: string | undefined;
+}
+
+interface WorkspacePreflight {
+  readonly workspace: IsolatedWorkspaceSpec;
+  readonly baseRef: string;
+}
+
+class WorkspaceConflictError extends Error {
+  readonly errorCode: NestedThreadCreationErrorCode;
+
+  constructor(errorCode: NestedThreadCreationErrorCode, message: string) {
+    super(message);
+    this.name = "WorkspaceConflictError";
+    this.errorCode = errorCode;
+  }
+}
+
+class NestedThreadValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NestedThreadValidationError";
+  }
+}
+
+function validateNestedThreadContext(
+  options: McpServeOptions,
+  toolName: string,
+): asserts options is McpServeOptions & {
+  readonly threadId: string;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly runtimeMode: RuntimeMode;
+} {
+  if (!options.threadId) {
+    throw new NestedThreadValidationError(
+      `${toolName} is only available from a T3 provider session`,
+    );
+  }
+  if (!options.runtimeMode) {
+    throw new NestedThreadValidationError(
+      `${toolName} requires an authenticated parent runtime mode`,
+    );
+  }
+  if (!options.providerInstanceId) {
+    throw new NestedThreadValidationError(
+      `${toolName} requires an authenticated parent provider instance`,
+    );
+  }
 }
 
 function parseIsolatedWorkspaceSpec(
@@ -524,9 +611,29 @@ function parseIsolatedWorkspaceSpec(
   }
   return {
     branch,
-    path: requireAbsolutePath(asString(value.path), toolName),
+    path: path.resolve(requireAbsolutePath(asString(value.path), toolName)),
     baseRef: asString(value.baseRef)?.trim() || undefined,
   };
+}
+
+const isMissingPathError = (error: unknown): boolean =>
+  error instanceof Error && "code" in error && error.code === "ENOENT";
+
+async function resolvePathThroughExistingAncestor(targetPath: string): Promise<string> {
+  const suffix: Array<string> = [];
+  let cursor = path.resolve(targetPath);
+  while (true) {
+    try {
+      const resolvedAncestor = await fs.realpath(cursor);
+      return path.join(resolvedAncestor, ...suffix.toReversed());
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw error;
+      suffix.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
 }
 
 async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec): Promise<string> {
@@ -544,6 +651,234 @@ async function createGitWorktree(cwd: string, workspace: IsolatedWorkspaceSpec):
     baseRef,
   ]);
   return baseRef;
+}
+
+async function findExistingAncestor(targetPath: string): Promise<string> {
+  let cursor = path.resolve(targetPath);
+  while (true) {
+    try {
+      await fs.lstat(cursor);
+      return cursor;
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw error;
+      cursor = parent;
+    }
+  }
+}
+
+async function findContainingGitRoot(
+  targetPath: string,
+): Promise<{ readonly path: string; readonly bare: boolean } | null> {
+  let cursor = await findExistingAncestor(targetPath);
+  while (true) {
+    try {
+      await fs.lstat(path.join(cursor, ".git"));
+      return { path: cursor, bare: false };
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const bareMarkers = await Promise.all(
+        ["HEAD", "config", "objects", "refs"].map(async (marker) => {
+          try {
+            await fs.lstat(path.join(cursor, marker));
+            return true;
+          } catch (markerError) {
+            if (isMissingPathError(markerError)) return false;
+            throw markerError;
+          }
+        }),
+      );
+      if (bareMarkers.every(Boolean)) return { path: cursor, bare: true };
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return null;
+      cursor = parent;
+    }
+  }
+}
+
+async function findContainingGitCommonDir(targetPath: string): Promise<string | null> {
+  const gitRoot = await findContainingGitRoot(targetPath);
+  if (gitRoot === null) return null;
+  const result = parseTerminalResult(
+    await spawnCommand(
+      gitRoot.path,
+      "git",
+      gitRoot.bare
+        ? ["--git-dir=.", "rev-parse", "--git-common-dir"]
+        : ["rev-parse", "--git-common-dir"],
+    ),
+    "git rev-parse --git-common-dir",
+  );
+  if (result.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git repository ownership inspection failed for '${gitRoot.path}'. Resolve the repository error before retrying: ${result.stderr.trim() || `exit ${String(result.code)}`}`,
+    );
+  }
+  const commonDir = result.stdout.trim();
+  if (!commonDir) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git repository ownership inspection returned no common directory for '${gitRoot.path}'. Repair the repository before retrying.`,
+    );
+  }
+  return await fs.realpath(
+    path.isAbsolute(commonDir) ? commonDir : path.resolve(gitRoot.path, commonDir),
+  );
+}
+
+const registeredWorktreePaths = (porcelain: string): ReadonlyArray<string> =>
+  porcelain
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => path.resolve(line.slice("worktree ".length)));
+
+async function inspectWorkspaceSideEffects(
+  cwd: string,
+  workspace: IsolatedWorkspaceSpec,
+): Promise<{
+  readonly branchCreated: boolean;
+  readonly pathCreated: boolean;
+  readonly worktreeRegistered: boolean;
+}> {
+  const [pathStat, branchCheck, worktreeList] = await Promise.all([
+    fs.lstat(workspace.path).catch((error) => {
+      if (isMissingPathError(error)) return null;
+      throw error;
+    }),
+    spawnCommand(cwd, "git", ["show-ref", "--verify", "--quiet", `refs/heads/${workspace.branch}`]),
+    runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
+  ]);
+  return {
+    branchCreated: parseTerminalResult(branchCheck, "git show-ref").code === 0,
+    pathCreated: pathStat !== null,
+    worktreeRegistered: registeredWorktreePaths(worktreeList.stdout).includes(workspace.path),
+  };
+}
+
+async function cleanupNestedWorkspace(
+  options: McpServeOptions,
+  workspace: IsolatedWorkspaceSpec,
+): Promise<void> {
+  const sideEffects = await inspectWorkspaceSideEffects(options.cwd, workspace);
+  const failures: Array<string> = [];
+  if (sideEffects.worktreeRegistered) {
+    try {
+      await runCommand(options.cwd, "git", ["worktree", "remove", "--force", workspace.path]);
+    } catch (error) {
+      failures.push(`worktree removal failed: ${toErrorMessage(error)}`);
+    }
+  } else if (sideEffects.pathCreated) {
+    failures.push(
+      `path '${workspace.path}' exists without a matching Git worktree registration and was preserved`,
+    );
+  }
+
+  const afterWorktreeRemoval = await inspectWorkspaceSideEffects(options.cwd, workspace);
+  if (
+    afterWorktreeRemoval.branchCreated &&
+    !afterWorktreeRemoval.pathCreated &&
+    !afterWorktreeRemoval.worktreeRegistered
+  ) {
+    try {
+      await runCommand(options.cwd, "git", ["branch", "--delete", "--force", workspace.branch]);
+    } catch (error) {
+      failures.push(`branch removal failed: ${toErrorMessage(error)}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(failures.join("; "));
+  }
+}
+
+async function preflightGitWorktree(
+  cwd: string,
+  input: IsolatedWorkspaceSpec,
+): Promise<WorkspacePreflight> {
+  const workspace = {
+    ...input,
+    path: await resolvePathThroughExistingAncestor(input.path),
+  };
+  const sourceCommonDir = await resolveGitCommonDir(cwd).catch((error) => {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `The calling workspace is not a usable Git repository: ${toErrorMessage(error)}. Open the parent thread in the repository that should own the child worktree.`,
+    );
+  });
+  const baseRef =
+    workspace.baseRef ?? (await runCommand(cwd, "git", ["branch", "--show-current"])).stdout.trim();
+  if (!baseRef) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BASE_REF_MISSING",
+      "Could not determine a base ref from the detached checkout. Pass workspace.baseRef explicitly.",
+    );
+  }
+
+  const [pathStat, branchFormat, branchCheck, baseRefCheck, worktreeList, containingCommonDir] =
+    await Promise.all([
+      fs.lstat(workspace.path).catch((error) => {
+        if (isMissingPathError(error)) return null;
+        throw error;
+      }),
+      spawnCommand(cwd, "git", ["check-ref-format", "--branch", workspace.branch]),
+      spawnCommand(cwd, "git", [
+        "show-ref",
+        "--verify",
+        "--quiet",
+        `refs/heads/${workspace.branch}`,
+      ]),
+      spawnCommand(cwd, "git", ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]),
+      runCommand(cwd, "git", ["worktree", "list", "--porcelain"]),
+      findContainingGitCommonDir(path.dirname(workspace.path)),
+    ]);
+  const branchFormatResult = parseTerminalResult(branchFormat, "git check-ref-format");
+  if (branchFormatResult.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BRANCH_INVALID",
+      `Workspace branch is not a valid Git branch name: ${workspace.branch}. Choose a valid branch name and retry.`,
+    );
+  }
+  if (pathStat !== null) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PATH_OCCUPIED",
+      `Workspace path is already occupied: ${workspace.path}. Choose an unused absolute path or remove the stale worktree first.`,
+    );
+  }
+  const branchResult = parseTerminalResult(branchCheck, "git show-ref");
+  if (branchResult.code === 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BRANCH_EXISTS",
+      `Workspace branch already exists: ${workspace.branch}. Choose a new branch or remove the stale branch first.`,
+    );
+  }
+  if (branchResult.code !== 1) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PREFLIGHT_FAILED",
+      `Git could not check whether branch '${workspace.branch}' is available. Resolve the repository error and retry: ${branchResult.stderr.trim() || `exit ${String(branchResult.code)}`}`,
+    );
+  }
+  const baseResult = parseTerminalResult(baseRefCheck, "git rev-parse");
+  if (baseResult.code !== 0) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_BASE_REF_MISSING",
+      `Workspace base ref does not resolve to a commit: ${baseRef}. Fetch or choose a valid baseRef and retry.`,
+    );
+  }
+  if (registeredWorktreePaths(worktreeList.stdout).includes(workspace.path)) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_PATH_REGISTERED",
+      `Workspace path is already registered as a Git worktree: ${workspace.path}. Run 'git worktree prune' for a stale registration or remove the registered worktree before retrying.`,
+    );
+  }
+  if (containingCommonDir !== null && containingCommonDir !== sourceCommonDir) {
+    throw new WorkspaceConflictError(
+      "WORKSPACE_REPOSITORY_MISMATCH",
+      `Workspace path resolves inside a different Git repository: ${workspace.path}. Choose a path owned by this repository or a neutral parent directory.`,
+    );
+  }
+
+  return { workspace, baseRef };
 }
 
 async function recordThreadWorkspaceBinding(
@@ -672,104 +1007,566 @@ async function switchWorkspaceTool(
   });
 }
 
-async function createNestedThreadTool(
+interface NestedThreadToolDependencies {
+  readonly beforeWorkspaceRevalidation: () => Promise<void>;
+  readonly createWorkspace: (cwd: string, preflight: WorkspacePreflight) => Promise<void>;
+  readonly cleanupWorkspace: (
+    options: McpServeOptions,
+    workspace: IsolatedWorkspaceSpec,
+  ) => Promise<void>;
+}
+
+const defaultNestedThreadToolDependencies: NestedThreadToolDependencies = {
+  beforeWorkspaceRevalidation: () => Promise.resolve(),
+  createWorkspace: async (cwd, preflight) => {
+    await createGitWorktree(cwd, {
+      ...preflight.workspace,
+      baseRef: preflight.baseRef,
+    });
+  },
+  cleanupWorkspace: cleanupNestedWorkspace,
+};
+
+const serializeNestedThreadOutcome = (outcome: NestedThreadCreationOutcome): string =>
+  JSON.stringify(outcome);
+
+const serializeNestedThreadBatchOutcome = (outcome: NestedThreadBatchCreationOutcome): string =>
+  JSON.stringify(decodeNestedThreadBatchCreationOutcome(outcome));
+
+const nestedThreadFailure = (
+  errorCode: NestedThreadCreationErrorCode,
+  message: string,
+  options: {
+    readonly retryable?: boolean;
+    readonly workspaceCreated?: boolean;
+    readonly cleanupPerformed?: boolean;
+  } = {},
+): NestedThreadCreationOutcome => ({
+  status: "failed",
+  threadId: null,
+  threadUrl: null,
+  retryable: options.retryable ?? false,
+  workspaceCreated: options.workspaceCreated ?? false,
+  cleanupPerformed: options.cleanupPerformed ?? false,
+  errorCode,
+  message,
+});
+
+function cliBoundaryFailure(
+  dryRun: boolean,
+  errorCode: "CLI_EXECUTION_FAILED" | "CLI_RESPONSE_INVALID",
+  detail: string,
+): NestedThreadCreationOutcome {
+  if (dryRun) {
+    return {
+      status: "failed",
+      threadId: null,
+      threadUrl: null,
+      retryable: true,
+      workspaceCreated: false,
+      cleanupPerformed: false,
+      errorCode,
+      message:
+        errorCode === "CLI_RESPONSE_INVALID"
+          ? `Nested-thread validation returned an invalid structured outcome and made no changes: ${detail}`
+          : `Nested-thread validation could not complete and made no changes. Retry after resolving the CLI error: ${detail}`,
+    };
+  }
+  return {
+    status: "ambiguous",
+    threadId: null,
+    threadUrl: null,
+    retryable: false,
+    workspaceCreated: false,
+    cleanupPerformed: false,
+    errorCode,
+    message:
+      errorCode === "CLI_RESPONSE_INVALID"
+        ? `The CLI returned an invalid structured creation outcome. Inspect child threads before retrying: ${detail}`
+        : `The CLI did not return a structured creation outcome. Inspect child threads before retrying: ${detail}`,
+  };
+}
+
+function parseNestedThreadCliOutcome(
+  result: TerminalResult,
+  dryRun: boolean,
+): NestedThreadCreationOutcome {
+  const outcome = decodeNestedThreadCreationOutcome(JSON.parse(result.stdout.trim()) as unknown);
+  const succeeded = result.code === 0;
+  if (
+    (dryRun && succeeded && outcome.status !== "dry-run") ||
+    (dryRun && !succeeded && (outcome.status === "created" || outcome.status === "dry-run")) ||
+    (!dryRun && outcome.status === "dry-run")
+  ) {
+    throw new Error(`CLI outcome status '${outcome.status}' does not match this invocation phase`);
+  }
+  return outcome;
+}
+
+async function invokeNestedThreadCli(
+  options: McpServeOptions,
+  commandArgs: ReadonlyArray<string>,
+  dryRun: boolean,
+): Promise<NestedThreadCreationOutcome> {
+  let result: TerminalResult;
+  try {
+    result = await runCommand(options.cwd, options.cliCommand, commandArgs);
+  } catch (error) {
+    if (error instanceof CommandExecutionError && error.result.stdout.trim()) {
+      try {
+        return parseNestedThreadCliOutcome(error.result, dryRun);
+      } catch {
+        return cliBoundaryFailure(dryRun, "CLI_RESPONSE_INVALID", error.result.stdout.trim());
+      }
+    }
+    return cliBoundaryFailure(dryRun, "CLI_EXECUTION_FAILED", toErrorMessage(error));
+  }
+  try {
+    return parseNestedThreadCliOutcome(result, dryRun);
+  } catch (error) {
+    return cliBoundaryFailure(dryRun, "CLI_RESPONSE_INVALID", toErrorMessage(error));
+  }
+}
+
+function nestedThreadCommandArgs(
+  options: McpServeOptions & {
+    readonly threadId: string;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly runtimeMode: RuntimeMode;
+  },
+  input: {
+    readonly project: string;
+    readonly title: string;
+    readonly prompt: string;
+    readonly model: string;
+    readonly reasoning: string | undefined;
+    readonly workspace: IsolatedWorkspaceSpec | undefined;
+    readonly dryRun: boolean;
+  },
+): ReadonlyArray<string> {
+  return [
+    ...(options.cliArgsPrefix ?? []),
+    "--log-level",
+    "error",
+    "chat",
+    "new",
+    "--project",
+    input.project,
+    "--parent",
+    options.threadId,
+    ...(!input.dryRun
+      ? [
+          "--cross-thread-source",
+          options.threadId,
+          "--cross-thread-capability",
+          issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
+        ]
+      : []),
+    "--provider",
+    options.providerInstanceId,
+    "--model",
+    input.model,
+    ...(input.reasoning ? ["--reasoning", input.reasoning] : []),
+    "--runtime-mode",
+    options.runtimeMode,
+    ...(input.workspace
+      ? ["--branch", input.workspace.branch, "--worktree", input.workspace.path]
+      : []),
+    ...(input.dryRun ? ["--dry-run"] : []),
+    "--title",
+    input.title,
+    input.prompt,
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ];
+}
+
+async function createNestedThreadToolImpl(
   options: McpServeOptions,
   args: Record<string, unknown>,
-): Promise<string> {
-  if (!options.threadId) {
-    throw new Error("create_nested_thread is only available from a T3 provider session");
-  }
+  dependencies: NestedThreadToolDependencies,
+): Promise<NestedThreadCreationOutcome> {
+  validateNestedThreadContext(options, "create_nested_thread");
   const project = asString(args.project)?.trim();
   const title = asString(args.title)?.trim();
   const prompt = asString(args.prompt)?.trim();
   const model = asString(args.model)?.trim();
   const reasoning = asString(args.reasoning)?.trim();
-  if (!project) throw new Error("create_nested_thread requires a non-empty project");
-  if (!title) throw new Error("create_nested_thread requires a non-empty title");
-  if (!prompt) throw new Error("create_nested_thread requires a non-empty prompt");
-  if (!model) throw new Error("create_nested_thread requires a non-empty model");
+  if (args.dryRun !== undefined && typeof args.dryRun !== "boolean") {
+    throw new NestedThreadValidationError("create_nested_thread dryRun must be a boolean");
+  }
+  const dryRun = args.dryRun === true;
+  if (!project)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty project");
+  if (!title)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty title");
+  if (!prompt)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty prompt");
+  if (!model)
+    throw new NestedThreadValidationError("create_nested_thread requires a non-empty model");
 
-  if (!options.runtimeMode) {
-    throw new Error("create_nested_thread requires an authenticated parent runtime mode");
-  }
-  if (!options.providerInstanceId) {
-    throw new Error("create_nested_thread requires an authenticated parent provider instance");
-  }
+  const childPrompt =
+    args.promptTemplate === undefined
+      ? prompt
+      : composeDelegationPrompt(prompt, args.promptTemplate);
 
   let workspace: IsolatedWorkspaceSpec | undefined;
-  const workspaceCleanupToken = randomUUID();
   if (args.workspace !== undefined) {
     if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
-      throw new Error("create_nested_thread workspace must be an object");
+      throw new NestedThreadValidationError("create_nested_thread workspace must be an object");
     }
     const workspaceInput = asRecord(args.workspace);
     if (asString(workspaceInput.mode) !== "isolated") {
-      throw new Error("create_nested_thread workspace mode must be 'isolated'");
-    }
-    workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
-    await createGitWorktree(options.cwd, workspace);
-  }
-
-  const commandArgs = [
-    ...(options.cliArgsPrefix ?? []),
-    "chat",
-    "new",
-    "--project",
-    project,
-    "--parent",
-    options.threadId,
-    "--cross-thread-source",
-    options.threadId,
-    "--cross-thread-capability",
-    issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
-    "--provider",
-    options.providerInstanceId,
-    "--model",
-    model,
-    ...(reasoning ? ["--reasoning", reasoning] : []),
-    "--runtime-mode",
-    options.runtimeMode,
-    ...(workspace
-      ? [
-          "--branch",
-          workspace.branch,
-          "--worktree",
-          workspace.path,
-          "--workspace-cleanup-token",
-          workspaceCleanupToken,
-        ]
-      : []),
-    "--title",
-    title,
-    prompt,
-    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
-  ];
-  let result: TerminalResult;
-  try {
-    result = await runCommand(options.cwd, options.cliCommand, commandArgs);
-  } catch (creationError) {
-    if (!workspace) {
-      throw creationError;
-    }
-    if (!isSafeNestedThreadCleanup(creationError, workspaceCleanupToken)) {
-      throw new Error(
-        `${toErrorMessage(creationError)}\nThe child worktree was preserved because the nested thread may have been created before the response was lost. Inspect child threads under '${options.threadId}' before removing '${workspace.path}'.`,
-        {
-          cause: creationError,
-        },
+      throw new NestedThreadValidationError(
+        "create_nested_thread workspace mode must be 'isolated'",
       );
     }
     try {
-      await rollbackCreatedWorktree(options, workspace.branch, workspace.path);
-    } catch (cleanupError) {
-      throw new Error(
-        `${toErrorMessage(creationError)}\nWorkspace cleanup also failed: ${toErrorMessage(cleanupError)}`,
-        { cause: cleanupError },
+      workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_thread");
+    } catch (error) {
+      throw new NestedThreadValidationError(toErrorMessage(error));
+    }
+  }
+
+  const authenticatedOptions = {
+    ...options,
+    threadId: options.threadId,
+    providerInstanceId: options.providerInstanceId,
+    runtimeMode: options.runtimeMode,
+  };
+  const validationOutcome = await invokeNestedThreadCli(
+    options,
+    nestedThreadCommandArgs(authenticatedOptions, {
+      project,
+      title,
+      prompt: childPrompt,
+      model,
+      reasoning,
+      workspace,
+      dryRun: true,
+    }),
+    true,
+  );
+  if (validationOutcome.status !== "dry-run") {
+    return validationOutcome;
+  }
+
+  if (!workspace) {
+    if (dryRun) return validationOutcome;
+    return await invokeNestedThreadCli(
+      options,
+      nestedThreadCommandArgs(authenticatedOptions, {
+        project,
+        title,
+        prompt: childPrompt,
+        model,
+        reasoning,
+        workspace,
+        dryRun: false,
+      }),
+      false,
+    );
+  }
+
+  const initialPreflight = await preflightGitWorktree(options.cwd, workspace);
+  workspace = initialPreflight.workspace;
+  if (dryRun) {
+    return {
+      ...validationOutcome,
+      message: `Nested-thread and workspace preflight passed for '${workspace.path}'; no changes were made.`,
+    };
+  }
+
+  await dependencies.beforeWorkspaceRevalidation();
+  const finalPreflight = await preflightGitWorktree(options.cwd, workspace);
+  workspace = finalPreflight.workspace;
+  try {
+    await dependencies.createWorkspace(options.cwd, finalPreflight);
+  } catch (error) {
+    let sideEffects: Awaited<ReturnType<typeof inspectWorkspaceSideEffects>>;
+    try {
+      sideEffects = await inspectWorkspaceSideEffects(options.cwd, workspace);
+    } catch (inspectionError) {
+      return {
+        status: "ambiguous",
+        threadId: null,
+        threadUrl: null,
+        retryable: false,
+        workspaceCreated: false,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CREATE_FAILED",
+        message: `Git worktree creation failed and its side effects could not be inspected. Inspect '${workspace.path}' and branch '${workspace.branch}' before retrying. Creation error: ${toErrorMessage(error)}. Inspection error: ${toErrorMessage(inspectionError)}`,
+      };
+    }
+    const workspaceCreated =
+      sideEffects.branchCreated || sideEffects.pathCreated || sideEffects.worktreeRegistered;
+    if (workspaceCreated) {
+      return {
+        status: "ambiguous",
+        threadId: null,
+        threadUrl: null,
+        retryable: false,
+        workspaceCreated: true,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CREATE_FAILED",
+        message: `Git worktree creation failed while branch, path, or registration state appeared concurrently. It was preserved because ownership is ambiguous. Inspect '${workspace.path}' and branch '${workspace.branch}' before retrying: ${toErrorMessage(error)}`,
+      };
+    }
+    return nestedThreadFailure(
+      "WORKSPACE_CREATE_FAILED",
+      `Git worktree creation failed without leaving a branch, path, or registration. Creation can be retried safely: ${toErrorMessage(error)}`,
+      { retryable: true },
+    );
+  }
+
+  const creationOutcome = await invokeNestedThreadCli(
+    options,
+    nestedThreadCommandArgs(authenticatedOptions, {
+      project,
+      title,
+      prompt: childPrompt,
+      model,
+      reasoning,
+      workspace,
+      dryRun: false,
+    }),
+    false,
+  );
+  if (creationOutcome.status === "dry-run") {
+    return cliBoundaryFailure(
+      false,
+      "CLI_RESPONSE_INVALID",
+      "mutating nested-thread creation returned a dry-run outcome",
+    );
+  }
+  if (creationOutcome.status === "created" || creationOutcome.status === "ambiguous") {
+    return { ...creationOutcome, workspaceCreated: true };
+  }
+  const outcomeWithWorkspace = { ...creationOutcome, workspaceCreated: true };
+  if (creationOutcome.threadId !== null) {
+    if (!creationOutcome.cleanupPerformed) return outcomeWithWorkspace;
+    try {
+      const sideEffects = await inspectWorkspaceSideEffects(options.cwd, workspace);
+      if (sideEffects.branchCreated || sideEffects.pathCreated || sideEffects.worktreeRegistered) {
+        return {
+          ...outcomeWithWorkspace,
+          retryable: false,
+          cleanupPerformed: false,
+          message: `${creationOutcome.message} Thread deletion committed, but durable worktree cleanup is still pending. Retry with this branch and path only after dryRun preflight succeeds.`,
+        };
+      }
+      return outcomeWithWorkspace;
+    } catch (error) {
+      return {
+        ...outcomeWithWorkspace,
+        retryable: false,
+        cleanupPerformed: false,
+        errorCode: "WORKSPACE_CLEANUP_FAILED",
+        message: `${creationOutcome.message} Thread deletion committed, but worktree cleanup state could not be verified. Inspect '${workspace.path}' before retrying: ${toErrorMessage(error)}`,
+      };
+    }
+  }
+
+  try {
+    await dependencies.cleanupWorkspace(options, workspace);
+    return {
+      ...outcomeWithWorkspace,
+      retryable: creationOutcome.retryable,
+      cleanupPerformed: true,
+      message: `${creationOutcome.message} The child worktree and branch were removed.`,
+    };
+  } catch (error) {
+    return {
+      ...outcomeWithWorkspace,
+      retryable: false,
+      cleanupPerformed: false,
+      errorCode: "WORKSPACE_CLEANUP_FAILED",
+      message: `${creationOutcome.message} Workspace cleanup also failed; inspect '${workspace.path}' and branch '${workspace.branch}' before retrying: ${toErrorMessage(error)}`,
+    };
+  }
+}
+
+async function createNestedThreadTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+  dependencyOverrides: Partial<NestedThreadToolDependencies> = {},
+): Promise<string> {
+  try {
+    return serializeNestedThreadOutcome(
+      await createNestedThreadToolImpl(options, args, {
+        ...defaultNestedThreadToolDependencies,
+        ...dependencyOverrides,
+      }),
+    );
+  } catch (error) {
+    return serializeNestedThreadOutcome(
+      nestedThreadFailure(
+        error instanceof WorkspaceConflictError ? error.errorCode : "VALIDATION_FAILED",
+        toErrorMessage(error),
+        { retryable: error instanceof WorkspaceConflictError },
+      ),
+    );
+  }
+}
+
+interface BatchWorkspaceIdentity {
+  readonly branchKey: string;
+  readonly pathKey: string;
+}
+
+// Reject case-only variants everywhere so a batch remains portable and cannot race on
+// case-insensitive Git ref stores or filesystems.
+const portableWorkspaceIdentityKey = (value: string): string =>
+  value.normalize("NFC").toLowerCase();
+
+async function batchWorkspaceIdentity(
+  args: Record<string, unknown>,
+): Promise<BatchWorkspaceIdentity | null> {
+  if (args.workspace === undefined) return null;
+  if (!args.workspace || typeof args.workspace !== "object" || Array.isArray(args.workspace)) {
+    throw new NestedThreadValidationError("create_nested_threads workspace must be an object");
+  }
+  const workspaceInput = asRecord(args.workspace);
+  if (asString(workspaceInput.mode) !== "isolated") {
+    throw new NestedThreadValidationError(
+      "create_nested_threads workspace mode must be 'isolated'",
+    );
+  }
+  const workspace = parseIsolatedWorkspaceSpec(workspaceInput, "create_nested_threads");
+  const resolvedPath = await resolvePathThroughExistingAncestor(workspace.path);
+  return {
+    branchKey: portableWorkspaceIdentityKey(workspace.branch),
+    pathKey: portableWorkspaceIdentityKey(resolvedPath),
+  };
+}
+
+const batchItemFailure = (error: unknown): NestedThreadCreationOutcome =>
+  nestedThreadFailure(
+    error instanceof WorkspaceConflictError ? error.errorCode : "VALIDATION_FAILED",
+    toErrorMessage(error),
+    { retryable: error instanceof WorkspaceConflictError },
+  );
+
+async function mapWithConcurrency<T, U>(
+  values: ReadonlyArray<T>,
+  concurrency: number,
+  operation: (value: T, index: number) => Promise<U>,
+): Promise<Array<U>> {
+  const results = Array.from<U>({ length: values.length });
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+      while (nextIndex < values.length) {
+        const index = nextIndex++;
+        results[index] = await operation(values[index] as T, index);
+      }
+    }),
+  );
+  return results;
+}
+
+async function createNestedThreadsTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+  dependencyOverrides: Partial<NestedThreadToolDependencies> = {},
+): Promise<string> {
+  validateNestedThreadContext(options, "create_nested_threads");
+  if (!Array.isArray(args.children)) {
+    throw new NestedThreadValidationError("create_nested_threads requires a children array");
+  }
+  if (args.children.length === 0 || args.children.length > MAX_NESTED_THREAD_BATCH_SIZE) {
+    throw new NestedThreadValidationError(
+      `create_nested_threads children must contain between 1 and ${String(MAX_NESTED_THREAD_BATCH_SIZE)} items`,
+    );
+  }
+  const concurrency = args.concurrency ?? DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY;
+  if (
+    typeof concurrency !== "number" ||
+    !Number.isInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > MAX_NESTED_THREAD_BATCH_CONCURRENCY
+  ) {
+    throw new NestedThreadValidationError(
+      `create_nested_threads concurrency must be an integer between 1 and ${String(MAX_NESTED_THREAD_BATCH_CONCURRENCY)}`,
+    );
+  }
+
+  const children = args.children.map((child) => {
+    if (!child || typeof child !== "object" || Array.isArray(child)) {
+      return null;
+    }
+    return asRecord(child);
+  });
+  const identities = await Promise.all(
+    children.map(async (child) => {
+      if (child === null) return new NestedThreadValidationError("Batch child must be an object");
+      try {
+        return await batchWorkspaceIdentity(child);
+      } catch (error) {
+        return error instanceof Error ? error : new Error(String(error));
+      }
+    }),
+  );
+  const branchIndices = new Map<string, Array<number>>();
+  const pathIndices = new Map<string, Array<number>>();
+  for (const [index, identity] of identities.entries()) {
+    if (identity === null || identity instanceof Error) continue;
+    const branches = branchIndices.get(identity.branchKey) ?? [];
+    branches.push(index);
+    branchIndices.set(identity.branchKey, branches);
+    const paths = pathIndices.get(identity.pathKey) ?? [];
+    paths.push(index);
+    pathIndices.set(identity.pathKey, paths);
+  }
+
+  const collisionMessages = new Map<number, Array<string>>();
+  const recordCollisions = (
+    label: "branch" | "path",
+    collisions: ReadonlyMap<string, ReadonlyArray<number>>,
+  ) => {
+    for (const [value, indices] of collisions) {
+      if (indices.length < 2) continue;
+      for (const index of indices) {
+        const messages = collisionMessages.get(index) ?? [];
+        messages.push(
+          `workspace ${label} '${value}' is also requested by batch item(s) ${indices
+            .filter((otherIndex) => otherIndex !== index)
+            .join(", ")}`,
+        );
+        collisionMessages.set(index, messages);
+      }
+    }
+  };
+  recordCollisions("branch", branchIndices);
+  recordCollisions("path", pathIndices);
+
+  const dependencies = {
+    ...defaultNestedThreadToolDependencies,
+    ...dependencyOverrides,
+  };
+  const outcomes = await mapWithConcurrency(children, concurrency, async (child, index) => {
+    const identity = identities[index];
+    if (identity instanceof Error) return batchItemFailure(identity);
+    if (child === null) {
+      return batchItemFailure(new NestedThreadValidationError("Batch child must be an object"));
+    }
+    const collisions = collisionMessages.get(index);
+    if (collisions) {
+      return nestedThreadFailure(
+        "VALIDATION_FAILED",
+        `Batch item ${String(index)} was not started because its ${collisions.join(" and its ")}. Every item sharing a branch or canonical path is rejected before mutation.`,
+        { retryable: true },
       );
     }
-    throw creationError;
-  }
-  return result.stdout.trim();
+    try {
+      return await createNestedThreadToolImpl(options, child, dependencies);
+    } catch (error) {
+      return batchItemFailure(error);
+    }
+  });
+
+  return serializeNestedThreadBatchOutcome({
+    results: outcomes.map((outcome, index) => ({ index, outcome })),
+  });
 }
 
 async function sendToThreadTool(
@@ -823,6 +1620,138 @@ async function associatePullRequestTool(
   ]);
   return result.stdout.trim();
 }
+
+const NESTED_THREAD_WORKSPACE_INPUT_SCHEMA = {
+  type: "object",
+  description: "Optional isolated checkout created and bound to the child before its first turn.",
+  properties: {
+    mode: { type: "string", enum: ["isolated"] },
+    branch: { type: "string" },
+    path: { type: "string", description: "Absolute path for the child worktree." },
+    baseRef: { type: "string", description: "Optional branch or ref to start from." },
+  },
+  required: ["mode", "branch", "path"],
+  additionalProperties: false,
+} as const;
+
+const NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA = {
+  type: "object",
+  description:
+    "Optional reusable prompt blocks. Only selected blocks are emitted; canonical ordering prevents contradictory layout, while overrides replace one standard block and additions append to it.",
+  properties: {
+    blocks: {
+      type: "array",
+      minItems: 1,
+      uniqueItems: true,
+      items: { type: "string", enum: [...DELEGATION_PROMPT_BLOCKS] },
+      description:
+        "Prompt blocks to compose. investigation-only conflicts with implementation, commit, and push-and-create-pr.",
+    },
+    repository: {
+      type: "object",
+      properties: {
+        context: { type: "string", minLength: 1 },
+        instructionFiles: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    validation: {
+      type: "object",
+      description: "Required when the validation block is selected.",
+      properties: {
+        commands: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      required: ["commands"],
+      additionalProperties: false,
+    },
+    commit: {
+      type: "object",
+      properties: {
+        requirements: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    pullRequest: {
+      type: "object",
+      properties: {
+        requirements: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    reporting: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          minItems: 1,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+      additionalProperties: false,
+    },
+    overrides: {
+      type: "object",
+      description: "Replacement text keyed by a selected block.",
+      properties: Object.fromEntries(
+        DELEGATION_PROMPT_BLOCKS.map((block) => [block, { type: "string", minLength: 1 }]),
+      ),
+      additionalProperties: false,
+    },
+    additions: {
+      type: "object",
+      description: "Additional bullet items keyed by a selected block.",
+      properties: Object.fromEntries(
+        DELEGATION_PROMPT_BLOCKS.map((block) => [
+          block,
+          {
+            type: "array",
+            minItems: 1,
+            items: { type: "string", minLength: 1 },
+          },
+        ]),
+      ),
+      additionalProperties: false,
+    },
+  },
+  required: ["blocks"],
+  additionalProperties: false,
+} as const;
+
+const NESTED_THREAD_INPUT_PROPERTIES = {
+  project: { type: "string", description: "Project id, title, or workspace root." },
+  title: { type: "string" },
+  prompt: { type: "string" },
+  promptTemplate: NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA,
+  model: {
+    type: "string",
+    minLength: 1,
+    description: "Any model slug available through the authenticated Copilot provider.",
+  },
+  reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
+  dryRun: {
+    type: "boolean",
+    description: "Validate the request and workspace preflight without making changes.",
+  },
+  workspace: NESTED_THREAD_WORKSPACE_INPUT_SCHEMA,
+} as const;
+
+const NESTED_THREAD_REQUIRED_INPUTS = ["project", "title", "prompt", "model"] as const;
 
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
@@ -957,34 +1886,40 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "create_nested_thread",
     description:
-      "Create and start a helper thread nested under the current T3 thread. When the child needs an isolated checkout, pass workspace here so T3 creates and binds the child before its first turn without moving the parent. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+      "Create and start a helper thread nested under the current T3 thread. Every result includes status, threadId, threadUrl, retryable, workspaceCreated, cleanupPerformed, errorCode, and message. When the child needs an isolated checkout, pass workspace here so T3 validates ownership and collisions, revalidates for races, then creates and binds the child before its first turn without moving the parent. Set dryRun to validate without mutation. Always call this tool before any child workspace operation; do not use terminal-based `t3 chat new` for delegation.",
+    inputSchema: {
+      type: "object",
+      properties: NESTED_THREAD_INPUT_PROPERTIES,
+      required: NESTED_THREAD_REQUIRED_INPUTS,
+    },
+  },
+  {
+    name: "create_nested_threads",
+    description:
+      "Create and start multiple sibling helper threads under the authenticated current T3 thread. Returns one indexed NestedThreadCreationOutcome per child in input order, including partial failures. Runs at most four creations concurrently. Every item sharing a workspace branch or canonical path with another batch item is rejected before mutation; other items continue. Never retry a non-retryable or ambiguous item.",
     inputSchema: {
       type: "object",
       properties: {
-        project: { type: "string", description: "Project id, title, or workspace root." },
-        title: { type: "string" },
-        prompt: { type: "string" },
-        model: {
-          type: "string",
-          minLength: 1,
-          description: "Any model slug available through the authenticated Copilot provider.",
-        },
-        reasoning: { type: "string", enum: ["low", "medium", "high", "xhigh"] },
-        workspace: {
-          type: "object",
-          description:
-            "Optional isolated checkout created and bound to the child before its first turn.",
-          properties: {
-            mode: { type: "string", enum: ["isolated"] },
-            branch: { type: "string" },
-            path: { type: "string", description: "Absolute path for the child worktree." },
-            baseRef: { type: "string", description: "Optional branch or ref to start from." },
+        children: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_NESTED_THREAD_BATCH_SIZE,
+          items: {
+            type: "object",
+            properties: NESTED_THREAD_INPUT_PROPERTIES,
+            required: NESTED_THREAD_REQUIRED_INPUTS,
+            additionalProperties: false,
           },
-          required: ["mode", "branch", "path"],
-          additionalProperties: false,
+        },
+        concurrency: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_NESTED_THREAD_BATCH_CONCURRENCY,
+          default: DEFAULT_NESTED_THREAD_BATCH_CONCURRENCY,
+          description: "Maximum number of child creations in flight.",
         },
       },
-      required: ["project", "title", "prompt", "model"],
+      required: ["children"],
     },
   },
   {
@@ -1021,6 +1956,12 @@ function availableTools(toolsets: ReadonlySet<string>): ReadonlyArray<McpTool> {
   return ALL_TOOLS.filter((tool) => toolsets.has(tool.name));
 }
 
+export function fingerprintMcpToolContract(toolsets: ReadonlySet<string>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(availableTools(toolsets)))
+    .digest("hex");
+}
+
 async function callTool(options: McpServeOptions, name: string, args: Record<string, unknown>) {
   if (!options.toolsets.has(name)) {
     throw new Error(`MCP tool is not enabled: ${name}`);
@@ -1053,6 +1994,8 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await switchWorkspaceTool(options, args);
     case "create_nested_thread":
       return await createNestedThreadTool(options, args);
+    case "create_nested_threads":
+      return await createNestedThreadsTool(options, args);
     case "send_to_thread":
       return await sendToThreadTool(options, args);
     case "associate_pull_request":
@@ -1126,7 +2069,30 @@ async function serveMcp(options: McpServeOptions): Promise<void> {
     if (!trimmed) {
       continue;
     }
-    await handleRequest(options, JSON.parse(trimmed) as JsonRpcRequest);
+    let request: JsonRpcRequest;
+    try {
+      request = JSON.parse(trimmed) as JsonRpcRequest;
+    } catch {
+      // A malformed line must not kill the stdio server; answer with a
+      // parse error and keep serving subsequent requests.
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Malformed JSON-RPC line" },
+      });
+      continue;
+    }
+    if (typeof request !== "object" || request === null || Array.isArray(request)) {
+      // Valid JSON but not a request object (e.g. `null`): handleRequest reads
+      // request.id before its try block, so reject here instead of crashing.
+      writeMessage({
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid JSON-RPC request" },
+      });
+      continue;
+    }
+    await handleRequest(options, request);
   }
 }
 
@@ -1140,7 +2106,12 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
       cliArgsPrefix: (() => {
         const raw = process.env.T3_MCP_CLI_ARGS_PREFIX?.trim();
         if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          throw new Error("T3_MCP_CLI_ARGS_PREFIX must be a JSON array of strings");
+        }
         if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
           throw new Error("T3_MCP_CLI_ARGS_PREFIX must be a JSON array of strings");
         }
@@ -1153,8 +2124,10 @@ export const runMcpServer = (input: { readonly cwd: string; readonly toolsets?: 
 export const __testing = {
   associatePullRequestTool,
   availableTools,
+  cleanupNestedWorkspace,
   createIsolatedWorkspaceTool,
   createNestedThreadTool,
+  createNestedThreadsTool,
   sendToThreadTool,
   switchWorkspaceTool,
 };

@@ -7,7 +7,7 @@ import {
   EnvironmentCloudEndpointUnavailableError,
   EnvironmentCloudLinkStateResult,
   EnvironmentCloudRelayConfigResult,
-  EnvironmentHttpApi,
+  EnvironmentConnectHttpApi,
   EnvironmentHttpBadRequestError,
   EnvironmentHttpConflictError,
   EnvironmentHttpInternalServerError,
@@ -46,12 +46,14 @@ import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
@@ -1106,8 +1108,10 @@ const cloudMintCredentialHandler = Effect.fn("environment.cloud.mintCredential")
   ),
 );
 
+const ConnectHttpApi = HttpApi.make("connect").add(EnvironmentConnectHttpApi);
+
 export const connectHttpApiLayer = HttpApiBuilder.group(
-  EnvironmentHttpApi,
+  ConnectHttpApi,
   "connect",
   Effect.fnUntraced(function* (handlers) {
     const dependencies = yield* cloudHttpDependencies;
@@ -1123,4 +1127,8 @@ export const connectHttpApiLayer = HttpApiBuilder.group(
         traceRelayRequest(cloudMintCredentialHandler(dependencies, payload)),
       );
   }),
+);
+
+export const connectHttpApiRoutesLayer = HttpApiBuilder.layer(ConnectHttpApi).pipe(
+  Layer.provideMerge(connectHttpApiLayer),
 );

@@ -9,6 +9,8 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+
 import {
   buildTailscaleHttpsBaseUrl,
   disableTailscaleServe,
@@ -64,20 +66,24 @@ function neverFinishingMockHandle() {
 }
 
 function mockSpawnerLayer(
+  platform: NodeJS.Platform,
   handler: (
     command: string,
     args: ReadonlyArray<string>,
   ) => { stdout?: string; stderr?: string; code?: number },
 ) {
-  return Layer.succeed(
-    ChildProcessSpawner.ChildProcessSpawner,
-    ChildProcessSpawner.make((command) => {
-      const childProcess = command as unknown as {
-        readonly command: string;
-        readonly args: ReadonlyArray<string>;
-      };
-      return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
-    }),
+  return Layer.mergeAll(
+    Layer.succeed(HostProcessPlatform, platform),
+    Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        const childProcess = command as unknown as {
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+        };
+        return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
+      }),
+    ),
   );
 }
 
@@ -169,7 +175,7 @@ describe("tailscale", () => {
   );
 
   it.effect("reads tailscale status through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["status", "--json"]);
       return {
@@ -186,7 +192,17 @@ describe("tailscale", () => {
     });
   });
 
-  it.effect("preserves tailscale spawn failures as causes", () => {
+  it.effect("uses the executable suffix required by Windows direct spawning", () => {
+    const layer = mockSpawnerLayer("win32", (command, args) => {
+      assert.equal(command, "tailscale.exe");
+      assert.deepEqual(args, ["status", "--json"]);
+      return { stdout: tailscaleStatusWithSingleIpJson };
+    });
+
+    return readTailscaleStatus.pipe(Effect.provide(layer));
+  });
+
+  it.effect("preserves Windows tailscale spawn failures as causes", () => {
     const systemCause = new Error("private executable lookup detail");
     const cause = PlatformError.systemError({
       _tag: "NotFound",
@@ -194,16 +210,19 @@ describe("tailscale", () => {
       method: "spawn",
       cause: systemCause,
     });
-    const layer = Layer.succeed(
-      ChildProcessSpawner.ChildProcessSpawner,
-      ChildProcessSpawner.make(() => Effect.fail(cause)),
+    const layer = Layer.mergeAll(
+      Layer.succeed(HostProcessPlatform, "win32"),
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() => Effect.fail(cause)),
+      ),
     );
 
     return Effect.gen(function* () {
       const error = yield* readTailscaleStatus.pipe(Effect.flip, Effect.provide(layer));
 
       assert.instanceOf(error, TailscaleCommandSpawnError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, "tailscale.exe");
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.strictEqual(error.cause, cause);
@@ -213,7 +232,7 @@ describe("tailscale", () => {
   });
 
   it.effect("keeps nonzero exit diagnostics structured", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = mockSpawnerLayer("linux", () => ({
       code: 7,
       stderr: "not logged in tskey-auth-secret-token-value",
     }));
@@ -235,9 +254,10 @@ describe("tailscale", () => {
     });
   });
 
-  it.effect("times out tailscale status through TestClock", () => {
-    const layer = Layer.merge(
+  it.effect("times out Windows tailscale status through TestClock", () => {
+    const layer = Layer.mergeAll(
       TestClock.layer(),
+      Layer.succeed(HostProcessPlatform, "win32"),
       Layer.succeed(
         ChildProcessSpawner.ChildProcessSpawner,
         ChildProcessSpawner.make(() => Effect.succeed(neverFinishingMockHandle())),
@@ -251,7 +271,7 @@ describe("tailscale", () => {
       const error = yield* Fiber.join(fiber);
 
       assert.instanceOf(error, TailscaleCommandTimeoutError);
-      assert.equal(error.executable, "tailscale");
+      assert.equal(error.executable, "tailscale.exe");
       assert.equal(error.subcommand, "status");
       assert.equal(error.argumentCount, 2);
       assert.equal(error.timeoutMs, 1_500);
@@ -261,7 +281,7 @@ describe("tailscale", () => {
   });
 
   it.effect("configures tailscale serve through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "--bg", "--https=8443", "http://127.0.0.1:13773"]);
       return {};
@@ -271,7 +291,7 @@ describe("tailscale", () => {
   });
 
   it.effect("reads tailscale serve port occupancy through the process spawner service", () => {
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "status", "--json"]);
       return { stdout: '{"TCP":{"8443":{"HTTPS":true}}}' };
@@ -283,7 +303,7 @@ describe("tailscale", () => {
   });
 
   it.effect("retains tailscale serve exit diagnostics", () => {
-    const layer = mockSpawnerLayer(() => ({
+    const layer = mockSpawnerLayer("linux", () => ({
       code: 1,
       stderr: "serve permission denied tskey-auth-secret-token-value",
     }));
@@ -311,7 +331,7 @@ describe("tailscale", () => {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
     }[] = [];
-    const layer = mockSpawnerLayer((command, args) => {
+    const layer = mockSpawnerLayer("linux", (command, args) => {
       commands.push({ command, args });
       assert.equal(command, "tailscale");
       assert.deepEqual(args, ["serve", "--https=8443", "off"]);

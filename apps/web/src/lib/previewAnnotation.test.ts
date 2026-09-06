@@ -1,9 +1,10 @@
 import type { PreviewAnnotationPayload } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   appendPreviewAnnotationPrompt,
   buildPreviewAnnotationPrompt,
+  capturePreviewAnnotationScreenshot,
   extractTrailingPreviewAnnotation,
 } from "./previewAnnotation";
 
@@ -52,6 +53,45 @@ describe("preview annotations", () => {
     expect(result).toContain("1 drawing");
     expect(result).toContain("border-radius: 4px → 16px");
     expect(result).toContain("attached screenshot");
+  });
+
+  describe("preview annotation capture", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it("returns the crop when conversion succeeds", async () => {
+      vi.stubGlobal("fetch", async () => new Response(new Blob(["png"], { type: "image/png" })));
+
+      expect(await capturePreviewAnnotationScreenshot(annotation)).toMatchObject({
+        status: "captured",
+      });
+    });
+
+    it("reports none when the annotation has no screenshot", async () => {
+      expect(await capturePreviewAnnotationScreenshot({ ...annotation, screenshot: null })).toEqual(
+        { status: "none" },
+      );
+    });
+
+    it("settles as failed when conversion never resolves", async () => {
+      vi.useFakeTimers();
+      vi.stubGlobal("fetch", () => new Promise<Response>(() => {}));
+
+      const capturePromise = capturePreviewAnnotationScreenshot(annotation, 1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(await capturePromise).toEqual({ status: "failed" });
+    });
+
+    it("settles as failed when conversion throws", async () => {
+      vi.stubGlobal("fetch", async () => {
+        throw new Error("unreadable data URL");
+      });
+
+      expect(await capturePreviewAnnotationScreenshot(annotation)).toEqual({ status: "failed" });
+    });
   });
 
   it("appends to an existing composer prompt", () => {

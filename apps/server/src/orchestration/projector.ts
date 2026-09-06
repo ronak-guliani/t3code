@@ -5,6 +5,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import { Effect, Schema } from "effect";
 
 import { toProjectorDecodeError, type OrchestrationProjectorDecodeError } from "./Errors.ts";
@@ -15,6 +16,7 @@ import {
   ProjectDeletedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
+  ThreadChildLifecycleNotifiedPayload,
   ThreadArchivedPayload,
   ThreadCreatedPayload,
   ThreadDecoupledPayload,
@@ -35,6 +37,9 @@ import {
   ThreadUnarchivedPayload,
   ThreadUnsettledPayload,
   ThreadUnsnoozedPayload,
+  ThreadPinnedPayload,
+  ThreadUnpinnedPayload,
+  ThreadPinReorderedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
   ThreadTurnDiffCompletedPayload,
@@ -46,9 +51,9 @@ import {
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
-const MAX_THREAD_MESSAGES = 2_000;
+export const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
-const MAX_THREAD_ACTIVITIES = 500;
+export const MAX_THREAD_ACTIVITIES = 500;
 
 function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "speculative" | "error") {
   if (status === "error") return "error" as const;
@@ -214,6 +219,38 @@ function compareThreadActivities(
   return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
+function appendThreadActivity(
+  thread: OrchestrationThread,
+  activity: OrchestrationThread["activities"][number],
+): Array<OrchestrationThread["activities"][number]> {
+  const tailActivity = thread.activities.at(-1);
+  let canAppendInOrder =
+    tailActivity === undefined || compareThreadActivities(tailActivity, activity) <= 0;
+  if (canAppendInOrder) {
+    let previousActivity: OrchestrationThread["activities"][number] | undefined;
+    for (const existingActivity of thread.activities) {
+      if (
+        existingActivity.id === activity.id ||
+        (previousActivity !== undefined &&
+          compareThreadActivities(previousActivity, existingActivity) > 0)
+      ) {
+        canAppendInOrder = false;
+        break;
+      }
+      previousActivity = existingActivity;
+    }
+  }
+
+  if (canAppendInOrder) {
+    const activities = thread.activities.slice(1 - MAX_THREAD_ACTIVITIES);
+    activities.push(activity);
+    return activities;
+  }
+  return [...thread.activities.filter((entry) => entry.id !== activity.id), activity]
+    .toSorted(compareThreadActivities)
+    .slice(-MAX_THREAD_ACTIVITIES);
+}
+
 export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
@@ -244,6 +281,7 @@ export function projectEvent(
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModelSelection: payload.defaultModelSelection,
+            autoPull: false,
             scripts: payload.scripts,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -277,6 +315,7 @@ export function projectEvent(
                     ? { defaultModelSelection: payload.defaultModelSelection }
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
+                  ...(payload.autoPull !== undefined ? { autoPull: payload.autoPull } : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,
@@ -341,6 +380,8 @@ export function projectEvent(
             settledAt: null,
             snoozedUntil: null,
             snoozedAt: null,
+            pinnedAt: null,
+            pinOrderKey: null,
             deletedAt: null,
             messages: [],
             queuedTurns: [],
@@ -377,6 +418,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            titleRegeneration: null,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -441,6 +483,41 @@ export function projectEvent(
         })),
       );
 
+    case "thread.pinned":
+      return decodeForEvent(ThreadPinnedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: payload.pinnedAt,
+            ...(payload.pinOrderKey !== undefined ? { pinOrderKey: payload.pinOrderKey } : {}),
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.unpinned":
+      return decodeForEvent(ThreadUnpinnedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: null,
+            pinOrderKey: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.pin-reordered":
+      return decodeForEvent(ThreadPinReorderedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinOrderKey: payload.orderKey,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
     case "thread.decoupled":
       return decodeForEvent(ThreadDecoupledPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
@@ -458,6 +535,9 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             ...(payload.title !== undefined ? { title: payload.title } : {}),
+            ...(payload.titleRegeneration !== undefined
+              ? { titleRegeneration: payload.titleRegeneration }
+              : {}),
             ...(payload.modelSelection !== undefined
               ? { modelSelection: payload.modelSelection }
               : {}),
@@ -681,6 +761,7 @@ export function projectEvent(
               ? {
                   ...queuedTurn,
                   message: { ...queuedTurn.message, text: payload.text },
+                  ...(payload.origin !== undefined ? { origin: payload.origin } : {}),
                   updatedAt: payload.updatedAt,
                   failedAt: null,
                   failureMessage: null,
@@ -946,42 +1027,37 @@ export function projectEvent(
             return nextBase;
           }
 
-          const tailActivity = thread.activities.at(-1);
-          let canAppendInOrder =
-            tailActivity === undefined ||
-            compareThreadActivities(tailActivity, payload.activity) <= 0;
-          if (canAppendInOrder) {
-            let previousActivity: OrchestrationThread["activities"][number] | undefined;
-            for (const activity of thread.activities) {
-              if (
-                activity.id === payload.activity.id ||
-                (previousActivity !== undefined &&
-                  compareThreadActivities(previousActivity, activity) > 0)
-              ) {
-                canAppendInOrder = false;
-                break;
-              }
-              previousActivity = activity;
-            }
-          }
-
-          let activities: Array<OrchestrationThread["activities"][number]>;
-          if (canAppendInOrder) {
-            activities = thread.activities.slice(1 - MAX_THREAD_ACTIVITIES);
-            activities.push(payload.activity);
-          } else {
-            activities = [
-              ...thread.activities.filter((entry) => entry.id !== payload.activity.id),
-              payload.activity,
-            ]
-              .toSorted(compareThreadActivities)
-              .slice(-MAX_THREAD_ACTIVITIES);
-          }
-
           return {
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
-              activities,
+              activities: appendThreadActivity(thread, payload.activity),
+              updatedAt: event.occurredAt,
+            }),
+          };
+        }),
+      );
+
+    case "thread.child-lifecycle-notified":
+      return decodeForEvent(
+        ThreadChildLifecycleNotifiedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const parent = nextBase.threads.find((entry) => entry.id === payload.parentThreadId);
+          if (!parent) {
+            return nextBase;
+          }
+          const activity = childLifecycleNotificationToActivity({
+            eventId: event.eventId,
+            payload,
+            sequence: event.sequence,
+          });
+          return {
+            ...nextBase,
+            threads: updateThread(nextBase.threads, payload.parentThreadId, {
+              activities: appendThreadActivity(parent, activity),
               updatedAt: event.occurredAt,
             }),
           };

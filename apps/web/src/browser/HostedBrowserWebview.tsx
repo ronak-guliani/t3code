@@ -6,9 +6,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
+import { browserDefaultTabState, useBrowserDefaults } from "./browserDefaults";
 import { cn } from "~/lib/utils";
 
-import { stopBrowserRecording } from "./browserRecording";
+import { useActiveBrowserRecordingTabIds } from "./browserRecording";
 import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
 import {
   browserViewportSettingKey,
@@ -49,10 +50,22 @@ export function HostedBrowserWebview(props: {
   readonly runtimeTabId: string;
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
+  readonly pictureInPicture?: boolean;
+  readonly profileId?: string | undefined;
   readonly zoomFactor: number;
 }) {
-  const { threadRef, tabId, runtimeTabId, initialUrl, viewport, zoomFactor } = props;
-  const config = usePreviewWebviewConfig(threadRef.environmentId);
+  const {
+    threadRef,
+    tabId,
+    runtimeTabId,
+    initialUrl,
+    viewport,
+    pictureInPicture = false,
+    profileId,
+    zoomFactor,
+  } = props;
+  const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
+  const browserDefaults = useBrowserDefaults();
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -68,24 +81,25 @@ export function HostedBrowserWebview(props: {
         fittedSourceContent: current?.fittedSourceContent ?? null,
         rect: resolveBrowserSurfacePanelRect(state.byTabId, runtimeTabId),
         visible: current?.visible ?? false,
+        zIndex: current?.zIndex ?? 30,
       };
     }),
   );
+  const backgroundActivity = useBrowserSurfaceStore(
+    (state) => (state.activityByTabId[runtimeTabId] ?? 0) > 0,
+  );
+  const recordingActive = useActiveBrowserRecordingTabIds().has(runtimeTabId);
   usePreviewBridge({ threadRef, tabId, runtimeTabId });
 
   useEffect(() => {
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
-    const lease = acquireDesktopTab(runtimeTabId);
+    const lease = acquireDesktopTab(runtimeTabId, browserDefaultTabState(browserDefaults));
     tabLeaseRef.current = lease;
     return () => {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
-      void stopBrowserRecording(runtimeTabId)
-        .catch((error) => {
-          console.error("Failed to stop browser recording during webview cleanup.", error);
-        })
-        .finally(lease.release);
+      lease.release();
     };
-  }, [runtimeTabId]);
+  }, [browserDefaults, runtimeTabId]);
 
   // Remounting the guest is the only way to recover a dead render process, so
   // recovery bumps a generation key. The reload target tracks the tab's latest
@@ -236,9 +250,12 @@ export function HostedBrowserWebview(props: {
 
   if (!config) return null;
 
+  const renderingActive = active || backgroundActivity || pictureInPicture || recordingActive;
   const wrapperStyle = resolveHostedBrowserWebviewWrapperStyle({
     active,
+    renderingActive,
     cornerRadius: presentation.cornerRadius,
+    zIndex: presentation.zIndex,
     rect: lastRect,
     hiddenSize,
   });
@@ -249,6 +266,7 @@ export function HostedBrowserWebview(props: {
       className="fixed overflow-hidden bg-muted/35"
       style={{ ...wrapperStyle, overscrollBehavior: "contain" }}
       onScroll={syncContentPresentation}
+      data-preview-rendering={renderingActive ? "active" : "suspended"}
       data-preview-viewport={runtimeTabId}
     >
       <div className="relative" style={{ width: layout.canvasWidth, height: layout.canvasHeight }}>

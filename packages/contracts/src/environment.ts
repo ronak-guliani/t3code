@@ -1,6 +1,26 @@
 import { Effect, Schema } from "effect";
 
-import { EnvironmentId, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  ForwardCompatibleOptional,
+  PositiveInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
+
+export const EnvironmentMachineKind = Schema.Literals([
+  "server",
+  "cloud",
+  "desktop",
+  "laptop",
+  "mac-mini",
+  "mac-studio",
+]);
+export type EnvironmentMachineKind = typeof EnvironmentMachineKind.Type;
+export const isEnvironmentMachineKind = Schema.is(EnvironmentMachineKind);
+export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
+export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
 export const ExecutionEnvironmentPlatformOs = Schema.Literals([
   "darwin",
@@ -16,17 +36,53 @@ export type ExecutionEnvironmentPlatformArch = typeof ExecutionEnvironmentPlatfo
 export const ExecutionEnvironmentPlatform = Schema.Struct({
   os: ExecutionEnvironmentPlatformOs,
   arch: ExecutionEnvironmentPlatformArch,
+  machine: ForwardCompatibleOptional(EnvironmentMachineKind),
 });
 export type ExecutionEnvironmentPlatform = typeof ExecutionEnvironmentPlatform.Type;
 
+export const ServerSelfUpdateMethod = Schema.Literals(["boot-service", "respawn"]);
+export type ServerSelfUpdateMethod = typeof ServerSelfUpdateMethod.Type;
+
+export const ServerSelfUpdateCapability = Schema.Literals([
+  "boot-service",
+  "respawn",
+  "desktop-managed",
+]);
+export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
+
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  ownedMobileProtocolVersion: Schema.optionalKey(PositiveInt),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
-  // Optional so clients can avoid PR requests against older servers.
   pullRequests: Schema.optionalKey(Schema.Boolean),
-  // Optional so clients can safely avoid lifecycle commands on older servers.
   threadSettlement: Schema.optionalKey(Schema.Boolean),
   threadSnooze: Schema.optionalKey(Schema.Boolean),
+  threadPinning: Schema.optionalKey(Schema.Boolean),
+  threadPinReorder: Schema.optionalKey(Schema.Boolean),
+  threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
+  serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
+  serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),
+  agentActivityPublishing: Schema.optionalKey(Schema.Boolean),
+  attachmentUploads: Schema.optionalKey(Schema.Boolean),
+  fileAttachments: Schema.optionalKey(
+    Schema.Struct({
+      maxUploadBytes: PositiveInt,
+    }),
+  ),
+  threadAutoSettlement: Schema.optionalKey(Schema.Boolean),
+  environmentThemes: Schema.optionalKey(Schema.Boolean),
+  usageLimitSources: Schema.optionalKey(Schema.Boolean),
+  usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
+  usageSummary: Schema.optionalKey(Schema.Boolean),
+  providerFeedback: Schema.optionalKey(Schema.Boolean),
+  resourceTelemetry: Schema.optionalKey(Schema.Boolean),
+  mediaFiles: Schema.optionalKey(Schema.Boolean),
+  nativeAppIcons: Schema.optionalKey(Schema.Boolean),
+  providerWorkspaceSnapshots: Schema.optionalKey(Schema.Boolean),
+  threadPullRequestLinking: Schema.optionalKey(Schema.Boolean),
+  serverUpdateThreadContinuation: Schema.optionalKey(Schema.Boolean),
+  environmentIcon: Schema.optionalKey(Schema.Boolean),
+  desktopAppUpdate: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

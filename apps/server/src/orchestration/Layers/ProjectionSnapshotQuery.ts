@@ -31,7 +31,7 @@ import {
   ReviewResult,
   ReviewSnapshot,
 } from "@t3tools/contracts";
-import { Effect, Layer, Option, Schema, Struct } from "effect";
+import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
@@ -54,6 +54,9 @@ import { ProjectionWorkflowRepository } from "../../persistence/Services/Project
 import { ProjectionWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionWorkflows.ts";
 import { RepositoryIdentityResolver } from "../../project/Services/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
+import { MAX_THREAD_ACTIVITIES, MAX_THREAD_MESSAGES } from "../projector.ts";
+// Per-thread cap for background-agent runs in shell snapshots.
+const MAX_BACKGROUND_AGENT_RUNS_PER_THREAD = 100;
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotCounts,
@@ -65,8 +68,29 @@ import {
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
+
+export interface ProjectionSnapshotQueryTestHooksShape {
+  readonly beforeShellSnapshotCursorRead: Effect.Effect<void>;
+}
+
+const defaultProjectionSnapshotQueryTestHooks: ProjectionSnapshotQueryTestHooksShape = {
+  beforeShellSnapshotCursorRead: Effect.void,
+};
+
+export const ProjectionSnapshotQueryTestHooks =
+  Context.Reference<ProjectionSnapshotQueryTestHooksShape>(
+    "t3/orchestration/ProjectionSnapshotQueryTestHooks",
+    { defaultValue: () => defaultProjectionSnapshotQueryTestHooks },
+  );
+
+const beforeShellSnapshotCursorRead = Effect.flatMap(
+  Effect.service(ProjectionSnapshotQueryTestHooks),
+  (hooks) => hooks.beforeShellSnapshotCursorRead,
+);
+
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
+    autoPull: Schema.Number,
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
@@ -209,6 +233,13 @@ const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
 });
 const THREAD_DETAIL_ACTIVITY_WINDOW = 200;
+// The thread-detail message window is the live projector's
+// MAX_THREAD_MESSAGES cap, applied in SQL (newest window, chronological
+// order) so a pathological thread cannot blow the V8 heap by decoding
+// unbounded text/attachment JSON in JS. Backed by
+// idx_projection_thread_messages_thread_created. Threads under the bound read
+// identically to before. Full-history reads (chat exports) use the unbounded
+// query below instead.
 const ThreadActivitiesLimitInput = Schema.Struct({
   threadId: ThreadId,
   limit: NonNegativeInt,
@@ -326,6 +357,15 @@ function mapLatestTurn(
   };
 }
 
+function mapTitleRegeneration(row: Schema.Schema.Type<typeof ProjectionThreadDbRowSchema>) {
+  return row.titleRegenerationRequestId != null && row.titleRegenerationStartedAt != null
+    ? {
+        requestId: row.titleRegenerationRequestId,
+        startedAt: row.titleRegenerationStartedAt,
+      }
+    : null;
+}
+
 function mapSessionRow(
   row: Schema.Schema.Type<typeof ProjectionThreadSessionDbRowSchema>,
 ): OrchestrationSession {
@@ -412,6 +452,7 @@ function mapProjectShellRow(
     workspaceRoot: row.workspaceRoot,
     repositoryIdentity,
     defaultModelSelection: row.defaultModelSelection,
+    autoPull: row.autoPull === 1,
     scripts: row.scripts,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -437,6 +478,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     project_id AS "projectId",
     title,
     workspace_root AS "workspaceRoot",
+    auto_pull AS "autoPull",
     default_model_selection_json AS "defaultModelSelection",
     scripts_json AS "scripts",
     created_at AS "createdAt",
@@ -466,7 +508,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     settled_at AS "settledAt",
     snoozed_until AS "snoozedUntil",
     snoozed_at AS "snoozedAt",
+    pinned_at AS "pinnedAt",
+    pin_order_key AS "pinOrderKey",
+    title_regeneration_request_id AS "titleRegenerationRequestId",
+    title_regeneration_started_at AS "titleRegenerationStartedAt",
     latest_user_message_at AS "latestUserMessageAt",
+    latest_child_notification_at AS "latestChildNotificationAt",
     pending_approval_count AS "pendingApprovalCount",
     pending_user_input_count AS "pendingUserInputCount",
     has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -535,19 +582,41 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadMessageDbRowSchema,
     execute: () =>
       sql`
+        WITH ranked_messages AS (
+          SELECT
+            message_id,
+            thread_id,
+            sequence,
+            rowid,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY
+                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+                sequence DESC,
+                rowid DESC
+            ) AS message_rank
+          FROM projection_thread_messages
+        )
         SELECT
-          message_id AS "messageId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          role,
-          text,
-          attachments_json AS "attachments",
-          origin_json AS "origin",
-          is_streaming AS "isStreaming",
-          created_at AS "createdAt",
-          updated_at AS "updatedAt"
-        FROM projection_thread_messages
-        ORDER BY thread_id ASC, created_at ASC, message_id ASC
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.origin_json AS "origin",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
+        FROM ranked_messages
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.message_id = ranked_messages.message_id
+        WHERE ranked_messages.message_rank <= ${MAX_THREAD_MESSAGES}
+        ORDER BY
+          messages.thread_id ASC,
+          CASE WHEN messages.sequence IS NULL THEN 0 ELSE 1 END ASC,
+          messages.sequence ASC,
+          messages.rowid ASC
       `,
   });
 
@@ -633,21 +702,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH ranked_activities AS (
+          SELECT
+            activity_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY created_at DESC, activity_id DESC
+            ) AS activity_rank
+          FROM projection_thread_activities
+        )
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
+          activities.activity_id AS "activityId",
+          activities.thread_id AS "threadId",
+          activities.turn_id AS "turnId",
+          activities.tone,
+          activities.kind,
+          activities.summary,
+          activities.payload_json AS "payload",
+          activities.sequence,
+          activities.created_at AS "createdAt"
+        FROM ranked_activities
+        INNER JOIN projection_thread_activities AS activities
+          ON activities.activity_id = ranked_activities.activity_id
+        WHERE ranked_activities.activity_rank <= ${MAX_THREAD_ACTIVITIES}
         ORDER BY
-          thread_id ASC,
-          created_at ASC,
-          activity_id ASC
+          activities.thread_id ASC,
+          activities.created_at ASC,
+          activities.activity_id ASC
       `,
   });
 
@@ -656,19 +737,56 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     Result: ProjectionThreadActivityDbRowSchema,
     execute: () =>
       sql`
+        WITH background_tasks AS (
+          SELECT
+            thread_id,
+            json_extract(payload_json, '$.taskId') AS task_id,
+            MAX(created_at) AS latest_created_at,
+            MAX(activity_id) AS latest_activity_id
+          FROM projection_thread_activities
+          WHERE kind IN ('task.started', 'task.completed')
+            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM projection_thread_activities AS started
+              WHERE started.thread_id = projection_thread_activities.thread_id
+                AND started.kind = 'task.started'
+                AND json_extract(started.payload_json, '$.taskType') = 'background-agent'
+                AND json_extract(started.payload_json, '$.taskId') =
+                  json_extract(projection_thread_activities.payload_json, '$.taskId')
+            )
+          GROUP BY thread_id, task_id
+        ),
+        ranked_tasks AS (
+          SELECT
+            thread_id,
+            task_id,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY latest_created_at DESC, latest_activity_id DESC
+            ) AS task_rank
+          FROM background_tasks
+        )
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE kind IN ('task.started', 'task.completed')
-        ORDER BY thread_id ASC, created_at ASC, activity_id ASC
+          activities.activity_id AS "activityId",
+          activities.thread_id AS "threadId",
+          activities.turn_id AS "turnId",
+          activities.tone,
+          activities.kind,
+          activities.summary,
+          activities.payload_json AS "payload",
+          activities.sequence,
+          activities.created_at AS "createdAt"
+        FROM ranked_tasks
+        INNER JOIN projection_thread_activities AS activities
+          ON activities.thread_id = ranked_tasks.thread_id
+          AND json_extract(activities.payload_json, '$.taskId') = ranked_tasks.task_id
+        WHERE ranked_tasks.task_rank <= ${MAX_BACKGROUND_AGENT_RUNS_PER_THREAD}
+          AND activities.kind IN ('task.started', 'task.completed')
+        ORDER BY
+          activities.thread_id ASC,
+          activities.created_at ASC,
+          activities.activity_id ASC
       `,
   });
 
@@ -862,6 +980,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           workspace_root AS "workspaceRoot",
+          auto_pull AS "autoPull",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -884,6 +1003,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           workspace_root AS "workspaceRoot",
+          auto_pull AS "autoPull",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -957,7 +1077,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.settled_at AS "settledAt",
           threads.snoozed_until AS "snoozedUntil",
           threads.snoozed_at AS "snoozedAt",
+          threads.pinned_at AS "pinnedAt",
+          threads.pin_order_key AS "pinOrderKey",
+          threads.title_regeneration_request_id AS "titleRegenerationRequestId",
+          threads.title_regeneration_started_at AS "titleRegenerationStartedAt",
           threads.latest_user_message_at AS "latestUserMessageAt",
+          threads.latest_child_notification_at AS "latestChildNotificationAt",
           threads.pending_approval_count AS "pendingApprovalCount",
           threads.pending_user_input_count AS "pendingUserInputCount",
           threads.has_actionable_proposed_plan AS "hasActionableProposedPlan",
@@ -974,6 +1099,50 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   const listThreadMessageRowsByThread = SqlSchema.findAll({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadMessageDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        WITH ranked_messages AS (
+          SELECT
+            message_id,
+            thread_id,
+            sequence,
+            rowid,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id
+              ORDER BY
+                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
+                sequence DESC,
+                rowid DESC
+            ) AS message_rank
+          FROM projection_thread_messages
+          WHERE thread_id = ${threadId}
+        )
+        SELECT
+          messages.message_id AS "messageId",
+          messages.thread_id AS "threadId",
+          messages.turn_id AS "turnId",
+          messages.role,
+          messages.text,
+          messages.attachments_json AS "attachments",
+          messages.origin_json AS "origin",
+          messages.is_streaming AS "isStreaming",
+          messages.created_at AS "createdAt",
+          messages.updated_at AS "updatedAt"
+        FROM ranked_messages
+        INNER JOIN projection_thread_messages AS messages
+          ON messages.message_id = ranked_messages.message_id
+        WHERE ranked_messages.message_rank <= ${MAX_THREAD_MESSAGES}
+        ORDER BY
+          messages.thread_id ASC,
+          CASE WHEN messages.sequence IS NULL THEN 0 ELSE 1 END ASC,
+          messages.sequence ASC,
+          messages.rowid ASC
+      `,
+  });
+
+  const listAllThreadMessageRowsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadMessageDbRowSchema,
     execute: ({ threadId }) =>
@@ -1043,6 +1212,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Scar #130: the per-thread activity window is applied in SQL (newest
+  // LIMIT over the (thread_id, created_at, activity_id) chronology index)
+  // BEFORE payload_json is decoded, so restart hydration cannot exceed the
+  // V8 heap even when a thread's full history is large. Older windows page
+  // via the (created_at, activity_id) keyset below.
   const listThreadActivityRowsByThread = SqlSchema.findAll({
     Request: ThreadActivitiesLimitInput,
     Result: ProjectionThreadActivityDbRowSchema,
@@ -1272,19 +1446,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
-          activity_id AS "activityId",
-          thread_id AS "threadId",
-          turn_id AS "turnId",
-          tone,
-          kind,
-          summary,
-          payload_json AS "payload",
-          sequence,
-          created_at AS "createdAt"
-        FROM projection_thread_activities
-        WHERE thread_id = ${threadId}
-          AND kind IN ('task.started', 'task.completed')
-        ORDER BY created_at ASC, activity_id ASC
+          recent.activity_id AS "activityId",
+          recent.thread_id AS "threadId",
+          recent.turn_id AS "turnId",
+          recent.tone,
+          recent.kind,
+          recent.summary,
+          recent.payload_json AS "payload",
+          recent.sequence,
+          recent.created_at AS "createdAt"
+        FROM projection_thread_activities AS recent
+        INNER JOIN (
+          SELECT
+            json_extract(payload_json, '$.taskId') AS task_id
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+            AND kind IN ('task.started', 'task.completed')
+            AND json_extract(payload_json, '$.taskId') IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM projection_thread_activities AS started
+              WHERE started.thread_id = ${threadId}
+                AND started.kind = 'task.started'
+                AND json_extract(started.payload_json, '$.taskType') = 'background-agent'
+                AND json_extract(started.payload_json, '$.taskId') =
+                  json_extract(projection_thread_activities.payload_json, '$.taskId')
+            )
+          GROUP BY task_id
+          ORDER BY MAX(created_at) DESC, MAX(activity_id) DESC
+          LIMIT ${MAX_BACKGROUND_AGENT_RUNS_PER_THREAD}
+        ) AS selected_tasks
+          ON json_extract(recent.payload_json, '$.taskId') = selected_tasks.task_id
+        WHERE recent.thread_id = ${threadId}
+          AND recent.kind IN ('task.started', 'task.completed')
+        ORDER BY recent.created_at ASC, recent.activity_id ASC
       `,
   });
 
@@ -1630,6 +1825,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 workspaceRoot: row.workspaceRoot,
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
                 defaultModelSelection: row.defaultModelSelection,
+                autoPull: row.autoPull === 1,
                 scripts: row.scripts,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -1665,6 +1861,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   settledAt: row.settledAt,
                   snoozedUntil: row.snoozedUntil,
                   snoozedAt: row.snoozedAt,
+                  pinnedAt: row.pinnedAt,
+                  pinOrderKey: row.pinOrderKey,
+                  titleRegeneration: mapTitleRegeneration(row),
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -1759,11 +1958,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listProjectionStateRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
-                "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+          beforeShellSnapshotCursorRead.pipe(
+            Effect.andThen(
+              listProjectionStateRows(undefined).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
+                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+                  ),
+                ),
               ),
             ),
           ),
@@ -1880,8 +2083,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     settledAt: row.settledAt,
                     snoozedUntil: row.snoozedUntil,
                     snoozedAt: row.snoozedAt,
+                    pinnedAt: row.pinnedAt,
+                    pinOrderKey: row.pinOrderKey,
+                    titleRegeneration: mapTitleRegeneration(row),
                     session,
                     latestUserMessageAt: row.latestUserMessageAt,
+                    ...(row.latestChildNotificationAt !== null
+                      ? { latestChildNotificationAt: row.latestChildNotificationAt }
+                      : {}),
                     hasPendingApprovals: row.pendingApprovalCount > 0,
                     hasPendingUserInput: row.pendingUserInputCount > 0,
                     hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
@@ -1960,6 +2169,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     workspaceRoot: option.value.workspaceRoot,
                     repositoryIdentity,
                     defaultModelSelection: option.value.defaultModelSelection,
+                    autoPull: option.value.autoPull === 1,
                     scripts: option.value.scripts,
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,
@@ -2133,8 +2343,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             settledAt: threadRow.value.settledAt,
             snoozedUntil: threadRow.value.snoozedUntil,
             snoozedAt: threadRow.value.snoozedAt,
+            pinnedAt: threadRow.value.pinnedAt,
+            pinOrderKey: threadRow.value.pinOrderKey,
+            titleRegeneration: mapTitleRegeneration(threadRow.value),
             session,
             latestUserMessageAt: threadRow.value.latestUserMessageAt,
+            ...(threadRow.value.latestChildNotificationAt !== null
+              ? { latestChildNotificationAt: threadRow.value.latestChildNotificationAt }
+              : {}),
             hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
             hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
             hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
@@ -2164,8 +2380,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ),
     );
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
+      const listMessageRows =
+        options?.unboundedMessages === true
+          ? listAllThreadMessageRowsByThread
+          : listThreadMessageRowsByThread;
       const [
         threadRow,
         messageRows,
@@ -2185,7 +2408,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           ),
         ),
-        listThreadMessageRowsByThread({ threadId }).pipe(
+        listMessageRows({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:listMessages:query",
@@ -2307,6 +2530,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         settledAt: threadRow.value.settledAt,
         snoozedUntil: threadRow.value.snoozedUntil,
         snoozedAt: threadRow.value.snoozedAt,
+        pinnedAt: threadRow.value.pinnedAt,
+        pinOrderKey: threadRow.value.pinOrderKey,
+        titleRegeneration: mapTitleRegeneration(threadRow.value),
         deletedAt: null,
         messages: messageRows.map((row) => {
           const message = {

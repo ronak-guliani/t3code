@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MessageId, TurnId } from "@t3tools/contracts";
+import type { TimelineEntry } from "../../session-logic";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
@@ -8,10 +9,139 @@ import {
   EMPTY_REVIEW_OUTPUT_MESSAGE_IDS,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
+  resolveExternalActionUrl,
+  shouldHandleInternalActionClick,
   resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+
+describe("compaction timeline boundaries", () => {
+  const work = (id: string, compact = false): TimelineEntry => ({
+    kind: "work",
+    id,
+    createdAt: "2026-09-05T00:00:10Z",
+    entry: {
+      id,
+      createdAt: "2026-09-05T00:00:10Z",
+      label: compact ? "Compacted context 173K → 5.69K tokens" : "Read file",
+      tone: "info",
+      ...(compact ? { sourceActivityKind: "context-compaction" } : {}),
+    },
+  });
+  const derive = (timelineEntries: TimelineEntry[]) =>
+    deriveMessagesTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnId: null,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+  it("splits work groups around each compaction instead of folding it into a work log", () => {
+    const rows = derive([work("before"), work("compact", true), work("after")]);
+    expect(rows.map((row) => row.kind)).toEqual(["work", "context-compaction", "work"]);
+    expect(rows[1]).toMatchObject({
+      id: "compact",
+      label: "Compacted context 173K → 5.69K tokens",
+    });
+  });
+
+  it("keeps automatic compaction visible between completed reasoning sections", () => {
+    const rows = derive([
+      {
+        kind: "message",
+        id: "user",
+        createdAt: "2026-09-05T00:00:00Z",
+        message: {
+          id: MessageId.make("user"),
+          role: "user",
+          text: "Work",
+          createdAt: "2026-09-05T00:00:00Z",
+          streaming: false,
+        },
+      },
+      work("before"),
+      work("compact", true),
+      work("after"),
+      {
+        kind: "message",
+        id: "assistant",
+        createdAt: "2026-09-05T00:00:20Z",
+        message: {
+          id: MessageId.make("assistant"),
+          role: "assistant",
+          text: "Done",
+          createdAt: "2026-09-05T00:00:20Z",
+          completedAt: "2026-09-05T00:00:20Z",
+          streaming: false,
+        },
+      },
+    ]);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "message",
+      "reasoning",
+      "context-compaction",
+      "reasoning",
+      "message",
+    ]);
+    const previous = computeStableMessagesTimelineRows(rows, { byId: new Map(), result: [] });
+    expect(
+      computeStableMessagesTimelineRows(
+        rows.map((row) => ({ ...row })),
+        previous,
+      ),
+    ).toBe(previous);
+    const changed = rows.map((row) =>
+      row.kind === "context-compaction" ? { ...row, label: "Compacted context" } : row,
+    );
+    expect(computeStableMessagesTimelineRows(changed, previous)).not.toBe(previous);
+  });
+});
+
+describe("shouldHandleInternalActionClick", () => {
+  it("handles only unmodified primary clicks", () => {
+    expect(
+      shouldHandleInternalActionClick({
+        button: 0,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+      }),
+    ).toBe(true);
+
+    for (const input of [
+      { button: 1, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false },
+      { button: 0, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: true, shiftKey: false, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: false, shiftKey: true, altKey: false },
+      { button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: true },
+    ]) {
+      expect(shouldHandleInternalActionClick(input)).toBe(false);
+    }
+  });
+});
+
+describe("resolveExternalActionUrl", () => {
+  it("accepts external HTTPS links", () => {
+    expect(resolveExternalActionUrl("https://github.com/example/repo/pull/1")).toBe(
+      "https://github.com/example/repo/pull/1",
+    );
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,unsafe",
+    "file:///tmp/unsafe",
+    "/env/thread",
+    "http://[malformed",
+  ])("rejects unsafe or invalid action URL %s", (url) => {
+    expect(resolveExternalActionUrl(url)).toBeNull();
+  });
+});
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {

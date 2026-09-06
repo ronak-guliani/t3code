@@ -1,4 +1,10 @@
-import type { OrchestrationEvent, ProjectId, ThreadId, WorkflowRunId } from "@t3tools/contracts";
+import type {
+  DispatchResult,
+  OrchestrationEvent,
+  ProjectId,
+  ThreadId,
+  WorkflowRunId,
+} from "@t3tools/contracts";
 import { OrchestrationCommand } from "@t3tools/contracts";
 import {
   Cause,
@@ -29,6 +35,8 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
+import { ThreadUrlBuilder } from "../../threadUrl.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
@@ -38,6 +46,7 @@ import {
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
+import type { ProjectionReceipt } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   OrchestrationEngineService,
@@ -51,7 +60,7 @@ const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvar
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
-  result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
+  result: Deferred.Deferred<DispatchResult, OrchestrationDispatchError>;
   startedAtMs: number;
 }
 
@@ -90,6 +99,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
+  const threadUrls = yield* Effect.serviceOption(ThreadUrlBuilder);
+  const coordinator = yield* CheckoutCoordinator;
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -100,6 +111,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const withWorktreeLock: OrchestrationEngineShape["withWorktreeLock"] = (effect) =>
     worktreeLock.withPermits(1)(effect);
+
+  const dispatchResult = (command: OrchestrationCommand, sequence: number): DispatchResult => ({
+    sequence,
+    ...((command.type === "thread.create" ||
+      (command.type === "thread.turn.start" && command.bootstrap?.createThread !== undefined)) &&
+    Option.isSome(threadUrls)
+      ? { threadUrl: threadUrls.value.forThread(command.threadId) }
+      : {}),
+  });
 
   const commandWorktreePath = (command: OrchestrationCommand): string | null => {
     switch (command.type) {
@@ -191,9 +211,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
-            return {
-              sequence: existingReceipt.value.resultSequence,
-            };
+            return dispatchResult(command, existingReceipt.value.resultSequence);
           }
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
@@ -218,12 +236,32 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           .withTransaction(
             Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
+              const projectionReceipts: ProjectionReceipt[] = [];
               let nextReadModel = readModel;
 
               for (const nextEvent of eventBases) {
+                if (nextEvent.type === "thread.child-lifecycle-notified") {
+                  const claimed = yield* sql<{ readonly dedupe_key: string }>`
+                    INSERT INTO child_lifecycle_notification_dedup (
+                      dedupe_key,
+                      event_id,
+                      created_at
+                    )
+                    VALUES (
+                      ${nextEvent.payload.dedupeKey},
+                      ${nextEvent.eventId},
+                      ${nextEvent.occurredAt}
+                    )
+                    ON CONFLICT(dedupe_key) DO NOTHING
+                    RETURNING dedupe_key
+                  `;
+                  if (claimed.length === 0) {
+                    continue;
+                  }
+                }
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
-                yield* projectionPipeline.projectEvent(savedEvent);
+                projectionReceipts.push(yield* projectionPipeline.projectEvent(savedEvent));
                 committedEvents.push(savedEvent);
               }
 
@@ -249,6 +287,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 committedEvents,
                 lastSequence: lastSavedEvent.sequence,
                 nextReadModel,
+                projectionReceipts,
               } as const;
             }),
           )
@@ -261,6 +300,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
         readModel = committedCommand.nextReadModel;
+        yield* Effect.forEach(committedCommand.projectionReceipts, (receipt) => receipt.reconcile, {
+          concurrency: 1,
+          discard: true,
+        }).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("projection post-commit reconciliation remains pending", {
+              commandId: envelope.command.commandId,
+              error,
+            }),
+          ),
+          Effect.ignore,
+        );
         for (const [index, event] of committedCommand.committedEvents.entries()) {
           yield* PubSub.publish(eventPubSub, event);
           if (index === 0) {
@@ -276,7 +327,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return { sequence: committedCommand.lastSequence };
+        return dispatchResult(command, committedCommand.lastSequence);
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>
@@ -343,7 +394,21 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         }),
       ),
     );
-    return commandWorktreePath(envelope.command) !== null ? withWorktreeLock(process) : process;
+    const command = envelope.command;
+    const worktreeProcess =
+      commandWorktreePath(command) !== null ? withWorktreeLock(process) : process;
+    if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.dispatch") {
+      return worktreeProcess;
+    }
+    const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+    const bootstrap = command.type === "thread.turn.start" ? command.bootstrap : undefined;
+    const projectId = thread?.projectId ?? bootstrap?.createThread?.projectId;
+    const project = readModel.projects.find((entry) => entry.id === projectId);
+    const cwd =
+      thread?.worktreePath ?? bootstrap?.createThread?.worktreePath ?? project?.workspaceRoot;
+    // This is the command worker itself, not dispatch(). Release after the
+    // committed pending state is visible, before the provider starts its turn.
+    return cwd ? coordinator.withCheckout(cwd, worktreeProcess) : worktreeProcess;
   };
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
@@ -382,7 +447,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       yield* Deferred.await(initialized);
-      const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+      const result = yield* Deferred.make<DispatchResult, OrchestrationDispatchError>();
       yield* Queue.offer(commandQueue, { command, result, startedAtMs: Date.now() });
       return yield* Deferred.await(result);
     });
@@ -398,10 +463,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     get streamDomainEvents(): OrchestrationEngineShape["streamDomainEvents"] {
       return Stream.fromPubSub(eventPubSub);
     },
+    // Scoped subscribe registers the subscription synchronously during the yield,
+    // giving consumers an explicit attach-before-snapshot handshake.
+    acquireDomainEventSubscription: PubSub.subscribe(eventPubSub),
   } satisfies OrchestrationEngineShape;
 });
 
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-).pipe(Layer.provideMerge(WorktreeCleanupJobRepositoryLive));
+).pipe(
+  Layer.provideMerge(WorktreeCleanupJobRepositoryLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

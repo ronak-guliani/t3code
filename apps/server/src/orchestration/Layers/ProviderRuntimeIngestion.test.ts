@@ -9,6 +9,7 @@ import {
   ProviderSession,
   ProviderInstanceId,
   type ReviewSnapshot,
+  type OrchestrationCommand,
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -22,11 +23,22 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  PubSub,
+  Scope,
+  Stream,
+} from "effect";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
   ProviderService,
@@ -38,6 +50,7 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
+import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -47,6 +60,7 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -212,7 +226,10 @@ type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][nu
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | CheckoutCoordinator,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -241,7 +258,14 @@ describe("ProviderRuntimeIngestion", () => {
   async function createHarness(options?: {
     serverSettings?: Partial<ServerSettings>;
     reviewSnapshot?: ReviewSnapshot;
+    failAssistantDeltaDispatch?: (
+      command: OrchestrationCommand,
+    ) => boolean | "invariant" | "transient" | "interrupt" | "commit-then-interrupt";
+    recordAssistantDeltaDispatches?: boolean;
+    beforeDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
+    enqueueCheckpointEvent?: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
   }) {
+    const assistantDeltaDispatchLog: Array<string> = [];
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -253,8 +277,67 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(RepositoryIdentityResolverLive),
       Layer.provide(SqlitePersistenceMemory),
     );
+    const engineLayer =
+      options?.failAssistantDeltaDispatch === undefined &&
+      !options?.recordAssistantDeltaDispatches &&
+      !options?.beforeDispatch
+        ? orchestrationLayer
+        : Layer.merge(
+            orchestrationLayer,
+            Layer.effect(
+              OrchestrationEngineService,
+              Effect.gen(function* () {
+                const real = yield* OrchestrationEngineService;
+                return {
+                  ...real,
+                  dispatch: (command: OrchestrationCommand) => {
+                    if (command.type !== "thread.message.assistant.delta") {
+                      return (options.beforeDispatch?.(command) ?? Effect.void).pipe(
+                        Effect.andThen(real.dispatch(command)),
+                      );
+                    }
+                    assistantDeltaDispatchLog.push(command.delta);
+                    const failure = options.failAssistantDeltaDispatch?.(command) ?? false;
+                    if (failure === "interrupt") {
+                      // A value-shaped interrupts-only cause, so it reaches
+                      // the flush's catchCause even though the production
+                      // dispatch is uninterruptible.
+                      return Effect.failCause(Cause.interrupt());
+                    }
+                    if (failure === "commit-then-interrupt") {
+                      // The dispatch really commits, then the caller still
+                      // observes an interrupts-only outcome — the ambiguous
+                      // commit case.
+                      return Effect.andThen(real.dispatch(command), () =>
+                        Effect.failCause(Cause.interrupt()),
+                      );
+                    }
+                    if (failure === "transient") {
+                      // A SQL failure is in the dispatch error union but is
+                      // not one of the permanent domain rejections, so the
+                      // ingestion layer classifies it as retryable.
+                      return Effect.fail(
+                        new PersistenceSqlError({
+                          operation: "test.dispatch",
+                          detail: "simulated transient assistant delta dispatch failure",
+                        }),
+                      );
+                    }
+                    return failure
+                      ? Effect.fail(
+                          new OrchestrationCommandInvariantError({
+                            commandType: command.type,
+                            detail: "simulated assistant delta dispatch failure",
+                          }),
+                        )
+                      : real.dispatch(command);
+                  },
+                } satisfies OrchestrationEngineShape;
+              }),
+            ).pipe(Layer.provide(orchestrationLayer)),
+          );
     const ingestionLayer = ProviderRuntimeIngestionLive.pipe(
-      Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(engineLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
@@ -274,9 +357,14 @@ describe("ProviderRuntimeIngestion", () => {
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
+    await Effect.runPromise(
+      ingestion
+        .start(options?.enqueueCheckpointEvent ?? (() => Effect.void))
+        .pipe(Scope.provide(scope)),
+    );
     const drain = () => Effect.runPromise(ingestion.drain);
 
     const createdAt = new Date().toISOString();
@@ -343,13 +431,130 @@ describe("ProviderRuntimeIngestion", () => {
 
     return {
       engine,
+      coordinator,
+      workspaceRoot,
       ingestion,
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
       snapshotQuery,
+      assistantDeltaDispatchLog,
     };
   }
+
+  for (const failure of ["handoff", "ingestion"] as const) {
+    it(`releases completion exclusion when ${failure} is interrupted before handoff`, async () => {
+      let completing = false;
+      const harness = await createHarness({
+        beforeDispatch: (command) =>
+          failure === "ingestion" && completing && command.type === "thread.session.set"
+            ? Effect.interrupt
+            : Effect.void,
+        enqueueCheckpointEvent: (event) =>
+          failure === "handoff" && event.type === "turn.completed" ? Effect.interrupt : Effect.void,
+      });
+      const beginFinalization = vi.spyOn(harness.coordinator, "beginFinalization");
+      const createdAt = new Date().toISOString();
+      const turnId = asTurnId("turn-cancel-handoff");
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("start-cancel-handoff"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: {},
+      });
+      await harness.drain();
+      completing = true;
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("complete-cancel-handoff"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        payload: { state: "completed" },
+      });
+      await harness.drain();
+      expect(beginFinalization).toHaveBeenCalledWith(
+        asEventId("complete-cancel-handoff"),
+        harness.workspaceRoot,
+      );
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.workspaceRoot))).toBe(
+        false,
+      );
+    });
+  }
+
+  it("establishes completion exclusion before publishing idle and retains it for checkpoint capture", async () => {
+    const idleDispatch = Effect.runSync(Deferred.make<void>());
+    const releaseIdle = Effect.runSync(Deferred.make<void>());
+    let completing = false;
+    const harness = await createHarness({
+      beforeDispatch: (command) =>
+        completing && command.type === "thread.session.set" && command.session.activeTurnId === null
+          ? Deferred.succeed(idleDispatch, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseIdle)),
+            )
+          : Effect.void,
+    });
+    const createdAt = new Date().toISOString();
+    const turnId = asTurnId("turn-completion-exclusion");
+    const eventId = asEventId("completion-exclusion");
+    const previousCheckout = `${harness.workspaceRoot}/previous-checkout`;
+    harness.setProviderSession({
+      provider: ProviderDriverKind.make("codex"),
+      status: "ready",
+      runtimeMode: "approval-required",
+      threadId: asThreadId("thread-1"),
+      cwd: previousCheckout,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("start-exclusion"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      payload: {},
+    });
+    await harness.drain();
+    completing = true;
+    harness.emit({
+      type: "turn.completed",
+      eventId,
+      provider: ProviderDriverKind.make("codex"),
+      createdAt,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      status: "completed",
+    });
+    try {
+      await Effect.runPromise(Deferred.await(idleDispatch));
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.workspaceRoot))).toBe(
+        true,
+      );
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(previousCheckout))).toBe(
+        true,
+      );
+      expect(
+        (await Effect.runPromise(harness.engine.getReadModel())).threads[0]?.session?.activeTurnId,
+      ).toBe(turnId);
+      await Effect.runPromise(Deferred.succeed(releaseIdle, undefined));
+      await Effect.runPromise(harness.ingestion.awaitTurnCompletionProcessed(eventId));
+      expect(
+        (await Effect.runPromise(harness.engine.getReadModel())).threads[0]?.session?.activeTurnId,
+      ).toBeNull();
+      expect(await Effect.runPromise(harness.coordinator.isFinalizing(harness.workspaceRoot))).toBe(
+        true,
+      );
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseIdle, undefined));
+    }
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
@@ -2500,6 +2705,561 @@ describe("ProviderRuntimeIngestion", () => {
     expect(finalMessage?.streaming).toBe(false);
   });
 
+  it("coalesces streaming assistant deltas into fewer engine commands without losing text", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-streaming-coalesce");
+    const messageId = "assistant:item-streaming-coalesce";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-coalesce"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    const chunks = Array.from({ length: 40 }, (_, index) => `<chunk-${index}>`);
+    for (const [index, chunk] of chunks.entries()) {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId(`evt-message-delta-streaming-coalesce-${index}`),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        itemId: asItemId("item-streaming-coalesce"),
+        payload: { streamKind: "assistant_text", delta: chunk },
+      });
+    }
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-streaming-coalesce"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-streaming-coalesce"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && !message.streaming && message.text === chunks.join(""),
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const streamingDeltaEvents = events.filter(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === true,
+    );
+    expect(streamingDeltaEvents.length).toBeGreaterThan(0);
+    expect(streamingDeltaEvents.length).toBeLessThan(chunks.length);
+  });
+
+  it("dispatches coalesced streaming deltas once they exceed the size threshold", async () => {
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      recordAssistantDeltaDispatches: true,
+    });
+    const now = new Date().toISOString();
+    const oversizedDelta = "y".repeat(3_000);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-spill"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-streaming-spill"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-streaming-spill",
+    );
+
+    // Freeze time so the 50ms periodic flusher can never fire; only the
+    // size-threshold spill may deliver the text.
+    vi.useFakeTimers();
+    try {
+      expect(harness.assistantDeltaDispatchLog).toEqual([]);
+
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-streaming-spill"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-spill"),
+        itemId: asItemId("item-streaming-spill"),
+        payload: { streamKind: "assistant_text", delta: oversizedDelta },
+      });
+
+      // Advance well short of the periodic window while letting the spill
+      // dispatch run; the text must arrive through the threshold branch alone.
+      let delivered = false;
+      for (let elapsed = 0; elapsed < 40 && !delivered; elapsed += 5) {
+        await vi.advanceTimersByTimeAsync(5);
+        delivered = harness.assistantDeltaDispatchLog.length > 0;
+      }
+      expect(delivered).toBe(true);
+      expect(harness.assistantDeltaDispatchLog).toEqual([oversizedDelta]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries coalesced streaming deltas after an engine dispatch failure instead of dropping them", async () => {
+    let failAssistantDeltaDispatch = true;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      // Transient (unknown-cause) failures stay retryable: the periodic
+      // flusher keeps attempting them until the engine recovers.
+      failAssistantDeltaDispatch: () => (failAssistantDeltaDispatch ? "transient" : false),
+    });
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-streaming-dispatch-failure");
+    const messageId = "assistant:item-streaming-dispatch-failure";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-streaming-dispatch-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-dispatch-failure-first"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-streaming-dispatch-failure"),
+      payload: { streamKind: "assistant_text", delta: "survives failures" },
+    });
+    // Let several periodic flush windows attempt (and fail) the dispatch.
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    failAssistantDeltaDispatch = false;
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-streaming-dispatch-failure-second"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-streaming-dispatch-failure"),
+      payload: { streamKind: "assistant_text", delta: " plus tail" },
+    });
+
+    // No non-delta event is emitted afterwards, so only a live periodic
+    // flusher can deliver the coalesced text.
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.text === "survives failures plus tail",
+      ),
+    );
+  });
+
+  it("flushes sub-threshold buffered deltas to the engine when the runtime shuts down", async () => {
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      recordAssistantDeltaDispatches: true,
+    });
+    const now = new Date().toISOString();
+    const tailDelta = " buffered tail";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-shutdown-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-shutdown-flush"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-shutdown-flush",
+    );
+
+    // First spill delivers a partial chunk, then a sub-threshold delta is
+    // left buffered with no terminal event and no periodic window elapsing.
+    vi.useFakeTimers();
+    try {
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-shutdown-flush-partial"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-shutdown-flush"),
+        itemId: asItemId("item-shutdown-flush"),
+        payload: { streamKind: "assistant_text", delta: "y".repeat(3_000) },
+      });
+      for (let elapsed = 0; elapsed < 20; elapsed += 5) {
+        await vi.advanceTimersByTimeAsync(5);
+      }
+      expect(harness.assistantDeltaDispatchLog).toEqual(["y".repeat(3_000)]);
+
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-shutdown-flush-tail"),
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-shutdown-flush"),
+        itemId: asItemId("item-shutdown-flush"),
+        payload: { streamKind: "assistant_text", delta: tailDelta },
+      });
+      // Keep total elapsed time below the 50ms periodic window so the text is
+      // provably still buffered.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(harness.assistantDeltaDispatchLog).toEqual(["y".repeat(3_000)]);
+
+      // Disposal needs real timers for the Effect runtime's async
+      // continuations. The shutdown finalizer begins flushing immediately
+      // during dispose, well before the next periodic window could fire, so
+      // this exercises exactly the shutdown-vs-periodic-flusher race: the
+      // buffered tail must reach the engine exactly once, unlost.
+      vi.useRealTimers();
+      if (runtime === null) {
+        throw new Error("runtime was not initialized");
+      }
+      await runtime.dispose();
+      expect(harness.assistantDeltaDispatchLog).toEqual(["y".repeat(3_000), tailDelta]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds a terminal event until its prerequisite delta flush succeeds", async () => {
+    let failAssistantDeltaDispatch = true;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      // Transient failures are retried by the strict pre-completion flush, so
+      // the completion stays blocked until the engine recovers.
+      failAssistantDeltaDispatch: () => (failAssistantDeltaDispatch ? "transient" : false),
+    });
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-terminal-ordering");
+    const messageId = "assistant:item-terminal-ordering";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-terminal-ordering"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-terminal-ordering"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-terminal-ordering"),
+      payload: { streamKind: "assistant_text", delta: "tail before completion" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-terminal-ordering"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      itemId: asItemId("item-terminal-ordering"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+
+    // While the delta dispatch keeps failing, the completion must not be
+    // processed: no finalized message may appear while text is undelivered.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const blockedReadModel = await Effect.runPromise(harness.engine.getReadModel());
+    const blockedThread = blockedReadModel.threads.find(
+      (entry) => entry.id === asThreadId("thread-1"),
+    );
+    expect(
+      blockedThread?.messages.every((message: ProviderRuntimeTestMessage) => message.streaming),
+    ).toBe(true);
+
+    failAssistantDeltaDispatch = false;
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId &&
+          !message.streaming &&
+          message.text === "tail before completion",
+      ),
+    );
+
+    // Ordering proof: every streaming delta event for this message precedes
+    // its terminal (non-streaming) event in the committed history.
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const terminalIndex = events.findIndex(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === false,
+    );
+    expect(terminalIndex).toBeGreaterThan(-1);
+    const streamingAfterTerminal = events.some(
+      (event, index): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        index > terminalIndex &&
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === true,
+    );
+    expect(streamingAfterTerminal).toBe(false);
+  });
+
+  it("restores buffered deltas when a flush is interrupted mid-dispatch", async () => {
+    let deltaDispatchAttempts = 0;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      failAssistantDeltaDispatch: () => (deltaDispatchAttempts++ === 0 ? "interrupt" : false),
+    });
+    const now = new Date().toISOString();
+    const messageId = "assistant:item-interrupted-flush";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-interrupted-flush"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interrupted-flush"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-interrupted-flush",
+    );
+
+    // Sub-threshold text is buffered; the first periodic flush attempt takes
+    // the batch out of the buffer and is interrupted mid-dispatch.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-interrupted-flush-alpha"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interrupted-flush"),
+      itemId: asItemId("item-interrupted-flush"),
+      payload: { streamKind: "assistant_text", delta: "alpha" },
+    });
+    // Give the first (interrupted) flush window time to fail and restore.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(deltaDispatchAttempts).toBeGreaterThan(0);
+
+    // The interrupted batch must have been restored: the next successful
+    // flush delivers it, and nothing is lost when more text arrives.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-interrupted-flush-beta"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-interrupted-flush"),
+      itemId: asItemId("item-interrupted-flush"),
+      payload: { streamKind: "assistant_text", delta: "beta" },
+    });
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.text === "alphabeta",
+      ),
+    );
+
+    // Exactly-once delivery: an un-restored batch would have lost "alpha";
+    // a doubly-restored one would duplicate it in the committed history.
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const committedDeltaText = events
+      .filter(
+        (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === messageId &&
+          event.payload.streaming === true,
+      )
+      .map((event) => event.payload.text)
+      .join("");
+    expect(committedDeltaText).toBe("alphabeta");
+  });
+
+  it("does not duplicate a delta whose dispatch committed before the caller was interrupted", async () => {
+    let ambiguousAttempts = 0;
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      // First flush attempt: the dispatch commits on the engine, then the
+      // caller observes an interrupts-only outcome. Every later attempt
+      // succeeds normally.
+      failAssistantDeltaDispatch: () =>
+        ambiguousAttempts++ === 0 ? "commit-then-interrupt" : false,
+    });
+    const now = new Date().toISOString();
+    const messageId = "assistant:item-ambiguous-commit";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-ambiguous-commit"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-ambiguous-commit"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-ambiguous-commit",
+    );
+
+    // Sub-threshold text is buffered; the first periodic flush commits it and
+    // then surfaces an interrupt, so the batch is restored ambiguously.
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-ambiguous-commit-alpha"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-ambiguous-commit"),
+      itemId: asItemId("item-ambiguous-commit"),
+      payload: { streamKind: "assistant_text", delta: "alpha" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(ambiguousAttempts).toBeGreaterThan(0);
+
+    // The retry must hit the engine's command receipt for the deterministic
+    // command id and deduplicate instead of appending "alpha" twice.
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && message.text === "alpha",
+      ),
+    );
+
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const committedDeltaText = events
+      .filter(
+        (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+          event.type === "thread.message-sent" &&
+          event.payload.messageId === messageId &&
+          event.payload.streaming === true,
+      )
+      .map((event) => event.payload.text)
+      .join("");
+    expect(committedDeltaText).toBe("alpha");
+  });
+
+  it("salvages permanently failing deltas into finalization instead of wedging ingestion", async () => {
+    const harness = await createHarness({
+      serverSettings: { enableAssistantStreaming: true },
+      // Every coalesced-delta dispatch fails permanently, but the finalize
+      // fallback path stays healthy so salvaged text still reaches the
+      // completed message.
+      failAssistantDeltaDispatch: (command) =>
+        command.commandId.includes(":assistant-delta:") ? "invariant" : false,
+    });
+    const now = new Date().toISOString();
+    const messageId = "assistant:item-permanent-failure";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-permanent-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-permanent-failure"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-permanent-failure",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-message-delta-permanent-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-permanent-failure"),
+      itemId: asItemId("item-permanent-failure"),
+      payload: { streamKind: "assistant_text", delta: "salvaged tail" },
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-message-completed-permanent-failure"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-permanent-failure"),
+      itemId: asItemId("item-permanent-failure"),
+      payload: { itemType: "assistant_message", status: "completed" },
+    });
+
+    // The strict pre-completion flush must recognize the invariant rejection
+    // as permanent, salvage the buffered text into the finalize buffer, and
+    // let the terminal event proceed — the shared ingestion worker must not
+    // wedge on retries. The completed message carries the full text via the
+    // finalize fallback dispatch.
+    await waitForThread(harness.engine, (entry) =>
+      entry.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.id === messageId && !message.streaming && message.text === "salvaged tail",
+      ),
+    );
+
+    // Ordering holds: no streaming delta for this message was committed after
+    // its terminal event.
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    const terminalIndex = events.findIndex(
+      (event): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === false,
+    );
+    expect(terminalIndex).toBeGreaterThan(-1);
+    const streamingAfterTerminal = events.some(
+      (event, index): event is Extract<(typeof events)[number], { type: "thread.message-sent" }> =>
+        index > terminalIndex &&
+        event.type === "thread.message-sent" &&
+        event.payload.messageId === messageId &&
+        event.payload.streaming === true,
+    );
+    expect(streamingAfterTerminal).toBe(false);
+  });
+
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -3406,8 +4166,31 @@ describe("ProviderRuntimeIngestion", () => {
     const activity = thread.activities.find(
       (candidate: ProviderRuntimeTestActivity) => candidate.kind === "context-compaction",
     );
-    expect(activity?.summary).toBe("Context compacted");
+    expect(activity?.summary).toBe("Compacted context");
     expect(activity?.tone).toBe("info");
+  });
+
+  it("projects compaction token counts without estimating missing counts", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-compacted-tokens"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: { state: "compacted", beforeTokens: 173_000, afterTokens: 5_690 },
+    });
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-compacted-tokens",
+      ),
+    );
+    const activity = thread.activities.find(
+      (candidate: ProviderRuntimeTestActivity) => candidate.id === "evt-compacted-tokens",
+    );
+    expect(activity?.summary).toBe("Compacted context 173K → 5.69K tokens");
+    expect(activity?.payload).toMatchObject({ beforeTokens: 173_000, afterTokens: 5_690 });
   });
 
   it("projects Codex task lifecycle chunks into thread activities", async () => {
@@ -3618,7 +4401,9 @@ describe("ProviderRuntimeIngestion", () => {
 
     expect(completedPayload?.summary).toBe(fullSummary);
     expect(completedPayload?.detail).toBe(`${fullSummary.slice(0, 177)}...`);
-    expect((completedPayload?.detail as string).length).toBe(180);
+    expect(typeof completedPayload?.detail === "string" ? completedPayload.detail.length : 0).toBe(
+      180,
+    );
   });
 
   it("projects structured user input request and resolution as thread activities", async () => {

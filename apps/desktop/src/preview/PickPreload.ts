@@ -1,4 +1,4 @@
-// @effect-diagnostics globalDate:off - This isolated Electron preload does not run inside an Effect runtime.
+// @effect-diagnostics globalDate:off globalTimers:off - This isolated Electron preload does not run inside an Effect runtime.
 import { ipcRenderer } from "electron";
 import { getElementContext } from "react-grab/primitives";
 import type {
@@ -27,6 +27,7 @@ const Z_INDEX_OVERLAY = 2147483646;
 const PRIMARY = "var(--t3-primary)";
 const PRIMARY_FILL = "color-mix(in srgb, var(--t3-primary) 10%, transparent)";
 const MAX_MARQUEE_ELEMENTS = 20;
+const ELEMENT_CONTEXT_TIMEOUT_MS = 5_000;
 const CONTENT_LAYER_Z_INDEX = 1;
 const CHROME_LAYER_Z_INDEX = 10;
 
@@ -242,25 +243,54 @@ function toStackFrame(frame: {
   };
 }
 
-async function captureElement(element: Element): Promise<PickedElementPayload | null> {
+function withCaptureTimeout<A>(promise: Promise<A>, millis: number): Promise<A | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), millis);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+const HTML_PREVIEW_MAX_CHARS = 500;
+
+async function captureElement(element: Element): Promise<PickedElementPayload> {
+  const base = {
+    pageUrl: location.href,
+    pageTitle: document.title?.trim() || null,
+    tagName: element.tagName.toLowerCase(),
+    pickedAt: new Date().toISOString(),
+  };
   try {
-    const context = await getElementContext(element);
-    const stack = (context.stack ?? []).map(toStackFrame);
-    return {
-      pageUrl: location.href,
-      pageTitle: document.title?.trim() || null,
-      tagName: element.tagName.toLowerCase(),
-      selector: context.selector,
-      htmlPreview: context.htmlPreview ?? "",
-      componentName: context.componentName,
-      source: stack[0] ?? null,
-      stack,
-      styles: context.styles ?? "",
-      pickedAt: new Date().toISOString(),
-    };
+    const context = await withCaptureTimeout(
+      Promise.resolve(getElementContext(element)),
+      ELEMENT_CONTEXT_TIMEOUT_MS,
+    );
+    if (context) {
+      const stack = (context.stack ?? []).map(toStackFrame);
+      return {
+        ...base,
+        selector: context.selector,
+        htmlPreview: context.htmlPreview ?? "",
+        componentName: context.componentName,
+        source: stack[0] ?? null,
+        stack,
+        styles: context.styles ?? "",
+      };
+    }
   } catch {
-    return null;
+    // Fall through to the DOM-only payload.
   }
+  return {
+    ...base,
+    selector: null,
+    htmlPreview: element.outerHTML.slice(0, HTML_PREVIEW_MAX_CHARS),
+    componentName: null,
+    source: null,
+    stack: [],
+    styles: "",
+  };
 }
 
 function createButton(label: string, title: string): HTMLButtonElement {
@@ -1188,12 +1218,17 @@ function startAnnotation(): void {
     pendingCapture = true;
     submit.disabled = true;
     submit.textContent = "Capturing…";
+    const submittedComment = comment.value.trim();
+    const submittedRegions = [...regions];
+    const submittedStrokes = [...strokes];
+    const submittedStyleChanges = Array.from(styleChanges.values(), (change) => ({ ...change }));
     void Promise.all(
       Array.from(selected.values()).map(async (target) => {
         const element = await captureElement(target.element);
-        if (!element) return null;
-        for (const change of styleChanges.values()) {
-          if (change.targetId === target.id) change.selector = element.selector;
+        for (const change of submittedStyleChanges) {
+          if (change.targetId === target.id && element.selector !== null) {
+            change.selector = element.selector;
+          }
         }
         return {
           id: target.id,
@@ -1201,30 +1236,34 @@ function startAnnotation(): void {
           rect: rectFromDomRect(target.element.getBoundingClientRect()),
         };
       }),
-    ).then((captured) => {
-      const elements = captured.filter((target) => target !== null);
-      const annotation: PreviewAnnotationPayload = {
-        id: nextId("annotation"),
-        pageUrl: location.href,
-        pageTitle: document.title?.trim() || null,
-        comment: comment.value.trim(),
-        elements,
-        regions: [...regions],
-        strokes: [...strokes],
-        styleChanges: Array.from(styleChanges.values()),
-        screenshot: null,
-        createdAt: new Date().toISOString(),
-      };
-      editor.style.display = "none";
-      toolbar.style.display = "none";
-      hoverOutline.style.display = "none";
-      const screenshotRect = unionRects([
-        ...elements.map((target) => target.rect),
-        ...regions.map((region) => region.rect),
-        ...strokes.map((stroke) => stroke.bounds),
-      ]);
-      ipcRenderer.send(ELEMENT_PICKED_CHANNEL, annotation, screenshotRect);
-    });
+    )
+      .then((elements) => {
+        if (finished) return;
+        const annotation: PreviewAnnotationPayload = {
+          id: nextId("annotation"),
+          pageUrl: location.href,
+          pageTitle: document.title?.trim() || null,
+          comment: submittedComment,
+          elements,
+          regions: submittedRegions,
+          strokes: submittedStrokes,
+          styleChanges: submittedStyleChanges,
+          screenshot: null,
+          createdAt: new Date().toISOString(),
+        };
+        editor.style.display = "none";
+        toolbar.style.display = "none";
+        hoverOutline.style.display = "none";
+        const screenshotRect = unionRects([
+          ...elements.map((target) => target.rect),
+          ...submittedRegions.map((region) => region.rect),
+          ...submittedStrokes.map((stroke) => stroke.bounds),
+        ]);
+        ipcRenderer.send(ELEMENT_PICKED_CHANNEL, annotation, screenshotRect);
+      })
+      .catch(() => {
+        teardown(true);
+      });
   });
   comment.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;

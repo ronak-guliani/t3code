@@ -50,6 +50,7 @@ import {
 import {
   buildThreadRouteParams,
   clearAgentRunRouteSearch,
+  clearThreadNavigationRouteSearch,
   parseAgentRunRouteSearch,
   resolveThreadRouteRef,
 } from "../threadRoutes";
@@ -73,6 +74,7 @@ import {
   type SidebarV2ThreadRow,
 } from "./SidebarV2.logic";
 import { SidebarV2NestedRow } from "./SidebarV2NestedRow";
+import { ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { SidebarV2Row, type SidebarV2RowProps } from "./SidebarV2Row";
 import { SidebarHoverThreadPrewarmer } from "./SidebarThreadPrewarmer";
 import { Button } from "./ui/button";
@@ -86,6 +88,7 @@ import {
 } from "./ui/sidebar";
 import { SidebarTopActions } from "./SidebarTopActions";
 import { TITLEBAR_ROW_CLASS, TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS } from "../lib/titlebar";
+import { reportClientError } from "../lib/clientLogger";
 import { cn } from "../lib/utils";
 
 const SETTLED_PAGE_SIZE = 25;
@@ -440,15 +443,23 @@ export default function SidebarV2() {
   const openThread = useCallback(
     (thread: SidebarThreadSummary) => {
       const target = resolveSidebarV2ThreadRouteTarget(thread);
+      const targetThreadRef = scopeThreadRef(thread.environmentId, target.threadId);
+      const clearSearch =
+        activeThreadKey === scopedThreadKey(targetThreadRef)
+          ? clearAgentRunRouteSearch
+          : clearThreadNavigationRouteSearch;
       void router.navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, target.threadId)),
+        params: buildThreadRouteParams(targetThreadRef),
         search: target.agentTaskId
-          ? (previous) => ({ ...previous, agent: target.agentTaskId ?? undefined })
-          : clearAgentRunRouteSearch,
+          ? (previous) => ({
+              ...clearSearch(previous),
+              agent: target.agentTaskId ?? undefined,
+            })
+          : clearSearch,
       });
     },
-    [router],
+    [activeThreadKey, router],
   );
   const handleDismissAgentRun = useCallback(
     (thread: SidebarThreadSummary) => {
@@ -474,7 +485,7 @@ export default function SidebarV2() {
     void action().catch((error: unknown) => {
       const description =
         error instanceof Error ? error.message : "An unexpected error prevented this action.";
-      console.error("Sidebar inbox lifecycle action failed", error);
+      reportClientError("Sidebar inbox lifecycle action failed", error);
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -503,7 +514,7 @@ export default function SidebarV2() {
         if (failures.length === 0) {
           return;
         }
-        console.error("Sidebar inbox bulk lifecycle action failed", failures);
+        reportClientError("Sidebar inbox bulk lifecycle action failed", failures);
         const firstReason: unknown = failures[0]?.reason;
         toastManager.add(
           stackedThreadToast({
@@ -722,7 +733,7 @@ export default function SidebarV2() {
   }, [defaultProjectRef, handleNewThread]);
 
   return (
-    <>
+    <ThreadDetailsTooltipProvider value={threadsWithAgentRuns}>
       {/* The desktop app hides the OS title bar, so this row is the only place
           a collapse control can live beside the window controls. It has to
           exist on every Electron platform, not just the ones that reserve
@@ -841,6 +852,6 @@ export default function SidebarV2() {
           ) : null}
         </Shelf>
       </SidebarContent>
-    </>
+    </ThreadDetailsTooltipProvider>
   );
 }

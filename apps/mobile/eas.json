@@ -1,32 +1,45 @@
 {
   "cli": {
-    "version": ">= 18.4.0",
+    "version": "23.2.0",
     "appVersionSource": "remote",
     "promptToConfigurePushNotifications": false
   },
   "build": {
+    "base": {
+      "node": "24.18.0",
+      "pnpm": "11.10.0",
+      "ios": {
+        "image": "macos-tahoe-26.5-xcode-26.6"
+      },
+      "android": {
+        "image": "ubuntu-26.04-jdk-17-ndk-r27b-sdk-57"
+      }
+    },
     "development": {
+      "extends": "base",
       "env": {
         "APP_VARIANT": "development"
       },
-      "channel": "development",
+      "environment": "development",
       "developmentClient": true,
       "distribution": "internal"
     },
     "preview": {
+      "extends": "base",
       "env": {
         "APP_VARIANT": "preview"
       },
-      "channel": "preview",
       "environment": "preview",
-      "distribution": "internal"
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
     },
     "preview:dev": {
+      "extends": "base",
       "env": {
-        "APP_VARIANT": "preview",
-        "MOBILE_VERSION_POLICY": "fingerprint"
+        "APP_VARIANT": "preview"
       },
-      "channel": "preview",
       "environment": "preview",
       "developmentClient": true,
       "distribution": "internal",
@@ -35,18 +48,43 @@
       }
     },
     "production": {
+      "extends": "base",
       "env": {
         "APP_VARIANT": "production"
       },
-      "channel": "production",
       "environment": "production",
+      "distribution": "store",
       "autoIncrement": true
+    },
+    "testflight": {
+      "extends": "production",
+      "env": {
+        "APP_VARIANT": "preview"
+      },
+      "environment": "preview"
+    },
+    "development:simulator": {
+      "extends": "development",
+      "ios": {
+        "simulator": true
+      }
+    },
+    "preview:simulator": {
+      "extends": "preview",
+      "ios": {
+        "simulator": true
+      }
     }
   },
   "submit": {
     "production": {
       "ios": {
-        "ascAppId": "6761315631"
+        "appleTeamId": "235XX73T5A"
+      }
+    },
+    "testflight": {
+      "ios": {
+        "appleTeamId": "235XX73T5A"
       }
     }
   }

@@ -21,7 +21,11 @@ import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../timest
 import type { SidebarThreadSummary } from "../types";
 import { useUiStateStore } from "../uiStateStore";
 import { cn } from "~/lib/utils";
-import { hasUnseenCompletion, resolveThreadStatusPill } from "./Sidebar.logic";
+import {
+  hasUnseenChildNotification,
+  hasUnseenCompletion,
+  resolveThreadStatusPill,
+} from "./Sidebar.logic";
 import {
   compactSidebarTimeLabel,
   resolveSidebarV2StatusLabel,
@@ -160,6 +164,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   const statusLabel = resolveSidebarV2StatusLabel({
     status: displayStatus,
     unseenCompletion: hasUnseenCompletion({ ...thread, lastVisitedAt }),
+    unseenChildNotification: hasUnseenChildNotification({ ...thread, lastVisitedAt }),
   });
   const pill = resolveThreadStatusPill({
     thread,
@@ -376,6 +381,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
       >
         <Tooltip>
           <TooltipTrigger
+            delay={200}
             render={
               <SidebarMenuButton
                 className="h-auto min-h-0 items-start px-[var(--app-sidebar-row-padding-x)] py-[calc(var(--app-sidebar-row-padding-y)*0.75)] text-[length:var(--app-sidebar-font-size)] transition-none"
@@ -446,6 +452,7 @@ export const SidebarV2Row = memo(function SidebarV2Row({
     >
       <Tooltip>
         <TooltipTrigger
+          delay={200}
           render={
             <SidebarMenuButton
               // Height is padding-driven rather than fixed so the row tracks

@@ -20,6 +20,9 @@ import { MAX_RETAINED_SNAPSHOTS } from "./pollSchedule.ts";
 
 const encodeUnknownJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+// Bound for the dashboard-style list() scan; callers needing more pass limit explicitly.
+const DEFAULT_LIST_LIMIT = 500;
+
 const decodeCursor = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({
@@ -41,7 +44,9 @@ const decodeCursor = Schema.decodeUnknownEffect(
           outcome: Schema.Literals(["success", "failure", "pending", "cancelled"]),
         }),
       ),
-      behindBase: Schema.Boolean,
+      mergeability: Schema.Literals(["mergeable", "conflicting", "unknown", ""]).pipe(
+        Schema.withDecodingDefault(Effect.succeed("")),
+      ),
       sourceRevision: Schema.String,
     }),
   ),
@@ -206,6 +211,14 @@ export interface PullRequestMonitorStoreApi {
   readonly list: (input: {
     readonly projectId?: string;
     readonly enabledOnly?: boolean;
+    readonly limit?: number;
+  }) => Effect.Effect<ReadonlyArray<PullRequestMonitorRecord>, PullRequestMonitorError>;
+  readonly listEnabledPage: (input: {
+    readonly limit: number;
+    readonly before?: {
+      readonly updatedAt: string;
+      readonly monitorId: PullRequestMonitorId;
+    };
   }) => Effect.Effect<ReadonlyArray<PullRequestMonitorRecord>, PullRequestMonitorError>;
   readonly listDue: (
     nowIso: string,
@@ -408,33 +421,70 @@ export const make = Effect.gen(function* () {
 
   const list: PullRequestMonitorStoreApi["list"] = (input) =>
     Effect.gen(function* () {
+      // Bound an otherwise full-table scan: monitor rows accumulate per project
+      // and this feeds polling snapshot paths.
+      const limit = input.limit ?? DEFAULT_LIST_LIMIT;
       const rows =
         input.projectId !== undefined && input.enabledOnly
           ? yield* sql<MonitorRow>`
               SELECT * FROM pull_request_monitors
               WHERE project_id = ${input.projectId} AND enabled = 1
               ORDER BY updated_at DESC
+              LIMIT ${limit}
             `
           : input.projectId !== undefined
             ? yield* sql<MonitorRow>`
                 SELECT * FROM pull_request_monitors
                 WHERE project_id = ${input.projectId}
                 ORDER BY updated_at DESC
+                LIMIT ${limit}
               `
             : input.enabledOnly
               ? yield* sql<MonitorRow>`
                   SELECT * FROM pull_request_monitors
                   WHERE enabled = 1
                   ORDER BY updated_at DESC
+                  LIMIT ${limit}
                 `
               : yield* sql<MonitorRow>`
                   SELECT * FROM pull_request_monitors
                   ORDER BY updated_at DESC
+                  LIMIT ${limit}
                 `;
       return yield* Effect.forEach(rows, rowToRecord, { concurrency: 1 });
     }).pipe(
       Effect.mapError((cause) =>
         isPullRequestMonitorError(cause) ? cause : storeError("Failed to list monitors.", cause),
+      ),
+    );
+
+  const listEnabledPage: PullRequestMonitorStoreApi["listEnabledPage"] = (input) =>
+    (input.before
+      ? sql<MonitorRow>`
+            SELECT * FROM pull_request_monitors
+            WHERE enabled = 1
+              AND (
+                updated_at < ${input.before.updatedAt}
+                OR (
+                  updated_at = ${input.before.updatedAt}
+                  AND monitor_id < ${input.before.monitorId}
+                )
+              )
+            ORDER BY updated_at DESC, monitor_id DESC
+            LIMIT ${input.limit}
+          `
+      : sql<MonitorRow>`
+            SELECT * FROM pull_request_monitors
+            WHERE enabled = 1
+            ORDER BY updated_at DESC, monitor_id DESC
+            LIMIT ${input.limit}
+          `
+    ).pipe(
+      Effect.flatMap((rows) => Effect.forEach(rows, rowToRecord, { concurrency: 1 })),
+      Effect.mapError((cause) =>
+        isPullRequestMonitorError(cause)
+          ? cause
+          : storeError("Failed to list enabled monitor page.", cause),
       ),
     );
 
@@ -717,7 +767,6 @@ export const make = Effect.gen(function* () {
         const raw = rows[0]?.cursor_json;
         if (!raw) return Effect.succeed(emptyCursor());
         return decodeCursor(raw).pipe(
-          Effect.map((cursor) => cursor as PullRequestMonitorCursor),
           Effect.mapError((cause) => storeError("Could not decode monitor cursor.", cause)),
         );
       }),
@@ -1046,6 +1095,7 @@ export const make = Effect.gen(function* () {
     getByCanonicalKey,
     getByProjectRef,
     list,
+    listEnabledPage,
     listDue,
     insert,
     update,

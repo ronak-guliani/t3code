@@ -22,6 +22,12 @@ import { AppAtomRegistryProvider } from "../../rpc/atomRegistry";
 import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/serverState";
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import { GeneralSettingsPanel } from "./SettingsPanels";
+import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
+
+vi.mock("../../environments/primary", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../environments/primary")>()),
+  usePrimaryEnvironmentId: () => EnvironmentId.make("environment-local"),
+}));
 
 const authAccessHarness = vi.hoisted(() => {
   type Snapshot = AuthAccessSnapshot;
@@ -351,10 +357,53 @@ describe("GeneralSettingsPanel observability", () => {
     | null = null;
 
   beforeEach(async () => {
+    __resetClientSettingsPersistenceForTests();
     resetServerStateForTests();
     await __resetLocalApiForTests();
     localStorage.clear();
     authAccessHarness.reset();
+  });
+
+  it("imports into the selected profile of the registered environment", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+    const importCookies = vi.fn().mockResolvedValue({ imported: 2, skipped: 0 });
+    Reflect.set(window, "desktopBridge", {
+      ...createDesktopBridgeStub(),
+      getClientSettings: async () => ({
+        browserProfiles: [{ id: "work", name: "Work", kind: "persistent" }],
+      }),
+      preview: {
+        listBrowserImportSources: async () => [
+          { id: "firefox", name: "Firefox", profiles: [{ name: "Default", directory: "fixture" }] },
+        ],
+        importBrowserCookies: importCookies,
+      },
+    });
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+    await page.getByRole("combobox", { name: "Cookie import target profile" }).click();
+    await page.getByRole("option", { name: "Work", exact: true }).click();
+    await expect.element(page.getByText("Import into Work", { exact: true })).toBeInTheDocument();
+    await page.getByRole("checkbox", { name: "Allow cookie import" }).click();
+    await page.getByRole("button", { name: "Import cookies", exact: true }).click();
+    await expect
+      .poll(() => importCookies.mock.calls[0]?.[0])
+      .toEqual({
+        environmentId: "environment-local",
+        sourceId: "firefox",
+        sourceProfileDirectory: "fixture",
+        targetProfileId: "work",
+      });
+    await page.getByRole("button", { name: "Delete Work profile" }).click();
+    await expect
+      .element(page.getByText("Import into Default", { exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("checkbox", { name: "Allow cookie import" }))
+      .not.toBeChecked();
   });
 
   afterEach(async () => {
@@ -822,6 +871,26 @@ describe("GeneralSettingsPanel observability", () => {
     await openLogsButton.click();
 
     expect(openInEditor).toHaveBeenCalledWith("/repo/project/.t3/logs", "cursor");
+  });
+
+  it("renders the server-authoritative agent browser access toggle", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    const toggle = page.getByLabelText("Allow agent browser access");
+    await expect.element(toggle).toBeChecked();
+    await expect
+      .element(
+        page.getByText(
+          "Let agents open and drive the preview browser. Turning this off withholds browser tools from newly started agent sessions. Externally managed OpenCode servers cannot receive per-thread browser credentials.",
+        ),
+      )
+      .toBeInTheDocument();
   });
 
   it("shows an OpenCode server URL field in provider settings", async () => {

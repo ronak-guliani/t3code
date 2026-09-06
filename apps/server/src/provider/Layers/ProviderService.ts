@@ -50,6 +50,7 @@ import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { withLogContext } from "../../observability/LogContext.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const isModelSelection = Schema.is(ModelSelection);
 
@@ -60,6 +61,9 @@ const isModelSelection = Schema.is(ModelSelection);
  */
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogger?: EventNdjsonLogger;
+  readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
+  readonly revokeMcpCredential?: typeof McpSessionRegistry.revokeActiveMcpProviderInstance;
+  readonly revokeMcpSession?: typeof McpSessionRegistry.revokeActiveMcpProviderSession;
 }
 
 const ProviderRollbackConversationInput = Schema.Struct({
@@ -215,17 +219,36 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const registry = yield* ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory;
+  const serverSettings = yield* ServerSettingsService;
+  const issueMcpCredential =
+    options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+  const revokeMcpCredential =
+    options?.revokeMcpCredential ?? McpSessionRegistry.revokeActiveMcpProviderInstance;
+  const revokeMcpSession =
+    options?.revokeMcpSession ?? McpSessionRegistry.revokeActiveMcpProviderSession;
   const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(
     RUNTIME_EVENT_BUS_CAPACITY,
   );
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId });
+    serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.enableAgentBrowserAccess),
+      Effect.catch((cause) =>
+        Effect.logWarning("provider.mcp.settings-read-failed", {
+          threadId,
+          providerInstanceId,
+          cause,
+        }).pipe(Effect.as(false)),
+      ),
+      Effect.flatMap((enabled) =>
+        enabled
+          ? issueMcpCredential({ threadId, providerInstanceId })
+          : revokeMcpCredential(threadId, providerInstanceId).pipe(Effect.as(undefined)),
+      ),
+    );
 
   const clearMcpSession = (providerSessionId: string | undefined) =>
-    providerSessionId
-      ? McpSessionRegistry.revokeActiveMcpProviderSession(providerSessionId)
-      : Effect.void;
+    providerSessionId ? revokeMcpSession(providerSessionId) : Effect.void;
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -681,12 +704,16 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       // then bind the target thread only after the adapter has forked. Future
       // fork paths should preserve source-before-target ordering to avoid
       // deadlocks with per-thread session locks.
-      const session = yield* routed.adapter.forkSession({
-        ...parsed,
-        provider: resolvedProvider,
-        providerInstanceId: routed.instanceId,
-      });
+      const credential = yield* prepareMcpSession(parsed.threadId, routed.instanceId);
+      const session = yield* routed.adapter
+        .forkSession({
+          ...parsed,
+          provider: resolvedProvider,
+          providerInstanceId: routed.instanceId,
+        })
+        .pipe(Effect.onError(() => clearMcpSession(credential?.config.providerSessionId)));
       if (session.provider !== routed.adapter.provider) {
+        yield* clearMcpSession(credential?.config.providerSessionId);
         return yield* toValidationError(
           "ProviderService.forkSession",
           `Adapter/provider mismatch: requested '${routed.adapter.provider}', received '${session.provider}'.`,

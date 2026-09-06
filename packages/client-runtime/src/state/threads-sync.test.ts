@@ -9,7 +9,9 @@ import {
   type OrchestrationThreadStreamItem,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -26,6 +28,7 @@ import {
 } from "../connection/model.ts";
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
+import { TEST_SERVER_CONFIG } from "../../test/fixtures.ts";
 import * as RpcSession from "../rpc/session.ts";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
@@ -69,7 +72,7 @@ type TestThreadInput = OrchestrationThreadStreamItem | Error;
 function testSession(client: WsRpcProtocolClient): RpcSession.RpcSession {
   return {
     client,
-    initialConfig: Effect.never,
+    initialConfig: Effect.succeed(TEST_SERVER_CONFIG),
     ready: Effect.void,
     probe: Effect.void,
     closed: Effect.never,
@@ -128,16 +131,22 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     retryNow: Ref.update(retryCount, (count) => count + 1),
   } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
   const cache = Persistence.EnvironmentCacheStore.of({
+    loadServerConfig: () => Effect.succeed(Option.none()),
+    saveServerConfig: () => Effect.void,
+    loadVcsRefs: () => Effect.succeed(Option.none()),
+    saveVcsRefs: () => Effect.void,
+    removeVcsRefs: () => Effect.void,
+    clearVcsRefs: () => Effect.void,
     loadShell: () => Effect.succeed(Option.none()),
     saveShell: () => Effect.void,
     loadThread: (_environmentId, threadId) =>
       Effect.succeed(
         threadId === THREAD_ID && options?.cached !== undefined
-          ? Option.some(options.cached)
+          ? Option.some({ snapshotSequence: 0, thread: options.cached })
           : Option.none(),
       ),
-    saveThread: (_environmentId, thread) =>
-      Ref.update(savedThreads, (current) => [...current, thread]),
+    saveThread: (_environmentId, snapshot) =>
+      Ref.update(savedThreads, (current) => [...current, snapshot.thread]),
     removeThread: (_environmentId, threadId) =>
       Ref.update(removedThreads, (current) => [...current, threadId]),
     clear: () => Effect.void,
@@ -398,6 +407,39 @@ describe("EnvironmentThreads", () => {
       }
 
       expect((yield* Ref.get(harness.latest)).status).toBe("live");
+    }),
+  );
+
+  it.effect("drain loop suspends while no stream items are buffered", () =>
+    Effect.gen(function* () {
+      // The consumer must block on an empty queue between stream arrivals;
+      // a non-blocking drain would busy-spin per retained thread state.
+      const queue = yield* Queue.unbounded<number, Cause.Done>();
+      const batches = yield* Ref.make(0);
+      const fiber = yield* Queue.takeAll(queue).pipe(
+        Effect.flatMap(() => Ref.update(batches, (count) => count + 1)),
+        Effect.forever,
+        Effect.catchTag("Done", () => Effect.void),
+        Effect.forkScoped,
+      );
+
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(batches)).toBe(0);
+
+      yield* Queue.offer(queue, 1);
+      yield* Queue.offer(queue, 2);
+      for (let attempt = 0; attempt < 50 && (yield* Ref.get(batches)) === 0; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(batches)).toBe(1);
+
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        yield* Effect.yieldNow;
+      }
+      expect(yield* Ref.get(batches)).toBe(1);
+      yield* Fiber.interrupt(fiber);
     }),
   );
 });

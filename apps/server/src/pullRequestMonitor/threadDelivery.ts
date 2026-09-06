@@ -13,6 +13,7 @@ import {
   MessageId,
   QueuedTurnId,
   type ModelSelection,
+  type PullRequestMonitorActionableEvent,
   type ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -175,6 +176,14 @@ export const sendQueuedTurn = (input: {
   readonly commandId: CommandId;
   readonly messageId: MessageId;
   readonly text: string;
+  readonly repository: string;
+  readonly pullRequestNumber: number;
+  readonly headSha: string;
+  readonly sourceRevision: string;
+  readonly events: ReadonlyArray<PullRequestMonitorActionableEvent>;
+  readonly deliveryId: string;
+  readonly revisionSummaries: ReadonlyArray<string>;
+  readonly availableTools: ReadonlyArray<string>;
 }): Effect.Effect<void, unknown, OrchestrationEngineService> =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
@@ -194,6 +203,17 @@ export const sendQueuedTurn = (input: {
       },
       runtimeMode: DEFAULT_RUNTIME_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      origin: {
+        kind: "pull-request-monitor",
+        repository: input.repository,
+        number: input.pullRequestNumber,
+        headSha: input.headSha,
+        sourceRevision: input.sourceRevision,
+        events: input.events,
+        deliveryId: input.deliveryId,
+        revisionSummaries: input.revisionSummaries,
+        availableTools: input.availableTools,
+      },
       createdAt: now,
     });
   });
@@ -251,6 +271,8 @@ export const startFallbackTurn = (input: {
   readonly commandId: CommandId;
   readonly messageId: MessageId;
   readonly text: string;
+  readonly repository: string;
+  readonly pullRequestNumber: number;
 }): Effect.Effect<void, unknown, OrchestrationEngineService> =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
@@ -267,6 +289,11 @@ export const startFallbackTurn = (input: {
       },
       runtimeMode: DEFAULT_RUNTIME_MODE,
       interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      origin: {
+        kind: "pull-request-monitor",
+        repository: input.repository,
+        number: input.pullRequestNumber,
+      },
       createdAt: now,
     });
   });

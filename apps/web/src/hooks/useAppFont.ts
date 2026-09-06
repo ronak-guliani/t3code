@@ -21,6 +21,7 @@ import {
 } from "@t3tools/contracts/settings";
 
 import { readBrowserClientSettings } from "../clientPersistenceStorage";
+import { reportClientError } from "../lib/clientLogger";
 import { useSettings } from "./useSettings";
 import { syncBrowserChromeTheme } from "./useTheme";
 
@@ -199,7 +200,7 @@ function syncNativeSidebarVibrancy(enabled: boolean): void {
         return;
       }
       setNativeVibrancyAttribute(false);
-      console.error("[SIDEBAR_VIBRANCY] sync failed", error);
+      reportClientError("[SIDEBAR_VIBRANCY] sync failed", error);
     });
 }
 

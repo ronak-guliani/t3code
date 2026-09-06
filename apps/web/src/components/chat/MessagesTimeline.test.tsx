@@ -3,7 +3,11 @@ import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { LegendListRef } from "@legendapp/list/react";
-import { MessagesTimeline, shouldAutoloadOlderHistory } from "./MessagesTimeline";
+import {
+  exceedsMessagePreviewHeight,
+  MessagesTimeline,
+  shouldAutoloadOlderHistory,
+} from "./MessagesTimeline";
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -168,6 +172,11 @@ function buildWorkspaceHandoffEntries() {
 }
 
 describe("MessagesTimeline", () => {
+  it("detects rendered message overflow beyond the configured preview height", () => {
+    expect(exceedsMessagePreviewHeight(81, 80)).toBe(false);
+    expect(exceedsMessagePreviewHeight(82, 80)).toBe(true);
+  });
+
   it("renders a workspace handoff marker instead of the boilerplate continuation", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline {...buildProps()} timelineEntries={buildWorkspaceHandoffEntries()} />,
@@ -203,6 +212,33 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Source chat");
     expect(markup).toContain("Source chat unavailable");
+  });
+
+  it("renders pull request monitor provenance above a user message bubble", () => {
+    const entry = buildUserTimelineEntry("Review new PR feedback.");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "pull-request-monitor",
+                repository: "acme/app",
+                number: 42,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("PR monitor");
+    expect(markup).toContain("acme/app#42");
+    expect(markup).toContain("Sent by pull request monitor");
+    expect(markup).toContain("border-sky-400/30");
   });
 
   it("renders model and usage metadata below assistant responses", () => {
@@ -444,6 +480,60 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-collapsible="false"');
   });
 
+  it("uses the four-line monitoring preview default", async () => {
+    const entry = buildUserTimelineEntry(["One", "Two", "Three", "Four", "Five"].join("\n"));
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "pull-request-monitor",
+                repository: "acme/widgets",
+                number: 42,
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsed-line-limit="4"');
+    expect(markup).toContain("max-height:4lh");
+  });
+
+  it("uses configurable cross-thread preview lines", async () => {
+    const entry = buildUserTimelineEntry(["One", "Two", "Three"].join("\n"));
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        messagePreviewLineLimits={{ normal: 10, crossThread: 2, monitoring: 4 }}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "cross-thread",
+                sourceThreadId: ThreadId.make("source-thread"),
+                sourceMessageId: MessageId.make("source-message"),
+                sourceThreadTitle: "Source chat",
+              },
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsed-line-limit="2"');
+    expect(markup).toContain("max-height:2lh");
+  });
+
   it("forces active chat find user message rows expanded", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -623,7 +713,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("yoo what&#x27;s ");
   }, 20_000);
 
-  it("renders context compaction entries in the normal work log", async () => {
+  it("renders context compaction as an accessible divider outside the work log", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -635,7 +725,8 @@ describe("MessagesTimeline", () => {
             entry: {
               id: "work-1",
               createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Context compacted",
+              label: "Compacted context 173K → 5.69K tokens",
+              sourceActivityKind: "context-compaction",
               tone: "info",
             },
           },
@@ -643,8 +734,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work log");
+    expect(markup).toContain("Compacted context 173K → 5.69K tokens");
+    expect(markup).toContain('role="separator"');
+    expect(markup).toContain("lucide-minimize2");
+    expect(markup).not.toContain("Work log");
   });
 
   it("collapses completed tool-call groups to an expandable header", async () => {

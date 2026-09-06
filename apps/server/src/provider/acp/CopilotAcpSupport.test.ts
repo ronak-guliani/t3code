@@ -13,10 +13,12 @@ import {
   COPILOT_LEGACY_PLAN_MODE_ID,
   COPILOT_PLAN_MODE_ID,
   COPILOT_WORKSPACE_INSTRUCTIONS,
+  buildCopilotWorkspaceInstructions,
   buildCopilotRuntimeModeArgs,
   buildCopilotAcpSpawnInput,
   buildCopilotMcpServerOptions,
   buildCopilotMcpServers,
+  buildCopilotSessionContractFingerprint,
   bindPrewarmedCopilotRuntime,
   isCopilotPlanModeId,
   logMissingCopilotMcpProviderSession,
@@ -99,16 +101,30 @@ describe("buildCopilotAcpSpawnInput", () => {
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`t3-code`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`t3-tools`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_open`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("call `preview_status` first");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "before concluding that the browser is unavailable",
+      );
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_open_and_snapshot`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_snapshot`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("snapshot-provided semantic locators");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("failed network requests");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`preview_recording_start`");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("recording alone");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("standalone Playwright");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("capture a final screenshot");
+      expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
+        "search `t3-code` for the needed `preview_*` function",
+      );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("Restart the chat/session");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`www-authenticate: Bearer`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`create_isolated_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`switch_workspace`");
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "call `create_nested_thread` before any workspace operation",
+        "call `create_nested_thread` or `create_nested_threads` before any workspace operation",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
-        "MUST use the tool-search API to load the matching function definition",
+        "search `t3-tools` for `create_isolated_workspace`",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain(
         "zero non-invokable resources does not mean the server exposes zero tools",
@@ -117,6 +133,23 @@ describe("buildCopilotAcpSpawnInput", () => {
         "Never call them to prepare a workspace for a future delegated thread",
       );
       expect(COPILOT_WORKSPACE_INSTRUCTIONS).toContain("`associate_pull_request`");
+      expect(buildCopilotSessionContractFingerprint({})).toMatch(/^[a-f0-9]{64}$/);
+      expect(buildCopilotSessionContractFingerprint({})).not.toBe(
+        buildCopilotSessionContractFingerprint({ T3_COPILOT_ACP_ENABLE_MCP: "1" }),
+      );
+      expect(buildCopilotSessionContractFingerprint({}, false)).not.toBe(
+        buildCopilotSessionContractFingerprint({}, true),
+      );
+      expect(buildCopilotWorkspaceInstructions(false)).not.toContain("`preview_status`");
+      expect(buildCopilotWorkspaceInstructions(false)).not.toContain("`t3-code`");
+
+      const instructionsWithoutBrowser = yield* prepareCopilotCustomInstructions(stateDir, false);
+      expect(instructionsWithoutBrowser).toBe(
+        path.join(stateDir, "providers", "copilot", "instructions-no-browser"),
+      );
+      expect(
+        yield* fileSystem.readFileString(path.join(instructionsWithoutBrowser, "AGENTS.md")),
+      ).toBe(buildCopilotWorkspaceInstructions(false));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -141,6 +174,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
         ]),
@@ -202,6 +236,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "switch_workspace",
           "associate_pull_request",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
         ]),
       );
@@ -229,6 +264,7 @@ describe("buildCopilotAcpSpawnInput", () => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
         ]),

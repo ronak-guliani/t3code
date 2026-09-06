@@ -43,6 +43,7 @@ import {
 } from "../diffRouteSearch";
 import { useTheme } from "../hooks/useTheme";
 import { buildPatchCacheKey } from "../lib/diffRendering";
+import { reportClientWarning } from "../lib/clientLogger";
 import { resolveDiffThemeName } from "../lib/diffRendering";
 import { areAllDiffFilesCollapsed, toggleAllDiffFiles } from "../lib/diffCollapse";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
@@ -365,7 +366,11 @@ export default function DiffPanel({
   const diffSearch = controlledDiffSearch ?? routeDiffSearch;
   const diffOpen = diffSearch.diff === "1";
   const activeThreadId = threadRef?.threadId ?? null;
-  const activeThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
+  // threadRef may be a fresh object on every useParams evaluation; depend on
+  // the primitives so the selector (and its subscription) stays stable.
+  const activeThread = useStore(
+    useMemo(() => createThreadSelectorByRef(threadRef), [threadRef?.environmentId, activeThreadId]),
+  );
   const activeProjectId = activeThread?.projectId ?? null;
   const activeProject = useStore((store) =>
     activeThread && activeProjectId
@@ -791,7 +796,7 @@ export default function DiffPanel({
       if (!api) return;
       const targetPath = activeCwd ? resolvePathLinkTarget(filePath, activeCwd) : filePath;
       void openInPreferredEditor(api, targetPath).catch((error) => {
-        console.warn("Failed to open diff file in editor.", error);
+        reportClientWarning("Failed to open diff file in editor.", error);
       });
     },
     [activeCwd],

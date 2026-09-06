@@ -17,6 +17,34 @@ afterEach(() => {
 });
 
 describe("resolveServerEnvironmentLabel", () => {
+  it.effect("prefers a configured per-environment label", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveServerEnvironmentLabel({
+        cwdBaseName: "t3code",
+        configuredLabel: " Ronak's MacBook Pro (Dev) ",
+        platform: "darwin",
+        hostname: "macbook-pro",
+        installationLabel: "Alpha",
+      }).pipe(Effect.provide(NoopFileSystemLayer));
+
+      expect(result).toBe("Ronak's MacBook Pro (Dev)");
+      expect(mockedRunProcess).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("ignores a blank configured label", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveServerEnvironmentLabel({
+        cwdBaseName: "t3code",
+        configuredLabel: "   ",
+        platform: "win32",
+        hostname: "macbook-pro",
+      }).pipe(Effect.provide(NoopFileSystemLayer));
+
+      expect(result).toBe("macbook-pro");
+    }),
+  );
+
   it.effect("uses hostname fallback regardless of launch mode", () =>
     Effect.gen(function* () {
       const result = yield* resolveServerEnvironmentLabel({
@@ -51,6 +79,27 @@ describe("resolveServerEnvironmentLabel", () => {
         ["--get", "ComputerName"],
         expect.objectContaining({ allowNonZeroExit: true }),
       );
+    }),
+  );
+
+  it.effect("appends a normalized installation label", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: " Julius's MacBook Pro \n",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+
+      const result = yield* resolveServerEnvironmentLabel({
+        cwdBaseName: "t3code",
+        platform: "darwin",
+        hostname: "macbook-pro",
+        installationLabel: " Dev ",
+      }).pipe(Effect.provide(NoopFileSystemLayer));
+
+      expect(result).toBe("Julius's MacBook Pro (Dev)");
     }),
   );
 

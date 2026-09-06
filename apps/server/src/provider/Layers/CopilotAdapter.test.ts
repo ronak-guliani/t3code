@@ -21,7 +21,11 @@ import { ServerEnvironment } from "../../environment/Services/ServerEnvironment.
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterRequestError } from "../Errors.ts";
-import { COPILOT_PLAN_MODE_ID, COPILOT_WORKSPACE_INSTRUCTIONS } from "../acp/CopilotAcpSupport.ts";
+import {
+  buildCopilotSessionContractFingerprint,
+  COPILOT_PLAN_MODE_ID,
+  buildCopilotWorkspaceInstructions,
+} from "../acp/CopilotAcpSupport.ts";
 import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
 import { makeCopilotAdapterLive } from "./CopilotAdapter.ts";
 
@@ -30,6 +34,7 @@ const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts")
 const bunExe = "bun";
 const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 const COPILOT_INSTANCE_ID = ProviderInstanceId.make("copilot");
+const COPILOT_SESSION_CONTRACT_FINGERPRINT = buildCopilotSessionContractFingerprint();
 
 const isolateCopilotHome = Effect.fn("isolateCopilotHome")(function* () {
   const previousHome = process.env.HOME;
@@ -163,6 +168,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       assert.deepStrictEqual(session.resumeCursor, {
         schemaVersion: 1,
         sessionId: "mock-session-1",
+        contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
       });
 
       yield* adapter.sendTurn({
@@ -531,6 +537,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         resumeCursor: {
           schemaVersion: 1,
           sessionId: "mock-session-1",
+          contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
         },
       });
 
@@ -547,6 +554,97 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
 
       assert.deepEqual(assistantDeltas, ["fresh answer"]);
       assert.notInclude(assistantDeltas, "stale history");
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("starts a fresh ACP session when the saved tool contract is stale", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-stale-contract-thread");
+
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-stale-contract-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionId: "stale-session",
+          contractFingerprint: "stale-contract",
+        },
+      });
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (request) => request.method,
+      );
+      assert.notInclude(methods, "session/load");
+      assert.include(methods, "session/new");
+      assert.notEqual(
+        (session.resumeCursor as { contractFingerprint?: string }).contractFingerprint,
+        "stale-contract",
+      );
+
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("starts a fresh ACP session when provider MCP availability changes", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-provider-mcp-contract-thread");
+
+      yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+      });
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-provider-mcp-contract-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({ T3_ACP_REQUEST_LOG_PATH: requestLogPath }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        resumeCursor: {
+          schemaVersion: 1,
+          sessionId: "session-without-provider-mcp",
+          contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
+        },
+      });
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (request) => request.method,
+      );
+      assert.notInclude(methods, "session/load");
+      assert.include(methods, "session/new");
+      assert.notEqual(
+        (session.resumeCursor as { contractFingerprint?: string }).contractFingerprint,
+        COPILOT_SESSION_CONTRACT_FINGERPRINT,
+      );
 
       yield* adapter.stopSession(threadId);
     }),
@@ -576,6 +674,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
         resumeCursor: {
           schemaVersion: 1,
           sessionId: "mock-session-1",
+          contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
         },
       });
 
@@ -641,6 +740,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       assert.deepStrictEqual(forked.resumeCursor, {
         schemaVersion: 1,
         sessionId: "mock-session-fork",
+        contractFingerprint: COPILOT_SESSION_CONTRACT_FINGERPRINT,
       });
       assert.isTrue(yield* adapter.hasSession(targetThreadId));
 
@@ -882,10 +982,12 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       ).pipe(Effect.map((contents) => contents.trim().split(",")));
       const t3InstructionsDir = customInstructionsDirs.at(-1);
       assert.isDefined(t3InstructionsDir);
-      assert.isTrue(t3InstructionsDir.endsWith(path.join("providers", "copilot", "instructions")));
+      assert.isTrue(
+        t3InstructionsDir.endsWith(path.join("providers", "copilot", "instructions-no-browser")),
+      );
       assert.equal(
         yield* Effect.promise(() => readFile(path.join(t3InstructionsDir, "AGENTS.md"), "utf8")),
-        COPILOT_WORKSPACE_INSTRUCTIONS,
+        buildCopilotWorkspaceInstructions(false),
       );
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
@@ -1622,6 +1724,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
           "create_isolated_workspace",
           "switch_workspace",
           "create_nested_thread",
+          "create_nested_threads",
           "send_to_thread",
           "associate_pull_request",
         ],
@@ -1918,6 +2021,72 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
       const argv = yield* Effect.promise(() => readArgvLog(argvLogPath));
       assert.deepEqual(argv[0], ["--acp"]);
       assert.deepEqual(argv[1], ["--acp"]);
+    }),
+  );
+
+  it.effect("starts fresh when a live restart finds a stale MCP contract", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CopilotAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("copilot-stale-live-restart-thread");
+
+      yield* McpSessionRegistry.issueActiveMcpCredential({
+        threadId,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+      });
+      yield* isolateCopilotHome();
+
+      const tempDir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "copilot-adapter-stale-live-restart-")),
+      );
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockCopilotWrapper({
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_IGNORE_CANCEL: "1",
+          T3_ACP_PROMPT_DELAY_MS: "2000",
+          T3_ACP_PROMPT_STARTED_TEXT: "waiting for stale-contract interrupt",
+        }),
+      );
+      yield* settings.updateSettings({ providers: { copilot: { binaryPath: wrapperPath } } });
+
+      const turnStartedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "content.delta" &&
+            event.payload.delta === "waiting for stale-contract interrupt",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId,
+        provider: COPILOT_DRIVER,
+        providerInstanceId: COPILOT_INSTANCE_ID,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const interruptedTurnFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "hang until interrupted after MCP contract changes",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
+      const promptStarted = yield* Fiber.join(turnStartedFiber);
+      assert.equal(promptStarted._tag, "Some");
+      yield* McpSessionRegistry.revokeActiveMcpProviderInstance(threadId, COPILOT_INSTANCE_ID);
+
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.join(interruptedTurnFiber);
+
+      const methods = (yield* Effect.promise(() => readJsonLines(requestLogPath))).map(
+        (request) => request.method,
+      );
+      assert.equal(methods.filter((method) => method === "session/new").length, 2);
+      assert.notInclude(methods, "session/load");
+
+      yield* adapter.stopSession(threadId);
     }),
   );
 

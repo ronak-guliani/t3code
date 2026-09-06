@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  EventId,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -30,9 +31,26 @@ function makeEnvironmentState(overrides: {
   readonly turnState?: "completed" | "error" | "interrupted" | "running";
   readonly activeTurnId?: TurnId | null;
   readonly hasPendingQueuedTurn?: boolean;
+  readonly terminalActivityState?: "completed" | "failed" | "interrupted" | "cancelled";
 }): EnvironmentState {
   const nextThreadId = overrides.threadId ?? threadId;
   const turnId = overrides.turnId ?? TurnId.make("turn-1");
+  const insightActivitiesByThreadId: EnvironmentState["insightActivitiesByThreadId"] =
+    overrides.terminalActivityState === undefined
+      ? {}
+      : {
+          [nextThreadId]: [
+            {
+              id: EventId.make("terminal-activity"),
+              kind: "insights.turn.completed",
+              tone: "info",
+              summary: "Turn completed",
+              payload: { state: overrides.terminalActivityState },
+              turnId,
+              createdAt: overrides.completedAt ?? "2026-06-10T00:01:00.000Z",
+            },
+          ],
+        };
   return {
     projectIds: [projectId],
     projectById: {},
@@ -48,7 +66,7 @@ function makeEnvironmentState(overrides: {
     activityIdsByThreadId: {},
     activityByThreadId: {},
     activityContextByThreadId: {},
-    insightActivitiesByThreadId: {},
+    insightActivitiesByThreadId,
     proposedPlanIdsByThreadId: {},
     proposedPlanByThreadId: {},
     turnDiffIdsByThreadId: {},
@@ -103,6 +121,37 @@ function makeTracker() {
     notifiedTurnKeys: new Set<string>(),
     bootstrappedEnvironmentIds: new Set<string>(),
     pendingInterruptedTurnKeys: new Map<string, number>(),
+  };
+}
+
+function collectAfterBootstrap(
+  environmentState: EnvironmentState,
+  input: {
+    readonly tracker?: ReturnType<typeof makeTracker>;
+    readonly now?: number;
+  } = {},
+) {
+  const tracker = input.tracker ?? makeTracker();
+  collectThreadCompletionNotifications({
+    environmentStateById: {
+      [environmentId]: makeEnvironmentState({ bootstrapComplete: true }),
+    },
+    notificationMode: "all",
+    activeThreadKey: null,
+    isDocumentFocused: false,
+    tracker,
+  });
+
+  return {
+    tracker,
+    requests: collectThreadCompletionNotifications({
+      environmentStateById: { [environmentId]: environmentState },
+      notificationMode: "all",
+      activeThreadKey: null,
+      isDocumentFocused: false,
+      tracker,
+      ...(input.now === undefined ? {} : { now: input.now }),
+    }),
   };
 }
 
@@ -313,6 +362,44 @@ describe("collectThreadCompletionNotifications", () => {
         status: "completed",
       },
     ]);
+  });
+
+  it.each([
+    {
+      name: "successful provider completion over a checkpoint interruption",
+      turnState: "interrupted" as const,
+      terminalActivityState: "completed" as const,
+      expectedStatus: "completed",
+      expectedTitle: "Chat completed",
+    },
+    {
+      name: "provider interruption over a stale completed shell state",
+      turnState: "completed" as const,
+      terminalActivityState: "interrupted" as const,
+      expectedStatus: "interrupted",
+      expectedTitle: "Chat interrupted",
+    },
+  ])("prefers $name", ({ turnState, terminalActivityState, expectedStatus, expectedTitle }) => {
+    const { requests, tracker } = collectAfterBootstrap(
+      makeEnvironmentState({
+        bootstrapComplete: true,
+        threadId: ThreadId.make("thread-provider-terminal"),
+        turnId: TurnId.make("turn-provider-terminal"),
+        turnState,
+        terminalActivityState,
+      }),
+      { now: 1_000 },
+    );
+
+    expect(requests).toMatchObject([
+      {
+        threadId: "thread-provider-terminal",
+        turnId: "turn-provider-terminal",
+        title: expectedTitle,
+        status: expectedStatus,
+      },
+    ]);
+    expect(tracker.pendingInterruptedTurnKeys).toEqual(new Map());
   });
 
   it("notifies an interruption that remains authoritative past the grace period", () => {

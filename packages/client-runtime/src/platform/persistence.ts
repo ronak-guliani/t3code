@@ -1,8 +1,10 @@
 import {
   EnvironmentId,
-  type OrchestrationThread,
+  type OrchestrationThreadDetailSnapshot,
   type OrchestrationShellSnapshot,
+  type ServerConfig,
   type ThreadId,
+  type VcsListRefsResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -24,6 +26,12 @@ export class ConnectionPersistenceError extends Schema.TaggedErrorClass<Connecti
       "load-thread",
       "save-thread",
       "remove-thread",
+      "load-server-config",
+      "save-server-config",
+      "load-vcs-refs",
+      "save-vcs-refs",
+      "remove-vcs-refs",
+      "clear-vcs-refs",
       "clear-environment",
     ]),
     message: Schema.String,
@@ -77,16 +85,42 @@ export class EnvironmentCacheStore extends Context.Service<
     readonly loadThread: (
       environmentId: EnvironmentId,
       threadId: ThreadId,
-    ) => Effect.Effect<Option.Option<OrchestrationThread>, ConnectionPersistenceError>;
+    ) => Effect.Effect<
+      Option.Option<OrchestrationThreadDetailSnapshot>,
+      ConnectionPersistenceError
+    >;
     readonly saveThread: (
       environmentId: EnvironmentId,
-      thread: OrchestrationThread,
+      thread: OrchestrationThreadDetailSnapshot,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
     readonly removeThread: (
       environmentId: EnvironmentId,
       threadId: ThreadId,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
     readonly clear: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly loadServerConfig: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<Option.Option<ServerConfig>, ConnectionPersistenceError>;
+    readonly saveServerConfig: (
+      environmentId: EnvironmentId,
+      config: ServerConfig,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly loadVcsRefs: (
+      environmentId: EnvironmentId,
+      cwd: string,
+    ) => Effect.Effect<Option.Option<VcsListRefsResult>, ConnectionPersistenceError>;
+    readonly saveVcsRefs: (
+      environmentId: EnvironmentId,
+      cwd: string,
+      refs: VcsListRefsResult,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly removeVcsRefs: (
+      environmentId: EnvironmentId,
+      cwd: string,
+    ) => Effect.Effect<void, ConnectionPersistenceError>;
+    readonly clearVcsRefs: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<void, ConnectionPersistenceError>;
   }

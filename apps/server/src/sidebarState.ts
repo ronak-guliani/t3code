@@ -144,7 +144,9 @@ const makeSidebarState = Effect.gen(function* () {
   });
 
   const loadSnapshot = Effect.gen(function* () {
-    const [state, rows] = yield* Effect.all([readStateRow(undefined), readPinnedRows(undefined)]);
+    const [state, rows] = yield* Effect.all([readStateRow(undefined), readPinnedRows(undefined)], {
+      concurrency: "unbounded",
+    });
     const pinnedThreadKeysByProjectKey: Record<string, string[]> = {};
     for (const row of rows) {
       (pinnedThreadKeysByProjectKey[row.projectKey] ??= []).push(row.threadKey);

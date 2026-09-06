@@ -7,6 +7,7 @@ import {
   buildDraftThreadRouteParams,
   buildThreadRouteParams,
   clearAgentRunRouteSearch,
+  clearThreadNavigationRouteSearch,
   parseAgentRunRouteSearch,
   parseThreadMessageRouteSearch,
   resolveThreadRouteRef,
@@ -86,6 +87,30 @@ describe("threadRoutes", () => {
     expect(clearAgentRunRouteSearch({ agent: "agent-1", diff: "1" })).toEqual({
       agent: undefined,
       diff: "1",
+    });
+  });
+
+  it("clears thread-local diff state when navigating to another thread", () => {
+    expect(
+      clearThreadNavigationRouteSearch({
+        agent: "agent-1",
+        diff: "1",
+        diffTurnId: "turn-1",
+        diffFilePath: "src/app.ts",
+        diffScope: "turn",
+        diffView: "chat",
+        reviewFinding: "finding-1",
+        message: "message-1",
+      }),
+    ).toEqual({
+      agent: undefined,
+      diff: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+      diffScope: undefined,
+      diffView: undefined,
+      reviewFinding: undefined,
+      message: "message-1",
     });
   });
 });

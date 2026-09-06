@@ -57,6 +57,7 @@ export const PullRequestMonitorBlockerKind = Schema.Literals([
   "check-cancelled",
   "changes-requested",
   "unresolved-thread",
+  /** Legacy durable blocker. Base distance is now informational and never blocks readiness. */
   "behind-base",
   /** Durable monitor state: feedback the owner has not dispositioned yet. */
   "feedback-open",
@@ -192,6 +193,8 @@ export const PullRequestMonitorActionableEventKind = Schema.Literals([
   "new-review-comment",
   "changes-requested-review",
   "check-failed",
+  "merge-conflict",
+  /** Legacy durable event. Base distance is now informational and never emitted. */
   "behind-base",
   "state-changed",
   /** Structured finding submitted by a review agent, not observed on the host. */
@@ -238,8 +241,16 @@ export type PullRequestMonitorRecord = typeof PullRequestMonitorRecord.Type;
 export const PullRequestMonitorStartInput = Schema.Struct({
   ...PullRequestRef.fields,
   ownerThreadId: Schema.optional(ThreadId),
+  requireAssociatedOwner: Schema.optional(Schema.Boolean),
+  ownerMode: Schema.optional(Schema.Literals(["preserve", "observe-only"])),
 });
 export type PullRequestMonitorStartInput = typeof PullRequestMonitorStartInput.Type;
+
+export const PullRequestMonitorOwnerCandidate = Schema.Struct({
+  threadId: ThreadId,
+  title: TrimmedNonEmptyString,
+});
+export type PullRequestMonitorOwnerCandidate = typeof PullRequestMonitorOwnerCandidate.Type;
 
 export const PullRequestMonitorStopInput = Schema.Struct({
   monitorId: Schema.optional(PullRequestMonitorId),
@@ -420,6 +431,7 @@ export type PullRequestMonitorContextResult = typeof PullRequestMonitorContextRe
 
 export const PullRequestMonitorStatusResult = Schema.Struct({
   monitor: Schema.NullOr(PullRequestMonitorRecord),
+  ownerCandidates: Schema.Array(PullRequestMonitorOwnerCandidate),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
   recentEvents: Schema.Array(PullRequestMonitorActionableEvent),
   openFeedback: Schema.Array(PullRequestMonitorFeedbackItem),
@@ -464,6 +476,8 @@ export type PullRequestMonitorFinding = typeof PullRequestMonitorFinding.Type;
 export const PullRequestMonitorSubmitFindingsInput = Schema.Struct({
   reference: PullRequestRef,
   reviewThreadId: ThreadId,
+  /** Source revision the findings reviewed; stale submissions are ignored. */
+  reviewedHeadSha: Schema.optional(TrimmedNonEmptyString),
   ownerThreadId: Schema.optional(ThreadId),
   summary: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
   startMonitoring: Schema.optional(Schema.Boolean),

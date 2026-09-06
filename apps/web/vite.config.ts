@@ -5,12 +5,18 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import { defineConfig } from "vite";
 import pkg from "./package.json" with { type: "json" };
 
+import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+
+const repoEnv = loadRepoEnv();
+Object.assign(process.env, repoEnv);
+
 const port = Number(process.env.PORT ?? 5733);
 const host = process.env.HOST?.trim() || "localhost";
 const configuredHttpUrl = process.env.VITE_HTTP_URL?.trim();
 const configuredWsUrl = process.env.VITE_WS_URL?.trim();
-const configuredCliOAuthClientId = process.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID?.trim();
-const configuredHostedAppUrl = process.env.VITE_HOSTED_APP_URL?.trim();
+const configuredClerkPublishableKey = repoEnv.VITE_CLERK_PUBLISHABLE_KEY?.trim();
+const configuredCliOAuthClientId = repoEnv.VITE_CLERK_CLI_OAUTH_CLIENT_ID?.trim();
+const configuredHostedAppUrl = repoEnv.VITE_HOSTED_APP_URL?.trim();
 const sourcemapEnv = process.env.T3CODE_WEB_SOURCEMAP?.trim().toLowerCase();
 
 const buildSourcemap =
@@ -70,6 +76,9 @@ export default defineConfig({
     "import.meta.env.VITE_HTTP_URL": JSON.stringify(configuredHttpUrl ?? ""),
     // In dev mode, tell the web app where the WebSocket server lives
     "import.meta.env.VITE_WS_URL": JSON.stringify(configuredWsUrl ?? ""),
+    "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(
+      configuredClerkPublishableKey ?? "",
+    ),
     "import.meta.env.VITE_CLERK_CLI_OAUTH_CLIENT_ID": JSON.stringify(
       configuredCliOAuthClientId ?? "",
     ),

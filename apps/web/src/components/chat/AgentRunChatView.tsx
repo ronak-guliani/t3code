@@ -82,6 +82,7 @@ export const AgentRunChatView = memo(function AgentRunChatView({
             markdownCwd={workspaceRoot}
             resolvedTheme={resolvedTheme}
             timestampFormat={settings.timestampFormat}
+            messagePreviewLineLimits={settings.messagePreviewLineLimits}
             workspaceRoot={workspaceRoot}
             onIsAtEndChange={() => undefined}
           />

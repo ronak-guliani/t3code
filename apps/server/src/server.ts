@@ -23,7 +23,6 @@ import { ProjectionWorkflowRepositoryLive } from "./persistence/Layers/Projectio
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
-import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime.ts";
 import { CheckpointDiffQueryLive } from "./checkpointing/Layers/CheckpointDiffQuery.ts";
 import { CheckpointStoreLive } from "./checkpointing/Layers/CheckpointStore.ts";
@@ -31,6 +30,7 @@ import { DiffStateQueryLive } from "./diffState/Layers/DiffStateQuery.ts";
 import { GitCoreLive } from "./git/Layers/GitCore.ts";
 import { GitHubCliLive } from "./git/Layers/GitHubCli.ts";
 import { GitStatusBroadcasterLive } from "./git/Layers/GitStatusBroadcaster.ts";
+import { ProjectAutoPullLive } from "./git/ProjectAutoPull.ts";
 import { TextGenerationLive } from "./git/Layers/TextGenerationLive.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { TerminalManagerLive } from "./terminal/Layers/Manager.ts";
@@ -39,9 +39,8 @@ import { KeybindingsLive } from "./keybindings.ts";
 import { ServerRuntimeStartup, ServerRuntimeStartupLive } from "./serverRuntimeStartup.ts";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
-import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
-import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
-import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
+import { TurnLifecycleRuntimeLayerLive } from "./orchestration/Layers/TurnLifecycleRuntime.ts";
+import { ThreadTitleReactorLive } from "./orchestration/Layers/ThreadTitleReactor.ts";
 import { QueuedTurnReactorLive } from "./orchestration/Layers/QueuedTurnReactor.ts";
 import { WorkflowCoordinatorReactorLive } from "./orchestration/Layers/WorkflowCoordinatorReactor.ts";
 import { ReviewSnapshotVerifierLive } from "./orchestration/Layers/ReviewSnapshotVerifier.ts";
@@ -76,6 +75,7 @@ import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { AuthControlPlaneLive, AuthCoreLive } from "./auth/Layers/AuthControlPlane.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -99,14 +99,18 @@ import * as CloudEnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as CloudServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as CliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
-import { connectHttpApiLayer } from "./cloud/http.ts";
+import { connectHttpApiRoutesLayer } from "./cloud/http.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiRoutesLayer } from "./pullRequest/http.ts";
 import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequestProviderRegistry.ts";
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
+import { layer as pullRequestMonitorReviewHandoffReactorLayer } from "./pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
+import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
+import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 
 const PtyAdapterLive = Layer.unwrap(
   Effect.gen(function* () {
@@ -158,9 +162,8 @@ const PlatformServicesLive = Layer.unwrap(
 
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
-  Layer.provideMerge(CheckpointReactorLive),
-  Layer.provideMerge(ProviderRuntimeIngestionLive),
+  Layer.provideMerge(TurnLifecycleRuntimeLayerLive),
+  Layer.provideMerge(ThreadTitleReactorLive),
   Layer.provideMerge(QueuedTurnReactorLive),
   Layer.provideMerge(WorkflowCoordinatorReactorLive),
   Layer.provideMerge(ReviewSnapshotVerifierLive),
@@ -201,7 +204,14 @@ const GitManagerLayerLive = GitManagerLive.pipe(
 
 const GitLayerLive = Layer.empty.pipe(
   Layer.provideMerge(GitManagerLayerLive),
-  Layer.provideMerge(GitStatusBroadcasterLive.pipe(Layer.provide(GitManagerLayerLive))),
+  Layer.provideMerge(
+    GitStatusBroadcasterLive.pipe(
+      Layer.provide(GitManagerLayerLive),
+      Layer.provideMerge(
+        ProjectAutoPullLive.pipe(Layer.provide(GitCoreLive), Layer.provide(OrchestrationLayerLive)),
+      ),
+    ),
+  ),
   Layer.provideMerge(GitCoreLive),
   Layer.provideMerge(GitHubCliLive),
 );
@@ -216,13 +226,15 @@ const PullRequestMonitorFeedbackServiceLive = pullRequestMonitorFeedbackServiceL
 
 const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(PullRequestLayerLive),
-  Layer.provide(PullRequestMonitorFeedbackServiceLive),
+  Layer.provideMerge(PullRequestMonitorFeedbackServiceLive),
   Layer.provideMerge(GitManagerLayerLive),
 );
 
 // Associating a pull request with a chat is the ownership signal, so monitoring follows it.
 // provideMerge keeps one monitor service instance shared with the reactor.
 const PullRequestMonitorLayerLive = pullRequestMonitorAssociationReactorLayer.pipe(
+  Layer.provideMerge(pullRequestMonitorReviewHandoffReactorLayer),
+  Layer.provideMerge(ProjectionStateRepositoryLive),
   Layer.provideMerge(PullRequestMonitorServiceLive),
 );
 
@@ -307,6 +319,7 @@ const AgentAwarenessRelayLayerLive = AgentAwarenessRelay.layer.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
 );
 
 export const CloudHttpRuntimeLayerLive = Layer.mergeAll(
@@ -325,12 +338,9 @@ export const CloudRuntimeLayerLive = Layer.effectDiscard(
   Layer.provideMerge(CloudRuntimeServicesLayerLive),
 ) as unknown as Layer.Layer<CloudRuntimeServices>;
 
-const ConnectHttpApiLayerLive = connectHttpApiLayer as unknown as Layer.Layer<never>;
+const ConnectHttpApiRoutesLayerLive = connectHttpApiRoutesLayer as unknown as Layer.Layer<never>;
 
-const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
-  Layer.provideMerge(ProviderLayerLive),
-  Layer.provideMerge(OrchestrationLayerLive),
-);
+const BackgroundLayerLive = BackgroundPolicy.layer.pipe(Layer.provideMerge(HostPowerMonitor.layer));
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // Core Services
@@ -338,7 +348,8 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(PullRequestLayerLive),
   Layer.provideMerge(PullRequestMonitorLayerLive),
-  Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(ProviderLayerLive),
+  Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(TerminalLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(KeybindingsLive),
@@ -362,6 +373,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntimeLive),
   Layer.provideMerge(ServerSettingsLive),
+  Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(SidebarStateLive),
   Layer.provideMerge(WorkspaceLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLive),
@@ -414,7 +426,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
   pullRequestHttpApiRoutesLayer,
-  ConnectHttpApiLayerLive,
+  ConnectHttpApiRoutesLayerLive,
   mobileRouteLayer,
   otlpTracesProxyRouteLayer,
   projectFaviconRouteLayer,

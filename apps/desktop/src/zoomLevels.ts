@@ -21,5 +21,5 @@ export function nextZoomLevel(current: number, direction: ZoomDirection): number
   if (direction === "in") {
     return ZOOM_LEVELS.find((level) => level > zoomFactor + ZOOM_EPSILON) ?? highest;
   }
-  return [...ZOOM_LEVELS].reverse().find((level) => level < zoomFactor - ZOOM_EPSILON) ?? lowest;
+  return ZOOM_LEVELS.toReversed().find((level) => level < zoomFactor - ZOOM_EPSILON) ?? lowest;
 }

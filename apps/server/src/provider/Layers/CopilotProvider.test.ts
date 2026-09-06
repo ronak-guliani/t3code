@@ -64,6 +64,7 @@ const COPILOT_DRIVER = ProviderDriverKind.make("copilot");
 
 const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "auto",
+  "gpt-6-astra",
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -79,6 +80,7 @@ const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "gpt-5-mini",
   "gpt-5.6-luna",
   "gpt-5.6-sol",
+  "gpt-5.6-sol-fast",
   "gpt-5.6-terra",
   "gpt-4.1",
   "gpt-4o",
@@ -94,15 +96,19 @@ const EXPECTED_COPILOT_BUILT_IN_MODEL_SLUGS = [
   "claude-sonnet-4.5",
   "claude-sonnet-4",
   "claude-haiku-4.5",
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-3.1-pro-preview",
   "gemini-3-pro-preview",
   "gemini-3-flash-preview",
   "gemini-2.5-pro",
+  "grok-4.6",
   "grok-4.5",
   "grok-code-fast-1",
   "kimi-k2.7-code",
+  "mai-code-1.1-flash",
   "mai-code-1-flash-picker",
 ] as const;
 

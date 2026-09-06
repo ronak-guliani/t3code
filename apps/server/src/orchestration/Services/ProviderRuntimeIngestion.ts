@@ -4,9 +4,11 @@
  * Owns background workers that consume provider runtime streams and emit
  * orchestration commands/events.
  *
+ * @internal TurnLifecycleRuntime owns this implementation seam.
+ *
  * @module ProviderRuntimeIngestionService
  */
-import { type EventId } from "@t3tools/contracts";
+import { type EventId, type ProviderRuntimeEvent } from "@t3tools/contracts";
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
 
@@ -21,9 +23,12 @@ export interface ProviderRuntimeIngestionShape {
    * finalized on shutdown.
    *
    * Uses an internal queue and continues after non-interrupt failures by
-   * logging warnings.
+   * logging warnings. Hands each processed event to the checkpoint queue
+   * before accepting the next item, without waiting for checkpoint capture.
    */
-  readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+  readonly start: (
+    enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>,
+  ) => Effect.Effect<void, never, Scope.Scope>;
 
   /**
    * Resolves when the internal processing queue is empty and idle.

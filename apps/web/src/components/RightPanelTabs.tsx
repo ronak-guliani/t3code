@@ -16,8 +16,18 @@ import { type MouseEvent, type ReactNode, useState } from "react";
 
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
+import { useBrowserDefaults } from "~/browser/browserDefaults";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "./ui/menu";
 
 type Props = {
   readonly mode: PreviewPanelMode;
@@ -30,8 +40,9 @@ type Props = {
   readonly onCloseOthers: (surface: RightPanelSurface) => void;
   readonly onCloseToRight: (surface: RightPanelSurface) => void;
   readonly onCloseAll: () => void;
+  readonly onClosePanel: () => void;
   readonly onCopyPath: (path: string) => void;
-  readonly onAddBrowser: () => void;
+  readonly onAddBrowserInProfile: (profileId: string) => void;
   readonly onAddTerminal: () => void;
   readonly onAddFiles: () => void;
   readonly onAddDiff: () => void;
@@ -128,8 +139,9 @@ export function RightPanelTabs({
   onCloseOthers,
   onCloseToRight,
   onCloseAll,
+  onClosePanel,
   onCopyPath,
-  onAddBrowser,
+  onAddBrowserInProfile,
   onAddTerminal,
   onAddFiles,
   onAddDiff,
@@ -138,6 +150,8 @@ export function RightPanelTabs({
   onToggleMaximize,
   children,
 }: Props) {
+  const browserProfiles = useBrowserDefaults().profiles;
+  const activeSurface = surfaces.find((surface) => surface.id === activeSurfaceId);
   const closeOnMiddleClick = (event: MouseEvent, surface: RightPanelSurface) => {
     if (event.button !== 1) return;
     event.preventDefault();
@@ -161,7 +175,8 @@ export function RightPanelTabs({
               <div
                 key={surface.id}
                 className={cn(
-                  "group flex h-6 min-w-20 max-w-40 shrink-0 items-center rounded-md border text-[11px]",
+                  "group flex h-6 min-w-20 max-w-40 shrink-0 items-center rounded-md border",
+                  surface.kind === "preview" ? "text-[10px]" : "text-[11px]",
                   active
                     ? "border-border/70 bg-background text-foreground shadow-xs/5"
                     : "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -240,7 +255,16 @@ export function RightPanelTabs({
               }
             />
             <MenuPopup>
-              <MenuItem onClick={onAddBrowser}>Browser</MenuItem>
+              <MenuSub>
+                <MenuSubTrigger>Browser</MenuSubTrigger>
+                <MenuSubPopup className="min-w-40 max-w-56">
+                  {browserProfiles.map((profile) => (
+                    <MenuItem key={profile.id} onClick={() => onAddBrowserInProfile(profile.id)}>
+                      <span className="min-w-0 truncate">{profile.name}</span>
+                    </MenuItem>
+                  ))}
+                </MenuSubPopup>
+              </MenuSub>
               <MenuItem onClick={onAddTerminal}>Terminal</MenuItem>
               <MenuItem onClick={onAddFiles}>Files</MenuItem>
               <MenuItem onClick={onAddDiff}>Diff</MenuItem>
@@ -256,6 +280,16 @@ export function RightPanelTabs({
             className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             {maximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+          </button>
+        ) : null}
+        {activeSurface?.kind === "preview" ? (
+          <button
+            type="button"
+            aria-label="Close browser panel"
+            onClick={onClosePanel}
+            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />
           </button>
         ) : null}
       </div>

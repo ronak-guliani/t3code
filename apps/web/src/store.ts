@@ -30,6 +30,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import type { ThreadId, TurnId } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { resolveModelSlugForProvider } from "@t3tools/shared/model";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 import { create } from "zustand";
 import {
   type ChatMessage,
@@ -73,6 +74,10 @@ export interface EnvironmentState {
   threadShellById: Record<ThreadId, ThreadShell>;
   threadSessionById: Record<ThreadId, ThreadSession | null>;
   threadTurnStateById: Record<ThreadId, ThreadTurnState>;
+  // Shell state can arrive before the focused thread's detail snapshot.
+  // Keep this separate so the timeline does not render transient work state
+  // while the detail projections are still being hydrated.
+  threadDetailHydratedById?: Record<ThreadId, boolean>;
 
   // ---------------------------------------------------------------------------
   // Thread detail content — written ONLY by the detail stream
@@ -123,6 +128,7 @@ const initialEnvironmentState: EnvironmentState = {
   threadShellById: {},
   threadSessionById: {},
   threadTurnStateById: {},
+  threadDetailHydratedById: {},
   messageIdsByThreadId: {},
   messageByThreadId: {},
   activityIdsByThreadId: {},
@@ -295,6 +301,7 @@ function mapProject(
     environmentId,
     name: project.title,
     cwd: project.workspaceRoot,
+    autoPull: project.autoPull ?? false,
     repositoryIdentity: project.repositoryIdentity ?? null,
     defaultModelSelection: project.defaultModelSelection
       ? normalizeModelSelection(project.defaultModelSelection)
@@ -401,6 +408,7 @@ function mapThreadShell(
     worktreePath: thread.worktreePath,
     pullRequest: thread.pullRequest ?? null,
     latestUserMessageAt: thread.latestUserMessageAt,
+    latestChildNotificationAt: thread.latestChildNotificationAt ?? null,
     hasPendingApprovals: thread.hasPendingApprovals,
     hasPendingUserInput: thread.hasPendingUserInput,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
@@ -543,6 +551,7 @@ function sidebarThreadSummariesEqual(
     left.worktreePath === right.worktreePath &&
     pullRequestsEqual(left.pullRequest, right.pullRequest) &&
     left.latestUserMessageAt === right.latestUserMessageAt &&
+    left.latestChildNotificationAt === right.latestChildNotificationAt &&
     left.hasPendingApprovals === right.hasPendingApprovals &&
     left.hasPendingUserInput === right.hasPendingUserInput &&
     left.hasActionableProposedPlan === right.hasActionableProposedPlan &&
@@ -1106,6 +1115,8 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   const { [threadId]: _removedShell, ...threadShellById } = state.threadShellById;
   const { [threadId]: _removedSession, ...threadSessionById } = state.threadSessionById;
   const { [threadId]: _removedTurnState, ...threadTurnStateById } = state.threadTurnStateById;
+  const { [threadId]: _removedDetailHydrated, ...threadDetailHydratedById } =
+    state.threadDetailHydratedById ?? {};
   const { [threadId]: _removedMessageIds, ...messageIdsByThreadId } = state.messageIdsByThreadId;
   const { [threadId]: _removedMessages, ...messageByThreadId } = state.messageByThreadId;
   const { [threadId]: _removedActivityIds, ...activityIdsByThreadId } = state.activityIdsByThreadId;
@@ -1139,6 +1150,7 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
     threadShellById,
     threadSessionById,
     threadTurnStateById,
+    threadDetailHydratedById,
     messageIdsByThreadId,
     messageByThreadId,
     activityIdsByThreadId,
@@ -1675,6 +1687,10 @@ function syncEnvironmentShellSnapshot(
     threadShellById,
     threadSessionById,
     threadTurnStateById,
+    threadDetailHydratedById: retainThreadScopedRecord(
+      state.threadDetailHydratedById ?? {},
+      nextThreadIds,
+    ),
     sidebarThreadSummaryById,
     workflowRuntime: createWorkflowRuntimeState(
       snapshot.workflowRuns ?? [],
@@ -1750,11 +1766,36 @@ export function syncServerThreadDetail(
 ): AppState {
   const environmentState = getStoredEnvironmentState(state, environmentId);
   const previousThread = getThreadFromEnvironmentState(environmentState, thread.id);
-  return commitEnvironmentState(
-    state,
-    environmentId,
-    writeThreadState(environmentState, mapThread(thread, environmentId), previousThread),
+  const nextEnvironmentState = writeThreadState(
+    environmentState,
+    mapThread(thread, environmentId),
+    previousThread,
   );
+  return commitEnvironmentState(state, environmentId, {
+    ...nextEnvironmentState,
+    threadDetailHydratedById: {
+      ...nextEnvironmentState.threadDetailHydratedById,
+      [thread.id]: true,
+    },
+  });
+}
+
+export function clearThreadDetailHydration(
+  state: AppState,
+  threadId: ThreadId,
+  environmentId: EnvironmentId,
+): AppState {
+  const environmentState = getStoredEnvironmentState(state, environmentId);
+  const hydrationByThreadId = environmentState.threadDetailHydratedById;
+  if (!hydrationByThreadId?.[threadId]) {
+    return state;
+  }
+
+  const { [threadId]: _removed, ...threadDetailHydratedById } = hydrationByThreadId;
+  return commitEnvironmentState(state, environmentId, {
+    ...environmentState,
+    threadDetailHydratedById,
+  });
 }
 
 function applyEnvironmentOrchestrationEvent(
@@ -1834,6 +1875,7 @@ function applyEnvironmentOrchestrationEvent(
       }
       const nextProject: Project = {
         ...project,
+        ...(event.payload.autoPull !== undefined ? { autoPull: event.payload.autoPull } : {}),
         ...(event.payload.title !== undefined ? { name: event.payload.title } : {}),
         ...(event.payload.workspaceRoot !== undefined ? { cwd: event.payload.workspaceRoot } : {}),
         ...(event.payload.repositoryIdentity !== undefined
@@ -2232,28 +2274,84 @@ function applyEnvironmentOrchestrationEvent(
       });
 
     case "thread.activity-appended":
-      return updateThreadState(state, event.payload.threadId, (thread) => {
-        const allActivities = [
-          ...thread.activities.filter((activity) => activity.id !== event.payload.activity.id),
-          { ...event.payload.activity },
-        ].toSorted(compareActivities);
-        const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
-        const activeTurnId = thread.latestTurn?.turnId;
-        const evictedCurrentTurnActivity =
-          activeTurnId !== undefined &&
-          allActivities
-            .slice(0, retainedActivityStart)
-            .some((activity) => activity.turnId === activeTurnId);
-        return {
-          ...thread,
-          activities: allActivities.slice(retainedActivityStart),
-          hasMoreActivities:
-            (thread.hasMoreActivities ?? false) || allActivities.length > MAX_THREAD_ACTIVITIES,
-          hasMoreCurrentTurnActivities:
-            (thread.hasMoreCurrentTurnActivities ?? false) || evictedCurrentTurnActivity,
-          updatedAt: event.occurredAt,
-        };
-      });
+    case "thread.child-lifecycle-notified":
+      return updateThreadState(
+        state,
+        event.type === "thread.activity-appended"
+          ? event.payload.threadId
+          : event.payload.parentThreadId,
+        (thread) => {
+          const nextActivity =
+            event.type === "thread.activity-appended"
+              ? { ...event.payload.activity }
+              : childLifecycleNotificationToActivity({
+                  eventId: event.eventId,
+                  payload: event.payload,
+                  sequence: event.sequence,
+                });
+          const tailActivity = thread.activities.at(-1);
+          let canAppendInOrder =
+            tailActivity === undefined || compareActivities(tailActivity, nextActivity) <= 0;
+          if (canAppendInOrder) {
+            let previousActivity: Thread["activities"][number] | undefined;
+            for (const activity of thread.activities) {
+              if (
+                activity.id === nextActivity.id ||
+                (previousActivity !== undefined &&
+                  compareActivities(previousActivity, activity) > 0)
+              ) {
+                canAppendInOrder = false;
+                break;
+              }
+              previousActivity = activity;
+            }
+          }
+
+          let activities: Thread["activities"];
+          let evictedCurrentTurnActivity = false;
+          const activeTurnId = thread.latestTurn?.turnId;
+          let exceededActivityLimit: boolean;
+          if (canAppendInOrder) {
+            const retainedActivityStart = Math.max(
+              0,
+              thread.activities.length + 1 - MAX_THREAD_ACTIVITIES,
+            );
+            if (activeTurnId !== undefined) {
+              for (let index = 0; index < retainedActivityStart; index += 1) {
+                if (thread.activities[index]?.turnId === activeTurnId) {
+                  evictedCurrentTurnActivity = true;
+                  break;
+                }
+              }
+            }
+            activities = thread.activities.slice(retainedActivityStart);
+            activities.push(nextActivity);
+            exceededActivityLimit = thread.activities.length + 1 > MAX_THREAD_ACTIVITIES;
+          } else {
+            const allActivities = [
+              ...thread.activities.filter((activity) => activity.id !== nextActivity.id),
+              nextActivity,
+            ].toSorted(compareActivities);
+            const retainedActivityStart = Math.max(0, allActivities.length - MAX_THREAD_ACTIVITIES);
+            evictedCurrentTurnActivity =
+              activeTurnId !== undefined &&
+              allActivities
+                .slice(0, retainedActivityStart)
+                .some((activity) => activity.turnId === activeTurnId);
+            activities = allActivities.slice(retainedActivityStart);
+            exceededActivityLimit = allActivities.length > MAX_THREAD_ACTIVITIES;
+          }
+
+          return {
+            ...thread,
+            activities,
+            hasMoreActivities: (thread.hasMoreActivities ?? false) || exceededActivityLimit,
+            hasMoreCurrentTurnActivities:
+              (thread.hasMoreCurrentTurnActivities ?? false) || evictedCurrentTurnActivity,
+            updatedAt: event.occurredAt,
+          };
+        },
+      );
 
     case "thread.queued-turn-created":
       return updateThreadState(state, event.payload.threadId, (thread) => ({
@@ -2779,6 +2877,7 @@ interface AppStore extends AppState {
     environmentId: EnvironmentId,
   ) => void;
   syncServerThreadDetail: (thread: OrchestrationThread, environmentId: EnvironmentId) => void;
+  clearThreadDetailHydration: (threadId: ThreadId, environmentId: EnvironmentId) => void;
   applyOrchestrationEvent: (event: OrchestrationEvent, environmentId: EnvironmentId) => void;
   applyOrchestrationEvents: (
     events: ReadonlyArray<OrchestrationEvent>,
@@ -2802,6 +2901,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncServerShellSnapshot(state, snapshot, environmentId)),
   syncServerThreadDetail: (thread, environmentId) =>
     set((state) => syncServerThreadDetail(state, thread, environmentId)),
+  clearThreadDetailHydration: (threadId, environmentId) =>
+    set((state) => clearThreadDetailHydration(state, threadId, environmentId)),
   applyOrchestrationEvent: (event, environmentId) =>
     set((state) => applyOrchestrationEvent(state, event, environmentId)),
   applyOrchestrationEvents: (events, environmentId) =>

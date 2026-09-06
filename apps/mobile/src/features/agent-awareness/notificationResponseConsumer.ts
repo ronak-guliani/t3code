@@ -1,6 +1,8 @@
 import type { NotificationResponse } from "expo-notifications";
 import * as Schema from "effect/Schema";
 
+import { reportClientError } from "../../lib/clientLogger";
+
 export class NotificationNavigationError extends Schema.TaggedErrorClass<NotificationNavigationError>()(
   "NotificationNavigationError",
   {
@@ -23,7 +25,7 @@ export async function consumeLastAgentNotificationResponse(input: {
   try {
     response = await input.getLastResponse();
   } catch (cause) {
-    console.error(new NotificationNavigationError({ operation: "read", cause }));
+    reportClientError(new NotificationNavigationError({ operation: "read", cause }));
     return;
   }
 
@@ -34,7 +36,7 @@ export async function consumeLastAgentNotificationResponse(input: {
   try {
     input.handleResponse(response);
   } catch (cause) {
-    console.error(
+    reportClientError(
       new NotificationNavigationError({
         operation: "route",
         notificationId: response.notification.request.identifier,
@@ -47,7 +49,7 @@ export async function consumeLastAgentNotificationResponse(input: {
   try {
     await input.clearLastResponse();
   } catch (cause) {
-    console.error(
+    reportClientError(
       new NotificationNavigationError({
         operation: "clear",
         notificationId: response.notification.request.identifier,

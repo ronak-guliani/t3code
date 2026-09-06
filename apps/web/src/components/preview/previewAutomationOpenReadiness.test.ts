@@ -8,6 +8,8 @@ import {
   previewAutomationDefaultViewport,
   previewAutomationOpenNeedsOverlay,
   previewPresentationSettleDecision,
+  explicitlySuppressesPreview,
+  shouldAutoShowPreviewForAutomationUse,
   shouldPresentPreview,
 } from "./previewAutomationOpenReadiness";
 
@@ -31,6 +33,41 @@ describe("preview automation open readiness", () => {
     expect(shouldPresentPreview({ open: true, show: false } as PreviewAutomationOpenInput)).toBe(
       true,
     );
+  });
+
+  it("respects the user's default presentation preference", () => {
+    expect(shouldPresentPreview({} as PreviewAutomationOpenInput, false)).toBe(false);
+    expect(shouldPresentPreview({ open: true } as PreviewAutomationOpenInput, false)).toBe(true);
+  });
+
+  it("auto-shows reused tabs for non-open operations unless suppressed", () => {
+    expect(
+      shouldAutoShowPreviewForAutomationUse({
+        operation: "click",
+        autoShowFloatingPreview: true,
+        presentationSuppressed: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldAutoShowPreviewForAutomationUse({
+        operation: "click",
+        autoShowFloatingPreview: true,
+        presentationSuppressed: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoShowPreviewForAutomationUse({
+        operation: "openAndSnapshot",
+        autoShowFloatingPreview: true,
+        presentationSuppressed: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("tracks explicit suppression through both presentation aliases", () => {
+    expect(explicitlySuppressesPreview({ open: false } as PreviewAutomationOpenInput)).toBe(true);
+    expect(explicitlySuppressesPreview({ show: false } as PreviewAutomationOpenInput)).toBe(true);
+    expect(explicitlySuppressesPreview({} as PreviewAutomationOpenInput)).toBe(false);
   });
 
   it("does not wait for a desktop overlay when opening an empty tab", () => {

@@ -56,10 +56,10 @@ import { createEnvironmentConnection, type EnvironmentConnection } from "./conne
 import {
   useStore,
   selectProjectsAcrossEnvironments,
+  selectSidebarThreadsAcrossEnvironments,
   selectSidebarThreadSummaryByRef,
   selectThreadByRef,
   selectThreadExistsByRef,
-  selectThreadsAcrossEnvironments,
 } from "~/store";
 import { useTerminalStateStore } from "~/terminalStateStore";
 import { isPendingTurnActive, usePendingTurnStore } from "~/pendingTurnStore";
@@ -117,6 +117,8 @@ let needsProviderInvalidation = false;
 const THREAD_DETAIL_SUBSCRIPTION_IDLE_EVICTION_MS = 15 * 60 * 1000;
 const MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS = 32;
 const NOOP = () => undefined;
+
+const THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS = 32;
 
 function compareAppliedProjectionVersion(
   left: { readonly sequence: number; readonly updatedAt: string | null },
@@ -310,19 +312,54 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     return false;
   }
 
-  entry.unsubscribe = connection.client.orchestration.subscribeThread(
+  // Streaming turns emit high-frequency deltas; buffer trailing events for a
+  // short window so the store applies them as one batch. The first event of a
+  // burst still applies synchronously to keep isolated events latency-free.
+  let pendingEvents: OrchestrationEvent[] | null = null;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushPendingEvents = () => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    const buffered = pendingEvents;
+    pendingEvents = null;
+    if (buffered !== null && buffered.length > 0) {
+      applyRecoveredEventBatch(buffered, entry.environmentId);
+    }
+  };
+
+  const unsubscribeTransport = connection.client.orchestration.subscribeThread(
     { threadId: entry.threadId },
     (item) => {
       if (item.kind === "snapshot") {
+        flushPendingEvents();
         useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
         return;
       }
       if (item.kind === "synchronized") {
         return;
       }
-      applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
+      if (flushTimer === null) {
+        applyRecoveredEventBatch([item.event], entry.environmentId);
+        if (THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS <= 0) {
+          return;
+        }
+        pendingEvents = [];
+        flushTimer = setTimeout(flushPendingEvents, THREAD_DETAIL_EVENT_COALESCING_WINDOW_MS);
+        return;
+      }
+      pendingEvents!.push(item.event);
     },
   );
+  entry.unsubscribe = () => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    pendingEvents = null;
+    unsubscribeTransport();
+  };
   stopWatchingThreadDetailSubscriptionReadiness(entry);
   return true;
 }
@@ -357,6 +394,7 @@ function disposeThreadDetailSubscriptionByKey(key: string): boolean {
   threadDetailSubscriptions.delete(key);
   entry.unsubscribe();
   entry.unsubscribe = NOOP;
+  useStore.getState().clearThreadDetailHydration(entry.threadId, entry.environmentId);
   return true;
 }
 
@@ -628,12 +666,13 @@ function syncProjectUiFromStore() {
 }
 
 function syncThreadUiFromStore() {
-  const threads = selectThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
   useUiStateStore.getState().syncThreads(
     threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       seedVisitedAt: thread.updatedAt ?? thread.createdAt,
       latestTurnCompletedAt: thread.latestTurn?.completedAt,
+      latestChildNotificationAt: thread.latestChildNotificationAt,
     })),
   );
   markPromotedDraftThreadsByRef(
@@ -645,7 +684,7 @@ function reconcileSnapshotDerivedState() {
   syncProjectUiFromStore();
   syncThreadUiFromStore();
 
-  const threads = selectThreadsAcrossEnvironments(useStore.getState());
+  const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
   const activeThreadKeys = collectActiveTerminalThreadIds({
     snapshotThreads: threads.map((thread) => ({
       key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
@@ -759,12 +798,13 @@ function applyRecoveredEventBatch(
     (event) => event.type === "thread.created" || event.type === "thread.deleted",
   );
   if (needsThreadUiSync) {
-    const threads = selectThreadsAcrossEnvironments(useStore.getState());
+    const threads = selectSidebarThreadsAcrossEnvironments(useStore.getState());
     useUiStateStore.getState().syncThreads(
       threads.map((thread) => ({
         key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
         seedVisitedAt: thread.updatedAt ?? thread.createdAt,
         latestTurnCompletedAt: thread.latestTurn?.completedAt,
+        latestChildNotificationAt: thread.latestChildNotificationAt,
       })),
     );
   }

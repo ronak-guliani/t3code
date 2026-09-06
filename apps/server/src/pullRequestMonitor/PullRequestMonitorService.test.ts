@@ -6,6 +6,7 @@ import {
   PullRequestOperationError,
   ThreadId,
   type ModelSelection,
+  type PullRequestMonitorFeedbackDeliveryId,
   type PullRequestMonitorSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -35,6 +36,7 @@ import {
 } from "./PullRequestMonitorFeedbackService.ts";
 import { PullRequestMonitorFeedbackStore } from "./PullRequestMonitorFeedbackStore.ts";
 import {
+  associatedOwnerCandidates,
   layer as pullRequestMonitorServiceLayer,
   PullRequestMonitorService,
 } from "./PullRequestMonitorService.ts";
@@ -174,15 +176,21 @@ const knownThreads = new Map<
     worktreePath: string | null;
     archivedAt: string | null;
     busy: boolean;
+    pullRequest: { number: number; url: string } | null;
   }
 >();
 
-function seedThread(threadId: ThreadId, worktreePath: string | null = "/tmp/wt") {
+function seedThread(
+  threadId: ThreadId,
+  worktreePath: string | null = "/tmp/wt",
+  pullRequest: { number: number; url: string } | null = null,
+) {
   knownThreads.set(threadId, {
     projectId,
     worktreePath,
     archivedAt: null,
     busy: false,
+    pullRequest,
   });
 }
 
@@ -222,6 +230,17 @@ const fakeProjections = {
 } as unknown as ProjectionSnapshotQuery["Service"];
 
 const fakeEngine = {
+  getReadModel: () =>
+    Effect.succeed({
+      threads: [...knownThreads.entries()].map(([id, thread]) => ({
+        id,
+        projectId: thread.projectId,
+        title: `Chat ${id}`,
+        pullRequest: thread.pullRequest,
+        archivedAt: thread.archivedAt,
+        deletedAt: null,
+      })),
+    } as never),
   dispatch: (command: {
     type: string;
     threadId?: ThreadId;
@@ -318,6 +337,40 @@ const TestLayer = pullRequestMonitorServiceLayer.pipe(
 
 const layer = it.layer(TestLayer);
 
+it("returns only active chats associated with the monitored pull request", () => {
+  const candidates = associatedOwnerCandidates(
+    [
+      {
+        id: ThreadId.make("owner"),
+        projectId,
+        title: "Fix PR",
+        pullRequest: { number: 42, url: "https://github.com/acme/app/pull/42" },
+        archivedAt: null,
+        deletedAt: null,
+      },
+      {
+        id: ThreadId.make("other-pr"),
+        projectId,
+        title: "Other PR",
+        pullRequest: { number: 43, url: "https://github.com/acme/app/pull/43" },
+        archivedAt: null,
+        deletedAt: null,
+      },
+      {
+        id: ThreadId.make("archived"),
+        projectId,
+        title: "Archived",
+        pullRequest: { number: 42, url: "https://github.com/acme/app/pull/42" },
+        archivedAt: "2026-08-17T00:00:00.000Z",
+        deletedAt: null,
+      },
+    ],
+    { projectId, repository: "acme/app", number: 42 },
+  );
+
+  assert.deepStrictEqual(candidates, [{ threadId: ThreadId.make("owner"), title: "Fix PR" }]);
+});
+
 layer("PullRequestMonitorService", (it) => {
   it.effect("starts one canonical monitor and exposes status", () =>
     Effect.gen(function* () {
@@ -342,6 +395,7 @@ layer("PullRequestMonitorService", (it) => {
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNotNull(status.monitor);
       assert.isNotNull(status.latestSnapshot);
+      assert.deepStrictEqual(status.ownerCandidates, []);
       assert.isArray(status.openFeedback);
       assert.isArray(status.recentDeliveries);
       assert.isArray(status.recentReports);
@@ -374,6 +428,249 @@ layer("PullRequestMonitorService", (it) => {
       });
       assert.strictEqual(transferred.monitor.ownerThreadId, ownerB);
       assert.isNull(transferred.monitor.linkedReviewThreadId);
+    }),
+  );
+
+  it.effect("requires browser-selected owners to be actively associated with the PR", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const associated = ThreadId.make("associated-owner");
+      const unrelated = ThreadId.make("unrelated-owner");
+      const archived = ThreadId.make("archived-owner");
+      seedThread(associated, "/tmp/associated", {
+        number: 1044,
+        url: "https://github.com/acme/app/pull/1044",
+      });
+      seedThread(unrelated, "/tmp/unrelated", {
+        number: 45,
+        url: "https://github.com/acme/app/pull/45",
+      });
+      seedThread(archived, "/tmp/archived", {
+        number: 1044,
+        url: "https://github.com/acme/app/pull/1044",
+      });
+      const archivedRow = knownThreads.get(archived)!;
+      knownThreads.set(archived, {
+        ...archivedRow,
+        archivedAt: "2026-08-17T00:00:00.000Z",
+      });
+
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1044,
+        ownerThreadId: associated,
+        requireAssociatedOwner: true,
+      });
+      assert.strictEqual(started.monitor.ownerThreadId, associated);
+
+      const unrelatedResult = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1044,
+          ownerThreadId: unrelated,
+          requireAssociatedOwner: true,
+        }),
+      );
+      assert.strictEqual(unrelatedResult._tag, "Failure");
+
+      const archivedResult = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1044,
+          ownerThreadId: archived,
+          requireAssociatedOwner: true,
+        }),
+      );
+      assert.strictEqual(archivedResult._tag, "Failure");
+    }),
+  );
+
+  it.effect("can explicitly resume a monitor in observe-only mode", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const owner = ThreadId.make("owner-observe");
+      seedThread(owner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 42,
+        ownerThreadId: owner,
+      });
+      yield* service.stop({ monitorId: started.monitor.id });
+
+      const resumed = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 42,
+        ownerMode: "observe-only",
+      });
+
+      assert.isNull(resumed.monitor.ownerThreadId);
+      assert.strictEqual(resumed.monitor.enabled, true);
+    }),
+  );
+
+  it.effect("preserves an existing owner when started with an inherited fallback", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const explicitOwner = ThreadId.make("owner-explicit");
+      const inheritedOwner = ThreadId.make("owner-inherited");
+      seedThread(explicitOwner);
+      seedThread(inheritedOwner);
+      yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: explicitOwner,
+      });
+
+      const preserved = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1045,
+        ownerThreadId: inheritedOwner,
+        ownerMode: "preserve",
+      });
+
+      assert.strictEqual(preserved.monitor.ownerThreadId, explicitOwner);
+    }),
+  );
+
+  it.effect("atomically claims an ownerless monitor with an inherited fallback", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const inheritedOwner = ThreadId.make("owner-inherited-claim");
+      seedThread(inheritedOwner);
+      yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1046,
+        ownerMode: "observe-only",
+      });
+
+      const claimed = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1046,
+        ownerThreadId: inheritedOwner,
+        ownerMode: "preserve",
+      });
+
+      assert.strictEqual(claimed.monitor.ownerThreadId, inheritedOwner);
+    }),
+  );
+
+  it.effect("rejects an invalid inherited fallback before claiming an ownerless monitor", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const missingOwner = ThreadId.make("owner-inherited-missing");
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1049,
+        ownerMode: "observe-only",
+      });
+
+      const result = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1049,
+          ownerThreadId: missingOwner,
+          ownerMode: "preserve",
+        }),
+      );
+      const status = yield* service.status({ monitorId: started.monitor.id });
+
+      assert.strictEqual(result._tag, "Failure");
+      assert.isNull(status.monitor?.ownerThreadId);
+    }),
+  );
+
+  it.effect("retains a concurrent explicit transfer over an inherited claim", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const inheritedOwner = ThreadId.make("owner-inherited-race");
+      const explicitOwner = ThreadId.make("owner-explicit-race");
+      seedThread(inheritedOwner);
+      seedThread(explicitOwner);
+      yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1047,
+        ownerMode: "observe-only",
+      });
+      yield* sql`
+        CREATE TRIGGER preserve_owner_race
+        AFTER UPDATE OF enabled ON pull_request_monitors
+        WHEN NEW.number = 1047 AND NEW.owner_thread_id IS NULL
+        BEGIN
+          UPDATE pull_request_monitors
+          SET owner_thread_id = 'owner-explicit-race'
+          WHERE monitor_id = NEW.monitor_id;
+        END
+      `;
+
+      const preserved = yield* service
+        .start({
+          projectId,
+          repository: "acme/app",
+          number: 1047,
+          ownerThreadId: inheritedOwner,
+          ownerMode: "preserve",
+        })
+        .pipe(Effect.ensuring(sql`DROP TRIGGER preserve_owner_race`.pipe(Effect.orDie)));
+
+      assert.strictEqual(preserved.monitor.ownerThreadId, explicitOwner);
+    }),
+  );
+
+  it.effect("does not mutate ownership when the existing monitor lookup fails", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const sql = yield* SqlClient.SqlClient;
+      const explicitOwner = ThreadId.make("owner-before-read-failure");
+      const inheritedOwner = ThreadId.make("owner-after-read-failure");
+      seedThread(explicitOwner);
+      seedThread(inheritedOwner);
+      const started = yield* service.start({
+        projectId,
+        repository: "acme/app",
+        number: 1048,
+        ownerThreadId: explicitOwner,
+      });
+      yield* sql`
+        UPDATE pull_request_monitors
+        SET readiness_json = '{'
+        WHERE monitor_id = ${started.monitor.id}
+      `;
+
+      const result = yield* Effect.result(
+        service.start({
+          projectId,
+          repository: "acme/app",
+          number: 1048,
+          ownerThreadId: inheritedOwner,
+          ownerMode: "preserve",
+        }),
+      );
+      const rows = yield* sql<{ owner_thread_id: string | null }>`
+        SELECT owner_thread_id
+        FROM pull_request_monitors
+        WHERE monitor_id = ${started.monitor.id}
+      `;
+      yield* sql`
+        UPDATE pull_request_monitors
+        SET readiness_json = NULL
+        WHERE monitor_id = ${started.monitor.id}
+      `;
+
+      assert.strictEqual(result._tag, "Failure");
+      assert.strictEqual(rows[0]?.owner_thread_id, explicitOwner);
     }),
   );
 
@@ -1151,6 +1448,7 @@ layer("PullRequestMonitorService", (it) => {
       const submitted = yield* monitors.submitFindings({
         reference: { projectId, repository: "acme/app", number: 64 },
         reviewThreadId: reviewer,
+        reviewedHeadSha: "deadbeef",
         ownerThreadId: owner,
         summary: "two findings",
         findings: [
@@ -1202,7 +1500,40 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
-  it.effect("queues remediation behind a user's active turn instead of steering it", () =>
+  it.effect("ignores findings reviewed against a stale pull request head", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const reviewer = ThreadId.make("thr_stale_findings_review");
+      seedThread(reviewer);
+
+      const submitted = yield* monitors.submitFindings({
+        reference: { projectId, repository: "acme/app", number: 64 },
+        reviewThreadId: reviewer,
+        reviewedHeadSha: "stale-head",
+        findings: [
+          {
+            key: "stale-finding",
+            title: "Stale finding",
+            detail: "This finding reviewed an earlier revision.",
+            severity: "major",
+          },
+        ],
+      });
+
+      assert.strictEqual(submitted.monitor.headSha, "deadbeef");
+      assert.deepEqual(submitted.findings, []);
+      const context = yield* monitors.context({
+        monitorId: submitted.monitor.id,
+        includeClosed: true,
+      });
+      assert.strictEqual(
+        context.items.some((item) => item.summary.includes("Stale finding")),
+        false,
+      );
+    }),
+  );
+
+  it.effect("queues remediation durably and can return it to delivery retry", () =>
     Effect.gen(function* () {
       const monitors = yield* PullRequestMonitorService;
       const feedback = yield* PullRequestMonitorFeedbackService;
@@ -1215,6 +1546,7 @@ layer("PullRequestMonitorService", (it) => {
         worktreePath: "/tmp/wt",
         archivedAt: null,
         busy: true,
+        pullRequest: null,
       });
 
       const live = sampleSnapshot({
@@ -1264,6 +1596,16 @@ layer("PullRequestMonitorService", (it) => {
         dispatchedCommands.some((command) => command.type === "thread.queued-turn.create"),
       );
       assert.isFalse(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
+
+      const delivery = deliveries[0]!;
+      yield* feedback.retryQueuedDelivery({
+        deliveryId: delivery.id,
+        reason: "dispatch revalidation unavailable",
+      });
+      const retried = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(retried[0]?.status, "failed");
+      assert.strictEqual(retried[0]?.deliveredAt, null);
+      assert.strictEqual(retried[0]?.lastError, "dispatch revalidation unavailable");
       currentSnapshot = sampleSnapshot();
     }),
   );
@@ -1347,6 +1689,276 @@ layer("PullRequestMonitorService", (it) => {
     }),
   );
 
+  it.effect("delivers unresolved review feedback when the head moves before delivery", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("thr_moved_head_owner");
+      seedThread(owner);
+
+      const unresolvedThread = {
+        id: "thread-moved-head",
+        author: { login: "reviewer", kind: "user" as const },
+        path: "a.ts",
+        line: 1,
+        createdAt: "2026-08-11T00:00:00.000Z",
+        updatedAt: "2026-08-11T00:00:00.000Z",
+        resolved: false,
+        latestCommentByViewer: false,
+        bodyExcerpt: "still needs fixing",
+      };
+      const observed = sampleSnapshot({ reviewThreads: [unresolvedThread] });
+      currentSnapshot = observed;
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 69,
+        ownerThreadId: owner,
+      });
+
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: observed,
+        events: [
+          {
+            kind: "new-review-comment",
+            sourceId: unresolvedThread.id,
+            detail: unresolvedThread.bodyExcerpt,
+          },
+        ],
+      });
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: state.pendingRevisionIds,
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+
+      // The provider head advances before the monitor's next poll, but the review
+      // thread remains unresolved and therefore still requires owner attention.
+      currentSnapshot = sampleSnapshot({
+        headSha: "feedface",
+        sourceRevision: "rev-2",
+        reviewThreads: [unresolvedThread],
+      });
+
+      dispatchedCommands.length = 0;
+      yield* feedback.flushDueDeliveries;
+
+      const deliveries = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(deliveries[0]?.status, "delivered");
+      assert.isTrue(
+        dispatchedCommands.some((command) => command.type === "thread.queued-turn.create"),
+      );
+      yield* feedback.flushDueDeliveries;
+      assert.strictEqual(
+        dispatchedCommands.filter((command) => command.type === "thread.queued-turn.create").length,
+        1,
+      );
+      const items = yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      });
+      assert.strictEqual(items[0]?.status, "open");
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("suppresses a failed check from an older head before delivery", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("thr_stale_check_owner");
+      seedThread(owner);
+
+      const failed = sampleSnapshot({
+        checkRuns: [
+          {
+            id: "check-old-head",
+            name: "ci",
+            status: "failure",
+            headSha: "deadbeef",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      currentSnapshot = failed;
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 70,
+        ownerThreadId: owner,
+      });
+
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: failed,
+        events: [{ kind: "check-failed", sourceId: "check-old-head", detail: "ci" }],
+      });
+      const state = yield* feedbackStore.getState(started.monitor.id);
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: state.pendingRevisionIds,
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+
+      currentSnapshot = sampleSnapshot({
+        headSha: "feedface",
+        sourceRevision: "rev-2",
+        checkRuns: [],
+      });
+
+      dispatchedCommands.length = 0;
+      yield* feedback.flushDueDeliveries;
+
+      const deliveries = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(deliveries[0]?.status, "suppressed");
+      assert.strictEqual(
+        deliveries[0]?.lastError,
+        "All findings in this batch were resolved upstream before delivery.",
+      );
+      assert.isFalse(
+        dispatchedCommands.some((command) => command.type === "thread.queued-turn.create"),
+      );
+      const items = yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      });
+      assert.strictEqual(items[0]?.status, "closed");
+      assert.strictEqual(items[0]?.disposition, "superseded");
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
+  it.effect("does not let a historical delivery close a newer revision", () =>
+    Effect.gen(function* () {
+      const monitors = yield* PullRequestMonitorService;
+      const feedback = yield* PullRequestMonitorFeedbackService;
+      const feedbackStore = yield* PullRequestMonitorFeedbackStore.make;
+      const owner = ThreadId.make("thr_historical_delivery_owner");
+      seedThread(owner);
+
+      const oldFailure = sampleSnapshot({
+        checkRuns: [
+          {
+            id: "check-stable-id",
+            name: "ci",
+            status: "failure",
+            headSha: "deadbeef",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      currentSnapshot = oldFailure;
+      const started = yield* monitors.start({
+        projectId,
+        repository: "acme/app",
+        number: 71,
+        ownerThreadId: owner,
+      });
+      const event = { kind: "check-failed" as const, sourceId: "check-stable-id", detail: "ci" };
+
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: oldFailure,
+        events: [event],
+      });
+      const oldState = yield* feedbackStore.getState(started.monitor.id);
+      const [oldRevision] = yield* feedbackStore.listRevisionsByIds(oldState.pendingRevisionIds);
+      assert.isDefined(oldRevision);
+      const historicalDelivery = {
+        id: "fb_del_historical_revision" as PullRequestMonitorFeedbackDeliveryId,
+        monitorId: started.monitor.id,
+        batchKey: "fb_batch_historical_revision",
+        targetThreadId: owner,
+        commandId: "command:historical-revision",
+        messageId: "message:historical-revision",
+        revisionIds: [oldRevision.id],
+        status: "pending",
+        attemptCount: 0,
+        lastError: null,
+        createdAt: "1969-12-31T23:59:59.000Z",
+        deliveredAt: null,
+      } as const;
+      yield* feedbackStore.insertDelivery({
+        ...historicalDelivery,
+        nextAttemptAt: "9999-12-31T23:59:59.000Z",
+        receiptJson: null,
+      });
+      yield* feedbackStore.removePendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: [oldRevision.id],
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+
+      const newFailure = sampleSnapshot({
+        headSha: "feedface",
+        sourceRevision: "rev-2",
+        checkRuns: [
+          {
+            id: "check-stable-id",
+            name: "ci",
+            status: "failure",
+            headSha: "feedface",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      currentSnapshot = newFailure;
+      yield* feedback.reconcileAndIngest({
+        monitor: started.monitor,
+        snapshot: newFailure,
+        events: [event],
+      });
+      const newState = yield* feedbackStore.getState(started.monitor.id);
+      const [newRevision] = yield* feedbackStore.listRevisionsByIds(newState.pendingRevisionIds);
+      assert.isDefined(newRevision);
+      assert.notStrictEqual(newRevision.id, oldRevision.id);
+      yield* TestClock.adjust(Duration.millis(1));
+      yield* feedbackStore.updateDelivery({
+        ...historicalDelivery,
+        nextAttemptAt: "1969-12-31T23:59:59.000Z",
+        receiptJson: null,
+      });
+
+      dispatchedCommands.length = 0;
+      yield* feedback.flushDueDeliveries;
+
+      const item = (yield* feedbackStore.listItems({
+        monitorId: started.monitor.id,
+        includeClosed: true,
+      }))[0];
+      assert.strictEqual(item?.status, "open");
+      assert.strictEqual(item?.currentRevisionId, newRevision.id);
+
+      yield* feedbackStore.appendPendingRevisionIds({
+        monitorId: started.monitor.id,
+        revisionIds: [newRevision.id],
+        debounceUntil: "1970-01-01T00:00:00.000Z",
+        updatedAt: "1970-01-01T00:00:00.000Z",
+      });
+      yield* feedback.flushDueDeliveries;
+
+      const deliveries = yield* feedbackStore.listDeliveries({ monitorId: started.monitor.id });
+      assert.strictEqual(
+        deliveries.find((delivery) => delivery.id === "fb_del_historical_revision")?.status,
+        "suppressed",
+      );
+      assert.strictEqual(
+        dispatchedCommands.filter((command) => command.type === "thread.queued-turn.create").length,
+        1,
+      );
+      currentSnapshot = sampleSnapshot();
+    }),
+  );
+
   it.effect("interrupts a busy previous owner before handing ownership to a fallback", () =>
     Effect.gen(function* () {
       const monitors = yield* PullRequestMonitorService;
@@ -1366,6 +1978,7 @@ layer("PullRequestMonitorService", (it) => {
         worktreePath: "/tmp/wt",
         archivedAt: "2026-08-11T00:00:00.000Z",
         busy: true,
+        pullRequest: null,
       });
       dispatchedCommands.length = 0;
 

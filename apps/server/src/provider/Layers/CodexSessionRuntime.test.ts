@@ -10,10 +10,13 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+  codexDefaultModeDeveloperInstructions,
+  codexPlanModeDeveloperInstructions,
 } from "../CodexDeveloperInstructions.ts";
 import {
   buildUnsupportedDynamicToolCallResponse,
   buildTurnStartParams,
+  hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
   selectCodexApprovalForRuntimeMode,
@@ -150,6 +153,50 @@ describe("buildTurnStartParams", () => {
         },
       ],
     });
+  });
+
+  it("includes browser instructions only when browser tools are attached", () => {
+    const enabled = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        browserToolsAvailable: true,
+      }),
+    );
+    const disabled = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        browserToolsAvailable: false,
+      }),
+    );
+
+    assert.match(
+      enabled.collaborationMode?.settings.developer_instructions ?? "",
+      /preview_status/,
+    );
+    assert.doesNotMatch(
+      disabled.collaborationMode?.settings.developer_instructions ?? "",
+      /preview_status/,
+    );
+    assert.equal(
+      enabled.collaborationMode?.settings.developer_instructions,
+      codexDefaultModeDeveloperInstructions(true),
+    );
+    assert.equal(codexPlanModeDeveloperInstructions(false), CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS);
+  });
+});
+
+describe("hasConfiguredMcpServer", () => {
+  it("recognizes only explicit MCP server configuration", () => {
+    assert.equal(hasConfiguredMcpServer(undefined), false);
+    assert.equal(hasConfiguredMcpServer(["--verbose"]), false);
+    assert.equal(
+      hasConfiguredMcpServer(["-c", "mcp_servers.t3-code.url=http://127.0.0.1:3000/mcp"]),
+      true,
+    );
   });
 });
 

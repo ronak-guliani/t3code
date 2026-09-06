@@ -12,6 +12,7 @@ import {
   type ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  QueuedTurnId,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   ThreadId,
@@ -532,6 +533,7 @@ function toShellThread(thread: OrchestrationReadModel["threads"][number]) {
     session: thread.session,
     latestUserMessageAt:
       thread.messages.findLast((message) => message.role === "user")?.createdAt ?? null,
+    latestChildNotificationAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
@@ -977,6 +979,42 @@ function createSnapshotWithPendingUserInput(): OrchestrationReadModel {
             ],
             updatedAt: isoAt(1_000),
           })
+        : thread,
+    ),
+  };
+}
+
+function createSnapshotWithQueuedTurn(): OrchestrationReadModel {
+  const snapshot = createSnapshotForTargetUser({
+    targetMessageId: "msg-user-queued-edit-target" as MessageId,
+    targetText: "queued edit thread",
+  });
+
+  return {
+    ...snapshot,
+    threads: snapshot.threads.map((thread) =>
+      thread.id === THREAD_ID
+        ? {
+            ...thread,
+            queuedTurns: [
+              {
+                id: QueuedTurnId.make("queued-turn-browser-test"),
+                threadId: THREAD_ID,
+                message: {
+                  messageId: "queued-message-browser-test" as MessageId,
+                  role: "user",
+                  text: "Original queued text",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: NOW_ISO,
+                updatedAt: NOW_ISO,
+                failedAt: null,
+                failureMessage: null,
+              },
+            ],
+          }
         : thread,
     ),
   };
@@ -2750,6 +2788,75 @@ describe("ChatView timeline estimator parity (full app)", () => {
             request._tag === WS_METHODS.terminalWrite && request.data === "bun install\r",
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("edits queued messages in the composer while preserving the existing draft", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithQueuedTurn(),
+      resolveRpc: (body) => {
+        if (body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand) {
+          return {
+            sequence: fixture.snapshot.snapshotSequence + 1,
+          };
+        }
+        return undefined;
+      },
+    });
+
+    try {
+      const draftStore = useComposerDraftStore.getState();
+      draftStore.setPrompt(THREAD_REF, "Existing draft");
+      draftStore.addImage(THREAD_REF, {
+        type: "image",
+        id: "draft-image",
+        name: "draft.png",
+        mimeType: "image/png",
+        sizeBytes: 128,
+        previewUrl: "data:image/png;base64,",
+        file: new File(["draft"], "draft.png", { type: "image/png" }),
+      });
+      await waitForLayout();
+
+      await expect.element(page.getByLabelText("Remove draft.png")).toBeInTheDocument();
+      await page.getByLabelText("Edit queued message").click();
+
+      const editor = page.getByTestId("composer-editor");
+      await expect.element(editor).toHaveTextContent("Original queued text");
+      await expect.element(page.getByLabelText("Remove draft.png")).not.toBeInTheDocument();
+
+      await editor.fill("Updated queued text");
+      await page.getByRole("button", { name: "Save" }).click();
+
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              request.type === "thread.queued-turn.update" &&
+              request.text === "Updated queued text",
+          ),
+        ).toBe(true);
+      });
+      expect(composerDraftFor(THREAD_ID)?.prompt).toBe("Existing draft");
+      await expect.element(editor).toHaveTextContent("Existing draft");
+      await expect.element(page.getByLabelText("Remove draft.png")).toBeInTheDocument();
+
+      await page.getByLabelText("Edit queued message").click();
+      await editor.fill("Discarded queued edit");
+      await userEvent.keyboard("{Escape}");
+
+      await expect.element(editor).toHaveTextContent("Existing draft");
+      expect(
+        wsRequests.filter(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+            request.type === "thread.queued-turn.update",
+        ),
+      ).toHaveLength(1);
     } finally {
       await mounted.cleanup();
     }
@@ -5058,6 +5165,109 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it.each([false, true])(
+    "keeps the timeline at the bottom when Enter sends with find open=%s",
+    async (findOpen) => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "scroll-send-target" as MessageId,
+          targetText: "Earlier conversation",
+        }),
+        resolveRpc: (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand
+            ? { sequence: fixture.snapshot.snapshotSequence + 1 }
+            : undefined,
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [
+              {
+                command: "chat.find",
+                shortcut: {
+                  key: "f",
+                  metaKey: false,
+                  ctrlKey: false,
+                  shiftKey: false,
+                  altKey: false,
+                  modKey: true,
+                },
+              },
+            ],
+          };
+        },
+      });
+      const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
+      try {
+        await waitForServerConfigToApply();
+        const editor = await waitForComposerEditor();
+        const timeline = document.querySelector<HTMLElement>(".overscroll-y-contain");
+        expect(timeline).not.toBeNull();
+        const distance = () =>
+          timeline!.scrollHeight - timeline!.clientHeight - timeline!.scrollTop;
+        await expect.poll(distance).toBeLessThan(5);
+        if (findOpen) {
+          await waitForServerConfigToApply();
+          dispatchChatFindShortcut();
+          const input = await waitForElement(
+            () => document.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]'),
+            "Find input should open",
+          );
+          await page.getByPlaceholder(input.placeholder).fill("Earlier conversation");
+          await expect.element(page.getByText("1 of 1")).toBeVisible();
+          await vi.waitFor(() => {
+            expect(document.querySelector('[data-chat-find-active="true"]')?.textContent).toContain(
+              "Earlier conversation",
+            );
+          });
+          timeline!.scrollTop = timeline!.scrollHeight;
+          await waitForLayout();
+        }
+        await page.getByRole("textbox").last().fill("Please continue");
+        await waitForComposerText("Please continue");
+        await vi.waitFor(async () => {
+          expect((await waitForSendButton()).disabled).toBe(false);
+        });
+        editor.focus();
+        scrollIntoView.mockClear();
+        const scrollTo = vi.spyOn(timeline!, "scrollTo");
+        const initialScrollTop = timeline!.scrollTop;
+        await userEvent.keyboard("{Enter}");
+        await vi.waitFor(() => {
+          expect(wsRequests).toContainEqual(
+            expect.objectContaining({
+              _tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+              type: "thread.turn.start",
+            }),
+          );
+          expect(editor.textContent).toBe("");
+        });
+        await expect.element(page.getByText("Please continue", { exact: true })).toBeVisible();
+        await waitForLayout();
+        await expect.poll(distance).toBeLessThan(5);
+        expect(
+          scrollIntoView.mock.contexts.filter(
+            (element) =>
+              element instanceof HTMLElement && element.hasAttribute("data-timeline-row-id"),
+          ),
+        ).toHaveLength(0);
+        expect(
+          scrollTo.mock.calls.every(
+            ([options]: [ScrollToOptions | number, number?]) =>
+              typeof options !== "object" ||
+              options.top === undefined ||
+              options.top > initialScrollTop / 2,
+          ),
+        ).toBe(true);
+        scrollTo.mockRestore();
+      } finally {
+        scrollIntoView.mockRestore();
+        await mounted.cleanup();
+        usePendingTurnStore.getState().clearThreadState(THREAD_REF);
+      }
+    },
+  );
+
   it("opens find in chat from the configured shortcut, prevents native find, and closes on Escape", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -7345,6 +7555,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       useRightPanelStore.getState().close(THREAD_REF);
       usePreviewMiniPlayerStore.getState().open(THREAD_REF, "preview-browser-test");
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-preview-mini-player="preview-browser-test"]'),
+        ).not.toBeNull();
+      });
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "b",
@@ -7356,10 +7571,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
         }),
       );
       await vi.waitFor(() => {
-        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]).toBeUndefined();
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.tabId).toBe(
+          "preview-browser-test",
+        );
+        expect(document.querySelector("[data-preview-mini-player]")).toBeNull();
         expect(
           document.querySelector('[data-chat-view-right-panel-surface="preview"]'),
         ).not.toBeNull();
+        expect(previewOpenCount).toBe(1);
+      });
+
+      await page.getByRole("button", { name: "Close browser panel", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
+        expect(
+          document.querySelector('[data-preview-mini-player="preview-browser-test"]'),
+        ).not.toBeNull();
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.tabId).toBe(
+          "preview-browser-test",
+        );
         expect(previewOpenCount).toBe(1);
       });
     } finally {
@@ -7482,6 +7712,154 @@ describe("ChatView timeline estimator parity (full app)", () => {
     } finally {
       await narrowMounted.cleanup();
       narrowSpy.mockRestore();
+    }
+  });
+
+  it("keeps the diff panel scoped to the chat where it was opened", async () => {
+    const secondThreadId = ThreadId.make("thread-browser-test-second");
+    const snapshot = addThreadToSnapshot(
+      addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID),
+      secondThreadId,
+    );
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot,
+    });
+
+    try {
+      await page.getByLabelText("Toggle diff panel").click();
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+
+      await page.getByTestId(`thread-row-${secondThreadId}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(secondThreadId),
+        "Route should switch to the second thread.",
+      );
+
+      const secondThreadKey = scopedThreadKey(scopeThreadRef(LOCAL_ENVIRONMENT_ID, secondThreadId));
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[secondThreadKey]).toBeUndefined();
+        expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
+      });
+
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch back to the first thread.",
+      );
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("clears another chat's diff state when opening its agent run", async () => {
+    const secondThreadId = ThreadId.make("thread-browser-test-agent-parent");
+    const agentTaskId = "agent-browser-test";
+    const virtualAgentThreadId = `agent-run:${secondThreadId}:${agentTaskId}`;
+    const snapshot = addThreadToSnapshot(
+      addThreadToSnapshot(createDraftOnlySnapshot(), THREAD_ID),
+      secondThreadId,
+    );
+    const snapshotWithAgentRun: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === secondThreadId
+          ? {
+              ...thread,
+              activities: [
+                {
+                  id: EventId.make("activity-agent-browser-test"),
+                  tone: "info",
+                  kind: "task.started",
+                  summary: "Agent browser test",
+                  payload: {
+                    taskId: agentTaskId,
+                    taskType: "background-agent",
+                    name: "Agent browser test",
+                  },
+                  turnId: null,
+                  sequence: 1,
+                  createdAt: isoAt(1_000),
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: snapshotWithAgentRun,
+      initialPath: serverThreadPath(secondThreadId),
+    });
+
+    async function expectAgentRunWithoutDiff() {
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(secondThreadId),
+        "Route should switch to the agent run's parent thread.",
+      );
+      await vi.waitFor(() => {
+        expect(mounted.router.state.location.search).toMatchObject({
+          agent: agentTaskId,
+        });
+        expect(mounted.router.state.location.search.diff).toBeUndefined();
+      });
+    }
+
+    async function returnToDiffChat() {
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch back to the diff chat.",
+      );
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "diff",
+        });
+      });
+    }
+
+    try {
+      await expect
+        .element(page.getByTestId(`thread-row-${virtualAgentThreadId}`))
+        .toBeInTheDocument();
+      await page.getByTestId(`thread-row-${THREAD_ID}`).click();
+      await waitForURL(
+        mounted.router,
+        (path) => path === serverThreadPath(THREAD_ID),
+        "Route should switch to the diff chat.",
+      );
+      await page.getByLabelText("Toggle diff panel").click();
+      await page.getByTestId(`thread-row-${virtualAgentThreadId}`).click();
+      await expectAgentRunWithoutDiff();
+
+      await returnToDiffChat();
+
+      const agentRow = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(`[data-testid="thread-row-${virtualAgentThreadId}"]`),
+        "Unable to find the virtual agent row.",
+      );
+      agentRow.focus();
+      await userEvent.keyboard("{Enter}");
+      await expectAgentRunWithoutDiff();
+    } finally {
+      await mounted.cleanup();
     }
   });
 

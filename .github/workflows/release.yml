@@ -26,6 +26,13 @@ permissions:
   contents: read
   id-token: none
 
+env:
+  T3CODE_CLERK_PUBLISHABLE_KEY: pk_live_Y2xlcmsudDMuY29kZXMk
+  T3CODE_CLERK_JWT_TEMPLATE: t3-relay
+  T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: hzxSgY2cH10sDU2r
+  T3CODE_RELAY_URL: https://relay.t3.codes
+  T3CODE_HOSTED_APP_URL: https://app.t3.codes
+
 jobs:
   check_changes:
     name: Check for changes since last nightly
@@ -219,6 +226,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install Linux browser helper build dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsecret-1-dev
 
       - name: Align package versions to release version
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"

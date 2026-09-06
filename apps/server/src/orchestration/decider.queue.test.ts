@@ -57,6 +57,79 @@ async function makeThreadReadModel(input: { readonly now: string; readonly threa
 }
 
 describe("decider queued turns", () => {
+  it("preserves pull request monitor provenance on queued turns", async () => {
+    const now = "2026-03-01T00:00:00.000Z";
+    const threadId = asThreadId("thread-monitor-owner");
+    const readModel = await makeThreadReadModel({ now, threadId });
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.create",
+          commandId: CommandId.make("cmd-monitor-feedback"),
+          threadId,
+          queuedTurnId: asQueuedTurnId("queued-monitor-feedback"),
+          message: {
+            messageId: asMessageId("message-monitor-feedback"),
+            role: "user",
+            text: "Review new pull request feedback.",
+            attachments: [],
+          },
+          origin: {
+            kind: "pull-request-monitor",
+            repository: "acme/app",
+            number: 42,
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: now,
+        },
+        readModel,
+      }),
+    );
+
+    const event = Array.isArray(result) ? result[0] : result;
+    expect(event?.payload).toMatchObject({
+      queuedTurn: {
+        origin: {
+          kind: "pull-request-monitor",
+          repository: "acme/app",
+          number: 42,
+        },
+      },
+    });
+
+    const withQueuedTurn = await Effect.runPromise(projectEvent(readModel, event));
+    const update = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.queued-turn.update",
+          commandId: CommandId.make("cmd-monitor-feedback-refresh"),
+          threadId,
+          queuedTurnId: asQueuedTurnId("queued-monitor-feedback"),
+          text: "Review refreshed pull request feedback.",
+          origin: {
+            kind: "pull-request-monitor",
+            repository: "acme/app",
+            number: 42,
+            headSha: "head-new",
+            sourceRevision: "revision-new",
+          },
+          updatedAt: "2026-03-01T00:00:01.000Z",
+        },
+        readModel: withQueuedTurn,
+      }),
+    );
+    const updateEvent = Array.isArray(update) ? update[0] : update;
+    expect(updateEvent?.payload).toMatchObject({
+      origin: {
+        kind: "pull-request-monitor",
+        headSha: "head-new",
+        sourceRevision: "revision-new",
+      },
+    });
+  });
+
   it("derives cross-thread provenance from the active parent turn", async () => {
     const now = "2026-03-01T00:00:00.000Z";
     const sourceThreadId = asThreadId("thread-source");

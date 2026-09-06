@@ -11,6 +11,7 @@ import type {
   OrchestrationThreadActivity,
   TurnId,
 } from "@t3tools/contracts";
+import { childLifecycleNotificationToActivity } from "@t3tools/shared/orchestrationActivity";
 
 /**
  * Retention limits for collections within a thread.
@@ -198,6 +199,9 @@ export function applyThreadDetailEvent(
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          pinnedAt: null,
+          pinOrderKey: null,
+          titleRegeneration: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -216,6 +220,7 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           archivedAt: event.payload.archivedAt,
+          titleRegeneration: null,
           updatedAt: event.payload.updatedAt,
         },
       };
@@ -270,6 +275,40 @@ export function applyThreadDetailEvent(
         },
       };
 
+    case "thread.pinned":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinnedAt: event.payload.pinnedAt,
+          ...(event.payload.pinOrderKey !== undefined
+            ? { pinOrderKey: event.payload.pinOrderKey }
+            : {}),
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.unpinned":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinnedAt: null,
+          pinOrderKey: null,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.pin-reordered":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          pinOrderKey: event.payload.orderKey,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
     case "thread.decoupled":
       return {
         kind: "updated",
@@ -283,6 +322,9 @@ export function applyThreadDetailEvent(
         thread: {
           ...thread,
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+          ...(event.payload.titleRegeneration !== undefined
+            ? { titleRegeneration: event.payload.titleRegeneration }
+            : {}),
           ...(event.payload.modelSelection !== undefined
             ? { modelSelection: event.payload.modelSelection }
             : {}),
@@ -391,7 +433,12 @@ export function applyThreadDetailEvent(
               },
               ...thread.messages.slice(messageIndex + 1),
             ];
-      const cappedMessages = Arr.takeRight(messages, limits.maxMessages);
+      // Copy only once the cap is actually exceeded; the streaming hot path
+      // runs per delta and the common case stays under the limit.
+      const cappedMessages =
+        messages.length > limits.maxMessages
+          ? Arr.takeRight(messages, limits.maxMessages)
+          : messages;
 
       // Update latestTurn for assistant messages bound to a turn.
       const latestTurn: OrchestrationThread["latestTurn"] =
@@ -621,8 +668,16 @@ export function applyThreadDetailEvent(
     }
 
     // ── Activities ──────────────────────────────────────────────────
-    case "thread.activity-appended": {
-      const activity = event.payload.activity;
+    case "thread.activity-appended":
+    case "thread.child-lifecycle-notified": {
+      const activity =
+        event.type === "thread.activity-appended"
+          ? event.payload.activity
+          : childLifecycleNotificationToActivity({
+              eventId: event.eventId,
+              payload: event.payload,
+              sequence: event.sequence,
+            });
       const activities = pipe(
         thread.activities,
         Arr.filter((entry) => entry.id !== activity.id),
@@ -670,8 +725,13 @@ function rebindCheckpointAssistantMessage(
   checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>,
   turnId: TurnId,
   messageId: MessageId,
-): OrchestrationCheckpointSummary[] {
-  return Arr.map(checkpoints, (entry) =>
+): ReadonlyArray<OrchestrationCheckpointSummary> {
+  // Streaming chunks call this per delta; keep the original reference when no
+  // checkpoint matches so downstream identity checks stay stable.
+  if (!checkpoints.some((entry) => entry.turnId === turnId)) {
+    return checkpoints;
+  }
+  return checkpoints.map((entry) =>
     entry.turnId === turnId ? { ...entry, assistantMessageId: messageId } : entry,
   );
 }

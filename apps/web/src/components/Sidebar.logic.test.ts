@@ -8,12 +8,14 @@ import {
   resolveAdjacentThreadId,
   getFallbackThreadIdAfterDelete,
   getProjectSortTimestamp,
+  hasUnseenChildNotification,
   hasUnseenCompletion,
   isContextMenuPointerDown,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarDraftPreview,
+  resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarThreadGitCwd,
@@ -56,18 +58,6 @@ describe("shouldRenderSidebarDraft", () => {
     ).toBe(true);
   });
 
-  describe("resolveSidebarDraftPreview", () => {
-    it("keeps the submitted message visible after composer cleanup", () => {
-      expect(
-        resolveSidebarDraftPreview({
-          draftPrompt: null,
-          draftAttachmentCount: 0,
-          optimisticMessage: { text: "Implement the sidebar fix\nwith tests" },
-        }),
-      ).toBe("Implement the sidebar fix");
-    });
-  });
-
   it("hands off to the regular thread row once it is published", () => {
     expect(
       shouldRenderSidebarDraft({
@@ -76,6 +66,30 @@ describe("shouldRenderSidebarDraft", () => {
         serverThreadPublished: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("resolveSidebarDraftPreview", () => {
+  it("keeps the submitted message visible after composer cleanup", () => {
+    expect(
+      resolveSidebarDraftPreview({
+        draftPrompt: null,
+        draftAttachmentCount: 0,
+        optimisticMessage: { text: "Implement the sidebar fix\nwith tests" },
+      }),
+    ).toBe("Implement the sidebar fix");
+  });
+});
+
+describe("resolveExistingThreadDraftPreview", () => {
+  it("returns the first non-empty line", () => {
+    expect(resolveExistingThreadDraftPreview("  follow up on this\nwith details ")).toBe(
+      "follow up on this",
+    );
+  });
+
+  it("hides empty prompts", () => {
+    expect(resolveExistingThreadDraftPreview(" \n ")).toBeNull();
   });
 });
 
@@ -101,6 +115,26 @@ describe("hasUnseenCompletion", () => {
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
       }),
     ).toBe(true);
+  });
+});
+
+describe("hasUnseenChildNotification", () => {
+  it("returns true when a child lifecycle notification arrived after the parent visit", () => {
+    expect(
+      hasUnseenChildNotification({
+        latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false after the parent has visited the latest child notification", () => {
+    expect(
+      hasUnseenChildNotification({
+        latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
+        lastVisitedAt: "2026-03-09T10:05:00.000Z",
+      }),
+    ).toBe(false);
   });
 });
 
@@ -1008,6 +1042,43 @@ describe("resolveProjectStatusIndicator", () => {
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
   });
+
+  it.each([
+    ["Completed", "Child update"],
+    ["Child update", "Completed"],
+  ] as const)("prefers child updates over completed regardless of input order", (first, second) => {
+    const status = (label: "Completed" | "Child update") => ({
+      label,
+      colorClass: "text-sky-600",
+      dotClass: "bg-sky-500",
+      pulse: false,
+      presentation: "corner-badge" as const,
+    });
+
+    expect(resolveProjectStatusIndicator([status(first), status(second)])).toMatchObject({
+      label: "Child update",
+    });
+  });
+
+  it.each([
+    ["Plan Ready", "Child update"],
+    ["Child update", "Plan Ready"],
+  ] as const)(
+    "prefers plan-ready over child updates regardless of input order",
+    (first, second) => {
+      const status = (label: "Plan Ready" | "Child update") => ({
+        label,
+        colorClass: "text-violet-600",
+        dotClass: "bg-violet-500",
+        pulse: false,
+        presentation: "label" as const,
+      });
+
+      expect(resolveProjectStatusIndicator([status(first), status(second)])).toMatchObject({
+        label: "Plan Ready",
+      });
+    },
+  );
 });
 
 function makeProject(overrides: Partial<Project> = {}): Project {

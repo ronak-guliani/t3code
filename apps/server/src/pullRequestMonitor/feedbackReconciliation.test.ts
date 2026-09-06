@@ -163,6 +163,15 @@ describe("reconcileFeedbackItem", () => {
     expect(stillFailing.kind).toBe("actionable");
   });
 
+  it("supersedes a failed check observed at an older head", () => {
+    const result = reconcileFeedbackItem(
+      { kind: "check-failed", stableKey: "check-failed:check-1" },
+      snapshot({ headSha: "head-2" }),
+      { checkName: "ci", observedHeadSha: "head-1" },
+    );
+    expect(result.kind).toBe("superseded");
+  });
+
   it("keeps a claimed review finding open until the head advances", () => {
     const item = { kind: "review-finding" as const, stableKey: "review-finding:finding-1" };
     expect(reconcileFeedbackItem(item, snapshot(), { claimHeadSha: "head-1" }).kind).toBe(
@@ -175,8 +184,8 @@ describe("reconcileFeedbackItem", () => {
     expect(reconcileFeedbackItem(item, snapshot(), {}).kind).toBe("actionable");
   });
 
-  it("never resolves behind-base on a failed comparison", () => {
-    const unknown = reconcileFeedbackItem(
+  it("retires legacy behind-base findings and tracks merge conflicts", () => {
+    const legacy = reconcileFeedbackItem(
       { kind: "behind-base", stableKey: "behind-base:na" },
       snapshot({
         behindBaseBy: null,
@@ -190,13 +199,19 @@ describe("reconcileFeedbackItem", () => {
         },
       }),
     );
-    expect(unknown.kind).toBe("actionable");
+    expect(legacy.kind).toBe("superseded");
 
-    const observed = reconcileFeedbackItem(
-      { kind: "behind-base", stableKey: "behind-base:na" },
-      snapshot({ behindBaseBy: 0 }),
+    const conflict = reconcileFeedbackItem(
+      { kind: "merge-conflict", stableKey: "merge-conflict:na" },
+      snapshot({ mergeability: "conflicting" }),
     );
-    expect(observed.kind).toBe("resolved-upstream");
+    expect(conflict.kind).toBe("actionable");
+
+    const resolved = reconcileFeedbackItem(
+      { kind: "merge-conflict", stableKey: "merge-conflict:na" },
+      snapshot({ mergeability: "mergeable" }),
+    );
+    expect(resolved.kind).toBe("resolved-upstream");
   });
 
   it("reads the source id out of a stable key", () => {

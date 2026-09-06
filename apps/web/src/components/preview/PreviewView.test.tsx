@@ -24,6 +24,18 @@ vi.mock("~/state/session", () => ({
   readPreparedConnection: mocks.readPreparedConnection,
 }));
 
+vi.mock("~/previewMiniPlayerStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/previewMiniPlayerStore")>();
+  const store = actual.usePreviewMiniPlayerStore;
+  return {
+    ...actual,
+    usePreviewMiniPlayerStore: Object.assign(
+      (select: (state: ReturnType<typeof store.getState>) => unknown) => select(store.getState()),
+      store,
+    ),
+  };
+});
+
 vi.mock("~/composerDraftStore", () => ({
   useComposerDraftStore: (
     select: (store: { addPreviewAnnotation: () => void; addImage: () => void }) => unknown,
@@ -146,7 +158,11 @@ vi.mock("./PreviewMoreMenu", () => ({
 vi.mock("./PreviewUnreachable", () => ({ PreviewUnreachable: () => null }));
 vi.mock("./ZoomIndicator", () => ({ ZoomIndicator: () => null }));
 vi.mock("./AgentBrowserCursor", () => ({ AgentBrowserCursor: () => null }));
-vi.mock("~/browser/BrowserSurfaceSlot", () => ({ BrowserSurfaceSlot: () => null }));
+vi.mock("~/browser/BrowserSurfaceSlot", () => ({
+  BrowserSurfaceSlot: (props: { visible: boolean }) => (
+    <div data-browser-surface-visible={props.visible} />
+  ),
+}));
 vi.mock("./useLoadingProgress", () => ({ useLoadingProgress: () => 0 }));
 vi.mock("./usePreviewSession", () => ({ usePreviewSession: vi.fn() }));
 
@@ -176,6 +192,28 @@ describe("PreviewView navigation", () => {
     mocks.showEmptyState = false;
     usePreviewMiniPlayerStore.setState({ byThreadKey: {} });
   });
+
+  it.each([null, "tab-1", "other-tab"])(
+    "presents the visible panel while preserving floating preference %s",
+    (floatingTabId) => {
+      const threadRef = {
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+      };
+      if (floatingTabId) usePreviewMiniPlayerStore.getState().open(threadRef, floatingTabId);
+
+      for (const visible of [true, false, true]) {
+        const markup = renderToStaticMarkup(
+          <PreviewView threadRef={threadRef} tabId="tab-1" visible={visible} />,
+        );
+        expect(markup).toContain(`data-browser-surface-visible="${visible}"`);
+        expect(
+          selectThreadPreviewMiniPlayer(usePreviewMiniPlayerStore.getState().byThreadKey, threadRef)
+            ?.tabId ?? null,
+        ).toBe(floatingTabId);
+      }
+    },
+  );
 
   it.each([
     [
@@ -306,7 +344,7 @@ describe("PreviewView navigation", () => {
 
   it("floats the active browser over chat and closes its panel", () => {
     const onClose = vi.fn();
-    renderToStaticMarkup(
+    const markup = renderToStaticMarkup(
       <PreviewView
         threadRef={{
           environmentId: EnvironmentId.make("environment-1"),
@@ -318,6 +356,7 @@ describe("PreviewView navigation", () => {
       />,
     );
 
+    expect(markup).not.toContain("Close browser panel");
     expect(mocks.pictureInPicture).not.toBeNull();
     mocks.pictureInPicture?.();
 

@@ -1,5 +1,6 @@
 import {
   CheckpointRef,
+  CommandId,
   EventId,
   MessageId,
   ProjectId,
@@ -8,13 +9,16 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Ref } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import {
+  OrchestrationProjectionSnapshotQueryLive,
+  ProjectionSnapshotQueryTestHooks,
+} from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
@@ -31,6 +35,31 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("hydrates auto-pull through full, shell, and targeted project reads", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, auto_pull, scripts_json, created_at, updated_at)
+        VALUES ('auto-pull-project', 'Auto pull', '/tmp/auto-pull-project', 1, '[]',
+          '2026-09-05T00:00:00.000Z', '2026-09-05T00:00:00.000Z')
+      `;
+      const full = yield* query.getSnapshot();
+      const shell = yield* query.getShellSnapshot();
+      const targeted = yield* query.getActiveProjectByWorkspaceRoot("/tmp/auto-pull-project");
+      assert.equal(
+        full.projects.find((project) => project.id === "auto-pull-project")?.autoPull,
+        true,
+      );
+      assert.equal(
+        shell.projects.find((project) => project.id === "auto-pull-project")?.autoPull,
+        true,
+      );
+      assert.equal(Option.getOrThrow(targeted).autoPull, true);
+      yield* sql`DELETE FROM projection_projects WHERE project_id = 'auto-pull-project'`;
+    }),
+  );
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -75,6 +104,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           branch,
           worktree_path,
           latest_turn_id,
+          pinned_at,
+          pin_order_key,
+          title_regeneration_request_id,
+          title_regeneration_started_at,
           latest_user_message_at,
           pending_approval_count,
           pending_user_input_count,
@@ -93,6 +126,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           NULL,
           NULL,
           'turn-1',
+          '2026-02-24T00:00:02.500Z',
+          'a0',
+          'cmd-title-regenerate',
+          '2026-02-24T00:00:02.750Z',
           '2026-02-24T00:00:04.000Z',
           1,
           0,
@@ -259,6 +296,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(snapshot.updatedAt, "2026-02-24T00:00:09.000Z");
       assert.deepEqual(snapshot.projects, [
         {
+          autoPull: false,
           id: asProjectId("project-1"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
@@ -317,6 +355,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          pinnedAt: "2026-02-24T00:00:02.500Z",
+          pinOrderKey: "a0",
+          titleRegeneration: {
+            requestId: CommandId.make("cmd-title-regenerate"),
+            startedAt: "2026-02-24T00:00:02.750Z",
+          },
           deletedAt: null,
           messages: [
             {
@@ -383,6 +427,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.equal(yield* snapshotQuery.getSnapshotSequence(), 5);
       assert.deepEqual(shellSnapshot.projects, [
         {
+          autoPull: false,
           id: asProjectId("project-1"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
@@ -439,6 +484,12 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           settledAt: null,
           snoozedUntil: null,
           snoozedAt: null,
+          pinnedAt: "2026-02-24T00:00:02.500Z",
+          pinOrderKey: "a0",
+          titleRegeneration: {
+            requestId: CommandId.make("cmd-title-regenerate"),
+            startedAt: "2026-02-24T00:00:02.750Z",
+          },
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -455,6 +506,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasPendingQueuedTurn: false,
         },
       ]);
+
+      const threadShell = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-1"));
+      assert.equal(threadShell._tag, "Some");
+      if (threadShell._tag === "Some") {
+        assert.equal(threadShell.value.pinnedAt, "2026-02-24T00:00:02.500Z");
+        assert.equal(threadShell.value.pinOrderKey, "a0");
+        assert.deepEqual(threadShell.value.titleRegeneration, {
+          requestId: "cmd-title-regenerate",
+          startedAt: "2026-02-24T00:00:02.750Z",
+        });
+      }
 
       const threadDetail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-1"));
       assert.equal(threadDetail._tag, "Some");
@@ -677,6 +739,192 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.isTrue(allActivityIds.includes(asEventId("legacy-approval")));
       assert.isTrue(allActivityIds.includes(asEventId("sequenced-001")));
       assert.isTrue(allActivityIds.includes(asEventId("sequenced-205")));
+    }),
+  );
+
+  it.effect("keeps the newest background-agent runs in the per-thread shell query", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-bg-cap', 'Background cap project', '/tmp/bg-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-bg-cap', 'project-bg-cap', 'Background cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}', 'approval-required', 'default',
+          NULL, 0, 0, 0,
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE task_sequence(value) AS (
+          VALUES (0)
+          UNION ALL
+          SELECT value + 1 FROM task_sequence WHERE value < 104
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('bg-activity-%03d', value),
+          'thread-bg-cap',
+          NULL,
+          'info',
+          'task.started',
+          printf('background agent %d', value),
+          printf(
+            '{"taskId":"bg-task-%03d","taskType":"background-agent","name":"Agent %d"}',
+            value,
+            value,
+            value
+          ),
+          NULL,
+          printf('2026-09-01T00:%02d:%02d.000Z', value / 60, value % 60)
+        FROM task_sequence
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        ) VALUES (
+          'bg-completed-104',
+          'thread-bg-cap',
+          NULL,
+          'info',
+          'task.completed',
+          'background agent 104 completed',
+          '{"taskId":"bg-task-104","status":"completed"}',
+          NULL,
+          '2026-09-01T00:02:00.000Z'
+        )
+      `;
+
+      const context = yield* snapshotQuery.getThreadShellById(ThreadId.make("thread-bg-cap"));
+      assert.equal(context._tag, "Some");
+      if (context._tag === "None") return;
+
+      const runs = context.value.backgroundAgentRuns ?? [];
+      assert.lengthOf(runs, 100);
+      const taskIds = new Set(runs.map((run) => run.taskId));
+      assert.isTrue(taskIds.has("bg-task-104"));
+      assert.isFalse(taskIds.has("bg-task-000"));
+      assert.equal(runs.find((run) => run.taskId === "bg-task-104")?.status, "completed");
+    }),
+  );
+
+  it.effect("caps full snapshot activities before decoding payloads", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-snapshot-cap', 'Snapshot cap project', '/tmp/snapshot-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+          '2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-snapshot-cap', 'project-snapshot-cap', 'Snapshot cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}', 'full-access', 'default',
+          NULL, 0, 0, 0, '2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE activity_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM activity_sequence WHERE value < 501
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json,
+          sequence, created_at
+        )
+        SELECT
+          printf('activity-%04d', value),
+          'thread-snapshot-cap',
+          NULL,
+          'info',
+          'runtime.note',
+          printf('activity %d', value),
+          CASE WHEN value = 1 THEN 'invalid json' ELSE '{}' END,
+          value,
+          '2026-08-18T00:00:01.000Z'
+        FROM activity_sequence
+      `;
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, attachments_json,
+          is_streaming, created_at, updated_at
+        )
+        SELECT
+          printf('snapshot-message-%04d', 2006 - value),
+          'thread-snapshot-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          CASE WHEN value = 1 THEN 'not-json' ELSE NULL END,
+          0,
+          '2026-08-18T00:00:02.000Z',
+          '2026-08-18T00:00:02.000Z'
+        FROM message_sequence
+      `;
+
+      const snapshot = yield* snapshotQuery.getSnapshot();
+      const thread = snapshot.threads.find((entry) => entry.id === "thread-snapshot-cap");
+
+      assert.isDefined(thread);
+      assert.equal(thread.activities.length, 500);
+      assert.equal(thread.activities[0]?.id, asEventId("activity-0002"));
+      assert.equal(thread.activities.at(-1)?.id, asEventId("activity-0501"));
+      assert.equal(thread.messages.length, 2000);
+      assert.equal(thread.messages[0]?.text, "message 6");
+      assert.equal(thread.messages.at(-1)?.text, "message 2005");
     }),
   );
 
@@ -2029,6 +2277,463 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ["legacy-1", "legacy-2", "legacy-3"],
       );
       assert.equal(remainingLegacyPage.hasMore, false);
+    }),
+  );
+
+  it.effect("caps thread-detail message hydration to the newest SQL-side window", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-message-cap',
+          'Message cap',
+          '/tmp/project-message-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          '[]',
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-message-cap',
+          'project-message-cap',
+          'Message cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          'approval-required',
+          'default',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      // 2,005 messages: five over MAX_THREAD_MESSAGES (2,000) so the
+      // test proves the bound is applied in SQL before text/attachment JSON
+      // is decoded, not in JS after. Message 1 carries malformed
+      // attachments_json but is excluded from the newest window, so any
+      // implementation that decodes before capping fails loudly.
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('cap-msg-%05d', 2006 - value),
+          'thread-message-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          CASE WHEN value = 1 THEN 'not-json' ELSE NULL END,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z'
+        FROM message_sequence
+      `;
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-message-cap"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "None") return;
+      assert.equal(detail.value.messages.length, 2000);
+      assert.equal(detail.value.messages[0]?.text, "message 6");
+      assert.equal(detail.value.messages.at(-1)?.text, "message 2005");
+    }),
+  );
+
+  it.effect("returns full message history for exports when unbounded", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-export-cap',
+          'Export cap',
+          '/tmp/project-export-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          '[]',
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-export-cap',
+          'project-export-cap',
+          'Export cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          'approval-required',
+          'default',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('export-msg-%05d', value),
+          'thread-export-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          0,
+          printf(
+            '2026-07-28T00:%02d:%02d.000Z',
+            CAST(value / 60 AS INTEGER),
+            value % 60
+          ),
+          printf(
+            '2026-07-28T00:%02d:%02d.000Z',
+            CAST(value / 60 AS INTEGER),
+            value % 60
+          )
+        FROM message_sequence
+      `;
+
+      const threadId = ThreadId.make("thread-export-cap");
+      const capped = yield* snapshotQuery.getThreadDetailById(threadId);
+      assert.equal(capped._tag, "Some");
+      if (capped._tag === "None") return;
+      assert.equal(capped.value.messages.length, 2000);
+      assert.equal(capped.value.messages[0]?.text, "message 6");
+
+      const full = yield* snapshotQuery.getThreadDetailById(threadId, {
+        unboundedMessages: true,
+      });
+      assert.equal(full._tag, "Some");
+      if (full._tag === "None") return;
+      assert.equal(full.value.messages.length, 2005);
+      assert.equal(full.value.messages[0]?.text, "message 1");
+      assert.equal(full.value.messages.at(-1)?.text, "message 2005");
+    }),
+  );
+
+  // Regression coverage for the snapshot-parallelism review (PR #289):
+  // `NodeSqliteClient` is one `DatabaseSync` connection behind `Semaphore(1)`, so
+  // read fan-outs cannot overlap SELECTs — and shell/full snapshot row reads must
+  // stay in one read transaction with `projection_state`, otherwise `subscribeShell`
+  // drops buffered live events through a mismatched `snapshotSequence` (scars #29,
+  // #148). The tests below therefore assert completion under contention (no read
+  // starvation) and per-snapshot cursor/row consistency — never overlap. They use a
+  // barrier `Deferred` plus joined fibers instead of clock sleeps (scar #135).
+  it.effect("snapshot reads do not starve a queued writer", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_turns`;
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_thread_proposed_plans`;
+      yield* sql`DELETE FROM projection_queued_turns`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+      yield* sql`DELETE FROM projection_thread_sessions`;
+      yield* sql`DELETE FROM provider_session_runtime`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_state`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-read-write', 'Read/write project', '/tmp/read-write',
+          '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          latest_user_message_at, pending_approval_count, pending_user_input_count,
+          has_actionable_proposed_plan, created_at, updated_at, deleted_at
+        ) VALUES (
+          'thread-read-write', 'project-read-write', 'Read/write thread',
+          '{"provider":"copilot","model":"gpt-5.4"}', 'approval-required', 'default',
+          NULL, 0, 0, 0,
+          '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+        )
+      `;
+
+      const blockerPaused = yield* Deferred.make<void>();
+      const releaseBlocker = yield* Deferred.make<void>();
+      const readersStarted = yield* Deferred.make<void>();
+      const startedReaderCount = yield* Ref.make(0);
+      const writerStarted = yield* Deferred.make<void>();
+      const writerDone = yield* Deferred.make<void>();
+      const contentionRounds = 25;
+
+      // Hold one real shell transaction immediately before its cursor query. The
+      // queued readers start first, then the writer joins the same semaphore queue.
+      // Once released, readers keep submitting snapshots until the writer commits,
+      // so the write must progress amid sustained snapshot traffic.
+      const blockerFiber = yield* Effect.forkChild(
+        snapshotQuery.getShellSnapshot().pipe(
+          Effect.provideService(ProjectionSnapshotQueryTestHooks, {
+            beforeShellSnapshotCursorRead: Deferred.succeed(blockerPaused, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseBlocker)),
+            ),
+          }),
+        ),
+      );
+      yield* Deferred.await(blockerPaused);
+
+      const readSnapshots = Effect.gen(function* () {
+        const count = yield* Ref.updateAndGet(startedReaderCount, (n) => n + 1);
+        if (count === 3) {
+          yield* Deferred.succeed(readersStarted, undefined);
+        }
+        let sawWrite = false;
+        for (let round = 0; round < contentionRounds && !sawWrite; round += 1) {
+          yield* snapshotQuery.getShellSnapshot().pipe(Effect.asVoid);
+          sawWrite = yield* Deferred.isDone(writerDone);
+        }
+        assert.isTrue(sawWrite, "late write must commit while snapshot reads keep arriving");
+      });
+      const readerFibers = yield* Effect.forEach([0, 1, 2], () => Effect.forkChild(readSnapshots));
+      yield* Deferred.await(readersStarted);
+      yield* Effect.yieldNow;
+
+      const writerFiber = yield* Effect.forkChild(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(writerStarted, undefined);
+          yield* sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, default_model_selection_json, scripts_json,
+            created_at, updated_at, deleted_at
+          ) VALUES (
+            'project-read-write-late', 'Late write', '/tmp/read-write-late',
+            '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+            '2026-09-01T00:00:01.000Z', '2026-09-01T00:00:01.000Z', NULL
+          )
+        `;
+          yield* Deferred.succeed(writerDone, undefined);
+        }),
+      );
+      yield* Deferred.await(writerStarted);
+      yield* Effect.yieldNow;
+      assert.isFalse(yield* Deferred.isDone(writerDone));
+      yield* Deferred.succeed(releaseBlocker, undefined);
+      yield* Fiber.join(blockerFiber);
+      yield* Fiber.join(writerFiber);
+      yield* Effect.forEach(readerFibers, (fiber) => Fiber.join(fiber), { discard: true });
+
+      const reread = yield* snapshotQuery.getShellSnapshot();
+      assert.isTrue(reread.projects.some((project) => project.id === "project-read-write-late"));
+    }),
+  );
+
+  it.effect("shell snapshots keep rows and cursor atomic across an in-window commit", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      const projectId = "project-shell-race";
+      const threadIdFor = (sequence: number): string => `thread-shell-race-${sequence}`;
+      // `computeSnapshotSequence` takes the minimum over every required projector, so each
+      // simulated projection commit must advance all of them together.
+      const requiredProjectors = [
+        ORCHESTRATION_PROJECTOR_NAMES.projects,
+        ORCHESTRATION_PROJECTOR_NAMES.threads,
+        ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
+        ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans,
+        ORCHESTRATION_PROJECTOR_NAMES.queuedTurns,
+        ORCHESTRATION_PROJECTOR_NAMES.threadActivities,
+        ORCHESTRATION_PROJECTOR_NAMES.threadSessions,
+        ORCHESTRATION_PROJECTOR_NAMES.checkpoints,
+        ORCHESTRATION_PROJECTOR_NAMES.workflows,
+      ] as const;
+
+      const clearRaceTables = Effect.gen(function* () {
+        yield* sql`DELETE FROM projection_turns`;
+        yield* sql`DELETE FROM projection_thread_messages`;
+        yield* sql`DELETE FROM projection_thread_proposed_plans`;
+        yield* sql`DELETE FROM projection_queued_turns`;
+        yield* sql`DELETE FROM projection_thread_activities`;
+        yield* sql`DELETE FROM projection_thread_sessions`;
+        yield* sql`DELETE FROM provider_session_runtime`;
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_projects`;
+        yield* sql`DELETE FROM projection_state`;
+      });
+
+      const body = Effect.gen(function* () {
+        yield* clearRaceTables;
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, default_model_selection_json, scripts_json,
+            created_at, updated_at, deleted_at
+          ) VALUES (
+            ${projectId}, 'Shell race project', '/tmp/shell-race',
+            '{"provider":"copilot","model":"gpt-5.4"}', '[]',
+            '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+          )
+        `;
+        // Explicitly sequential: every projector row starts at sequence 0.
+        yield* Effect.forEach(
+          requiredProjectors,
+          (projector) =>
+            sql`
+              INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+              VALUES (${projector}, 0, '2026-09-01T00:00:00.000Z')
+            `,
+          { discard: true },
+        );
+
+        // One simulated projection commit: the new thread row and its cursor advance
+        // commit together, exactly like the real projector.
+        const commitBatch = (sequence: number) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                UPDATE projection_state
+                SET last_applied_sequence = ${sequence}, updated_at = '2026-09-01T00:00:00.000Z'
+              `;
+              yield* sql`
+                INSERT INTO projection_threads (
+                  thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+                  latest_user_message_at, pending_approval_count, pending_user_input_count,
+                  has_actionable_proposed_plan, created_at, updated_at, deleted_at
+                ) VALUES (
+                  ${threadIdFor(sequence)}, ${projectId}, ${`Race thread ${sequence}`},
+                  '{"provider":"copilot","model":"gpt-5.4"}', 'approval-required', 'default',
+                  NULL, 0, 0, 0,
+                  '2026-09-01T00:00:00.000Z', '2026-09-01T00:00:00.000Z', NULL
+                )
+              `;
+            }),
+          );
+
+        const snapshotPaused = yield* Deferred.make<void>();
+        const releaseSnapshot = yield* Deferred.make<void>();
+        const writerStarted = yield* Deferred.make<void>();
+        const writerDone = yield* Deferred.make<void>();
+
+        const snapshotFiber = yield* Effect.forkChild(
+          snapshotQuery.getShellSnapshot().pipe(
+            Effect.provideService(ProjectionSnapshotQueryTestHooks, {
+              beforeShellSnapshotCursorRead: Deferred.succeed(snapshotPaused, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseSnapshot)),
+              ),
+            }),
+          ),
+        );
+        yield* Deferred.await(snapshotPaused);
+
+        const writerFiber = yield* Effect.forkChild(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(writerStarted, undefined);
+            yield* commitBatch(1);
+            yield* Deferred.succeed(writerDone, undefined);
+          }),
+        );
+        yield* Deferred.await(writerStarted);
+        yield* Effect.yieldNow;
+
+        // The commit was released after shell rows were read but before the cursor
+        // query. The snapshot transaction must keep it queued until the cursor is
+        // read; without `withTransaction`, the writer completes here and the
+        // snapshot returns old rows with cursor 1.
+        assert.isFalse(yield* Deferred.isDone(writerDone));
+        yield* Deferred.succeed(releaseSnapshot, undefined);
+
+        const snapshot = yield* Fiber.join(snapshotFiber);
+        yield* Fiber.join(writerFiber);
+        assert.equal(snapshot.snapshotSequence, 0);
+        assert.isFalse(snapshot.threads.some((thread) => thread.id === threadIdFor(1)));
+
+        const after = yield* snapshotQuery.getShellSnapshot();
+        assert.equal(after.snapshotSequence, 1);
+        assert.isTrue(after.threads.some((thread) => thread.id === threadIdFor(1)));
+      });
+
+      yield* Effect.ensuring(body, Effect.ignore(clearRaceTables));
     }),
   );
 });

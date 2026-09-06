@@ -24,7 +24,24 @@ import {
   hasToolActivityForTurn,
   isThreadActivelyWorking,
   isLatestTurnSettled,
+  latestValidTimestamp,
 } from "./session-logic";
+
+describe("latestValidTimestamp", () => {
+  it("ignores invalid values even when the first candidate is invalid", () => {
+    expect(
+      latestValidTimestamp([
+        "not-a-timestamp",
+        "2026-02-23T00:00:02.000Z",
+        "2026-02-23T00:00:01.000Z",
+      ]),
+    ).toBe("2026-02-23T00:00:02.000Z");
+  });
+
+  it("returns undefined when no candidate is valid", () => {
+    expect(latestValidTimestamp([null, undefined, "invalid"])).toBeUndefined();
+  });
+});
 
 describe("deriveAgentRunTimelineEntries", () => {
   it("maps an agent run into the normal prompt, work, and completed response sequence", () => {
@@ -628,6 +645,70 @@ describe("findSidebarProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("derives a child navigation action from lifecycle facts", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "child-completed",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "child.lifecycle.completed",
+          summary: "Release assistant completed",
+          payload: {
+            parentThreadId: ThreadId.make("parent-thread"),
+            childThreadId: ThreadId.make("child-thread"),
+            childTitle: "Release assistant",
+            lifecycle: "completed",
+            dedupeKey: "child:child-thread:completed:turn-1",
+            createdAt: "2026-02-23T00:00:01.000Z",
+          },
+        }),
+      ],
+      TurnId.make("parent-latest-turn"),
+    );
+
+    expect(entries).toMatchObject([
+      {
+        label: "Release assistant completed",
+        action: {
+          kind: "thread",
+          label: "View result",
+          threadId: "child-thread",
+        },
+      },
+    ]);
+  });
+
+  it("preserves a persisted external pull request action", () => {
+    const [entry] = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "child-pr-created",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "child.lifecycle.pr-created",
+          summary: "Release assistant created a pull request",
+          payload: {
+            parentThreadId: ThreadId.make("parent-thread"),
+            childThreadId: ThreadId.make("child-thread"),
+            childTitle: "Release assistant",
+            lifecycle: "pr-created",
+            dedupeKey: "child:child-thread:pr-created:https://github.com/acme/app/pull/42",
+            externalAction: {
+              url: "https://github.com/acme/app/pull/42",
+            },
+            createdAt: "2026-02-23T00:00:01.000Z",
+          },
+        }),
+      ],
+      TurnId.make("parent-latest-turn"),
+    );
+
+    expect(entry?.action).toEqual({
+      kind: "external",
+      label: "Open pull request",
+      url: "https://github.com/acme/app/pull/42",
+    });
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
@@ -1788,7 +1869,7 @@ describe("deriveWorkLogEntries context window handling", () => {
     expect(entries[0]?.label).toBe("Ran command");
   });
 
-  it("keeps context compaction activities as normal work log entries", () => {
+  it("preserves compaction identity for the dedicated timeline separator", () => {
     const entries = deriveWorkLogEntries(
       [
         makeActivity({
@@ -1803,7 +1884,8 @@ describe("deriveWorkLogEntries context window handling", () => {
     );
 
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.label).toBe("Context compacted");
+    expect(entries[0]?.label).toBe("Compacted context");
+    expect(entries[0]?.sourceActivityKind).toBe("context-compaction");
   });
 });
 

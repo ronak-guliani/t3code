@@ -15,6 +15,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import {
   extractChangedFilePathCandidatesFromToolPayload,
@@ -26,8 +27,11 @@ import {
   Deferred,
   Duration,
   Effect,
+  Exit,
   Layer,
   Option,
+  Ref,
+  Semaphore,
   Stream,
   SynchronizedRef,
 } from "effect";
@@ -41,6 +45,7 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/Utils.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -51,13 +56,25 @@ import { parseReviewResult } from "../reviewResult.ts";
 import { ReviewSnapshotVerifier } from "../Services/ReviewSnapshotVerifier.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
+const providerCommandIdFromEventId = (eventId: string, tag: string): CommandId =>
+  CommandId.make(`provider:${eventId}:${tag}:${crypto.randomUUID()}`);
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
-  CommandId.make(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
+  providerCommandIdFromEventId(event.eventId, tag);
 
 interface AssistantSegmentState {
   baseKey: string;
   nextSegmentIndex: number;
   activeMessageId: MessageId | null;
+}
+
+interface PendingStreamingDelta {
+  readonly threadId: ThreadId;
+  readonly turnId: TurnId | undefined;
+  readonly eventId: string;
+  readonly createdAt: string;
+  text: string;
+  /** UTF-8 byte length of `text`, tracked incrementally per appended delta. */
+  textBytes: number;
 }
 
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
@@ -67,6 +84,38 @@ const BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
+const STREAMING_DELTA_COALESCE_BYTES = 2_048;
+const STREAMING_DELTA_FLUSH_INTERVAL = Duration.millis(50);
+// A failed delta dispatch must not let a following terminal event (message
+// completion, turn finalization) overtake the buffered text, so the ingestion
+// worker retries the flush until it succeeds before processing that event.
+const STREAMING_DELTA_STRICT_RETRY_DELAY = Duration.millis(25);
+// Bound on strict-flush retry rounds so one poisoned message cannot stall the
+// shared ingestion worker indefinitely; leftovers are salvaged into the
+// finalize buffer instead of blocking later events for unrelated sessions.
+const STREAMING_DELTA_STRICT_MAX_RETRY_ROUNDS = 400;
+
+// Domain rejections that can never succeed on retry regardless of engine
+// health. Matched by tag: Effect Schema error classes must be identified via
+// their tag, not instanceof.
+const PERMANENT_STREAMING_DELTA_DISPATCH_ERROR_TAGS: ReadonlySet<string> = new Set([
+  "OrchestrationCommandJsonParseError",
+  "OrchestrationCommandDecodeError",
+  "OrchestrationCommandInvariantError",
+  "OrchestrationCommandPreviouslyRejectedError",
+  "OrchestrationCommandWorktreeCleanupPendingError",
+]);
+
+const hasPermanentStreamingDeltaDispatchFailure = (cause: Cause.Cause<unknown>): boolean =>
+  cause.reasons.some(
+    (reason) =>
+      reason._tag === "Fail" &&
+      typeof reason.error === "object" &&
+      reason.error !== null &&
+      PERMANENT_STREAMING_DELTA_DISPATCH_ERROR_TAGS.has(
+        (reason.error as { readonly _tag?: string })._tag ?? "",
+      ),
+  );
 const RUNTIME_INGESTION_QUEUE_CAPACITY = 1_024;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
@@ -106,6 +155,12 @@ function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string
 
 function hasRenderableAssistantText(text: string | undefined): boolean {
   return (text?.trim().length ?? 0) > 0;
+}
+
+function assistantTextDeltaFromEvent(event: ProviderRuntimeEvent): string | undefined {
+  return event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+    ? event.payload.delta
+    : undefined;
 }
 
 function proposedPlanIdForTurn(threadId: ThreadId, turnId: TurnId): string {
@@ -550,15 +605,21 @@ function runtimeEventToActivities(
         return [];
       }
 
+      const { beforeTokens, afterTokens } = event.payload;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-compaction",
-          summary: "Context compacted",
+          summary:
+            beforeTokens !== undefined && afterTokens !== undefined
+              ? `Compacted context ${formatTokens(beforeTokens)} → ${formatTokens(afterTokens)} tokens`
+              : "Compacted context",
           payload: {
             state: event.payload.state,
+            ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+            ...(afterTokens !== undefined ? { afterTokens } : {}),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -668,6 +729,7 @@ function runtimeEventToActivities(
 }
 
 const make = Effect.gen(function* () {
+  const coordinator = yield* CheckoutCoordinator;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
@@ -785,6 +847,192 @@ const make = Effect.gen(function* () {
     timeToLive: BUFFERED_MESSAGE_TEXT_BY_MESSAGE_ID_TTL,
     lookup: () => Effect.succeed(""),
   });
+
+  // Coalescing buffer for streaming-mode assistant deltas: deltas accumulate per
+  // message and are dispatched as one command on a size threshold, a time window,
+  // or before any non-delta event is processed (which preserves ordering with
+  // completion/finalization commands).
+  const pendingStreamingDeltas = yield* Ref.make<Map<MessageId, PendingStreamingDelta>>(new Map());
+  const streamingDeltaFlushLock = yield* Semaphore.make(1);
+
+  const takePendingStreamingDelta = (messageId: MessageId) =>
+    Ref.modify(
+      pendingStreamingDeltas,
+      (
+        map,
+      ): readonly [PendingStreamingDelta | undefined, Map<MessageId, PendingStreamingDelta>] => {
+        const entry = map.get(messageId);
+        if (entry === undefined) {
+          return [undefined, map];
+        }
+        const next = new Map(map);
+        next.delete(messageId);
+        return [entry, next];
+      },
+    );
+
+  // Puts undelivered text back at the front of the buffer so a failed dispatch
+  // is retried by the next flush instead of silently dropping streamed text.
+  const restorePendingStreamingDelta = (messageId: MessageId, pending: PendingStreamingDelta) =>
+    Ref.update(pendingStreamingDeltas, (map) => {
+      const existing = map.get(messageId);
+      const next = new Map(map);
+      next.set(
+        messageId,
+        existing === undefined
+          ? pending
+          : {
+              ...existing,
+              text: `${pending.text}${existing.text}`,
+              textBytes: pending.textBytes + existing.textBytes,
+            },
+      );
+      return next;
+    });
+
+  const flushStreamingDeltaForMessage = (messageId: MessageId) =>
+    streamingDeltaFlushLock.withPermits(1)(
+      Effect.gen(function* () {
+        const pending = yield* takePendingStreamingDelta(messageId);
+        if (pending === undefined || pending.text.length === 0) {
+          return;
+        }
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.message.assistant.delta",
+            // Deterministic per buffered batch (no random suffix): if this
+            // dispatch committed and its caller was still interrupted, the
+            // engine's command receipt deduplicates the retry instead of
+            // appending the same text twice.
+            commandId: CommandId.make(`provider:${pending.eventId}:assistant-delta`),
+            threadId: pending.threadId,
+            messageId,
+            delta: pending.text,
+            ...(pending.turnId !== undefined ? { turnId: pending.turnId } : {}),
+            createdAt: pending.createdAt,
+          })
+          .pipe(
+            // An interrupt observed mid-dispatch is ambiguous: the engine may
+            // have committed. Making the dispatch itself uninterruptible
+            // removes that window — external interruption waits until the
+            // dispatch settles, so restore-on-interrupt below only runs for
+            // dispatches that provably did not commit.
+            Effect.uninterruptible,
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) {
+                // The batch is already removed from the buffer; restore it so
+                // a later flusher or the shutdown finalizer can still deliver
+                // text an interrupted in-flight dispatch took out.
+                return Effect.flatMap(restorePendingStreamingDelta(messageId, pending), () =>
+                  Effect.failCause(cause),
+                );
+              }
+              if (hasPermanentStreamingDeltaDispatchFailure(cause)) {
+                // Retrying can never succeed. Hand the text to the finalize
+                // buffer instead of restoring it: the next terminal event for
+                // this message carries it to completion, and ingestion never
+                // wedges on a permanently rejected delta dispatch.
+                return Effect.flatMap(appendBufferedAssistantText(messageId, pending.text), () =>
+                  Effect.logError(
+                    "provider runtime ingestion gave up dispatching coalesced streaming delta; text deferred to message finalization",
+                    { messageId, cause: Cause.pretty(cause) },
+                  ),
+                );
+              }
+              return Effect.gen(function* () {
+                yield* restorePendingStreamingDelta(messageId, pending);
+                yield* Effect.logWarning(
+                  "provider runtime ingestion failed to dispatch coalesced streaming delta",
+                  { messageId, cause: Cause.pretty(cause) },
+                );
+              });
+            }),
+          );
+      }),
+    );
+
+  const flushAllStreamingDeltas = () =>
+    Effect.gen(function* () {
+      const messageIds = Array.from((yield* Ref.get(pendingStreamingDeltas)).keys());
+      for (const messageId of messageIds) {
+        yield* flushStreamingDeltaForMessage(messageId);
+      }
+    }).pipe(Effect.asVoid);
+
+  const hasPendingStreamingDeltas = Effect.map(
+    Ref.get(pendingStreamingDeltas),
+    (map) => map.size > 0,
+  );
+
+  // Last-resort salvage for buffers that keep failing transiently: move their
+  // text into the finalize buffer under the flush lock (excluding concurrent
+  // restores) so the upcoming terminal event still delivers it.
+  const salvageAllPendingStreamingDeltas = streamingDeltaFlushLock.withPermits(1)(
+    Effect.gen(function* () {
+      const remaining = yield* Ref.getAndSet(pendingStreamingDeltas, new Map());
+      const entries = Array.from(remaining.entries());
+      if (entries.length === 0) {
+        return;
+      }
+      for (const [messageId, pending] of entries) {
+        yield* appendBufferedAssistantText(messageId, pending.text);
+      }
+      yield* Effect.logWarning(
+        "provider runtime ingestion deferred persistently failing streaming deltas to message finalization",
+        { messageIds: entries.map(([messageId]) => messageId) },
+      );
+    }),
+  );
+
+  // Ordering-critical flush: used before terminal events. A transient engine
+  // failure must not let the terminal event overtake buffered text, so retry
+  // until every buffer is delivered — bounded so one poisoned message cannot
+  // wedge the shared ingestion worker forever; leftovers are salvaged into
+  // the finalize buffer rather than dropped.
+  const flushAllStreamingDeltasStrictly = Effect.gen(function* () {
+    yield* flushAllStreamingDeltas();
+    let rounds = 0;
+    while ((yield* hasPendingStreamingDeltas) && rounds < STREAMING_DELTA_STRICT_MAX_RETRY_ROUNDS) {
+      yield* Effect.sleep(STREAMING_DELTA_STRICT_RETRY_DELAY);
+      yield* flushAllStreamingDeltas();
+      rounds += 1;
+    }
+    if (yield* hasPendingStreamingDeltas) {
+      yield* salvageAllPendingStreamingDeltas;
+    }
+  }).pipe(Effect.asVoid);
+
+  const appendStreamingAssistantDelta = (input: {
+    threadId: ThreadId;
+    messageId: MessageId;
+    turnId: TurnId | undefined;
+    eventId: string;
+    delta: string;
+    createdAt: string;
+  }) =>
+    Ref.modify(
+      pendingStreamingDeltas,
+      (map): readonly [boolean, Map<MessageId, PendingStreamingDelta>] => {
+        const existing = map.get(input.messageId);
+        const text = `${existing?.text ?? ""}${input.delta}`;
+        const next = new Map(map);
+        next.set(input.messageId, {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          eventId: input.eventId,
+          createdAt: input.createdAt,
+          text,
+          // Compare UTF-8 bytes against the byte-named threshold; code-unit
+          // lengths understate multi-byte content by up to 3x per character.
+          textBytes: (existing?.textBytes ?? 0) + Buffer.byteLength(input.delta, "utf8"),
+        });
+        return [next.get(input.messageId)!.textBytes >= STREAMING_DELTA_COALESCE_BYTES, next];
+      },
+    ).pipe(
+      Effect.flatMap((shouldSpill) =>
+        shouldSpill ? flushStreamingDeltaForMessage(input.messageId) : Effect.void,
+      ),
+    );
 
   const assistantSegmentStateByTurnKey = yield* Cache.make<string, AssistantSegmentState>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -1422,6 +1670,23 @@ const make = Effect.gen(function* () {
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) return;
 
+      if (event.type === "turn.completed" && event.turnId !== undefined) {
+        const cwd =
+          thread.worktreePath ??
+          readModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
+        if (cwd) {
+          // Establish exclusion before any command can publish an idle session.
+          // The owned checkpoint handoff releases it after terminal processing.
+          yield* coordinator.beginFinalization(event.eventId, cwd);
+        }
+        const runtimeSession = (yield* providerService.listSessions()).find(
+          (session) => session.threadId === thread.id,
+        );
+        if (runtimeSession?.cwd) {
+          yield* coordinator.beginFinalization(event.eventId, runtimeSession.cwd);
+        }
+      }
+
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
@@ -1641,10 +1906,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const assistantDelta =
-        event.type === "content.delta" && event.payload.streamKind === "assistant_text"
-          ? event.payload.delta
-          : undefined;
+      const assistantDelta = assistantTextDeltaFromEvent(event);
       const proposedPlanDelta =
         event.type === "turn.proposed.delta" ? event.payload.delta : undefined;
 
@@ -1677,13 +1939,12 @@ const make = Effect.gen(function* () {
             });
           }
         } else {
-          yield* orchestrationEngine.dispatch({
-            type: "thread.message.assistant.delta",
-            commandId: providerCommandId(event, "assistant-delta"),
+          yield* appendStreamingAssistantDelta({
             threadId: thread.id,
             messageId: assistantMessageId,
+            turnId,
+            eventId: event.eventId,
             delta: assistantDelta,
-            ...(turnId ? { turnId } : {}),
             createdAt: now,
           });
         }
@@ -1941,17 +2202,88 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const isAssistantTextDeltaEvent = (event: ProviderRuntimeEvent): boolean =>
+    assistantTextDeltaFromEvent(event) !== undefined;
+
   const worker = yield* makeDrainableWorker(
-    (event: ProviderRuntimeEvent) =>
-      processRuntimeEventSafely(event).pipe(Effect.andThen(markProcessed(event))),
+    ({
+      event,
+      enqueueCheckpointEvent,
+    }: {
+      event: ProviderRuntimeEvent;
+      enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
+    }) =>
+      Effect.gen(function* () {
+        let handedOff = false;
+        yield* Effect.andThen(
+          // Non-delta events may finalize or complete a message, so any buffered
+          // deltas must reach the engine first to preserve ordering. The strict
+          // variant retries through transient dispatch failures instead of
+          // letting a completion overtake undelivered text.
+          isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
+          processRuntimeEventSafely(event),
+        ).pipe(
+          Effect.andThen(markProcessed(event)),
+          Effect.andThen(
+            enqueueCheckpointEvent(event).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  handedOff = true;
+                }),
+              ),
+              Effect.uninterruptible,
+            ),
+          ),
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) && !handedOff
+              ? coordinator.endFinalization(event.eventId)
+              : Effect.void,
+          ),
+        );
+      }),
     {
       capacity: RUNTIME_INGESTION_QUEUE_CAPACITY,
     },
   );
 
-  const start: ProviderRuntimeIngestionShape["start"] = () =>
+  yield* Effect.forkScoped(
+    Effect.forever(
+      Effect.sleep(STREAMING_DELTA_FLUSH_INTERVAL).pipe(
+        Effect.andThen(flushAllStreamingDeltas()),
+        // An interrupted in-flight flush must not kill the flusher fiber: the
+        // batch is restored by the flush itself and the next tick retries.
+        // Shutdown still ends this loop through its own scope interruption.
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logWarning("periodic streaming delta flush failed", {
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      ),
+    ),
+  );
+
+  yield* Effect.addFinalizer(() =>
+    flushAllStreamingDeltas().pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.void
+          : Effect.logWarning(
+              "provider runtime ingestion failed to flush streaming deltas on shutdown",
+              { cause: Cause.pretty(cause) },
+            ),
+      ),
+    ),
+  );
+
+  const start: ProviderRuntimeIngestionShape["start"] = (enqueueCheckpointEvent) =>
     Effect.gen(function* () {
-      yield* Effect.forkScoped(Stream.runForEach(providerService.streamEvents, worker.enqueue));
+      yield* Effect.forkScoped(
+        Stream.runForEach(providerService.streamEvents, (event) =>
+          worker.enqueue({ event, enqueueCheckpointEvent }),
+        ),
+      );
     });
 
   return {
@@ -1964,4 +2296,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provideMerge(CheckoutCoordinatorLive));

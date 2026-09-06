@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CheckpointRef,
+  CommandId,
   EventId,
   MessageId,
   ProjectId,
@@ -168,6 +169,69 @@ describe("applyThreadDetailEvent", () => {
     });
   });
 
+  describe("thread pinning", () => {
+    it("applies pin, reorder, and unpin events", () => {
+      const pinned = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.pinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          pinnedAt: "2026-04-01T05:00:00.000Z",
+          pinOrderKey: "a",
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+      expect(pinned.kind).toBe("updated");
+      if (pinned.kind !== "updated") {
+        return;
+      }
+
+      const reordered = applyThreadDetailEvent(pinned.thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T06:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.pin-reordered",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          orderKey: "b",
+          updatedAt: "2026-04-01T06:00:00.000Z",
+        },
+      });
+      expect(reordered.kind).toBe("updated");
+      if (reordered.kind !== "updated") {
+        return;
+      }
+      expect(reordered.thread).toMatchObject({
+        pinnedAt: "2026-04-01T05:00:00.000Z",
+        pinOrderKey: "b",
+      });
+
+      const unpinned = applyThreadDetailEvent(reordered.thread, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T07:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.unpinned",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          updatedAt: "2026-04-01T07:00:00.000Z",
+        },
+      });
+      expect(unpinned.kind).toBe("updated");
+      if (unpinned.kind === "updated") {
+        expect(unpinned.thread.pinnedAt).toBeNull();
+        expect(unpinned.thread.pinOrderKey).toBeNull();
+      }
+    });
+  });
+
   describe("thread.meta-updated", () => {
     it("patches title and branch", () => {
       const result = applyThreadDetailEvent(baseThread, {
@@ -191,6 +255,48 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.branch).toBe("feature/demo");
         // Model selection should be unchanged since it wasn't in the payload
         expect(result.thread.modelSelection).toEqual(baseThread.modelSelection);
+      }
+    });
+
+    it("applies and clears title regeneration state", () => {
+      const pending = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 5,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          titleRegeneration: {
+            requestId: CommandId.make("cmd-title-regenerate"),
+            startedAt: "2026-04-01T05:00:00.000Z",
+          },
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+      expect(pending.kind).toBe("updated");
+      if (pending.kind !== "updated") return;
+      expect(pending.thread.titleRegeneration?.requestId).toBe("cmd-title-regenerate");
+
+      const completed = applyThreadDetailEvent(pending.thread, {
+        ...baseEventFields,
+        sequence: 6,
+        occurredAt: "2026-04-01T05:00:01.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          title: "Regenerated title",
+          titleRegeneration: null,
+          updatedAt: "2026-04-01T05:00:01.000Z",
+        },
+      });
+      expect(completed.kind).toBe("updated");
+      if (completed.kind === "updated") {
+        expect(completed.thread.title).toBe("Regenerated title");
+        expect(completed.thread.titleRegeneration).toBeNull();
       }
     });
   });
@@ -496,6 +602,49 @@ describe("applyThreadDetailEvent", () => {
           "approval-resolved",
         ]);
         expect(resolved.thread.activityContext).toEqual([]);
+      }
+    });
+  });
+
+  describe("thread.child-lifecycle-notified", () => {
+    it("restores the parent activity on reconnect without duplicating a replayed event", () => {
+      const event = {
+        ...baseEventFields,
+        eventId: EventId.make("event-child-completed"),
+        sequence: 13,
+        occurredAt: "2026-04-01T12:00:00.000Z",
+        aggregateKind: "thread" as const,
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.child-lifecycle-notified" as const,
+        payload: {
+          parentThreadId: ThreadId.make("thread-1"),
+          childThreadId: ThreadId.make("thread-2"),
+          childTitle: "Release assistant",
+          lifecycle: "completed" as const,
+          dedupeKey: "child:thread-2:completed:turn-2",
+          createdAt: "2026-04-01T12:00:00.000Z",
+        },
+      };
+
+      const restored = applyThreadDetailEvent(baseThread, event);
+      expect(restored.kind).toBe("updated");
+      if (restored.kind !== "updated") return;
+      expect(restored.thread.activities).toHaveLength(1);
+      expect(restored.thread.activities[0]).toMatchObject({
+        id: "event-child-completed",
+        kind: "child.lifecycle.completed",
+        summary: "Release assistant completed",
+        payload: {
+          parentThreadId: "thread-1",
+          childThreadId: "thread-2",
+          lifecycle: "completed",
+        },
+      });
+
+      const replayed = applyThreadDetailEvent(restored.thread, event);
+      expect(replayed.kind).toBe("updated");
+      if (replayed.kind === "updated") {
+        expect(replayed.thread.activities).toHaveLength(1);
       }
     });
   });

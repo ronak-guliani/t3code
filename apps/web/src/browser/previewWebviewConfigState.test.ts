@@ -13,7 +13,7 @@ const environmentId = EnvironmentId.make("environment-1");
 describe("loadPreviewWebviewConfig", () => {
   it("reports a structurally distinct missing-bridge failure", async () => {
     const error = await Effect.runPromise(
-      loadPreviewWebviewConfig(environmentId, null).pipe(Effect.flip),
+      loadPreviewWebviewConfig(environmentId, undefined, null).pipe(Effect.flip),
     );
 
     expect(error).toBeInstanceOf(PreviewWebviewBridgeUnavailableError);
@@ -25,7 +25,7 @@ describe("loadPreviewWebviewConfig", () => {
   it("preserves the bridge rejection as the load failure cause", async () => {
     const cause = new Error("ipc unavailable");
     const error = await Effect.runPromise(
-      loadPreviewWebviewConfig(environmentId, {
+      loadPreviewWebviewConfig(environmentId, undefined, {
         getPreviewConfig: () => Promise.reject(cause),
       }).pipe(Effect.flip),
     );
@@ -44,7 +44,7 @@ describe("loadPreviewWebviewConfig", () => {
       preloadUrl: null,
     };
     const result = await Effect.runPromise(
-      loadPreviewWebviewConfig(environmentId, {
+      loadPreviewWebviewConfig(environmentId, undefined, {
         getPreviewConfig: (input) => {
           requestedEnvironmentId = input;
           return Promise.resolve(config);

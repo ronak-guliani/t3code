@@ -3,18 +3,16 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  DEFAULT_BROWSER_PROFILE_ID,
   FILL_PREVIEW_VIEWPORT,
   type PreviewViewportSetting,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
-import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Button } from "~/components/ui/button";
-
 import { useComposerDraftStore } from "~/composerDraftStore";
-import { previewAnnotationScreenshotFile } from "~/lib/previewAnnotation";
+import { capturePreviewAnnotationScreenshot } from "~/lib/previewAnnotation";
 import { readLocalApi } from "~/localApi";
 import {
   rememberPreviewUrl,
@@ -62,7 +60,7 @@ interface Props {
   tabId?: string | null;
   configuredUrls?: ReadonlyArray<string> | undefined;
   visible: boolean;
-  /** When provided, renders a panel close affordance in the chrome row. */
+  /** Closes the panel after moving this browser into the floating preview. */
   onClose?: (() => void) | undefined;
 }
 
@@ -129,6 +127,7 @@ export function PreviewView({
         }) ?? undefined)
       : undefined;
   const viewport = snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT;
+  const activeProfileId = snapshot?.profileId ?? DEFAULT_BROWSER_PROFILE_ID;
   const panelRect = useBrowserSurfaceStore((state) =>
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
@@ -517,10 +516,24 @@ export function PreviewView({
     setPickActive(true);
     void (async () => {
       try {
-        const annotation = await previewBridge.pickElement(runtimeTabId);
-        if (!annotation) return;
+        const picked = await previewBridge.pickElement(runtimeTabId);
+        if (!picked) return;
+        const capture = await capturePreviewAnnotationScreenshot(picked);
+        const cropExpected =
+          picked.elements.length > 0 || picked.regions.length > 0 || picked.strokes.length > 0;
+        const cropDropped = cropExpected && capture.status !== "captured";
+        const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
         addPreviewAnnotation(threadRef, annotation);
-        const screenshotFile = await previewAnnotationScreenshotFile(annotation);
+        if (cropDropped) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not capture the picked element",
+              description: "The annotation was kept without the screenshot.",
+            }),
+          );
+        }
+        const screenshotFile = capture.status === "captured" ? capture.file : null;
         if (screenshotFile && annotation.screenshot) {
           addImage(threadRef, {
             type: "image",
@@ -645,18 +658,9 @@ export function PreviewView({
                 onToggleNativePictureInPicture={handleToggleNativePictureInPicture}
                 nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
                 nativePictureInPictureDisabled={!desktopOverlay || isUnreachable}
+                environmentId={threadRef.environmentId}
+                profileId={activeProfileId}
               />
-            ) : null}
-            {onClose ? (
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                type="button"
-                aria-label="Close browser panel"
-                onClick={onClose}
-              >
-                <X className="size-3.5" />
-              </Button>
             ) : null}
           </>
         }
@@ -667,7 +671,7 @@ export function PreviewView({
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
-            visible={visible && miniPlayerTabId !== tabId && !isUnreachable}
+            visible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}

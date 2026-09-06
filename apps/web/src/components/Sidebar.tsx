@@ -20,7 +20,7 @@ import {
   ThreadBrowserOpenStatus,
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
-import { ThreadDetailsTooltip } from "./SidebarV2ThreadTooltip";
+import { ThreadDetailsTooltip, ThreadDetailsTooltipProvider } from "./SidebarV2ThreadTooltip";
 import { ProjectFavicon } from "./ProjectFavicon";
 import { formatWorktreePathForDisplay } from "../worktreeCleanup";
 import { autoAnimate } from "@formkit/auto-animate";
@@ -77,6 +77,7 @@ import {
 import { usePrimaryEnvironmentId } from "../environments/primary";
 import { isElectron } from "../env";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { reportClientError } from "../lib/clientLogger";
 import { cn, isMacPlatform, newCommandId, newDraftId, newThreadId } from "../lib/utils";
 import { TITLEBAR_ROW_CLASS, TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS } from "../lib/titlebar";
 import {
@@ -116,6 +117,7 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import {
   buildThreadRouteParams,
   clearAgentRunRouteSearch,
+  clearThreadNavigationRouteSearch,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -132,7 +134,11 @@ import {
 } from "./desktopUpdate.logic";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
-import { ProjectGroupingDialog, ProjectRenameDialog } from "./sidebar/ProjectDialogs";
+import {
+  ProjectGroupingDialog,
+  ProjectRenameDialog,
+  ProjectSettingsDialog,
+} from "./sidebar/ProjectDialogs";
 import { PROJECT_GROUPING_MODE_LABELS } from "./sidebar/projectGroupingLabels";
 import {
   Menu,
@@ -171,6 +177,7 @@ import {
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarDraftPreview,
+  resolveExistingThreadDraftPreview,
   shouldRenderSidebarDraft,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
@@ -349,6 +356,7 @@ interface SidebarThreadRowProps {
   threadProjectCwd: string | null;
   threadProjectName: string | null;
   orderedProjectThreadKeys: readonly string[];
+  activeRouteThreadKey: string | null;
   isActive: boolean;
   jumpLabel: string | null;
   appSettingsConfirmThreadArchive: boolean;
@@ -399,6 +407,7 @@ interface SidebarThreadRowProps {
 const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowProps) {
   const {
     orderedProjectThreadKeys,
+    activeRouteThreadKey,
     isActive,
     jumpLabel,
     appSettingsConfirmThreadArchive,
@@ -444,6 +453,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const pendingTurn = usePendingTurnStore(
     (state) => state.pendingByThreadKey[pendingTurnKey] ?? null,
   );
+  const composerPrompt = useComposerDraftStore((state) =>
+    virtualAgentRun ? null : (state.draftsByThreadKey[threadKey]?.prompt ?? null),
+  );
+  const composerDraftPreview = isActive ? null : resolveExistingThreadDraftPreview(composerPrompt);
   const effectiveThreadStatus = resolveSidebarThreadRowStatus({
     threadStatus,
     hasPendingTurn: isPendingTurnActive(pendingTurn, thread),
@@ -516,10 +529,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       if (virtualAgentRun) {
         event.preventDefault();
         clearSelection();
+        const clearSearch =
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch;
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
-          search: (previous) => ({ ...previous, agent: virtualAgentRun.taskId }),
+          search: (previous) => ({
+            ...clearSearch(previous),
+            agent: virtualAgentRun.taskId,
+          }),
         });
         return;
       }
@@ -537,6 +557,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       handleThreadClick(event, threadRef, orderedProjectThreadKeys);
     },
     [
+      activeRouteThreadKey,
       handleThreadClick,
       handleParentThreadSelected,
       clearSelection,
@@ -558,16 +579,23 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       if (virtualAgentRun) {
+        const clearSearch =
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch;
         void navigate({
           to: "/$environmentId/$threadId",
           params: buildThreadRouteParams(threadRef),
-          search: (previous) => ({ ...previous, agent: virtualAgentRun.taskId }),
+          search: (previous) => ({
+            ...clearSearch(previous),
+            agent: virtualAgentRun.taskId,
+          }),
         });
         return;
       }
       navigateToThread(threadRef);
     },
-    [navigate, navigateToThread, threadRef, virtualAgentRun],
+    [activeRouteThreadKey, navigate, navigateToThread, threadKey, threadRef, virtualAgentRun],
   );
   const handleRowContextMenu = useCallback(
     (event: React.MouseEvent) => {
@@ -820,6 +848,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             <span className="flex min-w-0 flex-1 items-center gap-[var(--app-sidebar-row-line-gap)]">
               <Tooltip>
                 <TooltipTrigger
+                  delay={200}
                   render={
                     <span
                       className="min-w-0 truncate font-medium text-foreground/90"
@@ -841,6 +870,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   thread={thread}
                 />
               </Tooltip>
+              {composerDraftPreview ? (
+                <span
+                  className="min-w-0 flex-1 truncate text-muted-foreground/50"
+                  style={{ fontSize: "var(--app-sidebar-meta-font-size)" }}
+                  title={composerDraftPreview}
+                >
+                  · {composerDraftPreview}
+                </span>
+              ) : null}
               {prStatus ? (
                 <>
                   <span
@@ -1154,6 +1192,7 @@ const VisibleSidebarProjectThreadList = memo(function VisibleSidebarProjectThrea
         threadProjectCwd: threadProject?.cwd ?? null,
         threadProjectName: threadProject?.name ?? null,
         orderedProjectThreadKeys,
+        activeRouteThreadKey,
         isActive:
           activeRouteThreadKey === routeThreadKey &&
           (virtualAgentRun ? activeAgentId === virtualAgentRun.taskId : !activeAgentId),
@@ -1641,6 +1680,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     null,
   );
   const [projectRenameTitle, setProjectRenameTitle] = useState("");
+  const [projectSettingsTarget, setProjectSettingsTarget] =
+    useState<SidebarProjectGroupMember | null>(null);
+  const [savingProjectSettings, setSavingProjectSettings] = useState(false);
   const [projectGroupingTarget, setProjectGroupingTarget] =
     useState<SidebarProjectGroupMember | null>(null);
   const [projectGroupingSelection, setProjectGroupingSelection] = useState<
@@ -1945,7 +1987,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 })().catch((error) => {
                   const message =
                     error instanceof Error ? error.message : "Unknown error removing project.";
-                  console.error("Failed to remove project", {
+                  reportClientError("Failed to remove project", {
                     projectId: member.id,
                     environmentId: member.environmentId,
                     error,
@@ -1980,7 +2022,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         await removeProject(member);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error removing project.";
-        console.error("Failed to remove project", {
+        reportClientError("Failed to remove project", {
           projectId: member.id,
           environmentId: member.environmentId,
           error,
@@ -2007,7 +2049,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "settings" | "rename" | "grouping" | "copy-path" | "delete",
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -2017,6 +2059,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           const id = `${action}:${member.physicalProjectKey}`;
           actionHandlers.set(id, () => {
             switch (action) {
+              case "settings":
+                setProjectSettingsTarget(member);
+                return;
               case "rename":
                 openProjectRenameDialog(member);
                 return;
@@ -2040,7 +2085,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "settings" | "rename" | "grouping" | "copy-path" | "delete",
           label: string,
           options?: {
             destructive?: boolean;
@@ -2072,6 +2117,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const clicked = await api.contextMenu.show(
           [
+            buildTargetedItem("settings", "Project settings"),
             buildTargetedItem("rename", "Rename project"),
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
@@ -2112,10 +2158,13 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          activeRouteThreadKey === scopedThreadKey(threadRef)
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
-    [clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
+    [activeRouteThreadKey, clearSelection, isMobile, router, setOpenMobile, setSelectionAnchor],
   );
   const toggleThreadExpanded = useCallback(
     (threadKey: string, isExpanded: boolean) => {
@@ -2158,10 +2207,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       void router.navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          activeRouteThreadKey === threadKey
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
     [
+      activeRouteThreadKey,
       clearSelection,
       isMobile,
       rangeSelectTo,
@@ -2318,6 +2371,37 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     setProjectRenameTarget(null);
     setProjectRenameTitle("");
   }, []);
+
+  const updateAutoPull = async (enabled: boolean) => {
+    if (!projectSettingsTarget || savingProjectSettings) return;
+    const target = projectSettingsTarget;
+    setSavingProjectSettings(true);
+    try {
+      const api = readEnvironmentApi(target.environmentId);
+      if (!api) throw new Error("Project API unavailable.");
+      await api.orchestration.dispatchCommand({
+        type: "project.meta.update",
+        commandId: newCommandId(),
+        projectId: target.id,
+        autoPull: enabled,
+      });
+      setProjectSettingsTarget((current) =>
+        current?.physicalProjectKey === target.physicalProjectKey
+          ? { ...current, autoPull: enabled }
+          : current,
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to update automatic pull setting",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    } finally {
+      setSavingProjectSettings(false);
+    }
+  };
 
   const submitProjectRename = useCallback(async () => {
     if (!projectRenameTarget) {
@@ -2539,7 +2623,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   );
 
   return (
-    <>
+    <ThreadDetailsTooltipProvider value={projectThreads}>
       {hideProjectHeader ? null : (
         <div className="group/project-header relative">
           <SidebarMenuButton
@@ -2694,6 +2778,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         onSubmit={() => void submitProjectRename()}
       />
 
+      <ProjectSettingsDialog
+        target={projectSettingsTarget}
+        enabled={projectSettingsTarget?.autoPull ?? false}
+        saving={savingProjectSettings}
+        onChange={(enabled) => void updateAutoPull(enabled)}
+        onClose={() => setProjectSettingsTarget(null)}
+      />
+
       <ProjectGroupingDialog
         target={projectGroupingTarget}
         selection={projectGroupingSelection}
@@ -2702,7 +2794,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         onClose={closeProjectGroupingDialog}
         onSave={saveProjectGroupingPreference}
       />
-    </>
+    </ThreadDetailsTooltipProvider>
   );
 });
 
@@ -3662,10 +3754,13 @@ export default function Sidebar() {
       void navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(threadRef),
-        search: clearAgentRunRouteSearch,
+        search:
+          routeThreadKey === scopedThreadKey(threadRef)
+            ? clearAgentRunRouteSearch
+            : clearThreadNavigationRouteSearch,
       });
     },
-    [clearSelection, isMobile, navigate, setOpenMobile, setSelectionAnchor],
+    [clearSelection, isMobile, navigate, routeThreadKey, setOpenMobile, setSelectionAnchor],
   );
   const navigateToDraft = useCallback(
     (draftId: DraftId) => {

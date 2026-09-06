@@ -5,6 +5,8 @@ import { Effect, Schema } from "effect";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
+  isProviderSendTurnSupportedImageMimeType,
   ClientOrchestrationCommand,
   DiffState,
   ModelSelection,
@@ -47,6 +49,22 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+
+it("recognizes supported image MIME types without accepting whitespace or parameters", () => {
+  for (const mimeType of PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES) {
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), true);
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType.toUpperCase()), true);
+  }
+  for (const mimeType of [
+    "image/heic",
+    "text/plain",
+    " image/png",
+    "image/png\n",
+    "image/png; charset=utf-8",
+  ]) {
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), false);
+  }
+});
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -488,13 +506,23 @@ it.effect("decodes thread.meta-updated payloads with explicit provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadMetaUpdatedPayload({
       threadId: "thread-1",
+      regenerateTitle: true,
+      previousTitle: "Previous title",
+      titleRegeneration: {
+        requestId: "cmd-title-regenerate",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      },
       modelSelection: {
         provider: "claudeAgent",
         model: "claude-opus-4-6",
       },
+      pullRequestOwnership: "transfer",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
+    assert.strictEqual(parsed.previousTitle, "Previous title");
+    assert.strictEqual(parsed.titleRegeneration?.requestId, "cmd-title-regenerate");
     assert.strictEqual(parsed.modelSelection?.instanceId, "claudeAgent");
+    assert.strictEqual(parsed.pullRequestOwnership, "transfer");
   }),
 );
 
@@ -696,6 +724,53 @@ it.effect("accepts a title seed in thread.turn.start", () =>
   }),
 );
 
+it.effect("accepts a title regeneration intent in thread.meta.update", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.meta.update",
+      commandId: "cmd-title-regenerate",
+      threadId: "thread-1",
+      regenerateTitle: true,
+    });
+    assert.strictEqual(parsed.type, "thread.meta.update");
+    if (parsed.type === "thread.meta.update") {
+      assert.strictEqual(parsed.regenerateTitle, true);
+    }
+  }),
+);
+
+it.effect("accepts an internal title regeneration completion", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.title.regeneration.complete",
+      commandId: "cmd-title-regeneration-complete",
+      threadId: "thread-1",
+      requestId: "cmd-title-regenerate",
+      title: "Updated title",
+    });
+    assert.strictEqual(parsed.type, "thread.title.regeneration.complete");
+    if (parsed.type === "thread.title.regeneration.complete") {
+      assert.strictEqual(parsed.requestId, "cmd-title-regenerate");
+      assert.strictEqual(parsed.title, "Updated title");
+    }
+  }),
+);
+
+it.effect("rejects an explicit title combined with title regeneration", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeOrchestrationCommand({
+        type: "thread.meta.update",
+        commandId: "cmd-title-regenerate-with-title",
+        threadId: "thread-1",
+        title: "Explicit title",
+        regenerateTitle: true,
+      }),
+    );
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
 it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({
@@ -767,6 +842,37 @@ it.effect("decodes cross-thread message provenance with trimmed source metadata"
       sourceThreadId: "thread-source",
       sourceMessageId: "message-source",
       sourceThreadTitle: "Source thread",
+    });
+  }),
+);
+
+it.effect("decodes pull request monitor provenance with normalized metadata", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeMessageOrigin({
+      kind: "pull-request-monitor",
+      repository: " acme/app ",
+      number: 42,
+      headSha: " abc123 ",
+      sourceRevision: " revision-1 ",
+      events: [{ kind: "behind-base" }],
+      deliveryId: " delivery-1 ",
+      revisionSummaries: ["behind-base: behind-base"],
+      availableTools: [" pr_monitor_context "],
+      revalidationAttemptCount: 1,
+      nextRevalidationAt: "2026-03-01T00:00:20.000Z",
+    });
+    assert.deepStrictEqual(parsed, {
+      kind: "pull-request-monitor",
+      repository: "acme/app",
+      number: 42,
+      headSha: "abc123",
+      sourceRevision: "revision-1",
+      events: [{ kind: "behind-base" }],
+      deliveryId: "delivery-1",
+      revisionSummaries: ["behind-base: behind-base"],
+      availableTools: ["pr_monitor_context"],
+      revalidationAttemptCount: 1,
+      nextRevalidationAt: "2026-03-01T00:00:20.000Z",
     });
   }),
 );

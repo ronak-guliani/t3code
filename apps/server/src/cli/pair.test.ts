@@ -5,7 +5,6 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
-import { NetService } from "@t3tools/shared/Net";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
@@ -16,6 +15,7 @@ import { Command } from "effect/unstable/cli";
 import { FetchHttpClient } from "effect/unstable/http";
 
 import { cli } from "../cli.ts";
+import { CliRuntimeLayerLive } from "../cliRuntime.ts";
 import {
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
@@ -44,7 +44,6 @@ import {
   withTailscaleServePortLock,
 } from "./pair.ts";
 
-const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
 
 const captureStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -57,7 +56,7 @@ const captureStdout = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         ) ?? ""
       );
     }),
-    Layer.mergeAll(CliRuntimeLayer, TestConsole.layer),
+    Layer.mergeAll(CliRuntimeLayerLive, TestConsole.layer),
   );
 
 const withDescriptorServer = <A, E, R>(
@@ -307,7 +306,7 @@ describe("t3 pair", () => {
 
       const error = yield* runCli(["pair", "--base-dir", baseDir]).pipe(
         Effect.flip,
-        Effect.provide(CliRuntimeLayer),
+        Effect.provide(CliRuntimeLayerLive),
       );
       expect(String(error)).toContain("NoRunningServerError");
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -324,7 +323,7 @@ describe("t3 pair", () => {
 
       const error = yield* runCli(["pair", "--base-dir", baseDir]).pipe(
         Effect.flip,
-        Effect.provide(CliRuntimeLayer),
+        Effect.provide(CliRuntimeLayerLive),
       );
       expect(String(error)).toContain("NoRunningServerError");
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -368,7 +367,7 @@ describe("t3 pair", () => {
               candidates: ["http://127.0.0.1:1", wrongOrigin],
             }).pipe(
               Effect.flip,
-              Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)),
+              Effect.provide(Layer.merge(CliRuntimeLayerLive, FetchHttpClient.layer)),
             );
             expect(failure).toBeInstanceOf(PairingEndpointUnavailableError);
           }),
@@ -471,7 +470,7 @@ describe("t3 pair", () => {
 
         yield* runCli(["pair", "--base-dir", baseDir]).pipe(
           Effect.flip,
-          Effect.provide(CliRuntimeLayer),
+          Effect.provide(CliRuntimeLayerLive),
         );
         const listed = JSON.parse(
           yield* captureStdout(
@@ -550,7 +549,7 @@ describe("t3 pair", () => {
         expect(error).toBeInstanceOf(PairingCleanupFailedError);
         expect(String(error)).toContain("tailscale serve --https=8443 off");
       }
-    }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)));
+    }).pipe(Effect.provide(Layer.merge(CliRuntimeLayerLive, FetchHttpClient.layer)));
   });
 
   it.effect("surfaces exact reconciliation guidance after confirmation failure", () => {
@@ -571,7 +570,7 @@ describe("t3 pair", () => {
 
       expect(error).toBeInstanceOf(PairingCleanupFailedError);
       expect(String(error)).toContain("tailscale serve --https=9443 off");
-    }).pipe(Effect.provide(Layer.merge(CliRuntimeLayer, FetchHttpClient.layer)));
+    }).pipe(Effect.provide(Layer.merge(CliRuntimeLayerLive, FetchHttpClient.layer)));
   });
 
   it.effect("serializes concurrent transactions on one Serve port", () =>
