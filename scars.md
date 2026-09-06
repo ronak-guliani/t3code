@@ -1,5 +1,8 @@
 # Scars
 
+- Browser cookie import must use the registered environment ID and selected persistent profile; a literal `default` environment silently writes into a partition no real tab uses. Reset consent when the target changes.
+- Guest keyboard isolation must route zoom directly to the preview's tab-owned zoom operations. Reject unsupported popup URLs without loading them into the opener; Electron cannot harden inherited `about:blank` preferences.
+
 - Agent browser access is a server-authoritative capability: gate credential issuance centrally, revoke stale credentials on denial, attach the resulting session consistently across providers, and derive provider instructions from actual tool availability. Never install a per-thread credential into an externally managed OpenCode server because its MCP configuration is shared.
 - Find-in-chat scrolling must follow selected match identity, not the rebuilt match object; message sends and stream updates otherwise yank the viewport back to an old search result.
 - `packages/contracts` stays schema-only; no runtime logic.

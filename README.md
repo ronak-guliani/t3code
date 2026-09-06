@@ -58,6 +58,11 @@ mise install
 pnpm install
 ```
 
+Linux desktop builds also require a C compiler, `pkg-config`, and libsecret development
+headers (`sudo apt-get install build-essential pkg-config libsecret-1-dev` on Debian/Ubuntu).
+The desktop build compiles and packages the cookie-import helper; Linux release artifacts
+must be built on a Linux host for the target architecture.
+
 Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening an issue or PR.
 
 Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).

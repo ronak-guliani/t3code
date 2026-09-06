@@ -596,36 +596,25 @@ const OptionalPositiveInt = (description: string, maximum: number) =>
 
 export const PreviewAutomationSnapshotInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
-  includeConsole: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "Include console entries. Defaults to true (errors/warnings preferred when reducing).",
-    }),
-  ),
-  includeNetwork: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "Include network entries. Defaults to true (failed requests preferred when reducing).",
-    }),
-  ),
-  includeAccessibilityTree: Schema.optional(
-    Schema.Boolean.annotate({
-      description:
-        "Include the full accessibility tree. Defaults to false because trees are large.",
-    }),
-  ),
-  consoleMode: Schema.optional(
-    Schema.Literals(["important", "all"]).annotate({
-      description:
-        "important (default) keeps warn/error/assert; all keeps the full recent buffer (still capped).",
-    }),
-  ),
-  networkMode: Schema.optional(
-    Schema.Literals(["failed", "all"]).annotate({
-      description:
-        "failed (default) keeps failed requests; all keeps recent requests (still capped).",
-    }),
-  ),
+  includeConsole: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Include console entries. Defaults to true (errors/warnings preferred when reducing).",
+  }),
+  includeNetwork: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Include network entries. Defaults to true (failed requests preferred when reducing).",
+  }),
+  includeAccessibilityTree: Schema.optional(Schema.Boolean).annotate({
+    description: "Include the full accessibility tree. Defaults to false because trees are large.",
+  }),
+  consoleMode: Schema.optional(Schema.Literals(["important", "all"])).annotate({
+    description:
+      "important (default) keeps warn/error/assert; all keeps the full recent buffer (still capped).",
+  }),
+  networkMode: Schema.optional(Schema.Literals(["failed", "all"])).annotate({
+    description:
+      "failed (default) keeps failed requests; all keeps recent requests (still capped).",
+  }),
   maxVisibleText: OptionalPositiveInt(
     `Max characters of visible text. Defaults to ${DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT}.`,
     20_000,
@@ -668,7 +657,12 @@ export const PreviewAutomationTabsResult = Schema.Struct({
 });
 export type PreviewAutomationTabsResult = typeof PreviewAutomationTabsResult.Type;
 
-export const PreviewAutomationListTabsInput = Schema.Struct({}).annotate({
+export const PreviewAutomationListTabsInput = Schema.Struct({
+  tabId: Schema.optional(PreviewTabId).annotate({
+    description:
+      "Optional collaborative browser tab identifier to keep tool inputs provider-compatible; listing returns all tabs.",
+  }),
+}).annotate({
   description:
     "Lists collaborative browser tabs for the current thread. Use preview_open({ tabId }) or pass tabId on other tools to target one.",
 });
@@ -709,11 +703,21 @@ export const PreviewAutomationOpenAndSnapshotInput = Schema.Struct({
     }),
   ),
   timeoutMs: OptionalTimeoutMs,
-  includeConsole: Schema.optional(Schema.Boolean),
-  includeNetwork: Schema.optional(Schema.Boolean),
-  includeAccessibilityTree: Schema.optional(Schema.Boolean),
-  consoleMode: Schema.optional(Schema.Literals(["important", "all"])),
-  networkMode: Schema.optional(Schema.Literals(["failed", "all"])),
+  includeConsole: Schema.optional(Schema.Boolean).annotate({
+    description: "Include console entries in the returned snapshot.",
+  }),
+  includeNetwork: Schema.optional(Schema.Boolean).annotate({
+    description: "Include network entries in the returned snapshot.",
+  }),
+  includeAccessibilityTree: Schema.optional(Schema.Boolean).annotate({
+    description: "Include the full accessibility tree in the returned snapshot.",
+  }),
+  consoleMode: Schema.optional(Schema.Literals(["important", "all"])).annotate({
+    description: "Choose whether to return important or all recent console entries.",
+  }),
+  networkMode: Schema.optional(Schema.Literals(["failed", "all"])).annotate({
+    description: "Choose whether to return failed or all recent network entries.",
+  }),
   maxVisibleText: OptionalPositiveInt(
     `Max characters of visible text. Defaults to ${DEFAULT_SNAPSHOT_MAX_VISIBLE_TEXT}.`,
     20_000,

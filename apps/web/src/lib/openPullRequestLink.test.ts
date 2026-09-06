@@ -1,13 +1,48 @@
 import { describe, expect, it } from "vitest";
 
-import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 
 import type { Project } from "../types";
-import { findGitHubPullRequestProject, githubPullRequestNavigation } from "./openPullRequestLink";
+import {
+  findGitHubPullRequestProject,
+  githubPullRequestNavigation,
+  findPullRequestBrowserThread,
+} from "./openPullRequestLink";
 
 const ENVIRONMENT_ID = EnvironmentId.make("environment-a");
 const PROJECT_ID = ProjectId.make("project-a");
 
+it("routes PR links only to an active explicitly associated thread in the selected project", () => {
+  const owner = {
+    id: ThreadId.make("owner"),
+    environmentId: ENVIRONMENT_ID,
+    projectId: PROJECT_ID,
+    archivedAt: null,
+    pullRequest: {
+      number: 291,
+      title: "Browser",
+      url: "https://github.com/owner/repo/pull/291",
+      baseBranch: "main",
+      headBranch: "feature",
+      state: "open" as const,
+    },
+  };
+  const reference = { projectId: PROJECT_ID, repository: "owner/repo", number: 291 };
+  const unrelated = [
+    { ...owner, environmentId: EnvironmentId.make("other") },
+    { ...owner, projectId: ProjectId.make("other") },
+    { ...owner, archivedAt: "2026-09-05T00:00:00Z" },
+    { ...owner, pullRequest: null },
+    {
+      ...owner,
+      pullRequest: { ...owner.pullRequest, url: "https://github.com/other/repo/pull/291" },
+    },
+  ];
+  expect(findPullRequestBrowserThread(unrelated, ENVIRONMENT_ID, reference)).toBeUndefined();
+  expect(findPullRequestBrowserThread([...unrelated, owner], ENVIRONMENT_ID, reference)).toBe(
+    owner,
+  );
+});
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: PROJECT_ID,
