@@ -45,12 +45,14 @@ const runtimeDependencies = (
 const buildCloudManagedEndpointRuntime = (
   spawner: ReturnType<typeof ChildProcessSpawner.make>,
   relayClientLayer = relayClientAvailableLayer,
+  restartDelay = "0 seconds",
 ) =>
   Effect.gen(function* () {
     const context = yield* Layer.build(
-      ManagedEndpointRuntime.layer.pipe(
-        Layer.provide(runtimeDependencies(spawner, relayClientLayer)),
-      ),
+      Layer.effect(
+        ManagedEndpointRuntime.CloudManagedEndpointRuntime,
+        ManagedEndpointRuntime.makeWithRestartDelay(restartDelay),
+      ).pipe(Layer.provide(runtimeDependencies(spawner, relayClientLayer))),
     );
     return yield* Effect.service(ManagedEndpointRuntime.CloudManagedEndpointRuntime).pipe(
       Effect.provide(context),
@@ -84,6 +86,33 @@ function makeHandle(input: {
 }
 
 describe("CloudManagedEndpointRuntime", () => {
+  it.effect("bounds crash restarts and cancels pending restarts when disabled", () =>
+    Effect.gen(function* () {
+      const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      const spawn = vi.fn(() =>
+        Effect.succeed(
+          makeHandle({
+            pid: 800,
+            onKill: () => undefined,
+            exitCode: Deferred.await(exited),
+          }),
+        ),
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(spawn),
+        relayClientAvailableLayer,
+        "5 seconds",
+      );
+      yield* runtime.applyConfig({ providerKind: "cloudflare_tunnel", connectorToken: "token" });
+      yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(1));
+      yield* TestClock.adjust("4 seconds");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      yield* runtime.applyConfig(null);
+      yield* TestClock.adjust("1 second");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(yield* runtime.getStatus).toEqual({ status: "disabled" });
+    }),
+  );
   it.effect("does not launch a persisted tunnel before desired-link reconciliation", () =>
     Effect.gen(function* () {
       const spawn = vi.fn();

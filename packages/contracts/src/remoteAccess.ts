@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AuthPairingCredentialResult } from "./auth.ts";
 
 export const AdvertisedEndpointProviderKind = Schema.Literals([
   "core",
@@ -66,3 +67,24 @@ export const AdvertisedEndpoint = Schema.Struct({
   description: Schema.optional(TrimmedNonEmptyString),
 });
 export type AdvertisedEndpoint = typeof AdvertisedEndpoint.Type;
+
+export const RemoteAccessSetup = Schema.Struct({
+  publicUrl: Schema.String.check(Schema.isMaxLength(2048)),
+  connectorToken: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(16384)),
+});
+export type RemoteAccessSetup = typeof RemoteAccessSetup.Type;
+
+export const RemoteAccessStatus = Schema.Struct({
+  enabled: Schema.Boolean,
+  publicUrl: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["disabled", "starting", "ready", "unreachable", "error"]),
+  message: Schema.String,
+  checkedAt: Schema.NullOr(Schema.String),
+});
+export type RemoteAccessStatus = typeof RemoteAccessStatus.Type;
+
+export const RemoteAccessPairing = Schema.Struct({
+  publicUrl: Schema.String,
+  ...AuthPairingCredentialResult.fields,
+});
+export type RemoteAccessPairing = typeof RemoteAccessPairing.Type;

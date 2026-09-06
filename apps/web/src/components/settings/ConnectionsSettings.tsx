@@ -68,6 +68,7 @@ import {
   removeSavedEnvironment,
 } from "~/environments/runtime";
 import { MobilePairingDialog } from "./MobilePairingDialog";
+import { RemoteAccessSettings } from "./RemoteAccessSettings";
 import { resolveCurrentOriginPairingUrl, useMobilePairing } from "./useMobilePairing";
 
 const accessTimestampFormatter = new Intl.DateTimeFormat(undefined, {
@@ -582,7 +583,7 @@ const AuthorizedClientsHeaderAction = memo(function AuthorizedClientsHeaderActio
         ) : (
           <>
             <QrCodeIcon className="size-3" />
-            Connect new device
+            Pair over LAN
           </>
         )}
       </Button>
@@ -839,7 +840,7 @@ export function ConnectionsSettings() {
   const isLocalBackendNetworkAccessible = desktopBridge
     ? desktopServerExposureState?.mode === "network-accessible"
     : currentAuthPolicy === "remote-reachable";
-  const canShowAuthorizedClients = Boolean(desktopBridge) || isLocalBackendNetworkAccessible;
+  const canShowAuthorizedClients = canManageLocalBackend;
   const localBackendEndpointUrl = desktopBridge
     ? desktopServerExposureState?.endpointUrl
     : currentAuthPolicy === "remote-reachable"
@@ -1195,10 +1196,11 @@ export function ConnectionsSettings() {
     <SettingsPageContainer>
       {canManageLocalBackend ? (
         <>
+          <RemoteAccessSettings />
           <SettingsSection title="Manage local backend">
             {desktopBridge ? (
               <SettingsRow
-                title="Network access"
+                title="Local network access"
                 description={
                   desktopServerExposureState?.endpointUrl
                     ? `Reachable at ${desktopServerExposureState.endpointUrl}`
@@ -1207,7 +1209,7 @@ export function ConnectionsSettings() {
                         ? `Exposed on all interfaces. Pairing links use ${desktopServerExposureState.advertisedHost}.`
                         : "Exposed on all interfaces."
                       : desktopServerExposureState
-                        ? "Limited to this machine."
+                        ? "LAN access is disabled. Remote Access works independently."
                         : "Loading…"
                 }
                 status={
@@ -1243,7 +1245,7 @@ export function ConnectionsSettings() {
                         <AlertDialogDescription>
                           {pendingDesktopServerExposureMode === "network-accessible"
                             ? "T3 Code will restart to expose this environment over the network."
-                            : "T3 Code will restart and limit this environment back to this machine."}
+                            : "T3 Code will restart and disable LAN access. Remote Access is controlled separately."}
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
@@ -1280,11 +1282,11 @@ export function ConnectionsSettings() {
               />
             ) : (
               <SettingsRow
-                title="Network access"
+                title="Local network access"
                 description={
                   currentAuthPolicy === "remote-reachable"
-                    ? "This backend is already configured for remote access. Network exposure changes must be made where the server is launched."
-                    : "This backend is only reachable on this machine. Restart it with a non-loopback host to enable remote pairing."
+                    ? "This backend accepts direct network connections. Change LAN exposure where the server is launched."
+                    : "LAN access is disabled. Use Remote Access above to connect through the tunnel without opening a LAN port."
                 }
                 control={
                   <Tooltip>
@@ -1330,7 +1332,8 @@ export function ConnectionsSettings() {
               {!isLocalBackendNetworkAccessible ? (
                 <div className={ITEM_ROW_CLASSNAME}>
                   <p className="text-xs text-muted-foreground">
-                    Connect new device will enable network access before creating the QR code.
+                    Use Pair remote device above for the tunnel. The LAN pairing action requires
+                    local network access.
                   </p>
                 </div>
               ) : null}

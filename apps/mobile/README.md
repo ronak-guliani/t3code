@@ -15,8 +15,11 @@ The client RPC schema includes capability-dependent upstream methods without add
 handlers to the fork server. Older servers retain inline image uploads and socket snapshots;
 file uploads, usage, provider feedback, and other optional APIs require explicit capability support.
 
-The app uses **Direct Connect** with existing pairing/session authentication, preferably over
-Tailscale HTTPS for access across networks. Managed T3 Connect/Clerk, remote APNs/Live Activity
+The app uses **Direct Connect** with existing pairing/session authentication. For access across
+networks without a phone VPN, configure the fork's [owned Remote Access](../../docs/background-service.md#owned-remote-access-no-phone-vpn)
+and pair through its permanent HTTPS hostname. Tailscale HTTPS remains an alternative.
+Multiple clients can pair independently, and each client can save multiple host environments.
+Managed T3 Connect/Clerk, remote APNs/Live Activity
 push, telemetry export, and OTA updates are disabled in this build. Desktop production settings
 in the root environment cannot enable them. Local widgets/Live Activities remain included.
 Configuring an owned Expo project does **not** turn OTA updates back on.

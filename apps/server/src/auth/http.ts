@@ -174,6 +174,8 @@ export const authBootstrapRouteLayer = HttpRouter.add(
         httpOnly: true,
         path: "/",
         sameSite: "lax",
+        secure:
+          request.headers["x-forwarded-proto"] === "https" || request.url.startsWith("https://"),
       }),
     );
   }).pipe(Effect.catchTag("AuthError", (error) => respondToAuthError(error))),

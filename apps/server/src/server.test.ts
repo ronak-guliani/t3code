@@ -74,7 +74,7 @@ import { vi } from "vitest";
 
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
-import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
+import { CloudHttpRuntimeLayerLive, RemoteAccessLayerLive, makeRoutesLayer } from "./server.ts";
 import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import { attachmentRelativePath } from "./attachmentStore.ts";
@@ -483,6 +483,7 @@ const buildAppUnderTest = (options?: {
       disableListenLog: true,
       disableLogger: true,
     }).pipe(
+      Layer.provide(RemoteAccessLayerLive),
       Layer.provide(
         Layer.mock(Keybindings)({
           loadConfigState: Effect.succeed({
@@ -1281,6 +1282,93 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
+    "protects Remote Access routes and reports disabled setup without exposing credentials",
+    () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest();
+        const url = yield* getHttpServerUrl("/api/remote-access");
+        for (const method of ["GET", "POST"]) {
+          const anonymous = yield* Effect.promise(() => fetch(url, { method }));
+          assert.equal(anonymous.status, 401);
+        }
+        const token = yield* getAuthenticatedBearerSessionToken();
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const status = yield* Effect.promise(() => fetch(url, { headers }));
+        assert.equal(status.status, 200);
+        assert.equal(status.headers.get("cache-control"), "no-store");
+        const body = yield* Effect.promise(() => status.text());
+        assert.notInclude(body, "connectorToken");
+        assert.include(body, '"enabled":false');
+        const pairingTokenUrl = yield* getHttpServerUrl("/api/auth/pairing-token");
+        const createClientCredential = Effect.promise(async () => {
+          const response = await fetch(pairingTokenUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ label: "Unprivileged remote client" }),
+          });
+          assert.equal(response.status, 200);
+          const value: unknown = await response.json();
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            !("credential" in value) ||
+            typeof value.credential !== "string"
+          ) {
+            throw new Error("Expected a pairing credential.");
+          }
+          return value.credential;
+        });
+        const pairingCredential = yield* createClientCredential;
+        const clientToken = yield* getAuthenticatedBearerSessionToken(pairingCredential);
+        for (const path of [url, `${url}/pair`]) {
+          const denied = yield* Effect.promise(() =>
+            fetch(path, {
+              method: "POST",
+              headers: { ...headers, authorization: `Bearer ${clientToken}` },
+              body: JSON.stringify({ action: "enable" }),
+            }),
+          );
+          assert.equal(denied.status, 403);
+        }
+        const crossOrigin = yield* Effect.promise(() =>
+          fetch(url, {
+            method: "POST",
+            headers: { ...headers, origin: "https://untrusted.example.com" },
+            body: JSON.stringify({ action: "enable" }),
+          }),
+        );
+        assert.equal(crossOrigin.status, 403);
+        const invalid = yield* Effect.promise(() =>
+          fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              action: "setup",
+              publicUrl: "http://localhost",
+              connectorToken: "secret",
+            }),
+          }),
+        );
+        assert.equal(invalid.status, 400);
+        const pairing = yield* Effect.promise(() =>
+          fetch(`${url}/pair`, { method: "POST", headers }),
+        );
+        assert.equal(pairing.status, 400);
+        const bootstrapUrl = yield* getHttpServerUrl("/api/auth/bootstrap");
+        const secureCredential = yield* createClientCredential;
+        const secureSession = yield* Effect.promise(() =>
+          fetch(bootstrapUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
+            body: JSON.stringify({ credential: secureCredential }),
+          }),
+        );
+        assert.equal(secureSession.status, 200);
+        assert.include(secureSession.headers.get("set-cookie") ?? "", "Secure");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("mounts the authenticated pull request diff endpoint", () =>
