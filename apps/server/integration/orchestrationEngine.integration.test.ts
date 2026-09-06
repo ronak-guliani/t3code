@@ -26,7 +26,11 @@ import {
   makeOrchestrationIntegrationHarness,
   type OrchestrationIntegrationHarness,
 } from "./OrchestrationEngineHarness.integration.ts";
-import { checkpointRefForThreadTurn } from "../src/checkpointing/Utils.ts";
+import {
+  checkpointBaselineRefForThreadTurn,
+  checkpointRefForThreadTurn,
+  checkpointRevertGuardRefForThread,
+} from "../src/checkpointing/Utils.ts";
 import type {
   CheckpointDiffFinalizedReceipt,
   TurnProcessingQuiescedReceipt,
@@ -90,6 +94,13 @@ function runtimeBase(
     createdAt,
   };
 }
+
+const waitForRevertCleanup = (harness: OrchestrationIntegrationHarness) =>
+  waitForSync(
+    () => gitRefExists(harness.workspaceDir, checkpointRevertGuardRefForThread(THREAD_ID)),
+    (exists) => !exists,
+    "checkpoint revert guard cleanup",
+  );
 
 function withHarness<A, E>(
   use: (harness: OrchestrationIntegrationHarness) => Effect.Effect<A, E>,
@@ -251,11 +262,11 @@ it.live("runs a single turn end-to-end and persists checkpoint state in sqlite +
       assert.equal(checkpointRows[0]?.status, "ready");
       assert.deepEqual(checkpointRows[0]?.files, []);
 
-      const ref0 = checkpointRefForThreadTurn(THREAD_ID, 0);
+      const baselineRef = checkpointBaselineRefForThreadTurn(THREAD_ID, 1);
       const ref1 = checkpointRefForThreadTurn(THREAD_ID, 1);
-      assert.equal(gitRefExists(harness.workspaceDir, ref0), true);
+      assert.equal(gitRefExists(harness.workspaceDir, baselineRef), true);
       assert.equal(gitRefExists(harness.workspaceDir, ref1), true);
-      assert.equal(gitShowFileAtRef(harness.workspaceDir, ref0, "README.md"), "v1\n");
+      assert.equal(gitShowFileAtRef(harness.workspaceDir, baselineRef, "README.md"), "v1\n");
       assert.equal(gitShowFileAtRef(harness.workspaceDir, ref1, "README.md"), "v1\n");
     }),
   ),
@@ -511,7 +522,7 @@ it.live("runs multi-turn file edits and persists checkpoint diffs", () =>
 
       const fullDiff = yield* harness.checkpointStore.diffCheckpoints({
         cwd: harness.workspaceDir,
-        fromCheckpointRef: checkpointRefForThreadTurn(THREAD_ID, 0),
+        fromCheckpointRef: checkpointBaselineRefForThreadTurn(THREAD_ID, 1),
         toCheckpointRef: checkpointRefForThreadTurn(THREAD_ID, 2),
         fallbackFromToHead: false,
       });
@@ -861,9 +872,19 @@ it.live("reverts to an earlier checkpoint and trims checkpoint projections + git
         true,
       );
       assert.equal(fs.readFileSync(path.join(harness.workspaceDir, "README.md"), "utf8"), "v2\n");
+      // Ref cleanup follows the domain commit; the guard is removed last.
+      yield* waitForRevertCleanup(harness);
       assert.equal(
         gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 2)),
         false,
+      );
+      assert.equal(
+        gitRefExists(harness.workspaceDir, checkpointBaselineRefForThreadTurn(THREAD_ID, 2)),
+        false,
+      );
+      assert.equal(
+        gitRefExists(harness.workspaceDir, checkpointBaselineRefForThreadTurn(THREAD_ID, 1)),
+        true,
       );
       assert.deepEqual(harness.adapterHarness!.getRollbackCalls(THREAD_ID), [1]);
 
@@ -1341,6 +1362,12 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
           },
         });
 
+        yield* harness.waitForReceipt(
+          (receipt): receipt is TurnProcessingQuiescedReceipt =>
+            receipt.type === "turn.processing.quiesced" &&
+            receipt.threadId === THREAD_ID &&
+            receipt.checkpointTurnCount === 1,
+        );
         yield* harness.waitForThread(
           THREAD_ID,
           (entry) =>
@@ -1420,6 +1447,7 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
             entry.checkpoints.length === 1 && entry.checkpoints[0]?.checkpointTurnCount === 1,
         );
         assert.equal(revertedThread.checkpoints[0]?.checkpointTurnCount, 1);
+        yield* waitForRevertCleanup(harness);
         assert.equal(
           gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 1)),
           true,
@@ -1427,6 +1455,14 @@ it.live("reverts claudeAgent turns and rolls back provider conversation state", 
         assert.equal(
           gitRefExists(harness.workspaceDir, checkpointRefForThreadTurn(THREAD_ID, 2)),
           false,
+        );
+        assert.equal(
+          gitRefExists(harness.workspaceDir, checkpointBaselineRefForThreadTurn(THREAD_ID, 2)),
+          false,
+        );
+        assert.equal(
+          gitRefExists(harness.workspaceDir, checkpointBaselineRefForThreadTurn(THREAD_ID, 1)),
+          true,
         );
         assert.deepEqual(harness.adapterHarness!.getRollbackCalls(THREAD_ID), [1]);
       }),
