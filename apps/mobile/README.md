@@ -80,6 +80,8 @@ The leading status indicator belongs to the chat itself. Activity and attention 
 group appear on the related-chat control, including an unread marker for lifecycle updates.
 Viewing a parent acknowledges its direct child updates; opening the related group acknowledges
 activity throughout that group.
+The related view keeps the selected inbox mode's actions: V2 root chats retain settle, snooze
+and pin controls, while nested chats retain their root-only lifecycle restrictions.
 Search reveals matching descendants on collapsed shelves without indentation or unmatched
 siblings. Content search can show a matching excerpt. The selected iPad conversation remains
 directly reachable even when it belongs to a group. On iPhone, search lives below the header;

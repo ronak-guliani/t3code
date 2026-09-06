@@ -16,9 +16,11 @@ export interface MobileThreadShell extends EnvironmentThreadShell {
 }
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
   latestRelatedNotificationAt?: string | null;
+  relatedStatus?: NestedThreadStatus;
 };
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
   readonly latestRelatedNotificationAt?: string | null;
+  readonly relatedStatus?: NestedThreadStatus;
 };
 
 export function nestedThreadParentError(
@@ -145,6 +147,9 @@ export function buildMobileThreadTree(
         latest = childLatest;
     }
     node.latestRelatedNotificationAt = latest;
+    node.relatedStatus = rollUpNestedThreadStatus(
+      node.children.map((child) => child.rolledUpStatus),
+    );
     if (latest) latestByKey.set(node.threadKey, latest);
   }
   return tree;
@@ -158,7 +163,10 @@ export function mobileThreadTreeRows(
   } = {},
 ): MobileThreadTreeRow[] {
   const rows: MobileThreadTreeRow[] = [];
-  const pending = nodes.map((node) => ({ node, depth: 0 })).toReversed();
+  const pending: Array<{ node: MobileThreadTreeNode; depth: number }> = [];
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    pending.push({ node: nodes[index]!, depth: 0 });
+  }
   while (pending.length > 0) {
     const { node, depth } = pending.pop()!;
     // Search and the selected iPad conversation stay directly reachable.
@@ -178,6 +186,7 @@ export function mobileThreadTreeRows(
         displayStatus: node.rolledUpStatus,
         archiveBlocked: node.archiveBlocked,
         latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
+        relatedStatus: node.relatedStatus ?? "ready",
       });
     }
     for (let index = node.children.length - 1; index >= 0; index--) {

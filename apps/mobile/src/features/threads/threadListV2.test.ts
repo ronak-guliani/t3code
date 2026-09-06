@@ -10,7 +10,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
@@ -80,6 +80,55 @@ describe("mobile nested threads", () => {
     extra: Partial<Parameters<typeof buildThreadListV2Items>[0]> = {},
   ) =>
     buildThreadListV2Items({ threads, environmentId: null, searchQuery: "", now: NOW, ...extra });
+
+  it("preserves root and child order without depending on ES2023 copy-array methods", () => {
+    const reverse = vi.spyOn(Array.prototype, "toReversed").mockImplementation(() => {
+      throw new TypeError("toReversed is unavailable");
+    });
+    try {
+      const other = makeThread({ id: ThreadId.make("other"), title: "Other", updatedAt: NOW });
+      expect(layout([leaf, child, parent, other]).items.map((item) => item.thread.id)).toEqual([
+        "other",
+        "parent",
+      ]);
+      expect(
+        relatedThreadRows(
+          buildMobileThreadTree([leaf, child, parent, other]),
+          `${environmentId}:parent`,
+        ).map((row) => row.thread.id),
+      ).toEqual(["parent", "child", "leaf"]);
+    } finally {
+      reverse.mockRestore();
+    }
+  });
+
+  it("keeps descendant attention separate from the parent's higher-priority state during search", () => {
+    const result = layout(
+      [
+        { ...parent, hasPendingApprovals: true },
+        {
+          ...child,
+          latestTurn: {
+            turnId: TurnId.make("failed-turn"),
+            state: "error",
+            requestedAt: NOW,
+            startedAt: NOW,
+            completedAt: NOW,
+            assistantMessageId: null,
+          },
+        },
+      ],
+      { searchQuery: "Parent" },
+    );
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      displayStatus: "approval",
+      relatedStatus: "failed",
+      childCount: 1,
+    });
+    expect(
+      layout([{ ...parent, hasPendingApprovals: true }, child]).items[0]?.hierarchy,
+    ).toMatchObject({ displayStatus: "approval", relatedStatus: "ready" });
+  });
 
   it("keeps the inbox flat while retaining the selected iPad conversation", () => {
     expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual(["parent"]);

@@ -115,6 +115,7 @@ describe("compact inbox row", () => {
     expect(markup).not.toContain(parent.worktreePath);
     expect(markup).toContain('data-lines="1"');
     expect(renderToStaticMarkup(harness.menus[0]?.children)).not.toContain("Related chats");
+    expect(renderToStaticMarkup(harness.menus[0]?.children)).toContain(">2m<");
     expect(harness.menus[0]?.accessibilityLabel).toBe("Parent chat, 2m");
     harness.menus[0]?.onAccessibilityTap?.();
     expect(onPress).toHaveBeenCalledOnce();
@@ -128,6 +129,55 @@ describe("compact inbox row", () => {
       environmentId: "local",
       threadId: "parent",
     });
+  });
+
+  it("does not repeat the parent's status on quiet related chats", () => {
+    const working = { ...parent, hasPendingQueuedTurn: true };
+    const hierarchy = mobileThreadTreeRows(
+      buildMobileThreadTree([
+        working,
+        { ...parent, id: ThreadId.make("child"), parentThreadId: parent.id },
+      ]),
+    )[0]!;
+    renderToStaticMarkup(
+      <CompactThreadRow
+        title={parent.title}
+        timestamp="2m"
+        status="working"
+        onPress={() => {}}
+        related={{ thread: working, hierarchy }}
+      />,
+    );
+    expect(harness.pressables[0]?.accessibilityLabel).toContain("Working");
+    expect(harness.pressables[1]?.accessibilityLabel).not.toContain("working in group");
+  });
+
+  it("includes the timestamp and search excerpt in the primary tap and long-press target", () => {
+    const onPress = vi.fn();
+    renderToStaticMarkup(
+      <CompactThreadRow
+        title={parent.title}
+        timestamp="2m"
+        status="ready"
+        onPress={onPress}
+        menu={{ actions: [] }}
+        searchMatch={{
+          environmentId: parent.environmentId,
+          threadId: parent.id,
+          projectId: parent.projectId,
+          source: "user",
+          snippet: "Needle",
+          messageCreatedAt: parent.createdAt,
+        }}
+      />,
+    );
+    const content = renderToStaticMarkup(harness.pressables[0]?.children);
+    expect(content).toContain(">2m<");
+    expect(content).toContain("Matched excerpt");
+    expect(renderToStaticMarkup(harness.menus[0]?.children)).toContain("Matched excerpt");
+    expect(harness.menus[0]?.accessibilityLabel).toContain("You: Needle");
+    harness.pressables[0]?.onPress?.();
+    expect(onPress).toHaveBeenCalledOnce();
   });
 
   it.each(["working", "approval", "input", "failed", "queued", "plan-ready"] as const)(

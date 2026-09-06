@@ -24,6 +24,7 @@ import {
   selectMatchingThreadTree,
   type MobileThreadTreeRow,
   type MobileThreadShell,
+  type NestedThreadStatus,
 } from "./mobile-thread-hierarchy";
 
 export { snoozeWakeLabel };
@@ -179,6 +180,29 @@ export interface ThreadListV2Item {
   /** Pinned-block row: renders the pin glyph and offers Unpin. */
   readonly pinned: boolean;
   readonly isLast: boolean;
+}
+
+export function resolveThreadListV2RootState(input: {
+  readonly thread: MobileThreadShell;
+  readonly relatedStatus: NestedThreadStatus;
+  readonly settlementSupported: boolean;
+  readonly snoozeSupported: boolean;
+  readonly now: string;
+}): Pick<ThreadListV2Item, "variant" | "snoozed" | "pinned"> {
+  const { thread } = input;
+  if (input.relatedStatus === "ready") {
+    if (input.snoozeSupported && effectiveSnoozed(thread, { now: input.now })) {
+      return { variant: "slim", snoozed: true, pinned: false };
+    }
+    if (
+      input.settlementSupported &&
+      thread.settledOverride === "settled" &&
+      resolveNestedThreadStatus(thread) === "ready"
+    ) {
+      return { variant: "slim", snoozed: false, pinned: false };
+    }
+  }
+  return { variant: "card", snoozed: false, pinned: thread.pinnedAt != null };
 }
 
 export interface ThreadListV2Layout {
@@ -386,17 +410,15 @@ export function buildThreadListV2Items(input: {
     if (projectKeys !== null && !projectKeys.has(`${thread.environmentId}:${thread.projectId}`)) {
       continue;
     }
-    if (
-      nodesByKey.get(node.threadKey)?.children.some((child) => child.rolledUpStatus !== "ready")
-    ) {
-      if (thread.pinnedAt != null) pinned.push(thread);
-      else active.push(thread);
-      continue;
-    }
-    const supportsSettlement = input.settlementEnvironmentIds?.has(thread.environmentId) ?? true;
-    const supportsSnooze = input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true;
+    const state = resolveThreadListV2RootState({
+      thread,
+      relatedStatus: node.relatedStatus ?? "ready",
+      settlementSupported: input.settlementEnvironmentIds?.has(thread.environmentId) ?? true,
+      snoozeSupported: input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true,
+      now,
+    });
     // Snooze outranks settlement and pinning until the thread wakes.
-    if (supportsSnooze && effectiveSnoozed(thread, { now })) {
+    if (state.snoozed) {
       snoozed.push(thread);
       if (
         thread.snoozedUntil != null &&
@@ -407,9 +429,9 @@ export function buildThreadListV2Items(input: {
       }
       continue;
     }
-    if (supportsSettlement && thread.settledOverride === "settled" && node.status === "ready") {
+    if (state.variant === "slim") {
       settled.push(thread);
-    } else if (thread.pinnedAt != null) {
+    } else if (state.pinned) {
       pinned.push(thread);
     } else {
       active.push(thread);

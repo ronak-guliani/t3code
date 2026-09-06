@@ -40,7 +40,7 @@ function RelatedThreadsButton(props: {
   );
   const count = props.hierarchy?.childCount ?? 0;
   if (count === 0 && !unread) return null;
-  const groupStatus = props.hierarchy?.displayStatus ?? "ready";
+  const groupStatus = props.hierarchy?.relatedStatus ?? "ready";
   const status = STATUS[groupStatus];
   return (
     <Pressable
@@ -119,7 +119,10 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     : props.muted
       ? "text-foreground-muted"
       : "text-foreground";
-  const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}, ${props.timestamp}`;
+  const excerptLabel = props.searchMatch
+    ? `, ${props.searchMatch.source === "user" ? "You" : "Agent"}: ${props.searchMatch.snippet}`
+    : "";
+  const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}, ${props.timestamp}${excerptLabel}`;
   const primary = (
     <Pressable
       accessibilityRole="button"
@@ -129,37 +132,59 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
       onPress={props.onPress}
       style={({ pressed }) => [styles.primaryButton, { opacity: pressed ? 0.6 : 1 }]}
     >
-      <View className="w-3 items-center">
-        {props.pinned && props.status === "ready" ? (
-          <SymbolView
-            name="pin.fill"
-            size={10}
-            tintColorClassName={
-              selected ? "accent-user-bubble-foreground" : "accent-foreground-tertiary"
-            }
-          />
-        ) : (
-          <View
+      <View style={styles.primaryLine}>
+        <View className="w-3 items-center">
+          {props.pinned && props.status === "ready" ? (
+            <SymbolView
+              name="pin.fill"
+              size={10}
+              tintColorClassName={
+                selected ? "accent-user-bubble-foreground" : "accent-foreground-tertiary"
+              }
+            />
+          ) : (
+            <View
+              className={cn(
+                "size-1.5 rounded-full",
+                selected && props.status !== "ready" ? "bg-user-bubble-foreground" : status.color,
+              )}
+            />
+          )}
+        </View>
+        <Text className={cn("flex-1 text-base font-t3-medium", foreground)} numberOfLines={1}>
+          {props.title}
+        </Text>
+        {status.action ? (
+          <Text
             className={cn(
-              "size-1.5 rounded-full",
-              selected && props.status !== "ready" ? "bg-user-bubble-foreground" : status.color,
+              "text-xs",
+              selected ? "text-user-bubble-foreground" : "text-foreground-muted",
             )}
-          />
-        )}
-      </View>
-      <Text className={cn("flex-1 text-base font-t3-medium", foreground)} numberOfLines={1}>
-        {props.title}
-      </Text>
-      {status.action ? (
+            numberOfLines={1}
+          >
+            {status.action}
+          </Text>
+        ) : null}
         <Text
+          accessible={false}
           className={cn(
-            "text-xs",
-            selected ? "text-user-bubble-foreground" : "text-foreground-muted",
+            "text-xs tabular-nums",
+            selected ? "text-user-bubble-foreground-muted" : "text-foreground-tertiary",
           )}
           numberOfLines={1}
+          style={styles.timestamp}
         >
-          {status.action}
+          {props.timestamp}
         </Text>
+      </View>
+      {props.searchMatch ? (
+        <View style={styles.excerpt}>
+          <ThreadSearchMatchExcerpt
+            match={props.searchMatch}
+            query={props.searchQuery ?? ""}
+            selected={selected}
+          />
+        </View>
       ) : null}
     </Pressable>
   );
@@ -196,27 +221,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
           )}
         </View>
         {props.related ? <RelatedThreadsButton {...props.related} selected={selected} /> : null}
-        <Text
-          accessible={false}
-          className={cn(
-            "text-xs tabular-nums",
-            selected ? "text-user-bubble-foreground-muted" : "text-foreground-tertiary",
-          )}
-          numberOfLines={1}
-          style={styles.timestamp}
-        >
-          {props.timestamp}
-        </Text>
       </View>
-      {props.searchMatch ? (
-        <View style={styles.excerpt}>
-          <ThreadSearchMatchExcerpt
-            match={props.searchMatch}
-            query={props.searchQuery ?? ""}
-            selected={selected}
-          />
-        </View>
-      ) : null}
       {props.showDivider ? <View className="bg-border-subtle" style={styles.divider} /> : null}
     </View>
   );
@@ -225,9 +230,9 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
 const styles = StyleSheet.create({
   container: { borderRadius: 10 },
   primarySlot: { flex: 1, minWidth: 0 },
-  row: { flexDirection: "row", alignItems: "center", minHeight: 48, gap: 4 },
-  primaryButton: {
-    minWidth: 0,
+  row: { flexDirection: "row", alignItems: "flex-start", minHeight: 48, gap: 4 },
+  primaryButton: { minWidth: 0, minHeight: 48 },
+  primaryLine: {
     minHeight: 48,
     flexDirection: "row",
     alignItems: "center",

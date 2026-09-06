@@ -116,6 +116,7 @@ export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem
         previous.hierarchy?.isExpanded === item.hierarchy?.isExpanded &&
         previous.hierarchy?.childCount === item.hierarchy?.childCount &&
         previous.hierarchy?.displayStatus === item.hierarchy?.displayStatus &&
+        previous.hierarchy?.relatedStatus === item.hierarchy?.relatedStatus &&
         previous.hierarchy?.archiveBlocked === item.hierarchy?.archiveBlocked &&
         previous.hierarchy?.latestRelatedNotificationAt ===
           item.hierarchy?.latestRelatedNotificationAt &&

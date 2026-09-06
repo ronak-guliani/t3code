@@ -212,6 +212,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly thread: MobileThreadShell;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
+  readonly hideRelated?: boolean;
   readonly variant: "card" | "slim";
   /** Snoozed-shelf row: shows its wake time and offers Wake. */
   readonly snoozed?: boolean;
@@ -288,7 +289,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onMovePinnedThread,
   } = props;
   const snoozedRow = props.snoozed === true;
-  const nested = (props.hierarchy?.depth ?? 0) > 0;
+  const nested = thread.parentThreadId != null || (props.hierarchy?.depth ?? 0) > 0;
   const nesting = useNestedThreadActions(thread);
   const pinnedRow = props.pinned === true;
 
@@ -610,7 +611,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       pinned={pinnedRow}
       sidebar={sidebarPane}
       showDivider={props.showTrailingDivider !== false}
-      related={{ thread, hierarchy: props.hierarchy }}
+      related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
       searchMatch={props.searchMatch}
       searchQuery={props.searchQuery}
       accessibilityHint={swipeAccessibilityHint}
