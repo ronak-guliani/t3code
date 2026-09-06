@@ -17,6 +17,7 @@ export class FileSaveCoordinator {
   constructor(private readonly options: FileSaveCoordinatorOptions) {}
 
   change(contents: string): void {
+    if (this.disposed) return;
     this.latestContents = contents;
     this.latestRevision += 1;
     this.lastChangeAt = Date.now();

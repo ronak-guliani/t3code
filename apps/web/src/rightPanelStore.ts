@@ -120,14 +120,19 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
     })),
   openFile: (ref, relativePath, line) =>
     set((state) => ({
-      byThreadKey: updateState(state.byThreadKey, ref, (current) =>
-        upsert(current, {
+      byThreadKey: updateState(state.byThreadKey, ref, (current) => {
+        const surface: RightPanelSurface = {
           id: `file:${relativePath}`,
           kind: "file",
           relativePath,
           revealLine: line === undefined ? null : Math.max(1, Math.trunc(line)),
-        }),
-      ),
+        };
+        // Replace the existing entry so a re-open with a new line updates it.
+        const surfaces = current.surfaces.some((entry) => entry.id === surface.id)
+          ? current.surfaces.map((entry) => (entry.id === surface.id ? surface : entry))
+          : [...current.surfaces, surface];
+        return { isOpen: true, activeSurfaceId: surface.id, surfaces };
+      }),
     })),
   openTerminal: (ref, terminalId) =>
     set((state) => ({

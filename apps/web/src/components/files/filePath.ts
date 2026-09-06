@@ -5,7 +5,7 @@ export interface FileBreadcrumb {
 }
 
 export function fileBreadcrumbs(projectName: string, relativePath: string): FileBreadcrumb[] {
-  const parts = relativePath.split("/").filter(Boolean);
+  const parts = relativePath.split(/[\\/]/).filter(Boolean);
   return [
     { label: projectName, path: "", kind: "project" },
     ...parts.map((part, index) => ({

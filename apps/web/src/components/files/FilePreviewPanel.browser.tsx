@@ -132,7 +132,7 @@ describe("FilePreviewPanel", () => {
     }
   });
 
-  it("renders binary files as read-only unsupported previews", async () => {
+  it("renders binary images as image previews", async () => {
     readFileMock.mockResolvedValueOnce({
       relativePath: "assets/logo.png",
       contents: "",
@@ -142,6 +142,34 @@ describe("FilePreviewPanel", () => {
       <FilePreviewPanel
         cwd="/repo/binary-preview"
         relativePath="assets/logo.png"
+        threadRef={threadRef}
+        onOpenFile={vi.fn()}
+      />,
+    );
+    try {
+      await expect.element(page.getByRole("img", { name: "assets/logo.png" })).toBeInTheDocument();
+      expect(createAssetUrlMock).toHaveBeenCalledWith({
+        resource: {
+          _tag: "workspace-file",
+          threadId: threadRef.threadId,
+          path: "assets/logo.png",
+        },
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders unsupported binary files as read-only notices", async () => {
+    readFileMock.mockResolvedValueOnce({
+      relativePath: "assets/archive.bin",
+      contents: "",
+      binary: true,
+    });
+    const screen = await render(
+      <FilePreviewPanel
+        cwd="/repo/binary-preview"
+        relativePath="assets/archive.bin"
         threadRef={threadRef}
         onOpenFile={vi.fn()}
       />,

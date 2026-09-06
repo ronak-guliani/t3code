@@ -20,4 +20,14 @@ describe("fileBreadcrumbs", () => {
       "index.ts",
     ]);
   });
+
+  it("supports windows separators", () => {
+    expect(fileBreadcrumbs("workspace", "apps\\web\\src\\main.tsx")).toEqual([
+      { label: "workspace", path: "", kind: "project" },
+      { label: "apps", path: "apps", kind: "directory" },
+      { label: "web", path: "apps/web", kind: "directory" },
+      { label: "src", path: "apps/web/src", kind: "directory" },
+      { label: "main.tsx", path: "apps/web/src/main.tsx", kind: "file" },
+    ]);
+  });
 });
