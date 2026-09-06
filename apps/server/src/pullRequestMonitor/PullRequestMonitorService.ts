@@ -1308,6 +1308,48 @@ export const layer = Layer.effect(
         }).pipe(Effect.ensuring(store.releaseLease(fallbackLease).pipe(Effect.orDie)));
       });
 
+    yield* serverSettings.streamChanges.pipe(
+      Stream.map((settings) =>
+        JSON.stringify([
+          settings.autoLaunchPrMonitorFallback,
+          settings.copilotAutomaticPrFeedback,
+          settings.textGenerationModelSelection.instanceId,
+          Object.entries(settings.providerInstances).map(([id, instance]) => [id, instance.driver]),
+        ]),
+      ),
+      Stream.changes,
+      Stream.runForEach(() =>
+        Effect.gen(function* () {
+          let before: { updatedAt: string; monitorId: PullRequestMonitorId } | undefined;
+          while (true) {
+            const monitors = yield* store.listEnabledPage({
+              limit: 100,
+              ...(before ? { before } : {}),
+            });
+            for (const monitor of monitors) {
+              const settings = yield* serverSettings.getSettings;
+              if (!settings.autoLaunchPrMonitorFallback) return;
+              if ((yield* ownerAvailability(monitor.ownerThreadId)).kind !== "unavailable")
+                continue;
+              if ((yield* feedback.listOpenItems(monitor.id)).length === 0) continue;
+              if ((yield* automationBlockReason(monitor, settings)) !== null) continue;
+              // Reuse fresh provider observation and the existing poll/takeover leases.
+              yield* pollMonitor(monitor);
+            }
+            if (monitors.length < 100) break;
+            const last = monitors[monitors.length - 1]!;
+            before = { updatedAt: last.updatedAt, monitorId: last.id };
+          }
+          yield* notify;
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("could not reconsider PR fallback after settings change", { cause }),
+          ),
+        ),
+      ),
+      Effect.forkScoped,
+    );
+
     return PullRequestMonitorService.of({
       start,
       stop,

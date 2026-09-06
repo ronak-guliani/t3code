@@ -73,6 +73,7 @@ import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { ComposerPreviewAnnotationCards } from "./ComposerPreviewAnnotationCards";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
+import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { resolveComposerMenuActiveItemId } from "./composerMenuHighlight";
 import { searchSlashCommandItems } from "./composerSlashCommandSearch";
@@ -2123,6 +2124,7 @@ export const ChatComposer = memo(
             onPointerEnter={onComposerIntent}
             onBlurCapture={scheduleComposerCollapseCheck}
           >
+            <CopilotCompletionWarning key={activeThreadId} activities={activeThread?.activities} />
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
                 policyBlocks={queuedPolicyBlocks}

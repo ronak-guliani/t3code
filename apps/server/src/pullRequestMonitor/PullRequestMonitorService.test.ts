@@ -18,6 +18,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as PubSub from "effect/PubSub";
+import * as Fiber from "effect/Fiber";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TestClock } from "effect/testing";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -316,11 +319,24 @@ const defaultSettings: ServerSettings = {
 };
 let currentSettings = defaultSettings;
 
-const fakeSettings = {
-  getSettings: Effect.sync(() => currentSettings),
-  updateSettings: () => Effect.die("unused"),
-  streamChanges: Stream.empty,
-} as unknown as ServerSettingsService["Service"];
+const SettingsLayer = Layer.effect(
+  ServerSettingsService,
+  Effect.gen(function* () {
+    const changes = yield* PubSub.unbounded<ServerSettings>();
+    return ServerSettingsService.of({
+      start: Effect.void,
+      ready: Effect.void,
+      getSettings: Effect.sync(() => currentSettings),
+      updateSettings: (patch) =>
+        Effect.gen(function* () {
+          currentSettings = applyServerSettingsPatch(currentSettings, patch);
+          yield* PubSub.publish(changes, currentSettings);
+          return currentSettings;
+        }),
+      streamChanges: Stream.fromPubSub(changes),
+    });
+  }),
+);
 
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -343,7 +359,7 @@ const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
   Layer.provideMerge(FeedbackLayer),
   Layer.provide(Layer.succeed(GitManager, fakeGit)),
-  Layer.provide(Layer.succeed(ServerSettingsService, fakeSettings)),
+  Layer.provideMerge(SettingsLayer),
   Layer.provideMerge(Layer.succeed(ProjectionSnapshotQuery, fakeProjections)),
   Layer.provideMerge(Layer.succeed(OrchestrationEngineService, fakeEngine)),
   Layer.provideMerge(MigratedSql),
@@ -989,8 +1005,20 @@ layer("PullRequestMonitorService", (it) => {
       const input = { projectId, repository: "acme/app", number: 350 };
       const started = yield* service.start(input);
       assert.isNull(started.monitor.ownerThreadId);
-      currentSettings = { ...currentSettings, copilotAutomaticPrFeedback: { [instanceId]: true } };
-      yield* service.start(input);
+      const settings = yield* ServerSettingsService;
+      const takeover = yield* service.subscribeList({ projectId }).pipe(
+        Stream.filter((result) =>
+          result.monitors.some(
+            (monitor) => monitor.id === started.monitor.id && monitor.ownerThreadId !== null,
+          ),
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* settings.updateSettings({ copilotAutomaticPrFeedback: { [instanceId]: true } });
+      yield* Fiber.join(takeover);
       const status = yield* service.status({ monitorId: started.monitor.id });
       assert.isNotNull(status.monitor?.ownerThreadId);
       assert.isUndefined(status.automationBlockReason);
@@ -999,6 +1027,7 @@ layer("PullRequestMonitorService", (it) => {
         Effect.sync(() => {
           currentSettings = defaultSettings;
           currentSnapshot = sampleSnapshot();
+          monitorSnapshotHook = Effect.void;
         }),
       ),
     ),

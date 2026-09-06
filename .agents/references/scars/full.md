@@ -36,6 +36,7 @@
 - Copilot ACP events do not reliably identify their originating prompt. Once a follow-up is active, old continuation events can still be attributed to it by existing handlers; no-active-turn warnings do not solve that ambiguity. Do not claim cross-turn attribution safety without an upstream correlation/completion contract.
 - Automatic PR fallback bypasses the owner-thread queue. Gate both the existing Copilot session and destination before automatic takeover, even when switching to another provider. Keep explicit requests distinct; policy-disabled feedback remains pending, not failed.
 - Keep orchestration opt-ins outside provider runtime config: config changes close and rebuild provider scopes. Derive pending reasons from the shared policy and let settings changes resume eligible queued feedback without edit/save recovery.
+- Consent changes must wake ownerless fallback as well as owner queues. Reuse the fresh-snapshot and lease path rather than launching directly from the settings watcher; surface late ACP activity near the composer without treating its warning as proof of current liveness.
 
 ## Desktop packaging and React state
 
