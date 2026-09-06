@@ -17,4 +17,6 @@ If the failure is intermittent, use repetition, tracing, stress, or timing contr
 
 ## Completion
 
+Remove temporary instrumentation and throwaway reproduction artifacts introduced during diagnosis. Preserve regression tests and any reproduction evidence explicitly needed for follow-up; identify retained artifacts and their purpose without deleting user-owned work.
+
 Done means the root cause is supported by evidence, the fix or explicit blocker is recorded, the regression behavior is checked, and relevant validation results are reported. Do not claim resolution from a passing unrelated command.

@@ -55,3 +55,18 @@ sequenceDiagram
 ## Focused HTML
 
 For a visual UI, layout, state comparison, or concept too dense for Mermaid, create one focused HTML artifact only when the user needs it. Use real labels and data, match the product's visual language, and open the artifact after writing it.
+
+## Focused diff
+
+Show only the meaningful change when the surrounding structure is familiar:
+
+```diff
+ on(save)
+-  write content
++  if content is unchanged
++    return cached result
++  write new content
++  invalidate cache
+```
+
+The same form works for file trees, component trees, or call trees. Show the whole block instead when most of it is new, omitted context would hide ownership or order, or the user needs a copyable target shape.

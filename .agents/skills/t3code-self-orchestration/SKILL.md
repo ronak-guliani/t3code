@@ -23,57 +23,11 @@ exposes zero tools. Do not infer that the authenticated `t3-tools` server lacks 
 initially loaded tool list or resource count. Search for `create_nested_threads` when delegating
 multiple independent sibling tasks.
 
-Call `create_nested_thread` with:
-
-```json
-{
-  "project": "project id, title, or workspace root",
-  "title": "Short child-thread title",
-  "prompt": "Self-contained task and expected result",
-  "model": "gpt-5.6-sol",
-  "reasoning": "low"
-}
-```
-
-`project`, `title`, `prompt`, and `model` are required. `reasoning` is optional and supports
-`low`, `medium`, `high`, or `xhigh` only when the selected model exposes that setting. Set
-`dryRun: true` to validate the request and any workspace collision preflight without mutation.
-
-Use `promptTemplate` to add only the standard blocks the child needs. The server composes selected
-blocks in canonical order and rejects duplicate blocks, unknown fields, missing validation
-commands, and contradictory permissions. Keep `prompt` focused on the task itself:
-
-```json
-{
-  "prompt": "Implement reusable cache invalidation.",
-  "promptTemplate": {
-    "blocks": [
-      "repository",
-      "implementation",
-      "validation",
-      "commit",
-      "push-and-create-pr",
-      "reporting"
-    ],
-    "repository": {
-      "context": "Work in acme/widgets on the current feature branch.",
-      "instructionFiles": ["AGENTS.md", "scars.md"]
-    },
-    "validation": {
-      "commands": ["pnpm fmt:check", "pnpm lint", "pnpm typecheck", "pnpm test"]
-    },
-    "commit": {
-      "requirements": ["Include the repository's required co-author trailer."]
-    }
-  }
-}
-```
-
-Available blocks are `repository`, `investigation-only`, `implementation`, `validation`, `commit`,
-`push-and-create-pr`, and `reporting`. Omit irrelevant blocks. Use `overrides` to replace the
-standard text for one selected block and `additions` to append block-specific bullet items.
-Repository context, commands, commit/PR requirements, and report items remain structured fields.
-Never combine `investigation-only` with `implementation`, `commit`, or `push-and-create-pr`.
+Supply the project, title, self-contained prompt, and requested model. Use only model-supported
+reasoning options. The loaded tool schema is authoritative; use `dryRun` when preflight is useful.
+Load [creation-examples.md](references/creation-examples.md) when composing structured prompt
+templates or a batch. Include only needed permissions; never combine investigation-only work
+with implementation, commit, or publication permissions.
 
 Every call returns `status`, `threadId`, `retryable`, `workspaceCreated`, `cleanupPerformed`,
 `errorCode`, and `message`. A `created` outcome always has a `threadId`. For an `ambiguous`
@@ -81,38 +35,9 @@ outcome with a non-null `threadId`, inspect that exact child before retrying; wh
 inspect the parent's children and any requested workspace state instead. Retry a failed call only
 when `retryable` is true and follow any remediation in `message`.
 
-For multiple siblings, call `create_nested_threads` with `children` containing 1-16 objects using
-the same child fields shown above and optional `concurrency` from 1-4 (default 4). Its `results`
-array is always in input order and contains `{ index, outcome }` for every child, even when only
-some children succeed. Items that share a workspace branch or canonical path are all rejected with
-`VALIDATION_FAILED` before mutation; unrelated items continue. Never retry the whole batch: inspect
-and retry only individual outcomes whose `retryable` field is true. Branch and path collision keys
-are Unicode-normalized and case-folded so case-only variants cannot race on macOS or Windows.
-
-```json
-{
-  "children": [
-    {
-      "project": "/repo",
-      "title": "Implement API",
-      "prompt": "Implement and test the API slice.",
-      "model": "gpt-5.6-sol",
-      "workspace": {
-        "mode": "isolated",
-        "branch": "feature/api",
-        "path": "/repo-worktrees/api"
-      }
-    },
-    {
-      "project": "/repo",
-      "title": "Review docs",
-      "prompt": "Review the relevant documentation without editing.",
-      "model": "gpt-5.6-sol"
-    }
-  ],
-  "concurrency": 2
-}
-```
+For a batch, inspect each indexed outcome; partial success is not a reason to retry the whole
+batch. Retry only individual retryable failures. Shared workspace branches or canonical paths
+are rejected before mutation; case-only path differences do not establish independent ownership.
 
 ## Delegation workflow
 

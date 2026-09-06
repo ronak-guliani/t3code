@@ -55,7 +55,7 @@ Before writing any code, when the intent is not already explicit:
 
 Ask about the public interface or test priorities only when the request leaves them consequentially unresolved.
 
-**You can't test everything.** Confirm with the user exactly which behaviors matter most. Focus testing effort on critical paths and complex logic, not every possible edge case.
+**You can't test everything.** Use the stated acceptance criteria to prioritize critical paths and complex logic. Ask only when a consequential test priority remains unresolved, not when the requested behavior is already clear.
 
 ### 2. Tracer Bullet
 
