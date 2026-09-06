@@ -13,7 +13,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -58,7 +58,7 @@ async function isOwnedDirectory(directory: string, home: string): Promise<boolea
     if (canonicalAncestor) break;
     const parent = dirname(ancestor);
     if (parent === ancestor) return false;
-    rest.unshift(ancestor.slice(parent.length + 1));
+    rest.unshift(basename(ancestor));
     ancestor = parent;
   }
   const canonicalDir = join(canonicalAncestor, ...rest);

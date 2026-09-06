@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, sep } from "node:path";
 import { afterEach, expect, it } from "vite-plus/test";
 
 import {
@@ -16,8 +16,9 @@ async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
     return true;
-  } catch {
-    return false;
+  } catch (cause) {
+    if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return false;
+    throw cause;
   }
 }
 
@@ -167,6 +168,19 @@ it("accepts a not-yet-created bin directory under an owned home", async () => {
   const { home } = await fixture();
   const link = join(home, "newbin", "t3");
   expect(await resolveCliLink(join(home, "newbin"), home)).toBe(link);
+});
+
+it("accepts nested missing directories under an owned home", async () => {
+  const { home } = await fixture();
+  const directory = join(home, "missing", "nested", "bin");
+  expect(await resolveCliLink(directory, home)).toBe(join(directory, "t3"));
+});
+
+it.skipIf(process.platform === "win32")("refuses a missing root-level bin directory", async () => {
+  const { home } = await fixture();
+  await expect(resolveCliLink(join(sep, "t3-cli-missing-bin"), home)).rejects.toThrow(
+    "No user-owned bin directory",
+  );
 });
 
 it.skipIf(process.platform === "win32")(
