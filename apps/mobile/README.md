@@ -24,6 +24,36 @@ The iOS binary excludes Clerk's unused native modules; hosted-auth native views 
 behind the disabled cloud configuration. Android retains the installed SDK's strict native
 bindings, but cloud services remain disabled there too.
 
+## Nested chats
+
+Long-press a chat and choose **New subchat**, or use **Chat actions** in its header.
+The draft inherits the parent's provider instance, model options and checkout without
+copying conversation history. Choose a new worktree explicitly to isolate its workspace.
+Each parent has its own persisted subchat draft; offline queued creation and rejection
+recovery retain parentage, model options and checkout selection.
+If a rejected queued subchat's parent is unavailable, its content and settings are recovered
+to the project's new-chat draft without parentage. Review and send it explicitly; recovery
+never sends it automatically.
+
+Home and the iPad sidebar keep descendants with their root in both list modes. Quiet trees
+start collapsed; active work and selected descendants reveal their ancestors. Expansion
+preferences persist on the device. Logical depth is unlimited; indentation stops increasing
+after four levels to keep narrow screens usable. Approval, input and work status roll up to
+ancestors. Durable child lifecycle updates show a **Child update** indicator until the parent
+is viewed in the foreground.
+Search reveals matching descendants on collapsed shelves and keeps their ancestry without
+showing unmatched sibling branches.
+
+**Go to parent chat** navigates up one level. **Decouple chat** makes the selected chat a root
+without changing its checkout. Archive includes active descendants and is blocked while that
+subtree has active work. Restore affects only the selected chat. Delete removes only the
+selected chat; surviving children become roots when their parent is absent.
+
+Provider background agents appear as display-only children. Opening one navigates to its
+parent; completed runs can be dismissed locally. Unlike web, mobile does not focus a specific
+agent work-log entry or provide hover previews and keyboard tree traversal.
+Pending unsent subchats remain in the existing Queued section until creation is acknowledged.
+
 ## Quickstart
 
 > [!NOTE]

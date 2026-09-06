@@ -4,19 +4,102 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  CommandId,
+  ClientOrchestrationCommand,
 } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
+import { decodeQueuedThreadMessage, encodeQueuedThreadMessage } from "../state/thread-outbox-model";
 
 import {
   buildProjectThreadStartTurnInput,
   deriveThreadTitleFromPrompt,
 } from "./projectThreadStartTurn";
 
+const decodeCommand = Schema.decodeUnknownSync(ClientOrchestrationCommand);
+
 describe("project thread title", () => {
   it("keeps ordinary titles and the empty-prompt fallback", () => {
     expect(deriveThreadTitleFromPrompt("  Fix\n the parser  ")).toBe("Fix the parser");
     expect(deriveThreadTitleFromPrompt(" \n ")).toBe("New thread");
+  });
+
+  describe("subchat first turn", () => {
+    const selection = {
+      instanceId: ProviderInstanceId.make("copilot"),
+      model: "gpt-6-astra",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    };
+    const queued = {
+      environmentId: EnvironmentId.make("local"),
+      threadId: ThreadId.make("child"),
+      commandId: CommandId.make("create-child"),
+      messageId: MessageId.make("first-message"),
+      text: "Implement mobile nesting",
+      attachments: [],
+      createdAt: "2026-09-05T12:00:00Z",
+      modelSelection: selection,
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      creation: {
+        projectId: ProjectId.make("project"),
+        parentThreadId: ThreadId.make("parent"),
+        projectCwd: "/repo",
+        workspaceMode: "local" as const,
+        branch: "feature",
+        worktreePath: "/repo-child",
+      },
+    };
+
+    it("retains ancestry, workspace and model options across durable outbox decoding and RPC encoding", () => {
+      const restored = decodeQueuedThreadMessage(encodeQueuedThreadMessage(queued));
+      expect(restored).toEqual(queued);
+      const input = buildProjectThreadStartTurnInput({
+        ...queued,
+        ...queued.creation,
+        uploadedAttachments: [],
+        startFromOrigin: false,
+        worktreeBranchName: "unused",
+      });
+      const command = decodeCommand({
+        type: "thread.turn.start",
+        ...input,
+      });
+      expect(command).toMatchObject({
+        commandId: queued.commandId,
+        modelSelection: selection,
+        bootstrap: {
+          createThread: {
+            parentThreadId: "parent",
+            worktreePath: "/repo-child",
+            branch: "feature",
+            modelSelection: selection,
+          },
+        },
+      });
+      expect(input.bootstrap).not.toHaveProperty("prepareWorktree");
+    });
+
+    it("isolates only on explicit workspace selection, preserving the parent relationship", () => {
+      const input = buildProjectThreadStartTurnInput({
+        ...queued,
+        ...queued.creation,
+        uploadedAttachments: [],
+        startFromOrigin: false,
+        workspaceMode: "worktree",
+        worktreeBranchName: "child-isolation",
+      });
+      expect(input.bootstrap.createThread).toMatchObject({
+        parentThreadId: "parent",
+        worktreePath: null,
+      });
+      expect(input.bootstrap.prepareWorktree).toMatchObject({
+        projectCwd: "/repo",
+        baseBranch: "feature",
+        branch: "child-isolation",
+      });
+    });
   });
 
   it.each([

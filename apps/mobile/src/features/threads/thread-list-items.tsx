@@ -15,6 +15,13 @@ import Svg, { Circle, Path } from "react-native-svg";
 
 import { AppText as Text } from "../../components/AppText";
 import { ControlPillMenu } from "../../components/ControlPill";
+import {
+  ChildNotificationIndicator,
+  ThreadHierarchyFrame,
+  useUnreadChildNotification,
+} from "./thread-hierarchy-controls";
+import type { MobileThreadTreeRow, MobileThreadShell } from "./mobile-thread-hierarchy";
+import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
 import { cn } from "../../lib/cn";
@@ -415,7 +422,8 @@ const THREAD_ROW_MENU_ACTIONS: MenuAction[] = [
 
 export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly variant: ThreadListVariant;
-  readonly thread: EnvironmentThreadShell;
+  readonly thread: MobileThreadShell;
+  readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly environmentLabel: string | null;
   readonly environmentMachine?: EnvironmentMachineKind;
   readonly projectCwd: string | null;
@@ -455,11 +463,13 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
     props;
   const status = resolveThreadStatus(thread);
+  const nesting = useNestedThreadActions(thread);
+  const childUpdateUnread = useUnreadChildNotification(thread);
   const pr = useThreadPr(thread, props.projectCwd);
   const timestamp = relativeTime(
     thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
   );
-  const threadAccessibilityLabel = pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title;
+  const threadAccessibilityLabel = `${pr ? `${thread.title}, ${pr.accessibilityLabel}` : thread.title}${childUpdateUnread ? ", Child update" : ""}`;
   const subtitleParts = [props.environmentLabel, thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -477,22 +487,46 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         }
       : status;
 
-  const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
-  const handleArchive = useCallback(() => onArchiveThread(thread), [onArchiveThread, thread]);
+  const handleDelete = useCallback(
+    () => (thread.virtualAgentRun ? nesting.dismissAgentRun() : onDeleteThread(thread)),
+    [nesting.dismissAgentRun, onDeleteThread, thread],
+  );
+  const handleArchive = useCallback(
+    () => (thread.virtualAgentRun ? nesting.dismissAgentRun() : onArchiveThread(thread)),
+    [nesting.dismissAgentRun, onArchiveThread, thread],
+  );
+  const handleSelect = useCallback(
+    () => (thread.virtualAgentRun ? nesting.openParent() : onSelectThread(thread)),
+    [nesting.openParent, onSelectThread, thread],
+  );
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
     [onRegenerateThreadTitle, thread],
   );
   const menuActions = useMemo<MenuAction[]>(
     () => [
-      THREAD_ROW_MENU_ACTIONS[0]!,
-      ...buildThreadTitleRegenerationMenuItems({
-        supported: props.titleRegenerationSupported,
-        isRegenerating: thread.titleRegeneration != null,
-      }),
-      THREAD_ROW_MENU_ACTIONS[1]!,
+      ...nesting.actions,
+      ...(thread.virtualAgentRun
+        ? []
+        : [
+            {
+              ...THREAD_ROW_MENU_ACTIONS[0]!,
+              attributes: { disabled: props.hierarchy?.archiveBlocked === true },
+            },
+            ...buildThreadTitleRegenerationMenuItems({
+              supported: props.titleRegenerationSupported,
+              isRegenerating: thread.titleRegeneration != null,
+            }),
+            THREAD_ROW_MENU_ACTIONS[1]!,
+          ]),
     ],
-    [props.titleRegenerationSupported, thread.titleRegeneration],
+    [
+      nesting.actions,
+      props.hierarchy?.archiveBlocked,
+      props.titleRegenerationSupported,
+      thread.titleRegeneration,
+      thread.virtualAgentRun,
+    ],
   );
   const primaryAction = useMemo(
     () => ({
@@ -505,20 +539,24 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
+      nesting.handleAction(nativeEvent.event);
       if (nativeEvent.event === "archive") handleArchive();
       if (nativeEvent.event === "regenerate-title") handleRegenerateTitle();
       if (nativeEvent.event === "delete") handleDelete();
     },
-    [handleArchive, handleDelete, handleRegenerateTitle],
+    [nesting.handleAction, handleArchive, handleDelete, handleRegenerateTitle],
   );
 
-  const statusPill = effectiveStatus ? (
-    <View className={`${effectiveStatus.pillClassName} rounded-full px-1.5 py-0.5`}>
-      <Text className={`text-3xs font-t3-bold ${effectiveStatus.textClassName}`}>
-        {effectiveStatus.label}
-      </Text>
-    </View>
-  ) : null;
+  const statusPill =
+    props.hierarchy && props.hierarchy.displayStatus !== "ready" ? (
+      <Text className="text-xs text-foreground-muted">{props.hierarchy.displayStatus}</Text>
+    ) : effectiveStatus ? (
+      <View className={`${effectiveStatus.pillClassName} rounded-full px-1.5 py-0.5`}>
+        <Text className={`text-3xs font-t3-bold ${effectiveStatus.textClassName}`}>
+          {effectiveStatus.label}
+        </Text>
+      </View>
+    ) : null;
 
   const subtitleRow =
     subtitleParts.length > 0 || pr !== null ? (
@@ -580,7 +618,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         className="bg-screen active:opacity-70"
         onPress={() => {
           close();
-          onSelectThread(thread);
+          handleSelect();
         }}
       >
         <View className="pr-[18px] pt-[10px]" style={{ paddingLeft: THREAD_LIST_COMPACT_INSET }}>
@@ -591,6 +629,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
               </Text>
               <View className="flex-row items-center gap-2">
                 {statusPill}
+                <ChildNotificationIndicator visible={childUpdateUnread} />
                 <Text className="text-base tabular-nums text-foreground-tertiary">{timestamp}</Text>
                 <SymbolView
                   name="chevron.right"
@@ -607,7 +646,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
                 query={props.searchQuery ?? ""}
               />
             ) : null}
-            {subtitleRow}
+            {(props.hierarchy?.depth ?? 0) === 0 ? subtitleRow : null}
           </View>
         </View>
       </Pressable>
@@ -621,7 +660,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
         onHoverOut={() => setHovered(false)}
         onPress={() => {
           close();
-          onSelectThread(thread);
+          handleSelect();
         }}
         style={({ pressed }) => ({
           backgroundColor: selected
@@ -650,6 +689,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
             </Text>
             <View className="flex-row items-center gap-2">
               {statusPill}
+              <ChildNotificationIndicator visible={childUpdateUnread} />
               <Text
                 className={cn(
                   "text-xs tabular-nums",
@@ -668,44 +708,46 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
               selected={selected}
             />
           ) : null}
-          {subtitleRow}
+          {(props.hierarchy?.depth ?? 0) === 0 ? subtitleRow : null}
         </View>
       </Pressable>
     );
 
   return (
-    <ThreadSwipeable
-      backgroundColor={backgroundColor}
-      containerStyle={
-        compact ? undefined : { borderRadius: SIDEBAR_ROW_RADIUS, overflow: "hidden" }
-      }
-      enableTrackpadSwipe
-      fullSwipeWidth={props.fullSwipeWidth ?? windowWidth - 32}
-      onDelete={handleDelete}
-      onSwipeableClose={props.onSwipeableClose}
-      onSwipeableWillOpen={props.onSwipeableWillOpen}
-      primaryAction={primaryAction}
-      resetKey={`${thread.environmentId}:${thread.id}`}
-      simultaneousWithExternalGesture={props.simultaneousSwipeGesture}
-      threadTitle={thread.title}
-    >
-      {(close) => (
-        // Messages-style row actions on long-press. iOS: a real
-        // UIContextMenuInteraction with the row as the zoom preview (needs the
-        // patched @react-native-menu, see
-        // patches/@react-native-menu__menu@2.0.0.patch — in long-press mode the
-        // interaction is hosted by the component view and the underlying
-        // UIButton passes touches through, so row taps keep working). Android:
-        // ControlPillMenu injects onLongPress into the row and anchors the
-        // token-styled dropdown to it; taps and swipes are untouched.
-        <ControlPillMenu
-          actions={menuActions}
-          onPressAction={handleMenuAction}
-          shouldOpenOnLongPress
-        >
-          {rowContent(close)}
-        </ControlPillMenu>
-      )}
-    </ThreadSwipeable>
+    <ThreadHierarchyFrame row={props.hierarchy}>
+      <ThreadSwipeable
+        backgroundColor={backgroundColor}
+        containerStyle={
+          compact ? undefined : { borderRadius: SIDEBAR_ROW_RADIUS, overflow: "hidden" }
+        }
+        enableTrackpadSwipe
+        fullSwipeWidth={props.fullSwipeWidth ?? windowWidth - 32}
+        onDelete={handleDelete}
+        onSwipeableClose={props.onSwipeableClose}
+        onSwipeableWillOpen={props.onSwipeableWillOpen}
+        primaryAction={primaryAction}
+        resetKey={`${thread.environmentId}:${thread.id}`}
+        simultaneousWithExternalGesture={props.simultaneousSwipeGesture}
+        threadTitle={thread.title}
+      >
+        {(close) => (
+          // Messages-style row actions on long-press. iOS: a real
+          // UIContextMenuInteraction with the row as the zoom preview (needs the
+          // patched @react-native-menu, see
+          // patches/@react-native-menu__menu@2.0.0.patch — in long-press mode the
+          // interaction is hosted by the component view and the underlying
+          // UIButton passes touches through, so row taps keep working). Android:
+          // ControlPillMenu injects onLongPress into the row and anchors the
+          // token-styled dropdown to it; taps and swipes are untouched.
+          <ControlPillMenu
+            actions={menuActions}
+            onPressAction={handleMenuAction}
+            shouldOpenOnLongPress
+          >
+            {rowContent(close)}
+          </ControlPillMenu>
+        )}
+      </ThreadSwipeable>
+    </ThreadHierarchyFrame>
   );
 });

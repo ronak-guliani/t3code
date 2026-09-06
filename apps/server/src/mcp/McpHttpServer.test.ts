@@ -1,7 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+  type PreviewAutomationRequest,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -276,6 +282,67 @@ it.effect("registers annotated tools and preserves authenticated request context
       expect(press.isError).toBe(false);
       expect(press.structuredContent).toBeNull();
       expect(press.content).toEqual([{ type: "text", text: "null" }]);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("exports an object-only no-argument tab listing and returns all tabs", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const tabsTool = server.tools.find(({ tool }) => tool.name === "preview_tabs");
+      expect(tabsTool?.tool.inputSchema).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+      });
+      expect(tabsTool?.tool.inputSchema.properties ?? {}).toEqual({});
+      expect(tabsTool?.tool.inputSchema.anyOf).toBeUndefined();
+      expect(tabsTool?.tool.inputSchema.oneOf).toBeUndefined();
+
+      const tabsResult = {
+        tabs: [
+          { tabId, url: "http://one.test/", title: "One", active: true, loading: false },
+          {
+            tabId: alternateTabId,
+            url: "http://two.test/",
+            title: "Two",
+            active: false,
+            loading: false,
+          },
+        ],
+        activeTabId: tabId,
+      };
+      const requests: PreviewAutomationRequest[] = [];
+      const events = yield* broker.connect({
+        clientId: "mcp-tabs-client",
+        environmentId,
+        supportedOperations: ["listTabs"],
+      });
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") return Effect.void;
+        requests.push(event.request);
+        return broker.respond({
+          clientId: "mcp-tabs-client",
+          connectionId: event.connectionId,
+          requestId: event.request.requestId,
+          ok: true,
+          result: tabsResult,
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const result = yield* server
+        .callTool({ name: "preview_tabs", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toEqual(tabsResult);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ operation: "listTabs", input: {}, tabIdExplicit: false });
+      expect(requests[0]?.tabId).toBeUndefined();
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

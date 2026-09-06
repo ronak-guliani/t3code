@@ -20,3 +20,15 @@ Create a GitHub issue.
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
+
+## Wayfinding operations
+
+Use body links rather than assuming native GitHub dependency commands are configured:
+
+- Ensure `wayfinder:map` and the needed `wayfinder:<type>` labels exist with `gh label list --search <label>` and `gh label create <label>` for missing labels. Preserve existing label settings.
+- Create one map issue and separate decision issues. Each decision has exactly one type label and a `Parent map: #<number>` body line.
+- Add one `Blocked by: #<number>` body line per dependency.
+- Enumerate open issues with `gh api --paginate --method GET 'repos/{owner}/{repo}/issues' -f state=open -f per_page=100`, exclude pull requests, and filter by parent map. Do not treat the default limited issue list as complete.
+- An unassigned child is available only if its map is open and every blocker is closed. Check blockers with `gh issue view <number> --json state`; unknown states remain blocked.
+- Claim with `gh issue edit <number> --add-assignee @me` or the designated maintainer. Re-read assignees before work; assignment is not an atomic lock.
+- Post the resolution as a comment, close the child, and add its title and link to the map's `Decisions so far`.
