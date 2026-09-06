@@ -82,6 +82,7 @@ type MarkdownFunctionComponentProps<K extends keyof Components> = Parameters<
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
 const WEB_CITATION_TOKEN_PATTERN = /\uE200cite(?:\uE202turn\d+[A-Za-z]+\d+)+\uE201/g;
+const TRAILING_PARTIAL_WEB_CITATION_PATTERN = /\uE200cite[\s\S]*$/;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -138,8 +139,9 @@ function extractCodeBlock(
   };
 }
 
-function normalizeChatMarkdownText(text: string): string {
-  return text.replace(WEB_CITATION_TOKEN_PATTERN, "");
+function normalizeChatMarkdownText(text: string, isStreaming: boolean): string {
+  const normalized = text.replace(WEB_CITATION_TOKEN_PATTERN, "");
+  return isStreaming ? normalized.replace(TRAILING_PARTIAL_WEB_CITATION_PATTERN, "") : normalized;
 }
 
 type MarkdownAstNode = {
@@ -876,7 +878,10 @@ const markdownComponentsWithoutRuntimeState = {
 function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
-  const normalizedText = useMemo(() => normalizeChatMarkdownText(text), [text]);
+  const normalizedText = useMemo(
+    () => normalizeChatMarkdownText(text, isStreaming),
+    [isStreaming, text],
+  );
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
