@@ -135,6 +135,81 @@ describe("mobile nested threads", () => {
     expect(layout([{ ...parent, archivedAt: NOW }, child, leaf]).items).toEqual([]);
   });
 
+  it.each(["title", "content"])("reveals %s matches on collapsed shelves", (kind) => {
+    for (const shelf of ["snoozed", "settled"]) {
+      const threads = [
+        {
+          ...parent,
+          ...(shelf === "snoozed"
+            ? { snoozedUntil: "2026-06-03T00:00:00Z" }
+            : { settledOverride: "settled" as const }),
+        },
+        child,
+        leaf,
+      ];
+      const options = {
+        snoozedShelfExpanded: false,
+        settledShelfExpanded: false,
+        ...(kind === "content"
+          ? {
+              matchedThreadKeys: new Set([
+                threadSearchMatchKey({ environmentId, threadId: leaf.id }),
+              ]),
+            }
+          : {}),
+      };
+      expect(
+        layout(threads, {
+          ...options,
+          searchQuery: kind === "title" ? "Leaf" : "needle",
+        }).items.map((item) => item.thread.id),
+      ).toEqual(["parent", "child", "leaf"]);
+      expect(layout(threads, { ...options, searchQuery: "" }).items).toEqual([]);
+    }
+  });
+
+  it("prunes unmatched siblings and descendants without losing ancestor safety rollups", () => {
+    const sibling = makeThread({
+      id: ThreadId.make("sibling"),
+      title: "Unrelated",
+      parentThreadId: parent.id,
+      hasPendingQueuedTurn: true,
+    });
+    const threads = [parent, child, leaf, sibling];
+    const result = layout(threads, {
+      searchQuery: "Leaf",
+      expandedOverrideByThreadKey: new Map([[`${environmentId}:parent`, true]]),
+    });
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      archiveBlocked: true,
+      displayStatus: "working",
+    });
+    expect(layout(threads, { searchQuery: "Parent" }).items.map((item) => item.thread.id)).toEqual([
+      "parent",
+    ]);
+    expect(layout(threads).items).toHaveLength(3);
+  });
+
+  it("shows failed provider agents and promotes their shelved ancestors until dismissed", () => {
+    const failedParent = {
+      ...parent,
+      settledOverride: "settled" as const,
+      backgroundAgentRuns: [
+        { taskId: "failed", name: "Failed check", status: "failed" as const, startedAt: NOW },
+      ],
+    };
+    const result = layout([failedParent]);
+    expect(result.items.map((item) => item.hierarchy?.displayStatus)).toEqual(["failed", "failed"]);
+    expect(result.settledCount).toBe(0);
+    expect(result.items.every((item) => item.hierarchy?.archiveBlocked === false)).toBe(true);
+    expect(
+      layout([failedParent], {
+        dismissedAgentRunKeys: [`${environmentId}:agent-run:parent:failed`],
+      }).settledCount,
+    ).toBe(1);
+  });
+
   it("pages root groups rather than children and keeps selected descendants on closed shelves", () => {
     const other = makeThread({
       id: ThreadId.make("other"),

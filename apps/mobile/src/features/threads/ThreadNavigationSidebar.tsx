@@ -402,11 +402,13 @@ function ThreadNavigationSidebarPane(
   );
   const {
     loaded: shelfPreferencesLoaded,
-    settledShelfExpanded,
-    snoozedShelfExpanded,
+    settledShelfExpanded: settledShelfPreferredExpanded,
+    snoozedShelfExpanded: snoozedShelfPreferredExpanded,
     toggleSettledShelf,
     toggleSnoozedShelf,
   } = useThreadListV2ShelfPreferences();
+  const settledShelfExpanded = hasSearchQuery || settledShelfPreferredExpanded;
+  const snoozedShelfExpanded = hasSearchQuery || snoozedShelfPreferredExpanded;
   // The queued-start and snooze helpers need a clock while the pane stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the

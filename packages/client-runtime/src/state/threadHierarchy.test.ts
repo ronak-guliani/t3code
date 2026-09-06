@@ -56,6 +56,31 @@ describe("shared thread hierarchy", () => {
     ).toEqual(["other"]);
   });
 
+  it.each([
+    ["entry", "a", "b"],
+    ["entry", "b", "a"],
+    ["a", "entry", "b"],
+    ["a", "b", "entry"],
+    ["b", "entry", "a"],
+    ["b", "a", "entry"],
+  ])("retains every row when %j leads into a downstream cycle", (...ids) => {
+    const threads = ids.map((id) => thread(id, id === "a" ? "b" : "a"));
+    const parents = normalizeParentThreadKeys(threads);
+    expect(parents.get("local:entry")).toBe("local:a");
+    const rows = flattenThreadTree({
+      nodes: buildThreadTree({
+        threads,
+        compare: () => 0,
+        resolveStatus: () => true,
+        rollUpStatus: () => true,
+        isArchiveBlocked: () => false,
+      }),
+      expandedOverrideByThreadKey: new Map(),
+      isActiveStatus: Boolean,
+    });
+    expect(rows.map((row) => row.thread.id).sort()).toEqual(["a", "b", "entry"]);
+  });
+
   it("builds and expands a 12,000-level hierarchy without recursive stack overflow", () => {
     const threads = Array.from({ length: 12_000 }, (_, index) =>
       thread(String(index), index === 0 ? null : String(index - 1)),

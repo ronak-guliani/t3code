@@ -11,6 +11,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
 
 const harness = vi.hoisted(() => ({
+  parent: null as {
+    readonly projectId: ProjectId;
+    readonly archivedAt: string | null;
+  } | null,
   manager: null as unknown as ReturnType<
     typeof import("./thread-outbox-manager").createThreadOutboxManager
   >,
@@ -87,9 +91,13 @@ vi.mock("./server", async () => {
   return { serverEnvironment: { configValueAtom: Atom.family(() => Atom.make(null)) } };
 });
 
-vi.mock("./threads", () => ({
-  threadEnvironment: {},
-}));
+vi.mock("./threads", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    threadEnvironment: {},
+    environmentThreadShells: { threadShellAtom: () => Atom.make(harness.parent) },
+  };
+});
 
 vi.mock("./use-atom-command", () => ({
   useAtomCommand: () => async () => undefined,
@@ -197,6 +205,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  harness.parent = null;
   appAtomRegistry.set(harness.manager.queuedMessagesByThreadKeyAtom, {});
   appAtomRegistry.set(composerDrafts.composerDraftsAtom, {});
   appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, { accountId: null, signedOut: {} });
@@ -583,6 +592,7 @@ describe("thread outbox delivered creation recovery", () => {
 
 describe("thread outbox recovery rollback", () => {
   it("restores a rejected subchat to its own draft without losing parent, model options or checkout", async () => {
+    harness.parent = { projectId: ProjectId.make("project"), archivedAt: null };
     const message: QueuedThreadMessage = {
       ...queuedMessage({
         messageId: "nested-rejection",
@@ -607,7 +617,7 @@ describe("thread outbox recovery rollback", () => {
       "untouched project draft",
     );
     await harness.manager.enqueue(message);
-    expect(await restoreRejectedQueuedMessage(message, "Parent archived")).toBe("restored");
+    expect(await restoreRejectedQueuedMessage(message, "Model unavailable")).toBe("restored");
     expect(composerDrafts.getComposerDraftSnapshot("subchat:environment-1:parent")).toMatchObject({
       text: message.text,
       attachments: message.attachments,
@@ -619,6 +629,90 @@ describe("thread outbox recovery rollback", () => {
       "untouched project draft",
     );
     expect(remainingMessages()).toEqual([]);
+  });
+
+  it.each(["deleted", "archived", "different-project"])(
+    "recovers a subchat with a %s parent into the reachable project draft",
+    async (state) => {
+      harness.parent =
+        state === "deleted"
+          ? null
+          : {
+              projectId: ProjectId.make(state === "different-project" ? "other" : "project"),
+              archivedAt: state === "archived" ? "2026-09-05T00:00:00Z" : null,
+            };
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({
+          messageId: `orphan-${state}`,
+          text: "Recovered",
+          fileUri: "file:///keep.pdf",
+        }),
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("copilot"),
+          model: "gpt-6-astra",
+          options: [{ id: "reasoning", value: "high" }],
+        },
+        creation: {
+          projectId: ProjectId.make("project"),
+          parentThreadId: ThreadId.make("parent"),
+          workspaceMode: "local",
+          branch: "feature",
+          worktreePath: "/repo-child",
+        },
+      };
+      composerDrafts.setComposerDraftText("new-task:environment-1:project", "Existing draft");
+      await harness.manager.enqueue(message);
+      expect(await restoreRejectedQueuedMessage(message, "Parent unavailable")).toBe("restored");
+      expect(
+        composerDrafts.getComposerDraftSnapshot("new-task:environment-1:project"),
+      ).toMatchObject({
+        text: "Existing draft\n\nRecovered",
+        attachments: message.attachments,
+        parentThreadId: undefined,
+        modelSelection: message.modelSelection,
+        workspaceSelection: { mode: "local", branch: "feature", worktreePath: "/repo-child" },
+      });
+      expect(remainingMessages()).toEqual([]);
+      expect(harness.setPendingConnectionError).toHaveBeenCalledWith(
+        expect.stringContaining("without a parent"),
+      );
+      expect(harness.removePersistedFile).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retries recovery into the project draft if the parent disappears during persistence", async () => {
+    harness.parent = { projectId: ProjectId.make("project"), archivedAt: null };
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "parent-disappears", text: "Keep exactly once" }),
+      creation: {
+        projectId: ProjectId.make("project"),
+        parentThreadId: ThreadId.make("parent"),
+        workspaceMode: "local",
+        branch: null,
+        worktreePath: null,
+      },
+    };
+    await harness.manager.enqueue(message);
+    const merge = composerDrafts.mergeComposerDraftContent;
+    const spy = vi
+      .spyOn(composerDrafts, "mergeComposerDraftContent")
+      .mockImplementationOnce(async (...args) => {
+        const result = await merge(...args);
+        harness.parent = null;
+        return result;
+      });
+    try {
+      expect(await restoreRejectedQueuedMessage(message, "Rejected")).toBe("retry");
+      expect(remainingMessages()).toEqual([message]);
+      expect(composerDrafts.getComposerDraftSnapshot("subchat:environment-1:parent").text).toBe("");
+      expect(await restoreRejectedQueuedMessage(message, "Rejected")).toBe("restored");
+      expect(composerDrafts.getComposerDraftSnapshot("new-task:environment-1:project").text).toBe(
+        message.text,
+      );
+      expect(remainingMessages()).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("restores a rejected new task into its durable project draft", async () => {

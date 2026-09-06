@@ -31,6 +31,9 @@ The draft inherits the parent's provider instance, model options and checkout wi
 copying conversation history. Choose a new worktree explicitly to isolate its workspace.
 Each parent has its own persisted subchat draft; offline queued creation and rejection
 recovery retain parentage, model options and checkout selection.
+If a rejected queued subchat's parent is unavailable, its content and settings are recovered
+to the project's new-chat draft without parentage. Review and send it explicitly; recovery
+never sends it automatically.
 
 Home and the iPad sidebar keep descendants with their root in both list modes. Quiet trees
 start collapsed; active work and selected descendants reveal their ancestors. Expansion
@@ -38,6 +41,8 @@ preferences persist on the device. Logical depth is unlimited; indentation stops
 after four levels to keep narrow screens usable. Approval, input and work status roll up to
 ancestors. Durable child lifecycle updates show a **Child update** indicator until the parent
 is viewed in the foreground.
+Search reveals matching descendants on collapsed shelves and keeps their ancestry without
+showing unmatched sibling branches.
 
 **Go to parent chat** navigates up one level. **Decouple chat** makes the selected chat a root
 without changing its checkout. Archive includes active descendants and is blocked while that

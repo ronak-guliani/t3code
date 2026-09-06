@@ -1,4 +1,4 @@
-import { useNavigation } from "@react-navigation/native";
+import { useAppNavigation } from "../../lib/use-app-navigation";
 import type { MenuAction } from "@react-native-menu/menu";
 import type { MobileThreadShell } from "./mobile-thread-hierarchy";
 import * as Cause from "effect/Cause";
@@ -13,7 +13,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 
 export function useNestedThreadActions(thread: MobileThreadShell) {
-  const navigation = useNavigation();
+  const navigation = useAppNavigation();
   const decouple = useAtomCommand(threadEnvironment.decouple, { reportFailure: false });
   const pending = useRef(false);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);

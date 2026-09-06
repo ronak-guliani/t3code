@@ -365,7 +365,7 @@ export function buildThreadListV2Items(input: {
     input.dismissedAgentRunKeys,
   );
   const roots = query.length > 0 ? selectMatchingThreadTree(tree, matchingKeys) : tree;
-  const nodesByKey = new Map(roots.map((node) => [node.threadKey, node]));
+  const nodesByKey = new Map(tree.map((node) => [node.threadKey, node]));
   const rowsByRootKey = new Map(
     roots.map((node) => [
       node.threadKey,
@@ -388,7 +388,9 @@ export function buildThreadListV2Items(input: {
     if (projectKeys !== null && !projectKeys.has(`${thread.environmentId}:${thread.projectId}`)) {
       continue;
     }
-    if (node.children.some((child) => child.rolledUpStatus !== "ready")) {
+    if (
+      nodesByKey.get(node.threadKey)?.children.some((child) => child.rolledUpStatus !== "ready")
+    ) {
       if (thread.pinnedAt != null) pinned.push(thread);
       else active.push(thread);
       continue;
@@ -427,7 +429,7 @@ export function buildThreadListV2Items(input: {
       parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
   );
   const visibleSnoozed =
-    input.snoozedShelfExpanded === true
+    query.length > 0 || input.snoozedShelfExpanded === true
       ? orderedSnoozed
       : orderedSnoozed.filter(rootContainsSelection);
   const orderedSettled = [...settled].sort(
@@ -441,7 +443,7 @@ export function buildThreadListV2Items(input: {
   const selectedSettled = orderedSettled.slice(pagedSettled.length).find(rootContainsSelection);
   if (selectedSettled !== undefined) pagedSettled.push(selectedSettled);
   const visibleSettled =
-    input.settledShelfExpanded !== false
+    query.length > 0 || input.settledShelfExpanded !== false
       ? pagedSettled
       : pagedSettled.filter(rootContainsSelection);
 

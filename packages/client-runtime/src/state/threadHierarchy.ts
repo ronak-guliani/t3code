@@ -44,7 +44,7 @@ export function normalizeParentThreadKeys<T extends HierarchicalThread>(
     let parent = parents.get(key);
     while (parent !== undefined && !resolved.has(parent)) {
       if (path.has(parent)) {
-        parents.delete(key);
+        parents.delete(parent);
         break;
       }
       path.add(parent);

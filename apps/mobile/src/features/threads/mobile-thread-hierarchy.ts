@@ -47,7 +47,8 @@ export function resolveNestedThreadStatus(
     thread.session?.status === "running"
   )
     return "working";
-  if (thread.session?.status === "error") return "failed";
+  if (thread.virtualAgentRun?.status === "failed" || thread.session?.status === "error")
+    return "failed";
   return "ready";
 }
 
@@ -145,13 +146,27 @@ export function selectMatchingThreadTree(
   nodes: readonly MobileThreadTreeNode[],
   matches: ReadonlySet<string>,
 ): MobileThreadTreeNode[] {
-  return nodes.filter((root) => {
-    const pending = [root];
-    while (pending.length > 0) {
-      const node = pending.pop()!;
-      if (matches.has(hierarchyThreadKey(node.thread))) return true;
-      for (const child of node.children) pending.push(child);
+  const traversal: MobileThreadTreeNode[] = [];
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    traversal.push(node);
+    for (const child of node.children) pending.push(child);
+  }
+  const retained = new Map<string, MobileThreadTreeNode>();
+  for (let index = traversal.length - 1; index >= 0; index--) {
+    const node = traversal[index]!;
+    const children = node.children.flatMap((child) => {
+      const match = retained.get(child.threadKey);
+      return match ? [match] : [];
+    });
+    if (matches.has(hierarchyThreadKey(node.thread)) || children.length > 0) {
+      // Keep full-subtree status and archive guards even when siblings are hidden.
+      retained.set(node.threadKey, { ...node, children });
     }
-    return false;
+  }
+  return nodes.flatMap((node) => {
+    const match = retained.get(node.threadKey);
+    return match ? [match] : [];
   });
 }
