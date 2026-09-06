@@ -21,9 +21,9 @@ export const makeTurnLifecycleRuntime = Effect.gen(function* () {
 
   const start: TurnLifecycleRuntimeShape["start"] = Effect.fn("start")(function* () {
     yield* sessionReaper.reconcileStartup;
-    yield* runtimeIngestion.start();
-    yield* commandReactor.start();
     yield* checkpointReactor.start();
+    yield* runtimeIngestion.start(checkpointReactor.enqueueRuntimeEvent);
+    yield* commandReactor.start();
     yield* sessionReaper.start();
   });
 

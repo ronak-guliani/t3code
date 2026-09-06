@@ -10,6 +10,7 @@
  */
 import { Context } from "effect";
 import type { Effect, Scope } from "effect";
+import type { ProviderRuntimeEvent } from "@t3tools/contracts";
 
 /**
  * CheckpointReactorShape - Service API for checkpoint reactor lifecycle.
@@ -21,10 +22,16 @@ export interface CheckpointReactorShape {
    * The returned effect must be run in a scope so all worker fibers can be
    * finalized on shutdown.
    *
-   * Consumes both orchestration-domain and provider-runtime events via an
-   * internal queue.
+   * Subscribes to orchestration-domain events. Provider-runtime events enter
+   * the same internal queue through the ingestion-owned handoff.
    */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+
+  /**
+   * Accept a runtime event after ingestion. The queue exists before start,
+   * so lifecycle startup cannot lose the handoff to a hot subscription.
+   */
+  readonly enqueueRuntimeEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
 
   /**
    * Resolves when the internal processing queue is empty and idle.

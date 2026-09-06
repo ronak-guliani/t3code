@@ -56,6 +56,7 @@ export const PROVIDER_OPTIONS: Array<{
 
 export interface WorkLogEntry {
   id: string;
+  sourceActivityKind?: string;
   stableId?: string;
   createdAt: string;
   label: string;
@@ -817,8 +818,12 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
+    ...(activity.kind === "context-compaction" ? { sourceActivityKind: activity.kind } : {}),
     createdAt: activity.createdAt,
-    label: taskLabel || activity.summary,
+    label:
+      activity.kind === "context-compaction" && activity.summary === "Context compacted"
+        ? "Compacted context"
+        : taskLabel || activity.summary,
     tone:
       activity.kind === "task.progress"
         ? "thinking"

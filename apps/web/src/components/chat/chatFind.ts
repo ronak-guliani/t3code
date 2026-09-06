@@ -50,6 +50,9 @@ function collectProposedPlanSearchText(proposedPlan: ProposedPlan): string {
 
 function collectTimelineRowSearchText(row: MessagesTimelineRow): string {
   switch (row.kind) {
+    case "context-compaction":
+      return normalizeSearchText(row.label);
+
     case "message":
       return collectMessageSearchText(row.message);
 

@@ -15,6 +15,7 @@ import {
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { formatTokens } from "@t3tools/shared/usageFormat";
 import { isReviewOutputText } from "@t3tools/shared/workflows/reviewOutput";
 import {
   extractChangedFilePathCandidatesFromToolPayload,
@@ -26,6 +27,7 @@ import {
   Deferred,
   Duration,
   Effect,
+  Exit,
   Layer,
   Option,
   Ref,
@@ -43,6 +45,7 @@ import {
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/Utils.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderRuntimeIngestionService,
@@ -602,15 +605,21 @@ function runtimeEventToActivities(
         return [];
       }
 
+      const { beforeTokens, afterTokens } = event.payload;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
           tone: "info",
           kind: "context-compaction",
-          summary: "Context compacted",
+          summary:
+            beforeTokens !== undefined && afterTokens !== undefined
+              ? `Compacted context ${formatTokens(beforeTokens)} → ${formatTokens(afterTokens)} tokens`
+              : "Compacted context",
           payload: {
             state: event.payload.state,
+            ...(beforeTokens !== undefined ? { beforeTokens } : {}),
+            ...(afterTokens !== undefined ? { afterTokens } : {}),
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
@@ -720,6 +729,7 @@ function runtimeEventToActivities(
 }
 
 const make = Effect.gen(function* () {
+  const coordinator = yield* CheckoutCoordinator;
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
@@ -1660,6 +1670,23 @@ const make = Effect.gen(function* () {
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) return;
 
+      if (event.type === "turn.completed" && event.turnId !== undefined) {
+        const cwd =
+          thread.worktreePath ??
+          readModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
+        if (cwd) {
+          // Establish exclusion before any command can publish an idle session.
+          // The owned checkpoint handoff releases it after terminal processing.
+          yield* coordinator.beginFinalization(event.eventId, cwd);
+        }
+        const runtimeSession = (yield* providerService.listSessions()).find(
+          (session) => session.threadId === thread.id,
+        );
+        if (runtimeSession?.cwd) {
+          yield* coordinator.beginFinalization(event.eventId, runtimeSession.cwd);
+        }
+      }
+
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
@@ -2179,15 +2206,41 @@ const make = Effect.gen(function* () {
     assistantTextDeltaFromEvent(event) !== undefined;
 
   const worker = yield* makeDrainableWorker(
-    (event: ProviderRuntimeEvent) =>
-      Effect.andThen(
-        // Non-delta events may finalize or complete a message, so any buffered
-        // deltas must reach the engine first to preserve ordering. The strict
-        // variant retries through transient dispatch failures instead of
-        // letting a completion overtake undelivered text.
-        isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
-        processRuntimeEventSafely(event),
-      ).pipe(Effect.andThen(markProcessed(event))),
+    ({
+      event,
+      enqueueCheckpointEvent,
+    }: {
+      event: ProviderRuntimeEvent;
+      enqueueCheckpointEvent: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
+    }) =>
+      Effect.gen(function* () {
+        let handedOff = false;
+        yield* Effect.andThen(
+          // Non-delta events may finalize or complete a message, so any buffered
+          // deltas must reach the engine first to preserve ordering. The strict
+          // variant retries through transient dispatch failures instead of
+          // letting a completion overtake undelivered text.
+          isAssistantTextDeltaEvent(event) ? Effect.void : flushAllStreamingDeltasStrictly,
+          processRuntimeEventSafely(event),
+        ).pipe(
+          Effect.andThen(markProcessed(event)),
+          Effect.andThen(
+            enqueueCheckpointEvent(event).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  handedOff = true;
+                }),
+              ),
+              Effect.uninterruptible,
+            ),
+          ),
+          Effect.onExit((exit) =>
+            Exit.isFailure(exit) && !handedOff
+              ? coordinator.endFinalization(event.eventId)
+              : Effect.void,
+          ),
+        );
+      }),
     {
       capacity: RUNTIME_INGESTION_QUEUE_CAPACITY,
     },
@@ -2224,9 +2277,13 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const start: ProviderRuntimeIngestionShape["start"] = () =>
+  const start: ProviderRuntimeIngestionShape["start"] = (enqueueCheckpointEvent) =>
     Effect.gen(function* () {
-      yield* Effect.forkScoped(Stream.runForEach(providerService.streamEvents, worker.enqueue));
+      yield* Effect.forkScoped(
+        Stream.runForEach(providerService.streamEvents, (event) =>
+          worker.enqueue({ event, enqueueCheckpointEvent }),
+        ),
+      );
     });
 
   return {
@@ -2239,4 +2296,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provideMerge(CheckoutCoordinatorLive));

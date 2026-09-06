@@ -16,6 +16,7 @@ import { Cache, Data, Duration, Effect, Exit, Layer, FileSystem, Path } from "ef
 import { CheckpointInvariantError, CheckpointRefUnavailableError } from "../Errors.ts";
 import { GitCommandError } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@t3tools/contracts";
 import { normalizeChangedFilePath } from "@t3tools/shared/toolChangedFiles";
@@ -56,6 +57,7 @@ const makeCheckpointStore = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const git = yield* GitCore;
+  const coordinator = yield* CheckoutCoordinator;
 
   const resolveHeadCommit = (cwd: string): Effect.Effect<string | null, GitCommandError> =>
     git
@@ -132,72 +134,77 @@ const makeCheckpointStore = Effect.gen(function* () {
     readonly cwd: string;
     readonly operation: string;
   }) {
-    return yield* Effect.acquireUseRelease(
-      fs.makeTempDirectory({ prefix: "t3-fs-checkpoint-" }),
-      Effect.fn("snapshotWorkspace.withTempDirectory")(function* (tempDir) {
-        const tempIndexPath = path.join(tempDir, `index-${randomUUID()}`);
-        const env: NodeJS.ProcessEnv = {
-          ...process.env,
-          GIT_INDEX_FILE: tempIndexPath,
-        };
-        const headCommit = yield* resolveHeadCommit(input.cwd);
-        if (headCommit !== null) {
-          yield* git.execute({
-            operation: input.operation,
-            cwd: input.cwd,
-            args: ["read-tree", "HEAD"],
-            env,
-          });
-        }
-        yield* git.execute({
-          operation: input.operation,
-          cwd: input.cwd,
-          args: ["add", "-A", "--", "."],
-          env,
-        });
-        const writeTreeResult = yield* git.execute({
-          operation: input.operation,
-          cwd: input.cwd,
-          args: ["write-tree"],
-          env,
-        });
-        const treeOid = writeTreeResult.stdout.trim();
-        if (treeOid.length === 0) {
-          return yield* new GitCommandError({
-            operation: input.operation,
-            command: "git write-tree",
-            cwd: input.cwd,
-            detail: "git write-tree returned an empty tree oid.",
-          });
-        }
-        const indexTreeResult = yield* git.execute({
-          operation: input.operation,
-          cwd: input.cwd,
-          args: ["write-tree"],
-        });
-        const indexTreeOid = indexTreeResult.stdout.trim();
-        if (indexTreeOid.length === 0) {
-          return yield* new GitCommandError({
-            operation: input.operation,
-            command: "git write-tree",
-            cwd: input.cwd,
-            detail: "git write-tree returned an empty index tree oid.",
-          });
-        }
-        return { headCommit, treeOid, indexTreeOid };
-      }),
-      (tempDir) => fs.remove(tempDir, { recursive: true }),
-    ).pipe(
-      Effect.catchTag("PlatformError", (error) =>
-        Effect.fail(
-          new CheckpointInvariantError({
-            operation: input.operation,
-            detail: "Failed to snapshot workspace.",
-            cause: error,
+    return yield* coordinator
+      .withCheckout(
+        input.cwd,
+        Effect.acquireUseRelease(
+          fs.makeTempDirectory({ prefix: "t3-fs-checkpoint-" }),
+          Effect.fn("snapshotWorkspace.withTempDirectory")(function* (tempDir) {
+            const tempIndexPath = path.join(tempDir, `index-${randomUUID()}`);
+            const env: NodeJS.ProcessEnv = {
+              ...process.env,
+              GIT_INDEX_FILE: tempIndexPath,
+            };
+            const headCommit = yield* resolveHeadCommit(input.cwd);
+            if (headCommit !== null) {
+              yield* git.execute({
+                operation: input.operation,
+                cwd: input.cwd,
+                args: ["read-tree", "HEAD"],
+                env,
+              });
+            }
+            yield* git.execute({
+              operation: input.operation,
+              cwd: input.cwd,
+              args: ["add", "-A", "--", "."],
+              env,
+            });
+            const writeTreeResult = yield* git.execute({
+              operation: input.operation,
+              cwd: input.cwd,
+              args: ["write-tree"],
+              env,
+            });
+            const treeOid = writeTreeResult.stdout.trim();
+            if (treeOid.length === 0) {
+              return yield* new GitCommandError({
+                operation: input.operation,
+                command: "git write-tree",
+                cwd: input.cwd,
+                detail: "git write-tree returned an empty tree oid.",
+              });
+            }
+            const indexTreeResult = yield* git.execute({
+              operation: input.operation,
+              cwd: input.cwd,
+              args: ["write-tree"],
+            });
+            const indexTreeOid = indexTreeResult.stdout.trim();
+            if (indexTreeOid.length === 0) {
+              return yield* new GitCommandError({
+                operation: input.operation,
+                command: "git write-tree",
+                cwd: input.cwd,
+                detail: "git write-tree returned an empty index tree oid.",
+              });
+            }
+            return { headCommit, treeOid, indexTreeOid };
           }),
+          (tempDir) => fs.remove(tempDir, { recursive: true }),
         ),
-      ),
-    );
+      )
+      .pipe(
+        Effect.catchTag("PlatformError", (error) =>
+          Effect.fail(
+            new CheckpointInvariantError({
+              operation: input.operation,
+              detail: "Failed to snapshot workspace.",
+              cause: error,
+            }),
+          ),
+        ),
+      );
   });
 
   const captureCheckpoint: CheckpointStoreShape["captureCheckpoint"] = Effect.fn(
@@ -862,11 +869,13 @@ const makeCheckpointStore = Effect.gen(function* () {
     captureCheckpoint,
     hasCheckpointRef,
     checkpointRefMatchesWorkspace,
-    restoreCheckpoint,
+    restoreCheckpoint: (input) => coordinator.withCheckout(input.cwd, restoreCheckpoint(input)),
     diffCheckpoints,
     diffCheckpointFiles,
     deleteCheckpointRefs,
   } satisfies CheckpointStoreShape;
 });
 
-export const CheckpointStoreLive = Layer.effect(CheckpointStore, makeCheckpointStore);
+export const CheckpointStoreLive = Layer.effect(CheckpointStore, makeCheckpointStore).pipe(
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

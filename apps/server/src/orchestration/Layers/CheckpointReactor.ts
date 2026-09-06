@@ -37,6 +37,7 @@ import type { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { WorkspaceEntries } from "../../workspace/Services/WorkspaceEntries.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 
 type ReactorInput =
   | {
@@ -96,6 +97,7 @@ const make = Effect.gen(function* () {
   const receiptBus = yield* RuntimeReceiptBus;
   const workspaceEntries = yield* WorkspaceEntries;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
+  const coordinator = yield* CheckoutCoordinator;
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -460,7 +462,6 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      yield* runtimeIngestion.awaitTurnCompletionProcessed(event.eventId);
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) {
@@ -932,9 +933,7 @@ const make = Effect.gen(function* () {
 
     // When ProviderRuntimeIngestion creates a speculative checkpoint
     // from a turn.diff.updated runtime event, capture the real git checkpoint to
-    // replace it. The providerService.streamEvents PubSub does not reliably deliver
-    // turn.completed runtime events to this reactor (shared subscription), so
-    // reacting to the domain event is the reliable path.
+    // replace it before the terminal completion arrives.
     if (event.type === "thread.turn-diff-completed") {
       yield* captureCheckpointFromNonAuthoritativeDiff(event).pipe(
         Effect.catch((error) =>
@@ -967,8 +966,14 @@ const make = Effect.gen(function* () {
 
     if (event.type === "turn.completed") {
       const turnId = toTurnId(event.turnId);
-      yield* refreshLocalGitStatusFromTurnCompletion(event);
-      yield* captureCheckpointFromTurnCompletion(event).pipe(
+      yield* Effect.gen(function* () {
+        if (turnId) {
+          // Do not hold a checkout mutex while ingestion is awaiting command dispatch.
+          yield* runtimeIngestion.awaitTurnCompletionProcessed(event.eventId);
+        }
+        yield* refreshLocalGitStatusFromTurnCompletion(event);
+        yield* captureCheckpointFromTurnCompletion(event);
+      }).pipe(
         Effect.catch((error) =>
           appendCaptureFailureActivity({
             threadId: event.threadId,
@@ -985,6 +990,7 @@ const make = Effect.gen(function* () {
             Effect.catch(() => Effect.void),
           ),
         ),
+        Effect.ensuring(releaseFinalization(event.eventId)),
       );
       return;
     }
@@ -1009,7 +1015,39 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const pendingFinalizations = new Set<EventId>();
+  const releaseFinalization = (eventId: EventId) =>
+    coordinator
+      .endFinalization(eventId)
+      .pipe(Effect.andThen(Effect.sync(() => pendingFinalizations.delete(eventId))));
+  // Registered before the worker so cancellation stops capture before releasing
+  // exclusions, including completions still waiting in its queue.
+  yield* Effect.addFinalizer(() =>
+    Effect.forEach(pendingFinalizations, releaseFinalization, { discard: true }),
+  );
   const worker = yield* makeDrainableWorker(processInputSafely);
+  let acceptingRuntimeEvents = true;
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      acceptingRuntimeEvents = false;
+    }),
+  );
+
+  const enqueueRuntimeEvent: CheckpointReactorShape["enqueueRuntimeEvent"] = (event) => {
+    if (event.type !== "turn.started" && event.type !== "turn.completed") {
+      return Effect.void;
+    }
+    return Effect.gen(function* () {
+      if (!acceptingRuntimeEvents) {
+        yield* coordinator.endFinalization(event.eventId);
+        return;
+      }
+      if (event.type === "turn.completed") {
+        pendingFinalizations.add(event.eventId);
+      }
+      yield* worker.enqueue({ source: "runtime", event });
+    }).pipe(Effect.uninterruptible);
+  };
 
   const start: CheckpointReactorShape["start"] = Effect.fn("start")(function* () {
     yield* Effect.forkScoped(
@@ -1023,21 +1061,15 @@ const make = Effect.gen(function* () {
         return worker.enqueue({ source: "domain", event });
       }),
     );
-
-    yield* Effect.forkScoped(
-      Stream.runForEach(providerService.streamEvents, (event) => {
-        if (event.type !== "turn.started" && event.type !== "turn.completed") {
-          return Effect.void;
-        }
-        return worker.enqueue({ source: "runtime", event });
-      }),
-    );
   });
 
   return {
     start,
+    enqueueRuntimeEvent,
     drain: worker.drain,
   } satisfies CheckpointReactorShape;
 });
 
-export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make);
+export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make).pipe(
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

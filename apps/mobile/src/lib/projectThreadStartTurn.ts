@@ -23,6 +23,7 @@ export function deriveThreadTitleFromPrompt(value: string): string {
 
 export interface ProjectThreadStartTurnSpec {
   readonly projectId: ProjectId;
+  readonly parentThreadId?: ThreadId | undefined;
   readonly projectCwd: string;
   readonly threadId: string;
   readonly commandId: string;
@@ -66,6 +67,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     bootstrap: {
       createThread: {
         projectId: spec.projectId,
+        ...(spec.parentThreadId ? { parentThreadId: spec.parentThreadId } : {}),
         title,
         modelSelection: spec.modelSelection,
         runtimeMode: spec.runtimeMode,

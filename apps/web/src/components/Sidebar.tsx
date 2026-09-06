@@ -134,7 +134,11 @@ import {
 } from "./desktopUpdate.logic";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
-import { ProjectGroupingDialog, ProjectRenameDialog } from "./sidebar/ProjectDialogs";
+import {
+  ProjectGroupingDialog,
+  ProjectRenameDialog,
+  ProjectSettingsDialog,
+} from "./sidebar/ProjectDialogs";
 import { PROJECT_GROUPING_MODE_LABELS } from "./sidebar/projectGroupingLabels";
 import {
   Menu,
@@ -1676,6 +1680,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     null,
   );
   const [projectRenameTitle, setProjectRenameTitle] = useState("");
+  const [projectSettingsTarget, setProjectSettingsTarget] =
+    useState<SidebarProjectGroupMember | null>(null);
+  const [savingProjectSettings, setSavingProjectSettings] = useState(false);
   const [projectGroupingTarget, setProjectGroupingTarget] =
     useState<SidebarProjectGroupMember | null>(null);
   const [projectGroupingSelection, setProjectGroupingSelection] = useState<
@@ -2042,7 +2049,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "settings" | "rename" | "grouping" | "copy-path" | "delete",
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -2052,6 +2059,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           const id = `${action}:${member.physicalProjectKey}`;
           actionHandlers.set(id, () => {
             switch (action) {
+              case "settings":
+                setProjectSettingsTarget(member);
+                return;
               case "rename":
                 openProjectRenameDialog(member);
                 return;
@@ -2075,7 +2085,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "settings" | "rename" | "grouping" | "copy-path" | "delete",
           label: string,
           options?: {
             destructive?: boolean;
@@ -2107,6 +2117,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const clicked = await api.contextMenu.show(
           [
+            buildTargetedItem("settings", "Project settings"),
             buildTargetedItem("rename", "Rename project"),
             buildTargetedItem("grouping", "Project grouping…"),
             buildTargetedItem("copy-path", "Copy Project Path"),
@@ -2360,6 +2371,37 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     setProjectRenameTarget(null);
     setProjectRenameTitle("");
   }, []);
+
+  const updateAutoPull = async (enabled: boolean) => {
+    if (!projectSettingsTarget || savingProjectSettings) return;
+    const target = projectSettingsTarget;
+    setSavingProjectSettings(true);
+    try {
+      const api = readEnvironmentApi(target.environmentId);
+      if (!api) throw new Error("Project API unavailable.");
+      await api.orchestration.dispatchCommand({
+        type: "project.meta.update",
+        commandId: newCommandId(),
+        projectId: target.id,
+        autoPull: enabled,
+      });
+      setProjectSettingsTarget((current) =>
+        current?.physicalProjectKey === target.physicalProjectKey
+          ? { ...current, autoPull: enabled }
+          : current,
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to update automatic pull setting",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    } finally {
+      setSavingProjectSettings(false);
+    }
+  };
 
   const submitProjectRename = useCallback(async () => {
     if (!projectRenameTarget) {
@@ -2734,6 +2776,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         onTitleChange={setProjectRenameTitle}
         onClose={closeProjectRenameDialog}
         onSubmit={() => void submitProjectRename()}
+      />
+
+      <ProjectSettingsDialog
+        target={projectSettingsTarget}
+        enabled={projectSettingsTarget?.autoPull ?? false}
+        saving={savingProjectSettings}
+        onChange={(enabled) => void updateAutoPull(enabled)}
+        onClose={() => setProjectSettingsTarget(null)}
       />
 
       <ProjectGroupingDialog

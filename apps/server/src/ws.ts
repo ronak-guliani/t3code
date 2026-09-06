@@ -105,6 +105,7 @@ import { DiffStateQuery } from "./diffState/Services/DiffStateQuery.ts";
 import { ServerConfig } from "./config.ts";
 import { loadAuthAccessSnapshot } from "./auth/authAccessSnapshot.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
+import { CheckoutCoordinator } from "./git/CheckoutCoordinator.ts";
 import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
@@ -273,6 +274,7 @@ const makeWsRpcLayer = (
       const open = yield* Open;
       const gitManager = yield* GitManager;
       const git = yield* GitCore;
+      const checkoutCoordinator = yield* CheckoutCoordinator;
       const gitHubCli = yield* Effect.serviceOption(GitHubCli);
       const gitStatusBroadcaster = yield* GitStatusBroadcaster;
       const terminalManager = yield* TerminalManager;
@@ -1538,8 +1540,10 @@ const makeWsRpcLayer = (
                 });
               }
 
+              // Exports need full history: the default thread-detail read caps
+              // message hydration to the newest MAX_THREAD_MESSAGES window.
               const threadOption = yield* projectionSnapshotQuery
-                .getThreadDetailById(input.threadId)
+                .getThreadDetailById(input.threadId, { unboundedMessages: true })
                 .pipe(
                   Effect.mapError(
                     (cause) =>
@@ -2134,7 +2138,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.gitPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitPull,
-            git.pullCurrentBranch(input.cwd).pipe(
+            checkoutCoordinator.withCheckout(input.cwd, git.pullCurrentBranch(input.cwd)).pipe(
               Effect.matchCauseEffect({
                 onFailure: (cause) => Effect.failCause(cause),
                 onSuccess: (result) =>
@@ -2250,33 +2254,41 @@ const makeWsRpcLayer = (
         [WS_METHODS.gitCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitCreateWorktree,
-            git.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createWorktree(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitRemoveWorktree,
-            git.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(NodePath.resolve(input.cwd, input.path), git.removeWorktree(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitCreateBranch]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitCreateBranch,
-            git.createBranch(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createBranch(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitCheckout]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitCheckout,
-            Effect.scoped(git.checkoutBranch(input)).pipe(
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(input.cwd, Effect.scoped(git.checkoutBranch(input)))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitInit,
-            git.initRepo(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.initRepo(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "git" },
           ),
         [ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]: (_input) =>
@@ -2311,7 +2323,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
-            git.pullCurrentBranch(input.cwd).pipe(
+            checkoutCoordinator.withCheckout(input.cwd, git.pullCurrentBranch(input.cwd)).pipe(
               Effect.map(gitPullResultToVcs),
               Effect.matchCauseEffect({
                 onFailure: (cause) => Effect.failCause(cause),
@@ -2330,40 +2342,51 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            git.createWorktree(vcsCreateWorktreeInputToGit(input)).pipe(
-              Effect.map(gitCreateWorktreeResultToVcs),
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createWorktree(vcsCreateWorktreeInputToGit(input)))
+              .pipe(
+                Effect.map(gitCreateWorktreeResultToVcs),
+                Effect.tap(() => refreshGitStatus(input.cwd)),
+              ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
-            git.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            checkoutCoordinator
+              .withCheckout(NodePath.resolve(input.cwd, input.path), git.removeWorktree(input))
+              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,
-            git.createBranch(vcsCreateRefInputToGit(input)).pipe(
-              Effect.map(gitCreateBranchResultToVcs),
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(input.cwd, git.createBranch(vcsCreateRefInputToGit(input)))
+              .pipe(
+                Effect.map(gitCreateBranchResultToVcs),
+                Effect.tap(() => refreshGitStatus(input.cwd)),
+              ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,
-            Effect.scoped(git.checkoutBranch({ cwd: input.cwd, branch: input.refName })).pipe(
-              Effect.map(gitCheckoutResultToVcs),
-              Effect.tap(() => refreshGitStatus(input.cwd)),
-            ),
+            checkoutCoordinator
+              .withCheckout(
+                input.cwd,
+                Effect.scoped(git.checkoutBranch({ cwd: input.cwd, branch: input.refName })),
+              )
+              .pipe(
+                Effect.map(gitCheckoutResultToVcs),
+                Effect.tap(() => refreshGitStatus(input.cwd)),
+              ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsInit,
-            git.initRepo({ cwd: input.cwd }).pipe(
+            checkoutCoordinator.withCheckout(input.cwd, git.initRepo({ cwd: input.cwd })).pipe(
               Effect.mapError((error): VcsError => gitCommandErrorToVcs(error)),
               Effect.tap(() => refreshGitStatus(input.cwd)),
             ),

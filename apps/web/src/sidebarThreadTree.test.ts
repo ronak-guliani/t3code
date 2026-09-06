@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
-import type { ThreadStatusPill } from "./components/Sidebar.logic";
+import { resolveThreadStatusPill, type ThreadStatusPill } from "./components/Sidebar.logic";
 import {
   agentRunDismissKey,
   buildSidebarThreadRows,
@@ -74,6 +74,51 @@ function activity(
 }
 
 describe("buildSidebarThreadRows", () => {
+  it("clears ancestor indicators when a nested agent finishes", () => {
+    const root = thread("thread-1", {
+      latestChildNotificationAt: "2026-01-01T00:00:05.000Z",
+    });
+    const parent = thread("thread-2", {
+      parentThreadId: root.id,
+      latestChildNotificationAt: "2026-01-01T00:00:05.000Z",
+    });
+    const run: AgentRun = {
+      taskId: "agent-1",
+      name: "Nested agent",
+      startedAt: "2026-01-01T00:00:03.000Z",
+      status: "running",
+      entries: [],
+    };
+    const build = (agentRun: AgentRun) =>
+      buildSidebarThreadRows({
+        threads: expandSidebarThreadsWithAgentRuns({
+          threads: [root, parent],
+          agentRunsByThreadKey: new Map([[key(parent.id), [agentRun]]]),
+        }),
+        pinnedThreadKeys: [],
+        expandedOverrideByThreadKey: new Map([
+          [key(root.id), true],
+          [key(parent.id), true],
+        ]),
+        sortOrder: "created_at",
+        resolveThreadStatus: (candidate) =>
+          resolveThreadStatusPill({
+            thread: candidate,
+            lastVisitedAt: "2026-01-01T00:00:04.000Z",
+          }),
+      });
+
+    expect(build(run).projectStatus?.label).toBe("Working");
+    const finished = build({
+      ...run,
+      status: "completed",
+      completedAt: "2026-01-01T00:00:05.000Z",
+    });
+    expect(finished.rowViews).toHaveLength(3);
+    expect(finished.rowViews.every((row) => row.status === null)).toBe(true);
+    expect(finished.projectStatus).toBeNull();
+  });
+
   it("renders inactive background agents through the normal nested-chat tree", () => {
     const parent = thread("thread-1");
     const agentRun: AgentRun = {

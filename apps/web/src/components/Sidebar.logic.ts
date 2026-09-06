@@ -80,8 +80,7 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready"
-    | "Child update";
+    | "Plan Ready";
   readonly colorClass: string;
   readonly dotClass: string;
   readonly pulse: boolean;
@@ -131,13 +130,6 @@ const THREAD_STATUSES = {
     pulse: false,
     presentation: "corner-badge",
   },
-  childUpdate: {
-    label: "Child update",
-    colorClass: "text-sky-600 dark:text-sky-300/80",
-    dotClass: "bg-sky-500 dark:bg-sky-300/80",
-    pulse: false,
-    presentation: "corner-badge",
-  },
 } as const satisfies Record<string, ThreadStatusPill>;
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
@@ -146,7 +138,6 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 4,
   Connecting: 4,
   "Plan Ready": 3,
-  "Child update": 2,
   Completed: 1,
 };
 
@@ -261,17 +252,7 @@ export function hasUnseenCompletion(thread: {
   return Date.parse(latestNotificationAt) > lastVisitedAt;
 }
 
-export function hasUnseenChildNotification(thread: {
-  latestChildNotificationAt?: string | null | undefined;
-  lastVisitedAt?: string | null | undefined;
-}): boolean {
-  if (!thread.latestChildNotificationAt) return false;
-  const notificationAt = Date.parse(thread.latestChildNotificationAt);
-  if (Number.isNaN(notificationAt)) return false;
-  if (!thread.lastVisitedAt) return true;
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  return Number.isNaN(lastVisitedAt) || notificationAt > lastVisitedAt;
-}
+export { hasUnseenChildNotification } from "@t3tools/client-runtime/state/thread-hierarchy";
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;
@@ -512,15 +493,6 @@ export function resolveThreadStatusPill(input: {
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
     return THREAD_STATUSES.planReady;
-  }
-
-  if (
-    hasUnseenChildNotification({
-      latestChildNotificationAt: thread.latestChildNotificationAt,
-      lastVisitedAt: input.lastVisitedAt,
-    })
-  ) {
-    return THREAD_STATUSES.childUpdate;
   }
 
   if (
