@@ -19,6 +19,7 @@ import { parseArgs } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { copyCliRuntime } from "@t3tools/shared/cliRuntime";
+import { normalizeHostedAppUrl } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import { loadRepoEnv, resolvePublicConfig } from "./lib/public-config.ts";
@@ -102,6 +103,10 @@ export async function installCliPackage(source: string, installations: string, l
   // Serialize validation and activation across cooperating installers: the
   // pre-activation ownership check below is only meaningful while no other
   // installer can replace `link` before `rename`.
+  // Create the parent first so first installs (missing PATH directory) can
+  // acquire the sibling lock instead of failing with ENOENT; the same
+  // recursive mkdir inside the lock stays idempotent.
+  await mkdir(dirname(link), { recursive: true });
   const lockDir = `${link}.install.lock`;
   try {
     await mkdir(lockDir);
@@ -199,24 +204,7 @@ function assertHostedAppUrl(value: string | undefined): void {
   // explicit override with the same rule as hostedAppUrlConfig, which login
   // enforces before opening the authorization page.
   if (!hosted) return;
-  let url: URL;
-  try {
-    url = new URL(hosted);
-  } catch (cause) {
-    throw new Error(
-      "Invalid T3CODE_HOSTED_APP_URL: expected an absolute HTTPS origin (or HTTP loopback origin) with no path, query, or fragment.",
-      { cause },
-    );
-  }
-  const isLoopbackHttp =
-    url.protocol === "http:" &&
-    (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
-  if (
-    (url.protocol !== "https:" && !isLoopbackHttp) ||
-    url.pathname !== "/" ||
-    url.search !== "" ||
-    url.hash !== ""
-  ) {
+  if (normalizeHostedAppUrl(hosted) === null) {
     throw new Error(
       "Invalid T3CODE_HOSTED_APP_URL: expected an absolute HTTPS origin (or HTTP loopback origin) with no path, query, or fragment.",
     );

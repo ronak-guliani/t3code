@@ -142,6 +142,27 @@ it.skipIf(process.platform === "win32")(
   },
 );
 
+it.skipIf(process.platform === "win32")(
+  "installs into a not-yet-created bin directory",
+  async () => {
+    const { home } = await fixture();
+    const link = join(home, "newbin", "t3");
+    const source = join(home, "source");
+    await mkdir(join(source, "dist", "client"), { recursive: true });
+    await writeFile(
+      join(source, "package.json"),
+      JSON.stringify({ dependencies: { dependency: "*" } }),
+    );
+    await writeFile(join(source, "dist", "bin.mjs"), 'console.log("installed-cli");');
+    await writeFile(join(source, "dist", "client", "index.html"), "client");
+    await mkdir(join(source, "node_modules", "dependency"), { recursive: true });
+    await writeFile(join(source, "node_modules", "dependency", "package.json"), "{}");
+    const entry = await installCliPackage(source, join(home, "installs"), link);
+    expect(await readlink(link)).toBe(entry);
+    expect(await exists(`${link}.install.lock`)).toBe(false);
+  },
+);
+
 it("accepts a not-yet-created bin directory under an owned home", async () => {
   const { home } = await fixture();
   const link = join(home, "newbin", "t3");
