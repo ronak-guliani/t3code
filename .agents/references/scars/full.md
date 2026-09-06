@@ -30,6 +30,7 @@
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
 - `provider_session_runtime.status = running` means the provider runtime is alive, not that a turn is active; clear `runtime_payload_json.activeTurnId` after `ProviderService.sendTurn` settles and retain a Copilot smoke test that starts, selects a model, sends, observes, and stops.
 - Before a Copilot session exits, emit `task.completed` with `status = stopped` for every running background agent, and reconcile unmatched starts on server startup so crashes cannot leave sidebar runs permanently active.
+- Copilot ACP `end_turn` can precede attached-shell completion and autonomous follow-up edits. Keep automatic PR feedback opt-in, surface unowned activity without reassigning it, and never use quiet time or log-file tailing as completion authority. This is containment, not a checkpoint/completion fix; track upstream [completion](https://github.com/github/copilot-cli/issues/4743) and [follow-up abort](https://github.com/github/copilot-cli/issues/4555).
 
 ## Desktop packaging and React state
 

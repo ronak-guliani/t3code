@@ -647,6 +647,10 @@ const program = Effect.gen(function* () {
               content: { type: "text", text: "Delayed continuation complete." },
             },
           });
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: { sessionUpdate: "usage_update", used: 200, size: 1_000 },
+          });
         }).pipe(Effect.forkIn(programScope));
         return { stopReason: "end_turn" };
       }

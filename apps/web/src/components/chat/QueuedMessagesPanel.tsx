@@ -144,7 +144,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                 </div>
               )}
               {!isEditing && isPaused && queuedTurn.failureMessage ? (
-                <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 truncate text-destructive">
+                <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 whitespace-pre-wrap break-words text-destructive">
                   {queuedTurn.failureMessage}
                 </div>
               ) : null}

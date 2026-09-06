@@ -100,4 +100,16 @@ describe("QueuedMessagesPanel", () => {
     expect(html).toContain("Save");
     expect(html).not.toContain("<textarea");
   });
+
+  it("keeps the full paused-feedback explanation readable", () => {
+    const html = render([
+      {
+        ...queuedTurn("q-1", "PR feedback", undefined, "2026-01-01T00:00:05Z"),
+        failureMessage:
+          "Automatic PR feedback is paused. Review the session before enabling automatic delivery.",
+      },
+    ]);
+    expect(html).toContain("Review the session before enabling automatic delivery.");
+    expect(html).toContain("whitespace-pre-wrap break-words");
+  });
 });

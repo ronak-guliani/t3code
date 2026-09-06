@@ -860,6 +860,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
       readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
       readonly getCurrentTurnId: () => TurnId | undefined;
+      readonly getLastCompletedTurnId: () => TurnId | undefined;
       readonly onSessionEvent?: (
         event: AcpParsedSessionEvent,
       ) => Effect.Effect<AcpParsedSessionEvent>;
@@ -908,9 +909,39 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           Effect.mapError((cause) => toProcessError(input.threadId, cause)),
         );
 
+        let reportedUnownedActivity = false;
+        const reportUnownedActivity = (eventKind: string) =>
+          Effect.gen(function* () {
+            if (
+              reportedUnownedActivity ||
+              input.getCurrentTurnId() !== undefined ||
+              input.getLastCompletedTurnId() === undefined
+            ) {
+              return;
+            }
+            reportedUnownedActivity = true;
+            yield* Effect.logWarning("copilot.acp.post-completion-activity", {
+              threadId: input.threadId,
+              providerInstanceId: input.providerInstanceId,
+              eventKind,
+            });
+            yield* offerRuntimeEvent({
+              type: "runtime.warning",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: {
+                message:
+                  "Copilot completion is uncertain: activity arrived after the prompt ended. Background work may still be running, and follow-up messages or interrupts may stop it. This activity is not assigned to a completed turn; its edits may not be covered by that turn's checkpoint.",
+                detail: { code: "copilot-acp-post-completion-activity", eventKind },
+              },
+            });
+          });
+
         const started = yield* Effect.gen(function* () {
           yield* acp.handleRequestPermission((params) =>
             Effect.gen(function* () {
+              yield* reportUnownedActivity("permission");
               yield* logNative(input.threadId, "session/request_permission", params);
               const permissionRequest = normalizeCopilotPermissionRequest(params);
               const autoApproval = selectCopilotPermissionForRuntimeMode({
@@ -1000,6 +1031,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           );
           yield* acp.handleElicitation((params) =>
             Effect.gen(function* () {
+              yield* reportUnownedActivity("user-input");
               yield* logNative(input.threadId, "session/elicitation", params);
               const requestId = ApprovalRequestId.make(crypto.randomUUID());
               const runtimeRequestId = RuntimeRequestId.make(requestId);
@@ -1123,6 +1155,16 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                   ? yield* input.onSessionEvent(rawNormalizedEvent)
                   : rawNormalizedEvent;
                 const activeTurnId = input.getCurrentTurnId();
+                if (
+                  activeTurnId === undefined &&
+                  !reportedUnownedActivity &&
+                  (event._tag === "AssistantItemStarted" ||
+                    event._tag === "ToolCallUpdated" ||
+                    event._tag === "PlanUpdated" ||
+                    event._tag === "ContentDelta")
+                ) {
+                  yield* reportUnownedActivity(event._tag);
+                }
                 switch (event._tag) {
                   case "UsageUpdated": {
                     yield* logNative(input.threadId, "session/update", event.rawPayload);
@@ -1354,6 +1396,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           pendingUserInputs: ctx.pendingUserInputs,
           ...(resumeSessionId ? { resumeSessionId } : {}),
           getCurrentTurnId: () => ctx.activeTurnId,
+          getLastCompletedTurnId: () => ctx.turns.at(-1)?.id,
           onSessionEvent: (event) => processBackgroundAgentEvent(ctx, event),
           onFatalCopilotError: (turnId, message) => {
             ctx.fatalErrorByTurnId.set(turnId, message);
@@ -1548,6 +1591,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             ...(resumeSessionId ? { resumeSessionId } : {}),
             ...(input.resumeFallback ? { resumeFallback: input.resumeFallback } : {}),
             getCurrentTurnId: () => ctx?.activeTurnId,
+            getLastCompletedTurnId: () => ctx?.turns.at(-1)?.id,
             onSessionEvent: (event) =>
               ctx ? processBackgroundAgentEvent(ctx, event) : Effect.succeed(event),
             onFatalCopilotError: (turnId, message) => {

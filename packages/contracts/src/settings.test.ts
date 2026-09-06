@@ -5,6 +5,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 import {
   ClientSettingsPatch,
   ClientSettingsSchema,
+  CopilotSettings,
   DEFAULT_CHAT_EXPORT_DETAIL_SETTINGS,
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT,
@@ -25,6 +26,25 @@ const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const decodeCopilotSettings = Schema.decodeUnknownSync(CopilotSettings);
+
+describe("Copilot ACP containment", () => {
+  it("defaults automatic PR feedback off for legacy settings and instance config", () => {
+    expect(decodeServerSettings({}).providers.copilot.allowAutomaticPrFeedback).toBe(false);
+    expect(decodeCopilotSettings({}).allowAutomaticPrFeedback).toBe(false);
+  });
+
+  it("requires a boolean opt-in", () => {
+    expect(decodeCopilotSettings({ allowAutomaticPrFeedback: true }).allowAutomaticPrFeedback).toBe(
+      true,
+    );
+    expect(() => decodeCopilotSettings({ allowAutomaticPrFeedback: "true" })).toThrow();
+    expect(
+      decodeServerSettingsPatch({ providers: { copilot: { allowAutomaticPrFeedback: true } } })
+        .providers?.copilot?.allowAutomaticPrFeedback,
+    ).toBe(true);
+  });
+});
 
 describe("ServerSettings.agentWorkflows", () => {
   it("defaults the Fix Review Issues workflow on for legacy settings", () => {

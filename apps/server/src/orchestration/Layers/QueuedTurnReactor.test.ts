@@ -3,6 +3,7 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   QueuedTurnId,
   ThreadId,
   type OrchestrationCommand,
@@ -11,11 +12,13 @@ import {
   PullRequestMonitorError,
   PullRequestOperationError,
   type PullRequestMonitorSnapshot,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestMonitorFeedbackService } from "../../pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { QueuedTurnReactor } from "../Services/QueuedTurnReactor.ts";
@@ -148,6 +151,8 @@ async function runReactor(
     readonly snapshotError?: PullRequestOperationError;
     readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
     readonly retryQueuedDeliveryError?: PullRequestMonitorError;
+    readonly providerInstances?: ServerSettings["providerInstances"];
+    readonly legacyOptIn?: boolean;
   },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
@@ -220,6 +225,18 @@ async function runReactor(
     Layer.provide(engineLayer),
     Layer.provide(pullRequestLayer(snapshot, options?.snapshotError)),
     Layer.provide(feedbackLayer),
+    Layer.provide(
+      ServerSettingsService.layerTest({
+        providers: { copilot: { allowAutomaticPrFeedback: options?.legacyOptIn ?? false } },
+        providerInstances: options?.providerInstances ?? {
+          [ProviderInstanceId.make("copilot")]: {
+            driver: ProviderDriverKind.make("copilot"),
+            enabled: true,
+            config: { allowAutomaticPrFeedback: true },
+          },
+        },
+      }),
+    ),
   );
 
   await Effect.runPromise(
@@ -235,6 +252,96 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("pauses Copilot monitor feedback without revalidation or dispatch by default", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        legacyOptIn: true,
+        providerInstances: {
+          [ProviderInstanceId.make("copilot")]: {
+            driver: ProviderDriverKind.make("copilot"),
+            enabled: true,
+          },
+        },
+      },
+    );
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.queued-turn.fail",
+      queuedTurnId,
+      failureMessage: expect.stringContaining("Automatic PR feedback is paused"),
+    });
+  });
+
+  it("does not block explicit user continuations with containment enabled", async () => {
+    const commands = await runReactor(queuedReadModel(), monitorSnapshot("head-current"), {
+      providerInstances: {
+        [ProviderInstanceId.make("copilot")]: {
+          driver: ProviderDriverKind.make("copilot"),
+          enabled: true,
+        },
+      },
+    });
+    expect(commands.map((command) => command.type)).toEqual(["thread.queued-turn.dispatch"]);
+  });
+
+  it("does not repeatedly fail or dispatch already paused feedback", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+        failedAt: now,
+        failureMessage: "Automatic PR feedback is paused",
+      }),
+      monitorSnapshot("head-current"),
+    );
+    expect(commands).toEqual([]);
+  });
+
+  it("uses the queued model's provider rather than the previous session", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        modelSelection: { instanceId: ProviderInstanceId.make("other"), model: "test-model" },
+        origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        providerInstances: {
+          [ProviderInstanceId.make("copilot")]: {
+            driver: ProviderDriverKind.make("copilot"),
+            enabled: true,
+          },
+          [ProviderInstanceId.make("other")]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+          },
+        },
+      },
+    );
+    expect(commands.map((command) => command.type)).toEqual(["thread.queued-turn.dispatch"]);
+  });
+
+  it("recognizes custom instances of the Copilot ACP driver", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        modelSelection: { instanceId: ProviderInstanceId.make("custom"), model: "test-model" },
+        origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        providerInstances: {
+          [ProviderInstanceId.make("custom")]: {
+            driver: ProviderDriverKind.make("copilot-acp-native"),
+            enabled: true,
+          },
+        },
+      },
+    );
+    expect(commands.map((command) => command.type)).toEqual(["thread.queued-turn.fail"]);
+  });
+
   it("dispatches a persisted continuation exactly once when the server restarts", async () => {
     const commands = await runReactor(queuedReadModel(), monitorSnapshot("head-current"));
 
