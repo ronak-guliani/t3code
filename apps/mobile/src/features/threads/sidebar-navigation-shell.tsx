@@ -10,6 +10,7 @@ import { getCompactBrandHeaderOptions } from "../../components/CompactBrandTitle
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { useMobileNavigationTheme } from "../../lib/useMobileNavigationTheme";
+import { AppNavigationContext, useAppNavigation } from "../../lib/use-app-navigation";
 
 const SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -53,17 +54,20 @@ const SidebarStack = createNativeStackNavigator();
  */
 export function SidebarNavigationShell(props: { readonly children: ReactNode }) {
   const navigationTheme = useMobileNavigationTheme();
+  const appNavigation = useAppNavigation();
 
   return (
-    <NavigationIndependentTree>
-      <NavigationContainer theme={navigationTheme}>
-        <SidebarStack.Navigator
-          screenOptions={SIDEBAR_SCREEN_OPTIONS}
-          initialRouteName="SidebarThreads"
-        >
-          <SidebarStack.Screen name="SidebarThreads">{() => props.children}</SidebarStack.Screen>
-        </SidebarStack.Navigator>
-      </NavigationContainer>
-    </NavigationIndependentTree>
+    <AppNavigationContext value={appNavigation}>
+      <NavigationIndependentTree>
+        <NavigationContainer theme={navigationTheme}>
+          <SidebarStack.Navigator
+            screenOptions={SIDEBAR_SCREEN_OPTIONS}
+            initialRouteName="SidebarThreads"
+          >
+            <SidebarStack.Screen name="SidebarThreads">{() => props.children}</SidebarStack.Screen>
+          </SidebarStack.Navigator>
+        </NavigationContainer>
+      </NavigationIndependentTree>
+    </AppNavigationContext>
   );
 }

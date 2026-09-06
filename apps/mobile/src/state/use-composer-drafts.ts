@@ -4,6 +4,7 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInteractionMode as ProviderInteractionModeSchema,
   RuntimeMode as RuntimeModeSchema,
+  ThreadId,
   type EnvironmentId,
   type ModelSelection,
   type ProviderInteractionMode,
@@ -53,6 +54,7 @@ export class ComposerDraftPersistenceError extends Schema.TaggedErrorClass<Compo
 }
 
 export interface ComposerDraft {
+  readonly parentThreadId?: ThreadId | undefined;
   readonly text: string;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
@@ -77,7 +79,7 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection"
+  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection" | "parentThreadId"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -88,6 +90,7 @@ const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
 });
 
 const ComposerDraftSchema = Schema.Struct({
+  parentThreadId: Schema.optional(ThreadId),
   text: Schema.String,
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
@@ -184,7 +187,8 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
-    draft.workspaceSelection === undefined
+    draft.workspaceSelection === undefined &&
+    draft.parentThreadId === undefined
   );
 }
 
@@ -1343,10 +1347,13 @@ export function removeComposerDraftsForEnvironment(
 ): Record<string, ComposerDraft> {
   const environmentPrefix = `${environmentId}:`;
   const newTaskPrefix = `new-task:${environmentId}:`;
+  const subchatPrefix = `subchat:${environmentId}:`;
   return Object.fromEntries(
     Object.entries(drafts).filter(
       ([draftKey]) =>
-        !draftKey.startsWith(environmentPrefix) && !draftKey.startsWith(newTaskPrefix),
+        !draftKey.startsWith(environmentPrefix) &&
+        !draftKey.startsWith(newTaskPrefix) &&
+        !draftKey.startsWith(subchatPrefix),
     ),
   );
 }

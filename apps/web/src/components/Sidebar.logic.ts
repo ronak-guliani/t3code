@@ -252,17 +252,7 @@ export function hasUnseenCompletion(thread: {
   return Date.parse(latestNotificationAt) > lastVisitedAt;
 }
 
-export function hasUnseenChildNotification(thread: {
-  latestChildNotificationAt?: string | null | undefined;
-  lastVisitedAt?: string | null | undefined;
-}): boolean {
-  if (!thread.latestChildNotificationAt) return false;
-  const notificationAt = Date.parse(thread.latestChildNotificationAt);
-  if (Number.isNaN(notificationAt)) return false;
-  if (!thread.lastVisitedAt) return true;
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  return Number.isNaN(lastVisitedAt) || notificationAt > lastVisitedAt;
-}
+export { hasUnseenChildNotification } from "@t3tools/client-runtime/state/thread-hierarchy";
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;
