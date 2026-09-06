@@ -10,7 +10,7 @@ You don't remember every skill, so ask.
 
 ## Capability rules
 
-Route only to skills that exist in the installed project or user skill directories. In this installation, `grill-with-docs`, `grilling`, `handoff`, `implement`, `code-review`, `tdd`, `triage`, `diagnosing-bugs`, `wayfinder`, `to-spec`, `to-issues`, `to-prd`, `improve-codebase-architecture`, `codebase-design`, `setup-matt-pocock-skills`, `resolving-merge-conflicts`, `wait-what`, and `zoom-out` are available. `prototype`, `research`, `domain-modeling`, `to-questionnaire`, `wizard`, `teach`, `writing-for-agents`, `qa`, `to-tickets`, and `pr-description` are not installed here.
+Route only to skills that exist in the installed project or user skill directories. In this installation, `grill-with-docs`, `grilling`, `handoff`, `implement`, `code-review`, `tdd`, `triage`, `diagnose`, `wayfinder`, `to-spec`, `to-issues`, `to-prd`, `improve-codebase-architecture`, `codebase-design`, `setup-matt-pocock-skills`, `resolving-merge-conflicts`, `wait-what`, and `zoom-out` are available. `prototype`, `research`, `domain-modeling`, `to-questionnaire`, `wizard`, `teach`, `writing-for-agents`, `qa`, `to-tickets`, and `pr-description` are not installed here.
 
 Treat the missing names as optional integrations, never as required dependencies. If one is unavailable, do the small equivalent directly in the current thread, write the needed questions or document yourself, or ask the user for the missing human input. Do not claim that a missing skill, script, app, or tracker operation exists.
 
@@ -35,7 +35,7 @@ The route most work travels. You have an idea and want it built.
 
 Keep steps 1–3 in **one unbroken context window** (don't compact or clear until after `/to-issues`) so the grilling, spec, and tickets all build on the same thinking. Each `/implement` then starts fresh, working from the ticket.
 
-The limit on this is the **[smart zone](https://www.aihero.dev/ai-coding-dictionary/smart-zone)**: the window (~150k tokens on state-of-the-art models) within which the model still reasons sharply. If a session approaches it before `/to-issues`, don't push on degraded; `/compact` at the nearest phase boundary and carry on (see Phase boundaries).
+Keep the current phase within the model's available context. If the conversation becomes too large to reason about reliably, compact at a natural phase boundary and carry on (see Phase boundaries); do not assume a fixed token budget.
 
 ## On-ramps
 
@@ -45,9 +45,9 @@ A starting situation that generates work, then merges onto the main flow.
 
   Triage is only for issues **you didn't create**: bug reports, incoming feature requests, anything that arrives raw. Tickets that `/to-issues` produced are already agent-ready, so **don't triage them**.
 
-- **Something's broken** → **`/diagnosing-bugs`**. For the hard ones: the bug that resists a first glance, the intermittent flake, the regression that crept in between two known-good states. It refuses to theorise until it has a **tight feedback loop** (one command that already goes red on _this_ bug), then fixes with a regression test. Its post-mortem hands off to **`/improve-codebase-architecture`** when the real finding is that there's no good seam to lock the bug down.
+- **Something's broken** → **`/diagnose`**. For the hard ones: the bug that resists a first glance, the intermittent flake, the regression that crept in between two known-good states. It builds the smallest useful feedback loop, tests evidence-based explanations, and fixes with a regression test when appropriate. Its post-mortem hands off to **`/improve-codebase-architecture`** when the real finding is that there's no good seam to lock the bug down.
 
-- **A huge, foggy effort: a greenfield project or a huge feature build, too big for one session** → **`/wayfinder`**, the most cognitively demanding flow here. When the way from here to the destination isn't visible yet, it charts a **shared map** of **decision tickets** on the issue tracker and resolves them one at a time, producing **decisions, not deliverables**, until the fog is pushed back and the way is clear. Where **`/grill-with-docs`** sharpens an idea you can hold in one session, wayfinder is for the idea you can't, and it's slower and denser, so save it for exactly that, never a well-scoped feature.
+- **A huge, foggy effort: a greenfield project or a huge feature build** → **`/wayfinder`**, which charts a shared map of decision tickets on the issue tracker until the fog is pushed back and the way is clear. Where **`/grill-with-docs`** sharpens an idea you can hold locally, wayfinder is for work whose dependencies or decisions are not yet visible.
 
   When the map clears, **it hands off, it doesn't build**: merge onto the main flow at **`/to-spec`**, which collapses the map's linked decisions into a buildable plan, then `/to-issues` and `/implement` as usual. Looping the map straight into `/implement` skips that collapse and throws the linked detail away, so go straight to `/implement` only when the effort turned out genuinely small.
 

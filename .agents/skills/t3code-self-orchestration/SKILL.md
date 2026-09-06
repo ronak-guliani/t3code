@@ -1,6 +1,6 @@
 ---
 name: t3code-self-orchestration
-description: Coordinates T3 Code from within T3 Code by creating helper threads, delegating prompts, monitoring progress, reading results, and merging findings back into the current chat. Use when the user asks a chat to control T3 Code, spawn or manage other threads, parallelize agent work, delegate tasks, or review results from other T3 chats.
+description: Delegates independent work from the current T3 Code chat by creating and monitoring helper threads through the authenticated control plane. Use only when the user asks to delegate, spawn, parallelize, or manage helper-thread work; use t3code-thread-review for read-only inspection and t3code-chat-control for ordinary chat lifecycle operations.
 ---
 
 # T3 Code Self-Orchestration

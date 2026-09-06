@@ -1,9 +1,9 @@
 ---
 name: show-me
-description: Help the user understand the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts.
+description: Help the user understand a topic visually when they ask for a diagram, code-shape sketch, visual comparison, or focused HTML artifact.
 ---
 
-Help the user understand the current topic of conversation visually. Skip the preamble and keep prose brief. Pick the smallest view that makes the key point clear.
+Help the user understand a requested topic visually. Pick the smallest view that makes the key point clear. Load [examples.md](references/examples.md) only when a concrete diagram shape or HTML artifact is useful; do not create HTML by default.
 
 - Show logic or an algorithm as pseudocode:
 
