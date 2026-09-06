@@ -22,10 +22,12 @@ const {
     ],
     truncated: false,
   })),
-  readFileMock: vi.fn(async () => ({
-    relativePath: "src/index.ts",
-    contents: "export const covered = true;",
-  })),
+  readFileMock: vi.fn(
+    async (): Promise<{ relativePath: string; contents: string; binary?: boolean }> => ({
+      relativePath: "src/index.ts",
+      contents: "export const covered = true;",
+    }),
+  ),
   createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
 }));
 
