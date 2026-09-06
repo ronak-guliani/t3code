@@ -86,6 +86,41 @@ function makeHandle(input: {
 }
 
 describe("CloudManagedEndpointRuntime", () => {
+  it.effect("honors crash backoff when reconciliation polls the exited connector", () =>
+    Effect.gen(function* () {
+      const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      let firstRunning = true;
+      const spawn = vi.fn(() => {
+        const first = spawn.mock.calls.length === 1;
+        return Effect.succeed(
+          makeHandle({
+            pid: first ? 810 : 811,
+            onKill: () => undefined,
+            isRunning: () => !first || firstRunning,
+            exitCode: first ? Deferred.await(exited) : Effect.never,
+          }),
+        );
+      });
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(spawn),
+        relayClientAvailableLayer,
+        "5 seconds",
+      );
+      const config = { providerKind: "cloudflare_tunnel", connectorToken: "token" };
+      yield* runtime.applyConfig(config);
+      firstRunning = false;
+      yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(1));
+      yield* TestClock.adjust("1 second");
+      expect(yield* runtime.applyConfig(config)).toMatchObject({ status: "starting", pid: 810 });
+      yield* TestClock.adjust("3 seconds");
+      yield* runtime.applyConfig(config);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      yield* TestClock.adjust("1 second");
+      yield* runtime.applyConfig(config);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 811 });
+    }),
+  );
   it.effect("bounds crash restarts and cancels pending restarts when disabled", () =>
     Effect.gen(function* () {
       const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();

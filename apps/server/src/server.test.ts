@@ -1371,6 +1371,44 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  for (const scope of ["orchestration:read", "relay:read", "relay:write", "access:write"]) {
+    it.effect(`enforces Remote Access operation scopes for an owner with ${scope}`, () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest();
+        const token = yield* exchangeAccessToken([scope]);
+        const headers = {
+          authorization: ["Bearer", token].join(" "),
+          "content-type": "application/json",
+        };
+        const url = yield* getHttpServerUrl("/api/remote-access");
+        const operations = [
+          { method: "GET", url, requiredScope: "relay:read", allowedStatus: 200 },
+          { method: "POST", url, requiredScope: "relay:write", allowedStatus: 400 },
+          { method: "POST", url: `${url}/pair`, requiredScope: "access:write", allowedStatus: 400 },
+        ];
+        for (const operation of operations) {
+          const response = yield* Effect.promise(() =>
+            fetch(operation.url, {
+              method: operation.method,
+              headers,
+              ...(operation.method === "POST"
+                ? { body: JSON.stringify({ action: "enable" }) }
+                : {}),
+            }),
+          );
+          // Authorized mutations reach the unconfigured service; unauthorized ones never do.
+          assert.equal(
+            response.status,
+            scope === operation.requiredScope ? operation.allowedStatus : 403,
+          );
+          if (scope !== operation.requiredScope) {
+            assert.include(yield* Effect.promise(() => response.text()), operation.requiredScope);
+          }
+        }
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
   it.effect("mounts the authenticated pull request diff endpoint", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest();

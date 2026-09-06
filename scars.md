@@ -1,6 +1,7 @@
 # Scars
 
 - Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
+- Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
 
 - Browser cookie import must use the registered environment ID and selected persistent profile; a literal `default` environment silently writes into a partition no real tab uses. Reset consent when the target changes.
 - Guest keyboard isolation must route zoom directly to the preview's tab-owned zoom operations. Reject unsupported popup URLs without loading them into the opener; Electron cannot harden inherited `about:blank` preferences.

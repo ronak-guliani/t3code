@@ -1,4 +1,11 @@
-import { RemoteAccessPairing, RemoteAccessSetup } from "@t3tools/contracts";
+import {
+  AuthAccessWriteScope,
+  type AuthEnvironmentScope,
+  AuthRelayReadScope,
+  AuthRelayWriteScope,
+  RemoteAccessPairing,
+  RemoteAccessSetup,
+} from "@t3tools/contracts";
 import { Effect, FileSystem, Layer, Schema } from "effect";
 import {
   HttpIncomingMessage,
@@ -7,49 +14,54 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import { AuthError, ServerAuth } from "../auth/Services/ServerAuth.ts";
-import { respondToAuthError } from "../auth/http.ts";
+import { requireSessionScope, respondToAuthError } from "../auth/http.ts";
 import { ServerConfig } from "../config.ts";
 import { RemoteAccess } from "./RemoteAccess.ts";
 
 const responseHeaders = { "cache-control": "no-store", pragma: "no-cache" };
 const encodePairing = Schema.encodeEffect(RemoteAccessPairing);
 
-export const requireRemoteAccessOwner = Effect.gen(function* () {
-  const request = yield* HttpServerRequest.HttpServerRequest;
-  const auth = yield* ServerAuth;
-  const session = yield* auth.authenticateHttpRequest(request);
-  if (session.role !== "owner") {
-    return yield* new AuthError({
-      message: "Only the host owner can manage Remote Access.",
-      status: 403,
-    });
-  }
-  if (request.method !== "GET") {
-    const config = yield* ServerConfig;
-    const origin = request.headers.origin;
-    if (origin) {
-      const matches = yield* Effect.try({
-        try: () => {
-          const url = new URL(origin);
-          return (
-            url.host === request.headers.host ||
-            (config.devUrl !== undefined && url.origin === config.devUrl.origin)
-          );
-        },
-        catch: () => new AuthError({ message: "Invalid request origin.", status: 403 }),
-      });
-      if (!matches)
-        return yield* new AuthError({
-          message: "Cross-origin Remote Access changes are not allowed.",
-          status: 403,
-        });
-    }
-  }
-});
-
-const respond = <A, R>(effect: Effect.Effect<A, AuthError, R>) =>
+export const requireRemoteAccessOwner = (requiredScope: AuthEnvironmentScope) =>
   Effect.gen(function* () {
-    yield* requireRemoteAccessOwner;
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const auth = yield* ServerAuth;
+    const session = yield* auth.authenticateHttpRequest(request);
+    if (session.role !== "owner") {
+      return yield* new AuthError({
+        message: "Only the host owner can manage Remote Access.",
+        status: 403,
+      });
+    }
+    yield* requireSessionScope(session.role, requiredScope, session.scopes);
+    if (request.method !== "GET") {
+      const config = yield* ServerConfig;
+      const origin = request.headers.origin;
+      if (origin) {
+        const matches = yield* Effect.try({
+          try: () => {
+            const url = new URL(origin);
+            return (
+              url.host === request.headers.host ||
+              (config.devUrl !== undefined && url.origin === config.devUrl.origin)
+            );
+          },
+          catch: () => new AuthError({ message: "Invalid request origin.", status: 403 }),
+        });
+        if (!matches)
+          return yield* new AuthError({
+            message: "Cross-origin Remote Access changes are not allowed.",
+            status: 403,
+          });
+      }
+    }
+  });
+
+const respond = <A, R>(
+  requiredScope: AuthEnvironmentScope,
+  effect: Effect.Effect<A, AuthError, R>,
+) =>
+  Effect.gen(function* () {
+    yield* requireRemoteAccessOwner(requiredScope);
     return yield* effect.pipe(
       Effect.map((body) => HttpServerResponse.jsonUnsafe(body, { headers: responseHeaders })),
     );
@@ -58,13 +70,17 @@ const respond = <A, R>(effect: Effect.Effect<A, AuthError, R>) =>
 const status = HttpRouter.add(
   "GET",
   "/api/remote-access",
-  respond(Effect.flatMap(RemoteAccess, (remote) => remote.getStatus)),
+  respond(
+    AuthRelayReadScope,
+    Effect.flatMap(RemoteAccess, (remote) => remote.getStatus),
+  ),
 );
 
 const update = HttpRouter.add(
   "POST",
   "/api/remote-access",
   respond(
+    AuthRelayWriteScope,
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       if (!request.headers["content-type"]?.startsWith("application/json")) {
@@ -98,6 +114,7 @@ const pairing = HttpRouter.add(
   "POST",
   "/api/remote-access/pair",
   respond(
+    AuthAccessWriteScope,
     Effect.gen(function* () {
       const remote = yield* RemoteAccess;
       const publicUrl = yield* remote.verify.pipe(

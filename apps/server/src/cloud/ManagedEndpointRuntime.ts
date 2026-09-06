@@ -2,7 +2,9 @@
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import type { EnvironmentCloudEndpointRuntimeStatus } from "@t3tools/contracts/environmentHttp";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -32,6 +34,7 @@ interface ActiveConnector {
   readonly child: ChildProcessSpawner.ChildProcessHandle;
   readonly scope: Scope.Closeable;
   readonly retryStopWithKill: Ref.Ref<boolean>;
+  readonly restartAt: Ref.Ref<number | null>;
   readonly configKey: string;
   readonly config: RelayManagedEndpointRuntimeConfig;
 }
@@ -173,6 +176,16 @@ export const makeWithRestartDelay = (restartDelay: string) =>
     const reconcileSemaphore = yield* Semaphore.make(1);
     let reconcileConfig: CloudManagedEndpointRuntime["Service"]["applyConfig"];
 
+    // Both polling and exit supervision must honor the same crash deadline.
+    const remainingRestartDelay = (connector: ActiveConnector) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        return yield* Ref.modify(connector.restartAt, (deadline) => {
+          const restartAt = deadline ?? now + Duration.toMillis(restartDelay);
+          return [Math.max(0, restartAt - now), restartAt];
+        });
+      });
+
     const stopActive = Effect.gen(function* () {
       const active = yield* Ref.get(activeRef);
       const stopped = yield* stopConnector(active);
@@ -192,7 +205,8 @@ export const makeWithRestartDelay = (restartDelay: string) =>
         // reconciliation or beginning replacement work.
         yield* Ref.set(statusRef, connectorStatus(connector, "starting"));
         // cloudflared handles network reconnects; bound restarts when the process itself crashes.
-        if (restartDelay !== "0 seconds") yield* Effect.sleep(restartDelay);
+        const remaining = yield* remainingRestartDelay(connector);
+        if (remaining > 0) yield* Effect.sleep(remaining);
         yield* reconcileSemaphore.withPermits(1)(
           Effect.gen(function* () {
             const active = yield* Ref.get(activeRef);
@@ -288,6 +302,9 @@ export const makeWithRestartDelay = (restartDelay: string) =>
           const status = yield* Ref.get(statusRef);
           return connectorStatus(active, status.status === "running" ? "running" : "starting");
         }
+        if ((yield* remainingRestartDelay(active)) > 0) {
+          return connectorStatus(active, "starting");
+        }
       }
 
       if (active) {
@@ -370,10 +387,12 @@ export const makeWithRestartDelay = (restartDelay: string) =>
 
       if (!("status" in child)) {
         const retryStopWithKill = yield* Ref.make(false);
+        const restartAt = yield* Ref.make<number | null>(null);
         const connector = {
           child,
           scope: connectorScope,
           retryStopWithKill,
+          restartAt,
           configKey: nextConfigKey,
           config,
         } satisfies ActiveConnector;
