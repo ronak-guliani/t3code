@@ -57,6 +57,10 @@ import {
   type ThreadListV2ListItem,
 } from "../threads/threadListV2";
 import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-shelf-preferences";
+import {
+  useThreadExpandedOverrides,
+  useDismissedAgentRunKeys,
+} from "../threads/thread-hierarchy-controls";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
   buildHomeListLayout,
@@ -210,6 +214,8 @@ export function HomeScreen(props: HomeScreenProps) {
   >(() => new Map());
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const threadListV2Enabled = useThreadListV2Enabled();
+  const expandedOverrideByThreadKey = useThreadExpandedOverrides();
+  const dismissedAgentRunKeys = useDismissedAgentRunKeys();
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
@@ -412,8 +418,17 @@ export function HomeScreen(props: HomeScreenProps) {
             groups: projectGroups,
             displayStates: effectiveGroupDisplayStates,
             showAllThreads: hasSearchQuery,
+            expandedOverrideByThreadKey,
+            dismissedAgentRunKeys,
           }),
-    [threadListV2Enabled, projectGroups, effectiveGroupDisplayStates, hasSearchQuery],
+    [
+      threadListV2Enabled,
+      projectGroups,
+      effectiveGroupDisplayStates,
+      hasSearchQuery,
+      expandedOverrideByThreadKey,
+      dismissedAgentRunKeys,
+    ],
   );
 
   const projectCwdByKey = useMemo(() => {
@@ -557,11 +572,13 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   const {
     loaded: shelfPreferencesLoaded,
-    settledShelfExpanded,
-    snoozedShelfExpanded,
+    settledShelfExpanded: settledShelfPreferredExpanded,
+    snoozedShelfExpanded: snoozedShelfPreferredExpanded,
     toggleSettledShelf,
     toggleSnoozedShelf,
   } = useThreadListV2ShelfPreferences();
+  const settledShelfExpanded = hasSearchQuery || settledShelfPreferredExpanded;
+  const snoozedShelfExpanded = hasSearchQuery || snoozedShelfPreferredExpanded;
   // The queued-start and snooze helpers need a clock while the list stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the
@@ -663,7 +680,9 @@ export function HomeScreen(props: HomeScreenProps) {
     // Settled threads are live shells; archived threads keep their original
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
-      threads: props.threads.filter((thread) => thread.archivedAt === null),
+      threads: props.threads,
+      expandedOverrideByThreadKey,
+      dismissedAgentRunKeys,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -678,6 +697,8 @@ export function HomeScreen(props: HomeScreenProps) {
     });
   }, [
     nowMinute,
+    expandedOverrideByThreadKey,
+    dismissedAgentRunKeys,
     snoozeWakeTick,
     snoozedShelfExpanded,
     settledShelfExpanded,
@@ -795,6 +816,7 @@ export function HomeScreen(props: HomeScreenProps) {
       return (
         <ThreadListV2Row
           thread={thread}
+          hierarchy={item.item.hierarchy}
           variant={item.item.variant}
           snoozed={item.item.snoozed}
           pinned={item.item.pinned}
@@ -837,7 +859,9 @@ export function HomeScreen(props: HomeScreenProps) {
           settlementSupported={settlementEnvironmentIds.has(thread.environmentId)}
           onSettleThread={handleSettleThread}
           snoozeSupported={snoozeEnvironmentIds.has(thread.environmentId)}
-          pinningSupported={pinningEnvironmentIds.has(thread.environmentId)}
+          pinningSupported={
+            thread.parentThreadId == null && pinningEnvironmentIds.has(thread.environmentId)
+          }
           pinReorderSupported={pinReorderEnvironmentIds.has(thread.environmentId)}
           canMovePinnedUp={arrangedPinnedKeys.indexOf(`${thread.environmentId}:${thread.id}`) > 0}
           canMovePinnedDown={(() => {
@@ -976,6 +1000,7 @@ export function HomeScreen(props: HomeScreenProps) {
           const thread = item.thread;
           return (
             <ThreadListRow
+              hierarchy={item.hierarchy}
               variant="compact"
               thread={thread}
               environmentLabel={

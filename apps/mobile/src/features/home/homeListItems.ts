@@ -1,7 +1,12 @@
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import type { HomeThreadGroup } from "./homeThreadList";
+import {
+  buildMobileThreadTree,
+  mobileThreadTreeRows,
+  type MobileThreadTreeRow,
+  type MobileThreadShell,
+  compareNestedThreads,
+} from "../threads/mobile-thread-hierarchy";
 
 /** Threads shown per project before the "Show more" affordance appears. */
 export const HOME_INITIAL_VISIBLE_THREADS = 6;
@@ -30,7 +35,8 @@ export interface HomeHeaderListItem {
 export interface HomeThreadListItem {
   readonly type: "thread";
   readonly key: string;
-  readonly thread: EnvironmentThreadShell;
+  readonly thread: MobileThreadShell;
+  readonly hierarchy?: MobileThreadTreeRow;
   readonly isLast: boolean;
 }
 
@@ -106,6 +112,11 @@ export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem
       return (
         previous.type === "thread" &&
         previous.thread === item.thread &&
+        previous.hierarchy?.depth === item.hierarchy?.depth &&
+        previous.hierarchy?.isExpanded === item.hierarchy?.isExpanded &&
+        previous.hierarchy?.childCount === item.hierarchy?.childCount &&
+        previous.hierarchy?.displayStatus === item.hierarchy?.displayStatus &&
+        previous.hierarchy?.archiveBlocked === item.hierarchy?.archiveBlocked &&
         previous.isLast === item.isLast
       );
     case "show-more":
@@ -125,6 +136,9 @@ export function buildHomeListLayout(input: {
    * When searching, pagination is suspended so every match stays visible.
    */
   readonly showAllThreads?: boolean;
+  readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean>;
+  readonly dismissedAgentRunKeys?: readonly string[];
+  readonly selectedThreadKey?: string | null;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
   const stickyHeaderIndices: number[] = [];
@@ -146,14 +160,35 @@ export function buildHomeListLayout(input: {
       continue;
     }
 
-    const totalCount = group.threads.length;
+    const ordinalByThreadKey = new Map(
+      group.threads.map((thread, index) => [`${thread.environmentId}:${thread.id}`, index]),
+    );
+    const ordinal = (thread: MobileThreadShell) =>
+      ordinalByThreadKey.get(
+        `${thread.environmentId}:${thread.virtualAgentRun?.parentThreadId ?? thread.id}`,
+      ) ?? Number.POSITIVE_INFINITY;
+    // Synthetic rows share their parent's position; never mix two different
+    // comparators for real and synthetic rows, which makes sorting non-transitive.
+    const roots = buildMobileThreadTree(
+      group.threads,
+      (left, right) => ordinal(left) - ordinal(right) || compareNestedThreads(left, right),
+      input.dismissedAgentRunKeys,
+    ).sort((left, right) => ordinal(left.mostRecentThread) - ordinal(right.mostRecentThread));
+    const totalCount = roots.length;
     // Default to the group's recent-activity window (last few days, or a small
     // fallback for stale projects), capped at the initial page size. Until the
     // user taps "Show more", older threads stay hidden to save vertical space;
     // "Show less" resets visibleCount to the initial constant, which lands back
     // here at the recency baseline.
+    const recentThreadKeys = new Set(
+      group.recentThreads.map((thread) => `${thread.environmentId}:${thread.id}`),
+    );
     const baselineCount = Math.min(
-      group.recentThreads.length,
+      roots.filter((node) =>
+        recentThreadKeys.has(
+          `${node.mostRecentThread.environmentId}:${node.mostRecentThread.virtualAgentRun?.parentThreadId ?? node.mostRecentThread.id}`,
+        ),
+      ).length,
       HOME_INITIAL_VISIBLE_THREADS,
       totalCount,
     );
@@ -165,8 +200,30 @@ export function buildHomeListLayout(input: {
             : baselineCount,
           totalCount,
         );
-    const visibleThreads = group.threads.slice(0, visibleCount);
-    const hiddenCount = totalCount - visibleCount;
+    const rows = roots.map((root) =>
+      mobileThreadTreeRows([root], {
+        expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
+        selectedThreadKey: input.selectedThreadKey,
+        ...(input.showAllThreads
+          ? {
+              revealThreadKeys: new Set(
+                group.threads.map((thread) => `${thread.environmentId}:${thread.id}`),
+              ),
+            }
+          : {}),
+      }),
+    );
+    const visibleThreads = rows
+      .filter(
+        (rootRows, index) =>
+          index < visibleCount || rootRows.some((row) => row.threadKey === input.selectedThreadKey),
+      )
+      .flat();
+    const visibleRootCount = rows.filter(
+      (rootRows, index) =>
+        index < visibleCount || rootRows.some((row) => row.threadKey === input.selectedThreadKey),
+    ).length;
+    const hiddenCount = totalCount - visibleRootCount;
     const hasShowMoreRow = !input.showAllThreads && totalCount > baselineCount;
 
     // Pending (unsent) tasks lead the group and are never paginated away.
@@ -182,11 +239,13 @@ export function buildHomeListLayout(input: {
       });
     }
 
-    for (const [threadIndex, thread] of visibleThreads.entries()) {
+    for (const [threadIndex, hierarchy] of visibleThreads.entries()) {
+      const thread = hierarchy.thread;
       items.push({
         type: "thread",
         key: `thread:${thread.environmentId}:${thread.id}`,
         thread,
+        hierarchy,
         isLast: threadIndex === visibleThreads.length - 1 && !hasShowMoreRow,
       });
     }

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentProject,
+  EnvironmentShellState,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type {
@@ -14,6 +15,17 @@ import { Atom } from "effect/unstable/reactivity";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
 import { environmentThreadShells } from "./threads";
+import { environmentShell } from "./shell";
+
+const EMPTY_SHELL_STATE_ATOM = Atom.make<EnvironmentShellState | null>(null);
+
+export function useEnvironmentShellState(environmentId: EnvironmentId | null) {
+  return useAtomValue(
+    environmentId === null
+      ? EMPTY_SHELL_STATE_ATOM
+      : environmentShell.stateValueAtom(environmentId),
+  );
+}
 
 const EMPTY_PROJECT_ATOM = Atom.make<EnvironmentProject | null>(null).pipe(
   Atom.withLabel("mobile-project:empty"),
