@@ -136,6 +136,7 @@ import {
 import { connectCommand } from "./cli/connect.ts";
 import { serviceCommand } from "./cli/service.ts";
 import { pairCommand } from "./cli/pair.ts";
+import { remoteCommand } from "./cli/remote.ts";
 
 const PortSchema = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
 const PENDING_REQUEST_DETAILS_CONCURRENCY = 4;
@@ -5170,6 +5171,7 @@ export const cli: Command.Command<"t3", never, {}, unknown, NetService | NodeSer
       startCommand,
       serveCommand,
       pairCommand,
+      remoteCommand,
       serverCommand,
       authCommand,
       projectCommand,

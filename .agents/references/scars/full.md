@@ -100,6 +100,7 @@
 
 ## Release builds and mobile integration
 
+- Desktop browser tests must mock Electron mode before module evaluation and supply the real query provider; installing a bridge fixture later cannot change `env.ts`'s captured desktop flag.
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
 - Workspace dependency patches do not ship in the published CLI manifest; when runtime behavior depends on a patched package, bundle that package into `dist/bin.mjs` and verify the packed artifact contains the patch.
 - T3 Connect release builds and local desktop installers must explicitly inject the public Clerk and relay configuration into package-local Vite builds; root env files are not loaded automatically, `.env.example` is the local installer fallback beneath `.env`/`.env.local`, and loopback OAuth must enter through the hosted `/connect` page so Clerk sign-in cannot discard state or PKCE parameters.
@@ -138,6 +139,8 @@
 
 ## Pairing and environment recovery
 
+- Owned tunnels are independent of account-linked Connect. Persist disabled intent before stopping, stop on unreadable configuration, and verify the public endpoint's environment ID before minting pairing links. Keep client revocation available even when the origin listens only on loopback.
+- Owner role does not override explicit session scopes; enforce operation scopes on every management route. Connector crash backoff must gate polling reconciliation as well as exit supervision.
 - Pairing QR payloads must use the shared canonical `/pair#token=...` URL; desktop-only deep-link shapes can silently parse as tokenless hosts in the RN client.
 - A closed collaborative browser is not an unavailable browser: agent instructions must require `preview_status` followed by `preview_open` or `preview_open_and_snapshot`, then validate with snapshots and diagnostics rather than treating a recording alone as proof.
 - WebSocket session revocation cannot rely only on process-local events or per-socket full scans; use one bounded durable poll for connected session IDs plus subscribe-before-lookup waiters.

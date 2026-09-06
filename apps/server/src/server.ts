@@ -99,6 +99,8 @@ import * as CloudEnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as CloudServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as CliTokenManager from "./cloud/CliTokenManager.ts";
 import * as ManagedEndpointRuntime from "./cloud/ManagedEndpointRuntime.ts";
+import * as RemoteAccess from "./remoteAccess/RemoteAccess.ts";
+import { routes as remoteAccessRoutes } from "./remoteAccess/http.ts";
 import { connectHttpApiRoutesLayer } from "./cloud/http.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { pullRequestHttpApiRoutesLayer } from "./pullRequest/http.ts";
@@ -313,6 +315,11 @@ const CloudBaseLayerLive = Layer.mergeAll(
   CloudRelayClientLayerLive,
 );
 
+export const RemoteAccessLayerLive = RemoteAccess.layer.pipe(
+  Layer.provide(CloudBaseLayerLive),
+  Layer.provide(ServerEnvironmentLive),
+);
+
 const AgentAwarenessRelayLayerLive = AgentAwarenessRelay.layer.pipe(
   Layer.provide(CloudBaseLayerLive),
   Layer.provideMerge(ServerEnvironmentLive),
@@ -383,6 +390,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(PreviewAutomationLayerLive),
   Layer.provideMerge(AuthLayerLive),
   Layer.provideMerge(CloudRuntimeLayerLive),
+  Layer.provideMerge(RemoteAccessLayerLive),
 );
 
 const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
@@ -427,6 +435,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationThreadSnapshotRouteLayer,
   pullRequestHttpApiRoutesLayer,
   ConnectHttpApiRoutesLayerLive,
+  remoteAccessRoutes,
   mobileRouteLayer,
   otlpTracesProxyRouteLayer,
   projectFaviconRouteLayer,
