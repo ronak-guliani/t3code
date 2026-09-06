@@ -30,6 +30,7 @@ import { DiffStateQueryLive } from "./diffState/Layers/DiffStateQuery.ts";
 import { GitCoreLive } from "./git/Layers/GitCore.ts";
 import { GitHubCliLive } from "./git/Layers/GitHubCli.ts";
 import { GitStatusBroadcasterLive } from "./git/Layers/GitStatusBroadcaster.ts";
+import { ProjectAutoPullLive } from "./git/ProjectAutoPull.ts";
 import { TextGenerationLive } from "./git/Layers/TextGenerationLive.ts";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { TerminalManagerLive } from "./terminal/Layers/Manager.ts";
@@ -74,6 +75,7 @@ import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerAuthLive } from "./auth/Layers/ServerAuth.ts";
 import { AuthControlPlaneLive, AuthCoreLive } from "./auth/Layers/AuthControlPlane.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import {
   clearPersistedServerRuntimeState,
   makePersistedServerRuntimeState,
@@ -202,7 +204,14 @@ const GitManagerLayerLive = GitManagerLive.pipe(
 
 const GitLayerLive = Layer.empty.pipe(
   Layer.provideMerge(GitManagerLayerLive),
-  Layer.provideMerge(GitStatusBroadcasterLive.pipe(Layer.provide(GitManagerLayerLive))),
+  Layer.provideMerge(
+    GitStatusBroadcasterLive.pipe(
+      Layer.provide(GitManagerLayerLive),
+      Layer.provideMerge(
+        ProjectAutoPullLive.pipe(Layer.provide(GitCoreLive), Layer.provide(OrchestrationLayerLive)),
+      ),
+    ),
+  ),
   Layer.provideMerge(GitCoreLive),
   Layer.provideMerge(GitHubCliLive),
 );
@@ -310,6 +319,7 @@ const AgentAwarenessRelayLayerLive = AgentAwarenessRelay.layer.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(RepositoryIdentityResolverLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
 );
 
 export const CloudHttpRuntimeLayerLive = Layer.mergeAll(

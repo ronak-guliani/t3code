@@ -2,7 +2,7 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, PlatformError, Scope } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Layer, Option, PlatformError, Scope } from "effect";
 import { describe, expect } from "vitest";
 
 import { checkpointBaselineRefForThreadTurn, checkpointRefForThreadTurn } from "../Utils.ts";
@@ -17,6 +17,7 @@ import {
 import { GitCommandError } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import { ThreadId } from "@t3tools/contracts";
+import { CheckoutCoordinator } from "../../git/CheckoutCoordinator.ts";
 
 const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-checkpoint-store-test-",
@@ -117,6 +118,115 @@ function replaceLine(contents: string, lineIndex: number, replacement: string): 
 }
 
 describe("CheckpointStoreLive range resolution", () => {
+  for (const phase of [
+    "HEAD",
+    "workspace tree",
+    "index tree",
+    "restore worktree",
+    "restore index",
+  ] as const) {
+    it.effect(`excludes manual checkout operations during ${phase}`, () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const real = yield* GitCore;
+        const checkpointRef = checkpointBaselineRefForThreadTurn(
+          ThreadId.make("coordinated-store"),
+          1,
+        );
+        yield* writeTextFile(path.join(cwd, "README.md"), "staged\n");
+        yield* git(cwd, ["add", "README.md"]);
+        yield* writeTextFile(path.join(cwd, "README.md"), "unstaged\n");
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let armed = false;
+        const restoring = phase.startsWith("restore");
+        const instrumentedGit = Layer.succeed(GitCore, {
+          ...real,
+          execute: (input) =>
+            real.execute(input).pipe(
+              Effect.tap(() => {
+                const matches =
+                  phase === "HEAD"
+                    ? input.operation === "CheckpointStore.resolveHeadCommit"
+                    : phase === "workspace tree"
+                      ? input.args[0] === "write-tree" && input.env?.GIT_INDEX_FILE !== undefined
+                      : phase === "index tree"
+                        ? input.args[0] === "write-tree" && input.env?.GIT_INDEX_FILE === undefined
+                        : phase === "restore worktree"
+                          ? input.args[0] === "read-tree" && input.args[1] === "--reset"
+                          : input.args[0] === "read-tree" && input.args.length === 2;
+                return armed && matches
+                  ? Deferred.succeed(entered, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                    )
+                  : Effect.void;
+              }),
+            ),
+        });
+        yield* Effect.gen(function* () {
+          const store = yield* CheckpointStore;
+          const coordinator = yield* CheckoutCoordinator;
+          if (restoring) {
+            yield* store.captureCheckpoint({ cwd, checkpointRef });
+            yield* writeTextFile(path.join(cwd, "README.md"), "later\n");
+            yield* git(cwd, ["add", "README.md"]);
+            yield* writeTextFile(path.join(cwd, "untracked.txt"), "remove me\n");
+          }
+          armed = true;
+          const operation = yield* (
+            restoring
+              ? store.restoreCheckpoint({ cwd, checkpointRef })
+              : store.captureCheckpoint({ cwd, checkpointRef })
+          ).pipe(Effect.forkScoped);
+          yield* Effect.gen(function* () {
+            yield* Deferred.await(entered);
+            let mutated = false;
+            const manual = coordinator.tryWithCheckout(
+              cwd,
+              writeTextFile(path.join(cwd, "README.md"), "manual\n").pipe(
+                Effect.andThen(git(cwd, ["add", "README.md"])),
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    mutated = true;
+                  }),
+                ),
+              ),
+            );
+            expect(Option.isNone(yield* manual)).toBe(true);
+            expect(mutated).toBe(false);
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(operation);
+            if (restoring) {
+              const fs = yield* FileSystem.FileSystem;
+              expect(yield* fs.readFileString(path.join(cwd, "README.md"))).toBe("unstaged\n");
+              expect(yield* git(cwd, ["show", ":README.md"])).toBe("staged");
+              expect(yield* fs.exists(path.join(cwd, "untracked.txt"))).toBe(false);
+            } else {
+              expect(yield* git(cwd, ["show", `${checkpointRef}:README.md`])).toBe("unstaged");
+              const message = yield* git(cwd, ["show", "-s", "--format=%B", checkpointRef]);
+              const indexTree = /^t3-index-tree=(.+)$/m.exec(message)?.[1];
+              expect(indexTree).toBeDefined();
+              expect(yield* git(cwd, ["show", `${indexTree}:README.md`])).toBe("staged");
+              expect(yield* git(cwd, ["rev-parse", `${checkpointRef}^`])).toBe(
+                yield* git(cwd, ["rev-parse", "HEAD"]),
+              );
+            }
+            expect(Option.isSome(yield* manual)).toBe(true);
+            expect(mutated).toBe(true);
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+        }).pipe(
+          Effect.provide(
+            CheckpointStoreLive.pipe(
+              Layer.provide(instrumentedGit),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, GitCoreTestLayer))),
+    );
+  }
+
   it.effect("resolves preferred, fallback, and target checkpoint refs only once", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-checkpoint-store-range-resolution");

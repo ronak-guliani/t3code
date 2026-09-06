@@ -75,6 +75,7 @@ import { vi } from "vitest";
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
 import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
 import { attachmentRelativePath } from "./attachmentStore.ts";
 import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
@@ -86,6 +87,7 @@ import { DiffStateQuery, type DiffStateQueryShape } from "./diffState/Services/D
 import { GitCore, type GitCoreShape } from "./git/Services/GitCore.ts";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcasterLive } from "./git/Layers/GitStatusBroadcaster.ts";
+import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   GitStatusBroadcaster,
   type GitStatusBroadcasterShape,
@@ -466,7 +468,16 @@ const buildAppUnderTest = (options?: {
       ? Layer.mock(GitStatusBroadcaster)({
           ...options.layers.gitStatusBroadcaster,
         })
-      : GitStatusBroadcasterLive.pipe(Layer.provide(gitManagerLayer));
+      : GitStatusBroadcasterLive.pipe(
+          Layer.provide(gitManagerLayer),
+          Layer.provide(
+            Layer.succeed(ProjectAutoPull, {
+              attempt: () => Effect.void,
+              start: Effect.void,
+              changes: Stream.empty,
+            }),
+          ),
+        );
 
     const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
       disableListenLog: true,
@@ -750,7 +761,7 @@ const buildAppUnderTest = (options?: {
         )
       : appLayer;
 
-    yield* Layer.build(appLayerWithProvider);
+    yield* Layer.build(appLayerWithProvider.pipe(Layer.provideMerge(CheckoutCoordinatorLive)));
     return config;
   });
 

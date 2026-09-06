@@ -37,6 +37,7 @@ import { ServerAuth } from "./auth/Services/ServerAuth.ts";
 import { readCliDesiredCloudLink } from "./cloud/CliState.ts";
 import { reconcileDesiredCloudLink } from "./cloud/http.ts";
 import { AgentAwarenessRelay } from "./relay/AgentAwarenessRelay.ts";
+import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   formatHeadlessServeOutput,
   formatHostForUrl,
@@ -475,6 +476,8 @@ export const makeServerRuntimeStartup = Effect.gen(function* () {
 
       yield* Effect.logDebug("Accepting commands");
       yield* commandGate.signalCommandReady;
+      const autoPull = yield* ProjectAutoPull;
+      yield* Effect.forkScoped(autoPull.start);
       yield* Effect.logDebug("startup phase: waiting for http listener");
       yield* runStartupPhase("http.wait", Deferred.await(httpListening));
       yield* Effect.forkScoped(runStartupPhase("connect.reconcile", reconcileDesiredConnectLink));
