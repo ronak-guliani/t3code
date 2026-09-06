@@ -53,7 +53,7 @@ describe("ThreadDetailsTooltip", () => {
     expect(markup).not.toContain("terminal process");
   });
 
-  it("preserves remote, terminal, and pull request details in the compact card", () => {
+  it("preserves remote and terminal details and separates pull request state from its title", () => {
     const markup = renderToStaticMarkup(
       <ThreadDetailsTooltipProvider value={[thread]}>
         <ThreadDetailsTooltip
@@ -81,7 +81,8 @@ describe("ThreadDetailsTooltip", () => {
     expect(markup).toContain("/projects/t3code");
     expect(markup).toContain("Build machine");
     expect(markup).toContain("2 terminal processes running");
-    expect(markup).toContain("#273 PR merged: Separate projection reconciliation");
+    expect(markup).toContain("PR merged</div>");
+    expect(markup).toContain("Separate projection reconciliation</div>");
   });
 
   it("renders three prioritized children, the total count, and parent blockers", () => {

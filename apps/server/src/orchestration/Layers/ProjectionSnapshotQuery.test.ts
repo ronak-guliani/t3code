@@ -862,6 +862,28 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           '2026-08-18T00:00:01.000Z'
         FROM activity_sequence
       `;
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, attachments_json,
+          is_streaming, created_at, updated_at
+        )
+        SELECT
+          printf('snapshot-message-%04d', 2006 - value),
+          'thread-snapshot-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          CASE WHEN value = 1 THEN 'not-json' ELSE NULL END,
+          0,
+          '2026-08-18T00:00:02.000Z',
+          '2026-08-18T00:00:02.000Z'
+        FROM message_sequence
+      `;
 
       const snapshot = yield* snapshotQuery.getSnapshot();
       const thread = snapshot.threads.find((entry) => entry.id === "thread-snapshot-cap");
@@ -887,6 +909,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(commandThread.messages, []);
       assert.deepEqual(commandThread.activities, []);
       assert.deepEqual(commandThread.checkpoints, []);
+      assert.equal(thread.messages.length, 2000);
+      assert.equal(thread.messages[0]?.text, "message 6");
+      assert.equal(thread.messages.at(-1)?.text, "message 2005");
     }),
   );
 
@@ -2270,6 +2295,222 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ["legacy-1", "legacy-2", "legacy-3"],
       );
       assert.equal(remainingLegacyPage.hasMore, false);
+    }),
+  );
+
+  it.effect("caps thread-detail message hydration to the newest SQL-side window", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-message-cap',
+          'Message cap',
+          '/tmp/project-message-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          '[]',
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-message-cap',
+          'project-message-cap',
+          'Message cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          'approval-required',
+          'default',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      // 2,005 messages: five over MAX_THREAD_MESSAGES (2,000) so the
+      // test proves the bound is applied in SQL before text/attachment JSON
+      // is decoded, not in JS after. Message 1 carries malformed
+      // attachments_json but is excluded from the newest window, so any
+      // implementation that decodes before capping fails loudly.
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          attachments_json,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('cap-msg-%05d', 2006 - value),
+          'thread-message-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          CASE WHEN value = 1 THEN 'not-json' ELSE NULL END,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z'
+        FROM message_sequence
+      `;
+
+      const detail = yield* snapshotQuery.getThreadDetailById(ThreadId.make("thread-message-cap"));
+      assert.equal(detail._tag, "Some");
+      if (detail._tag === "None") return;
+      assert.equal(detail.value.messages.length, 2000);
+      assert.equal(detail.value.messages[0]?.text, "message 6");
+      assert.equal(detail.value.messages.at(-1)?.text, "message 2005");
+    }),
+  );
+
+  it.effect("returns full message history for exports when unbounded", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'project-export-cap',
+          'Export cap',
+          '/tmp/project-export-cap',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          '[]',
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          latest_user_message_at,
+          pending_approval_count,
+          pending_user_input_count,
+          has_actionable_proposed_plan,
+          created_at,
+          updated_at,
+          deleted_at
+        )
+        VALUES (
+          'thread-export-cap',
+          'project-export-cap',
+          'Export cap thread',
+          '{"provider":"copilot","model":"gpt-5.4"}',
+          'approval-required',
+          'default',
+          NULL,
+          0,
+          0,
+          0,
+          '2026-07-28T00:00:00.000Z',
+          '2026-07-28T00:00:00.000Z',
+          NULL
+        )
+      `;
+      yield* sql`
+        WITH RECURSIVE message_sequence(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM message_sequence WHERE value < 2005
+        )
+        INSERT INTO projection_thread_messages (
+          message_id,
+          thread_id,
+          turn_id,
+          role,
+          text,
+          is_streaming,
+          created_at,
+          updated_at
+        )
+        SELECT
+          printf('export-msg-%05d', value),
+          'thread-export-cap',
+          NULL,
+          'user',
+          printf('message %d', value),
+          0,
+          printf(
+            '2026-07-28T00:%02d:%02d.000Z',
+            CAST(value / 60 AS INTEGER),
+            value % 60
+          ),
+          printf(
+            '2026-07-28T00:%02d:%02d.000Z',
+            CAST(value / 60 AS INTEGER),
+            value % 60
+          )
+        FROM message_sequence
+      `;
+
+      const threadId = ThreadId.make("thread-export-cap");
+      const capped = yield* snapshotQuery.getThreadDetailById(threadId);
+      assert.equal(capped._tag, "Some");
+      if (capped._tag === "None") return;
+      assert.equal(capped.value.messages.length, 2000);
+      assert.equal(capped.value.messages[0]?.text, "message 6");
+
+      const full = yield* snapshotQuery.getThreadDetailById(threadId, {
+        unboundedMessages: true,
+      });
+      assert.equal(full._tag, "Some");
+      if (full._tag === "None") return;
+      assert.equal(full.value.messages.length, 2005);
+      assert.equal(full.value.messages[0]?.text, "message 1");
+      assert.equal(full.value.messages.at(-1)?.text, "message 2005");
     }),
   );
 });

@@ -7555,6 +7555,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
 
       useRightPanelStore.getState().close(THREAD_REF);
       usePreviewMiniPlayerStore.getState().open(THREAD_REF, "preview-browser-test");
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector('[data-preview-mini-player="preview-browser-test"]'),
+        ).not.toBeNull();
+      });
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "b",
@@ -7566,10 +7571,25 @@ describe("ChatView timeline estimator parity (full app)", () => {
         }),
       );
       await vi.waitFor(() => {
-        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]).toBeUndefined();
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.tabId).toBe(
+          "preview-browser-test",
+        );
+        expect(document.querySelector("[data-preview-mini-player]")).toBeNull();
         expect(
           document.querySelector('[data-chat-view-right-panel-surface="preview"]'),
         ).not.toBeNull();
+        expect(previewOpenCount).toBe(1);
+      });
+
+      await page.getByRole("button", { name: "Close browser panel", exact: true }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
+        expect(
+          document.querySelector('[data-preview-mini-player="preview-browser-test"]'),
+        ).not.toBeNull();
+        expect(usePreviewMiniPlayerStore.getState().byThreadKey[THREAD_KEY]?.tabId).toBe(
+          "preview-browser-test",
+        );
         expect(previewOpenCount).toBe(1);
       });
     } finally {

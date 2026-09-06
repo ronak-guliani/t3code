@@ -18,5 +18,7 @@ export const installPreviewIpcHandlers = Effect.fn("desktop.ipc.installPreviewHa
     for (const previewMethod of PreviewIpc.methods) {
       yield* ipc.handle(previewMethod);
     }
+    yield* ipc.handle(PreviewIpc.listBrowserImportSources);
+    yield* ipc.handle(PreviewIpc.importBrowserCookies);
   },
 );

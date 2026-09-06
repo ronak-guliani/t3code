@@ -40,11 +40,15 @@ import {
   pullRequestSetThreadResolutionMutationOptions,
   pullRequestSubmitReviewMutationOptions,
 } from "~/lib/pullRequestReactQuery";
-import { openExternalPullRequestLink } from "~/lib/openPullRequestLink";
 import { buildPatchCacheKey, resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { useTheme } from "~/hooks/useTheme";
+import { useOpenLink } from "~/browser/useOpenLink";
+import { isWebUrl } from "~/browser/browserLinkTarget";
+import { selectThreadShellsAcrossEnvironments, useStore } from "~/store";
+import { scopeThreadRef } from "@t3tools/client-runtime";
+import { findPullRequestBrowserThread } from "~/lib/openPullRequestLink";
 
 import {
   EMPTY_PENDING_REVIEW_COMMENTS,
@@ -578,6 +582,18 @@ export function PullRequestDetailPanel({
   const [comment, setComment] = useState("");
   const [actionPending, setActionPending] = useState<PullRequestAction | null>(null);
   const detail = toDetailView(detailQuery.data, activityQuery.data);
+  const owner = useStore((state) =>
+    findPullRequestBrowserThread(
+      selectThreadShellsAcrossEnvironments(state),
+      environmentId,
+      reference,
+    ),
+  );
+  const browserThreadRef = useMemo(
+    () => (owner ? scopeThreadRef(owner.environmentId, owner.id) : null),
+    [owner?.environmentId, owner?.id],
+  );
+  const openLink = useOpenLink(browserThreadRef, true);
   const runAction = useMutation(
     pullRequestRunActionMutationOptions({ environmentId, queryClient }),
   );
@@ -696,7 +712,24 @@ export function PullRequestDetailPanel({
   const reviewKey = pullRequestReviewKey(reference);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-background">
+    <section
+      className="flex h-full min-h-0 flex-col bg-background"
+      onClickCapture={(event) => {
+        if (event.button !== 0 || !(event.target instanceof Element)) return;
+        const link = event.target.closest("a[href]");
+        const url = link?.getAttribute("href");
+        if (!url || !isWebUrl(url)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void openLink(url, { event }).catch((error: unknown) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not open link",
+            description: errorMessage(error),
+          });
+        });
+      }}
+    >
       <header className="border-b border-border px-4 py-3">
         <div className="flex gap-2">
           <PullRequestStateGlyph
@@ -734,8 +767,23 @@ export function PullRequestDetailPanel({
             className="inline-flex items-center gap-1 hover:text-foreground"
             href={detail.url}
             onClick={(event) => {
+              if (
+                event.button !== 0 ||
+                event.metaKey ||
+                event.ctrlKey ||
+                event.shiftKey ||
+                event.altKey
+              ) {
+                return;
+              }
               event.preventDefault();
-              openExternalPullRequestLink(detail.url);
+              void openLink(detail.url).catch((error: unknown) => {
+                toastManager.add({
+                  type: "error",
+                  title: "Could not open pull request",
+                  description: errorMessage(error),
+                });
+              });
             }}
           >
             GitHub <ExternalLinkIcon className="size-3" />
