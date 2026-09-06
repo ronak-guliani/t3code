@@ -81,6 +81,7 @@ type MarkdownFunctionComponentProps<K extends keyof Components> = Parameters<
 >[0];
 
 const CODE_FENCE_LANGUAGE_REGEX = /(?:^|\s)language-([^\s]+)/;
+const WEB_CITATION_TOKEN_PATTERN = /\uE200cite\uE202turn\d+[A-Za-z]+\d+\uE201/g;
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
 const MAX_HIGHLIGHT_CACHE_MEMORY_BYTES = 50 * 1024 * 1024;
 const highlightedCodeCache = new LRUCache<string>(
@@ -135,6 +136,10 @@ function extractCodeBlock(
     className: onlyChild.props.className,
     code: nodeToPlainText(onlyChild.props.children),
   };
+}
+
+function normalizeChatMarkdownText(text: string): string {
+  return text.replace(WEB_CITATION_TOKEN_PATTERN, "");
 }
 
 type MarkdownAstNode = {
@@ -871,6 +876,7 @@ const markdownComponentsWithoutRuntimeState = {
 function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const normalizedText = useMemo(() => normalizeChatMarkdownText(text), [text]);
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
@@ -1008,7 +1014,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >
-        {text}
+        {normalizedText}
       </ReactMarkdown>
     </div>
   );

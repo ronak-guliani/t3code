@@ -44,6 +44,18 @@ describe("ChatMarkdown", () => {
     expect(markup).not.toContain("chat-markdown-thread-link");
   });
 
+  it("removes leaked web citation tokens", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={"Cancellation is expected. \uE200cite\uE202turn0search1\uE201"}
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("Cancellation is expected.");
+    expect(markup).not.toContain("turn0search1");
+  });
+
   it("renders inline code file paths as file links", () => {
     const markup = renderToStaticMarkup(
       <ChatMarkdown
