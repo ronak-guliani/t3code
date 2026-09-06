@@ -1,12 +1,11 @@
 import {
   CommandId,
-  CopilotSettings,
   PullRequestMonitorFeedbackDeliveryId,
   QueuedTurnId,
   ThreadId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { Cause, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Result, Stream } from "effect";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
@@ -24,7 +23,6 @@ import { isThreadReadyForQueuedDispatch } from "../commandInvariants.ts";
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
 const MONITOR_REVALIDATION_RETRY_BASE_MS = 20_000;
-const decodeCopilotSettings = Schema.decodeUnknownEffect(CopilotSettings);
 
 const serverCommandId = (tag: string): CommandId =>
   CommandId.make(`server:${tag}:${crypto.randomUUID()}`);
@@ -80,10 +78,14 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         const instance = settings.providerInstances[instanceId];
         const driver = instance?.driver ?? instanceId;
         if (driver === "copilot" || driver === "copilot-acp-native") {
-          const config = yield* decodeCopilotSettings(
-            instance ? (instance.config ?? {}) : settings.providers.copilot,
-          );
-          if (!config.allowAutomaticPrFeedback) {
+          const config = instance ? instance.config : settings.providers.copilot;
+          const allowAutomaticPrFeedback =
+            typeof config === "object" &&
+            config !== null &&
+            !Array.isArray(config) &&
+            "allowAutomaticPrFeedback" in config &&
+            config.allowAutomaticPrFeedback === true;
+          if (!allowAutomaticPrFeedback) {
             yield* failQueuedTurn({
               threadId,
               queuedTurnId: nextQueuedTurn.id,

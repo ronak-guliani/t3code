@@ -252,6 +252,59 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it.each([
+    undefined,
+    null,
+    [],
+    "invalid",
+    42,
+    true,
+    { customModels: "invalid" },
+    { allowAutomaticPrFeedback: "true" },
+    { allowAutomaticPrFeedback: 1 },
+    { allowAutomaticPrFeedback: false, customModels: "invalid" },
+  ])("visibly pauses feedback for default-off or malformed config %j", async (config) => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        providerInstances: {
+          [ProviderInstanceId.make("copilot")]: {
+            driver: ProviderDriverKind.make("copilot"),
+            enabled: true,
+            config,
+          },
+        },
+      },
+    );
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      type: "thread.queued-turn.fail",
+      failureMessage: expect.stringContaining("Automatic PR feedback is paused"),
+    });
+  });
+
+  it("honors an explicit opt-in without decoding unrelated config fields", async () => {
+    const commands = await runReactor(
+      queuedReadModel({
+        origin: { kind: "pull-request-monitor", repository: "acme/app", number: 42 },
+      }),
+      monitorSnapshot("head-current"),
+      {
+        providerInstances: {
+          [ProviderInstanceId.make("copilot")]: {
+            driver: ProviderDriverKind.make("copilot"),
+            enabled: true,
+            config: { allowAutomaticPrFeedback: true, customModels: "invalid" },
+          },
+        },
+      },
+    );
+    expect(commands.map((command) => command.type)).toEqual(["thread.queued-turn.dispatch"]);
+  });
+
   it("pauses Copilot monitor feedback without revalidation or dispatch by default", async () => {
     const commands = await runReactor(
       queuedReadModel({
