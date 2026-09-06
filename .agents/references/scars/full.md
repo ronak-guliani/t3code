@@ -213,6 +213,8 @@
 
 ## Mobile capabilities and cross-platform tests
 
+- Node test support for an Array method is not a promise about every mobile engine. Keep shared inbox traversal free of unpolyfilled ES2023 copy-array methods and cover it with the method unavailable.
+
 - Mobile capability flags are promises across both orchestration and `mobile.v1`; command schemas, mobile allowlists, server dispatch guards, and every exported live-event reducer must move together before advertising support.
 - Long-running mobile mutations need durable pending state plus correlated completion commands; clear interrupted work on reactor startup and ignore stale completions so reconnects and manual edits cannot be overwritten.
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
@@ -239,6 +241,7 @@
 
 ## Mobile drafts and navigation
 
+- Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.
 - Independent iPad sidebar stacks own header chrome only; carry app navigation across that boundary for chat and queued-draft actions.
 - Rejected subchats must recover to a reachable project draft when their parent disappears; recheck the recovery destination before removing the outbox entry.

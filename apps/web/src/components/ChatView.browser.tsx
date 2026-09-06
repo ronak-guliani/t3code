@@ -53,7 +53,11 @@ import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
-import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
+import {
+  selectBootstrapCompleteForActiveEnvironment,
+  type EnvironmentState,
+  useStore,
+} from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import { usePendingTurnStore } from "../pendingTurnStore";
 import { useUiStateStore } from "../uiStateStore";
@@ -7658,6 +7662,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     const toggleLabels = [
       "Toggle insights panel",
       "Toggle browser preview",
+      "Toggle file browser",
       "Toggle terminal drawer",
       "Toggle diff panel",
     ];
@@ -7712,6 +7717,123 @@ describe("ChatView timeline estimator parity (full app)", () => {
     } finally {
       await narrowMounted.cleanup();
       narrowSpy.mockRestore();
+    }
+  });
+
+  it("toggles the Files surface, tracks file previews, and disables without a project", async () => {
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-files-toggle" as MessageId,
+        targetText: "files toggle",
+      }),
+    });
+    const filesToggle = page.getByLabelText("Toggle file browser");
+    const environmentState = useStore.getState().environmentStateById[LOCAL_ENVIRONMENT_ID];
+    if (!environmentState) {
+      throw new Error("Expected the browser test environment to be bootstrapped.");
+    }
+    const bootstrappedEnvironmentState: EnvironmentState = environmentState;
+
+    async function exerciseFilesToggle(compactSheet = false) {
+      await expect.element(filesToggle).toHaveAttribute("aria-pressed", "false");
+
+      await filesToggle.click();
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "files",
+        });
+      });
+      await expect.element(filesToggle).toHaveAttribute("aria-pressed", "true");
+
+      if (compactSheet) {
+        // The compact panel is a modal sheet, so its backdrop intercepts header clicks.
+        useRightPanelStore.getState().close(THREAD_REF);
+      } else {
+        await filesToggle.click();
+      }
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]?.isOpen).toBe(false);
+      });
+      await expect.element(filesToggle).toHaveAttribute("aria-pressed", "false");
+
+      useRightPanelStore.getState().openFile(THREAD_REF, "src/index.ts");
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "file:src/index.ts",
+        });
+      });
+      await expect.element(filesToggle).toHaveAttribute("aria-pressed", "true");
+
+      if (compactSheet) {
+        useRightPanelStore.getState().toggle(THREAD_REF, "files");
+      } else {
+        await filesToggle.click();
+      }
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]).toMatchObject({
+          isOpen: true,
+          activeSurfaceId: "files",
+        });
+      });
+      await expect.element(filesToggle).toHaveAttribute("aria-pressed", "true");
+
+      if (compactSheet) {
+        useRightPanelStore.getState().close(THREAD_REF);
+      } else {
+        await filesToggle.click();
+      }
+      await vi.waitFor(() => {
+        expect(useRightPanelStore.getState().byThreadKey[THREAD_KEY]?.isOpen).toBe(false);
+      });
+      await expect.element(filesToggle).toHaveAttribute("aria-pressed", "false");
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-view-right-panel-surface]")).toBeNull();
+        expect(document.querySelector("[data-right-panel-tab-list]")).toBeNull();
+      });
+    }
+
+    async function expectDisabledWithoutProject() {
+      const currentState = useStore.getState();
+      const projectlessEnvironmentState: EnvironmentState = {
+        ...bootstrappedEnvironmentState,
+        projectIds: [],
+        projectById: {},
+      };
+      useStore.setState({
+        environmentStateById: {
+          ...currentState.environmentStateById,
+          [LOCAL_ENVIRONMENT_ID]: projectlessEnvironmentState,
+        },
+      });
+      await expect.element(filesToggle).toBeDisabled();
+      const restoredEnvironmentStateById: Record<string, EnvironmentState> = {
+        ...useStore.getState().environmentStateById,
+        [LOCAL_ENVIRONMENT_ID]: bootstrappedEnvironmentState,
+      };
+      useStore.setState({ environmentStateById: restoredEnvironmentStateById });
+      await expect.element(filesToggle).not.toBeDisabled();
+    }
+
+    const wideSpy = stubNarrowLayout(false);
+    try {
+      await exerciseFilesToggle();
+      await expectDisabledWithoutProject();
+
+      wideSpy.mockRestore();
+      const narrowSpy = stubNarrowLayout(true);
+      try {
+        await mounted.setViewport(COMPACT_FOOTER_VIEWPORT);
+        await exerciseFilesToggle(true);
+        await expectDisabledWithoutProject();
+      } finally {
+        narrowSpy.mockRestore();
+      }
+    } finally {
+      wideSpy.mockRestore();
+      await mounted.cleanup();
     }
   });
 

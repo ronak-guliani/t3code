@@ -157,6 +157,7 @@ import {
   collapsedWorkLogHeight,
   ThreadDisclosureChevron,
   ThreadWorkGroupToggle,
+  ThreadThinkingRow,
   ThreadWorkLog,
   THREAD_DISCLOSURE_TRANSITION_MS,
   WORK_GROUP_TOGGLE_HEIGHT,
@@ -1335,6 +1336,7 @@ function renderFeedEntry(
     readonly renderMarkdownImage: MarkdownImageRenderer;
     readonly renderViewedImage: MarkdownImageRenderer;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
+    readonly screenColor: string;
     readonly userBubbleColor: string | import("react-native").ColorValue;
     readonly markdownStyles: MarkdownStyleSets;
     readonly reviewCommentColors: ReviewCommentColors;
@@ -1372,6 +1374,10 @@ function renderFeedEntry(
         />
       </Pressable>
     );
+  }
+
+  if (entry.type === "thinking") {
+    return <ThreadThinkingRow rowSizing={props.workRowSizing} iconSubtleColor={iconSubtleColor} />;
   }
 
   if (entry.type === "work-toggle") {
@@ -1591,6 +1597,7 @@ function renderFeedEntry(
       rowSizing={props.workRowSizing}
       scrollPositions={props.workGroupScrollPositions}
       iconSubtleColor={iconSubtleColor}
+      edgeFadeColor={props.screenColor}
       themeAppearance={props.themeAppearance}
       onCopyRow={props.onCopyWorkRow}
       onToggleRow={props.onToggleWorkRow}
@@ -1985,6 +1992,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
 
   const theme = useUniwindTheme();
   const iconSubtleColor = theme["--color-icon-subtle"];
+  const screenColor = theme["--color-screen"];
   const userBubbleColor = theme["--color-user-bubble"];
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
@@ -2591,6 +2599,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         case "turn-fold":
           return TURN_FOLD_HEIGHT;
         case "work-toggle":
+        case "thinking":
           return WORK_GROUP_TOGGLE_HEIGHT;
         case "activity-group":
           if (isContextCompactionActivityGroup(entry)) {
@@ -2635,6 +2644,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             renderMarkdownImage,
             renderViewedImage,
             iconSubtleColor,
+            screenColor,
             userBubbleColor,
             markdownStyles,
             reviewCommentColors,
@@ -2656,6 +2666,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       terminalAssistantMessageIds,
       unsettledTurnId,
       iconSubtleColor,
+      screenColor,
       userBubbleColor,
       markdownStyles,
       reviewCommentColors,
