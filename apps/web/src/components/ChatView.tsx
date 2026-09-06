@@ -1765,14 +1765,7 @@ function ChatViewBody(
   }, [activeThreadRef, diffOpen, isServerThread, updateDiffSearch]);
   const onToggleFiles = useCallback(() => {
     if (!activeThreadRef || !activeProject) return;
-    const state = useRightPanelStore.getState();
-    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
-    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
-    if (panel?.isOpen && (activeSurface?.kind === "files" || activeSurface?.kind === "file")) {
-      state.close(activeThreadRef);
-      return;
-    }
-    state.open(activeThreadRef, "files");
+    useRightPanelStore.getState().toggle(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
 
   const envLocked = Boolean(
