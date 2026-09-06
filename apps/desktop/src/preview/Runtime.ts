@@ -8,6 +8,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { installPreviewIpcHandlers } from "../ipc/DesktopIpcHandlers.ts";
 import * as DesktopIpc from "../ipc/DesktopIpc.ts";
 import * as BrowserSession from "./BrowserSession.ts";
+import * as BrowserImport from "./BrowserImport/BrowserImport.ts";
+import * as LinuxBrowserSecret from "./BrowserImport/LinuxBrowserSecret.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as PreviewBroadcast from "./PreviewBroadcast.ts";
 import * as PreviewEnvironment from "./PreviewEnvironment.ts";
@@ -41,6 +43,10 @@ export const startPreviewRuntime = async (
     PreviewManager.layer.pipe(
       Layer.provideMerge(BrowserSession.layer),
       Layer.provideMerge(PreviewEnvironment.layer(options.browserArtifactsDir)),
+    ),
+    BrowserImport.layer.pipe(
+      Layer.provideMerge(BrowserSession.layer),
+      Layer.provideMerge(LinuxBrowserSecret.layer),
     ),
     PreviewBroadcast.layer,
     Layer.succeed(DesktopIpc.DesktopIpc, DesktopIpc.make(ipcMain)),

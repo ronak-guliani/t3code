@@ -1,5 +1,4 @@
 import {
-  CheckIcon,
   CircleAlertIcon,
   ClockIcon,
   FolderIcon,
@@ -88,46 +87,39 @@ function ThreadTooltipActivity({ thread }: { readonly thread: SidebarThreadSumma
       {activity.childCount > 0 ? (
         <section
           aria-label="Child chats"
-          className="grid min-w-0 gap-1.5 border-t border-border/60 pt-2"
+          className="grid min-w-0 gap-3 border-t border-border/60 pt-4"
         >
-          <div className="flex items-center gap-2 text-[10px]">
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
             <span className="font-medium text-foreground/75">Child chats</span>
+            <span className="tabular-nums text-muted-foreground">{activity.childCount}</span>
             {activity.unreadResultCount > 0 ? (
               <span className="text-sky-600 dark:text-sky-400">
                 {activity.unreadResultCount} unread{" "}
                 {activity.unreadResultCount === 1 ? "result" : "results"}
               </span>
             ) : null}
-            <span className="ml-auto tabular-nums">{activity.childCount}</span>
           </div>
-          <ul className="grid min-w-0 gap-1">
+          <ul className="grid min-w-0 gap-3">
             {activity.children.map((child) => {
               const status = CHILD_STATUS[child.status];
               return (
-                <li key={child.key} className="flex min-w-0 items-center gap-1.5">
-                  {child.status === "done" ? (
-                    <CheckIcon className={`size-3 shrink-0 ${status.className}`} />
-                  ) : (
-                    <span
-                      className={`mx-0.75 size-1.5 shrink-0 rounded-full bg-current ${status.className}`}
-                    />
-                  )}
-                  <span className="min-w-0 flex-1 truncate text-foreground/80">
+                <li key={child.key} className="flex min-w-0 items-start gap-3">
+                  <span className="line-clamp-2 min-w-0 flex-1 wrap-anywhere text-foreground/80">
                     {child.thread.title}
                   </span>
                   {child.unread ? (
                     <span
                       aria-label="Unread result"
-                      className="size-1 shrink-0 rounded-full bg-sky-500 dark:bg-sky-400"
+                      className="mt-1.5 size-1.5 shrink-0 rounded-full bg-sky-500 dark:bg-sky-400"
                     />
                   ) : null}
-                  <span className={`shrink-0 text-[10px] ${status.className}`}>{status.label}</span>
+                  <span className={`shrink-0 text-[11px] ${status.className}`}>{status.label}</span>
                 </li>
               );
             })}
           </ul>
           {activity.remainingChildCount > 0 ? (
-            <div className="pl-4.5 text-[10px]">+{activity.remainingChildCount} more</div>
+            <div className="text-[11px]">+{activity.remainingChildCount} more</div>
           ) : null}
         </section>
       ) : null}
@@ -183,73 +175,84 @@ export function ThreadDetailsTooltip({
   return (
     <TooltipPopup
       align="start"
-      className="max-w-72 rounded-lg whitespace-normal text-left transition-opacity duration-100 ease-out motion-reduce:transition-none"
+      className="w-90 max-w-[min(24rem,var(--available-width))] rounded-xl whitespace-normal text-left text-pretty transition-opacity duration-100 ease-out motion-reduce:transition-none"
       side="right"
       sideOffset={8}
     >
-      <div className="flex min-w-0 flex-col gap-2 px-1 py-1.5 text-[11px] leading-4 text-muted-foreground">
-        <div className="line-clamp-2 min-w-0 text-xs font-medium leading-4 wrap-break-word text-foreground">
+      <div className="flex min-w-0 flex-col gap-4 px-2 py-3 text-xs leading-5 text-muted-foreground">
+        <div className="line-clamp-3 min-w-0 text-sm font-medium leading-5 wrap-anywhere text-foreground">
           {thread.title}
         </div>
-        <div className="grid min-w-0 gap-1.5">
-          <div className="flex min-w-0 items-start gap-2">
-            <GitBranchIcon className="mt-0.5 size-3 shrink-0" />
-            <div className="min-w-0">
-              <div className="truncate text-foreground/80">{projectName}</div>
-              {thread.branch ? <div className="truncate">{thread.branch}</div> : null}
+        <div className="grid min-w-0 gap-3">
+          <div className="flex min-w-0 items-start gap-2.5">
+            <FolderIcon className="mt-1 size-3.5 shrink-0" />
+            <div className="grid min-w-0 gap-0.5">
+              <div className="wrap-anywhere font-medium text-foreground/80">{projectName}</div>
+              {workspacePath ? (
+                <div className="line-clamp-2 text-[11px] leading-4 wrap-anywhere">
+                  {workspacePath}
+                </div>
+              ) : null}
             </div>
           </div>
-          {workspacePath ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <FolderIcon className="size-3 shrink-0" />
-              <div className="min-w-0 truncate">{workspacePath}</div>
+          {thread.branch ? (
+            <div className="flex min-w-0 items-start gap-2.5">
+              <GitBranchIcon className="mt-1 size-3.5 shrink-0" />
+              <div className="line-clamp-2 min-w-0 wrap-anywhere">{thread.branch}</div>
             </div>
           ) : null}
           {environmentLabel ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <ServerIcon className="size-3 shrink-0 stroke-muted-foreground" />
-              <div className="min-w-0 truncate text-foreground/75">{environmentLabel}</div>
+            <div className="flex min-w-0 items-start gap-2.5">
+              <ServerIcon className="mt-1 size-3.5 shrink-0" />
+              <div className="min-w-0 wrap-anywhere text-foreground/75">{environmentLabel}</div>
             </div>
           ) : null}
           {terminalProcessCount > 0 ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <TerminalIcon className="size-3 shrink-0 stroke-muted-foreground" />
-              <div className="min-w-0 truncate text-foreground/75">
+            <div className="flex min-w-0 items-start gap-2.5">
+              <TerminalIcon className="mt-1 size-3.5 shrink-0" />
+              <div className="min-w-0 text-foreground/75">
                 {terminalProcessLabel(terminalProcessCount)}
               </div>
             </div>
           ) : null}
-          {prStatus ? (
-            <div className="flex min-w-0 items-center gap-2">
-              <GitPullRequestIcon className={`size-3 shrink-0 ${prStatus.colorClass}`} />
-              <div className="min-w-0 truncate text-foreground/75">{prStatus.tooltip}</div>
-            </div>
-          ) : null}
-          <ThreadTooltipActivity thread={thread} />
-          <div className="flex min-w-0 items-center gap-3 text-[10px]">
-            {driverKind ? (
-              <div className="flex min-w-0 items-center gap-1.5">
-                <ProviderInstanceIcon
-                  displayName={providerEntry?.displayName ?? driverKind}
-                  driverKind={driverKind}
-                  iconClassName="size-3 shrink-0 grayscale opacity-60"
-                />
-                <span className="truncate">{providerEntry?.displayName ?? driverKind}</span>
+          {prStatus && thread.pullRequest ? (
+            <div className="flex min-w-0 items-start gap-2.5">
+              <GitPullRequestIcon className={`mt-1 size-3.5 shrink-0 ${prStatus.colorClass}`} />
+              <div className="grid min-w-0 gap-0.5">
+                <div className={`text-[11px] ${prStatus.colorClass}`}>
+                  #{thread.pullRequest.number} {prStatus.label}
+                </div>
+                <div className="line-clamp-2 wrap-anywhere text-foreground/75">
+                  {thread.pullRequest.title}
+                </div>
               </div>
-            ) : null}
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              <ClockIcon className="size-3" />
-              {formatRelativeTimeLabel(
-                thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
-              )}
-            </div>
-          </div>
-          {sessionError ? (
-            <div className="flex min-w-0 items-start gap-2 text-red-600 dark:text-red-400">
-              <CircleAlertIcon className="mt-0.5 size-3 shrink-0 stroke-current" />
-              <div className="min-w-0 flex-1 wrap-break-word">{sessionError}</div>
             </div>
           ) : null}
+        </div>
+        <ThreadTooltipActivity thread={thread} />
+        {sessionError ? (
+          <div className="flex min-w-0 items-start gap-2.5 text-red-600 dark:text-red-400">
+            <CircleAlertIcon className="mt-1 size-3.5 shrink-0 stroke-current" />
+            <div className="min-w-0 flex-1 wrap-anywhere">{sessionError}</div>
+          </div>
+        ) : null}
+        <div className="flex min-w-0 items-center gap-3 border-t border-border/60 pt-3 text-[11px] leading-4">
+          {driverKind ? (
+            <div className="flex min-w-0 items-center gap-1.5">
+              <ProviderInstanceIcon
+                displayName={providerEntry?.displayName ?? driverKind}
+                driverKind={driverKind}
+                iconClassName="size-3 shrink-0 grayscale opacity-60"
+              />
+              <span className="truncate">{providerEntry?.displayName ?? driverKind}</span>
+            </div>
+          ) : null}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <ClockIcon className="size-3" />
+            {formatRelativeTimeLabel(
+              thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt,
+            )}
+          </div>
         </div>
       </div>
     </TooltipPopup>

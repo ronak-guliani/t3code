@@ -3,6 +3,7 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  DEFAULT_BROWSER_PROFILE_ID,
   FILL_PREVIEW_VIEWPORT,
   type PreviewViewportSetting,
   type ScopedThreadRef,
@@ -126,6 +127,7 @@ export function PreviewView({
         }) ?? undefined)
       : undefined;
   const viewport = snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT;
+  const activeProfileId = snapshot?.profileId ?? DEFAULT_BROWSER_PROFILE_ID;
   const panelRect = useBrowserSurfaceStore((state) =>
     runtimeTabId ? (state.byTabId[runtimeTabId]?.rect ?? null) : null,
   );
@@ -656,6 +658,8 @@ export function PreviewView({
                 onToggleNativePictureInPicture={handleToggleNativePictureInPicture}
                 nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
                 nativePictureInPictureDisabled={!desktopOverlay || isUnreachable}
+                environmentId={threadRef.environmentId}
+                profileId={activeProfileId}
               />
             ) : null}
           </>
@@ -667,7 +671,7 @@ export function PreviewView({
           <BrowserSurfaceSlot
             key={runtimeTabId}
             tabId={runtimeTabId}
-            visible={visible && miniPlayerTabId !== tabId && !isUnreachable}
+            visible={visible && !isUnreachable}
             className="absolute inset-0 h-full w-full"
           />
         ) : null}
