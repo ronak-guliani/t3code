@@ -13,6 +13,8 @@ import {
   type ServerConfig,
 } from "@t3tools/contracts";
 import { DateTime } from "effect";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { page } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -23,6 +25,11 @@ import { resetServerStateForTests, setServerConfigSnapshot } from "../../rpc/ser
 import { ConnectionsSettings } from "./ConnectionsSettings";
 import { GeneralSettingsPanel } from "./SettingsPanels";
 import { __resetClientSettingsPersistenceForTests } from "../../hooks/useSettings";
+
+vi.mock("../../env", () => ({
+  // Desktop mode is fixed at module load, before individual bridge fixtures exist.
+  isElectron: true,
+}));
 
 vi.mock("../../environments/primary", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../environments/primary")>()),
@@ -349,6 +356,9 @@ const createDesktopBridgeStub = (overrides?: {
 };
 
 describe("GeneralSettingsPanel observability", () => {
+  let queryClient: QueryClient;
+  const renderSettings = (children: ReactNode) =>
+    render(<QueryClientProvider client={queryClient}>{children}</QueryClientProvider>);
   let mounted:
     | (Awaited<ReturnType<typeof render>> & {
         cleanup?: () => Promise<void>;
@@ -357,6 +367,7 @@ describe("GeneralSettingsPanel observability", () => {
     | null = null;
 
   beforeEach(async () => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     __resetClientSettingsPersistenceForTests();
     resetServerStateForTests();
     await __resetLocalApiForTests();
@@ -379,7 +390,7 @@ describe("GeneralSettingsPanel observability", () => {
         importBrowserCookies: importCookies,
       },
     });
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <GeneralSettingsPanel />
       </AppAtomRegistryProvider>,
@@ -412,6 +423,7 @@ describe("GeneralSettingsPanel observability", () => {
       await teardown?.call(mounted).catch(() => {});
     }
     mounted = null;
+    queryClient.clear();
     vi.unstubAllGlobals();
     Reflect.deleteProperty(window, "desktopBridge");
     Reflect.deleteProperty(window, "nativeApi");
@@ -476,7 +488,7 @@ describe("GeneralSettingsPanel observability", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <ConnectionsSettings />
       </AppAtomRegistryProvider>,
@@ -505,7 +517,7 @@ describe("GeneralSettingsPanel observability", () => {
   it("shows diagnostics inside About with a single logs-folder action", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <GeneralSettingsPanel />
       </AppAtomRegistryProvider>,
@@ -546,7 +558,7 @@ describe("GeneralSettingsPanel observability", () => {
     );
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <GeneralSettingsPanel />
       </AppAtomRegistryProvider>,
@@ -653,7 +665,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <ConnectionsSettings />
       </AppAtomRegistryProvider>,
@@ -729,7 +741,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <ConnectionsSettings />
       </AppAtomRegistryProvider>,
@@ -824,7 +836,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <ConnectionsSettings />
       </AppAtomRegistryProvider>,
@@ -843,7 +855,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <ConnectionsSettings />
       </AppAtomRegistryProvider>,
@@ -875,7 +887,7 @@ describe("GeneralSettingsPanel observability", () => {
 
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <GeneralSettingsPanel />
       </AppAtomRegistryProvider>,
@@ -890,7 +902,7 @@ describe("GeneralSettingsPanel observability", () => {
   it("renders the server-authoritative agent browser access toggle", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <GeneralSettingsPanel />
       </AppAtomRegistryProvider>,
@@ -910,7 +922,7 @@ describe("GeneralSettingsPanel observability", () => {
   it("shows an OpenCode server URL field in provider settings", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
-    mounted = await render(
+    mounted = await renderSettings(
       <AppAtomRegistryProvider>
         <GeneralSettingsPanel />
       </AppAtomRegistryProvider>,
