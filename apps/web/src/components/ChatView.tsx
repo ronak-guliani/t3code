@@ -981,6 +981,9 @@ function ChatViewBody(
     (surface) => surface.id === routeBrowserPanel.activeSurfaceId,
   );
   const browserPreviewOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "preview";
+  const filesOpen =
+    routeBrowserPanel.isOpen &&
+    (routeActiveSurface?.kind === "files" || routeActiveSurface?.kind === "file");
   const insightsOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "insights";
   const diffSurfaceOpen = routeBrowserPanel.isOpen && routeActiveSurface?.kind === "diff";
   const setPlanSidebarOpen = useCallback(
@@ -1760,6 +1763,17 @@ function ChatViewBody(
     state.open(activeThreadRef, "diff");
     if (!diffOpen) updateDiffSearch({ diff: "1" });
   }, [activeThreadRef, diffOpen, isServerThread, updateDiffSearch]);
+  const onToggleFiles = useCallback(() => {
+    if (!activeThreadRef || !activeProject) return;
+    const state = useRightPanelStore.getState();
+    const panel = state.byThreadKey[scopedThreadKey(activeThreadRef)];
+    const activeSurface = panel?.surfaces.find((surface) => surface.id === panel.activeSurfaceId);
+    if (panel?.isOpen && (activeSurface?.kind === "files" || activeSurface?.kind === "file")) {
+      state.close(activeThreadRef);
+      return;
+    }
+    state.open(activeThreadRef, "files");
+  }, [activeProject, activeThreadRef]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -4560,6 +4574,8 @@ function ChatViewBody(
     () => ({
       terminalAvailable: activeProject !== undefined,
       terminalOpen: terminalState.terminalOpen,
+      filesAvailable: activeProject !== undefined,
+      filesOpen,
       browserPreviewOpen,
       insightsOpen,
       diffOpen: diffSurfaceOpen,
@@ -4567,6 +4583,7 @@ function ChatViewBody(
       terminalToggleShortcutLabel,
       diffToggleShortcutLabel: diffPanelShortcutLabel,
       onToggleTerminal: toggleTerminalVisibility,
+      onToggleFiles,
       onToggleBrowserPreview: toggleBrowserPreview,
       onToggleInsights: toggleInsights,
       onToggleDiff,
@@ -4576,8 +4593,10 @@ function ChatViewBody(
       browserPreviewOpen,
       diffSurfaceOpen,
       diffPanelShortcutLabel,
+      filesOpen,
       insightsOpen,
       isGitRepo,
+      onToggleFiles,
       onToggleDiff,
       terminalState.terminalOpen,
       terminalToggleShortcutLabel,
