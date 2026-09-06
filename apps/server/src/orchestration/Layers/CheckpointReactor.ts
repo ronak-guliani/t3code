@@ -29,7 +29,7 @@ import {
 } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService, readRecoveryModel } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
 import { CheckpointInvariantError, type CheckpointStoreError } from "../../checkpointing/Errors.ts";
@@ -149,7 +149,7 @@ const make = Effect.gen(function* () {
   const resolveSessionRuntimeForThread = Effect.fn("resolveSessionRuntimeForThread")(function* (
     threadId: ThreadId,
   ): Effect.fn.Return<Option.Option<{ readonly threadId: ThreadId; readonly cwd: string }>> {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readRecoveryModel(orchestrationEngine, threadId);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
 
     const sessions = yield* providerService.listSessions();
@@ -461,7 +461,7 @@ const make = Effect.gen(function* () {
       }
 
       yield* runtimeIngestion.awaitTurnCompletionProcessed(event.eventId);
-      const readModel = yield* orchestrationEngine.getReadModel();
+      const readModel = yield* readRecoveryModel(orchestrationEngine, event.threadId);
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) {
         return;
@@ -562,7 +562,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readRecoveryModel(orchestrationEngine, threadId);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
       yield* Effect.logWarning(
@@ -617,7 +617,7 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const readModel = yield* orchestrationEngine.getReadModel();
+      const readModel = yield* readRecoveryModel(orchestrationEngine, event.threadId);
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) {
         return;
@@ -686,7 +686,7 @@ const make = Effect.gen(function* () {
   ) {
     const now = new Date().toISOString();
 
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readRecoveryModel(orchestrationEngine, event.payload.threadId);
     const thread = readModel.threads.find((entry) => entry.id === event.payload.threadId);
     if (!thread) {
       yield* appendRevertFailureActivity({

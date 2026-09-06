@@ -29,13 +29,24 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import {
+  OrchestrationEngineService,
+  readCommandModel,
+  readThreadDetail,
+} from "../Services/OrchestrationEngine.ts";
 import { assistantTurnCount } from "../Utils.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  canReplaceThreadTitle,
+  DEFAULT_THREAD_TITLE,
+  formatThreadTitleContext,
+} from "./ThreadTitleReactor.ts";
 
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
@@ -44,6 +55,7 @@ type ProviderIntentEvent = Extract<
   OrchestrationEvent,
   {
     type:
+      | "thread.meta-updated"
       | "thread.runtime-mode-set"
       | "thread.provider-fork-requested"
       | "thread.turn-start-requested"
@@ -175,6 +187,8 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const eventStore = yield* OrchestrationEventStore;
+  const projectionTurnRepository = yield* ProjectionTurnRepository;
   const checkpointStore = yield* CheckpointStore;
   const git = yield* GitCore;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
@@ -344,8 +358,12 @@ const make = Effect.gen(function* () {
       );
 
   const resolveThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     return readModel.threads.find((entry) => entry.id === threadId);
+  });
+
+  const resolveThreadWithBodies = Effect.fnUntraced(function* (threadId: ThreadId) {
+    return Option.getOrUndefined(yield* readThreadDetail(orchestrationEngine, threadId));
   });
 
   const hasActiveProviderTurn = (threadId: ThreadId) =>
@@ -411,7 +429,7 @@ const make = Effect.gen(function* () {
       readonly modelSelection?: ModelSelection;
     },
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     if (!thread) {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
@@ -757,10 +775,221 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const maybeGenerateThreadTitleForFirstTurn = Effect.fn("maybeGenerateThreadTitleForFirstTurn")(
+    function* (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+      readonly messageText: string;
+      readonly attachments?: ReadonlyArray<ChatAttachment>;
+      readonly titleSeed?: string;
+    }) {
+      const attachments = input.attachments ?? [];
+      yield* Effect.gen(function* () {
+        const { textGenerationModelSelection: modelSelection } =
+          yield* serverSettingsService.getSettings;
+
+        const generated = yield* textGeneration.generateThreadTitle({
+          cwd: input.cwd,
+          message: input.messageText,
+          ...(attachments.length > 0 ? { attachments } : {}),
+          modelSelection,
+        });
+        if (!generated) return;
+
+        const thread = yield* resolveThread(input.threadId);
+        if (!thread) return;
+        if (!canReplaceThreadTitle(thread.title, input.titleSeed)) {
+          return;
+        }
+
+        yield* orchestrationEngine.dispatch({
+          type: "thread.meta.update",
+          commandId: serverCommandId("thread-title-rename"),
+          threadId: input.threadId,
+          title: generated.title,
+        });
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor failed to generate or rename thread title", {
+            threadId: input.threadId,
+            cwd: input.cwd,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    },
+  );
+
+  const dispatchThreadTitleRegenerationCompletion = Effect.fn(
+    "dispatchThreadTitleRegenerationCompletion",
+  )(function* (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: CommandId;
+    readonly title?: string;
+  }) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.title.regeneration.complete",
+      commandId: serverCommandId("thread-title-regeneration-complete"),
+      threadId: input.threadId,
+      requestId: input.requestId,
+      ...(input.title !== undefined ? { title: input.title } : {}),
+    });
+  });
+
+  const regenerateThreadTitle = Effect.fn("regenerateThreadTitle")(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.meta-updated" }>,
+    requestId: CommandId,
+  ) {
+    if (event.payload.regenerateTitle !== true) {
+      return { _tag: "Superseded" } as const;
+    }
+
+    const thread = yield* resolveThreadWithBodies(event.payload.threadId);
+    if (!thread || thread.titleRegeneration?.requestId !== requestId) {
+      return { _tag: "Superseded" } as const;
+    }
+
+    const { message, attachments } = formatThreadTitleContext(thread.messages);
+    if (message.length === 0) {
+      return { _tag: "Completed", title: undefined } as const;
+    }
+
+    const previousTitle = event.payload.previousTitle ?? thread.title;
+    if (thread.title !== previousTitle) {
+      return { _tag: "Superseded" } as const;
+    }
+    const cwd =
+      resolveThreadWorkspaceCwd({
+        thread,
+        projects: (yield* orchestrationEngine.getReadModel()).projects,
+      }) ?? process.cwd();
+    const { textGenerationModelSelection: modelSelection } =
+      yield* serverSettingsService.getSettings;
+    const generated = yield* textGeneration.generateThreadTitle({
+      cwd,
+      message,
+      previousTitle,
+      ...(attachments.length > 0 ? { attachments } : {}),
+      modelSelection,
+    });
+    if (
+      !generated ||
+      generated.title === DEFAULT_THREAD_TITLE ||
+      generated.title === previousTitle
+    ) {
+      return { _tag: "Completed", title: undefined } as const;
+    }
+
+    const latestThread = yield* resolveThread(event.payload.threadId);
+    if (
+      !latestThread ||
+      latestThread.titleRegeneration?.requestId !== requestId ||
+      latestThread.title !== previousTitle
+    ) {
+      return { _tag: "Superseded" } as const;
+    }
+
+    return { _tag: "Completed", title: generated.title } as const;
+  });
+
+  const processThreadTitleRegenerationSafely = Effect.fn("processThreadTitleRegenerationSafely")(
+    function* (event: Extract<ProviderIntentEvent, { type: "thread.meta-updated" }>) {
+      if (event.payload.regenerateTitle !== true) {
+        return;
+      }
+
+      const requestId = event.payload.titleRegeneration?.requestId ?? event.commandId;
+      if (requestId === null) {
+        return;
+      }
+      const result = yield* regenerateThreadTitle(event, requestId).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          return Effect.logWarning("provider command reactor failed to regenerate thread title", {
+            threadId: event.payload.threadId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as({ _tag: "Completed", title: undefined } as const));
+        }),
+      );
+      if (result._tag === "Superseded") {
+        return;
+      }
+
+      const completion = {
+        threadId: event.payload.threadId,
+        requestId,
+        ...(result.title !== undefined ? { title: result.title } : {}),
+      };
+      yield* dispatchThreadTitleRegenerationCompletion(completion).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          return Effect.logWarning(
+            "provider command reactor retrying title regeneration completion",
+            {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            },
+          ).pipe(Effect.andThen(dispatchThreadTitleRegenerationCompletion(completion)));
+        }),
+      );
+    },
+    (effect, event) =>
+      effect.pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          return Effect.logWarning(
+            "provider command reactor failed to complete title regeneration",
+            {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(cause),
+            },
+          );
+        }),
+      ),
+  );
+  const threadTitleRegenerationWorker = yield* makeDrainableWorker(
+    processThreadTitleRegenerationSafely,
+  );
+
+  const clearInterruptedThreadTitleRegenerations = Effect.fn(
+    "clearInterruptedThreadTitleRegenerations",
+  )(function* () {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const interrupted = readModel.threads.flatMap((thread) => {
+      const requestId = thread.titleRegeneration?.requestId;
+      return requestId === undefined ? [] : [{ threadId: thread.id, requestId }];
+    });
+    yield* Effect.forEach(
+      interrupted,
+      ({ threadId, requestId }) =>
+        dispatchThreadTitleRegenerationCompletion({ threadId, requestId }).pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) {
+              return Effect.interrupt;
+            }
+            return Effect.logWarning(
+              "provider command reactor failed to clear interrupted title regeneration",
+              {
+                threadId,
+                cause: Cause.pretty(cause),
+              },
+            );
+          }),
+        ),
+      { discard: true },
+    );
+  });
+
   const processProviderForkRequested = Effect.fn("processProviderForkRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.provider-fork-requested" }>,
   ) {
-    const readModel = yield* orchestrationEngine.getReadModel();
+    const readModel = yield* readCommandModel(orchestrationEngine);
     const sourceThread = readModel.threads.find(
       (entry) => entry.id === event.payload.sourceThreadId,
     );
@@ -926,7 +1155,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const thread = yield* resolveThread(event.payload.threadId);
+    const thread = yield* resolveThreadWithBodies(event.payload.threadId);
     if (!thread) {
       return;
     }
@@ -948,6 +1177,11 @@ const make = Effect.gen(function* () {
     const isFirstUserMessageTurn =
       thread.messages.filter((entry) => entry.role === "user").length === 1;
     if (isFirstUserMessageTurn) {
+      const generationCwd =
+        resolveThreadWorkspaceCwd({
+          thread,
+          projects: (yield* readCommandModel(orchestrationEngine)).projects,
+        }) ?? process.cwd();
       const generationInput = {
         messageText: message.text,
         ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
@@ -1376,6 +1610,48 @@ const make = Effect.gen(function* () {
 
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent),
+    );
+    yield* projectionTurnRepository.listPendingTurnStarts().pipe(
+      Effect.flatMap((durablePendingTurnStarts) =>
+        Effect.forEach(
+          durablePendingTurnStarts,
+          (pendingTurnStart) =>
+            eventStore.findTurnStartRequested(pendingTurnStart).pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () =>
+                    Effect.logWarning("pending turn start has no durable start intent", {
+                      threadId: pendingTurnStart.threadId,
+                      messageId: pendingTurnStart.messageId,
+                    }),
+                  onSome: processEvent,
+                }),
+              ),
+            ),
+          { concurrency: 1 },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider command reactor failed to resume pending turn starts", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
+    // Correlated completions only clear the request captured here, leaving any
+    // newer request untouched.
+    yield* clearInterruptedThreadTitleRegenerations().pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) {
+          return Effect.interrupt;
+        }
+        return Effect.logWarning(
+          "provider command reactor failed to clear interrupted title regenerations",
+          {
+            cause: Cause.pretty(cause),
+          },
+        );
+      }),
     );
   });
 

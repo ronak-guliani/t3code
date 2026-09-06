@@ -2425,14 +2425,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            getReadModel: () =>
+            getCommandReadModel: () =>
               PubSub.publish(liveEvents, messageEvent).pipe(
                 Effect.as({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
               ),
+            getReadModel: () => Effect.die("Resume should use the compact command model"),
             readEvents: () => Stream.make(messageEvent),
             streamDomainEvents: Stream.fromPubSub(liveEvents),
           },
           projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(1),
             getThreadDetailSnapshotById: () =>
               Effect.die("A valid resume cursor must not reload the thread snapshot"),
           },
@@ -2490,11 +2492,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            getReadModel: () =>
+            getCommandReadModel: () =>
               Effect.succeed({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
+            getReadModel: () => Effect.die("Resume should use the compact command model"),
             readEvents: () => Stream.make(unrelatedEvent),
           },
           projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(1),
             getThreadDetailSnapshotById: () =>
               Effect.die("A valid resume cursor must not reload the thread snapshot"),
           },
@@ -2561,14 +2565,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           orchestrationEngine: {
-            getReadModel: () =>
+            getCommandReadModel: () =>
               PubSub.publish(liveEvents, createdEvent).pipe(
                 Effect.as({ ...makeDefaultOrchestrationReadModel(), snapshotSequence: 2 }),
               ),
+            getReadModel: () => Effect.die("Resume should use the compact command model"),
             readEvents: () => Stream.make(createdEvent),
             streamDomainEvents: Stream.fromPubSub(liveEvents),
           },
           projectionSnapshotQuery: {
+            getSnapshotSequence: () => Effect.succeed(1),
             getShellSnapshot: () =>
               Effect.die("A valid resume cursor must not reload the shell snapshot"),
             getThreadShellById: () => Effect.succeed(Option.some(thread)),
@@ -2851,6 +2857,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 updatedAt: "2026-05-10T00:00:00.000Z",
               }),
             getThreadDetailById: () => Effect.succeed(Option.some(defaultThread)),
+            getThreadDetailSnapshotById: () =>
+              Effect.succeed(
+                Option.some({
+                  snapshotSequence: 5,
+                  thread: defaultThread,
+                }),
+              ),
           },
           orchestrationEngine: {
             getReadModel: () => Effect.succeed({ ...readModel, snapshotSequence: 5 }),
