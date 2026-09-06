@@ -1,7 +1,7 @@
-import { useNavigation } from "@react-navigation/native";
 import { useCallback } from "react";
 import { Alert } from "react-native";
 
+import { useAppNavigation } from "../../lib/use-app-navigation";
 import { removeThreadOutboxMessage } from "../../state/thread-outbox-removal";
 import { clearComposerDraftContent } from "../../state/use-composer-drafts";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
@@ -11,7 +11,7 @@ export function usePendingTaskListActions(): {
   readonly openPendingTask: (pendingTask: PendingNewTask) => void;
   readonly confirmDeletePendingTask: (pendingTask: PendingNewTask) => void;
 } {
-  const navigation = useNavigation();
+  const navigation = useAppNavigation();
 
   const openPendingTask = useCallback(
     (pendingTask: PendingNewTask) => {

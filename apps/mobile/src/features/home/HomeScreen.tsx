@@ -14,10 +14,10 @@ import {
 } from "@t3tools/client-runtime/state/thread-search";
 import {
   type EnvironmentId,
-  resolveEnvironmentMachineKind,
   type SidebarProjectGroupingMode,
   type SidebarThreadSortOrder,
 } from "@t3tools/contracts";
+import { resolveEnvironmentMachineKind } from "@t3tools/shared/environmentMachine";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useFocusEffect } from "@react-navigation/native";

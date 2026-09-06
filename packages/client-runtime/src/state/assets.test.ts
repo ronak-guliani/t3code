@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type AssetCreateUrlResult, EnvironmentId } from "@t3tools/contracts";
+import { type AssetCreateUrlResult, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
@@ -8,11 +8,23 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import { createProjectFaviconCache } from "../projectFaviconCache.ts";
 import {
+  compatibleAssetResource,
   createAssetEnvironmentAtoms,
   createProjectFaviconUrlAtomFamily,
   InvalidAssetCollectionKeyError,
   parseAssetCollectionKey,
 } from "./assets.ts";
+
+describe("asset compatibility", () => {
+  it("uses workspace files for media resources on older servers", () => {
+    expect(
+      compatibleAssetResource(
+        { _tag: "media-file", threadId: ThreadId.make("thread-1"), path: "image.png" },
+        { repositoryIdentity: true },
+      ),
+    ).toEqual({ _tag: "workspace-file", threadId: "thread-1", path: "image.png" });
+  });
+});
 
 describe("asset collection keys", () => {
   it("preserves malformed JSON and its native cause", () => {

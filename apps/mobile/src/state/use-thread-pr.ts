@@ -41,7 +41,7 @@ export {
 export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentation | null {
   const pullRequestRef = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
   const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-  const snapshotIdentity = JSON.stringify(pullRequestRef);
+  const snapshotIdentity = JSON.stringify(thread.pullRequest ?? pullRequestRef);
   // Select this row's entry so writes for other rows do not re-render it.
   const snapshotEntry = useAtomValue(
     threadPrSnapshotsAtom,
@@ -52,7 +52,7 @@ export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentatio
   );
   const snapshot = snapshotEntry?.identity === snapshotIdentity ? snapshotEntry.presentation : null;
   const pullRequestSummary = useEnvironmentQuery(
-    pullRequestRef === null
+    thread.pullRequest != null || pullRequestRef === null
       ? null
       : pullRequestSummaryAtom({
           environmentId: thread.environmentId,
@@ -65,6 +65,9 @@ export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentatio
   );
 
   const live = useMemo<ThreadPrPresentation | null | undefined>(() => {
+    if (thread.pullRequest != null) {
+      return presentThreadPr({ ...thread.pullRequest, isDraft: false }, null);
+    }
     if (pullRequestRef === null) return null;
     const summary = pullRequestSummary.data;
     return summary === null
@@ -74,7 +77,7 @@ export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentatio
           name: summary.provider,
           baseUrl: "",
         });
-  }, [pullRequestRef, pullRequestSummary.data]);
+  }, [pullRequestRef, pullRequestSummary.data, thread.pullRequest]);
 
   useEffect(() => {
     if (live === undefined) return;

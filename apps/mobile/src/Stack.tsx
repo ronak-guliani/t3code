@@ -15,6 +15,7 @@ import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native"
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
@@ -404,7 +405,7 @@ function RootStackLayout(props: {
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ExistingThreadSettingsRouteProvider>
         <AdaptiveWorkspaceLayout pathname={workspacePathname}>
-          {props.children}
+          <RouteErrorBoundary routeName={pathname}>{props.children}</RouteErrorBoundary>
         </AdaptiveWorkspaceLayout>
       </ExistingThreadSettingsRouteProvider>
     </HardwareKeyboardCommandProvider>

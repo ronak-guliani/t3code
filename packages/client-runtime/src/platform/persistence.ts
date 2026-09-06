@@ -144,7 +144,9 @@ export class EnvironmentCacheStore extends Context.Service<
 >()("@t3tools/client-runtime/platform/persistence/EnvironmentCacheStore") {}
 
 export class EnvironmentOwnedDataCleanup extends Context.Reference<{
-  readonly clear: (environmentId: EnvironmentId) => Effect.Effect<void>;
+  readonly clear: (
+    environmentId: EnvironmentId,
+  ) => Effect.Effect<void, EnvironmentOwnedDataCleanupError>;
 }>("@t3tools/client-runtime/platform/persistence/EnvironmentOwnedDataCleanup", {
   defaultValue: () => ({
     clear: () => Effect.void,

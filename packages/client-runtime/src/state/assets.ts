@@ -1,8 +1,10 @@
 import {
+  type AssetCreateUrlInput,
   type AssetCreateUrlResult,
   type AssetImageDimensions,
   AssetResource,
   EnvironmentId,
+  type ExecutionEnvironmentCapabilities,
   WS_METHODS,
 } from "@t3tools/contracts";
 import {
@@ -12,11 +14,24 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import type { ProjectFaviconCache, ProjectFaviconTarget } from "../projectFaviconCache.ts";
-import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import { request } from "../rpc/client.ts";
+import { createEnvironmentQueryAtomFamily } from "./runtime.ts";
+
+export function compatibleAssetResource(
+  resource: AssetResource,
+  capabilities: ExecutionEnvironmentCapabilities,
+): AssetResource {
+  if (resource._tag === "media-file" && capabilities.mediaFiles !== true) {
+    return { _tag: "workspace-file", threadId: resource.threadId, path: resource.path };
+  }
+  return resource;
+}
 
 const ASSET_URL_REFRESH_INTERVAL_MS = 30 * 60_000;
 const ASSET_URL_STALE_TIME_MS = 5 * 60_000;
@@ -93,9 +108,21 @@ export function assetUrlStateFromResult(
 export function createAssetEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
-  const createUrl = createEnvironmentRpcQueryAtomFamily(runtime, {
+  const createUrl = createEnvironmentQueryAtomFamily(runtime, {
     label: "environment-data:assets:create-url",
-    tag: WS_METHODS.assetsCreateUrl,
+    execute: (input: AssetCreateUrlInput) =>
+      Effect.gen(function* () {
+        let resource = input.resource;
+        if (resource._tag === "media-file") {
+          const supervisor = yield* EnvironmentSupervisor;
+          const session = yield* SubscriptionRef.get(supervisor.session);
+          if (Option.isSome(session)) {
+            const config = yield* session.value.initialConfig;
+            resource = compatibleAssetResource(resource, config.environment.capabilities);
+          }
+        }
+        return yield* request(WS_METHODS.assetsCreateUrl, { ...input, resource });
+      }),
     staleTimeMs: ASSET_URL_STALE_TIME_MS,
     idleTtlMs: ASSET_URL_IDLE_TTL_MS,
     refreshIntervalMs: ASSET_URL_REFRESH_INTERVAL_MS,

@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { EnvironmentMachineKind, ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import { ServerAuthDescriptor } from "./auth.ts";
 import {
   IsoDateTime,
@@ -293,18 +293,6 @@ export const ServerConfig = Schema.Struct({
   usageLimitSources: Schema.optional(UsageLimitSourceSnapshots),
 });
 export type ServerConfig = typeof ServerConfig.Type;
-
-/**
- * The machine an environment should be drawn as: the user's pick, else what
- * the server detected, else a generic server. A null config (not connected
- * yet, or an older server) resolves to the same generic so rows never
- * flicker between glyphs.
- */
-export function resolveEnvironmentMachineKind(
-  config: Pick<ServerConfig, "environment" | "settings"> | null,
-): EnvironmentMachineKind {
-  return config?.settings.environmentIcon ?? config?.environment.platform.machine ?? "server";
-}
 
 export const ServerUpsertKeybindingInput = KeybindingRule;
 export type ServerUpsertKeybindingInput = typeof ServerUpsertKeybindingInput.Type;

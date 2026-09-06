@@ -65,4 +65,29 @@ describe("project thread title", () => {
     expect(input.bootstrap.createThread.title).toBe(input.titleSeed);
     expect(input.message.text).toBe(text);
   });
+
+  it("preserves parent ancestry when creating a nested thread", () => {
+    const parentThreadId = ThreadId.make("parent-thread");
+    const input = buildProjectThreadStartTurnInput({
+      projectId: ProjectId.make("project"),
+      parentThreadId,
+      projectCwd: "/workspace",
+      threadId: "new-thread",
+      commandId: "command",
+      messageId: "message",
+      createdAt: "2026-09-01T00:00:00Z",
+      text: "Follow up",
+      uploadedAttachments: [],
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceMode: "local",
+      branch: null,
+      worktreePath: null,
+      startFromOrigin: false,
+      worktreeBranchName: "unused",
+    });
+
+    expect(input.bootstrap.createThread.parentThreadId).toBe(parentThreadId);
+  });
 });
