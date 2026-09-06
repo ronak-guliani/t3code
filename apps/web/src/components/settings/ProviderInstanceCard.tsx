@@ -452,6 +452,8 @@ function ProviderEnvironmentSection(props: {
 }
 
 interface ProviderInstanceCardProps {
+  automaticPrFeedback: boolean;
+  onAutomaticPrFeedbackChange: (enabled: boolean) => void;
   readonly instanceId: ProviderInstanceId;
   readonly instance: ProviderInstanceConfig;
   readonly driverOption: DriverOption | undefined;
@@ -507,6 +509,8 @@ interface ProviderInstanceCardProps {
  *     flows through the envelope.
  */
 export function ProviderInstanceCard({
+  automaticPrFeedback,
+  onAutomaticPrFeedbackChange,
   instanceId,
   instance,
   driverOption,
@@ -781,6 +785,30 @@ export function ProviderInstanceCard({
                 </label>
               </div>
             ))}
+
+            {instance.driver === "copilot" || instance.driver === "copilot-acp-native" ? (
+              <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+                <div className="flex items-center justify-between gap-4">
+                  <label
+                    htmlFor={`provider-instance-${instanceId}-automatic-pr-feedback`}
+                    className="text-xs font-medium text-foreground"
+                  >
+                    Allow automatic PR feedback (interrupt risk)
+                  </label>
+                  <Switch
+                    id={`provider-instance-${instanceId}-automatic-pr-feedback`}
+                    checked={automaticPrFeedback}
+                    onCheckedChange={(checked) => onAutomaticPrFeedbackChange(Boolean(checked))}
+                  />
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Off by default: Copilot ACP can report completion while background work continues.
+                  Automatic feedback may interrupt that work, including when switching providers.
+                  Pending feedback resumes automatically when enabled; changing this setting does
+                  not restart provider sessions. This does not fix hidden activity or checkpoints.
+                </p>
+              </div>
+            ) : null}
 
             {driverOption !== undefined ? (
               <ProviderModelsSection

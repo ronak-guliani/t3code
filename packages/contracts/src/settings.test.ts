@@ -26,6 +26,25 @@ const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
+describe("Copilot ACP containment", () => {
+  it("defaults automation policy off outside provider runtime config", () => {
+    expect(decodeServerSettings({}).copilotAutomaticPrFeedback).toEqual({});
+    expect(decodeServerSettings({}).providers.copilot).not.toHaveProperty(
+      "allowAutomaticPrFeedback",
+    );
+  });
+
+  it("requires a boolean opt-in", () => {
+    expect(() =>
+      decodeServerSettings({ copilotAutomaticPrFeedback: { copilot: "true" } }),
+    ).toThrow();
+    expect(
+      decodeServerSettingsPatch({ copilotAutomaticPrFeedback: { copilot: true } })
+        .copilotAutomaticPrFeedback?.[ProviderInstanceId.make("copilot")],
+    ).toBe(true);
+  });
+});
+
 describe("ServerSettings.agentWorkflows", () => {
   it("defaults the Fix Review Issues workflow on for legacy settings", () => {
     const decoded = decodeServerSettings({});

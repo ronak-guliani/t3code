@@ -409,7 +409,7 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
     }),
   );
 
-  it.effect("settles immediately when end_turn declares no background tasks", () =>
+  it.effect("warns once about unowned continuation without reopening a completed turn", () =>
     Effect.gen(function* () {
       const adapter = yield* CopilotAdapter;
       const settings = yield* ServerSettingsService;
@@ -434,23 +434,35 @@ copilotAdapterTestLayer("CopilotAdapterLive", (it) => {
             event.type === "item.updated" ||
             event.type === "item.completed" ||
             event.type === "content.delta" ||
+            event.type === "runtime.warning" ||
+            event.type === "thread.token-usage.updated" ||
             event.type === "turn.completed",
         ),
-        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.takeUntil((event) => event.type === "thread.token-usage.updated"),
         Stream.runCollect,
         Effect.forkChild,
       );
       yield* Effect.yieldNow;
 
-      const startedAt = Date.now();
       yield* adapter.sendTurn({ threadId, input: "continue later", attachments: [] });
       const events = Array.from(yield* Fiber.join(eventsFiber));
 
-      assert.isBelow(Date.now() - startedAt, 750);
       assert.deepEqual(
         events.map((event) => event.type),
-        ["turn.completed"],
+        ["turn.completed", "runtime.warning", "thread.token-usage.updated"],
       );
+      const warning = events.find((event) => event.type === "runtime.warning");
+      assert.isUndefined(warning?.turnId);
+      if (warning?.type === "runtime.warning") {
+        assert.include(warning.payload.message, "completion is uncertain");
+        assert.deepEqual(warning.payload.detail, {
+          code: "copilot-acp-post-completion-activity",
+          eventKind: "ToolCallUpdated",
+        });
+        assert.notInclude(JSON.stringify(warning), "git status");
+      }
+      const sessions = yield* adapter.listSessions();
+      assert.equal(sessions.find((session) => session.threadId === threadId)?.status, "ready");
 
       yield* adapter.stopSession(threadId);
     }),

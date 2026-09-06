@@ -108,6 +108,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
+import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
@@ -572,6 +573,37 @@ export const ChatComposer = memo(
       activeThreadModelSelection?.instanceId ??
       activeProjectDefaultModelSelection?.instanceId ??
       null;
+    const queuedPolicyBlocks = useMemo(() => {
+      const blocks = new Map<QueuedTurnId, string>();
+      for (const turn of queuedTurns) {
+        if (turn.failedAt !== null || turn.origin?.kind !== "pull-request-monitor") continue;
+        const target = turn.modelSelection?.instanceId ?? activeThreadModelSelection?.instanceId;
+        if (!target) continue;
+        const session = activeThread?.session;
+        const reason = automaticPrFeedbackBlockReason(
+          {
+            providerInstances: settings.providerInstances,
+            copilotAutomaticPrFeedback: settings.copilotAutomaticPrFeedback,
+          },
+          target,
+          session
+            ? {
+                providerName: session.provider,
+                providerInstanceId: session.providerInstanceId,
+                status: session.orchestrationStatus,
+              }
+            : null,
+        );
+        if (reason) blocks.set(turn.id, reason);
+      }
+      return blocks;
+    }, [
+      queuedTurns,
+      activeThreadModelSelection?.instanceId,
+      activeThread?.session,
+      settings.providerInstances,
+      settings.copilotAutomaticPrFeedback,
+    ]);
     const explicitSelectedInstanceId = selectedProviderByThreadId ?? threadProvider;
 
     const unlockedSelectedProvider =
@@ -2093,6 +2125,7 @@ export const ChatComposer = memo(
           >
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
+                policyBlocks={queuedPolicyBlocks}
                 queuedTurns={queuedTurns}
                 editingQueuedTurnId={editingQueuedTurn?.id ?? null}
                 editingText={editingQueuedTurn?.text ?? ""}

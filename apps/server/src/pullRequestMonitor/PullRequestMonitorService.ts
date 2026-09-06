@@ -24,6 +24,7 @@ import {
   type PullRequestMonitorFallbackReason,
   type PullRequestRef,
   type ThreadId,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
@@ -44,6 +45,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
+import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import {
   formatPullRequestMonitorCanonicalKey,
   repositoryFromPullRequestUrl,
@@ -228,6 +230,19 @@ export const layer = Layer.effect(
         })
         .pipe(Effect.map((monitors) => ({ monitors })));
 
+    const automationBlockReason = (monitor: PullRequestMonitorRecord, settings: ServerSettings) =>
+      Effect.gen(function* () {
+        const owner = monitor.ownerThreadId
+          ? yield* projections.getThreadShellById(monitor.ownerThreadId)
+          : Option.none();
+        const shell = Option.getOrNull(owner);
+        const target =
+          shell && shell.archivedAt === null
+            ? shell.modelSelection.instanceId
+            : settings.textGenerationModelSelection.instanceId;
+        return automaticPrFeedbackBlockReason(settings, target, shell?.session);
+      });
+
     const status = (input: PullRequestMonitorStatusInput) =>
       Effect.gen(function* () {
         const monitor = yield* resolveMonitor(input).pipe(
@@ -261,8 +276,18 @@ export const layer = Layer.effect(
         const openFeedback = yield* feedback.listOpenItems(monitor.id);
         const recentDeliveries = yield* feedback.listDeliveries(monitor.id);
         const recentReports = yield* feedback.listReports(monitor.id);
+        const blockReason =
+          monitor.enabled && openFeedback.length > 0
+            ? yield* serverSettings.getSettings.pipe(
+                Effect.flatMap((settings) => automationBlockReason(monitor, settings)),
+                Effect.mapError((cause) =>
+                  monitorError("Could not resolve automatic PR feedback policy.", { cause }),
+                ),
+              )
+            : null;
         return {
           monitor,
+          ...(blockReason ? { automationBlockReason: blockReason } : {}),
           ownerCandidates,
           latestSnapshot: latest?.snapshot ?? null,
           recentEvents: latest?.events ?? [],
@@ -595,18 +620,26 @@ export const layer = Layer.effect(
 
         // Auto fallback only when owner is explicitly missing/unavailable and there is work.
         // Fail closed on settings/read errors and operational projection failures.
-        if (actionableEvents.length > 0 && snapshot.state === "open" && updated.enabled) {
+        if (
+          snapshot.state === "open" &&
+          updated.enabled &&
+          (actionableEvents.length > 0 || (yield* feedback.listOpenItems(updated.id)).length > 0)
+        ) {
           const availability = yield* ownerAvailability(updated.ownerThreadId);
           if (availability.kind === "unavailable") {
             const settingsResult = yield* Effect.result(serverSettings.getSettings);
             if (
               Result.isSuccess(settingsResult) &&
-              settingsResult.success.autoLaunchPrMonitorFallback === true
+              settingsResult.success.autoLaunchPrMonitorFallback === true &&
+              (yield* automationBlockReason(updated, settingsResult.success)) === null
             ) {
-              yield* launchFallback({
-                monitorId: updated.id,
-                reason: availability.reason,
-              }).pipe(Effect.ignore);
+              yield* launchFallback(
+                {
+                  monitorId: updated.id,
+                  reason: availability.reason,
+                },
+                settingsResult.success,
+              ).pipe(Effect.ignore);
             }
           }
         }
@@ -881,6 +914,7 @@ export const layer = Layer.effect(
 
     const launchFallback = (
       input: PullRequestMonitorLaunchFallbackInput,
+      settings: ServerSettings,
     ): Effect.Effect<PullRequestMonitorLaunchFallbackResult, PullRequestMonitorError> =>
       Effect.gen(function* () {
         const monitor = yield* resolveMonitor(input);
@@ -1065,16 +1099,6 @@ export const layer = Layer.effect(
             label: "blocked" as const,
             blockers: [{ kind: "checks-missing" as const, detail: "No readiness yet" }],
           };
-          const settingsResult = yield* Effect.result(serverSettings.getSettings);
-          if (Result.isFailure(settingsResult)) {
-            return yield* failLaunch({
-              message: "Could not read settings for fallback launch.",
-              threadId: null,
-              cause: settingsResult.failure,
-            });
-          }
-          const settings = settingsResult.success;
-
           const projectShellResult = yield* Effect.result(
             projections.getProjectShellById(monitor.projectId),
           );
@@ -1299,7 +1323,13 @@ export const layer = Layer.effect(
       report,
       transferOwnership,
       submitFindings,
-      launchFallback,
+      launchFallback: (input) =>
+        serverSettings.getSettings.pipe(
+          Effect.mapError((cause) =>
+            monitorError("Could not read settings for fallback launch.", { cause }),
+          ),
+          Effect.flatMap((settings) => launchFallback(input, settings)),
+        ),
     });
   }),
 );

@@ -32,6 +32,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceConfigMap,
   ProviderInstanceId,
+  DEFAULT_SERVER_SETTINGS,
 } from "@t3tools/contracts";
 import { Effect, Layer } from "effect";
 
@@ -43,6 +44,7 @@ import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
+import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 
 const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
   enabled: false,
@@ -90,6 +92,40 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
   }).pipe(
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+  );
+
+  it.live("does not rebuild provider instances when only feedback policy changes", () =>
+    Effect.gen(function* () {
+      const id = ProviderInstanceId.make("codex");
+      const settings = {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: {
+          [id]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: false,
+            config: makeCodexConfig({}),
+          },
+        },
+      };
+      const { registry, mutator } = yield* makeProviderInstanceRegistry({
+        drivers: [CodexDriver],
+        configMap: deriveProviderInstanceConfigMap(settings),
+      });
+      const before = yield* registry.getInstance(id);
+      yield* mutator.reconcile(
+        deriveProviderInstanceConfigMap({
+          ...settings,
+          copilotAutomaticPrFeedback: { [ProviderInstanceId.make("copilot")]: true },
+        }),
+      );
+      expect(yield* registry.getInstance(id)).toBe(before);
+      expect(deriveProviderInstanceConfigMap(settings)).toEqual(
+        deriveProviderInstanceConfigMap({
+          ...settings,
+          copilotAutomaticPrFeedback: { [ProviderInstanceId.make("copilot")]: true },
+        }),
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
