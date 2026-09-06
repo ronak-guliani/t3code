@@ -31,7 +31,7 @@ import {
   ReviewResult,
   ReviewSnapshot,
 } from "@t3tools/contracts";
-import { Effect, Layer, Option, Schema, Struct } from "effect";
+import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
@@ -68,6 +68,26 @@ import {
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
+
+export interface ProjectionSnapshotQueryTestHooksShape {
+  readonly beforeShellSnapshotCursorRead: Effect.Effect<void>;
+}
+
+const defaultProjectionSnapshotQueryTestHooks: ProjectionSnapshotQueryTestHooksShape = {
+  beforeShellSnapshotCursorRead: Effect.void,
+};
+
+export const ProjectionSnapshotQueryTestHooks =
+  Context.Reference<ProjectionSnapshotQueryTestHooksShape>(
+    "t3/orchestration/ProjectionSnapshotQueryTestHooks",
+    { defaultValue: () => defaultProjectionSnapshotQueryTestHooks },
+  );
+
+const beforeShellSnapshotCursorRead = Effect.flatMap(
+  Effect.service(ProjectionSnapshotQueryTestHooks),
+  (hooks) => hooks.beforeShellSnapshotCursorRead,
+);
+
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
@@ -1932,11 +1952,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listProjectionStateRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
-                "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+          beforeShellSnapshotCursorRead.pipe(
+            Effect.andThen(
+              listProjectionStateRows(undefined).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
+                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+                  ),
+                ),
               ),
             ),
           ),
