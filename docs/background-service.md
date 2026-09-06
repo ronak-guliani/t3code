@@ -35,6 +35,19 @@ kill the process that `RunAtLoad` has just started. A failed candidate restores 
 service when shutdown succeeds. If launchd cannot confirm shutdown, the installer reports that
 failure and retains the runtime rather than deleting files a process might still be using.
 
+### Multiple desktop and CLI environments
+
+Each environment must keep its own data directory. Do not start a foreground `t3` against a
+directory already served in the background. Connect targets the server's actual listening
+address family and port rather than `localhost`, so a separate IPv6 server cannot intercept
+a desktop environment's IPv4 tunnel. Desktop and CLI builds both need this startup fix;
+updating only the CLI does not update an already running desktop application's tunnel.
+
+If mobile reports `endpoint_request_failed`, a running connector alone does not prove that the
+endpoint is healthy. Compare `/.well-known/t3/environment` on the host and its public endpoint:
+the `environmentId` must match. Do not delete mobile environments to repair host routing;
+removal clears local drafts and queued work.
+
 ## Owned Remote Access (no phone VPN)
 
 Use a permanent Cloudflare Tunnel to connect phones, tablets, and browsers over ordinary

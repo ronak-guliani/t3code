@@ -3,6 +3,8 @@ import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Option, Ref, Stream } from "effect";
 import { TestClock } from "effect/testing";
+import { HttpServer } from "effect/unstable/http";
+import { createServer } from "node:http";
 
 import { ServerConfig } from "./config.ts";
 import {
@@ -17,9 +19,94 @@ import {
   makeCommandGate,
   resolveAutoBootstrapWelcomeTargets,
   resolveWelcomeBase,
+  resolveListeningLocalOrigin,
   retryConnectReconciliation,
   ServerRuntimeStartupError,
 } from "./serverRuntimeStartup.ts";
+
+it.effect("targets the listening address family and actual port for Connect", () =>
+  Effect.gen(function* () {
+    for (const [hostname, expected] of [
+      ["0.0.0.0", "http://127.0.0.1:43123"],
+      ["127.0.0.1", "http://127.0.0.1:43123"],
+      ["::", "http://[::1]:43123"],
+      ["[::]", "http://[::1]:43123"],
+      ["::1", "http://[::1]:43123"],
+      ["192.168.1.20", "http://192.168.1.20:43123"],
+    ]) {
+      const origin = yield* resolveListeningLocalOrigin.pipe(
+        Effect.provideService(
+          HttpServer.HttpServer,
+          HttpServer.HttpServer.of({
+            address: { _tag: "TcpAddress", hostname: hostname!, port: 43123 },
+            serve: () => Effect.void,
+          }),
+        ),
+      );
+      assert.equal(origin, expected);
+    }
+  }),
+);
+
+it.effect("does not invent a localhost endpoint for a Unix socket listener", () =>
+  Effect.gen(function* () {
+    const error = yield* resolveListeningLocalOrigin.pipe(
+      Effect.provideService(
+        HttpServer.HttpServer,
+        HttpServer.HttpServer.of({
+          address: { _tag: "UnixAddress", path: "/tmp/t3.sock" },
+          serve: () => Effect.void,
+        }),
+      ),
+      Effect.flip,
+    );
+    assert.include(error.message, "requires a TCP listener");
+  }),
+);
+
+it("keeps two different environments on the same IPv4/IPv6 port distinct", async () => {
+  const ipv4 = createServer((_request, response) => response.end("desktop-environment"));
+  const ipv6 = createServer((_request, response) => response.end("other-environment"));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ipv4.once("error", reject);
+      ipv4.listen(0, "127.0.0.1", resolve);
+    });
+    const address = ipv4.address();
+    if (address === null || typeof address === "string") throw new Error("Expected a TCP listener");
+    await new Promise<void>((resolve, reject) => {
+      ipv6.once("error", reject);
+      ipv6.listen({ port: address.port, host: "::1", ipv6Only: true }, resolve);
+    });
+    for (const [hostname, environment] of [
+      ["0.0.0.0", "desktop-environment"],
+      ["::", "other-environment"],
+    ] as const) {
+      const origin = await Effect.runPromise(
+        resolveListeningLocalOrigin.pipe(
+          Effect.provideService(
+            HttpServer.HttpServer,
+            HttpServer.HttpServer.of({
+              address: { _tag: "TcpAddress", hostname, port: address.port },
+              serve: () => Effect.void,
+            }),
+          ),
+        ),
+      );
+      const response = await fetch(origin, { signal: AbortSignal.timeout(2_000) });
+      assert.equal(await response.text(), environment);
+    }
+  } finally {
+    for (const server of [ipv4, ipv6]) {
+      server.closeAllConnections();
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    }
+  }
+});
 
 it("uses the canonical Codex default for auto-bootstrapped model selection", () => {
   assert.deepStrictEqual(getAutoBootstrapDefaultModelSelection(), {

@@ -120,6 +120,7 @@
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
+- Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
 
 ## Desktop browser surfaces
 
