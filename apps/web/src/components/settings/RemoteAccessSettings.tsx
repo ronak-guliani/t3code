@@ -38,6 +38,8 @@ export function RemoteAccessSettings() {
   const [busy, setBusy] = useState(false);
   const [pairing, setPairing] = useState<MobilePairingDialogState | null>(null);
   const [pairingOpen, setPairingOpen] = useState(false);
+  const retryDisable = status?.enabled === false && status.status === "error";
+  const nextAction = status?.enabled || retryDisable ? "disable" : "enable";
 
   useEffect(() => {
     if (busy) return;
@@ -76,7 +78,7 @@ export function RemoteAccessSettings() {
           await request("/api/remote-access", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ action: status?.enabled ? "disable" : "enable" }),
+            body: JSON.stringify({ action: nextAction }),
             signal: AbortSignal.timeout(30_000),
           }),
         ),
@@ -158,7 +160,7 @@ export function RemoteAccessSettings() {
             </Button>
             {status?.publicUrl ? (
               <Button variant="outline" disabled={busy} onClick={() => void changeEnabled()}>
-                {status.enabled ? "Disable" : "Enable"}
+                {retryDisable ? "Retry Disable" : status.enabled ? "Disable" : "Enable"}
               </Button>
             ) : null}
           </div>
