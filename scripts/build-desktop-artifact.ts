@@ -240,8 +240,29 @@ interface DesktopStageCacheKeyInput {
   readonly overrides: Record<string, unknown>;
 }
 
+export function resolveDesktopStageWorkspaceConfig(
+  platform: typeof BuildPlatform.Type,
+  arch: typeof BuildArch.Type,
+) {
+  return {
+    packages: [],
+    // Native runtime bindings (including keyring) ship as optional packages.
+    optional: true,
+    supportedArchitectures: {
+      os: ["current", platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux"],
+      cpu: ["current", ...(arch === "universal" ? ["arm64", "x64"] : [arch])],
+      libc: ["glibc", "musl"],
+    },
+  };
+}
+
 export function resolveDesktopStageCacheKey(input: DesktopStageCacheKeyInput): string {
-  return Crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex").slice(0, 20);
+  // Installation policy changes must invalidate stages built without native bindings.
+  return Crypto.createHash("sha256")
+    .update(JSON.stringify(input))
+    .update(JSON.stringify(resolveDesktopStageWorkspaceConfig(input.platform, input.arch)))
+    .digest("hex")
+    .slice(0, 20);
 }
 
 const AzureTrustedSigningOptionsConfig = Config.all({
@@ -975,7 +996,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.makeDirectory(stageAppDir, { recursive: true });
   // Keep pnpm from walking up into the repository workspace. The staged app is
   // intentionally standalone and has its own dependency graph/cache lifecycle.
-  yield* fs.writeFileString(path.join(stageAppDir, "pnpm-workspace.yaml"), "packages: []\n");
+  yield* fs.writeFileString(
+    path.join(stageAppDir, "pnpm-workspace.yaml"),
+    yield* encodeJsonString(resolveDesktopStageWorkspaceConfig(options.platform, options.arch)),
+  );
   for (const mutablePath of [
     path.join(stageAppDir, "apps/desktop"),
     path.join(stageAppDir, "apps/server"),
@@ -1086,7 +1110,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         ...commandOutputOptions(options.verbose),
         // Windows needs shell mode to resolve .cmd shims.
         shell: process.platform === "win32",
-      })`pnpm install --no-optional --ignore-scripts`,
+      })`pnpm install --ignore-scripts`,
     );
     yield* fs.writeFileString(dependencyCacheMarker, `${stageCacheKey}\n`);
   }

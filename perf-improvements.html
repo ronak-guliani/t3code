@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>T3 Code — Top 10 Performance Improvements, Ranked</title>
+<style>
+:root{--bg:#0b0e14;--card:#141a26;--muted:#8b94a7;--text:#e8ecf3;--accent:#5ac8fa;--green:#3dd68c;--yellow:#ffb224;--red:#ff6369;--border:#232c40}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+header{max-width:1080px;margin:0 auto;padding:48px 24px 16px}
+.badge{display:inline-block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:4px 12px;margin-bottom:16px}
+h1{font-size:40px;line-height:1.1;margin:0 0 12px}h1 span{color:var(--accent)}
+.sub{color:var(--muted);max-width:760px;font-size:17px}
+.meta{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:13px;margin-top:16px}
+main{max-width:1080px;margin:0 auto;padding:8px 24px 64px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin:24px 0;font-size:14px}
+th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--border)}th{background:#1a2233;color:#fff;font-size:12px;text-transform:uppercase;letter-spacing:.06em}tr:last-child td{border-bottom:0}
+.rank{display:inline-flex;width:28px;height:28px;border-radius:8px;align-items:center;justify-content:center;font-weight:800;background:#222f4a;color:#fff}.rank.r1{background:var(--red)}.rank.r2{background:#ff8a3d}.rank.r3{background:var(--yellow);color:#111}
+.pill{display:inline-block;font-size:12px;border-radius:999px;padding:2px 10px;border:1px solid var(--border)}.high{color:var(--red);border-color:var(--red)}.med{color:var(--yellow);border-color:var(--yellow)}.low{color:var(--green);border-color:var(--green)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;margin:20px 0}
+.card h2{margin:0 0 4px;font-size:22px}.card h2 .n{color:var(--accent)}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:14px;margin:12px 0}.kv dt{color:var(--muted)}.kv dd{margin:0}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}code{background:#0e1422;border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:13px}pre{background:#0a0f1c;border:1px solid var(--border);border-radius:10px;padding:14px;overflow:auto;font-size:13px;color:#cfe3ff}
+.files{color:var(--muted);font-size:13px}.files code{color:#9fd6ff}
+.fix{border-left:3px solid var(--green);padding-left:14px;margin-top:12px}.why{border-left:3px solid var(--accent);padding-left:14px}
+footer{max-width:1080px;margin:0 auto;padding:0 24px 48px;color:var(--muted);font-size:13px}
+a{color:var(--accent)}
+@media(max-width:640px){h1{font-size:30px}.kv{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+<div class="badge">T3 Code &bull; Performance Audit &bull; Sep 2026</div>
+<h1>Top 10 Performance Improvements, <span>Ranked by Impact</span></h1>
+<p class="sub">Grounded in the current codebase: projection/SQL hot paths, streaming timeline rendering, Effect concurrency defaults, checkpoint diffs, FTS search, and desktop/bundle startup. Ranked by user-visible latency &times; frequency &times; blast radius.</p>
+<div class="meta"><span>Scope: apps/server, apps/web, apps/desktop, packages/*</span><span>Method: static exploration + scars.md constraints</span><span>Toolchain: pnpm 11 / node 24</span></div>
+</header>
+<main>
+<table aria-label="Ranking summary">
+<thead><tr><th>#</th><th>Improvement</th><th>Impact</th><th>Effort</th><th>Area</th></tr></thead>
+<tbody>
+<tr><td><span class="rank r1">1</span></td><td>Cap projection bootstrap replay + SQL-side hydration limits</td><td><span class="pill high">P0 startup / OOM</span></td><td>M</td><td>server / SQLite</td></tr>
+<tr><td><span class="rank r2">2</span></td><td>Parallelize snapshot queries, drop read-transaction</td><td><span class="pill high">P0 connect</span></td><td>S</td><td>server / ws</td></tr>
+<tr><td><span class="rank r3">3</span></td><td>De-serialize shell-summary reconciler (N+1 → incremental)</td><td><span class="pill high">P0 steady-state</span></td><td>M</td><td>server / projection</td></tr>
+<tr><td><span class="rank">4</span></td><td>Index activity JSON paths, kill full-table windows</td><td><span class="pill high">High</span></td><td>S–M</td><td>server / SQLite</td></tr>
+<tr><td><span class="rank">5</span></td><td>Memoize timeline derivation, stop per-chunk re-render</td><td><span class="pill high">High</span></td><td>M</td><td>web / React</td></tr>
+<tr><td><span class="rank">6</span></td><td>Stop O(n²) markdown re-parse on every token</td><td><span class="pill high">High</span></td><td>M</td><td>web / chat</td></tr>
+<tr><td><span class="rank">7</span></td><td>Fix default-sequential <code>Effect.all</code> on I/O paths</td><td><span class="pill med">Medium-High</span></td><td>S</td><td>server / Effect</td></tr>
+<tr><td><span class="rank">8</span></td><td>Bound checkpoint diffs: fewer git spawns, streamed parse</td><td><span class="pill med">Medium</span></td><td>M</td><td>server / git</td></tr>
+<tr><td><span class="rank">9</span></td><td>Bound FTS5 hits before windowing, single MATCH</td><td><span class="pill med">Medium</span></td><td>S</td><td>server / search</td></tr>
+<tr><td><span class="rank">10</span></td><td>Lazy cloud runtime + parallel Electron boot + vendor chunks</td><td><span class="pill med">Medium</span></td><td>M</td><td>desktop / build</td></tr>
+</tbody>
+</table>
+
+<section class="card"><h2><span class="n">#1 —</span> Cap projection bootstrap replay + SQL-side hydration limits</h2>
+<dl class="kv"><dt>Why first</dt><dd>One retired projector pins global <code>minCursor</code> and replays GBs on every startup; full histories are decoded in JS and can exceed the V8 heap. Cf. scars #129–#131.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1686-1709</code>, <code>apps/server/src/persistence/Layers/OrchestrationEventStore.ts:209-264</code>, <code>apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:214,2319</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>deleteExcept()</code> + sequential <code>getByProjector</code> loop → <code>min(cursors)</code> → <code>readFromSequence(minCursor, MAX_SAFE_INTEGER)</code>. Restart hydration decodes full <code>payload_json</code> before applying the per-thread 200-item cap in memory.</div>
+<div class="fix"><strong>Fix:</strong> prune retired cursor rows <em>before</em> computing <code>minCursor</code>; batch-commit + parallel <code>getByProjector</code>; push <code>THREAD_DETAIL_ACTIVITY_WINDOW</code> cap into SQL with keyset <code>(created_at, activity_id)</code> before JSON decode; cap <code>listThreadMessageRowsByThread</code> / <code>getShellSnapshot</code> live tables.</div>
+<pre>-- before: decode everything, cap in JS
+SELECT payload_json FROM projection_thread_activities ORDER BY thread_id, created_at;
+-- after: cap per thread in SQL
+SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC) rn
+FROM projection_thread_activities) WHERE rn &lt;= 200;</pre>
+</section>
+
+<section class="card"><h2><span class="n">#2 —</span> Parallelize snapshot queries, drop read-transaction</h2>
+<dl class="kv"><dt>Impact</dt><dd>Every WS connect / shell snapshot holds the SQLite write lock while doing 8–10 serial round-trips. Blocks heartbeats.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:1458-1520,1800,2162,2286</code>, <code>apps/server/src/ws.ts:1121-1134</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>getSnapshot</code> / <code>getShellSnapshot</code> / <code>getThreadDetailById</code> wrap 8–10 <code>list*Rows</code> calls in <code>sql.withTransaction(Effect.all([...]))</code> with no <code>{concurrency}</code> — Effect defaults to sequential.</div>
+<div class="fix"><strong>Fix:</strong> add <code>{ concurrency: "unbounded" }</code> for read-only fan-out (decode is CPU-bound, SQLite reads are cheap); remove <code>withTransaction</code> for pure reads or use a read snapshot; collapse <code>getThreadDetailById</code> 9 trips → 2–3 joins.</div>
+<pre>// before
+Effect.all([listProjectRows, listThreadRows, listActivityRows, ...])
+// after
+Effect.all([...], { concurrency: "unbounded" }) // no withTransaction for reads</pre>
+</section>
+
+<section class="card"><h2><span class="n">#3 —</span> De-serialize shell-summary reconciler</h2>
+<dl class="kv"><dt>Impact</dt><dd><code>O(threads × (4 queries + full JSON parse + sort))</code> serialized behind <code>Semaphore(1)</code>. Bootstrap <code>drain</code> stalls startup.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/orchestration/projection/ProjectionReconciler.ts:109-145</code>, <code>apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1633-1710</code>, <code>apps/server/src/persistence/Layers/ProjectionThreadActivities.ts:18,116-136</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>Effect.forEach(ids, refreshShellSummary, {concurrency:1})</code>; each refresh does 4× <code>listByThreadId</code> (<code>SELECT payload_json … ORDER BY</code>) + per-row <code>Schema.fromJsonString</code> + in-JS filter/sort.</div>
+<div class="fix"><strong>Fix:</strong> only refresh summaries for events that change summary fields (scar #127) with concurrent repo reads; maintain incremental summary columns instead of full-history re-derive; see existing good pattern at <code>sidebarState.ts:147</code> with unbounded concurrency.</div>
+</section>
+
+<section class="card"><h2><span class="n">#4 —</span> Index activity JSON paths, kill full-table windows</h2>
+<dl class="kv"><dt>Impact</dt><dd>Unindexable <code>json_extract</code> + <code>ROW_NUMBER() OVER (PARTITION BY …)</code> with no <code>WHERE</code> scans + sorts the whole activity table per snapshot.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:648-738,1139-1370</code>; indexes <code>005,008,054,060,081</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>ranked_activities</code> CTE, background-task <code>GROUP BY thread_id,task_id</code>, correlated <code>EXISTS(json_extract…)</code>, <code>LIKE '%stale%'</code> on extracted detail. Existing <code>(thread_id,created_at)</code> indexes don't cover <code>turn_id</code> or JSON paths.</div>
+<div class="fix"><strong>Fix:</strong> add <code>(thread_id, turn_id, created_at)</code> composite; add generated/stored columns for hot JSON keys (<code>taskId</code>, <code>requestId</code>) + partial <code>task.started/task.completed</code> chronology index (scar #105); push <code>WHERE thread_id IN …</code> before windowing.</div>
+</section>
+
+<section class="card"><h2><span class="n">#5 —</span> Memoize timeline derivation, stop per-chunk re-render</h2>
+<dl class="kv"><dt>Impact</dt><dd>Every stream chunk rebuilds maps + scans activities, invalidates context, and re-renders every mounted row — the main chat jank source.</dd><dt>Files</dt><dd class="files"><code>apps/web/src/components/chat/ChatTimelineSection.tsx:284-460</code>, <code>apps/web/src/components/chat/MessagesTimeline.tsx:338-387,470,1417-1428</code>, <code>apps/web/src/components/chat/MessagesTimeline.logic.ts:447-465</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>timelineMessages</code>, two <code>Map</code>s, <code>responseMetaByTurnId</code>, nested revert-count loop re-run per chunk; fresh <code>Map</code> identities break the ~20-dep <code>sharedState useMemo</code>; <code>TimelineRowContent</code> is not <code>memo</code> (unlike <code>WorkGroupSection</code>/<code>ReasoningSection</code>). Scars #25–#26 describe the same identity trap.</div>
+<div class="fix"><strong>Fix:</strong> memoize derives by <code>(messages, activities)</code> version + fast tail-append path (scar #128, 500-item cap); <code>memo(TimelineRowContent)</code>; stabilize <code>reviewOutputMessageIds</code> / empty <code>Set</code>; hoist <code>new Intl.NumberFormat</code> to module scope.</div>
+</section>
+
+<section class="card"><h2><span class="n">#6 —</span> Stop O(n²) markdown re-parse on every token</h2>
+<dl class="kv"><dt>Impact</dt><dd>Growing <code>text</code> prop re-parses + re-highlights from scratch per token; per-row 1s timers and N store subscriptions amplify it.</dd><dt>Files</dt><dd class="files"><code>apps/web/src/components/chat/MessagesTimeline.tsx:625-633,894-988</code>, <code>apps/web/src/components/ChatMarkdown.tsx:1,21-23,495-496,976-983</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>&lt;ChatMarkdown text={messageText} isStreaming&gt;</code> → <code>react-markdown + remark-gfm + Shiki</code> full re-parse; <code>LegendList estimatedItemSize=90</code> re-measures as code height changes; <code>WorkingTimer</code>/<code>LiveMessageMeta</code> each own a <code>setInterval(1000)</code>; every instance subscribes to sidebar summary.</div>
+<div class="fix"><strong>Fix:</strong> incremental streaming render (append-only token buffer, highlight only the fenced block being streamed, defer Shiki to settle); single shared timer; lift sidebar-summary subscription above rows; add <code>loading="lazy" decoding="async"</code> + size reservation to chat <code>&lt;img&gt;</code> (only 3 other files do this today).</div>
+</section>
+
+<section class="card"><h2><span class="n">#7 —</span> Fix default-sequential <code>Effect.all</code> on I/O paths</h2>
+<dl class="kv"><dt>Impact</dt><dd>Cross-cutting silent latency adder: independent <code>gh</code>/network/DB calls sum instead of overlapping. Scar #98.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/orchestration/clientCommandDispatcher.ts:141-158</code>, <code>apps/server/src/ws.ts:2779-2807</code>, <code>apps/server/src/background/BackgroundPolicy.ts:251,293</code>, <code>apps/server/src/cloud/config.ts:37</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>Effect.all</code> defaults to sequential. Hot examples: two activity inserts per turn start serialized; WS connect/teardown <code>markConnected + registerConnection</code> serialized; replay enrichment at <code>concurrency:4</code> with per-event FS/git resolve.</div>
+<div class="fix"><strong>Fix:</strong> audit hot paths, add <code>{ concurrency: "unbounded" }</code> for independent I/O; gate pre-navigation waits on exactly what the route needs (thread existence, not first-turn projection).</div>
+<pre>Effect.all([appendActivity(a), appendActivity(b)], { concurrency: "unbounded" })</pre>
+</section>
+
+<section class="card"><h2><span class="n">#8 —</span> Bound checkpoint diffs: fewer git spawns, streamed parse</h2>
+<dl class="kv"><dt>Impact</dt><dd>Each diff fans out ~6 git processes + holds multiple 10&nbsp;MB strings; concurrent requests fork-storm + GC churn.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/checkpointing/Layers/CheckpointStore.ts:27-28,365-516,614-682</code>, <code>apps/server/src/checkpointing/Diffs.ts:44-115</code>, <code>apps/server/src/ws.ts:1023-1068</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>rev-parse ×2</code> + <code>reflog --max-count=1000</code> + <code>for-each-ref --no-contains</code> + <code>rev-list ×2</code> + <code>diff --numstat</code> + <code>diff</code> patch (10&nbsp;MB caps each); <code>matchAll(/^diff --git/gm)</code> + per-file <code>slice</code> + <code>toSorted(localeCompare)</code>; 5s base-projection cache barely helps. Scars #68, #72–#73 apply.</div>
+<div class="fix"><strong>Fix:</strong> resolve refs once and reuse OIDs; share one unified-diff parse (attach raw sections to parsed metadata); stream numstat/patch instead of buffering 10&nbsp;MB; raise cache TTL with head-aware invalidation; coalesce concurrent identical diffs.</div>
+</section>
+
+<section class="card"><h2><span class="n">#9 —</span> Bound FTS5 hits before windowing, single MATCH</h2>
+<dl class="kv"><dt>Impact</dt><dd>Search computes <code>rank</code> for every match, windows it, discards most, then runs <code>MATCH</code> twice.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:2548-2596</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>hits AS MATERIALIZED (… MATCH … rank AS score)</code> → unbounded <code>ranked (ROW_NUMBER …)</code> → <code>LIMIT 20</code> → second <code>JOIN … WHERE MATCH</code> + <code>snippet(…,20)</code>. Violates scar #15 intent (materialize rank before windowing, snippet only selected rows — second MATCH doubles the work).</div>
+<div class="fix"><strong>Fix:</strong> <code>ranked AS MATERIALIZED</code>, <code>ORDER BY bm25()</code>, cap <code>hits … ORDER BY score LIMIT 500</code> before windowing, keep <code>snippet()</code> only on <code>top_hits</code>.</div>
+<pre>-- after
+hits AS MATERIALIZED (SELECT ... bm25() AS score ... ORDER BY score LIMIT 500),
+ranked AS MATERIALIZED (SELECT *, ROW_NUMBER() OVER (...) FROM hits)
+SELECT ... snippet(...) FROM top_hits; -- only here</pre>
+</section>
+
+<section class="card"><h2><span class="n">#10 —</span> Lazy cloud runtime + parallel Electron boot + vendor chunks</h2>
+<dl class="kv"><dt>Impact</dt><dd>Desktop pays cloud + updater + shell-env + serial HTTP-poll cost and ships an unsplit bundle with prod sourcemaps — slow cold start.</dd><dt>Files</dt><dd class="files"><code>apps/server/src/server.ts:301-392</code>, <code>apps/desktop/src/main.ts:127,133,525-570,1466-1543</code>, <code>apps/web/vite.config.ts:66-74,121-125</code>, <code>apps/server/vite.config.ts:9-33</code>, <code>apps/desktop/vite.config.ts:6-43</code></dd></dl>
+<div class="why"><strong>Problem:</strong> <code>CloudRuntimeLayerLive</code> eagerly builds relay/token/awareness (scar #21) even with no cloud link; window waits on 60s <code>waitForHttpReady</code> instead of fd3 listening signal; <code>AUTO_UPDATE 15s + 4h poll</code> races first-second I/O; web/server/desktop Vite configs lack <code>manualChunks</code> and leave <code>sourcemap:true</code> on; patched deps risk missing from <code>dist/bin.mjs</code> (scar #75).</div>
+<div class="fix"><strong>Fix:</strong> <code>Layer.unwrap</code>-gate cloud on desired-link config, start awareness after <code>http.wait</code>; spawn backend + create loading window in parallel, navigate on <code>listening</code>; defer updater/shell-env off critical path; add <code>manualChunks {vendor, tanstack, effect}</code>, <code>sourcemap:hidden</code> for prod, bundle patched deps and verify packed artifact.</div>
+</section>
+
+<section class="card"><h2>Honorable mentions (next up)</h2>
+<p><strong>WS replay enrichment fan-out</strong> — <code>ws.ts:1097 replayEvents → enrichProjectEvent</code> does FS/git <code>resolve()</code> per <code>project.*</code> event; batch + cache identity, raise from <code>concurrency:4</code> with dedupe. <strong>PR-monitor polling</strong> — <code>PullRequestMonitorStore.ts:377-506</code> <code>SELECT * + LIMIT 500</code> with per-row 3× JSON decode at <code>concurrency:1</code>; add <code>(canonical_key)</code> / composite project indexes, select only due columns. <strong>Retained detail subs</strong> — <code>MAX_CACHED_THREAD_DETAIL_SUBSCRIPTIONS=32</code> + hover prewarm keeps background threads streaming; tighten eviction + gate <code>retainThreadDetailSubscription</code> on shell-published threads (scars #122–#123). <strong>PortScanner 3s tick</strong> — <code>PortScanner.ts:262-287</code> spawns <code>lsof</code>/probes unconditionally; back off when no listeners, make broadcast concurrent.</p>
+</section>
+</main>
+<footer>Generated from codebase exploration 2026-09-05. Verify each item against its cited file:line before scheduling. Suggested order: #2 + #7 (quick wins) → #4 + #9 (SQL) → #5 + #6 (frontend) → #1 + #3 (projection) → #8 → #10.</footer>
+</body>
+</html>

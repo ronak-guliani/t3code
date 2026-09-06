@@ -46,6 +46,7 @@
 - Retried sidebar mutations need durable IDs and server deduplication; a lost response can otherwise hide a committed reorder or replay it twice.
 - Parent-visible child lifecycle updates must be emitted transactionally as parent-aggregate events, carry semantic dedupe keys, and persist a shell-level latest timestamp; deriving notifications or unread state from bounded child/parent activity history loses updates across retries and restarts.
 - Packaged Dev builds must write their flavor-specific `productName` into ASAR metadata; Electron derives `app.getName()` from it, and a stale Alpha name makes Dev reuse Alpha's Chromium profile.
+- Desktop staging must install optional native dependencies for the target architecture and key its cache by install policy; `--no-optional` omits keyring bindings. Load feature-only native modules inside the feature's typed error boundary, never during app startup.
 - Filter archived sidebar hierarchies before tree normalization; archived parents must suppress both real and virtual descendants or stale children are resurrected as roots.
 
 ## Provider tools and workspace ownership
