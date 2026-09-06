@@ -5,6 +5,7 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 
 interface QueuedMessagesPanelProps {
+  policyBlocks?: ReadonlyMap<QueuedTurnId, string> | undefined;
   queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>;
   editingQueuedTurnId: QueuedTurnId | null;
   editingText: string;
@@ -39,6 +40,7 @@ function attachmentLabel(queuedTurn: OrchestrationQueuedTurn): string | null {
 }
 
 export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
+  policyBlocks,
   queuedTurns,
   editingQueuedTurnId,
   editingText,
@@ -47,8 +49,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
   onSaveEditingQueuedTurn,
   onDeleteQueuedTurn,
 }: QueuedMessagesPanelProps) {
-  // Labels track the real dispatch position: a hidden handoff continuation is
-  // still queued ahead of the user's own messages and runs before them.
+  const nextEligibleId = queuedTurns.find((turn) => !policyBlocks?.has(turn.id))?.id;
   const visibleQueuedTurns = queuedTurns.flatMap((queuedTurn, queueIndex) =>
     isHiddenQueuedTurn(queuedTurn) ? [] : [{ queuedTurn, queueIndex }],
   );
@@ -62,8 +63,13 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
           const isEditing = editingQueuedTurnId === queuedTurn.id;
           const isPaused = queuedTurn.failedAt !== null;
+          const policyBlock = policyBlocks?.get(queuedTurn.id);
           const meta = attachmentLabel(queuedTurn);
-          const label = queueIndex === 0 ? "Up next" : `Queued ${queueIndex + 1}`;
+          const label = policyBlock
+            ? "Pending"
+            : queuedTurn.id === nextEligibleId
+              ? "Up next"
+              : `Queued ${queueIndex + 1}`;
           return (
             <li
               key={queuedTurn.id}
@@ -146,6 +152,11 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
               {!isEditing && isPaused && queuedTurn.failureMessage ? (
                 <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 whitespace-pre-wrap break-words text-destructive">
                   {queuedTurn.failureMessage}
+                </div>
+              ) : null}
+              {!isEditing && policyBlock ? (
+                <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 break-words text-muted-foreground">
+                  {policyBlock}
                 </div>
               ) : null}
             </li>

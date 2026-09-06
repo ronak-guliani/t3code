@@ -179,6 +179,7 @@ const knownThreads = new Map<
     worktreePath: string | null;
     archivedAt: string | null;
     busy: boolean;
+    copilotSession?: boolean;
     pullRequest: { number: number; url: string } | null;
   }
 >();
@@ -216,7 +217,15 @@ const fakeProjections = {
         archivedAt: row.archivedAt,
         modelSelection: { instanceId: "copilot", model: "gpt-test" },
         latestTurn: row.busy ? { state: "running" } : null,
-        session: row.busy ? { status: "running", activeTurnId: "turn-1" } : null,
+        session:
+          row.busy || row.copilotSession
+            ? {
+                status: row.busy ? "running" : "ready",
+                activeTurnId: row.busy ? "turn-1" : null,
+                providerName: "copilot",
+                providerInstanceId: ProviderInstanceId.make("copilot"),
+              }
+            : null,
         hasPendingQueuedTurn: false,
       } as never);
     }),
@@ -816,41 +825,31 @@ layer("PullRequestMonitorService", (it) => {
   );
 
   for (const [index, scenario] of [
-    { name: "legacy Copilot default-off", instanceId: "copilot", config: undefined, launch: false },
-    { name: "custom Copilot default-off", driver: "copilot", config: {}, launch: false },
-    { name: "native ACP default-off", driver: "copilot-acp-native", config: null, launch: false },
-    {
-      name: "malformed opt-in",
-      driver: "copilot",
-      config: { allowAutomaticPrFeedback: "true" },
-      launch: false,
-    },
+    { name: "Copilot default-off", driver: "copilot", optIn: false, launch: false },
     {
       name: "explicit opt-in",
       driver: "copilot",
-      config: { allowAutomaticPrFeedback: true, customModels: "invalid" },
+      optIn: true,
       launch: true,
     },
-    { name: "other provider", driver: "codex", config: {}, launch: true },
+    { name: "other provider", driver: "codex", optIn: false, launch: true },
   ].entries()) {
     it.effect(`automatic fallback respects ${scenario.name}`, () =>
       Effect.gen(function* () {
         const service = yield* PullRequestMonitorService;
         const store = yield* PullRequestMonitorStore.make;
-        const instanceId = ProviderInstanceId.make(scenario.instanceId ?? "fallback-provider");
+        const instanceId = ProviderInstanceId.make("fallback-provider");
         currentSettings = {
           ...defaultSettings,
           textGenerationModelSelection: { instanceId, model: "gpt-test" },
-          providerInstances: scenario.driver
-            ? {
-                [instanceId]: {
-                  driver: ProviderDriverKind.make(scenario.driver),
-                  displayName: "Fallback provider",
-                  enabled: true,
-                  config: scenario.config,
-                },
-              }
-            : {},
+          copilotAutomaticPrFeedback: { [instanceId]: scenario.optIn },
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make(scenario.driver),
+              displayName: "Fallback provider",
+              enabled: true,
+            },
+          },
         };
         currentSnapshot = sampleSnapshot({
           checkRuns: [
@@ -872,7 +871,7 @@ layer("PullRequestMonitorService", (it) => {
           number: 300 + index,
         });
         const launch = yield* store.latestFallbackLaunch(started.monitor.id);
-        assert.strictEqual(launch?.status, scenario.launch ? "launched" : "failed");
+        assert.strictEqual(launch?.status, scenario.launch ? "launched" : undefined);
         const commands = dispatchedCommands.slice(before);
         if (scenario.launch) {
           assert.isTrue(commands.some((command) => command.type === "thread.turn.start"));
@@ -880,10 +879,12 @@ layer("PullRequestMonitorService", (it) => {
         } else {
           assert.deepStrictEqual(commands, []);
           assert.strictEqual(preparedPrReferences.length, refsBefore);
-          assert.include(launch?.error ?? "", "Automatic PR fallback is paused");
+          assert.isNull(launch);
           const status = yield* service.status({ monitorId: started.monitor.id });
           assert.isNull(status.monitor?.ownerThreadId);
           assert.isAbove(status.openFeedback.length, 0);
+          assert.include(status.automationBlockReason ?? "", "Automatic PR feedback is pending");
+          assert.isNull(status.monitor?.lastError);
 
           // Explicit operator requests remain possible without enabling automation.
           const explicit = yield* service.launchFallback({ monitorId: started.monitor.id });
@@ -900,32 +901,83 @@ layer("PullRequestMonitorService", (it) => {
     );
   }
 
-  it.effect("blocks automatic Copilot fallback before interrupting an unavailable busy owner", () =>
+  for (const busy of [false, true]) {
+    it.effect(
+      `blocks a Codex fallback from taking over an unavailable Copilot owner (busy=${busy})`,
+      () =>
+        Effect.gen(function* () {
+          const service = yield* PullRequestMonitorService;
+          const store = yield* PullRequestMonitorStore.make;
+          const owner = ThreadId.make(`copilot-fallback-owner-${busy}`);
+          const number = busy ? 341 : 340;
+          seedThread(owner);
+          const started = yield* service.start({
+            projectId,
+            repository: "acme/app",
+            number,
+            ownerThreadId: owner,
+          });
+          const row = knownThreads.get(owner)!;
+          knownThreads.set(owner, {
+            ...row,
+            archivedAt: "1970-01-01T00:00:00.000Z",
+            busy,
+            copilotSession: true,
+          });
+          currentSettings = {
+            ...defaultSettings,
+            providerInstances: {},
+            textGenerationModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-test",
+            },
+          };
+          currentSnapshot = sampleSnapshot({
+            checkRuns: [
+              {
+                id: "busy-owner-check",
+                name: "ci",
+                status: "failure",
+                headSha: "deadbeef",
+                url: null,
+                description: null,
+              },
+            ],
+          });
+          const before = dispatchedCommands.length;
+          const refsBefore = preparedPrReferences.length;
+          yield* service.start({ projectId, repository: "acme/app", number });
+          assert.deepStrictEqual(dispatchedCommands.slice(before), []);
+          assert.strictEqual(preparedPrReferences.length, refsBefore);
+          assert.strictEqual(knownThreads.get(owner)?.busy, busy);
+          const status = yield* service.status({ monitorId: started.monitor.id });
+          assert.strictEqual(status.monitor?.ownerThreadId, owner);
+          const launch = yield* store.latestFallbackLaunch(started.monitor.id);
+          assert.isNull(launch);
+          assert.include(status.automationBlockReason ?? "", "protect existing Copilot work");
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              currentSettings = defaultSettings;
+              currentSnapshot = sampleSnapshot();
+            }),
+          ),
+        ),
+    );
+  }
+
+  it.effect("reconsiders pending fallback after opt-in without requiring new feedback", () =>
     Effect.gen(function* () {
       const service = yield* PullRequestMonitorService;
-      const store = yield* PullRequestMonitorStore.make;
-      const owner = ThreadId.make("copilot-fallback-busy-owner");
-      seedThread(owner);
-      const started = yield* service.start({
-        projectId,
-        repository: "acme/app",
-        number: 310,
-        ownerThreadId: owner,
-      });
-      const row = knownThreads.get(owner)!;
-      knownThreads.set(owner, { ...row, archivedAt: "1970-01-01T00:00:00.000Z", busy: true });
+      const instanceId = ProviderInstanceId.make("copilot");
       currentSettings = {
         ...defaultSettings,
-        providerInstances: {},
-        textGenerationModelSelection: {
-          instanceId: ProviderInstanceId.make("copilot"),
-          model: "gpt-test",
-        },
+        textGenerationModelSelection: { instanceId, model: "gpt-test" },
       };
       currentSnapshot = sampleSnapshot({
         checkRuns: [
           {
-            id: "busy-owner-check",
+            id: "resume-check",
             name: "ci",
             status: "failure",
             headSha: "deadbeef",
@@ -934,17 +986,14 @@ layer("PullRequestMonitorService", (it) => {
           },
         ],
       });
-      const before = dispatchedCommands.length;
-      const refsBefore = preparedPrReferences.length;
-      yield* service.start({ projectId, repository: "acme/app", number: 310 });
-      assert.deepStrictEqual(dispatchedCommands.slice(before), []);
-      assert.strictEqual(preparedPrReferences.length, refsBefore);
-      assert.isTrue(knownThreads.get(owner)?.busy);
+      const input = { projectId, repository: "acme/app", number: 350 };
+      const started = yield* service.start(input);
+      assert.isNull(started.monitor.ownerThreadId);
+      currentSettings = { ...currentSettings, copilotAutomaticPrFeedback: { [instanceId]: true } };
+      yield* service.start(input);
       const status = yield* service.status({ monitorId: started.monitor.id });
-      assert.strictEqual(status.monitor?.ownerThreadId, owner);
-      const launch = yield* store.latestFallbackLaunch(started.monitor.id);
-      assert.strictEqual(launch?.status, "failed");
-      assert.include(launch?.error ?? "", "Automatic PR fallback is paused");
+      assert.isNotNull(status.monitor?.ownerThreadId);
+      assert.isUndefined(status.automationBlockReason);
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {

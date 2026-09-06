@@ -35,10 +35,14 @@ const handoffOrigin = {
   worktreePath: "/tmp/handoff",
 } as OrchestrationQueuedTurn["origin"];
 
-function render(queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>) {
+function render(
+  queuedTurns: ReadonlyArray<OrchestrationQueuedTurn>,
+  policyBlocks?: ReadonlyMap<OrchestrationQueuedTurn["id"], string>,
+) {
   return renderToStaticMarkup(
     <QueuedMessagesPanel
       queuedTurns={queuedTurns}
+      policyBlocks={policyBlocks}
       editingQueuedTurnId={null}
       editingText=""
       onStartEditingQueuedTurn={() => {}}
@@ -111,5 +115,22 @@ describe("QueuedMessagesPanel", () => {
     ]);
     expect(html).toContain("Review the session before enabling automatic delivery.");
     expect(html).toContain("whitespace-pre-wrap break-words");
+  });
+
+  it("shows policy-blocked feedback as pending while explicit work is up next", () => {
+    const feedback = queuedTurn("feedback", "PR feedback", {
+      kind: "pull-request-monitor",
+      repository: "acme/app",
+      number: 42,
+    });
+    const html = render(
+      [feedback, queuedTurn("explicit", "My next message")],
+      new Map([[feedback.id, "Enable automatic PR feedback in Settings to resume."]]),
+    );
+    expect(html).toContain("Pending");
+    expect(html).toContain("Up next");
+    expect(html).toContain("Settings to resume.");
+    expect(html).not.toContain("Paused");
+    expect(html).not.toContain("bg-destructive/5");
   });
 });

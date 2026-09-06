@@ -860,7 +860,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
       readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
       readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
       readonly getCurrentTurnId: () => TurnId | undefined;
-      readonly getLastCompletedTurnId: () => TurnId | undefined;
+      readonly hasSettledPrompt: () => boolean;
       readonly onSessionEvent?: (
         event: AcpParsedSessionEvent,
       ) => Effect.Effect<AcpParsedSessionEvent>;
@@ -915,7 +915,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             if (
               reportedUnownedActivity ||
               input.getCurrentTurnId() !== undefined ||
-              input.getLastCompletedTurnId() === undefined
+              !input.hasSettledPrompt()
             ) {
               return;
             }
@@ -1156,12 +1156,10 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
                   : rawNormalizedEvent;
                 const activeTurnId = input.getCurrentTurnId();
                 if (
-                  activeTurnId === undefined &&
-                  !reportedUnownedActivity &&
-                  (event._tag === "AssistantItemStarted" ||
-                    event._tag === "ToolCallUpdated" ||
-                    event._tag === "PlanUpdated" ||
-                    event._tag === "ContentDelta")
+                  event._tag === "AssistantItemStarted" ||
+                  event._tag === "ToolCallUpdated" ||
+                  event._tag === "PlanUpdated" ||
+                  event._tag === "ContentDelta"
                 ) {
                   yield* reportUnownedActivity(event._tag);
                 }
@@ -1396,7 +1394,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
           pendingUserInputs: ctx.pendingUserInputs,
           ...(resumeSessionId ? { resumeSessionId } : {}),
           getCurrentTurnId: () => ctx.activeTurnId,
-          getLastCompletedTurnId: () => ctx.turns.at(-1)?.id,
+          hasSettledPrompt: () => ctx.turns.length > 0,
           onSessionEvent: (event) => processBackgroundAgentEvent(ctx, event),
           onFatalCopilotError: (turnId, message) => {
             ctx.fatalErrorByTurnId.set(turnId, message);
@@ -1591,7 +1589,7 @@ export function makeCopilotAdapter(options?: CopilotAdapterLiveOptions) {
             ...(resumeSessionId ? { resumeSessionId } : {}),
             ...(input.resumeFallback ? { resumeFallback: input.resumeFallback } : {}),
             getCurrentTurnId: () => ctx?.activeTurnId,
-            getLastCompletedTurnId: () => ctx?.turns.at(-1)?.id,
+            hasSettledPrompt: () => (ctx?.turns.length ?? 0) > 0,
             onSessionEvent: (event) =>
               ctx ? processBackgroundAgentEvent(ctx, event) : Effect.succeed(event),
             onFatalCopilotError: (turnId, message) => {

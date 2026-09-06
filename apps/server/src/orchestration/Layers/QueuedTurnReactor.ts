@@ -9,7 +9,7 @@ import { Cause, Duration, Effect, Layer, Result, Stream } from "effect";
 
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
-import { allowsAutomaticPrFeedback } from "../../pullRequestMonitor/automaticFeedback.ts";
+import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import {
   feedbackStableKeyOf,
   reconcileFeedbackItem,
@@ -66,26 +66,23 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         return;
       }
 
-      const nextQueuedTurn = queuedTurns[0];
-      if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) {
-        return;
+      let nextQueuedTurn = queuedTurns[0];
+      if (queuedTurns.some((turn) => turn.origin?.kind === "pull-request-monitor")) {
+        const settings = yield* serverSettings.getSettings;
+        nextQueuedTurn = queuedTurns.find(
+          (turn) =>
+            turn.failedAt !== null ||
+            turn.origin?.kind !== "pull-request-monitor" ||
+            automaticPrFeedbackBlockReason(
+              settings,
+              turn.modelSelection?.instanceId ?? thread.modelSelection.instanceId,
+              thread.session,
+            ) === null,
+        );
       }
+      if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) return;
 
       const origin = nextQueuedTurn.origin;
-      if (origin?.kind === "pull-request-monitor") {
-        const settings = yield* serverSettings.getSettings;
-        const instanceId =
-          nextQueuedTurn.modelSelection?.instanceId ?? thread.modelSelection.instanceId;
-        if (!allowsAutomaticPrFeedback(settings, instanceId)) {
-          yield* failQueuedTurn({
-            threadId,
-            queuedTurnId: nextQueuedTurn.id,
-            detail:
-              "Automatic PR feedback is paused for Copilot ACP: a completed prompt may still have background work running. Sending feedback can interrupt that work. Review the session first. To resume automatic delivery, enable it in this provider's settings, then edit and save this queued message. This containment does not fix background completion or checkpoints.",
-          });
-          return;
-        }
-      }
       if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
         const observedHeadSha = origin.headSha;
         const now = new Date();
@@ -294,6 +291,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         const threadId = threadIdForEvent(event);
         return threadId === null ? Effect.void : drainThreadSafely(threadId);
       }),
+    );
+    yield* Effect.forkScoped(
+      Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),
     );
     yield* Effect.forkScoped(
       Effect.sleep(MONITOR_REVALIDATION_RETRY_INTERVAL).pipe(

@@ -15,17 +15,25 @@ import { ProviderInstanceCard } from "./ProviderInstanceCard";
 function Harness({
   driver = "copilot",
   onUpdate,
+  onPolicyChange,
 }: {
   driver?: string;
   onUpdate: (instance: ProviderInstanceConfig) => void;
+  onPolicyChange?: (enabled: boolean) => void;
 }) {
   const [instance, setInstance] = useState<ProviderInstanceConfig>({
     driver: ProviderDriverKind.make(driver),
     enabled: true,
     config: { binaryPath: "/custom/copilot", customModels: ["custom-model"] },
   });
+  const [automaticPrFeedback, setAutomaticPrFeedback] = useState(false);
   return (
     <ProviderInstanceCard
+      automaticPrFeedback={automaticPrFeedback}
+      onAutomaticPrFeedbackChange={(enabled) => {
+        setAutomaticPrFeedback(enabled);
+        onPolicyChange?.(enabled);
+      }}
       instanceId={ProviderInstanceId.make("test-instance")}
       instance={instance}
       driverOption={undefined}
@@ -51,7 +59,8 @@ describe("Copilot automatic PR feedback containment", () => {
     "defaults off and persists a reversible opt-in for %s",
     async (driver) => {
       const onUpdate = vi.fn();
-      await render(<Harness driver={driver} onUpdate={onUpdate} />);
+      const onPolicyChange = vi.fn();
+      await render(<Harness driver={driver} onUpdate={onUpdate} onPolicyChange={onPolicyChange} />);
       const toggle = page.getByRole("switch", {
         name: "Allow automatic PR feedback (interrupt risk)",
       });
@@ -61,18 +70,12 @@ describe("Copilot automatic PR feedback containment", () => {
         .toBeVisible();
       await toggle.click();
       await expect.element(toggle).toBeChecked();
-      expect(onUpdate).toHaveBeenLastCalledWith({
-        driver,
-        enabled: true,
-        config: {
-          binaryPath: "/custom/copilot",
-          customModels: ["custom-model"],
-          allowAutomaticPrFeedback: true,
-        },
-      });
+      expect(onPolicyChange).toHaveBeenLastCalledWith(true);
+      expect(onUpdate).not.toHaveBeenCalled();
       await toggle.click();
       await expect.element(toggle).not.toBeChecked();
-      expect(onUpdate.mock.lastCall?.[0].config.allowAutomaticPrFeedback).toBe(false);
+      expect(onPolicyChange).toHaveBeenLastCalledWith(false);
+      expect(onUpdate).not.toHaveBeenCalled();
     },
   );
 

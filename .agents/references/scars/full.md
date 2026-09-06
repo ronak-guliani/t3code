@@ -2,6 +2,8 @@
 
 ## Browser access and initial navigation
 
+- When starting Vite separately from the dev runner, set `VITE_DEV_SERVER_URL` as well as backend HTTP/WS URLs. Without the dev origin, cookie-auth requests bypass the same-origin proxy and can fail CORS despite a healthy backend.
+
 - Browser cookie import must use the registered environment ID and selected persistent profile; a literal `default` environment silently writes into a partition no real tab uses. Reset consent when the target changes.
 - Guest keyboard isolation must route zoom directly to the preview's tab-owned zoom operations. Reject unsupported popup URLs without loading them into the opener; Electron cannot harden inherited `about:blank` preferences.
 
@@ -32,7 +34,8 @@
 - Before a Copilot session exits, emit `task.completed` with `status = stopped` for every running background agent, and reconcile unmatched starts on server startup so crashes cannot leave sidebar runs permanently active.
 - Copilot ACP `end_turn` can precede attached-shell completion and autonomous follow-up edits. Keep automatic PR feedback opt-in, surface unowned activity without reassigning it, and never use quiet time or log-file tailing as completion authority. This is containment, not a checkpoint/completion fix; track upstream [completion](https://github.com/github/copilot-cli/issues/4743) and [follow-up abort](https://github.com/github/copilot-cli/issues/4555).
 - Copilot ACP events do not reliably identify their originating prompt. Once a follow-up is active, old continuation events can still be attributed to it by existing handlers; no-active-turn warnings do not solve that ambiguity. Do not claim cross-turn attribution safety without an upstream correlation/completion contract.
-- Automatic PR fallback bypasses the owner-thread queue. Apply the same provider opt-in before fallback takeover side effects, using the selected fallback model's instance; keep explicit fallback requests distinct and record blocked attempts durably.
+- Automatic PR fallback bypasses the owner-thread queue. Gate both the existing Copilot session and destination before automatic takeover, even when switching to another provider. Keep explicit requests distinct; policy-disabled feedback remains pending, not failed.
+- Keep orchestration opt-ins outside provider runtime config: config changes close and rebuild provider scopes. Derive pending reasons from the shared policy and let settings changes resume eligible queued feedback without edit/save recovery.
 
 ## Desktop packaging and React state
 

@@ -150,6 +150,11 @@ export function PullRequestMonitorStrip(props: {
         <RadarIcon className="size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{statusLabel(monitor)}</div>
+          {statusQuery.data?.automationBlockReason ? (
+            <div className="text-xs text-muted-foreground">
+              {statusQuery.data.automationBlockReason}
+            </div>
+          ) : null}
           {summary ? (
             <div className="truncate text-xs text-muted-foreground">{summary}</div>
           ) : monitor?.lastError ? (

@@ -452,6 +452,8 @@ function ProviderEnvironmentSection(props: {
 }
 
 interface ProviderInstanceCardProps {
+  automaticPrFeedback: boolean;
+  onAutomaticPrFeedbackChange: (enabled: boolean) => void;
   readonly instanceId: ProviderInstanceId;
   readonly instance: ProviderInstanceConfig;
   readonly driverOption: DriverOption | undefined;
@@ -507,6 +509,8 @@ interface ProviderInstanceCardProps {
  *     flows through the envelope.
  */
 export function ProviderInstanceCard({
+  automaticPrFeedback,
+  onAutomaticPrFeedbackChange,
   instanceId,
   instance,
   driverOption,
@@ -793,29 +797,15 @@ export function ProviderInstanceCard({
                   </label>
                   <Switch
                     id={`provider-instance-${instanceId}-automatic-pr-feedback`}
-                    checked={
-                      typeof instance.config === "object" &&
-                      instance.config !== null &&
-                      "allowAutomaticPrFeedback" in instance.config &&
-                      instance.config.allowAutomaticPrFeedback === true
-                    }
-                    onCheckedChange={(checked) =>
-                      onUpdate({
-                        ...instance,
-                        config: nextConfigBlobWithValue(
-                          instance.config,
-                          "allowAutomaticPrFeedback",
-                          Boolean(checked),
-                        ),
-                      })
-                    }
+                    checked={automaticPrFeedback}
+                    onCheckedChange={(checked) => onAutomaticPrFeedbackChange(Boolean(checked))}
                   />
                 </div>
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   Off by default: Copilot ACP can report completion while background work continues.
-                  Automatic feedback may interrupt that work. Paused feedback stays in the chat
-                  queue; after enabling, edit and save the queued message to retry. This does not
-                  fix hidden activity or checkpoints.
+                  Automatic feedback may interrupt that work, including when switching providers.
+                  Pending feedback resumes automatically when enabled; changing this setting does
+                  not restart provider sessions. This does not fix hidden activity or checkpoints.
                 </p>
               </div>
             ) : null}

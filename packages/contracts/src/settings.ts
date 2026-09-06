@@ -335,7 +335,6 @@ export type CursorSettings = typeof CursorSettings.Type;
 export const CopilotSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   binaryPath: makeBinaryPathSetting("copilot"),
-  allowAutomaticPrFeedback: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type CopilotSettings = typeof CopilotSettings.Type;
@@ -429,6 +428,9 @@ export const ServerSettings = Schema.Struct({
   autoLaunchPrMonitorFallback: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  copilotAutomaticPrFeedback: Schema.Record(ProviderInstanceId, Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -489,7 +491,6 @@ const CursorSettingsPatch = Schema.Struct({
 const CopilotSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
-  allowAutomaticPrFeedback: Schema.optionalKey(Schema.Boolean),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
@@ -581,6 +582,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   autoMonitorPullRequestsOnCreate: Schema.optionalKey(Schema.Boolean),
   autoLaunchPrMonitorFallback: Schema.optionalKey(Schema.Boolean),
+  copilotAutomaticPrFeedback: Schema.optionalKey(Schema.Record(ProviderInstanceId, Schema.Boolean)),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),

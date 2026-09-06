@@ -430,6 +430,7 @@ export const PullRequestMonitorContextResult = Schema.Struct({
 export type PullRequestMonitorContextResult = typeof PullRequestMonitorContextResult.Type;
 
 export const PullRequestMonitorStatusResult = Schema.Struct({
+  automationBlockReason: Schema.optionalKey(Schema.String),
   monitor: Schema.NullOr(PullRequestMonitorRecord),
   ownerCandidates: Schema.Array(PullRequestMonitorOwnerCandidate),
   latestSnapshot: Schema.NullOr(PullRequestMonitorSnapshot),
