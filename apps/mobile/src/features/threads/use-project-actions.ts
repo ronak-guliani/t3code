@@ -14,7 +14,6 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
-import { nestedThreadParentError } from "./mobile-thread-hierarchy";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import { prepareTurnAttachments, validateDraftFileAttachments } from "../../lib/attachmentUpload";
 import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/commandMetadata";
@@ -28,6 +27,7 @@ import { validateProjectThreadCreation } from "./projectThreadCreationValidation
 import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { resolveProviderInteractionMode } from "./legacy-plan-mode";
+import { nestedThreadParentError } from "./mobile-thread-hierarchy";
 
 export function useCreateProjectThread() {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
@@ -35,7 +35,7 @@ export function useCreateProjectThread() {
   return useCallback(
     async (input: {
       readonly project: EnvironmentProject;
-      readonly parentThreadId?: ThreadId | undefined;
+      readonly parentThreadId?: ThreadId;
       readonly modelSelection: ModelSelection;
       readonly envMode: "local" | "worktree";
       readonly branch: string | null;

@@ -13,15 +13,8 @@ vi.mock("../../state/use-atom-command", () => ({
 
 import {
   buildComposerSlashCommandItems,
-  composerSelectionAtEnd,
   resolveComposerCommandSelection,
 } from "./use-composer-command-menu";
-
-describe("composerSelectionAtEnd", () => {
-  it("resets a changed draft owner to the new draft end", () => {
-    expect(composerSelectionAtEnd("queued task 🧪")).toEqual({ start: 14, end: 14 });
-  });
-});
 
 describe("mobile slash commands", () => {
   const antigravity = {
@@ -99,5 +92,26 @@ describe("mobile slash commands", () => {
         allowInteractionMode: false,
       }),
     ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
+  });
+
+  it("adds one T3 usage-limits command when the provider offers limits", () => {
+    const items = buildComposerSlashCommandItems({
+      query: "usage",
+      atMessageStart: true,
+      hasThread: true,
+      offersUsageLimits: true,
+      allowInteractionMode: true,
+      selectedProviderStatus: {
+        driver: ProviderDriverKind.make("codex"),
+        slashCommands: [{ name: "usage-limits", description: "Provider duplicate" }],
+      },
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "pcmd:usage-limits",
+      type: "provider-slash-command",
+      label: "/usage-limits",
+    });
   });
 });

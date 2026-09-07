@@ -296,7 +296,7 @@ function ThreadNavigationSidebarPane(
           ? pendingTasks
           : pendingTasks.filter((pendingTask) =>
               selectedProjectRefs.has(
-                scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
+                scopedProjectKey(pendingTask.environmentId, pendingTask.projectId),
               ),
             ),
     [threadListV2Enabled, pendingTasks, selectedProjectRefs],
@@ -533,10 +533,10 @@ function ThreadNavigationSidebarPane(
     const v2PendingTasks = pendingTasks.filter(
       (pendingTask) =>
         (options.selectedEnvironmentId === null ||
-          pendingTask.message.environmentId === options.selectedEnvironmentId) &&
+          pendingTask.environmentId === options.selectedEnvironmentId) &&
         (selectedProjectRefs === null ||
           selectedProjectRefs.has(
-            scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
+            scopedProjectKey(pendingTask.environmentId, pendingTask.projectId),
           )) &&
         (v2SearchQuery.length === 0 ||
           pendingTask.title.toLocaleLowerCase().includes(v2SearchQuery)),

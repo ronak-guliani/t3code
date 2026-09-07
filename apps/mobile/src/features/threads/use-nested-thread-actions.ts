@@ -1,4 +1,3 @@
-import { useAppNavigation } from "../../lib/use-app-navigation";
 import type { MenuAction } from "@react-native-menu/menu";
 import {
   nestedThreadCompletionMarker,
@@ -6,14 +5,15 @@ import {
   type MobileThreadShell,
 } from "./mobile-thread-hierarchy";
 import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { useAtomSet } from "@effect/atom-react";
 import { useCallback, useMemo, useRef } from "react";
 import { Alert } from "react-native";
 
+import { useAppNavigation } from "../../lib/use-app-navigation";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useAtomSet } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 
 export function useNestedThreadActions(thread: MobileThreadShell) {
@@ -133,7 +133,7 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
       if (event === "decouple") void decoupleChat();
       if (event === "dismiss-agent-run") dismissAgentRun();
     },
-    [createSubchat, openParent, decoupleChat, dismissAgentRun],
+    [createSubchat, decoupleChat, dismissAgentRun, openParent],
   );
   return { actions, handleAction, createSubchat, openParent, dismissAgentRun };
 }

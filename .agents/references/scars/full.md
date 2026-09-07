@@ -122,6 +122,7 @@
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
+- Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
 
 ## Desktop browser surfaces
 
@@ -165,6 +166,7 @@
 
 ## Mobile protocol compatibility
 
+- Favicon caches may key by workspace and icon revision locally, but keep `projectId` in the asset request; replacing it with required `cwd` breaks both old-client/new-server and new-client/old-server pairings.
 - Official mobile compatibility is an additive protocol boundary: retain legacy bootstrap and `wsToken` routes while serving scoped OAuth access tokens and `wsTicket`; persist granted scopes because role-derived authorization cannot represent restricted upstream tokens.
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.
 - Mobile capability flags are executable protocol promises: advertise a feature only when every current RPC it gates is implemented, and send explicit `false` when current clients distinguish disabled behavior from legacy absence.
@@ -243,6 +245,7 @@
 
 ## Mobile drafts and navigation
 
+- Upstream consumer imports must preserve fork-owned inbox composition. Exercise the real legacy and V2 row consumers, not only an orphanable compact component, so imports cannot silently restore metadata rows or remove related-chat navigation.
 - Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.
 - Independent iPad sidebar stacks own header chrome only; carry app navigation across that boundary for chat and queued-draft actions.

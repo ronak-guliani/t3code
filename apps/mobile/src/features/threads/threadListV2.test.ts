@@ -1282,6 +1282,14 @@ describe("buildThreadListV2Items settled paging", () => {
 
 function makePendingTask(id: string): PendingNewTask {
   return {
+    kind: "pending",
+    key: `pending-task:${id}`,
+    environmentId,
+    projectId: ProjectId.make("project-1"),
+    projectTitle: undefined,
+    projectCwd: undefined,
+    branch: null,
+    createdAt: NOW,
     message: {
       environmentId,
       threadId: ThreadId.make(`thread-${id}`),

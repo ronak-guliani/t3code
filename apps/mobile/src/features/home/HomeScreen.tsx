@@ -378,7 +378,7 @@ export function HomeScreen(props: HomeScreenProps) {
           ? props.pendingTasks
           : props.pendingTasks.filter((pendingTask) =>
               selectedProjectRefKeys.has(
-                scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
+                scopedProjectKey(pendingTask.environmentId, pendingTask.projectId),
               ),
             ),
     [threadListV2Enabled, props.pendingTasks, selectedProjectRefKeys],
@@ -699,10 +699,10 @@ export function HomeScreen(props: HomeScreenProps) {
       props.pendingTasks.filter(
         (pendingTask) =>
           (props.selectedEnvironmentId === null ||
-            pendingTask.message.environmentId === props.selectedEnvironmentId) &&
+            pendingTask.environmentId === props.selectedEnvironmentId) &&
           (v2ScopedProjectKeys === null ||
             v2ScopedProjectKeys.has(
-              scopedProjectKey(pendingTask.message.environmentId, pendingTask.creation.projectId),
+              scopedProjectKey(pendingTask.environmentId, pendingTask.projectId),
             )) &&
           (v2SearchQuery.length === 0 ||
             pendingTask.title.toLocaleLowerCase().includes(v2SearchQuery)),
