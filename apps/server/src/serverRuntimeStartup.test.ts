@@ -1,3 +1,4 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
@@ -64,49 +65,52 @@ it.effect("does not invent a localhost endpoint for a Unix socket listener", () 
   }),
 );
 
-it("keeps two different environments on the same IPv4/IPv6 port distinct", async () => {
-  const ipv4 = createServer((_request, response) => response.end("desktop-environment"));
-  const ipv6 = createServer((_request, response) => response.end("other-environment"));
-  try {
-    await new Promise<void>((resolve, reject) => {
-      ipv4.once("error", reject);
-      ipv4.listen(0, "127.0.0.1", resolve);
-    });
-    const address = ipv4.address();
-    if (address === null || typeof address === "string") throw new Error("Expected a TCP listener");
-    await new Promise<void>((resolve, reject) => {
-      ipv6.once("error", reject);
-      ipv6.listen({ port: address.port, host: "::1", ipv6Only: true }, resolve);
-    });
-    for (const [hostname, environment] of [
-      ["0.0.0.0", "desktop-environment"],
-      ["::", "other-environment"],
-    ] as const) {
-      const origin = await Effect.runPromise(
-        resolveListeningLocalOrigin.pipe(
-          Effect.provideService(
-            HttpServer.HttpServer,
-            HttpServer.HttpServer.of({
-              address: { _tag: "TcpAddress", hostname, port: address.port },
-              serve: () => Effect.void,
-            }),
+it.each([
+  ["0.0.0.0", "::"],
+  ["127.0.0.1", "::1"],
+])("keeps %s and %s environments distinct through the Node HTTP adapter", (ipv4, ipv6) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      if (server.address._tag !== "TcpAddress") throw new Error("Expected a TCP listener");
+      const port = server.address.port;
+      const ipv4Origin = yield* resolveListeningLocalOrigin;
+      assert.equal(ipv4Origin, `http://127.0.0.1:${port}`);
+      yield* Effect.gen(function* () {
+        const ipv6Server = yield* HttpServer.HttpServer;
+        assert.equal(HttpServer.formatAddress(ipv6Server.address), `http://[${ipv6}]:${port}`);
+        const ipv6Origin = yield* resolveListeningLocalOrigin;
+        assert.equal(ipv6Origin, `http://[::1]:${port}`);
+        for (const [origin, environment] of [
+          [ipv4Origin, "desktop-environment"],
+          [ipv6Origin, "other-environment"],
+        ]) {
+          const identity = yield* Effect.promise(async () => {
+            const response = await fetch(`${origin}/.well-known/t3/environment`, {
+              signal: AbortSignal.timeout(2_000),
+            });
+            return response.text();
+          });
+          assert.equal(identity, environment);
+        }
+      }).pipe(
+        Effect.provide(
+          NodeHttpServer.layer(
+            () => createServer((_request, response) => response.end("other-environment")),
+            { host: ipv6, port, ipv6Only: true },
           ),
         ),
       );
-      const response = await fetch(origin, { signal: AbortSignal.timeout(2_000) });
-      assert.equal(await response.text(), environment);
-    }
-  } finally {
-    for (const server of [ipv4, ipv6]) {
-      server.closeAllConnections();
-      if (server.listening) {
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
-      }
-    }
-  }
-});
+    }).pipe(
+      Effect.provide(
+        NodeHttpServer.layer(
+          () => createServer((_request, response) => response.end("desktop-environment")),
+          { host: ipv4, port: 0 },
+        ),
+      ),
+    ),
+  ),
+);
 
 it("uses the canonical Codex default for auto-bootstrapped model selection", () => {
   assert.deepStrictEqual(getAutoBootstrapDefaultModelSelection(), {
