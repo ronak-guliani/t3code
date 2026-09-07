@@ -1,9 +1,6 @@
 import type { MenuAction } from "@react-native-menu/menu";
-import {
-  nestedThreadCompletionMarker,
-  nestedThreadKey,
-  type MobileThreadShell,
-} from "./mobile-thread-hierarchy";
+import { nestedThreadKey, type MobileThreadShell } from "./mobile-thread-hierarchy";
+import { markNestedThreadRead } from "./nested-thread-read";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { useAtomSet } from "@effect/atom-react";
@@ -23,19 +20,9 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const markRead = useCallback(() => {
     if (!thread.virtualAgentRun) return;
-    const marker = nestedThreadCompletionMarker(thread);
-    if (marker === null) return;
     const preferences = appAtomRegistry.get(mobilePreferencesAtom);
     if (!AsyncResult.isSuccess(preferences)) return;
-    const key = nestedThreadKey(thread);
-    const previous = preferences.value.threadChildReadAt?.[key];
-    if (previous && Date.parse(previous) >= Date.parse(marker)) return;
-    savePreferences({
-      threadChildReadAt: {
-        ...preferences.value.threadChildReadAt,
-        [key]: marker,
-      },
-    });
+    markNestedThreadRead(thread, preferences.value, savePreferences);
   }, [savePreferences, thread]);
   const dismissAgentRun = useCallback(() => {
     if (!thread.virtualAgentRun) return;
@@ -67,7 +54,6 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
     });
   }, [navigation, thread.environmentId, thread.id, thread.projectId]);
   const openParent = useCallback(() => {
-    markRead();
     const parentThreadId = thread.parentThreadId;
     const parent =
       parentThreadId == null
@@ -85,6 +71,7 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
       );
       return;
     }
+    markRead();
     navigation.navigate("Thread", { environmentId: thread.environmentId, threadId: parent.id });
   }, [markRead, navigation, thread.environmentId, thread.parentThreadId]);
   const decoupleChat = useCallback(async () => {

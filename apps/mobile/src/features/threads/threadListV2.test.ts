@@ -158,6 +158,39 @@ describe("mobile nested threads", () => {
     expect(result.items[0]?.hierarchy?.childCount).toBe(2);
   });
 
+  it.each(["snoozed", "settled"] as const)(
+    "promotes a %s parent for an unread completed descendant without changing its status",
+    (shelf) => {
+      const completedChild = {
+        ...child,
+        latestTurn: {
+          turnId: TurnId.make("completed-child-turn"),
+          state: "completed" as const,
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          assistantMessageId: null,
+        },
+      };
+      const shelvedParent =
+        shelf === "snoozed"
+          ? { ...parent, snoozedUntil: "2026-06-03T00:00:00.000Z" }
+          : { ...parent, settledOverride: "settled" as const, settledAt: NOW };
+      const result = layout([shelvedParent, completedChild], {
+        snoozedShelfExpanded: false,
+        settledShelfExpanded: false,
+      });
+      expect(result.snoozedCount).toBe(0);
+      expect(result.settledCount).toBe(0);
+      expect(result.items.map((item) => item.thread.id)).toEqual([parent.id, child.id]);
+      expect(result.items[0]?.hierarchy).toMatchObject({
+        displayStatus: "ready",
+        relatedStatus: "ready",
+        hasUnreadDescendant: true,
+      });
+    },
+  );
+
   it("keeps terminal children until they are read, while active children ignore read markers", () => {
     const completedChild = {
       ...child,

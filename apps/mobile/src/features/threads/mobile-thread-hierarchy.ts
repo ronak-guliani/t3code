@@ -18,10 +18,12 @@ export type NestedThreadReadMarkers = Readonly<Record<string, string>>;
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
   latestRelatedNotificationAt?: string | null;
   relatedStatus?: NestedThreadStatus;
+  hasUnreadDescendant?: boolean;
 };
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
   readonly latestRelatedNotificationAt?: string | null;
   readonly relatedStatus?: NestedThreadStatus;
+  readonly hasUnreadDescendant?: boolean;
 };
 
 export function nestedThreadKey(thread: MobileThreadShell): string {
@@ -207,6 +209,7 @@ export function buildMobileThreadTree(
     for (const child of node.children) pending.push(child);
   }
   const latestByKey = new Map<string, string>();
+  const unreadDescendantByKey = new Map<string, boolean>();
   for (let index = traversal.length - 1; index >= 0; index--) {
     const node = traversal[index]!;
     let latest = node.thread.latestChildNotificationAt ?? null;
@@ -219,6 +222,13 @@ export function buildMobileThreadTree(
     node.relatedStatus = rollUpNestedThreadStatus(
       node.children.map((child) => child.rolledUpStatus),
     );
+    node.hasUnreadDescendant = node.children.some(
+      (child) =>
+        unreadDescendantByKey.get(child.threadKey) === true ||
+        (nestedThreadCompletionMarker(child.thread) !== null &&
+          !isNestedThreadRead(child.thread, readMarkers)),
+    );
+    unreadDescendantByKey.set(node.threadKey, node.hasUnreadDescendant);
     if (latest) latestByKey.set(node.threadKey, latest);
   }
   return tree;
@@ -311,6 +321,7 @@ export function mobileThreadTreeRows(
         archiveBlocked: node.archiveBlocked,
         latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
         relatedStatus: node.relatedStatus ?? "ready",
+        hasUnreadDescendant: node.hasUnreadDescendant === true,
       });
     }
     for (let index = node.children.length - 1; index >= 0; index--) {

@@ -189,11 +189,17 @@ export interface ThreadListV2Item {
 export function resolveThreadListV2RootState(input: {
   readonly thread: MobileThreadShell;
   readonly relatedStatus: NestedThreadStatus;
+  readonly hasUnreadDescendant?: boolean;
   readonly settlementSupported: boolean;
   readonly snoozeSupported: boolean;
   readonly now: string;
 }): Pick<ThreadListV2Item, "variant" | "snoozed" | "pinned"> {
   const { thread } = input;
+  // Unread terminal child activity promotes the root without changing the
+  // parent's own execution status or rolling it up as Working.
+  if (input.hasUnreadDescendant === true) {
+    return { variant: "card", snoozed: false, pinned: thread.pinnedAt != null };
+  }
   if (input.relatedStatus === "ready") {
     if (input.snoozeSupported && effectiveSnoozed(thread, { now: input.now })) {
       return { variant: "slim", snoozed: true, pinned: false };
@@ -430,6 +436,7 @@ export function buildThreadListV2Items(input: {
     const state = resolveThreadListV2RootState({
       thread,
       relatedStatus: node.relatedStatus ?? "ready",
+      hasUnreadDescendant: node.hasUnreadDescendant === true,
       settlementSupported: input.settlementEnvironmentIds?.has(thread.environmentId) ?? true,
       snoozeSupported: input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true,
       now,
