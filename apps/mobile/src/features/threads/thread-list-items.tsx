@@ -26,6 +26,7 @@ import {
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { resolveThreadStatus } from "./threadPresentation";
+import { useThreadPr } from "../../state/use-thread-pr";
 
 export type ThreadListVariant = "compact" | "sidebar";
 export const THREAD_LIST_COMPACT_INSET = HOME_HORIZONTAL_INSET;
@@ -170,6 +171,7 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly variant: ThreadListVariant;
   readonly thread: MobileThreadShell;
+  readonly projectCwd?: string | null;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
@@ -192,6 +194,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const theme = useUniwindTheme();
   const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
     props;
+  const pullRequest = useThreadPr(thread, props.projectCwd ?? null);
   const nesting = useNestedThreadActions(thread);
   const handleDelete = useCallback(
     () => (thread.virtualAgentRun ? nesting.dismissAgentRun() : onDeleteThread(thread)),
@@ -283,6 +286,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           selected={props.selected}
           showDivider={!props.isLast}
           related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
+          pullRequest={pullRequest}
           searchMatch={props.searchMatch}
           searchQuery={props.searchQuery}
           accessibilityHint="Opens the thread. Swipe left for archive and delete actions."

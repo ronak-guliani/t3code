@@ -29,7 +29,7 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
-import { useDismissedAgentRunKeys } from "./thread-hierarchy-controls";
+import { useDismissedAgentRunKeys, useThreadChildReadAt } from "./thread-hierarchy-controls";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -143,6 +143,16 @@ function ThreadNavigationSidebarPane(
 ) {
   const insets = useSafeAreaInsets();
   const projects = useProjects();
+  const projectCwdByKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          scopedProjectKey(project.environmentId, project.id),
+          project.workspaceRoot,
+        ]),
+      ),
+    [projects],
+  );
   const threads = useThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
@@ -164,6 +174,7 @@ function ThreadNavigationSidebarPane(
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
+  const threadChildReadAt = useThreadChildReadAt();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(
@@ -338,6 +349,7 @@ function ThreadNavigationSidebarPane(
             displayStates: groupDisplayStates,
             showAllThreads: hasSearchQuery,
             dismissedAgentRunKeys,
+            threadChildReadAt,
             selectedThreadKey: props.selectedThreadKey,
           }),
     [
@@ -347,6 +359,7 @@ function ThreadNavigationSidebarPane(
       hasSearchQuery,
       props.selectedThreadKey,
       dismissedAgentRunKeys,
+      threadChildReadAt,
     ],
   );
 
@@ -464,6 +477,7 @@ function ThreadNavigationSidebarPane(
     return buildThreadListV2Items({
       threads,
       dismissedAgentRunKeys,
+      threadChildReadAt,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -479,6 +493,7 @@ function ThreadNavigationSidebarPane(
   }, [
     nowMinute,
     dismissedAgentRunKeys,
+    threadChildReadAt,
     snoozeWakeTick,
     snoozedShelfExpanded,
     settledShelfExpanded,
@@ -713,12 +728,13 @@ function ThreadNavigationSidebarPane(
   });
   const listExtraData = useMemo(
     () => ({
+      projectCwdByKey,
       selectedThreadKey: props.selectedThreadKey ?? "",
       serverConfigs,
       snoozePresetMinute: nowMinute,
       threadSearchMatchByKey,
     }),
-    [props.selectedThreadKey, serverConfigs, nowMinute, threadSearchMatchByKey],
+    [projectCwdByKey, props.selectedThreadKey, serverConfigs, nowMinute, threadSearchMatchByKey],
   );
   const sidebarItemsAreEqual = useCallback(
     (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -810,6 +826,9 @@ function ThreadNavigationSidebarPane(
             <ThreadListV2Row
               hierarchy={item.item.hierarchy}
               thread={thread}
+              projectCwd={projectCwdByKey.get(
+                scopedProjectKey(thread.environmentId, thread.projectId),
+              )}
               variant={item.item.variant}
               snoozed={item.item.snoozed}
               pinned={item.item.pinned}
@@ -925,6 +944,9 @@ function ThreadNavigationSidebarPane(
               hierarchy={item.hierarchy}
               variant="sidebar"
               thread={thread}
+              projectCwd={projectCwdByKey.get(
+                scopedProjectKey(thread.environmentId, thread.projectId),
+              )}
               isLast={item.isLast}
               searchMatch={threadSearchMatchByKey.get(
                 threadSearchMatchKey({
@@ -978,6 +1000,7 @@ function ThreadNavigationSidebarPane(
       props.searchQuery,
       props.selectedThreadKey,
       props.width,
+      projectCwdByKey,
       savedConnectionsById,
       serverConfigs,
       shelfPreferencesLoaded,

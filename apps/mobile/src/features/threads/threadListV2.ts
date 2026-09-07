@@ -22,6 +22,10 @@ import {
   mobileThreadTreeRows,
   resolveNestedThreadStatus,
   selectMatchingThreadTree,
+  nestedThreadRevealKeys,
+  nestedVirtualAgentKeys,
+  nestedVirtualAgentSearchKeys,
+  type NestedThreadReadMarkers,
   type MobileThreadTreeRow,
   type MobileThreadShell,
   type NestedThreadStatus,
@@ -185,11 +189,17 @@ export interface ThreadListV2Item {
 export function resolveThreadListV2RootState(input: {
   readonly thread: MobileThreadShell;
   readonly relatedStatus: NestedThreadStatus;
+  readonly hasUnreadDescendant?: boolean;
   readonly settlementSupported: boolean;
   readonly snoozeSupported: boolean;
   readonly now: string;
 }): Pick<ThreadListV2Item, "variant" | "snoozed" | "pinned"> {
   const { thread } = input;
+  // Unread terminal child activity promotes the root without changing the
+  // parent's own execution status or rolling it up as Working.
+  if (input.hasUnreadDescendant === true) {
+    return { variant: "card", snoozed: false, pinned: thread.pinnedAt != null };
+  }
   if (input.relatedStatus === "ready") {
     if (input.snoozeSupported && effectiveSnoozed(thread, { now: input.now })) {
       return { variant: "slim", snoozed: true, pinned: false };
@@ -355,6 +365,7 @@ export function buildThreadListV2Items(input: {
       a split-view detail can never lose its navigation row. */
   readonly selectedThreadKey?: string | null;
   readonly dismissedAgentRunKeys?: readonly string[];
+  readonly threadChildReadAt?: NestedThreadReadMarkers;
 }): ThreadListV2Layout {
   const now = input.now;
   const query = input.searchQuery.trim().toLocaleLowerCase();
@@ -386,15 +397,27 @@ export function buildThreadListV2Items(input: {
     scopedThreads,
     compareNestedThreads,
     input.dismissedAgentRunKeys,
+    {
+      readMarkers: input.threadChildReadAt,
+      includeReadCompletedChildren: query.length > 0,
+      selectedThreadKey: input.selectedThreadKey,
+    },
   );
-  const roots = query.length > 0 ? selectMatchingThreadTree(tree, matchingKeys) : tree;
+  const searchKeys =
+    query.length > 0
+      ? new Set([...matchingKeys, ...nestedVirtualAgentSearchKeys(tree, query)])
+      : matchingKeys;
+  const roots = query.length > 0 ? selectMatchingThreadTree(tree, searchKeys) : tree;
   const nodesByKey = new Map(tree.map((node) => [node.threadKey, node]));
   const rowsByRootKey = new Map(
     roots.map((node) => [
       node.threadKey,
       mobileThreadTreeRows([node], {
         selectedThreadKey: input.selectedThreadKey,
-        ...(query.length > 0 ? { revealThreadKeys: matchingKeys } : {}),
+        revealThreadKeys:
+          query.length > 0
+            ? new Set([...searchKeys, ...nestedVirtualAgentKeys([node]).values()])
+            : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
       }),
     ]),
   );
@@ -413,6 +436,7 @@ export function buildThreadListV2Items(input: {
     const state = resolveThreadListV2RootState({
       thread,
       relatedStatus: node.relatedStatus ?? "ready",
+      hasUnreadDescendant: node.hasUnreadDescendant === true,
       settlementSupported: input.settlementEnvironmentIds?.has(thread.environmentId) ?? true,
       snoozeSupported: input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true,
       now,

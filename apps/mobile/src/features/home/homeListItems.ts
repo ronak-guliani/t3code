@@ -3,8 +3,11 @@ import type { HomeThreadGroup } from "./homeThreadList";
 import {
   buildMobileThreadTree,
   mobileThreadTreeRows,
+  nestedThreadRevealKeys,
+  nestedVirtualAgentKeys,
   type MobileThreadTreeRow,
   type MobileThreadShell,
+  type NestedThreadReadMarkers,
   compareNestedThreads,
   selectMatchingThreadTree,
 } from "../threads/mobile-thread-hierarchy";
@@ -140,6 +143,7 @@ export function buildHomeListLayout(input: {
    */
   readonly showAllThreads?: boolean;
   readonly dismissedAgentRunKeys?: readonly string[];
+  readonly threadChildReadAt?: NestedThreadReadMarkers;
   readonly selectedThreadKey?: string | null;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
@@ -176,6 +180,11 @@ export function buildHomeListLayout(input: {
       allThreads,
       (left, right) => ordinal(left) - ordinal(right) || compareNestedThreads(left, right),
       input.dismissedAgentRunKeys,
+      {
+        readMarkers: input.threadChildReadAt,
+        includeReadCompletedChildren: input.showAllThreads === true,
+        selectedThreadKey: input.selectedThreadKey,
+      },
     ).sort((left, right) => ordinal(left.mostRecentThread) - ordinal(right.mostRecentThread));
     const matchingThreadKeys = input.showAllThreads
       ? new Set(group.threads.map((thread) => `${thread.environmentId}:${thread.id}`))
@@ -210,7 +219,9 @@ export function buildHomeListLayout(input: {
     const rows = roots.map((root) =>
       mobileThreadTreeRows([root], {
         selectedThreadKey: input.selectedThreadKey,
-        revealThreadKeys: matchingThreadKeys,
+        revealThreadKeys: matchingThreadKeys
+          ? new Set([...matchingThreadKeys, ...nestedVirtualAgentKeys([root])])
+          : nestedThreadRevealKeys([root], input.threadChildReadAt ?? {}),
       }),
     );
     const visibleThreads = rows

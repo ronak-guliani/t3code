@@ -14,14 +14,51 @@ export interface MobileThreadShell extends EnvironmentThreadShell {
     readonly parentThreadId: ThreadId;
   };
 }
+export type NestedThreadReadMarkers = Readonly<Record<string, string>>;
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
   latestRelatedNotificationAt?: string | null;
   relatedStatus?: NestedThreadStatus;
+  hasUnreadDescendant?: boolean;
 };
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
   readonly latestRelatedNotificationAt?: string | null;
   readonly relatedStatus?: NestedThreadStatus;
+  readonly hasUnreadDescendant?: boolean;
 };
+
+export function nestedThreadKey(thread: MobileThreadShell): string {
+  return thread.virtualAgentRun
+    ? `${thread.environmentId}:agent-run:${thread.virtualAgentRun.parentThreadId}:${thread.virtualAgentRun.taskId}`
+    : `${thread.environmentId}:${thread.id}`;
+}
+
+export function nestedThreadCompletionMarker(thread: MobileThreadShell): string | null {
+  if (thread.virtualAgentRun) {
+    if (thread.virtualAgentRun.status === "running") return null;
+    return thread.virtualAgentRun.completedAt ?? thread.updatedAt;
+  }
+  if (thread.parentThreadId == null) return null;
+  if (thread.latestTurn) {
+    if (thread.latestTurn.state !== "running" && thread.latestTurn.completedAt !== null) {
+      return thread.latestTurn.completedAt;
+    }
+    if (thread.latestTurn.state === "running") return null;
+  }
+  return thread.session?.status === "error" ? thread.session.updatedAt : null;
+}
+
+export function isNestedThreadRead(
+  thread: MobileThreadShell,
+  readMarkers: NestedThreadReadMarkers,
+): boolean {
+  const marker = nestedThreadCompletionMarker(thread);
+  if (marker === null) return false;
+  const readMarker = readMarkers[nestedThreadKey(thread)];
+  if (!readMarker) return false;
+  const markerMs = Date.parse(marker);
+  const readMarkerMs = Date.parse(readMarker);
+  return Number.isFinite(markerMs) && Number.isFinite(readMarkerMs) && markerMs <= readMarkerMs;
+}
 
 export function nestedThreadParentError(
   parentThreadId: ThreadId | undefined,
@@ -93,6 +130,11 @@ export function buildMobileThreadTree(
   threads: readonly EnvironmentThreadShell[],
   compare = compareNestedThreads,
   dismissedAgentRunKeys: readonly string[] = [],
+  options: {
+    readonly readMarkers?: NestedThreadReadMarkers;
+    readonly includeReadCompletedChildren?: boolean;
+    readonly selectedThreadKey?: string | null;
+  } = {},
 ): MobileThreadTreeNode[] {
   const dismissed = new Set(dismissedAgentRunKeys);
   const expanded: MobileThreadShell[] = selectVisibleThreads(threads).flatMap((thread) => [
@@ -122,8 +164,37 @@ export function buildMobileThreadTree(
         }),
       ),
   ]);
+  const readMarkers = options.readMarkers ?? {};
+  const visibleKeys = new Set(
+    expanded
+      .filter((thread) => {
+        if (options.includeReadCompletedChildren === true || thread.parentThreadId == null) {
+          return true;
+        }
+        if (hierarchyThreadKey(thread) === options.selectedThreadKey) return true;
+        const status = resolveNestedThreadStatus(thread);
+        if (status === "approval" || status === "input" || status === "working") return true;
+        const completionMarker = nestedThreadCompletionMarker(thread);
+        return completionMarker === null || !isNestedThreadRead(thread, readMarkers);
+      })
+      .map((thread) => hierarchyThreadKey(thread)),
+  );
+  const threadsByKey = new Map(expanded.map((thread) => [hierarchyThreadKey(thread), thread]));
+  for (const thread of expanded) {
+    if (!visibleKeys.has(hierarchyThreadKey(thread))) continue;
+    let parentThreadId = thread.parentThreadId;
+    while (parentThreadId != null) {
+      const parentKey = hierarchyThreadKey({
+        environmentId: thread.environmentId,
+        id: parentThreadId,
+      });
+      if (!threadsByKey.has(parentKey)) break;
+      visibleKeys.add(parentKey);
+      parentThreadId = threadsByKey.get(parentKey)?.parentThreadId ?? null;
+    }
+  }
   const tree: MobileThreadTreeNode[] = buildThreadTree({
-    threads: expanded,
+    threads: expanded.filter((thread) => visibleKeys.has(hierarchyThreadKey(thread))),
     compare,
     resolveStatus: resolveNestedThreadStatus,
     rollUpStatus: rollUpNestedThreadStatus,
@@ -138,6 +209,7 @@ export function buildMobileThreadTree(
     for (const child of node.children) pending.push(child);
   }
   const latestByKey = new Map<string, string>();
+  const unreadDescendantByKey = new Map<string, boolean>();
   for (let index = traversal.length - 1; index >= 0; index--) {
     const node = traversal[index]!;
     let latest = node.thread.latestChildNotificationAt ?? null;
@@ -150,9 +222,71 @@ export function buildMobileThreadTree(
     node.relatedStatus = rollUpNestedThreadStatus(
       node.children.map((child) => child.rolledUpStatus),
     );
+    node.hasUnreadDescendant = node.children.some(
+      (child) =>
+        unreadDescendantByKey.get(child.threadKey) === true ||
+        (nestedThreadCompletionMarker(child.thread) !== null &&
+          !isNestedThreadRead(child.thread, readMarkers)),
+    );
+    unreadDescendantByKey.set(node.threadKey, node.hasUnreadDescendant);
     if (latest) latestByKey.set(node.threadKey, latest);
   }
   return tree;
+}
+
+export function nestedThreadRevealKeys(
+  nodes: readonly MobileThreadTreeNode[],
+  readMarkers: NestedThreadReadMarkers,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (
+      node.thread.parentThreadId != null &&
+      (node.status !== "ready" ||
+        (nestedThreadCompletionMarker(node.thread) !== null &&
+          !isNestedThreadRead(node.thread, readMarkers)))
+    ) {
+      keys.add(node.threadKey);
+    }
+    pending.push(...node.children);
+  }
+  return keys;
+}
+
+export function nestedVirtualAgentKeys(
+  nodes: readonly MobileThreadTreeNode[],
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.thread.virtualAgentRun) keys.add(node.threadKey);
+    pending.push(...node.children);
+  }
+  return keys;
+}
+
+export function nestedVirtualAgentSearchKeys(
+  nodes: readonly MobileThreadTreeNode[],
+  query: string,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (normalizedQuery.length === 0) return keys;
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (
+      node.thread.virtualAgentRun &&
+      node.thread.title.toLocaleLowerCase().includes(normalizedQuery)
+    ) {
+      keys.add(node.threadKey);
+    }
+    pending.push(...node.children);
+  }
+  return keys;
 }
 
 export function mobileThreadTreeRows(
@@ -187,6 +321,7 @@ export function mobileThreadTreeRows(
         archiveBlocked: node.archiveBlocked,
         latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
         relatedStatus: node.relatedStatus ?? "ready",
+        hasUnreadDescendant: node.hasUnreadDescendant === true,
       });
     }
     for (let index = node.children.length - 1; index >= 0; index--) {
@@ -237,7 +372,18 @@ export function selectMatchingThreadTree(
       const match = retained.get(child.threadKey);
       return match ? [match] : [];
     });
-    if (matches.has(hierarchyThreadKey(node.thread)) || children.length > 0) {
+    const nodeMatches = matches.has(hierarchyThreadKey(node.thread));
+    if (nodeMatches) {
+      for (const child of node.children) {
+        if (
+          child.thread.virtualAgentRun &&
+          !children.some((item) => item.threadKey === child.threadKey)
+        ) {
+          children.push(child);
+        }
+      }
+    }
+    if (nodeMatches || children.length > 0) {
       // Keep full-subtree status and archive guards even when siblings are hidden.
       retained.set(node.threadKey, { ...node, children });
     }
