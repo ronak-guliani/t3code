@@ -67,6 +67,12 @@ address family and port rather than `localhost`, so a separate IPv6 server canno
 a desktop environment's IPv4 tunnel. Desktop and CLI builds both need this startup fix;
 updating only the CLI does not update an already running desktop application's tunnel.
 
+Connect link proofs require a loopback origin. Explicit interface binds such as
+`--host 192.168.1.20` are not supported for Connect; startup reports this limitation.
+Use `--host 127.0.0.1` or `--host ::1` for local-only access, or a wildcard bind
+(`--host 0.0.0.0` or `--host ::`) when LAN access is also required. Wildcard binds
+expose the listener to other interfaces; Connect still targets matching-family loopback.
+
 If mobile reports `endpoint_request_failed`, a running connector alone does not prove that the
 endpoint is healthy. Compare `/.well-known/t3/environment` on the host and its public endpoint:
 the `environmentId` must match. Do not delete mobile environments to repair host routing;

@@ -33,7 +33,8 @@ it.effect("targets the listening address family and actual port for Connect", ()
       ["::", "http://[::1]:43123"],
       ["[::]", "http://[::1]:43123"],
       ["::1", "http://[::1]:43123"],
-      ["192.168.1.20", "http://192.168.1.20:43123"],
+      ["[::1]", "http://[::1]:43123"],
+      ["localhost", "http://localhost:43123"],
     ]) {
       const origin = yield* resolveListeningLocalOrigin.pipe(
         Effect.provideService(
@@ -45,6 +46,26 @@ it.effect("targets the listening address family and actual port for Connect", ()
         ),
       );
       assert.equal(origin, expected);
+    }
+  }),
+);
+
+it.effect("rejects interface binds that Connect link proofs cannot authorize", () =>
+  Effect.gen(function* () {
+    for (const hostname of ["192.168.1.20", "2001:db8::1", "[fe80::1]", "127.0.0.2"]) {
+      const error = yield* resolveListeningLocalOrigin.pipe(
+        Effect.provideService(
+          HttpServer.HttpServer,
+          HttpServer.HttpServer.of({
+            address: { _tag: "TcpAddress", hostname, port: 43123 },
+            serve: () => Effect.void,
+          }),
+        ),
+        Effect.flip,
+      );
+      assert.include(error.message, "explicit interface bind is unsupported");
+      assert.include(error.message, "--host 127.0.0.1");
+      assert.include(error.message, "--host 0.0.0.0");
     }
   }),
 );

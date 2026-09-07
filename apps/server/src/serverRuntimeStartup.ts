@@ -310,6 +310,12 @@ export const resolveListeningLocalOrigin = Effect.gen(function* () {
       : address.hostname === "::" || address.hostname === "[::]"
         ? "::1"
         : address.hostname;
+  if (!["127.0.0.1", "::1", "[::1]", "localhost"].includes(hostname)) {
+    return yield* new ServerRuntimeStartupError({
+      message:
+        "T3 Connect requires an origin on 127.0.0.1 or ::1; this explicit interface bind is unsupported. Restart with --host 127.0.0.1 or --host ::1 for local access, or --host 0.0.0.0 or --host :: if LAN access is also required.",
+    });
+  }
   return `http://${formatHostForUrl(hostname)}:${address.port}`;
 });
 
