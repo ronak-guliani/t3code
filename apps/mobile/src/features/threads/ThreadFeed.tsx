@@ -72,12 +72,7 @@ import { FilePreviewModal, type FilePreviewSource } from "../../components/FileP
 import { isPdfFile } from "../../lib/filePreview";
 import { PresentationSource } from "../../components/NativePresentation";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Animated, {
-  FadeIn,
-  FadeInUp,
-  LinearTransition,
-  type SharedValue,
-} from "react-native-reanimated";
+import Animated, { FadeIn, FadeInUp, type SharedValue } from "react-native-reanimated";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { useFontFamily } from "../../lib/useFontFamily";
@@ -159,7 +154,6 @@ import {
   ThreadWorkGroupToggle,
   ThreadThinkingRow,
   ThreadWorkLog,
-  THREAD_DISCLOSURE_TRANSITION_MS,
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
@@ -209,11 +203,7 @@ function formatMessageTime(input: string): string {
 // Fixed heights mirror renderFeedEntry's classNames and are only used while
 // text fits at the current font settings. Larger accessibility text is measured.
 const TURN_FOLD_HEIGHT = 42; // min-h-11 (38.5) + mb-1 (3.5), with the mobile 14px rem
-const THREAD_FEED_LAYOUT_TRANSITION = LinearTransition.duration(THREAD_DISCLOSURE_TRANSITION_MS);
-// Let neighboring rows move out of the new rows' space before showing their text.
-const THREAD_FEED_DISCLOSURE_ENTER_TRANSITION = FadeIn.delay(
-  THREAD_DISCLOSURE_TRANSITION_MS,
-).duration(140);
+const THREAD_FEED_DISCLOSURE_ENTER_TRANSITION = FadeIn.duration(140);
 
 // Entering animations must only play for rows born just now — LegendList
 // remounts rows when they scroll back into view, and replaying an entrance for
@@ -2618,7 +2608,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
 
   // Disclosures can mount existing offscreen rows as well as new work rows.
-  // Fade those in after movement; never retain removed rows over replacements.
+  // Fade those in without animating their geometry or retaining removed rows.
   const renderItem = useCallback(
     (info: { item: ThreadFeedEntry; index: number }) => (
       <Animated.View
@@ -2789,7 +2779,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               entry.type === "message" ? `message:${entry.message.role}` : entry.type
             }
             getFixedItemSize={getFixedItemSize}
-            itemLayoutAnimation={THREAD_FEED_LAYOUT_TRANSITION}
+            // Keep virtual cell positions synchronous. Interrupted native layout
+            // transitions can finish at stale offsets after measurement/MVCP
+            // corrections, leaving gaps or overlaps despite correct list sizes.
             onItemSizeChanged={handleItemSizeChanged}
             // Measure rows well before they scroll into view so estimate→actual
             // corrections land offscreen instead of under the user's finger.
