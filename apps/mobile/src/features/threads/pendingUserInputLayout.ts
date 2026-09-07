@@ -35,3 +35,9 @@ export function derivePendingUserInputMaxHeight(input: {
     Math.max(PENDING_USER_INPUT_MIN_HEIGHT, availableHeight),
   );
 }
+
+export function derivePendingApprovalMaxHeight(
+  input: Parameters<typeof derivePendingUserInputMaxHeight>[0],
+): number {
+  return derivePendingUserInputMaxHeight(input);
+}

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { derivePendingUserInputMaxHeight } from "./pendingUserInputLayout";
+import {
+  derivePendingApprovalMaxHeight,
+  derivePendingUserInputMaxHeight,
+} from "./pendingUserInputLayout";
 
 describe("derivePendingUserInputMaxHeight", () => {
   it("caps a tall portrait viewport", () => {
@@ -34,5 +37,16 @@ describe("derivePendingUserInputMaxHeight", () => {
         composerOverlapHeight: 94,
       }),
     ).toBe(160);
+  });
+
+  it("bounds approval details by the real short viewport while keeping controls outside the scroll region", () => {
+    expect(
+      derivePendingApprovalMaxHeight({
+        windowHeight: 375,
+        keyboardHeight: 0,
+        navigationHeaderHeight: 44,
+        composerOverlapHeight: 94,
+      }),
+    ).toBe(225);
   });
 });

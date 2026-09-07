@@ -179,6 +179,10 @@ import {
   ThreadMarkdownImageUnavailable,
   ThreadMarkdownImageView,
 } from "./ThreadMarkdownImage";
+import {
+  deriveAssistantMetadataInvalidationKey,
+  deriveTerminalAssistantMessageIds,
+} from "./threadFeedPresentation";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // Native iOS blockquotes and adjacent selectable text are separate layout
@@ -2187,6 +2191,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   );
   const markdownStyles = useMarkdownStyles(onMarkdownLinkPress, renderMarkdownImage);
   const reviewCommentColors = useReviewCommentColors();
+  const assistantMetadataInvalidationKey = deriveAssistantMetadataInvalidationKey(props.latestTurn);
   // LegendList does not invalidate visible rows when only the renderItem closure changes.
   // Keep row-local interaction props in extraData so disclosures and copy feedback repaint.
   const listAppearanceData = useMemo(
@@ -2200,6 +2205,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       themeAppearance,
       userBubbleColor,
       viewportWidth,
+      assistantMetadataInvalidationKey,
     }),
     [
       copiedRowId,
@@ -2211,6 +2217,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       themeAppearance,
       userBubbleColor,
       viewportWidth,
+      assistantMetadataInvalidationKey,
     ],
   );
   const reportHeaderMaterialVisibility = useCallback(
@@ -2383,15 +2390,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       ),
     [presentedFeed, props.anchorMessageId, anchorTopInset],
   );
-  const terminalAssistantMessageIds = useMemo(() => {
-    const terminalIdsByTurn = new Map<TurnId, string>();
-    for (const entry of props.feed) {
-      if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
-        terminalIdsByTurn.set(entry.message.turnId, entry.message.id);
-      }
-    }
-    return new Set(terminalIdsByTurn.values());
-  }, [props.feed]);
+  const terminalAssistantMessageIds = useMemo(
+    () => deriveTerminalAssistantMessageIds(props.feed),
+    [props.feed],
+  );
   const unsettledTurnId =
     props.latestTurn &&
     (props.latestTurn.completedAt === null || props.latestTurn.state === "running")

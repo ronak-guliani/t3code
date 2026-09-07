@@ -1,5 +1,5 @@
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useReducer, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -16,6 +16,11 @@ import { PresentationSource } from "../../components/NativePresentation";
 import { useMediaActions, type MediaActionsSource } from "../../lib/mediaActions";
 import { useAssetUrlState } from "../../state/assets";
 import { MARKDOWN_IMAGE_MAX_WIDTH, resolveMarkdownImageDisplaySize } from "./markdownImageSize";
+import {
+  createMarkdownImageLoadState,
+  reduceMarkdownImageLoadState,
+  shouldAutomaticallyRetryMarkdownImage,
+} from "./markdownImageLoadState";
 
 export function ThreadMarkdownImageView(props: {
   readonly uri: string | null;
@@ -29,15 +34,42 @@ export function ThreadMarkdownImageView(props: {
   const mediaActions = useMediaActions(props.actionsSource);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [sourceSize, setSourceSize] = useState<{ width: number; height: number } | null>(null);
-  const [failedUri, setFailedUri] = useState<string | null>(null);
+  const [imageLoadState, dispatchImageLoad] = useReducer(
+    reduceMarkdownImageLoadState,
+    { sourceKey: props.sourceKey, uri: props.uri },
+    createMarkdownImageLoadState,
+  );
 
   useEffect(() => {
     setSourceSize(null);
-  }, [props.sourceKey]);
+    dispatchImageLoad({
+      type: "source-changed",
+      sourceKey: props.sourceKey,
+      uri: props.uri,
+    });
+  }, [props.sourceKey, props.uri]);
 
   useEffect(() => {
-    setFailedUri(null);
-  }, [props.uri]);
+    if (
+      !shouldAutomaticallyRetryMarkdownImage(imageLoadState, {
+        uri: props.uri,
+        unavailable: props.unavailable,
+      })
+    ) {
+      return;
+    }
+    const retryTimer = setTimeout(() => {
+      dispatchImageLoad({ type: "retry", automatic: true });
+    }, 500);
+    return () => clearTimeout(retryTimer);
+  }, [imageLoadState, props.unavailable, props.uri]);
+
+  const retryImage = useCallback(() => {
+    if (props.uri === null || props.unavailable) {
+      return;
+    }
+    dispatchImageLoad({ type: "retry", automatic: false });
+  }, [props.unavailable, props.uri]);
 
   const displaySize =
     sourceSize === null
@@ -47,7 +79,10 @@ export function ThreadMarkdownImageView(props: {
           sourceHeight: sourceSize.height,
           availableWidth,
         });
-  const failed = props.unavailable || (props.uri !== null && failedUri === props.uri);
+  const failed =
+    props.unavailable ||
+    (props.uri !== null && imageLoadState.uri === props.uri && imageLoadState.failed);
+  const canRetry = failed && props.uri !== null && !props.unavailable;
   const placeholderWidth: ViewStyle["width"] =
     availableWidth > 0 ? Math.min(availableWidth, MARKDOWN_IMAGE_MAX_WIDTH) : "100%";
   const frameStyle: ViewStyle = displaySize ?? { width: placeholderWidth, aspectRatio: 16 / 9 };
@@ -60,11 +95,20 @@ export function ThreadMarkdownImageView(props: {
       {props.uri === null || failed ? (
         <MediaActionsMenu media={mediaActions}>
           <Pressable
-            accessibilityRole="imagebutton"
-            accessibilityLabel={props.alt ?? "Markdown image"}
-            accessibilityHint={
-              mediaActions.actions.length > 0 ? "Touch and hold for media actions" : undefined
+            accessibilityRole={canRetry ? "button" : "image"}
+            accessibilityLabel={
+              canRetry
+                ? `${props.alt ?? "Image"} unavailable. Retry`
+                : (props.alt ?? "Markdown image")
             }
+            accessibilityHint={
+              canRetry
+                ? "Double tap to retry loading this image"
+                : mediaActions.actions.length > 0
+                  ? "Touch and hold for media actions"
+                  : undefined
+            }
+            onPress={canRetry ? retryImage : undefined}
             className="items-center justify-center rounded-[10px] bg-md-code-bg"
             style={frameStyle}
           >
@@ -102,10 +146,13 @@ export function ThreadMarkdownImageView(props: {
                 }}
               >
                 <ThreadMarkdownImageRequest
-                  key={props.uri}
-                  uri={props.uri}
-                  onLoad={setSourceSize}
-                  onError={() => setFailedUri(props.uri)}
+                  uri={props.uri!}
+                  key={`${props.uri}:${imageLoadState.requestVersion}`}
+                  onLoad={(sourceSize) => {
+                    dispatchImageLoad({ type: "loaded", uri: props.uri! });
+                    setSourceSize(sourceSize);
+                  }}
+                  onError={() => dispatchImageLoad({ type: "failed", uri: props.uri! })}
                 />
               </View>
             </Pressable>
