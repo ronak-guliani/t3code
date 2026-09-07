@@ -78,9 +78,7 @@ import { useSelectedThreadRequests } from "../../state/use-selected-thread-reque
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
-import {
-  useMarkNestedThreadRead,
-} from "./thread-hierarchy-controls";
+import { useMarkNestedThreadRead } from "./thread-hierarchy-controls";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import {
