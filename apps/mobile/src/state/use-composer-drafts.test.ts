@@ -154,8 +154,10 @@ import {
   archiveCloudComposerDrafts,
   clearComposerDraftContent,
   clearComposerDraftContentState,
+  clearComposerDraft,
   clearComposerDraftsEnvironment,
   ComposerDraftPersistenceError,
+  composerDraftAtom,
   composerDraftsAtom,
   composerCloudDraftsAtom,
   createNewTaskDraft,
@@ -179,6 +181,7 @@ import {
   waitForComposerDraftsLoaded,
   setStickyComposerModelSelection,
   stickyComposerModelSelectionAtom,
+  updateComposerDraftSettings,
   undoComposerDraftMerge,
   undoComposerDraftMergeState,
 } from "./use-composer-drafts";
@@ -211,6 +214,129 @@ afterEach(() => {
 });
 
 describe("mobile composer drafts", () => {
+  it("isolates per-key draft notifications while preserving stored references", () => {
+    const keyA = "environment-1:thread-a";
+    const keyB = "environment-1:thread-b";
+    const attachment = {
+      id: "image-a",
+      type: "image" as const,
+      name: "photo.png",
+      mimeType: "image/png",
+      sizeBytes: 3,
+      dataUrl: "data:image/png;base64,YWJj",
+      previewUri: "data:image/png;base64,YWJj",
+    };
+    const draftA: ComposerDraft = {
+      text: "draft a",
+      attachments: [attachment],
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.6-sol",
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    };
+    const valuesA: ComposerDraft[] = [];
+    const valuesB: ComposerDraft[] = [];
+    const unsubscribeA = appAtomRegistry.subscribe(
+      composerDraftAtom(keyA),
+      (draft) => valuesA.push(draft),
+      { immediate: true },
+    );
+    const unsubscribeB = appAtomRegistry.subscribe(
+      composerDraftAtom(keyB),
+      (draft) => valuesB.push(draft),
+      { immediate: true },
+    );
+    onTestFinished(() => {
+      unsubscribeA();
+      unsubscribeB();
+    });
+
+    appAtomRegistry.set(composerDraftsAtom, { [keyA]: draftA });
+    expect(valuesA.at(-1)).toBe(draftA);
+    expect(getComposerDraftSnapshot(keyA)).toBe(draftA);
+    const notificationCountA = valuesA.length;
+
+    setComposerDraftText(keyB, "draft b");
+    expect(valuesA).toHaveLength(notificationCountA);
+    expect(valuesB.at(-1)?.text).toBe("draft b");
+    expect(getComposerDraftSnapshot(keyA)).toBe(draftA);
+
+    updateComposerDraftSettings(keyA, { runtimeMode: "full-access" });
+    expect(valuesA.at(-1)).toMatchObject({
+      text: "draft a",
+      attachments: [attachment],
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+    });
+    expect(valuesA.at(-1)?.modelSelection).toBe(draftA.modelSelection);
+
+    clearComposerDraft(keyA);
+    const emptyAfterDeletion = valuesA.at(-1);
+    expect(emptyAfterDeletion).toEqual({ text: "", attachments: [] });
+    expect(getComposerDraftSnapshot(keyA)).toBe(emptyAfterDeletion);
+    expect(composerDraftAtom(keyA)).toBe(composerDraftAtom(keyA));
+    expect(composerDraftAtom(keyA)).not.toBe(composerDraftAtom(keyB));
+  });
+
+  it("keeps null and missing draft selectors stable across unrelated updates", () => {
+    const nullValues: ComposerDraft[] = [];
+    const missingValues: ComposerDraft[] = [];
+    const unsubscribeNull = appAtomRegistry.subscribe(
+      composerDraftAtom(null),
+      (draft) => nullValues.push(draft),
+      { immediate: true },
+    );
+    const unsubscribeMissing = appAtomRegistry.subscribe(
+      composerDraftAtom("missing"),
+      (draft) => missingValues.push(draft),
+      { immediate: true },
+    );
+    onTestFinished(() => {
+      unsubscribeNull();
+      unsubscribeMissing();
+    });
+
+    const nullDraft = nullValues.at(-1);
+    const missingDraft = missingValues.at(-1);
+    setComposerDraftText("another-key", "unrelated");
+
+    expect(nullValues).toEqual([nullDraft]);
+    expect(missingValues).toEqual([missingDraft]);
+    expect(nullDraft).toBe(missingDraft);
+  });
+
+  it("publishes hydrated drafts through the key-specific selector", async () => {
+    const key = "environment-1:hydrated-thread";
+    composerDraftFileMocks.setDocument({
+      schemaVersion: 1,
+      drafts: {
+        [key]: {
+          text: "hydrated",
+          attachments: [],
+          runtimeMode: "approval-required",
+        },
+      },
+    });
+    const values: ComposerDraft[] = [];
+    const unsubscribe = appAtomRegistry.subscribe(
+      composerDraftAtom(key),
+      (draft) => values.push(draft),
+      { immediate: true },
+    );
+    onTestFinished(unsubscribe);
+
+    await waitForComposerDraftsLoaded();
+
+    expect(values).toHaveLength(2);
+    expect(values.at(-1)).toBe(appAtomRegistry.get(composerDraftsAtom)[key]);
+    expect(values.at(-1)).toMatchObject({
+      text: "hydrated",
+      runtimeMode: "approval-required",
+    });
+  });
+
   // Hydration is one-shot per module instance and the attachment sweep now
   // triggers it too, so this test must observe it before any sweep test runs.
   it("hydrates generic file attachments from their saved local paths", () => {
