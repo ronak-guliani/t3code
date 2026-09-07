@@ -1,8 +1,11 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Option, Ref, Stream } from "effect";
 import { TestClock } from "effect/testing";
+import { HttpServer } from "effect/unstable/http";
+import { createServer } from "node:http";
 
 import { ServerConfig } from "./config.ts";
 import {
@@ -17,9 +20,118 @@ import {
   makeCommandGate,
   resolveAutoBootstrapWelcomeTargets,
   resolveWelcomeBase,
+  resolveListeningLocalOrigin,
   retryConnectReconciliation,
   ServerRuntimeStartupError,
 } from "./serverRuntimeStartup.ts";
+
+it.effect("targets the listening address family and actual port for Connect", () =>
+  Effect.gen(function* () {
+    for (const [hostname, expected] of [
+      ["0.0.0.0", "http://127.0.0.1:43123"],
+      ["127.0.0.1", "http://127.0.0.1:43123"],
+      ["::", "http://[::1]:43123"],
+      ["[::]", "http://[::1]:43123"],
+      ["::1", "http://[::1]:43123"],
+      ["[::1]", "http://[::1]:43123"],
+      ["localhost", "http://localhost:43123"],
+    ]) {
+      const origin = yield* resolveListeningLocalOrigin.pipe(
+        Effect.provideService(
+          HttpServer.HttpServer,
+          HttpServer.HttpServer.of({
+            address: { _tag: "TcpAddress", hostname: hostname!, port: 43123 },
+            serve: () => Effect.void,
+          }),
+        ),
+      );
+      assert.equal(origin, expected);
+    }
+  }),
+);
+
+it.effect("rejects interface binds that Connect link proofs cannot authorize", () =>
+  Effect.gen(function* () {
+    for (const hostname of ["192.168.1.20", "2001:db8::1", "[fe80::1]", "127.0.0.2"]) {
+      const error = yield* resolveListeningLocalOrigin.pipe(
+        Effect.provideService(
+          HttpServer.HttpServer,
+          HttpServer.HttpServer.of({
+            address: { _tag: "TcpAddress", hostname, port: 43123 },
+            serve: () => Effect.void,
+          }),
+        ),
+        Effect.flip,
+      );
+      assert.include(error.message, "explicit interface bind is unsupported");
+      assert.include(error.message, "--host 127.0.0.1");
+      assert.include(error.message, "--host 0.0.0.0");
+    }
+  }),
+);
+
+it.effect("does not invent a localhost endpoint for a Unix socket listener", () =>
+  Effect.gen(function* () {
+    const error = yield* resolveListeningLocalOrigin.pipe(
+      Effect.provideService(
+        HttpServer.HttpServer,
+        HttpServer.HttpServer.of({
+          address: { _tag: "UnixAddress", path: "/tmp/t3.sock" },
+          serve: () => Effect.void,
+        }),
+      ),
+      Effect.flip,
+    );
+    assert.include(error.message, "requires a TCP listener");
+  }),
+);
+
+it.each([
+  ["0.0.0.0", "::"],
+  ["127.0.0.1", "::1"],
+])("keeps %s and %s environments distinct through the Node HTTP adapter", (ipv4, ipv6) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      if (server.address._tag !== "TcpAddress") throw new Error("Expected a TCP listener");
+      const port = server.address.port;
+      const ipv4Origin = yield* resolveListeningLocalOrigin;
+      assert.equal(ipv4Origin, `http://127.0.0.1:${port}`);
+      yield* Effect.gen(function* () {
+        const ipv6Server = yield* HttpServer.HttpServer;
+        assert.equal(HttpServer.formatAddress(ipv6Server.address), `http://[${ipv6}]:${port}`);
+        const ipv6Origin = yield* resolveListeningLocalOrigin;
+        assert.equal(ipv6Origin, `http://[::1]:${port}`);
+        for (const [origin, environment] of [
+          [ipv4Origin, "desktop-environment"],
+          [ipv6Origin, "other-environment"],
+        ]) {
+          const identity = yield* Effect.promise(async () => {
+            const response = await fetch(`${origin}/.well-known/t3/environment`, {
+              signal: AbortSignal.timeout(2_000),
+            });
+            return response.text();
+          });
+          assert.equal(identity, environment);
+        }
+      }).pipe(
+        Effect.provide(
+          NodeHttpServer.layer(
+            () => createServer((_request, response) => response.end("other-environment")),
+            { host: ipv6, port, ipv6Only: true },
+          ),
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        NodeHttpServer.layer(
+          () => createServer((_request, response) => response.end("desktop-environment")),
+          { host: ipv4, port: 0 },
+        ),
+      ),
+    ),
+  ),
+);
 
 it("uses the canonical Codex default for auto-bootstrapped model selection", () => {
   assert.deepStrictEqual(getAutoBootstrapDefaultModelSelection(), {
