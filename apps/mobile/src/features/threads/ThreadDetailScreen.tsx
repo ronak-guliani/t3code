@@ -885,10 +885,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 {props.activePendingApproval || props.activePendingUserInput ? (
                   <Animated.View
                     className="shrink-0 gap-3 px-4 pb-3"
-                    // Pending requests replace the composer, so they must pad
-                    // the home indicator the composer normally covers.
+                    // Only questionnaires replace the composer; approvals keep
+                    // it mounted and reserve its full overlap in maxHeight.
                     style={
-                      activeUserInputRequestId !== null || props.activePendingApproval !== null
+                      activeUserInputRequestId !== null
                         ? { paddingBottom: composerBottomInset }
                         : undefined
                     }

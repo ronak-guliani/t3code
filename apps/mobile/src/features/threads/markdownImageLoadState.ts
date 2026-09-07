@@ -8,14 +8,20 @@ export interface MarkdownImageLoadState {
   readonly requestVersion: number;
 }
 
+export interface MarkdownImageRequestIdentity {
+  readonly sourceKey: string;
+  readonly uri: string;
+  readonly requestVersion: number;
+}
+
 export type MarkdownImageLoadEvent =
   | {
       readonly type: "source-changed";
       readonly sourceKey: string;
       readonly uri: string | null;
     }
-  | { readonly type: "failed"; readonly uri: string }
-  | { readonly type: "loaded"; readonly uri: string }
+  | { readonly type: "failed"; readonly request: MarkdownImageRequestIdentity }
+  | { readonly type: "loaded"; readonly request: MarkdownImageRequestIdentity }
   | { readonly type: "retry"; readonly automatic: boolean };
 
 export function createMarkdownImageLoadState(input: {
@@ -39,6 +45,17 @@ export function createMarkdownImageRequestKey(input: {
   return JSON.stringify([input.sourceKey, input.uri, input.requestVersion]);
 }
 
+export function isCurrentMarkdownImageRequest(
+  state: Pick<MarkdownImageLoadState, "sourceKey" | "uri" | "requestVersion">,
+  request: MarkdownImageRequestIdentity,
+): boolean {
+  return (
+    state.sourceKey === request.sourceKey &&
+    state.uri === request.uri &&
+    state.requestVersion === request.requestVersion
+  );
+}
+
 export function reduceMarkdownImageLoadState(
   state: MarkdownImageLoadState,
   event: MarkdownImageLoadEvent,
@@ -47,7 +64,7 @@ export function reduceMarkdownImageLoadState(
     case "source-changed":
       return createMarkdownImageLoadState(event);
     case "failed":
-      if (state.uri !== event.uri) {
+      if (!isCurrentMarkdownImageRequest(state, event.request)) {
         return state;
       }
       return {
@@ -55,7 +72,9 @@ export function reduceMarkdownImageLoadState(
         failed: true,
       };
     case "loaded":
-      return state.uri === event.uri ? { ...state, failed: false, automaticRetryCount: 0 } : state;
+      return isCurrentMarkdownImageRequest(state, event.request)
+        ? { ...state, failed: false, automaticRetryCount: 0 }
+        : state;
     case "retry":
       return state.uri === null
         ? state

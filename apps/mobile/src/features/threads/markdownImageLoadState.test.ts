@@ -16,7 +16,11 @@ describe("markdown image load recovery", () => {
     });
     const failed = reduceMarkdownImageLoadState(initial, {
       type: "failed",
-      uri: initial.uri!,
+      request: {
+        sourceKey: initial.sourceKey,
+        uri: initial.uri!,
+        requestVersion: initial.requestVersion,
+      },
     });
 
     expect(
@@ -32,7 +36,11 @@ describe("markdown image load recovery", () => {
     });
     const loaded = reduceMarkdownImageLoadState(retried, {
       type: "loaded",
-      uri: initial.uri!,
+      request: {
+        sourceKey: initial.sourceKey,
+        uri: initial.uri!,
+        requestVersion: retried.requestVersion,
+      },
     });
 
     expect(retried.requestVersion).toBe(1);
@@ -47,7 +55,14 @@ describe("markdown image load recovery", () => {
     });
 
     for (let attempt = 0; attempt < MAX_AUTOMATIC_MARKDOWN_IMAGE_RETRIES; attempt += 1) {
-      state = reduceMarkdownImageLoadState(state, { type: "failed", uri: state.uri! });
+      state = reduceMarkdownImageLoadState(state, {
+        type: "failed",
+        request: {
+          sourceKey: state.sourceKey,
+          uri: state.uri!,
+          requestVersion: state.requestVersion,
+        },
+      });
       expect(
         shouldAutomaticallyRetryMarkdownImage(state, {
           uri: state.uri,
@@ -57,7 +72,14 @@ describe("markdown image load recovery", () => {
       state = reduceMarkdownImageLoadState(state, { type: "retry", automatic: true });
     }
 
-    state = reduceMarkdownImageLoadState(state, { type: "failed", uri: state.uri! });
+    state = reduceMarkdownImageLoadState(state, {
+      type: "failed",
+      request: {
+        sourceKey: state.sourceKey,
+        uri: state.uri!,
+        requestVersion: state.requestVersion,
+      },
+    });
     expect(state.failed).toBe(true);
     expect(
       shouldAutomaticallyRetryMarkdownImage(state, {
@@ -79,12 +101,39 @@ describe("markdown image load recovery", () => {
     });
     const staleFailure = reduceMarkdownImageLoadState(second, {
       type: "failed",
-      uri: "https://example.test/first.png",
+      request: {
+        sourceKey: "first",
+        uri: "https://example.test/first.png",
+        requestVersion: first.requestVersion,
+      },
     });
 
     expect(staleFailure).toEqual(second);
     expect(second.automaticRetryCount).toBe(0);
     expect(second.failed).toBe(false);
+  });
+
+  it("ignores stale same-URL callbacks from a superseded request version", () => {
+    const initial = createMarkdownImageLoadState({
+      sourceKey: "same-source",
+      uri: "https://example.test/image.png",
+    });
+    const retried = reduceMarkdownImageLoadState(initial, {
+      type: "retry",
+      automatic: true,
+    });
+    const staleRequest = {
+      sourceKey: initial.sourceKey,
+      uri: initial.uri!,
+      requestVersion: initial.requestVersion,
+    };
+
+    expect(
+      reduceMarkdownImageLoadState(retried, { type: "loaded", request: staleRequest }),
+    ).toEqual(retried);
+    expect(
+      reduceMarkdownImageLoadState(retried, { type: "failed", request: staleRequest }),
+    ).toEqual(retried);
   });
 
   it("remounts the native request when source identity changes at the same URL", () => {

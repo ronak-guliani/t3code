@@ -1,5 +1,5 @@
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useEffect, useId, useReducer, useState } from "react";
+import { useCallback, useEffect, useId, useReducer, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -19,6 +19,8 @@ import { MARKDOWN_IMAGE_MAX_WIDTH, resolveMarkdownImageDisplaySize } from "./mar
 import {
   createMarkdownImageLoadState,
   createMarkdownImageRequestKey,
+  isCurrentMarkdownImageRequest,
+  type MarkdownImageRequestIdentity,
   reduceMarkdownImageLoadState,
   shouldAutomaticallyRetryMarkdownImage,
 } from "./markdownImageLoadState";
@@ -64,6 +66,16 @@ export function ThreadMarkdownImageView(props: {
     }, 500);
     return () => clearTimeout(retryTimer);
   }, [imageLoadState, props.unavailable, props.uri]);
+
+  const latestRequestIdentityRef = useRef<MarkdownImageRequestIdentity | null>(null);
+  latestRequestIdentityRef.current =
+    props.uri === null
+      ? null
+      : {
+          sourceKey: props.sourceKey,
+          uri: props.uri,
+          requestVersion: imageLoadState.requestVersion,
+        };
 
   const retryImage = useCallback(() => {
     if (props.uri === null || props.unavailable) {
@@ -154,10 +166,29 @@ export function ThreadMarkdownImageView(props: {
                     requestVersion: imageLoadState.requestVersion,
                   })}
                   onLoad={(sourceSize) => {
-                    dispatchImageLoad({ type: "loaded", uri: props.uri! });
-                    setSourceSize(sourceSize);
+                    const request: MarkdownImageRequestIdentity = {
+                      sourceKey: props.sourceKey,
+                      uri: props.uri!,
+                      requestVersion: imageLoadState.requestVersion,
+                    };
+                    dispatchImageLoad({ type: "loaded", request });
+                    if (
+                      latestRequestIdentityRef.current !== null &&
+                      isCurrentMarkdownImageRequest(latestRequestIdentityRef.current, request)
+                    ) {
+                      setSourceSize(sourceSize);
+                    }
                   }}
-                  onError={() => dispatchImageLoad({ type: "failed", uri: props.uri! })}
+                  onError={() =>
+                    dispatchImageLoad({
+                      type: "failed",
+                      request: {
+                        sourceKey: props.sourceKey,
+                        uri: props.uri!,
+                        requestVersion: imageLoadState.requestVersion,
+                      },
+                    })
+                  }
                 />
               </View>
             </Pressable>
