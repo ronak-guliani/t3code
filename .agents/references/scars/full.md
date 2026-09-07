@@ -242,6 +242,8 @@
 
 ## Mobile drafts and navigation
 
+- Deferred route failures need an explicit failed state: a rejected promise can carry `null`, so using the rejection value as the loading/error sentinel can strand the screen without a retry action.
+
 - Upstream consumer imports must preserve fork-owned inbox composition. Exercise the real legacy and V2 row consumers, not only an orphanable compact component, so imports cannot silently restore metadata rows or remove related-chat navigation.
 - Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.

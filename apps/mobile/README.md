@@ -157,6 +157,29 @@ installation page in the Expo project dashboard on your phone.
 
 ## Development
 
+### Deferred route coverage
+
+From the repository root:
+
+```bash
+pnpm --filter @t3tools/mobile exec playwright install chromium --only-shell
+pnpm --filter @t3tools/mobile test:browser
+```
+
+This runs the real deferred-screen React lifecycle in Chromium with DOM substitutes for native
+primitives. It covers pending route parameter updates, retained surrounding chrome, concurrent
+mounts, StrictMode, leaving during a load, returning to a cached screen, and explicit load-error
+recovery. It does **not** validate native-stack transitions, deep-link parsing, iOS headers,
+Android back handling, or iPad layout, and is not a substitute for device acceptance.
+
+Before releasing deferred-route changes, use an isolated backend and compatible native builds
+on iPhone, iPad, and Android. Exercise cold entry and repeat entry to connection-add (both Home
+and Settings), legal documents, terminal, review/comment, and file/tree routes. Open the thread
+routes by deep link as well as in-app navigation. Confirm route parameters and selected content,
+back/swipe dismissal, sheet headers, and iPad inspector registration and cleanup. Record device,
+build revision, failures, and cold/first-open timing separately from JavaScript lifecycle results.
+If native tooling is unavailable, leave this acceptance gate explicitly open.
+
 Start Metro for the dev client:
 
 ```bash
