@@ -34,6 +34,29 @@ describe("rightPanelStore", () => {
     expect(panel.activeSurfaceId).toBe("file:src/index.ts");
   });
 
+  it("switches from a file preview to the files surface when toggled", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(ref, "src/index.ts");
+
+    store.toggle(ref, "files");
+
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      isOpen: true,
+      activeSurfaceId: "files",
+      surfaces: [
+        { id: "file:src/index.ts", kind: "file" },
+        { id: "files", kind: "files" },
+      ],
+    });
+
+    store.toggle(ref, "files");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, ref).isOpen).toBe(
+      false,
+    );
+  });
+
   it("orders, activates, reconciles, and bulk closes surfaces", () => {
     const store = useRightPanelStore.getState();
     store.open(ref, "files");

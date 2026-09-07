@@ -6,6 +6,7 @@ import {
   connectCallbackUrl,
   connectLoopbackRedirectUri,
   encodeConnectAuthCode,
+  normalizeHostedAppUrl,
   readConnectAuthorizeRequest,
 } from "./connectAuth.ts";
 
@@ -74,4 +75,18 @@ it("rejects malformed and cross-request authorization codes", () => {
     ),
     { code: "clerk-code", state: "expected-state" },
   );
+});
+
+it("normalizes hosted app origins and rejects insecure or non-origin URLs", () => {
+  assert.equal(normalizeHostedAppUrl("https://app.example.test"), "https://app.example.test");
+  assert.equal(normalizeHostedAppUrl("http://127.0.0.1:5733"), "http://127.0.0.1:5733");
+  for (const value of [
+    "http://app.example.test",
+    "https://app.example.test/path",
+    "https://app.example.test?query=1",
+    "https://app.example.test#fragment",
+    "not-a-url",
+  ]) {
+    assert.isNull(normalizeHostedAppUrl(value));
+  }
 });

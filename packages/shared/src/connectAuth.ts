@@ -7,6 +7,26 @@ const CONNECT_AUTH_CODE_SEPARATOR = ".";
 export const DEFAULT_HOSTED_APP_URL = "https://app.t3.codes";
 export const CONNECT_OAUTH_SCOPES = ["openid", "profile", "email"] as const;
 
+export function normalizeHostedAppUrl(value: string): string | null {
+  try {
+    const url = new URL(value.trim());
+    const isLoopbackHttp =
+      url.protocol === "http:" &&
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
+    if (
+      (url.protocol !== "https:" && !isLoopbackHttp) ||
+      url.pathname !== "/" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 export interface ConnectAuthorizeRequest {
   readonly state: string;
   readonly challenge: string;
