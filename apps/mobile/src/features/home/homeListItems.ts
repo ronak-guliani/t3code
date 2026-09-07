@@ -6,6 +6,7 @@ import {
   type MobileThreadTreeRow,
   type MobileThreadShell,
   compareNestedThreads,
+  selectMatchingThreadTree,
 } from "../threads/mobile-thread-hierarchy";
 
 /** Threads shown per project before the "Show more" affordance appears. */
@@ -89,8 +90,7 @@ export function nextGroupDisplayState(
 /**
  * Structural equality for list items. Item objects are rebuilt on every
  * collapse/show-more toggle; without this the lists would consider every
- * mounted row changed and re-render all of them (each carrying a swipeable +
- * a vcs-status subscription). Group/thread references are stable across
+ * mounted row changed and re-render all of their swipeables. Group/thread references are stable across
  * toggles.
  */
 export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem): boolean {
@@ -116,7 +116,10 @@ export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem
         previous.hierarchy?.isExpanded === item.hierarchy?.isExpanded &&
         previous.hierarchy?.childCount === item.hierarchy?.childCount &&
         previous.hierarchy?.displayStatus === item.hierarchy?.displayStatus &&
+        previous.hierarchy?.relatedStatus === item.hierarchy?.relatedStatus &&
         previous.hierarchy?.archiveBlocked === item.hierarchy?.archiveBlocked &&
+        previous.hierarchy?.latestRelatedNotificationAt ===
+          item.hierarchy?.latestRelatedNotificationAt &&
         previous.isLast === item.isLast
       );
     case "show-more":
@@ -136,7 +139,6 @@ export function buildHomeListLayout(input: {
    * When searching, pagination is suspended so every match stays visible.
    */
   readonly showAllThreads?: boolean;
-  readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean>;
   readonly dismissedAgentRunKeys?: readonly string[];
   readonly selectedThreadKey?: string | null;
 }): HomeListLayout {
@@ -160,8 +162,9 @@ export function buildHomeListLayout(input: {
       continue;
     }
 
+    const allThreads = group.allThreads ?? group.threads;
     const ordinalByThreadKey = new Map(
-      group.threads.map((thread, index) => [`${thread.environmentId}:${thread.id}`, index]),
+      allThreads.map((thread, index) => [`${thread.environmentId}:${thread.id}`, index]),
     );
     const ordinal = (thread: MobileThreadShell) =>
       ordinalByThreadKey.get(
@@ -169,11 +172,15 @@ export function buildHomeListLayout(input: {
       ) ?? Number.POSITIVE_INFINITY;
     // Synthetic rows share their parent's position; never mix two different
     // comparators for real and synthetic rows, which makes sorting non-transitive.
-    const roots = buildMobileThreadTree(
-      group.threads,
+    const tree = buildMobileThreadTree(
+      allThreads,
       (left, right) => ordinal(left) - ordinal(right) || compareNestedThreads(left, right),
       input.dismissedAgentRunKeys,
     ).sort((left, right) => ordinal(left.mostRecentThread) - ordinal(right.mostRecentThread));
+    const matchingThreadKeys = input.showAllThreads
+      ? new Set(group.threads.map((thread) => `${thread.environmentId}:${thread.id}`))
+      : undefined;
+    const roots = matchingThreadKeys ? selectMatchingThreadTree(tree, matchingThreadKeys) : tree;
     const totalCount = roots.length;
     // Default to the group's recent-activity window (last few days, or a small
     // fallback for stale projects), capped at the initial page size. Until the
@@ -202,15 +209,8 @@ export function buildHomeListLayout(input: {
         );
     const rows = roots.map((root) =>
       mobileThreadTreeRows([root], {
-        expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
         selectedThreadKey: input.selectedThreadKey,
-        ...(input.showAllThreads
-          ? {
-              revealThreadKeys: new Set(
-                group.threads.map((thread) => `${thread.environmentId}:${thread.id}`),
-              ),
-            }
-          : {}),
+        revealThreadKeys: matchingThreadKeys,
       }),
     );
     const visibleThreads = rows

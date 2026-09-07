@@ -1,6 +1,5 @@
 import {
   buildThreadTree,
-  flattenThreadTree,
   hierarchyThreadKey,
   selectVisibleThreads,
   type ThreadTreeNode,
@@ -15,9 +14,14 @@ export interface MobileThreadShell extends EnvironmentThreadShell {
     readonly parentThreadId: ThreadId;
   };
 }
-export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus>;
-export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus>;
-export const NO_THREAD_EXPANSION_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
+export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
+  latestRelatedNotificationAt?: string | null;
+  relatedStatus?: NestedThreadStatus;
+};
+export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
+  readonly latestRelatedNotificationAt?: string | null;
+  readonly relatedStatus?: NestedThreadStatus;
+};
 
 export function nestedThreadParentError(
   parentThreadId: ThreadId | undefined,
@@ -47,7 +51,11 @@ export function resolveNestedThreadStatus(
     thread.session?.status === "running"
   )
     return "working";
-  if (thread.virtualAgentRun?.status === "failed" || thread.session?.status === "error")
+  if (
+    thread.virtualAgentRun?.status === "failed" ||
+    thread.session?.status === "error" ||
+    thread.latestTurn?.state === "error"
+  )
     return "failed";
   return "ready";
 }
@@ -114,31 +122,100 @@ export function buildMobileThreadTree(
         }),
       ),
   ]);
-  return buildThreadTree({
+  const tree: MobileThreadTreeNode[] = buildThreadTree({
     threads: expanded,
     compare,
     resolveStatus: resolveNestedThreadStatus,
     rollUpStatus: rollUpNestedThreadStatus,
     isArchiveBlocked: isThreadArchiveBlocked,
   });
+  // A collapsed group must retain notifications from deeper branches, including during search.
+  const traversal: MobileThreadTreeNode[] = [];
+  const pending: MobileThreadTreeNode[] = [...tree];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    traversal.push(node);
+    for (const child of node.children) pending.push(child);
+  }
+  const latestByKey = new Map<string, string>();
+  for (let index = traversal.length - 1; index >= 0; index--) {
+    const node = traversal[index]!;
+    let latest = node.thread.latestChildNotificationAt ?? null;
+    for (const child of node.children) {
+      const childLatest = latestByKey.get(child.threadKey);
+      if (childLatest && (!latest || Date.parse(childLatest) > Date.parse(latest)))
+        latest = childLatest;
+    }
+    node.latestRelatedNotificationAt = latest;
+    node.relatedStatus = rollUpNestedThreadStatus(
+      node.children.map((child) => child.rolledUpStatus),
+    );
+    if (latest) latestByKey.set(node.threadKey, latest);
+  }
+  return tree;
 }
 
 export function mobileThreadTreeRows(
   nodes: readonly MobileThreadTreeNode[],
   options: {
-    readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean> | undefined;
     readonly selectedThreadKey?: string | null | undefined;
     readonly revealThreadKeys?: ReadonlySet<string> | undefined;
   } = {},
 ): MobileThreadTreeRow[] {
-  return flattenThreadTree({
-    nodes,
-    expandedOverrideByThreadKey:
-      options.expandedOverrideByThreadKey ?? NO_THREAD_EXPANSION_OVERRIDES,
-    activeThreadKey: options.selectedThreadKey,
-    revealThreadKeys: options.revealThreadKeys,
-    isActiveStatus: (status) => status !== "ready",
-  });
+  const rows: MobileThreadTreeRow[] = [];
+  const pending: Array<{ node: MobileThreadTreeNode; depth: number }> = [];
+  for (let index = nodes.length - 1; index >= 0; index--) {
+    pending.push({ node: nodes[index]!, depth: 0 });
+  }
+  while (pending.length > 0) {
+    const { node, depth } = pending.pop()!;
+    // Search and the selected iPad conversation stay directly reachable.
+    // Activity alone never expands the inbox into a tree.
+    if (
+      depth === 0 ||
+      node.threadKey === options.selectedThreadKey ||
+      options.revealThreadKeys?.has(node.threadKey)
+    ) {
+      rows.push({
+        thread: node.thread,
+        threadKey: node.threadKey,
+        depth,
+        hasChildren: node.descendantCount > 0,
+        isExpanded: false,
+        childCount: node.descendantCount,
+        displayStatus: node.rolledUpStatus,
+        archiveBlocked: node.archiveBlocked,
+        latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
+        relatedStatus: node.relatedStatus ?? "ready",
+      });
+    }
+    for (let index = node.children.length - 1; index >= 0; index--) {
+      pending.push({ node: node.children[index]!, depth: depth + 1 });
+    }
+  }
+  return rows;
+}
+
+export function relatedThreadRows(
+  nodes: readonly MobileThreadTreeNode[],
+  threadKey: string,
+): MobileThreadTreeRow[] {
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.threadKey === threadKey) {
+      const revealThreadKeys = new Set<string>();
+      const descendants = [node];
+      while (descendants.length > 0) {
+        const descendant = descendants.pop()!;
+        revealThreadKeys.add(descendant.threadKey);
+        descendants.push(...descendant.children);
+      }
+      return mobileThreadTreeRows([node], { revealThreadKeys });
+    }
+    pending.push(...node.children);
+  }
+  return [];
 }
 
 /** A search match keeps its ancestors rather than presenting a child as a new root. */

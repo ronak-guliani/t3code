@@ -10,7 +10,6 @@ import { LegendList } from "@legendapp/list/react-native";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { resolveEnvironmentMachineKind } from "@t3tools/shared/environmentMachine";
 import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LayoutChangeEvent } from "react-native";
@@ -30,7 +29,7 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
-import { useThreadExpandedOverrides, useDismissedAgentRunKeys } from "./thread-hierarchy-controls";
+import { useDismissedAgentRunKeys } from "./thread-hierarchy-controls";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -164,7 +163,6 @@ function ThreadNavigationSidebarPane(
     regenerateThreadTitle,
   } = useThreadListActions();
   const threadListV2Enabled = useThreadListV2Enabled();
-  const expandedOverrideByThreadKey = useThreadExpandedOverrides();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
@@ -229,21 +227,6 @@ function ThreadNavigationSidebarPane(
         key: scope.key,
         label: scope.title,
       })),
-    [projectScopes],
-  );
-  const projectTitleByProjectKey = useMemo(
-    () =>
-      new Map(
-        projectScopes.flatMap((scope) =>
-          scope.projectRefs.map(
-            (projectRef) =>
-              [
-                scopedProjectKey(projectRef.environmentId, projectRef.projectId),
-                scope.title,
-              ] as const,
-          ),
-        ),
-      ),
     [projectScopes],
   );
   const selectedProjectScope = useMemo(
@@ -354,7 +337,6 @@ function ThreadNavigationSidebarPane(
             groups,
             displayStates: groupDisplayStates,
             showAllThreads: hasSearchQuery,
-            expandedOverrideByThreadKey,
             dismissedAgentRunKeys,
             selectedThreadKey: props.selectedThreadKey,
           }),
@@ -363,25 +345,10 @@ function ThreadNavigationSidebarPane(
       groups,
       groupDisplayStates,
       hasSearchQuery,
-      expandedOverrideByThreadKey,
       props.selectedThreadKey,
       dismissedAgentRunKeys,
     ],
   );
-  const projectCwdByKey = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const project of projects) {
-      map.set(scopedProjectKey(project.environmentId, project.id), project.workspaceRoot);
-    }
-    return map;
-  }, [projects]);
-  const projectByKey = useMemo(() => {
-    const map = new Map<string, EnvironmentProject>();
-    for (const project of projects) {
-      map.set(scopedProjectKey(project.environmentId, project.id), project);
-    }
-    return map;
-  }, [projects]);
 
   // Thread List v2 (beta) support — same model as the compact Home list
   // (HomeScreen.tsx): flat creation-order card block + settled recency tail.
@@ -470,16 +437,6 @@ function ThreadNavigationSidebarPane(
     }
     return supported;
   }, [serverConfigs]);
-  const machineByEnvironmentId = useMemo(
-    () =>
-      new Map(
-        [...serverConfigs].map(
-          ([environmentId, config]) =>
-            [environmentId, resolveEnvironmentMachineKind(config)] as const,
-        ),
-      ),
-    [serverConfigs],
-  );
   // Canonical arranged pinned order for Move up/down flags — computed from
   // all shells so search/scope filtering never disables a valid move.
   const arrangedPinnedKeys = useMemo(() => {
@@ -506,7 +463,6 @@ function ThreadNavigationSidebarPane(
       };
     return buildThreadListV2Items({
       threads,
-      expandedOverrideByThreadKey,
       dismissedAgentRunKeys,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
@@ -522,7 +478,6 @@ function ThreadNavigationSidebarPane(
     });
   }, [
     nowMinute,
-    expandedOverrideByThreadKey,
     dismissedAgentRunKeys,
     snoozeWakeTick,
     snoozedShelfExpanded,
@@ -756,30 +711,14 @@ function ThreadNavigationSidebarPane(
   const { swipeEnabled, scrollGateHandlers } = useSwipeableScrollGate({
     onScrollBeginDrag: handleScrollBeginDrag,
   });
-  // Project shells load after the first rows draw, so the maps they feed have
-  // to bust the recycler's memoization — otherwise a row keeps the blank
-  // favicon and fallback title it was first rendered with.
   const listExtraData = useMemo(
     () => ({
       selectedThreadKey: props.selectedThreadKey ?? "",
-      projectByKey,
-      projectCwdByKey,
-      projectTitleByProjectKey,
-      savedConnectionsById,
       serverConfigs,
       snoozePresetMinute: nowMinute,
       threadSearchMatchByKey,
     }),
-    [
-      props.selectedThreadKey,
-      projectByKey,
-      projectCwdByKey,
-      projectTitleByProjectKey,
-      savedConnectionsById,
-      serverConfigs,
-      nowMinute,
-      threadSearchMatchByKey,
-    ],
+    [props.selectedThreadKey, serverConfigs, nowMinute, threadSearchMatchByKey],
   );
   const sidebarItemsAreEqual = useCallback(
     (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -791,7 +730,10 @@ function ThreadNavigationSidebarPane(
           previous.item.hierarchy?.isExpanded === item.item.hierarchy?.isExpanded &&
           previous.item.hierarchy?.childCount === item.item.hierarchy?.childCount &&
           previous.item.hierarchy?.displayStatus === item.item.hierarchy?.displayStatus &&
+          previous.item.hierarchy?.relatedStatus === item.item.hierarchy?.relatedStatus &&
           previous.item.hierarchy?.archiveBlocked === item.item.hierarchy?.archiveBlocked &&
+          previous.item.hierarchy?.latestRelatedNotificationAt ===
+            item.item.hierarchy?.latestRelatedNotificationAt &&
           previous.item.variant === item.item.variant &&
           previous.item.snoozed === item.item.snoozed &&
           previous.item.pinned === item.item.pinned &&
@@ -852,24 +794,9 @@ function ThreadNavigationSidebarPane(
     ({ item }: { readonly item: SidebarListItem }) => {
       switch (item.type) {
         case "v2-pending": {
-          const pendingScopeKey = scopedProjectKey(
-            item.pendingTask.message.environmentId,
-            item.pendingTask.creation.projectId,
-          );
           return (
             <ThreadListV2PendingRow
               pendingTask={item.pendingTask}
-              project={projectByKey.get(pendingScopeKey) ?? null}
-              projectTitle={projectTitleByProjectKey.get(pendingScopeKey)}
-              environmentLabel={
-                Object.keys(savedConnectionsById).length > 1
-                  ? (savedConnectionsById[item.pendingTask.message.environmentId]
-                      ?.environmentLabel ?? null)
-                  : null
-              }
-              environmentMachine={machineByEnvironmentId.get(
-                item.pendingTask.message.environmentId,
-              )}
               pane="sidebar"
               showPendingDivider={item.showPendingDivider}
               onSelectPendingTask={openPendingTask}
@@ -879,7 +806,6 @@ function ThreadNavigationSidebarPane(
         }
         case "v2-thread": {
           const thread = item.item.thread;
-          const scopeKey = scopedProjectKey(thread.environmentId, thread.projectId);
           return (
             <ThreadListV2Row
               hierarchy={item.item.hierarchy}
@@ -889,23 +815,6 @@ function ThreadNavigationSidebarPane(
               pinned={item.item.pinned}
               snoozePresetMinute={nowMinute}
               snoozeWakeLabelText={item.snoozeWakeLabelText}
-              project={projectByKey.get(scopeKey) ?? null}
-              projectTitle={projectTitleByProjectKey.get(scopeKey)}
-              providerDriver={
-                serverConfigs
-                  .get(thread.environmentId)
-                  ?.providers.find(
-                    (provider) =>
-                      provider.instanceId ===
-                      (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId),
-                  )?.driver ?? null
-              }
-              environmentLabel={
-                Object.keys(savedConnectionsById).length > 1
-                  ? (savedConnectionsById[thread.environmentId]?.environmentLabel ?? null)
-                  : null
-              }
-              environmentMachine={machineByEnvironmentId.get(thread.environmentId)}
               searchMatch={threadSearchMatchByKey.get(
                 threadSearchMatchKey({
                   environmentId: thread.environmentId,
@@ -941,7 +850,6 @@ function ThreadNavigationSidebarPane(
               onPinThread={pinThread}
               onUnpinThread={unpinThread}
               onMovePinnedThread={movePinnedThread}
-              projectCwd={projectCwdByKey.get(scopeKey) ?? null}
               onSwipeableClose={handleSwipeableClose}
               onSwipeableWillOpen={handleSwipeableWillOpen}
               simultaneousSwipeGesture={sidebarScrollGesture}
@@ -1005,13 +913,6 @@ function ThreadNavigationSidebarPane(
             <PendingTaskListRow
               variant="sidebar"
               pendingTask={item.pendingTask}
-              environmentLabel={
-                savedConnectionsById[item.pendingTask.message.environmentId]?.environmentLabel ??
-                null
-              }
-              environmentMachine={machineByEnvironmentId.get(
-                item.pendingTask.message.environmentId,
-              )}
               isLast={item.isLast}
               onSelectPendingTask={openPendingTask}
               onDeletePendingTask={confirmDeletePendingTask}
@@ -1024,14 +925,6 @@ function ThreadNavigationSidebarPane(
               hierarchy={item.hierarchy}
               variant="sidebar"
               thread={thread}
-              environmentLabel={
-                savedConnectionsById[thread.environmentId]?.environmentLabel ?? null
-              }
-              environmentMachine={machineByEnvironmentId.get(thread.environmentId)}
-              projectCwd={
-                projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ??
-                null
-              }
               isLast={item.isLast}
               searchMatch={threadSearchMatchByKey.get(
                 threadSearchMatchKey({
@@ -1075,15 +968,11 @@ function ThreadNavigationSidebarPane(
       handleSelectThread,
       handleSwipeableClose,
       handleSwipeableWillOpen,
-      machineByEnvironmentId,
       movePinnedThread,
       openPendingTask,
       pinReorderEnvironmentIds,
       pinThread,
       pinningEnvironmentIds,
-      projectByKey,
-      projectCwdByKey,
-      projectTitleByProjectKey,
       regenerateThreadTitle,
       props.onNewThreadInProject,
       props.searchQuery,
@@ -1209,7 +1098,7 @@ function ThreadNavigationSidebarPane(
               <LegendList
                 data={listItems}
                 drawDistance={500}
-                estimatedItemSize={64}
+                estimatedItemSize={48}
                 extraData={listExtraData}
                 getItemType={(item) => item.type}
                 itemsAreEqual={sidebarItemsAreEqual}
@@ -1254,7 +1143,7 @@ function ThreadNavigationSidebarPane(
             <LegendList
               data={listItems}
               drawDistance={500}
-              estimatedItemSize={64}
+              estimatedItemSize={48}
               extraData={listExtraData}
               getItemType={(item) => item.type}
               itemsAreEqual={sidebarItemsAreEqual}
