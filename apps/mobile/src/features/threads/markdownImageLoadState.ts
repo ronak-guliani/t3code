@@ -31,6 +31,14 @@ export function createMarkdownImageLoadState(input: {
   };
 }
 
+export function createMarkdownImageRequestKey(input: {
+  readonly sourceKey: string;
+  readonly uri: string;
+  readonly requestVersion: number;
+}): string {
+  return JSON.stringify([input.sourceKey, input.uri, input.requestVersion]);
+}
+
 export function reduceMarkdownImageLoadState(
   state: MarkdownImageLoadState,
   event: MarkdownImageLoadEvent,

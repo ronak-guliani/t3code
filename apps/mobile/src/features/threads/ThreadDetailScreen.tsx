@@ -463,7 +463,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       ? Math.max(liveKeyboardHeight, lastKnownKeyboardHeight, ESTIMATED_KEYBOARD_HEIGHT)
       : 0,
     navigationHeaderHeight,
-    composerOverlapHeight: composerBottomInset,
+    composerOverlapHeight,
   });
   const estimatedOverlayHeight = composerOverlapHeight;
   // The overlay's measured height includes the home-indicator inset (the

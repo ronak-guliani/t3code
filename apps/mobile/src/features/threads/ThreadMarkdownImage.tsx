@@ -18,6 +18,7 @@ import { useAssetUrlState } from "../../state/assets";
 import { MARKDOWN_IMAGE_MAX_WIDTH, resolveMarkdownImageDisplaySize } from "./markdownImageSize";
 import {
   createMarkdownImageLoadState,
+  createMarkdownImageRequestKey,
   reduceMarkdownImageLoadState,
   shouldAutomaticallyRetryMarkdownImage,
 } from "./markdownImageLoadState";
@@ -147,7 +148,11 @@ export function ThreadMarkdownImageView(props: {
               >
                 <ThreadMarkdownImageRequest
                   uri={props.uri!}
-                  key={`${props.uri}:${imageLoadState.requestVersion}`}
+                  key={createMarkdownImageRequestKey({
+                    sourceKey: props.sourceKey,
+                    uri: props.uri!,
+                    requestVersion: imageLoadState.requestVersion,
+                  })}
                   onLoad={(sourceSize) => {
                     dispatchImageLoad({ type: "loaded", uri: props.uri! });
                     setSourceSize(sourceSize);

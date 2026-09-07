@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   createMarkdownImageLoadState,
+  createMarkdownImageRequestKey,
   MAX_AUTOMATIC_MARKDOWN_IMAGE_RETRIES,
   reduceMarkdownImageLoadState,
   shouldAutomaticallyRetryMarkdownImage,
@@ -84,6 +85,22 @@ describe("markdown image load recovery", () => {
     expect(staleFailure).toEqual(second);
     expect(second.automaticRetryCount).toBe(0);
     expect(second.failed).toBe(false);
+  });
+
+  it("remounts the native request when source identity changes at the same URL", () => {
+    expect(
+      createMarkdownImageRequestKey({
+        sourceKey: "attachment:first",
+        uri: "https://example.test/image.png",
+        requestVersion: 0,
+      }),
+    ).not.toBe(
+      createMarkdownImageRequestKey({
+        sourceKey: "attachment:second",
+        uri: "https://example.test/image.png",
+        requestVersion: 0,
+      }),
+    );
   });
 
   it("allows an explicit retry to start a fresh bounded cycle", () => {
