@@ -3,6 +3,28 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+vi.hoisted(() => {
+  class TestEventEmitter {}
+  const global = globalThis as {
+    __DEV__?: boolean;
+    expo?: { EventEmitter: typeof TestEventEmitter; modules: Record<string, unknown> };
+  };
+  global.__DEV__ = false;
+  global.expo = { EventEmitter: TestEventEmitter, modules: {} };
+});
+vi.mock("expo-crypto", () => ({
+  getRandomBytes: (length: number) => new Uint8Array(length),
+  randomUUID: () => "00000000-0000-4000-8000-000000000000",
+}));
+vi.mock("expo-secure-store", () => ({
+  deleteItemAsync: async () => {},
+  getItemAsync: async () => null,
+  setItemAsync: async () => {},
+}));
+vi.mock("../../state/use-thread-pr", () => ({
+  useThreadPr: () => ({ pullRequest: null }),
+}));
+
 import { CompactThreadRow } from "./compact-thread-row";
 import { presentThreadPr } from "../../state/thread-pr-presentation";
 import { PendingTaskListRow, ThreadListRow } from "./thread-list-items";
@@ -32,6 +54,10 @@ const harness = vi.hoisted(() => ({
 }));
 vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
+  Platform: {
+    OS: "ios",
+    select: <T,>(options: { ios?: T; default?: T }) => options.ios ?? options.default,
+  },
   useWindowDimensions: () => ({ width: 402 }),
   StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 0.5 },
   View: ({ children }: TestProps) => createElement("div", null, children),
