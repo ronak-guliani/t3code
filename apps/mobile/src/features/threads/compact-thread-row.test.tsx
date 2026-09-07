@@ -34,7 +34,7 @@ vi.mock("expo-secure-store", () => ({
   setItemAsync: async () => {},
 }));
 vi.mock("../../state/use-thread-pr", () => ({
-  useThreadPr: () => ({ pullRequest: null }),
+  useThreadPr: () => null,
 }));
 
 import { CompactThreadRow } from "./compact-thread-row";
