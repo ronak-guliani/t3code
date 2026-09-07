@@ -60,8 +60,6 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   threadSnooze: Schema.optionalKey(Schema.Boolean),
   threadPinning: Schema.optionalKey(Schema.Boolean),
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
-  /** Server persists manual Active order through thread.active.reorder. */
-  threadActiveReorder: Schema.optionalKey(Schema.Boolean),
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
   serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),

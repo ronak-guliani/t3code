@@ -2,7 +2,7 @@ import { SymbolView } from "./AppSymbol";
 import { Image } from "expo-image";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { View } from "react-native";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import {
   getProjectFaviconCacheKey,
   getProjectFaviconResourceKey,
@@ -25,6 +25,7 @@ const EMPTY_FAVICON_URL = Atom.make<string | null>(null);
 /* ─── Component ──────────────────────────────────────────────────────── */
 export function ProjectFavicon(props: {
   readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
   readonly open?: boolean;
   readonly size?: number;
   readonly projectTitle: string;
@@ -37,6 +38,7 @@ export function ProjectFavicon(props: {
       ? EMPTY_FAVICON_URL
       : projectFaviconUrlAtom({
           environmentId: props.environmentId,
+          projectId: props.projectId,
           cwd: props.workspaceRoot,
           faviconPath: props.faviconPath,
         }),

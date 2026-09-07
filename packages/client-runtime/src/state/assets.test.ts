@@ -1,5 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { type AssetCreateUrlResult, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AssetCreateUrlInput,
+  type AssetCreateUrlResult,
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
@@ -15,7 +22,40 @@ import {
   parseAssetCollectionKey,
 } from "./assets.ts";
 
+const decodeAssetCreateUrlInput = Schema.decodeUnknownSync(AssetCreateUrlInput);
+const decodeLegacyFaviconInput = Schema.decodeUnknownSync(
+  Schema.Struct({
+    resource: Schema.TaggedStruct("project-favicon", { projectId: ProjectId }),
+  }),
+);
+
 describe("asset compatibility", () => {
+  it("accepts the favicon request sent by already-installed clients", () => {
+    const resource = { _tag: "project-favicon", projectId: "project-1" };
+    expect(decodeAssetCreateUrlInput({ resource })).toEqual({ resource });
+  });
+
+  it("keeps favicon cache requests compatible with the projectId wire format", () => {
+    const requests: Array<{ input: { resource: unknown } }> = [];
+    const favicon = createProjectFaviconUrlAtomFamily({
+      createUrl: (target) => {
+        requests.push(target);
+        return Atom.make(AsyncResult.initial<AssetCreateUrlResult, unknown>());
+      },
+      preparedConnection: () => Atom.make(Option.none()),
+    });
+    favicon({
+      environmentId: EnvironmentId.make("remote"),
+      projectId: ProjectId.make("project-1"),
+      cwd: "/workspace",
+      faviconPath: "icon.svg",
+    });
+    expect(requests).toHaveLength(1);
+    expect(decodeLegacyFaviconInput(requests[0]?.input)).toEqual({
+      resource: { _tag: "project-favicon", projectId: "project-1" },
+    });
+  });
+
   it("uses workspace files for media resources on older servers", () => {
     expect(
       compatibleAssetResource(
@@ -61,7 +101,7 @@ describe("createAssetEnvironmentAtoms", () => {
       input: {
         resource: {
           _tag: "project-favicon" as const,
-          cwd: "/repo/original",
+          projectId: ProjectId.make("original"),
         },
       },
     };
@@ -72,7 +112,7 @@ describe("createAssetEnvironmentAtoms", () => {
         input: {
           resource: {
             _tag: "project-favicon",
-            cwd: "/repo/original",
+            projectId: ProjectId.make("original"),
           },
         },
       }),
@@ -83,7 +123,7 @@ describe("createAssetEnvironmentAtoms", () => {
         input: {
           resource: {
             _tag: "project-favicon",
-            cwd: "/repo/next",
+            projectId: ProjectId.make("next"),
           },
         },
       }),
@@ -94,7 +134,7 @@ describe("createAssetEnvironmentAtoms", () => {
         input: {
           resource: {
             _tag: "project-favicon",
-            cwd: "/repo/original",
+            projectId: ProjectId.make("original"),
             path: "brand/icon.svg",
           },
         },
@@ -149,7 +189,11 @@ describe("project favicon URL cache", () => {
         records.delete(key);
       },
     };
-    const target = { environmentId: EnvironmentId.make("remote"), cwd: "/workspace" };
+    const target = {
+      environmentId: EnvironmentId.make("remote"),
+      projectId: ProjectId.make("project-1"),
+      cwd: "/workspace",
+    };
     const previousCache = createProjectFaviconCache({ storage, load: async () => image });
     await previousCache.resolve(
       target,
@@ -208,7 +252,11 @@ describe("project favicon URL cache", () => {
     const favicon = createProjectFaviconUrlAtomFamily({
       createUrl: () => result,
       preparedConnection: () => connection,
-    })({ environmentId: EnvironmentId.make("remote"), cwd: "/workspace" });
+    })({
+      environmentId: EnvironmentId.make("remote"),
+      projectId: ProjectId.make("project-1"),
+      cwd: "/workspace",
+    });
     let unmount = registry.mount(favicon);
     try {
       expect(registry.get(favicon)).toBeNull();
@@ -272,7 +320,11 @@ describe("project favicon URL cache", () => {
       createUrl: () => result,
       preparedConnection: () => Atom.make(Option.some({ httpBaseUrl: "https://remote.test" })),
     });
-    const target = { environmentId: EnvironmentId.make("remote"), cwd: "/workspace" };
+    const target = {
+      environmentId: EnvironmentId.make("remote"),
+      projectId: ProjectId.make("project-1"),
+      cwd: "/workspace",
+    };
     const unmount = registry.mount(favicon(target));
     try {
       expect(registry.get(favicon(target))).toBe("https://remote.test/api/assets/token/icon.svg");
@@ -281,6 +333,9 @@ describe("project favicon URL cache", () => {
         registry.get(favicon({ ...target, environmentId: EnvironmentId.make("other") })),
       ).toBeNull();
       expect(registry.get(favicon({ ...target, cwd: "/other" }))).toBeNull();
+      expect(
+        registry.get(favicon({ ...target, projectId: ProjectId.make("replacement") })),
+      ).toBeNull();
       expect(registry.get(favicon({ ...target, faviconPath: "brand.svg" }))).toBeNull();
       expect(registry.get(favicon({ ...target, faviconPath: null }))).toBe(
         "https://remote.test/api/assets/token/icon.svg",

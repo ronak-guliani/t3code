@@ -4,13 +4,11 @@ import {
   type AssetImageDimensions,
   AssetResource,
   EnvironmentId,
+  ProjectId,
   type ExecutionEnvironmentCapabilities,
   WS_METHODS,
 } from "@t3tools/contracts";
-import {
-  getProjectFaviconResourceKey,
-  isProjectFaviconFallbackUrl,
-} from "@t3tools/shared/projectFavicon";
+import { isProjectFaviconFallbackUrl } from "@t3tools/shared/projectFavicon";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -168,11 +166,11 @@ export function createProjectFaviconUrlAtomFamily(input: {
   ) => Atom.Atom<Option.Option<{ readonly httpBaseUrl: string }>>;
 }) {
   const decodeKey = Schema.decodeUnknownSync(
-    Schema.Tuple([EnvironmentId, Schema.String, Schema.NullOr(Schema.String)]),
+    Schema.Tuple([EnvironmentId, ProjectId, Schema.String, Schema.NullOr(Schema.String)]),
   );
   const family = Atom.family((key: string) => {
-    const [environmentId, cwd, path] = decodeKey(JSON.parse(key));
-    const resource = { _tag: "project-favicon" as const, cwd, ...(path ? { path } : {}) };
+    const [environmentId, projectId, cwd, path] = decodeKey(JSON.parse(key));
+    const resource = { _tag: "project-favicon" as const, projectId, ...(path ? { path } : {}) };
     const request = input.createUrl({ environmentId, input: { resource } });
     const resolvedUrl = Atom.make((get): string | null => {
       const result = get(request);
@@ -199,6 +197,13 @@ export function createProjectFaviconUrlAtomFamily(input: {
       return Option.getOrElse(AsyncResult.value(result), () => cache.peek(target));
     }).pipe(Atom.setIdleTTL(ASSET_URL_IDLE_TTL_MS));
   });
-  return (target: ProjectFaviconTarget) =>
-    family(getProjectFaviconResourceKey(target.environmentId, target.cwd, target.faviconPath));
+  return (target: ProjectFaviconTarget & { readonly projectId: ProjectId }) =>
+    family(
+      JSON.stringify([
+        target.environmentId,
+        target.projectId,
+        target.cwd,
+        target.faviconPath ?? null,
+      ]),
+    );
 }

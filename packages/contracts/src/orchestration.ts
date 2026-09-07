@@ -552,9 +552,6 @@ export const OrchestrationThread = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  // Manual Active placement. Keyless threads retain their creation/re-entry
-  // order above the arranged run. Settling clears this slot.
-  activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
@@ -631,9 +628,6 @@ export const OrchestrationThreadShell = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  // Manual Active placement. Keyless threads retain their creation/re-entry
-  // order above the arranged run. Settling clears this slot.
-  activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
@@ -801,13 +795,6 @@ const ThreadUnpinCommand = Schema.Struct({
 
 const ThreadPinReorderCommand = Schema.Struct({
   type: Schema.Literal("thread.pin.reorder"),
-  commandId: CommandId,
-  threadId: ThreadId,
-  orderKey: TrimmedNonEmptyString,
-});
-
-const ThreadActiveReorderCommand = Schema.Struct({
-  type: Schema.Literal("thread.active.reorder"),
   commandId: CommandId,
   threadId: ThreadId,
   orderKey: TrimmedNonEmptyString,
@@ -1194,7 +1181,6 @@ export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 // Client-only additions are sent only after checking the server's advertised capabilities.
 export const CapabilityClientOrchestrationCommand = Schema.Union([
   ClientOrchestrationCommand,
-  ThreadActiveReorderCommand,
   Schema.Struct({
     ...ClientThreadTurnStartCommand.fields,
     message: Schema.Struct({

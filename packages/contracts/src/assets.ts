@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -36,7 +36,7 @@ export const AssetResource = Schema.Union([
     disposition: Schema.optionalKey(Schema.Literals(["inline", "attachment"])),
   }),
   Schema.TaggedStruct("project-favicon", {
-    cwd: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+    projectId: ProjectId,
     // A cache-key hint only. The server reads the authoritative path from the
     // project projection before it issues the signed URL.
     path: Schema.optional(ProjectFaviconPath),

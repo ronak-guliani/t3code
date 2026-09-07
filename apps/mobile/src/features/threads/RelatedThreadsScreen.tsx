@@ -12,7 +12,7 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useThreadListActions } from "../home/useThreadListActions";
 import { ThreadListRow } from "./thread-list-items";
 import { ThreadListV2Row } from "./thread-list-v2-items";
-import { snoozeWakeLabel } from "./threadListV2";
+import { resolveThreadListV2RootState, snoozeWakeLabel } from "./threadListV2";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
 import {
   buildMobileThreadTree,
@@ -63,13 +63,19 @@ export function RelatedThreadsScreen(
       return () => clearInterval(timer);
     }, [threadListV2Enabled]),
   );
+  const relatedStatus = rows[0]?.relatedStatus ?? "ready";
   const rootState = useMemo(
-    () => ({
-      variant: "card" as const,
-      snoozed: root !== null && snoozeSupported && root.snoozedUntil !== null,
-      pinned: root?.pinnedAt != null,
-    }),
-    [root, snoozeSupported],
+    () =>
+      root && root.parentThreadId == null
+        ? resolveThreadListV2RootState({
+            thread: root,
+            relatedStatus,
+            settlementSupported,
+            snoozeSupported,
+            now,
+          })
+        : { variant: "card" as const, snoozed: false, pinned: false },
+    [root, relatedStatus, settlementSupported, snoozeSupported, now],
   );
   const wakeAt = rootState.snoozed ? root?.snoozedUntil : null;
   useEffect(() => {
@@ -116,10 +122,9 @@ export function RelatedThreadsScreen(
         return (
           <ThreadListV2Row
             thread={item.thread}
+            hierarchy={item}
+            hideRelated
             {...state}
-            project={null}
-            providerDriver={null}
-            environmentLabel={null}
             snoozePresetMinute={now.slice(0, 16)}
             snoozeWakeLabelText={
               state.snoozed && item.thread.snoozedUntil
@@ -137,13 +142,13 @@ export function RelatedThreadsScreen(
             onUnsnoozeThread={actions.unsnoozeThread}
             onPinThread={actions.pinThread}
             onUnpinThread={actions.unpinThread}
-            onMoveThread={actions.moveThread}
+            onMovePinnedThread={actions.movePinnedThread}
             settlementSupported={settlementSupported}
             snoozeSupported={snoozeSupported}
             pinningSupported={pinningSupported}
-            reorderSupported={pinReorderSupported}
-            canMoveUp={pinIndex > 0}
-            canMoveDown={pinIndex >= 0 && pinIndex < pinnedKeys.length - 1}
+            pinReorderSupported={pinReorderSupported}
+            canMovePinnedUp={pinIndex > 0}
+            canMovePinnedDown={pinIndex >= 0 && pinIndex < pinnedKeys.length - 1}
             titleRegenerationSupported={titleRegenerationSupported}
             onSwipeableWillOpen={onSwipeableWillOpen}
             onSwipeableClose={onSwipeableClose}
@@ -154,7 +159,8 @@ export function RelatedThreadsScreen(
         <ThreadListRow
           variant="compact"
           thread={item.thread}
-          environmentLabel={null}
+          hierarchy={item}
+          hideRelated
           isLast={index === rows.length - 1}
           onSelectThread={onSelectThread}
           onArchiveThread={actions.archiveThread}
@@ -176,7 +182,7 @@ export function RelatedThreadsScreen(
       actions.unsnoozeThread,
       actions.pinThread,
       actions.unpinThread,
-      actions.moveThread,
+      actions.movePinnedThread,
       threadListV2Enabled,
       rootState,
       now,
