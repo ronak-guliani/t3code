@@ -24,7 +24,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
+import { EnvironmentId, PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
 import { resolveEnvironmentMachineKind } from "@t3tools/shared/environmentMachine";
 
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
@@ -75,6 +75,7 @@ import {
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import {
   clearComposerDraftContent,
+  clearComposerDraft,
   flushComposerDrafts,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
@@ -82,7 +83,12 @@ import {
   scheduleUnusedComposerAttachmentCleanup,
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
-import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
+import {
+  useEnvironmentServerConfig,
+  useEnvironmentShellState,
+  useProjects,
+  useThreadShells,
+} from "../../state/entities";
 import {
   isModelSelectionUnavailable,
   resolveSelectableModelSelection,
@@ -142,6 +148,7 @@ function NewTaskWorkspaceIcon(props: {
 }
 
 export function NewTaskDraftScreen(props: {
+  readonly parentThreadId?: string | undefined;
   readonly initialProjectRef?: {
     readonly environmentId?: string;
     readonly projectId?: string;
@@ -152,6 +159,12 @@ export function NewTaskDraftScreen(props: {
   readonly incomingShareId?: string;
 }) {
   const projects = useProjects();
+  const threads = useThreadShells();
+  const initialShellState = useEnvironmentShellState(
+    props.initialProjectRef?.environmentId
+      ? EnvironmentId.make(props.initialProjectRef.environmentId)
+      : null,
+  );
   const createProjectThread = useCreateProjectThread();
   const flow = useNewTaskFlow();
   const navigation = useNavigation();
@@ -305,7 +318,10 @@ export function NewTaskDraftScreen(props: {
     cancelledIncomingShareId !== props.incomingShareId &&
     !isIncomingShareAwaitingServerConfig,
   );
-  const isComposerInteractionLocked = isIncomingShareTransferPending || flow.submitting;
+  const isComposerInteractionLocked =
+    isIncomingShareTransferPending ||
+    flow.submitting ||
+    (props.parentThreadId !== undefined && flow.parentThreadId !== props.parentThreadId);
   // Also guard while a submit is in flight: an Android back press or iOS
   // Cancel would otherwise abandon the screen while the task still starts.
   const composerMenu = useComposerCommandMenu({
@@ -467,8 +483,24 @@ export function NewTaskDraftScreen(props: {
       if (directProject) {
         // Apply the route's project once. Re-applying on every change would
         // instantly revert environment/project switches made in the picker.
-        const directProjectKey = `${directProject.environmentId}:${directProject.id}`;
+        const directProjectKey = `${directProject.environmentId}:${directProject.id}:${props.parentThreadId ?? ""}`;
         if (appliedInitialProjectKeyRef.current === directProjectKey) {
+          return;
+        }
+        if (props.parentThreadId) {
+          const parent = threads.find(
+            (thread) =>
+              thread.environmentId === directProject.environmentId &&
+              thread.id === props.parentThreadId,
+          );
+          if (!parent && initialShellState?.status !== "live") return;
+          if (!parent || parent.archivedAt !== null) {
+            Alert.alert("Parent chat unavailable", "The parent chat is no longer active.");
+            navigation.goBack();
+            return;
+          }
+          appliedInitialProjectKeyRef.current = directProjectKey;
+          flow.beginSubchat(directProject, parent);
           return;
         }
         appliedInitialProjectKeyRef.current = directProjectKey;
@@ -507,6 +539,10 @@ export function NewTaskDraftScreen(props: {
     props.initialProjectRef,
     props.incomingShareId,
     props.pendingTaskId,
+    props.parentThreadId,
+    threads,
+    initialShellState?.status,
+    flow.beginSubchat,
     navigation,
     selectedProject,
     selectedProjectKey,
@@ -860,7 +896,7 @@ export function NewTaskDraftScreen(props: {
   );
 
   async function handleStart(): Promise<void> {
-    if (voiceInput.blocksSubmission) return;
+    if (voiceInput.blocksSubmission || isComposerInteractionLocked) return;
     const selectedProject = flow.selectedProject;
     const draftKey = flow.draftKey;
     if (!selectedProject || !draftKey) {
@@ -870,10 +906,12 @@ export function NewTaskDraftScreen(props: {
     // Read the latest explicit pick. Antigravity selections stay unchanged
     // when setup or a catalog change makes them unavailable.
     const modelSelection =
-      resolveSelectableModelSelection(
-        selectedEnvironmentServerConfig,
-        draft.modelSelection ?? null,
-      ) ?? flow.selectedModel;
+      (draft.parentThreadId
+        ? draft.modelSelection
+        : resolveSelectableModelSelection(
+            selectedEnvironmentServerConfig,
+            draft.modelSelection ?? null,
+          )) ?? flow.selectedModel;
     const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
     const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
     const selectedWorktreePath =
@@ -950,6 +988,8 @@ export function NewTaskDraftScreen(props: {
       }
       if (editingPendingTask) {
         flow.finishEditingPendingTask();
+      } else if (flow.parentThreadId) {
+        clearComposerDraft(draftKey);
       } else {
         // Drop draft-local model/workspace selections with the content. The
         // next task re-resolves project defaults before sticky app defaults.
@@ -979,6 +1019,7 @@ export function NewTaskDraftScreen(props: {
     });
     const result = await createProjectThread({
       project: selectedProject,
+      parentThreadId: draft.parentThreadId,
       modelSelection,
       envMode: workspaceMode,
       branch: creationBranch,
@@ -1023,6 +1064,8 @@ export function NewTaskDraftScreen(props: {
         reportClientWarning("[new-task] failed to remove delivered pending task", error);
       }
       flow.finishEditingPendingTask();
+    } else if (flow.parentThreadId) {
+      clearComposerDraft(draftKey);
     } else {
       clearComposerDraftContent(draftKey, {
         clearModelSelection: true,
@@ -1132,7 +1175,7 @@ export function NewTaskDraftScreen(props: {
             accessibilityHint="Opens the project picker"
             accessibilityLabel={`Change project from ${selectedProject.title}`}
             accessibilityRole="button"
-            disabled={isComposerInteractionLocked}
+            disabled={isComposerInteractionLocked || flow.parentThreadId !== null}
             onPress={chooseProject}
             className="min-w-0 max-w-[250px] border-b border-foreground-muted active:opacity-65"
           >
@@ -1147,10 +1190,20 @@ export function NewTaskDraftScreen(props: {
         </View>
       </View>
 
+      {flow.parentThreadId ? (
+        <Text className="text-center text-sm text-foreground-muted">
+          Subchat of{" "}
+          {threads.find(
+            (thread) =>
+              thread.environmentId === selectedProject.environmentId &&
+              thread.id === flow.parentThreadId,
+          )?.title ?? "parent chat"}
+        </Text>
+      ) : null}
       <ComposerInlineControl
         accessibilityLabel={`Environment: ${selectedEnvironmentLabel}`}
         chevronDirection="right"
-        disabled={isComposerInteractionLocked || voiceInput.isBusy}
+        disabled={isComposerInteractionLocked || voiceInput.isBusy || flow.parentThreadId !== null}
         iconNode={
           <EnvironmentMachineSymbol
             kind={resolveEnvironmentMachineKind(selectedEnvironmentServerConfig)}

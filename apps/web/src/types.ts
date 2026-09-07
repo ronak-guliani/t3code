@@ -91,6 +91,7 @@ export interface TurnDiffSummary {
 }
 
 export interface Project {
+  autoPull?: boolean;
   id: ProjectId;
   environmentId: EnvironmentId;
   name: string;

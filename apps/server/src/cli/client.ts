@@ -406,7 +406,7 @@ export const wsRpcProtocolLayer = (url: string) => {
   );
 };
 
-const withBorrowedBearerToken = <A, E, R>(
+export const withBorrowedBearerToken = <A, E, R>(
   flags: CliLiveTargetFlags,
   run: (input: { readonly origin: string; readonly bearerToken: string }) => Effect.Effect<A, E, R>,
 ) =>

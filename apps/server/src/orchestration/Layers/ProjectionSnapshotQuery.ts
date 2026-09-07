@@ -31,7 +31,7 @@ import {
   ReviewResult,
   ReviewSnapshot,
 } from "@t3tools/contracts";
-import { Effect, Layer, Option, Schema, Struct } from "effect";
+import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 
@@ -68,8 +68,29 @@ import {
 const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeShellSnapshot = Schema.decodeUnknownEffect(OrchestrationShellSnapshot);
 const decodeThread = Schema.decodeUnknownEffect(OrchestrationThread);
+
+export interface ProjectionSnapshotQueryTestHooksShape {
+  readonly beforeShellSnapshotCursorRead: Effect.Effect<void>;
+}
+
+const defaultProjectionSnapshotQueryTestHooks: ProjectionSnapshotQueryTestHooksShape = {
+  beforeShellSnapshotCursorRead: Effect.void,
+};
+
+export const ProjectionSnapshotQueryTestHooks =
+  Context.Reference<ProjectionSnapshotQueryTestHooksShape>(
+    "t3/orchestration/ProjectionSnapshotQueryTestHooks",
+    { defaultValue: () => defaultProjectionSnapshotQueryTestHooks },
+  );
+
+const beforeShellSnapshotCursorRead = Effect.flatMap(
+  Effect.service(ProjectionSnapshotQueryTestHooks),
+  (hooks) => hooks.beforeShellSnapshotCursorRead,
+);
+
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
+    autoPull: Schema.Number,
     defaultModelSelection: Schema.NullOr(Schema.fromJsonString(ModelSelection)),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
@@ -431,6 +452,7 @@ function mapProjectShellRow(
     workspaceRoot: row.workspaceRoot,
     repositoryIdentity,
     defaultModelSelection: row.defaultModelSelection,
+    autoPull: row.autoPull === 1,
     scripts: row.scripts,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -456,6 +478,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     project_id AS "projectId",
     title,
     workspace_root AS "workspaceRoot",
+    auto_pull AS "autoPull",
     default_model_selection_json AS "defaultModelSelection",
     scripts_json AS "scripts",
     created_at AS "createdAt",
@@ -1028,6 +1051,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           workspace_root AS "workspaceRoot",
+          auto_pull AS "autoPull",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -1050,6 +1074,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           workspace_root AS "workspaceRoot",
+          auto_pull AS "autoPull",
           default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -1871,6 +1896,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 workspaceRoot: row.workspaceRoot,
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
                 defaultModelSelection: row.defaultModelSelection,
+                autoPull: row.autoPull === 1,
                 scripts: row.scripts,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2246,11 +2272,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ),
             ),
           ),
-          listProjectionStateRows(undefined).pipe(
-            Effect.mapError(
-              toPersistenceSqlOrDecodeError(
-                "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
-                "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+          beforeShellSnapshotCursorRead.pipe(
+            Effect.andThen(
+              listProjectionStateRows(undefined).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:query",
+                    "ProjectionSnapshotQuery.getShellSnapshot:listProjectionState:decodeRows",
+                  ),
+                ),
               ),
             ),
           ),
@@ -2471,6 +2501,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     workspaceRoot: option.value.workspaceRoot,
                     repositoryIdentity,
                     defaultModelSelection: option.value.defaultModelSelection,
+                    autoPull: option.value.autoPull === 1,
                     scripts: option.value.scripts,
                     createdAt: option.value.createdAt,
                     updatedAt: option.value.updatedAt,

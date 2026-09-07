@@ -38,6 +38,7 @@ export const ProjectSearchEntriesRpcInput = Schema.Union([
   ProjectDirectSearchEntriesInput,
 ]);
 export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
+export type ProjectSearchEntriesRpcInput = typeof ProjectSearchEntriesRpcInput.Type;
 
 export const ProjectEntry = Schema.Struct({
   path: TrimmedNonEmptyString,
@@ -79,12 +80,14 @@ export const ProjectReadFileRpcInput = Schema.Union([
   ProjectDirectReadFileInput,
 ]);
 export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
+export type ProjectReadFileRpcInput = typeof ProjectReadFileRpcInput.Type;
 
 export const ProjectReadFileResult = Schema.Struct({
   relativePath: TrimmedNonEmptyString,
   contents: Schema.String,
   byteLength: Schema.optionalKey(NonNegativeInt),
   truncated: Schema.optionalKey(Schema.Boolean),
+  binary: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
 

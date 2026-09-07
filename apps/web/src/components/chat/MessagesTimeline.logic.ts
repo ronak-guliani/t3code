@@ -15,6 +15,12 @@ export interface TimelineDurationMessage {
 
 type BaseMessagesTimelineRow =
   | {
+      kind: "context-compaction";
+      id: string;
+      createdAt: string;
+      label: string;
+    }
+  | {
       kind: "work";
       id: string;
       createdAt: string;
@@ -213,12 +219,30 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (
+      timelineEntry.kind === "work" &&
+      timelineEntry.entry.sourceActivityKind === "context-compaction"
+    ) {
+      nextRows.push({
+        kind: "context-compaction",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        label: timelineEntry.entry.label,
+      });
+      continue;
+    }
+
     if (timelineEntry.kind === "work") {
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
       while (cursor < input.timelineEntries.length) {
         const nextEntry = input.timelineEntries[cursor];
-        if (!nextEntry || nextEntry.kind !== "work") break;
+        if (
+          !nextEntry ||
+          nextEntry.kind !== "work" ||
+          nextEntry.entry.sourceActivityKind === "context-compaction"
+        )
+          break;
         groupedEntries.push(nextEntry.entry);
         cursor += 1;
       }
@@ -397,14 +421,31 @@ function collapseReasoningRows(
     ) {
       const userRow = userIndex >= 0 ? collapsedRows[userIndex] : undefined;
       const startedAt = userRow?.createdAt ?? reasoningRows[0]?.createdAt;
-      const workedFor = startedAt ? formatElapsed(startedAt, row.createdAt) : null;
-      collapsedRows.push({
-        kind: "reasoning",
-        id: `reasoning:${row.id}`,
-        createdAt: reasoningRows[0]?.createdAt ?? row.createdAt,
-        workedFor,
-        rows: reasoningRows,
-      });
+      // Compaction marks a context boundary, not hidden reasoning. Partition
+      // completed work around each marker without changing chronological order.
+      let section: BaseMessagesTimelineRow[] = [];
+      let sectionStartedAt = startedAt;
+      const flushSection = (id: string, completedAt: string) => {
+        if (section.length === 0) return;
+        collapsedRows.push({
+          kind: "reasoning",
+          id: `reasoning:${id}`,
+          createdAt: section[0]?.createdAt ?? completedAt,
+          workedFor: sectionStartedAt ? formatElapsed(sectionStartedAt, completedAt) : null,
+          rows: section,
+        });
+        section = [];
+      };
+      for (const entry of reasoningRows) {
+        if (entry.kind === "context-compaction") {
+          flushSection(entry.id, entry.createdAt);
+          collapsedRows.push(entry);
+          sectionStartedAt = entry.createdAt;
+        } else {
+          section.push(entry);
+        }
+      }
+      flushSection(row.id, row.createdAt);
       reasoningRows = [];
       collapsedRows.push(row);
       continue;
@@ -469,6 +510,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (a.kind !== b.kind || a.id !== b.id) return false;
 
   switch (a.kind) {
+    case "context-compaction": {
+      const compacted = b as typeof a;
+      return a.createdAt === compacted.createdAt && a.label === compacted.label;
+    }
     case "working":
       return a.createdAt === (b as typeof a).createdAt;
 
@@ -547,6 +592,7 @@ function areWorkLogEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
   if (a === b) return true;
   return (
     a.id === b.id &&
+    a.sourceActivityKind === b.sourceActivityKind &&
     a.createdAt === b.createdAt &&
     a.label === b.label &&
     a.detail === b.detail &&

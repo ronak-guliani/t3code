@@ -234,6 +234,33 @@ describe("mobile connection storage", () => {
     });
   });
 
+  it("persists device-local hierarchy expansion, dismissed agents and acknowledged child updates", async () => {
+    const preferences = {
+      threadExpandedOverrides: { "environment-1:parent": true },
+      dismissedAgentRunKeys: ["environment-1:agent-run:parent:task"],
+      threadChildNotificationReadAt: { "environment-1:parent": "2026-09-05T12:00:00Z" },
+    };
+    await expect(savePreferencesPatch(preferences)).resolves.toEqual(preferences);
+    await expect(loadPreferences()).resolves.toEqual(preferences);
+    expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual(preferences);
+  });
+
+  it("discards invalid hierarchy preference values without dropping valid entries", async () => {
+    mocks.setPreferencesJson(
+      JSON.stringify({
+        threadExpandedOverrides: { valid: false, invalid: "true" },
+        dismissedAgentRunKeys: ["valid", 42],
+        threadChildNotificationReadAt: { valid: "2026-09-05T12:00:00Z", invalid: "yesterday" },
+      }),
+      10,
+    );
+    await expect(loadPreferences()).resolves.toEqual({
+      threadExpandedOverrides: { valid: false },
+      dismissedAgentRunKeys: ["valid"],
+      threadChildNotificationReadAt: { valid: "2026-09-05T12:00:00Z" },
+    });
+  });
+
   it("drops legacy and invalid thread list shelf expansion preferences", async () => {
     mocks.setPreferencesJson(
       JSON.stringify({

@@ -22,6 +22,20 @@ export interface T3CodePublicConfig {
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
+const CONNECT_KEYS = {
+  clerkPublishableKey: [
+    "T3CODE_CLERK_PUBLISHABLE_KEY",
+    "VITE_CLERK_PUBLISHABLE_KEY",
+    "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
+  ],
+  clerkJwtTemplate: [
+    "T3CODE_CLERK_JWT_TEMPLATE",
+    "VITE_CLERK_JWT_TEMPLATE",
+    "EXPO_PUBLIC_CLERK_JWT_TEMPLATE",
+  ],
+  relayUrl: ["T3CODE_RELAY_URL", "VITE_T3CODE_RELAY_URL"],
+} as const;
+
 const REPO_ROOT = NodePath.dirname(
   NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url))),
 );
@@ -29,15 +43,28 @@ const REPO_ROOT = NodePath.dirname(
 export function loadRepoEnv({
   baseEnv = process.env,
   repoRoot = REPO_ROOT,
+  includeExample = false,
 }: {
   readonly baseEnv?: Environment;
   readonly repoRoot?: string;
+  readonly includeExample?: boolean;
 } = {}): Record<string, string | undefined> {
   const rootEnv = readEnvFile(NodePath.join(repoRoot, ".env"));
   const localEnv = readEnvFile(NodePath.join(repoRoot, ".env.local"));
-  const config = resolvePublicConfig(baseEnv, localEnv, rootEnv);
+  const hasConnectOverride = [baseEnv, localEnv, rootEnv].some((source) =>
+    Object.values(CONNECT_KEYS).some((names) => names.some((name) => source[name] !== undefined)),
+  );
+  const exampleEnv = includeExample ? readEnvFile(NodePath.join(repoRoot, ".env.example")) : {};
+  // The Connect triplet falls back together, never field by field.
+  if (hasConnectOverride) {
+    for (const names of Object.values(CONNECT_KEYS)) {
+      for (const name of names) delete exampleEnv[name];
+    }
+  }
+  const config = resolvePublicConfig(baseEnv, localEnv, rootEnv, exampleEnv);
 
   return {
+    ...exampleEnv,
     ...rootEnv,
     ...localEnv,
     ...baseEnv,
@@ -114,21 +141,11 @@ export function loadRepoEnv({
 
 export function resolvePublicConfig(...sources: readonly Environment[]): T3CodePublicConfig {
   return {
-    clerkPublishableKey: firstNonEmpty(
-      sources,
-      "T3CODE_CLERK_PUBLISHABLE_KEY",
-      "VITE_CLERK_PUBLISHABLE_KEY",
-      "EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY",
-    ),
-    clerkJwtTemplate: firstNonEmpty(
-      sources,
-      "T3CODE_CLERK_JWT_TEMPLATE",
-      "VITE_CLERK_JWT_TEMPLATE",
-      "EXPO_PUBLIC_CLERK_JWT_TEMPLATE",
-    ),
+    clerkPublishableKey: firstNonEmpty(sources, ...CONNECT_KEYS.clerkPublishableKey),
+    clerkJwtTemplate: firstNonEmpty(sources, ...CONNECT_KEYS.clerkJwtTemplate),
     clerkCliOAuthClientId: firstNonEmpty(sources, "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID"),
     hostedAppUrl: firstNonEmpty(sources, "T3CODE_HOSTED_APP_URL", "VITE_HOSTED_APP_URL"),
-    relayUrl: firstNonEmpty(sources, "T3CODE_RELAY_URL", "VITE_T3CODE_RELAY_URL"),
+    relayUrl: firstNonEmpty(sources, ...CONNECT_KEYS.relayUrl),
     mobileOtlpTracesUrl: firstNonEmpty(
       sources,
       "T3CODE_MOBILE_OTLP_TRACES_URL",

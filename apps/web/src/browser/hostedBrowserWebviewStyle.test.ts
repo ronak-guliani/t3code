@@ -20,6 +20,7 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       width: 800,
       height: 600,
       zIndex: HOSTED_BROWSER_WEBVIEW_Z_INDEX,
+      opacity: 1,
       pointerEvents: "auto",
     });
   });
@@ -41,6 +42,7 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       width: 393,
       height: 852,
       zIndex: -1,
+      opacity: 0,
       pointerEvents: "none",
       visibility: "visible",
     });
@@ -60,8 +62,45 @@ describe("resolveHostedBrowserWebviewWrapperStyle", () => {
       width: 1280,
       height: 800,
       zIndex: -1,
+      opacity: 0,
       pointerEvents: "none",
       visibility: "visible",
+    });
+  });
+
+  it.each([false, true])(
+    "conceals an unpresented guest independently of its rendering activity (%s)",
+    (renderingActive) => {
+      const style = resolveHostedBrowserWebviewWrapperStyle({
+        active: false,
+        renderingActive,
+        rect: { x: 12, y: 34, width: 800, height: 600 },
+        hiddenSize: { width: 1280, height: 800 },
+      });
+
+      expect(style).toMatchObject({
+        opacity: 0,
+        visibility: "visible",
+        pointerEvents: "none",
+        width: 1280,
+        height: 800,
+      });
+    },
+  );
+
+  it("restores opacity when a background guest is presented", () => {
+    const input = {
+      renderingActive: true,
+      rect: { x: 12, y: 34, width: 800, height: 600 },
+      hiddenSize: { width: 1280, height: 800 },
+    };
+    expect(resolveHostedBrowserWebviewWrapperStyle({ ...input, active: false })).toMatchObject({
+      opacity: 0,
+      pointerEvents: "none",
+    });
+    expect(resolveHostedBrowserWebviewWrapperStyle({ ...input, active: true })).toMatchObject({
+      opacity: 1,
+      pointerEvents: "auto",
     });
   });
 

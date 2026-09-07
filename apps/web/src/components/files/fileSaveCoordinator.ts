@@ -1,0 +1,94 @@
+export interface FileSaveCoordinatorOptions {
+  readonly debounceMs: number;
+  readonly persist: (contents: string) => Promise<void>;
+  readonly onPendingChange: (pending: boolean) => void;
+  readonly onConfirmed: (contents: string) => void;
+  readonly onError: (cause: unknown) => void;
+}
+
+export class FileSaveCoordinator {
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private latestContents = "";
+  private latestRevision = 0;
+  private persistedRevision = 0;
+  private lastChangeAt = 0;
+  private saving = false;
+  private disposed = false;
+
+  constructor(private readonly options: FileSaveCoordinatorOptions) {}
+
+  change(contents: string): void {
+    if (this.disposed) return;
+    this.latestContents = contents;
+    this.latestRevision += 1;
+    this.lastChangeAt = Date.now();
+    this.options.onError(null);
+    this.options.onPendingChange(true);
+    this.schedule(this.options.debounceMs);
+  }
+
+  retry(): void {
+    if (this.latestRevision === this.persistedRevision) return;
+    this.schedule(0);
+  }
+
+  flush(): void {
+    this.clearTimer();
+    void this.persistLatest();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.flush();
+  }
+
+  private schedule(delay: number): void {
+    this.clearTimer();
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.persistLatest();
+    }, delay);
+  }
+
+  private clearTimer(): void {
+    if (this.timer === null) return;
+    clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private async persistLatest(): Promise<void> {
+    if (this.saving || this.latestRevision === this.persistedRevision) return;
+
+    this.saving = true;
+    const contents = this.latestContents;
+    const revision = this.latestRevision;
+    let succeeded = false;
+    try {
+      await this.options.persist(contents);
+      succeeded = true;
+      this.persistedRevision = revision;
+      this.options.onConfirmed(contents);
+    } catch (cause) {
+      this.options.onError(cause);
+    }
+
+    this.saving = false;
+    if (revision === this.latestRevision) {
+      if (succeeded) {
+        this.options.onError(null);
+        this.options.onPendingChange(false);
+      }
+      return;
+    }
+
+    const remainingDebounce = Math.max(
+      0,
+      this.options.debounceMs - (Date.now() - this.lastChangeAt),
+    );
+    if (this.disposed) {
+      void this.persistLatest();
+    } else {
+      this.schedule(remainingDebounce);
+    }
+  }
+}

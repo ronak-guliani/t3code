@@ -2093,16 +2093,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           },
         });
         return;
-      case "compact_boundary":
+      case "compact_boundary": {
+        const metadata: Readonly<Record<string, unknown>> = message.compact_metadata;
+        const beforeTokens = metadata.pre_tokens;
+        const afterTokens = metadata.post_tokens;
         yield* offerRuntimeEvent({
           ...base,
           type: "thread.state.changed",
           payload: {
             state: "compacted",
+            ...(typeof beforeTokens === "number" &&
+            Number.isSafeInteger(beforeTokens) &&
+            beforeTokens >= 0
+              ? { beforeTokens }
+              : {}),
+            ...(typeof afterTokens === "number" &&
+            Number.isSafeInteger(afterTokens) &&
+            afterTokens >= 0
+              ? { afterTokens }
+              : {}),
             detail: message,
           },
         });
         return;
+      }
       case "hook_started":
         yield* offerRuntimeEvent({
           ...base,

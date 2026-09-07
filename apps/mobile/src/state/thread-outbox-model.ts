@@ -33,6 +33,7 @@ const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
   // Snapshot of the project's display metadata so a pending task stays
   // presentable in the thread list even when the project shell is not loaded.
   projectTitle: Schema.optional(Schema.String),
@@ -65,6 +66,7 @@ const encodeStoredQueuedThreadMessage = Schema.encodeUnknownSync(QueuedThreadMes
 
 export interface QueuedThreadCreation {
   readonly projectId: ProjectIdType;
+  readonly parentThreadId?: ThreadId | undefined;
   readonly projectTitle?: string;
   readonly projectCwd?: string;
   readonly workspaceMode: "local" | "worktree";
@@ -251,14 +253,30 @@ function errorMessage(error: unknown): string | null {
   return typeof error === "string" ? error : null;
 }
 
+/**
+ * Only a failure the server actually decided (`OrchestrationDispatchCommandError`,
+ * or an authorization rejection) means the payload itself is bad. The other
+ * typed failures a queued send can hit are transport-shaped: a socket that
+ * dropped mid-request (`RpcClientError` wrapping a Socket read/write/close
+ * reason), or an environment that is not connected or not registered. Those
+ * are matched by tag, not by message text, because a `SocketReadError` message
+ * is just "An error occurred during Read". A wrong answer here restores the
+ * pending task into a draft and it disappears from the list.
+ */
 export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "_tag" in error &&
-    error._tag === "ConnectionTransientError"
-  ) {
-    return true;
+  if (typeof error === "object" && error !== null && "_tag" in error) {
+    switch (error._tag) {
+      case "OrchestrationDispatchCommandError":
+      case "EnvironmentAuthorizationError":
+        return false;
+      case "ConnectionTransientError":
+      case "RpcClientError":
+      case "EnvironmentRpcUnavailableError":
+      case "EnvironmentNotRegisteredError":
+        return true;
+      default:
+        break;
+    }
   }
   return isTransportConnectionErrorMessage(errorMessage(error));
 }

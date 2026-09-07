@@ -33,7 +33,11 @@ export function composerDraftEnvironmentId(
         ?.environmentId ?? null
     );
   }
-  const scope = draftKey.startsWith("new-task:") ? draftKey.slice("new-task:".length) : draftKey;
+  const scope = draftKey.startsWith("new-task:")
+    ? draftKey.slice("new-task:".length)
+    : draftKey.startsWith("subchat:")
+      ? draftKey.slice("subchat:".length)
+      : draftKey;
   const separator = scope.lastIndexOf(":");
   return separator > 0 ? EnvironmentId.make(scope.slice(0, separator)) : null;
 }

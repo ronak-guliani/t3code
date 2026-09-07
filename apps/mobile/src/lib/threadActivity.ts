@@ -169,6 +169,12 @@ export type ThreadFeedEntry =
       readonly turnId: TurnId;
       readonly label: string;
       readonly expanded: boolean;
+    }
+  | {
+      readonly type: "thinking";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly turnId: TurnId | null;
     };
 
 export type ThreadFeedLatestTurn = Pick<
@@ -201,6 +207,7 @@ const turnFoldRowsCache = new WeakMap<
   ThreadFeedEntry,
   Extract<ThreadFeedEntry, { readonly type: "turn-fold" }>
 >();
+let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
 export function isContextCompactionActivityGroup(
   entry: Extract<ThreadFeedEntry, { readonly type: "activity-group" }>,
@@ -871,13 +878,43 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
-function workEntryHasExpandedBody(entry: WorkLogEntry): boolean {
-  return (
-    (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) ||
-    Boolean((entry.rawCommand ?? entry.command)?.trim()) ||
-    Boolean(entry.detail?.trim()) ||
-    (entry.changedFiles?.some((path) => path.trim().length > 0) ?? false)
-  );
+/**
+ * A row only opens when its body says more than its collapsed line. A row
+ * whose only detail is the single-line text it already shows (a runtime
+ * warning, a task summary, a short command) has nothing to reveal.
+ * Multi-line text still expands: the collapsed row truncates it to one line.
+ * Cheap field checks come first so large tool payloads are not serialized
+ * for every row (see the deferred-expansion test).
+ */
+function workEntryHasExpandedBody(entry: WorkLogEntry, collapsedText: string): boolean {
+  if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
+  if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
+  const parts = [entry.rawCommand ?? entry.command, entry.detail]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (parts.length === 0) return false;
+  if (parts.length > 1 && new Set(parts).size > 1) return true;
+  const only = parts[0]!;
+  return only.includes("\n") || collapseWhitespace(only) !== collapseWhitespace(collapsedText);
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function stripShellWrapper(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^\/bin\/zsh -lc ['"]?([\s\S]*?)['"]?$/);
+  return (match?.[1] ?? trimmed).trim();
+}
+
+/** The one-line text a collapsed work row shows. */
+export function workEntryRowLabel(entry: WorkLogEntry): string {
+  const presentation = resolveWorkEntryToolPresentation(entry);
+  if (presentation) return presentation.displayName;
+  const preview = workEntryPreview(entry);
+  const compactPreview = preview === null ? null : collapseWhitespace(stripShellWrapper(preview));
+  return compactPreview || workEntryHeading(entry);
 }
 
 function memoizeValue<T>(build: () => T): () => T {
@@ -1510,7 +1547,8 @@ export function deriveThreadFeedPresentation(
   activeWorkStartedAt: string | null = null,
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
-    (entry) => entry.type !== "turn-fold" && entry.type !== "work-toggle",
+    (entry) =>
+      entry.type !== "turn-fold" && entry.type !== "work-toggle" && entry.type !== "thinking",
   );
   const activeTailGroup = sourceFeed.findLast(
     (entry) => entry.type !== "message" || !isEmptyMessage(entry),
@@ -1570,12 +1608,27 @@ export function deriveThreadFeedPresentation(
       );
     }
   }
+  // A working turn always shows one live activity. When no tool row is
+  // shimmering (no tools yet, or the latest failed), that row is "Thinking".
+  if (
+    activeWorkStartedAt !== null &&
+    !result.some((row) => row.type === "work-toggle" && row.shimmer)
+  ) {
+    result.push(thinkingRow(activeWorkStartedAt, unsettledTurnId));
+  }
   return result;
+}
+
+function thinkingRow(createdAt: string, turnId: TurnId | null) {
+  if (cachedThinkingRow?.createdAt !== createdAt || cachedThinkingRow.turnId !== turnId) {
+    cachedThinkingRow = { type: "thinking", id: "thinking", createdAt, turnId };
+  }
+  return cachedThinkingRow;
 }
 
 function appendPresentedFeedEntry(
   result: ThreadFeedEntry[],
-  entry: Exclude<ThreadFeedEntry, { readonly type: "turn-fold" | "work-toggle" }>,
+  entry: Exclude<ThreadFeedEntry, { readonly type: "turn-fold" | "work-toggle" | "thinking" }>,
   expandedWorkGroupIds: ReadonlySet<string>,
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
@@ -1696,6 +1749,9 @@ function appendToolGroupRows(
   const active = latestActiveActivity !== undefined;
   const live = activeTail || active;
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
+  // Like web, the trailing run keeps shining after its latest call succeeds;
+  // only a failed, declined, or stopped call hands the live slot to "Thinking".
+  const shimmer = active || (activeTail && latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
   const summary = live
     ? liveToolActivitySummary(latestActivity, live)
@@ -1751,7 +1807,7 @@ function appendToolGroupRows(
     ...(summaryToolIcon ? { summaryToolIcon } : {}),
     hasFailure: activities.findLast((activity) => activity.toolLike)?.status === "failure",
     live,
-    shimmer: active,
+    shimmer,
   });
   if (!expanded) {
     return;
@@ -2072,7 +2128,7 @@ function toThreadFeedActivityEntry(
       turnId: entry.turnId,
       summary,
       detail,
-      canExpand: workEntryHasExpandedBody(entry),
+      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry)),
       getFullDetail,
       getCopyText,
       icon: workEntryIcon(entry),

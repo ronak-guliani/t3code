@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
+import { Deferred, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ProviderSessionReaper } from "../../provider/Services/ProviderSessionReaper.ts";
@@ -25,17 +25,27 @@ describe("TurnLifecycleRuntime", () => {
 
   it("reconciles sessions before starting ordered lifecycle workers", async () => {
     const calls: string[] = [];
+    const reconciling = Effect.runSync(Deferred.make<void>());
+    const reconciled = Effect.runSync(Deferred.make<void>());
+    const enqueueRuntimeEvent = () => Effect.void;
     runtime = ManagedRuntime.make(
       TurnLifecycleRuntimeLive.pipe(
         Layer.provideMerge(
           Layer.succeed(ProviderSessionReaper, {
-            reconcileStartup: Effect.sync(() => calls.push("reconcile")),
+            reconcileStartup: Effect.sync(() => calls.push("reconcile")).pipe(
+              Effect.andThen(Deferred.succeed(reconciling, undefined)),
+              Effect.andThen(Deferred.await(reconciled)),
+            ),
             start: () => Effect.sync(() => calls.push("reaper")),
           }),
         ),
         Layer.provideMerge(
           Layer.succeed(ProviderRuntimeIngestionService, {
-            start: () => Effect.sync(() => calls.push("ingestion")),
+            start: (enqueueCheckpointEvent) =>
+              Effect.sync(() => {
+                expect(enqueueCheckpointEvent).toBe(enqueueRuntimeEvent);
+                calls.push("ingestion");
+              }),
             drain: Effect.sync(() => calls.push("drain-ingestion")),
             awaitTurnCompletionProcessed: () => Effect.void,
           }),
@@ -49,6 +59,7 @@ describe("TurnLifecycleRuntime", () => {
         Layer.provideMerge(
           Layer.succeed(CheckpointReactor, {
             start: () => Effect.sync(() => calls.push("checkpoints")),
+            enqueueRuntimeEvent,
             drain: Effect.sync(() => calls.push("drain-checkpoints")),
           }),
         ),
@@ -57,14 +68,21 @@ describe("TurnLifecycleRuntime", () => {
 
     const lifecycle = await runtime.runPromise(Effect.service(TurnLifecycleRuntime));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(lifecycle.start().pipe(Scope.provide(scope)));
+    const starting = Effect.runPromise(lifecycle.start().pipe(Scope.provide(scope)));
+    try {
+      await Effect.runPromise(Deferred.await(reconciling));
+      expect(calls).toEqual(["reconcile"]);
+    } finally {
+      await Effect.runPromise(Deferred.succeed(reconciled, undefined));
+    }
+    await starting;
     await runtime.runPromise(lifecycle.drain);
 
     expect(calls).toEqual([
       "reconcile",
+      "checkpoints",
       "ingestion",
       "commands",
-      "checkpoints",
       "reaper",
       "drain-commands",
       "drain-ingestion",

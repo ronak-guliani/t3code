@@ -26,6 +26,10 @@ import * as Order from "effect/Order";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import {
+  includeThreadAncestors,
+  selectVisibleThreads,
+} from "@t3tools/client-runtime/state/thread-hierarchy";
 
 export type HomeProjectSortOrder = Exclude<SidebarProjectSortOrder, "manual">;
 
@@ -96,7 +100,7 @@ export function sortHomeProjectScopes(input: {
     );
   };
 
-  for (const thread of input.threads) {
+  for (const thread of selectVisibleThreads(input.threads)) {
     if (thread.archivedAt !== null) continue;
     recordActivity(
       scopeKeyByProjectRef.get(scopedProjectKey(thread.environmentId, thread.projectId)),
@@ -149,8 +153,10 @@ export interface HomeThreadGroup {
   readonly representative: EnvironmentProject;
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
-  /** Full sorted thread history for the group (revealed when expanded / searching). */
+  /** Sorted matches and their ancestors, or the full history when not searching. */
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  /** Unfiltered members keep related counts, activity and guards intact during search. */
+  readonly allThreads?: ReadonlyArray<EnvironmentThreadShell>;
   /** Subset shown by default: threads from the last few days, or the most recent few. */
   readonly recentThreads: ReadonlyArray<EnvironmentThreadShell>;
   /**
@@ -273,7 +279,7 @@ export function buildHomeThreadGroups(input: {
     groups.get(groupKey)?.pendingTasks.push(pendingTask);
   }
 
-  for (const thread of input.threads) {
+  for (const thread of selectVisibleThreads(input.threads)) {
     if (thread.archivedAt !== null) {
       continue;
     }
@@ -307,15 +313,22 @@ export function buildHomeThreadGroups(input: {
       group.projects.some((project) => project.title.toLocaleLowerCase().includes(query));
     const matchingThreads = groupMatches
       ? group.threads
-      : group.threads.filter(
-          (thread) =>
-            thread.title.toLocaleLowerCase().includes(query) ||
-            input.matchedThreadKeys?.has(
-              threadSearchMatchKey({
-                environmentId: thread.environmentId,
-                threadId: thread.id,
-              }),
-            ) === true,
+      : includeThreadAncestors(
+          group.threads,
+          new Set(
+            group.threads
+              .filter(
+                (thread) =>
+                  thread.title.toLocaleLowerCase().includes(query) ||
+                  input.matchedThreadKeys?.has(
+                    threadSearchMatchKey({
+                      environmentId: thread.environmentId,
+                      threadId: thread.id,
+                    }),
+                  ) === true,
+              )
+              .map((thread) => `${thread.environmentId}:${thread.id}`),
+          ),
         );
     const matchingPendingTasks = groupMatches
       ? group.pendingTasks
@@ -362,6 +375,10 @@ export function buildHomeThreadGroups(input: {
       projects: group.projects,
       pendingTasks: matchingPendingTasks,
       threads: sortedThreads,
+      allThreads:
+        matchingThreads === group.threads
+          ? sortedThreads
+          : sortThreads(group.threads, input.threadSortOrder),
       recentThreads,
       newThreadTarget: group.key.startsWith("pending-project:")
         ? null

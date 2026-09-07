@@ -39,6 +39,7 @@ import {
   GlobeIcon,
   HammerIcon,
   InfoIcon,
+  Minimize2Icon,
   PaintbrushIcon,
   RadarIcon,
   type LucideIcon,
@@ -486,6 +487,20 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         row.kind === "message" && row.message.id === ctx.highlightedMessageId ? "true" : undefined
       }
     >
+      {row.kind === "context-compaction" && (
+        <div
+          role="separator"
+          aria-label={row.label}
+          className="mx-auto flex w-full max-w-3xl items-center gap-3 py-1 text-xs text-muted-foreground"
+        >
+          <span className="h-px min-w-4 flex-1 bg-border/70" />
+          <span className="flex min-w-0 items-center justify-center gap-1.5 text-center">
+            <Minimize2Icon aria-hidden="true" className="size-3 shrink-0" />
+            {row.label}
+          </span>
+          <span className="h-px min-w-4 flex-1 bg-border/70" />
+        </div>
+      )}
       {row.kind === "work" && (
         <WorkGroupSection
           groupedEntries={row.groupedEntries}

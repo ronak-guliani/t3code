@@ -25,9 +25,11 @@ import type {
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type { AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import type {
-  ProjectReadFileInput,
+  ProjectListEntriesInput,
+  ProjectListEntriesResult,
+  ProjectReadFileRpcInput,
   ProjectReadFileResult,
-  ProjectSearchEntriesInput,
+  ProjectSearchEntriesRpcInput,
   ProjectSearchEntriesResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
@@ -1011,8 +1013,9 @@ export interface EnvironmentApi {
     onEvent: (callback: (event: TerminalEvent) => void) => () => void;
   };
   projects: {
-    readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
-    searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
+    listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
+    readFile: (input: ProjectReadFileRpcInput) => Promise<ProjectReadFileResult>;
+    searchEntries: (input: ProjectSearchEntriesRpcInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
   };
   filesystem: {

@@ -24,6 +24,7 @@ import { type TextGenerationShape, TextGeneration } from "../Services/TextGenera
 import { GitCoreLive } from "./GitCore.ts";
 import { type GitCoreShape, GitCore } from "../Services/GitCore.ts";
 import { makeGitManager } from "./GitManager.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../CheckoutCoordinator.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
@@ -660,11 +661,37 @@ function preparePullRequestThread(
   return manager.preparePullRequestThread(input);
 }
 
+function recordCheckoutLocks() {
+  const paths: string[] = [];
+  let held: string | null = null;
+  const service: CheckoutCoordinator["Service"] = {
+    tryWithCheckout: () => Effect.die("Unexpected automatic checkout reservation"),
+    beginFinalization: () => Effect.die("Unexpected finalization"),
+    endFinalization: () => Effect.die("Unexpected finalization"),
+    isFinalizing: () => Effect.die("Unexpected finalization lookup"),
+    withCheckout: (cwd, effect) =>
+      Effect.gen(function* () {
+        expect(held).toBeNull();
+        held = cwd;
+        paths.push(cwd);
+        return yield* effect.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              held = null;
+            }),
+          ),
+        );
+      }),
+  };
+  return { service, paths, held: () => held };
+}
+
 function makeManager(input?: {
   ghScenario?: FakeGhScenario;
   gitCore?: Partial<GitCoreShape>;
   textGeneration?: Partial<FakeGitTextGeneration>;
   setupScriptRunner?: ProjectSetupScriptRunnerShape;
+  checkoutCoordinator?: CheckoutCoordinator["Service"];
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -691,6 +718,9 @@ function makeManager(input?: {
       },
     ),
     gitCoreLayer,
+    input?.checkoutCoordinator
+      ? Layer.succeed(CheckoutCoordinator, input.checkoutCoordinator)
+      : CheckoutCoordinatorLive,
     serverSettingsLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 
@@ -1374,13 +1404,25 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* initRepo(repoDir);
       fs.writeFileSync(path.join(repoDir, "README.md"), "hello\nworld\n");
 
-      const { manager } = yield* makeManager();
+      const locks = recordCheckoutLocks();
+      const { manager } = yield* makeManager({
+        checkoutCoordinator: locks.service,
+        textGeneration: {
+          generateCommitMessage: () =>
+            Effect.sync(() => {
+              expect(locks.held()).toBe(repoDir);
+              return { subject: "Implement stacked git actions", body: "" };
+            }),
+        },
+      });
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
+      expect(locks.paths).toEqual([repoDir]);
+      expect(locks.held()).toBeNull();
       expect(result.commit.status).toBe("created");
       expect(result.push.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("skipped_not_requested");
@@ -2422,7 +2464,9 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["add", "local.txt"]);
       yield* runGit(repoDir, ["commit", "-m", "Local PR branch"]);
 
+      const locks = recordCheckoutLocks();
       const { manager, ghCalls } = yield* makeManager({
+        checkoutCoordinator: locks.service,
         ghScenario: {
           pullRequest: {
             number: 64,
@@ -2446,6 +2490,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const branch = (yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim();
       expect(branch).toBe("feature/pr-local");
       expect(ghCalls).toContain("pr checkout 64 --force");
+      expect(locks.paths).toEqual([repoDir]);
+      expect(locks.held()).toBeNull();
     }),
   );
 
@@ -2510,7 +2556,9 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["checkout", "main"]);
 
       const setupCalls: ProjectSetupScriptRunnerInput[] = [];
+      const locks = recordCheckoutLocks();
       const { manager } = yield* makeManager({
+        checkoutCoordinator: locks.service,
         ghScenario: {
           pullRequest: {
             number: 177,
@@ -2524,6 +2572,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         setupScriptRunner: {
           runForThread: (setupInput) =>
             Effect.sync(() => {
+              expect(locks.held()).toBeNull();
               setupCalls.push(setupInput);
               return { status: "no-script" as const };
             }),
@@ -2538,6 +2587,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
 
       expect(result.worktreePath).not.toBeNull();
+      expect(locks.paths).toEqual([repoDir, result.worktreePath]);
       expect(setupCalls).toHaveLength(1);
       expect(setupCalls[0]).toEqual({
         threadId: "thread-pr-setup",

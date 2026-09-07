@@ -77,8 +77,9 @@ overrides:
 packageExtensionsChecksum: sha256-FV3+2NW/9MFbunJaPsMxvO0LAzyfccoPtPiKoIXAwUU=
 
 patchedDependencies:
+  '@clerk/expo@3.6.2': 03495e425377040a3fb282c1bb7652dbd6990a54fe108a4470bfa31ae96669ca
   '@effect/platform-bun@4.0.0-beta.78': 17326e206d468ac4ad84f787d2c5a6b3856c44c21deef99c05f205e350272af4
-  '@effect/platform-node@4.0.0-beta.78': 53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba
+  '@effect/platform-node@4.0.0-beta.78': a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c
   '@effect/vitest@4.0.0-beta.78': 42b87cc47e70d74e62496e7a8261b3fd298ecad4464d209348ab04b96f853a5f
   '@expo/metro-config@57.0.12': 96f1a75347e6ea02dc4b7034ace815d8ee39e18b8166ebfb573d9e58328f0dc2
   '@ff-labs/fff-node@0.9.4': 2b16019ce7ab61aec6478dd02f79ef468cc1d5c51e9d00764f7d2ab8167210c8
@@ -127,7 +128,7 @@ importers:
     dependencies:
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@napi-rs/keyring':
         specifier: ^1.3.0
         version: 1.3.0
@@ -192,7 +193,7 @@ importers:
     dependencies:
       '@clerk/expo':
         specifier: 3.6.2
-        version: 3.6.2(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
+        version: 3.6.2(patch_hash=03495e425377040a3fb282c1bb7652dbd6990a54fe108a4470bfa31ae96669ca)(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)
       '@effect/atom-react':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(react@19.2.3)(scheduler@0.27.0)
@@ -443,6 +444,9 @@ importers:
       '@types/react':
         specifier: ~19.2.0
         version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.17)
       babel-preset-expo:
         specifier: ~57.0.9
         version: 57.0.10(@babel/core@7.29.7)(@babel/runtime@7.29.7)(expo-widgets@57.0.16)(expo@57.0.19)(react-refresh@0.14.2)
@@ -469,7 +473,7 @@ importers:
         version: 4.0.0-beta.78(patch_hash=17326e206d468ac4ad84f787d2c5a6b3856c44c21deef99c05f205e350272af4)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@effect/platform-node-shared':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
@@ -573,6 +577,9 @@ importers:
       '@pierre/diffs':
         specifier: 'catalog:'
         version: 1.3.0-beta.5(patch_hash=7cb6da88544119adda056b2f46f43956f99326227732da0b345081e285a6c53a)(@shikijs/themes@4.3.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@pierre/trees':
+        specifier: 1.0.0-beta.4
+        version: 1.0.0-beta.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@t3tools/client-runtime':
         specifier: workspace:*
         version: link:../../packages/client-runtime
@@ -687,7 +694,7 @@ importers:
     dependencies:
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@oxlint/plugins':
         specifier: ^1.63.0
         version: 1.72.0
@@ -799,10 +806,10 @@ importers:
         version: 0.84.2
       '@effect/openapi-generator':
         specifier: 'catalog:'
-        version: 4.0.0-beta.78(@effect/platform-node@4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1))(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
+        version: 4.0.0-beta.78(@effect/platform-node@4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1))(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@effect/vitest':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(patch_hash=42b87cc47e70d74e62496e7a8261b3fd298ecad4464d209348ab04b96f853a5f)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
@@ -833,10 +840,10 @@ importers:
         version: 0.84.2
       '@effect/openapi-generator':
         specifier: 'catalog:'
-        version: 4.0.0-beta.78(@effect/platform-node@4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1))(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
+        version: 4.0.0-beta.78(@effect/platform-node@4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1))(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@effect/vitest':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(patch_hash=42b87cc47e70d74e62496e7a8261b3fd298ecad4464d209348ab04b96f853a5f)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
@@ -882,7 +889,7 @@ importers:
         version: 0.84.2
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@effect/vitest':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(patch_hash=42b87cc47e70d74e62496e7a8261b3fd298ecad4464d209348ab04b96f853a5f)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
@@ -903,7 +910,7 @@ importers:
     dependencies:
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@t3tools/shared':
         specifier: workspace:*
         version: link:../shared
@@ -928,7 +935,7 @@ importers:
         version: 0.2.141(supports-color@8.1.1)(zod@4.4.3)
       '@effect/platform-node':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+        version: 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../packages/contracts
@@ -10639,7 +10646,7 @@ snapshots:
       - react
       - react-dom
 
-  '@clerk/expo@3.6.2(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)':
+  '@clerk/expo@3.6.2(patch_hash=03495e425377040a3fb282c1bb7652dbd6990a54fe108a4470bfa31ae96669ca)(expo-auth-session@57.0.11(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3))(expo-constants@57.0.16(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo-crypto@57.0.2(expo@57.0.19))(expo-secure-store@57.0.3(expo@57.0.19))(expo-web-browser@57.0.2(expo@57.0.19)(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1)))(expo@57.0.19)(react-dom@19.2.3(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.7)(@react-native/metro-config@0.86.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3)(supports-color@8.1.1))(react@19.2.3)':
     dependencies:
       '@clerk/clerk-js': 6.22.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@clerk/react': 6.11.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -10719,9 +10726,9 @@ snapshots:
 
   '@effect/language-service@0.84.2': {}
 
-  '@effect/openapi-generator@4.0.0-beta.78(@effect/platform-node@4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1))(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))':
+  '@effect/openapi-generator@4.0.0-beta.78(@effect/platform-node@4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1))(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))':
     dependencies:
-      '@effect/platform-node': 4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
+      '@effect/platform-node': 4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)
       effect: 4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5)
 
   '@effect/platform-bun@4.0.0-beta.78(patch_hash=17326e206d468ac4ad84f787d2c5a6b3856c44c21deef99c05f205e350272af4)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))':
@@ -10741,7 +10748,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0-beta.78(patch_hash=53e9a5ded476e2e6f44c7c2b992d1d68ca8d9ff409675e8cc574dbfb0da7efba)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)':
+  '@effect/platform-node@4.0.0-beta.78(patch_hash=a234d63fcceff2862fd0792d327006a8aaad5dc37d136c88f0acbba6a356557c)(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))(ioredis@5.11.1)':
     dependencies:
       '@effect/platform-node-shared': 4.0.0-beta.78(effect@4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5))
       effect: 4.0.0-beta.78(patch_hash=c502bc684210b707dfceb87d8fe6ad6843395af6e19cfc02cd65854898bde2c5)

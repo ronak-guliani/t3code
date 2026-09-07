@@ -312,25 +312,28 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     expect(resolveApsEnvironment(undefined)).toBe("production");
   });
 
-  it("disables push features in Personal Team relay registrations", () => {
-    Constants.expoConfig!.extra = { iosPersonalTeamBuild: true };
+  it.each([{ iosPersonalTeamBuild: true }, { agentAwarenessPushEnabled: false }])(
+    "disables push features when the build opts out: %o",
+    (extra) => {
+      Constants.expoConfig!.extra = extra;
 
-    expect(
-      makeRelayDeviceRegistrationRequest({
-        deviceId: "device-1",
-        label: "Julius's iPhone",
-        iosMajorVersion: 18,
-        appVersion: "1.0.0",
-        pushToken: "apns-token",
-        pushToStartToken: "push-to-start-token",
-        notificationsEnabled: true,
-        preferences: {},
-      }).preferences,
-    ).toMatchObject({
-      liveActivitiesEnabled: false,
-      notificationsEnabled: false,
-    });
-  });
+      expect(
+        makeRelayDeviceRegistrationRequest({
+          deviceId: "device-1",
+          label: "Julius's iPhone",
+          iosMajorVersion: 18,
+          appVersion: "1.0.0",
+          pushToken: "apns-token",
+          pushToStartToken: "push-to-start-token",
+          notificationsEnabled: true,
+          preferences: {},
+        }).preferences,
+      ).toMatchObject({
+        liveActivitiesEnabled: false,
+        notificationsEnabled: false,
+      });
+    },
+  );
 
   it("marks notification delivery disabled when APNs permission is unavailable", () => {
     expect(

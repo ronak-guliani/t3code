@@ -583,26 +583,14 @@ describe("resolveSidebarV2StatusLabel", () => {
       resolveSidebarV2StatusLabel({
         status: "ready",
         unseenCompletion: false,
-        unseenChildNotification: false,
       }),
     ).toBeNull();
     expect(
       resolveSidebarV2StatusLabel({
         status: "ready",
         unseenCompletion: true,
-        unseenChildNotification: false,
       })?.label,
     ).toBe("Done");
-  });
-
-  it("prefers an unseen child update over an unseen completion", () => {
-    expect(
-      resolveSidebarV2StatusLabel({
-        status: "ready",
-        unseenCompletion: true,
-        unseenChildNotification: true,
-      })?.label,
-    ).toBe("Child update");
   });
 
   it("shows the elapsed counter only for working threads", () => {
@@ -610,14 +598,12 @@ describe("resolveSidebarV2StatusLabel", () => {
       resolveSidebarV2StatusLabel({
         status: "working",
         unseenCompletion: false,
-        unseenChildNotification: false,
       })?.showElapsed,
     ).toBe(true);
     expect(
       resolveSidebarV2StatusLabel({
         status: "approval",
         unseenCompletion: false,
-        unseenChildNotification: false,
       })?.showElapsed,
     ).toBe(false);
   });

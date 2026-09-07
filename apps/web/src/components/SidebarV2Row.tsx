@@ -21,11 +21,7 @@ import { formatRelativeTimeLabel, formatRelativeTimeUntilLabel } from "../timest
 import type { SidebarThreadSummary } from "../types";
 import { useUiStateStore } from "../uiStateStore";
 import { cn } from "~/lib/utils";
-import {
-  hasUnseenChildNotification,
-  hasUnseenCompletion,
-  resolveThreadStatusPill,
-} from "./Sidebar.logic";
+import { hasUnseenCompletion, resolveThreadStatusPill } from "./Sidebar.logic";
 import {
   compactSidebarTimeLabel,
   resolveSidebarV2StatusLabel,
@@ -164,7 +160,6 @@ export const SidebarV2Row = memo(function SidebarV2Row({
   const statusLabel = resolveSidebarV2StatusLabel({
     status: displayStatus,
     unseenCompletion: hasUnseenCompletion({ ...thread, lastVisitedAt }),
-    unseenChildNotification: hasUnseenChildNotification({ ...thread, lastVisitedAt }),
   });
   const pill = resolveThreadStatusPill({
     thread,

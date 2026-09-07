@@ -1,40 +1,30 @@
 # SQLite fixtures
 
-Load this reference only when inspecting or seeding local T3 state directly.
+Load this reference only when inspecting local T3 state directly.
 
 ## Select the correct database
 
-When `--base-dir` or `--home-dir` is explicit, runtime state lives under `<base-dir>/userdata` and the database path is `<base-dir>/userdata/state.sqlite`. The `<base-dir>/dev` state directory is only the fallback for an implicit development home, preventing an ordinary `vp run dev` from touching production state.
+The server derives its state directory from the base directory and whether a dev URL is set. The normal `pnpm dev` path uses `<base-dir>/dev/state.sqlite`; a server started without a dev URL uses `<base-dir>/userdata/state.sqlite`. Read the `[dev-runner]` line and server startup output instead of guessing. Always use an isolated base directory.
 
-Start the target runtime once before seeding so all migrations have run. Use an isolated base directory. Stop the server before writes to avoid racing application state or an active projection.
+Start the target runtime once before inspection so all migrations have run. Use an isolated base directory. Do not write a live database.
 
-## Use the helper
+## Read-only inspection
 
-List tables:
-
-```bash
-node apps/server/scripts/t3-sqlite-state.ts query \
-  --base-dir <base-dir> \
-  --sql "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name"
-```
-
-Inspect current columns before writing a fixture:
+This checkout does not contain the previously referenced `apps/server/scripts/t3-sqlite-state.ts` helper. If `sqlite3` is installed, use it only for read-only inspection:
 
 ```bash
-node apps/server/scripts/t3-sqlite-state.ts query \
-  --base-dir <base-dir> \
-  --sql "PRAGMA table_info(projection_threads)"
+sqlite3 -readonly <base-dir>/dev/state.sqlite \
+  "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;"
 ```
 
-Apply a SQL fixture from a file:
+Inspect current columns before considering a disposable fixture:
 
 ```bash
-node apps/server/scripts/t3-sqlite-state.ts exec \
-  --base-dir <base-dir> \
-  --file /tmp/t3-seed.sql
+sqlite3 -readonly <base-dir>/dev/state.sqlite \
+  "PRAGMA table_info(projection_threads);"
 ```
 
-Use one statement per invocation for both `query` and `exec`; the helper wraps writes in a transaction and prints the backup path after a successful mutation. Use a single insert with multiple value rows when a fixture needs several records.
+Do not assume `dev` is the right directory. Replace it with `userdata` when the server was started without a dev URL. If `sqlite3` is unavailable, use the app's CLI and APIs instead of adding an ad hoc database dependency.
 
 ## Seed projection data carefully
 
@@ -51,8 +41,8 @@ The web UI primarily reads these projection tables:
 
 Inspect `PRAGMA table_info(<table>)` and the current migrations under `apps/server/src/persistence/Migrations/` before constructing inserts. Keep identifiers unique, timestamps as ISO strings, JSON columns valid, and related project/thread/turn IDs consistent.
 
-For a substantial current example, inspect `seedDatabase` in `scripts/mobile-showcase-environment.ts`. Adapt its column set to the target database instead of assuming copied SQL remains current.
+No mobile showcase fixture script is installed in this checkout. Derive any separately reviewed fixture from the target database schema and current migrations, not an unavailable example. Stop the server and back up the isolated database before mutation; no helper provides these safeguards automatically.
 
-Direct projection writes are appropriate for ephemeral visual states, edge-case counts, long titles, activity lists, and similar UI fixtures. They do not create a coherent orchestration event history. Do not modify `orchestration_events` unless the test specifically exercises projector internals, and do not use direct projection writes to claim backend business behavior works.
+Direct projection writes may be appropriate for ephemeral visual states, edge-case counts, long titles, activity lists, and similar UI fixtures, but this checkout provides no supported fixture helper. They do not create a coherent orchestration event history. Do not modify `orchestration_events` unless the test specifically exercises projector internals, and do not use direct projection writes to claim backend business behavior works.
 
 Use the app's commands or APIs for behavior tests. Use `node apps/server/src/bin.ts auth ...` for auth state rather than editing `auth_pairing_links` or `auth_sessions`.

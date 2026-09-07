@@ -649,6 +649,33 @@ describe("resolveThreadStatusPill", () => {
     },
   };
 
+  it("does not mark an idle parent when a child finishes after its last visit", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          session: null,
+          latestChildNotificationAt: "2026-03-09T10:05:00.000Z",
+        },
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toBeNull();
+  });
+
+  it("preserves the parent's own unread completion after a child update", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          session: null,
+          latestTurn: makeLatestTurn(),
+          latestChildNotificationAt: "2026-03-09T10:06:00.000Z",
+        },
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+      }),
+    ).toMatchObject({ label: "Completed" });
+  });
+
   it("shows working for a running virtual background agent", () => {
     expect(
       resolveThreadStatusPill({
@@ -1042,43 +1069,6 @@ describe("resolveProjectStatusIndicator", () => {
       ]),
     ).toMatchObject({ label: "Plan Ready", dotClass: "bg-violet-500" });
   });
-
-  it.each([
-    ["Completed", "Child update"],
-    ["Child update", "Completed"],
-  ] as const)("prefers child updates over completed regardless of input order", (first, second) => {
-    const status = (label: "Completed" | "Child update") => ({
-      label,
-      colorClass: "text-sky-600",
-      dotClass: "bg-sky-500",
-      pulse: false,
-      presentation: "corner-badge" as const,
-    });
-
-    expect(resolveProjectStatusIndicator([status(first), status(second)])).toMatchObject({
-      label: "Child update",
-    });
-  });
-
-  it.each([
-    ["Plan Ready", "Child update"],
-    ["Child update", "Plan Ready"],
-  ] as const)(
-    "prefers plan-ready over child updates regardless of input order",
-    (first, second) => {
-      const status = (label: "Plan Ready" | "Child update") => ({
-        label,
-        colorClass: "text-violet-600",
-        dotClass: "bg-violet-500",
-        pulse: false,
-        presentation: "label" as const,
-      });
-
-      expect(resolveProjectStatusIndicator([status(first), status(second)])).toMatchObject({
-        label: "Plan Ready",
-      });
-    },
-  );
 });
 
 function makeProject(overrides: Partial<Project> = {}): Project {

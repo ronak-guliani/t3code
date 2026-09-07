@@ -310,6 +310,49 @@ function makeEvent<T extends OrchestrationEvent["type"]>(
 }
 
 describe("syncServerShellSnapshot", () => {
+  it("preserves auto-pull through hydration and explicit enable/disable events", () => {
+    const thread = makeThread();
+    const updatedAt = "2026-09-05T00:00:00.000Z";
+    let state = syncServerShellSnapshot(
+      makeState(thread),
+      {
+        snapshotSequence: 1,
+        projects: [
+          {
+            id: thread.projectId,
+            title: "Project",
+            workspaceRoot: "/tmp/project",
+            defaultModelSelection: null,
+            scripts: [],
+            autoPull: true,
+            createdAt: updatedAt,
+            updatedAt,
+          },
+        ],
+        threads: [],
+        updatedAt,
+      },
+      localEnvironmentId,
+    );
+    expect(localEnvironmentStateOf(state).projectById[thread.projectId]?.autoPull).toBe(true);
+    for (const [index, autoPull] of [false, true].entries()) {
+      state = applyOrchestrationEvent(
+        state,
+        makeEvent(
+          "project.meta-updated",
+          {
+            projectId: thread.projectId,
+            autoPull,
+            updatedAt,
+          },
+          { sequence: index + 2 },
+        ),
+        localEnvironmentId,
+      );
+      expect(localEnvironmentStateOf(state).projectById[thread.projectId]?.autoPull).toBe(autoPull);
+    }
+  });
+
   it("rebuilds shell indexes while retaining detail slices for threads still in the snapshot", () => {
     const createdAt = "2026-02-13T00:00:00.000Z";
     const updatedAt = "2026-02-13T00:03:00.000Z";

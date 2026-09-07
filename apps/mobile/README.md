@@ -15,14 +15,87 @@ The client RPC schema includes capability-dependent upstream methods without add
 handlers to the fork server. Older servers retain inline image uploads and socket snapshots;
 file uploads, usage, provider feedback, and other optional APIs require explicit capability support.
 
-The app uses **Direct Connect** with existing pairing/session authentication, preferably over
-Tailscale HTTPS for access across networks. Managed T3 Connect/Clerk, remote APNs/Live Activity
-push, telemetry export, and OTA updates are disabled in this build. Desktop production settings
-in the root environment cannot enable them. Local widgets/Live Activities remain included.
+The app supports **T3 Connect** account sign-in and **Direct Connect** pairing/session authentication.
+Connect uses the managed relay without requiring a domain or phone VPN. For Direct Connect across
+networks without a phone VPN, configure the fork's [owned Remote Access](../../docs/background-service.md#owned-remote-access-no-phone-vpn)
+and pair through its permanent HTTPS hostname. Tailscale HTTPS remains an alternative.
+Multiple clients can pair independently, and each client can save multiple host environments.
+Remote APNs/Live Activity push, telemetry export, and OTA updates remain disabled independently
+of Connect. Desktop production settings cannot enable them. Local widgets/Live Activities remain included.
 Configuring an owned Expo project does **not** turn OTA updates back on.
-The iOS binary excludes Clerk's unused native modules; hosted-auth native views are lazy-loaded
-behind the disabled cloud configuration. Android retains the installed SDK's strict native
-bindings, but cloud services remain disabled there too.
+Both native binaries include Clerk's auth modules; configured builds expose the existing native
+sign-in screen. Set `MOBILE_CONNECT_ENABLED=false` to hide Connect and keep Direct Connect only.
+
+## T3 Connect
+
+Mobile builds use the public Connect identifiers in the root `.env.example` by default.
+Setting any Connect key or framework alias in root `.env`, `.env.local`, or process/EAS environment
+variables disables fallback for the entire example Connect triplet. Partial custom
+configuration fails validation instead of inheriting production settings. Explicit sources retain
+that precedence order. To use another deployment, configure all three together:
+`T3CODE_CLERK_PUBLISHABLE_KEY`, `T3CODE_CLERK_JWT_TEMPLATE`, and `T3CODE_RELAY_URL`.
+The relay must be an HTTPS origin and trust the matching Clerk instance/JWT template.
+No Clerk secret key belongs in mobile configuration.
+
+1. On the host, run `t3 connect`, sign in, and accept background setup. No separately started
+   `t3 serve` process is needed. If one already uses this host's base directory, stop it first;
+   do not run two servers against the same data. Use the same `--base-dir` throughout to retain
+   the environment identity and account link. Run `t3 connect status` and wait for linked and online.
+2. Rebuild and install this mobile app. Existing Direct Connect-only binaries lack the iOS
+   auth module; restarting Metro or refreshing JavaScript is not sufficient.
+3. Open **Settings**, choose the account **Sign in** row, and sign into the same account used
+   on the host. The Connect onboarding sheet lists the account's environments.
+4. Select the host and connect. Existing Direct Connect environments remain available without
+   requiring account sign-in.
+
+The native Clerk plugin adds Sign in with Apple to the app entitlement. Device distribution needs
+an updated provisioning profile for this fork's bundle identifier.
+
+For the production Connect deployment, `.env.example` sets
+`MOBILE_CLERK_IOS_REDIRECT_URL=com.t3tools.t3code://callback`. The pinned Clerk Expo patch forwards
+this callback to the native SDK and registers its scheme as an additional iOS callback alias.
+The fork retains its own bundle identifier, primary URL scheme, signing team, and keychain service;
+it does not read the official app's stored credentials. This is an iOS-only override.
+
+When using another Clerk deployment, set that variable to its authorized custom-scheme callback
+or set it to an empty string to use the SDK's default `{bundleIdentifier}://callback`. Merely adding
+a URI locally does not authorize it on Clerk. Changing the native callback requires a new binary;
+use `pnpm ios:update` and install the resulting Preview build.
+
+## Nested chats
+
+Long-press a chat and choose **New subchat**, or use **Chat actions** in its header.
+The draft inherits the parent's provider instance, model options and checkout without
+copying conversation history. Choose a new worktree explicitly to isolate its workspace.
+Each parent has its own persisted subchat draft; offline queued creation and rejection
+recovery retain parentage, model options and checkout selection.
+If a rejected queued subchat's parent is unavailable, its content and settings are recovered
+to the project's new-chat draft without parentage. Review and send it explicitly; recovery
+never sends it automatically.
+
+Home and the iPad sidebar use compact, single-line rows in both list modes. Device, checkout
+and PR details stay inside the chat rather than repeating in the inbox. A related-chat count
+opens a focused, flat group view; active descendants never expand the inbox into a tree.
+The leading status indicator belongs to the chat itself. Activity and attention within its
+group appear on the related-chat control, including an unread marker for lifecycle updates.
+Viewing a parent acknowledges its direct child updates; opening the related group acknowledges
+activity throughout that group.
+The related view keeps the selected inbox mode's actions: V2 root chats retain settle, snooze
+and pin controls, while nested chats retain their root-only lifecycle restrictions.
+Search reveals matching descendants on collapsed shelves without indentation or unmatched
+siblings. Content search can show a matching excerpt. The selected iPad conversation remains
+directly reachable even when it belongs to a group. On iPhone, search lives below the header;
+filter, settings and compose actions no longer float over the list.
+
+**Go to parent chat** navigates up one level. **Decouple chat** makes the selected chat a root
+without changing its checkout. Archive includes active descendants and is blocked while that
+subtree has active work. Restore affects only the selected chat. Delete removes only the
+selected chat; surviving children become roots when their parent is absent.
+
+Provider background agents appear as display-only children. Opening one navigates to its
+parent; completed runs can be dismissed locally. Unlike web, mobile does not focus a specific
+agent work-log entry or provide hover previews and keyboard tree traversal.
+Pending unsent subchats remain in the existing Queued section until creation is acknowledged.
 
 ## Quickstart
 
@@ -40,8 +113,7 @@ The variants have independent native identities, widget IDs, app groups, and URL
 The development ID intentionally preserves this fork's existing dev installation; preview and
 production no longer use upstream identifiers. Pair each new installation normally. Do not copy
 the official app's credential storage, or change the server's environment ID to match a client.
-Existing fork Dev installations retain their storage; remove obsolete managed-Connect entries
-in that app and pair through Direct Connect. The authorized-client list uses the build's display
+Existing fork Dev installations retain their storage. The authorized-client list uses the build's display
 name, so Dev and Preview sessions are distinguishable.
 
 Use the root-pinned Node/pnpm toolchain and run `pnpm install --frozen-lockfile` at the repository
@@ -53,6 +125,30 @@ unknown variants fail rather than silently selecting a release identity.
 Local iOS commands check the active Xcode version before regenerating native projects.
 Use `DEVELOPER_DIR` to select a compatible installation without changing the machine-wide
 Xcode selection. The EAS profiles use Xcode 26.6, Node 24.18.0, and pnpm 11.10.0.
+
+## Update your iPhone without a cable
+
+From the repository root or `apps/mobile`, run:
+
+```bash
+pnpm ios:update
+```
+
+This builds the current source using the standalone ad hoc `preview` profile, waits for the
+cloud build, and prints an installation link and QR code. Scan the QR code with your iPhone,
+open the link, and confirm **Install**. It replaces **T3 Code RG Preview** using the same bundle
+identifier; do not delete the old app first if you want to keep its local data.
+
+No cable, local Xcode, Metro, or TestFlight is needed. The Mac and phone do not need to be on
+the same network. You need Internet access, an Expo account with access to this project, and
+your iPhone registered in the ad hoc profile (`ronniefone` is already registered). EAS may ask
+for Apple authentication when signing credentials need refreshing; enter it directly in your
+terminal, not in chat.
+
+The command creates a new cloud build and uses EAS build quota; it is not an instant JavaScript
+update. iOS requires installation confirmation, so the script cannot silently replace the app.
+OTA updates remain disabled. To reinstall an existing build without rebuilding, open that build's
+installation page in the Expo project dashboard on your phone.
 
 ## Development
 

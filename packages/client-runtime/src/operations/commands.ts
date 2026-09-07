@@ -35,6 +35,7 @@ export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
 export type UnarchiveThreadInput = CommandInput<"thread.unarchive">;
+export type DecoupleThreadInput = CommandInput<"thread.decouple">;
 export type SettleThreadInput = CommandInput<"thread.settle">;
 export type UnsettleThreadInput = CommandInput<"thread.unsettle">;
 export type SnoozeThreadInput = CommandInput<"thread.snooze">;
@@ -153,6 +154,16 @@ export const unarchiveThread: (input: UnarchiveThreadInput) => CommandEffect = E
   return yield* dispatch({
     ...input,
     type: "thread.unarchive",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const decoupleThread: (input: DecoupleThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.decoupleThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.decouple",
     commandId: yield* commandId(input),
   });
 });

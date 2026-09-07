@@ -1,6 +1,6 @@
 ---
 name: t3code-chat-control
-description: Controls T3 Code chats/threads through the t3 CLI: create, list, show, rename, archive, fork, send prompts, stream events, interrupt, stop, and queue turns. Use when the user asks to create/manage T3 Code chats or threads, send work to another thread, read chat state, or control an active turn.
+description: Controls T3 Code chat lifecycle through the t3 CLI: create, list, show, rename, archive, fork, send prompts, interrupt, stop, or queue turns. Use when the user asks to operate a chat or active turn; use t3code-thread-review for read-only history and t3code-self-orchestration for delegation.
 ---
 
 # T3 Code Chat Control

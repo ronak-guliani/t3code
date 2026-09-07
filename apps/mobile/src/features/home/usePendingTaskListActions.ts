@@ -1,4 +1,4 @@
-import { useNavigation } from "@react-navigation/native";
+import { useAppNavigation } from "../../lib/use-app-navigation";
 import { useCallback } from "react";
 import { Alert } from "react-native";
 
@@ -10,7 +10,7 @@ export function usePendingTaskListActions(): {
   readonly openPendingTask: (pendingTask: PendingNewTask) => void;
   readonly confirmDeletePendingTask: (pendingTask: PendingNewTask) => void;
 } {
-  const navigation = useNavigation();
+  const navigation = useAppNavigation();
 
   const openPendingTask = useCallback(
     (pendingTask: PendingNewTask) => {

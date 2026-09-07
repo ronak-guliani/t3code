@@ -1,27 +1,20 @@
 ---
 name: write-a-skill
-description: Create new agent skills with proper structure, progressive disclosure, and bundled resources. Use when user wants to create, write, or build a new skill.
+description: Create or update an agent skill when the user explicitly asks to author, install, or revise a skill, its trigger, workflow, or bundled resources.
 ---
 
 # Writing Skills
 
 ## Process
 
-1. **Gather requirements** - ask user about:
-   - What task/domain does the skill cover?
-   - What specific use cases should it handle?
-   - Does it need executable scripts or just instructions?
-   - Any reference materials to include?
+1. **Gather requirements** - infer the task and ask only about unresolved consequential choices: supported trigger phrases, authorized side effects, required tools, and expected delivery.
 
 2. **Draft the skill** - create:
    - SKILL.md with concise instructions
-   - Additional reference files if content exceeds 500 lines
+   - Additional reference files when content is detailed, variant-specific, or useful only for selected tasks
    - Utility scripts if deterministic operations needed
 
-3. **Review with user** - present draft and ask:
-   - Does this cover your use cases?
-   - Anything missing or unclear?
-   - Should any section be more/less detailed?
+3. **Review** - check the trigger, references, relative links, permissions, and completion criteria. Ask for review when the user requested an interactive design process or when a consequential choice remains unresolved.
 
 ## Skill Structure
 
@@ -54,7 +47,7 @@ description: Brief description of capability. Use when [specific triggers].
 
 ## Advanced features
 
-[Link to separate files: See [REFERENCE.md](REFERENCE.md)]
+[Link to a task-specific reference file when one is needed]
 ```
 
 ## Description Requirements
@@ -99,18 +92,13 @@ Scripts save tokens and improve reliability vs generated code.
 
 ## When to Split Files
 
-Split into separate files when:
-
-- SKILL.md exceeds 100 lines
-- Content has distinct domains (finance vs sales schemas)
-- Advanced features are rarely needed
+Split into separate files when content has distinct domains, variants, examples, schemas, or advanced details that are not needed for every invocation. Keep the root focused on routing and the core workflow; choose the split based on task context rather than an arbitrary line count.
 
 ## Review Checklist
 
 After drafting, verify:
 
 - [ ] Description includes triggers ("Use when...")
-- [ ] SKILL.md under 100 lines
 - [ ] No time-sensitive info
 - [ ] Consistent terminology
 - [ ] Concrete examples included

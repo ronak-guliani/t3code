@@ -11,6 +11,7 @@ export interface HostedBrowserWebviewWrapperStyle {
   readonly width: number;
   readonly height: number;
   readonly zIndex: number;
+  readonly opacity: 0 | 1;
   readonly pointerEvents: "auto" | "none";
   readonly borderRadius?: number;
   readonly visibility?: "visible";
@@ -44,6 +45,7 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
       width: rect.width,
       height: rect.height,
       zIndex,
+      opacity: 1,
       pointerEvents: "auto",
       ...(cornerRadius > 0 ? { borderRadius: cornerRadius } : {}),
     };
@@ -56,6 +58,9 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
       width: hiddenSize.width,
       height: hiddenSize.height,
       zIndex: -1,
+      // A negative layer still shows through native-vibrancy sidebars.
+      // Opacity hides the host without hiding the guest from native capture.
+      opacity: 0,
       pointerEvents: "none",
       visibility: "visible",
     };
@@ -67,6 +72,7 @@ export function resolveHostedBrowserWebviewWrapperStyle(input: {
     width: hiddenSize.width,
     height: hiddenSize.height,
     zIndex: -1,
+    opacity: 0,
     pointerEvents: "none",
     // Keep the guest CSS-visible even while physically offscreen. Electron
     // webviews can keep metadata/status alive under `visibility:hidden` while

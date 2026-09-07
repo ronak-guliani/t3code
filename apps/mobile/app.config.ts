@@ -1,6 +1,8 @@
 import type { ExpoConfig } from "expo/config";
 
-import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { loadRepoEnv, resolvePublicConfig } from "../../scripts/lib/public-config.ts";
+// Expo evaluates this config as CommonJS; shared package exports are ESM-only.
+import { normalizeSecureRelayUrl } from "../../packages/shared/src/relayUrl.ts";
 
 type AppVariant = "development" | "preview" | "production";
 type BuildEnvironment = Readonly<Record<string, string | undefined>>;
@@ -62,9 +64,42 @@ function resolveAppVariant(value: string | undefined): AppVariant {
   }
 }
 
+function resolveIosAuthRedirect(value: string | undefined) {
+  const url = value?.trim();
+  if (!url) return undefined;
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\/callback$/.exec(url)?.[1];
+  if (!scheme || scheme === "http" || scheme === "https") {
+    throw new Error(
+      "MOBILE_CLERK_IOS_REDIRECT_URL must be a custom-scheme URL such as myapp://callback.",
+    );
+  }
+  return { url, scheme };
+}
+
 export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
   const appVariant = resolveAppVariant(env.APP_VARIANT);
   const variant = VARIANT_CONFIG[appVariant];
+  const connectFlag = env.MOBILE_CONNECT_ENABLED?.trim() ?? "true";
+  if (connectFlag !== "true" && connectFlag !== "false") {
+    throw new Error("MOBILE_CONNECT_ENABLED must be true or false.");
+  }
+  const connectEnabled = connectFlag === "true";
+  const iosAuthRedirect = connectEnabled
+    ? resolveIosAuthRedirect(env.MOBILE_CLERK_IOS_REDIRECT_URL)
+    : undefined;
+  const publicConfig = resolvePublicConfig(env);
+  const relayUrl = normalizeSecureRelayUrl(publicConfig.relayUrl ?? "");
+  if (
+    connectEnabled &&
+    (!publicConfig.clerkPublishableKey || !publicConfig.clerkJwtTemplate || !relayUrl)
+  ) {
+    throw new Error(
+      "T3 Connect requires T3CODE_CLERK_PUBLISHABLE_KEY, T3CODE_CLERK_JWT_TEMPLATE, and a secure T3CODE_RELAY_URL. Set MOBILE_CONNECT_ENABLED=false for a Direct Connect-only build.",
+    );
+  }
+  const authPlugins: NonNullable<ExpoConfig["plugins"]> = connectEnabled
+    ? [["@clerk/expo", { theme: "./clerk-theme.json" }]]
+    : [];
   const ownerOverride = env.MOBILE_EAS_OWNER?.trim();
   const projectIdOverride = env.MOBILE_EAS_PROJECT_ID?.trim();
 
@@ -113,6 +148,22 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
       appleTeamId,
       buildNumber: "1",
       infoPlist: {
+        ...(iosAuthRedirect
+          ? {
+              ClerkRedirectUrl: iosAuthRedirect.url,
+              CFBundleURLTypes: [
+                {
+                  CFBundleURLSchemes: [
+                    ...new Set([
+                      variant.scheme,
+                      variant.iosBundleIdentifier,
+                      iosAuthRedirect.scheme,
+                    ]),
+                  ],
+                },
+              ],
+            }
+          : {}),
         NSAppTransportSecurity: {
           NSAllowsArbitraryLoads: true,
         },
@@ -140,6 +191,7 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
     plugins: [
       // Expo mod actions execute in reverse registration order; strip APNs after other plugins.
       "./plugins/withLocalOnlyNotifications.cjs",
+      ...authPlugins,
       ["expo-dev-client", { addGeneratedScheme: appVariant === "development" }],
       ["expo-notifications", { enableBackgroundRemoteNotifications: false }],
       "expo-asset",
@@ -275,13 +327,14 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
     ],
     extra: {
       appVariant,
-      // This build uses Direct Connect. Desktop release env must not opt mobile into hosted services.
+      // Connect does not opt this independently signed app into hosted push or telemetry.
+      agentAwarenessPushEnabled: false,
       relay: {
-        url: null,
+        url: connectEnabled ? relayUrl : null,
       },
       clerk: {
-        publishableKey: null,
-        jwtTemplate: null,
+        publishableKey: connectEnabled ? publicConfig.clerkPublishableKey : null,
+        jwtTemplate: connectEnabled ? publicConfig.clerkJwtTemplate : null,
       },
       observability: {
         tracesUrl: null,
@@ -293,4 +346,4 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
   };
 }
 
-export default makeMobileConfig(loadRepoEnv());
+export default makeMobileConfig(loadRepoEnv({ includeExample: true }));

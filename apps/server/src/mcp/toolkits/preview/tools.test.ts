@@ -1,7 +1,8 @@
 import { expect, it } from "@effect/vitest";
+import { Schema } from "effect";
 import { Tool } from "effect/unstable/ai";
 
-import { PreviewToolkit } from "./tools.ts";
+import { PreviewTabsTool, PreviewToolkit } from "./tools.ts";
 
 const schemaHasDescription = (schema: unknown): boolean => {
   if (!schema || typeof schema !== "object") return false;
@@ -43,15 +44,29 @@ it("exports provider-compatible object schemas with described parameters", () =>
     if (tool.name === "preview_navigate") {
       expect(schemaHasMultipleAllOfDescriptions(schema)).toBe(false);
     }
-    expect(
-      schema.properties?.tabId,
-      `${tool.name} must allow an explicit collaborative browser tab target`,
-    ).toBeDefined();
+    if (tool.name !== "preview_tabs") {
+      expect(
+        schema.properties?.tabId,
+        `${tool.name} must allow an explicit collaborative browser tab target`,
+      ).toBeDefined();
+    }
     for (const [field, fieldSchema] of Object.entries(schema.properties ?? {})) {
       expect(
         schemaHasDescription(fieldSchema),
         `${tool.name}.${field} should explain what data the agent must pass`,
       ).toBe(true);
     }
+  }
+});
+
+it("exports and decodes list-tabs parameters as an empty object", () => {
+  const schema = Tool.getJsonSchema(PreviewTabsTool);
+  expect(schema).toMatchObject({ type: "object", additionalProperties: false });
+  expect(schema.properties ?? {}).toEqual({});
+
+  const decode = Schema.decodeUnknownSync(PreviewTabsTool.parametersSchema);
+  expect(decode({})).toEqual({});
+  for (const input of [[], null, "tabs", 1, true, { tabId: "tab-1" }]) {
+    expect(() => decode(input)).toThrow();
   }
 });

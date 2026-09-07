@@ -12,11 +12,12 @@ import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
 
 import { isMacPlatform } from "../lib/utils";
 import { isThreadActivelyWorking } from "../session-logic";
+import { selectVisibleSidebarThreads, sidebarThreadKey } from "../sidebarThreadTree";
 import {
-  normalizeParentThreadKeys,
-  selectVisibleSidebarThreads,
-  sidebarThreadKey,
-} from "../sidebarThreadTree";
+  buildThreadTree,
+  flattenThreadTree,
+  type ThreadTreeNode,
+} from "@t3tools/client-runtime/state/thread-hierarchy";
 import type { SidebarThreadSummary } from "../types";
 
 export type ThreadLifecycleSupport = {
@@ -119,16 +120,7 @@ export interface SidebarV2ThreadGroup {
   readonly rows: readonly SidebarV2ThreadRow[];
 }
 
-interface SidebarV2ThreadNode {
-  readonly thread: SidebarThreadSummary;
-  readonly threadKey: string;
-  readonly children: SidebarV2ThreadNode[];
-  mostRecentThread: SidebarThreadSummary;
-  readonly status: SidebarV2Status;
-  rolledUpStatus: SidebarV2Status;
-  descendantCount: number;
-  archiveBlocked: boolean;
-}
+type SidebarV2ThreadNode = ThreadTreeNode<SidebarThreadSummary, SidebarV2Status>;
 
 /** Matches the client archive guard: a live agent run or an in-flight session turn. */
 export function isSidebarV2ArchiveBlockedThread(
@@ -170,123 +162,17 @@ function buildThreadNodes(
   threads: readonly SidebarThreadSummary[],
   pendingThreadKeys: ReadonlySet<string>,
 ): SidebarV2ThreadNode[] {
-  const parentByKey = normalizeParentThreadKeys(threads);
-  // Sorted once up front so roots and children land in order as they are
-  // appended, avoiding a recursive sort pass per subtree.
-  const sortedThreads = threads.toSorted(sortByRecent);
-  const nodesByKey = new Map<string, SidebarV2ThreadNode>(
-    sortedThreads.map((thread) => {
-      const threadKey = sidebarThreadKey(thread);
-      return [
-        threadKey,
-        {
-          thread,
-          threadKey,
-          children: [],
-          mostRecentThread: thread,
-          status: resolveSidebarV2Status({
-            ...thread,
-            hasPendingTurn: pendingThreadKeys.has(threadKey),
-          }),
-          rolledUpStatus: "ready",
-          descendantCount: 0,
-          archiveBlocked: false,
-        },
-      ];
-    }),
-  );
-
-  const roots: SidebarV2ThreadNode[] = [];
-  for (const thread of sortedThreads) {
-    const threadKey = sidebarThreadKey(thread);
-    const node = nodesByKey.get(threadKey);
-    if (!node) continue;
-    const parentKey = parentByKey.get(threadKey);
-    const parent = parentKey === undefined ? undefined : nodesByKey.get(parentKey);
-    if (parent) {
-      parent.children.push(node);
-    } else {
-      roots.push(node);
-    }
-  }
-
-  resolveNodeRollups(roots);
-  return roots;
-}
-
-function resolveNodeRollups(nodes: readonly SidebarV2ThreadNode[]): void {
-  for (const node of nodes) {
-    resolveNodeRollups(node.children);
-    node.mostRecentThread = node.children.reduce(
-      (mostRecentThread, child) =>
-        sortByRecent(child.mostRecentThread, mostRecentThread) < 0
-          ? child.mostRecentThread
-          : mostRecentThread,
-      node.thread,
-    );
-    node.descendantCount = node.children.reduce(
-      (count, child) => count + 1 + child.descendantCount,
-      0,
-    );
-    node.rolledUpStatus = rollUpSidebarV2Status([
-      node.status,
-      ...node.children.map((child) => child.rolledUpStatus),
-    ]);
-    node.archiveBlocked =
-      isSidebarV2ArchiveBlockedThread(node.thread) ||
-      node.children.some((child) => child.archiveBlocked);
-  }
-}
-
-/**
- * Flattens a subtree into rows. Expansion mirrors sidebar v1: an explicit
- * override wins, the default is "expanded while the subtree has live work",
- * and a routed descendant always stays visible so the open thread can never be
- * collapsed out of view.
- */
-function flattenGroupRows(input: {
-  readonly nodes: readonly SidebarV2ThreadNode[];
-  readonly depth: number;
-  readonly activeThreadKey: string | undefined;
-  readonly expandedOverrideByThreadKey: ReadonlyMap<string, boolean>;
-  readonly output: SidebarV2ThreadRow[];
-}): boolean {
-  let containsActiveThread = false;
-  for (const node of input.nodes) {
-    const hasChildren = node.children.length > 0;
-    const childRows: SidebarV2ThreadRow[] = [];
-    const containsActiveDescendant = hasChildren
-      ? flattenGroupRows({
-          nodes: node.children,
-          depth: input.depth + 1,
-          activeThreadKey: input.activeThreadKey,
-          expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
-          output: childRows,
-        })
-      : false;
-    const override = input.expandedOverrideByThreadKey.get(node.threadKey);
-    const hasActiveDescendant =
-      containsActiveDescendant ||
-      node.children.some((child) => isSidebarV2ActiveStatus(child.rolledUpStatus));
-    const isExpanded =
-      hasChildren &&
-      (hasActiveDescendant || (override ?? isSidebarV2ActiveStatus(node.rolledUpStatus)));
-    input.output.push({
-      thread: node.thread,
-      threadKey: node.threadKey,
-      depth: input.depth,
-      hasChildren,
-      isExpanded,
-      childCount: node.descendantCount,
-      displayStatus: node.rolledUpStatus,
-      archiveBlocked: node.archiveBlocked,
-    });
-    if (isExpanded) {
-      input.output.push(...childRows);
-    }
-    containsActiveThread ||= node.threadKey === input.activeThreadKey || containsActiveDescendant;
-  }
-  return containsActiveThread;
+  return buildThreadTree({
+    threads,
+    compare: sortByRecent,
+    resolveStatus: (thread) =>
+      resolveSidebarV2Status({
+        ...thread,
+        hasPendingTurn: pendingThreadKeys.has(sidebarThreadKey(thread)),
+      }),
+    rollUpStatus: rollUpSidebarV2Status,
+    isArchiveBlocked: isSidebarV2ArchiveBlockedThread,
+  });
 }
 
 function toThreadGroup(
@@ -296,13 +182,11 @@ function toThreadGroup(
     readonly expandedOverrideByThreadKey: ReadonlyMap<string, boolean>;
   },
 ): SidebarV2ThreadGroup {
-  const rows: SidebarV2ThreadRow[] = [];
-  flattenGroupRows({
+  const rows = flattenThreadTree({
     nodes: [node],
-    depth: 0,
     activeThreadKey: input.activeThreadKey,
     expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
-    output: rows,
+    isActiveStatus: isSidebarV2ActiveStatus,
   });
   return { root: node.thread, rootKey: node.threadKey, rows };
 }
@@ -458,20 +342,19 @@ export function resolveSidebarV2Status(thread: SidebarV2StatusInput): SidebarV2S
 }
 
 export interface SidebarV2StatusLabel {
-  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done" | "Child update";
+  readonly label: "Working" | "Approval" | "Input" | "Failed" | "Done";
   readonly className: string;
   readonly showElapsed: boolean;
 }
 
 /**
  * The right-hand label a card row shows at rest. A `ready` thread only earns
- * one while its completion or child update is unseen, so a row the user
+ * one while its own completion is unseen, so a row the user
  * already read falls back to its relative timestamp.
  */
 export function resolveSidebarV2StatusLabel(input: {
   readonly status: SidebarV2Status;
   readonly unseenCompletion: boolean;
-  readonly unseenChildNotification: boolean;
 }): SidebarV2StatusLabel | null {
   switch (input.status) {
     case "working":
@@ -499,19 +382,13 @@ export function resolveSidebarV2StatusLabel(input: {
         showElapsed: false,
       };
     case "ready":
-      return input.unseenChildNotification
+      return input.unseenCompletion
         ? {
-            label: "Child update",
-            className: "text-sky-600 dark:text-sky-400",
+            label: "Done",
+            className: "text-emerald-700 dark:text-emerald-300",
             showElapsed: false,
           }
-        : input.unseenCompletion
-          ? {
-              label: "Done",
-              className: "text-emerald-700 dark:text-emerald-300",
-              showElapsed: false,
-            }
-          : null;
+        : null;
   }
 }
 

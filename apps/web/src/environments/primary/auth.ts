@@ -396,7 +396,7 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
   bootstrapPromise = nextPromise;
   return nextPromise
     .then((result) => {
-      if (result.status === "authenticated") {
+      if (bootstrapPromise === nextPromise && result.status === "authenticated") {
         resolvedAuthenticatedGateState = result;
       }
       return result;

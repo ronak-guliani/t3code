@@ -45,6 +45,9 @@ export interface Preferences {
   /** Fresh keys reset both shelves to collapsed when users update. */
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
+  readonly threadExpandedOverrides?: Readonly<Record<string, boolean>>;
+  readonly dismissedAgentRunKeys?: readonly string[];
+  readonly threadChildNotificationReadAt?: Readonly<Record<string, string>>;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -104,8 +107,38 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     planModeEnabled?: boolean;
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
+    threadExpandedOverrides?: Readonly<Record<string, boolean>>;
+    dismissedAgentRunKeys?: readonly string[];
+    threadChildNotificationReadAt?: Readonly<Record<string, string>>;
   } = {};
 
+  if (
+    parsed.threadChildNotificationReadAt &&
+    typeof parsed.threadChildNotificationReadAt === "object" &&
+    !Array.isArray(parsed.threadChildNotificationReadAt)
+  ) {
+    preferences.threadChildNotificationReadAt = Object.fromEntries(
+      Object.entries(parsed.threadChildNotificationReadAt).filter(
+        ([, value]) => typeof value === "string" && Number.isFinite(Date.parse(value)),
+      ),
+    );
+  }
+  if (Array.isArray(parsed.dismissedAgentRunKeys)) {
+    preferences.dismissedAgentRunKeys = parsed.dismissedAgentRunKeys.filter(
+      (key) => typeof key === "string",
+    );
+  }
+  if (
+    parsed.threadExpandedOverrides &&
+    typeof parsed.threadExpandedOverrides === "object" &&
+    !Array.isArray(parsed.threadExpandedOverrides)
+  ) {
+    preferences.threadExpandedOverrides = Object.fromEntries(
+      Object.entries(parsed.threadExpandedOverrides).filter(
+        ([, value]) => typeof value === "boolean",
+      ),
+    );
+  }
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
   }

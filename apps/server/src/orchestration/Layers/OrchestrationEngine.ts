@@ -37,6 +37,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { WorktreeCleanupJobRepository } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { WorktreeCleanupJobRepositoryLive } from "../../persistence/Layers/WorktreeCleanupJobs.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { ThreadUrlBuilder } from "../../threadUrl.ts";
 import {
   OrchestrationCommandInvariantError,
@@ -172,6 +173,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
   const threadUrls = yield* Effect.serviceOption(ThreadUrlBuilder);
+  const coordinator = yield* CheckoutCoordinator;
 
   let commandReadModel = createEmptyReadModel(new Date().toISOString());
 
@@ -488,7 +490,21 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         }),
       ),
     );
-    return commandWorktreePath(envelope.command) !== null ? withWorktreeLock(process) : process;
+    const command = envelope.command;
+    const worktreeProcess =
+      commandWorktreePath(command) !== null ? withWorktreeLock(process) : process;
+    if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.dispatch") {
+      return worktreeProcess;
+    }
+    const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+    const bootstrap = command.type === "thread.turn.start" ? command.bootstrap : undefined;
+    const projectId = thread?.projectId ?? bootstrap?.createThread?.projectId;
+    const project = readModel.projects.find((entry) => entry.id === projectId);
+    const cwd =
+      thread?.worktreePath ?? bootstrap?.createThread?.worktreePath ?? project?.workspaceRoot;
+    // This is the command worker itself, not dispatch(). Release after the
+    // committed pending state is visible, before the provider starts its turn.
+    return cwd ? coordinator.withCheckout(cwd, worktreeProcess) : worktreeProcess;
   };
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
@@ -616,4 +632,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-).pipe(Layer.provideMerge(WorktreeCleanupJobRepositoryLive));
+).pipe(
+  Layer.provideMerge(WorktreeCleanupJobRepositoryLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

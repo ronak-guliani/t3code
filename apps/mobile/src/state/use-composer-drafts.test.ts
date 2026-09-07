@@ -172,6 +172,7 @@ import {
   restoreComposerDraftSnapshotState,
   restoreCloudComposerDrafts,
   setComposerDraftText,
+  updateComposerDraftSettings,
   setComposerDraftAttachmentUpload,
   waitForComposerDraftsLoaded,
   setStickyComposerModelSelection,
@@ -1527,17 +1528,45 @@ describe("mobile composer drafts", () => {
         {
           [`${environmentId}:thread-cloud`]: DRAFT,
           [`new-task:${environmentId}:project-cloud`]: DRAFT,
+          [`subchat:${environmentId}:parent`]: DRAFT,
           [`${retainedEnvironmentId}:thread-local`]: DRAFT,
           [`new-task:${retainedEnvironmentId}:project-local`]: DRAFT,
+          [`subchat:${retainedEnvironmentId}:parent`]: DRAFT,
         },
         environmentId,
       ),
     ).toEqual({
       [`${retainedEnvironmentId}:thread-local`]: DRAFT,
       [`new-task:${retainedEnvironmentId}:project-local`]: DRAFT,
+      [`subchat:${retainedEnvironmentId}:parent`]: DRAFT,
     });
   });
 
+  it("persists subchat settings independently from the parent and project drafts", async () => {
+    const key = "subchat:environment-1:parent";
+    const settings = {
+      parentThreadId: ThreadId.make("parent"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("copilot"),
+        model: "gpt-6-astra",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+      workspaceSelection: {
+        mode: "local" as const,
+        branch: "feature",
+        worktreePath: "/repo-child",
+      },
+    };
+    setComposerDraftText("new-task:environment-1:project", "keep project draft");
+    setComposerDraftText("environment-1:parent", "keep parent draft");
+    updateComposerDraftSettings(key, settings);
+    setComposerDraftText(key, "child instructions");
+    await flushComposerDrafts();
+    const decoded = decodePersistedComposerDrafts(JSON.parse(composerDraftFileMocks.getDocument()));
+    expect(decoded[key]).toMatchObject({ ...settings, text: "child instructions" });
+    expect(decoded["environment-1:parent"]?.text).toBe("keep parent draft");
+    expect(decoded["new-task:environment-1:project"]?.text).toBe("keep project draft");
+  });
   it("lands a still-debounced draft write when flushed", async () => {
     const draftKey = "environment-1:thread-1";
     setComposerDraftText(draftKey, "typed right before the restart");

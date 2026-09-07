@@ -657,12 +657,7 @@ export const PreviewAutomationTabsResult = Schema.Struct({
 });
 export type PreviewAutomationTabsResult = typeof PreviewAutomationTabsResult.Type;
 
-export const PreviewAutomationListTabsInput = Schema.Struct({
-  tabId: Schema.optional(PreviewTabId).annotate({
-    description:
-      "Optional collaborative browser tab identifier to keep tool inputs provider-compatible; listing returns all tabs.",
-  }),
-}).annotate({
+export const PreviewAutomationListTabsInput = Schema.Record(Schema.String, Schema.Never).annotate({
   description:
     "Lists collaborative browser tabs for the current thread. Use preview_open({ tabId }) or pass tabId on other tools to target one.",
 });

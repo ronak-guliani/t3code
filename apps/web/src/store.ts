@@ -301,6 +301,7 @@ function mapProject(
     environmentId,
     name: project.title,
     cwd: project.workspaceRoot,
+    autoPull: project.autoPull ?? false,
     repositoryIdentity: project.repositoryIdentity ?? null,
     defaultModelSelection: project.defaultModelSelection
       ? normalizeModelSelection(project.defaultModelSelection)
@@ -1874,6 +1875,7 @@ function applyEnvironmentOrchestrationEvent(
       }
       const nextProject: Project = {
         ...project,
+        ...(event.payload.autoPull !== undefined ? { autoPull: event.payload.autoPull } : {}),
         ...(event.payload.title !== undefined ? { name: event.payload.title } : {}),
         ...(event.payload.workspaceRoot !== undefined ? { cwd: event.payload.workspaceRoot } : {}),
         ...(event.payload.repositoryIdentity !== undefined

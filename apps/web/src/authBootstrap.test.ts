@@ -1,6 +1,14 @@
 import type { DesktopBridge } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  __resetServerAuthBootstrapForTests,
+  createServerPairingCredential,
+  resolveInitialServerAuthGateState,
+  submitServerAuthCredential,
+  takePairingTokenFromUrl,
+} from "./environments/primary/auth";
+
 function jsonResponse(body: unknown, init?: ResponseInit) {
   return new Response(JSON.stringify(body), {
     headers: {
@@ -39,6 +47,14 @@ function sessionResponse(body: unknown, init?: ResponseInit) {
   return jsonResponse(body, init);
 }
 
+function deferredResponse() {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe("resolveInitialServerAuthGateState", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -46,9 +62,9 @@ describe("resolveInitialServerAuthGateState", () => {
     installTestBrowser("http://localhost/");
   });
 
-  afterEach(async () => {
-    const { __resetServerAuthBootstrapForTests } = await import("./environments/primary");
+  afterEach(() => {
     __resetServerAuthBootstrapForTests();
+    vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -100,9 +116,9 @@ describe("resolveInitialServerAuthGateState", () => {
       }),
     } as DesktopBridge;
 
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
-    await Promise.all([resolveInitialServerAuthGateState(), resolveInitialServerAuthGateState()]);
+    await expect(
+      Promise.all([resolveInitialServerAuthGateState(), resolveInitialServerAuthGateState()]),
+    ).resolves.toEqual([{ status: "authenticated" }, { status: "authenticated" }]);
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:3773/api/auth/session");
@@ -125,8 +141,6 @@ describe("resolveInitialServerAuthGateState", () => {
     vi.stubGlobal("fetch", fetchMock);
     vi.stubEnv("VITE_HTTP_URL", "https://remote.example.com");
     vi.stubEnv("VITE_WS_URL", "wss://remote.example.com");
-
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
 
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
@@ -157,8 +171,6 @@ describe("resolveInitialServerAuthGateState", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     installTestBrowser("http://localhost:5735/");
-
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
 
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
@@ -199,8 +211,6 @@ describe("resolveInitialServerAuthGateState", () => {
       }),
     } as DesktopBridge;
 
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
       auth: {
@@ -229,8 +239,6 @@ describe("resolveInitialServerAuthGateState", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
 
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
@@ -263,8 +271,6 @@ describe("resolveInitialServerAuthGateState", () => {
       );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
     const gateStatePromise = resolveInitialServerAuthGateState();
     await vi.advanceTimersByTimeAsync(2_000);
 
@@ -282,7 +288,6 @@ describe("resolveInitialServerAuthGateState", () => {
 
   it("takes a pairing token from the location hash and strips it immediately", async () => {
     const testWindow = installTestBrowser("http://localhost/#token=pairing-token");
-    const { takePairingTokenFromUrl } = await import("./environments/primary");
 
     expect(takePairingTokenFromUrl()).toBe("pairing-token");
     expect(testWindow.location.hash).toBe("");
@@ -291,7 +296,6 @@ describe("resolveInitialServerAuthGateState", () => {
 
   it("accepts query-string pairing tokens as a backward-compatible fallback", async () => {
     const testWindow = installTestBrowser("http://localhost/?token=pairing-token");
-    const { takePairingTokenFromUrl } = await import("./environments/primary");
 
     expect(takePairingTokenFromUrl()).toBe("pairing-token");
     expect(testWindow.location.searchParams.get("token")).toBeNull();
@@ -334,9 +338,6 @@ describe("resolveInitialServerAuthGateState", () => {
     vi.stubGlobal("fetch", fetchMock);
     installTestBrowser("http://localhost/");
 
-    const { resolveInitialServerAuthGateState, submitServerAuthCredential } =
-      await import("./environments/primary");
-
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
       auth: {
@@ -365,8 +366,6 @@ describe("resolveInitialServerAuthGateState", () => {
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
-
-    const { submitServerAuthCredential } = await import("./environments/primary");
 
     await expect(submitServerAuthCredential("bad-token")).rejects.toThrow(
       "Invalid pairing token. Check the token and try again.",
@@ -439,8 +438,6 @@ describe("resolveInitialServerAuthGateState", () => {
       }),
     } as DesktopBridge;
 
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
     const gateStatePromise = resolveInitialServerAuthGateState();
     await vi.advanceTimersByTimeAsync(100);
 
@@ -481,8 +478,6 @@ describe("resolveInitialServerAuthGateState", () => {
       );
     vi.stubGlobal("fetch", fetchMock);
 
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "authenticated",
     });
@@ -490,6 +485,60 @@ describe("resolveInitialServerAuthGateState", () => {
       status: "authenticated",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache an authenticated result from before a reset", async () => {
+    const previousResponse = deferredResponse();
+    const auth = {
+      policy: "loopback-browser",
+      bootstrapMethods: ["one-time-token"],
+      sessionMethods: ["browser-session-cookie"],
+      sessionCookieName: "t3_session",
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(previousResponse.promise)
+      .mockResolvedValueOnce(sessionResponse({ authenticated: false, auth }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousBootstrap = resolveInitialServerAuthGateState();
+    __resetServerAuthBootstrapForTests();
+    previousResponse.resolve(sessionResponse({ authenticated: true, auth }));
+    await expect(previousBootstrap).resolves.toEqual({ status: "authenticated" });
+
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a newer bootstrap in flight when a pre-reset attempt completes", async () => {
+    const previousResponse = deferredResponse();
+    const currentResponse = deferredResponse();
+    const auth = {
+      policy: "loopback-browser",
+      bootstrapMethods: ["one-time-token"],
+      sessionMethods: ["browser-session-cookie"],
+      sessionCookieName: "t3_session",
+    };
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockReturnValueOnce(previousResponse.promise)
+      .mockReturnValueOnce(currentResponse.promise);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const previousBootstrap = resolveInitialServerAuthGateState();
+    __resetServerAuthBootstrapForTests();
+    const currentBootstrap = resolveInitialServerAuthGateState();
+    previousResponse.resolve(sessionResponse({ authenticated: true, auth }));
+    await expect(previousBootstrap).resolves.toEqual({ status: "authenticated" });
+
+    const sharedBootstrap = resolveInitialServerAuthGateState();
+    currentResponse.resolve(sessionResponse({ authenticated: false, auth }));
+    await expect(currentBootstrap).resolves.toEqual({ status: "requires-auth", auth });
+    await expect(sharedBootstrap).resolves.toEqual({ status: "requires-auth", auth });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("creates a pairing credential from the authenticated auth endpoint", async () => {
@@ -502,8 +551,6 @@ describe("resolveInitialServerAuthGateState", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-
-    const { createServerPairingCredential } = await import("./environments/primary");
 
     await expect(createServerPairingCredential("Julius iPhone")).resolves.toEqual({
       id: "pairing-link-1",
