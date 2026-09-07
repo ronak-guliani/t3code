@@ -6,6 +6,7 @@ import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
 import { ControlPillMenu } from "../../components/ControlPill";
 import { cn } from "../../lib/cn";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAppNavigation } from "../../lib/use-app-navigation";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import type {
@@ -13,6 +14,7 @@ import type {
   MobileThreadTreeRow,
   NestedThreadStatus,
 } from "./mobile-thread-hierarchy";
+import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import { useUnreadChildNotification } from "./thread-hierarchy-controls";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
@@ -26,6 +28,12 @@ const STATUS: Record<CompactThreadStatus, { label: string; color: string; action
   failed: { label: "Failed", color: "bg-adaptive-red-700-300", action: "Failed" },
   queued: { label: "Queued", color: "bg-foreground-tertiary" },
   "plan-ready": { label: "Plan ready", color: "bg-adaptive-violet-700-300", action: "Plan" },
+};
+
+const PULL_REQUEST_ICON_TINT: Record<ThreadPrPresentation["state"], string> = {
+  open: "accent-adaptive-emerald-600-400",
+  merged: "accent-adaptive-violet-600-400",
+  closed: "accent-adaptive-zinc-500-400",
 };
 
 function RelatedThreadsButton(props: {
@@ -108,6 +116,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     readonly thread: MobileThreadShell;
     readonly hierarchy?: MobileThreadTreeRow | undefined;
   };
+  readonly pullRequest?: ThreadPrPresentation | null;
   readonly searchMatch?: EnvironmentThreadSearchMatch | undefined;
   readonly searchQuery?: string | undefined;
 }) {
@@ -123,6 +132,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
     ? `, ${props.searchMatch.source === "user" ? "You" : "Agent"}: ${props.searchMatch.snippet}`
     : "";
   const accessibilityLabel = `${props.title}${status.label ? `, ${status.label}` : ""}${props.pinned ? ", pinned" : ""}, ${props.timestamp}${excerptLabel}`;
+  const pullRequest = props.pullRequest;
   const primary = (
     <Pressable
       accessibilityRole="button"
@@ -220,6 +230,36 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             primary
           )}
         </View>
+        {pullRequest ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={pullRequest.accessibilityLabel}
+            accessibilityHint="Opens the pull request in your browser"
+            onPress={() => void tryOpenExternalUrl(pullRequest.url, "pull-request")}
+            style={styles.pullRequestButton}
+          >
+            <SymbolView
+              name="arrow.triangle.pull"
+              size={13}
+              tintColorClassName={
+                selected
+                  ? "accent-user-bubble-foreground"
+                  : pullRequest.isDraft
+                    ? "accent-adaptive-zinc-500-400"
+                    : PULL_REQUEST_ICON_TINT[pullRequest.state]
+              }
+            />
+            <Text
+              className={cn(
+                "text-xs tabular-nums font-t3-medium",
+                selected ? "text-user-bubble-foreground" : pullRequest.textClassName,
+              )}
+              numberOfLines={1}
+            >
+              {pullRequest.label}
+            </Text>
+          </Pressable>
+        ) : null}
         {props.related ? <RelatedThreadsButton {...props.related} selected={selected} /> : null}
       </View>
       {props.showDivider ? <View className="bg-border-subtle" style={styles.divider} /> : null}
@@ -231,6 +271,14 @@ const styles = StyleSheet.create({
   container: { borderRadius: 10 },
   primarySlot: { flex: 1, minWidth: 0 },
   row: { flexDirection: "row", alignItems: "flex-start", minHeight: 48, gap: 4 },
+  pullRequestButton: {
+    minHeight: 48,
+    maxWidth: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 4,
+  },
   primaryButton: { minWidth: 0, minHeight: 48 },
   primaryLine: {
     minHeight: 48,

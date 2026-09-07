@@ -7,7 +7,8 @@ import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/threa
 
 import { AppText as Text } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
-import { useServerConfigs, useThreadShells } from "../../state/entities";
+import { scopedProjectKey } from "../../lib/scopedEntities";
+import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useThreadListActions } from "../home/useThreadListActions";
 import { ThreadListRow } from "./thread-list-items";
@@ -32,6 +33,17 @@ export function RelatedThreadsScreen(
 ) {
   const navigation = useNavigation();
   const threads = useThreadShells();
+  const projects = useProjects();
+  const projectCwdByKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          scopedProjectKey(project.environmentId, project.id),
+          project.workspaceRoot,
+        ]),
+      ),
+    [projects],
+  );
   const dismissed = useDismissedAgentRunKeys();
   const { environmentId, threadId } = props.route.params;
   const rows = useMemo(() => {
@@ -122,6 +134,9 @@ export function RelatedThreadsScreen(
         return (
           <ThreadListV2Row
             thread={item.thread}
+            projectCwd={projectCwdByKey.get(
+              scopedProjectKey(item.thread.environmentId, item.thread.projectId),
+            )}
             hierarchy={item}
             hideRelated
             {...state}
@@ -159,6 +174,9 @@ export function RelatedThreadsScreen(
         <ThreadListRow
           variant="compact"
           thread={item.thread}
+          projectCwd={projectCwdByKey.get(
+            scopedProjectKey(item.thread.environmentId, item.thread.projectId),
+          )}
           hierarchy={item}
           hideRelated
           isLast={index === rows.length - 1}

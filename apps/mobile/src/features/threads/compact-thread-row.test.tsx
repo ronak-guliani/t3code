@@ -4,6 +4,7 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { CompactThreadRow } from "./compact-thread-row";
+import { presentThreadPr } from "../../state/thread-pr-presentation";
 import {
   buildMobileThreadTree,
   mobileThreadTreeRows,
@@ -178,6 +179,33 @@ describe("compact inbox row", () => {
     expect(harness.menus[0]?.accessibilityLabel).toContain("You: Needle");
     harness.pressables[0]?.onPress?.();
     expect(onPress).toHaveBeenCalledOnce();
+  });
+
+  it("renders a pull request badge alongside the thread row", () => {
+    const pullRequest = presentThreadPr(
+      {
+        number: 3774,
+        title: "Desktop-style pull request indicator",
+        url: "https://github.com/t3tools/t3code/pull/3774",
+        baseRef: "main",
+        headRef: "feature/pr",
+        state: "open",
+      },
+      undefined,
+    );
+    const markup = renderToStaticMarkup(
+      <CompactThreadRow
+        title={parent.title}
+        timestamp="2m"
+        status="ready"
+        pullRequest={pullRequest}
+        onPress={() => {}}
+      />,
+    );
+    expect(markup).toContain(">3774<");
+    expect(
+      harness.pressables.find((item) => item.accessibilityLabel === "#3774 pull request open"),
+    ).toBeDefined();
   });
 
   it.each(["working", "approval", "input", "failed", "queued", "plan-ready"] as const)(

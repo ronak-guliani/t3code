@@ -143,6 +143,16 @@ function ThreadNavigationSidebarPane(
 ) {
   const insets = useSafeAreaInsets();
   const projects = useProjects();
+  const projectCwdByKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          scopedProjectKey(project.environmentId, project.id),
+          project.workspaceRoot,
+        ]),
+      ),
+    [projects],
+  );
   const threads = useThreadShells();
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
@@ -718,12 +728,13 @@ function ThreadNavigationSidebarPane(
   });
   const listExtraData = useMemo(
     () => ({
+      projectCwdByKey,
       selectedThreadKey: props.selectedThreadKey ?? "",
       serverConfigs,
       snoozePresetMinute: nowMinute,
       threadSearchMatchByKey,
     }),
-    [props.selectedThreadKey, serverConfigs, nowMinute, threadSearchMatchByKey],
+    [projectCwdByKey, props.selectedThreadKey, serverConfigs, nowMinute, threadSearchMatchByKey],
   );
   const sidebarItemsAreEqual = useCallback(
     (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -815,6 +826,9 @@ function ThreadNavigationSidebarPane(
             <ThreadListV2Row
               hierarchy={item.item.hierarchy}
               thread={thread}
+              projectCwd={projectCwdByKey.get(
+                scopedProjectKey(thread.environmentId, thread.projectId),
+              )}
               variant={item.item.variant}
               snoozed={item.item.snoozed}
               pinned={item.item.pinned}
@@ -930,6 +944,9 @@ function ThreadNavigationSidebarPane(
               hierarchy={item.hierarchy}
               variant="sidebar"
               thread={thread}
+              projectCwd={projectCwdByKey.get(
+                scopedProjectKey(thread.environmentId, thread.projectId),
+              )}
               isLast={item.isLast}
               searchMatch={threadSearchMatchByKey.get(
                 threadSearchMatchKey({
@@ -983,6 +1000,7 @@ function ThreadNavigationSidebarPane(
       props.searchQuery,
       props.selectedThreadKey,
       props.width,
+      projectCwdByKey,
       savedConnectionsById,
       serverConfigs,
       shelfPreferencesLoaded,

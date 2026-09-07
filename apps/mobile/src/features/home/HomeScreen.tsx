@@ -349,6 +349,16 @@ export function HomeScreen(props: HomeScreenProps) {
             ),
     [threadListV2Enabled, props.projects, selectedProjectRefKeys],
   );
+  const projectCwdByKey = useMemo(
+    () =>
+      new Map(
+        props.projects.map((project) => [
+          scopedProjectKey(project.environmentId, project.id),
+          project.workspaceRoot,
+        ]),
+      ),
+    [props.projects],
+  );
   const scopedThreads = useMemo(
     () =>
       threadListV2Enabled
@@ -756,6 +766,7 @@ export function HomeScreen(props: HomeScreenProps) {
       return (
         <ThreadListV2Row
           thread={thread}
+          projectCwd={projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId))}
           hierarchy={item.item.hierarchy}
           variant={item.item.variant}
           snoozed={item.item.snoozed}
@@ -827,6 +838,7 @@ export function HomeScreen(props: HomeScreenProps) {
       toggleSnoozedShelf,
       props.searchQuery,
       nowMinute,
+      projectCwdByKey,
     ],
   );
   const v2KeyExtractor = useCallback((item: ThreadListV2ListItem) => item.key, []);
@@ -836,20 +848,22 @@ export function HomeScreen(props: HomeScreenProps) {
   // HomeScreen render.
   const v2ExtraData = useMemo(
     () => ({
+      projectCwdByKey,
       serverConfigs,
       searchQuery: props.searchQuery,
       snoozePresetMinute: nowMinute,
       threadSearchMatchByKey,
     }),
-    [props.searchQuery, serverConfigs, nowMinute, threadSearchMatchByKey],
+    [projectCwdByKey, props.searchQuery, serverConfigs, nowMinute, threadSearchMatchByKey],
   );
 
   const extraData = useMemo(
     () => ({
+      projectCwdByKey,
       searchQuery: props.searchQuery,
       threadSearchMatchByKey,
     }),
-    [props.searchQuery, threadSearchMatchByKey],
+    [projectCwdByKey, props.searchQuery, threadSearchMatchByKey],
   );
 
   const renderItem = useCallback(
@@ -891,6 +905,9 @@ export function HomeScreen(props: HomeScreenProps) {
               hierarchy={item.hierarchy}
               variant="compact"
               thread={thread}
+              projectCwd={projectCwdByKey.get(
+                scopedProjectKey(thread.environmentId, thread.projectId),
+              )}
               isLast={item.isLast}
               searchMatch={threadSearchMatchByKey.get(
                 threadSearchMatchKey({
@@ -925,6 +942,7 @@ export function HomeScreen(props: HomeScreenProps) {
       handleSwipeableClose,
       handleSwipeableWillOpen,
       handleRegenerateThreadTitle,
+      projectCwdByKey,
       props.onArchiveThread,
       props.onDeletePendingTask,
       props.onDeleteThread,
