@@ -2391,6 +2391,15 @@ describe("buildThreadFeed", () => {
         (entry) => entry.type,
       ),
     ).toEqual(["message"]);
+    expect(
+      deriveThreadFeedPresentation(
+        feed,
+        { ...latestTurn, state: "completed", completedAt: "2026-04-01T00:00:02.000Z" },
+        new Set(),
+        new Set(),
+        latestTurn.startedAt,
+      ).map((entry) => entry.type),
+    ).toEqual(["message"]);
   });
 
   it("hands a settled tool run off to Thinking once assistant text streams after it", () => {
