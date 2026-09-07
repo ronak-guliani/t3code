@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildMobileThreadTree,
+  nestedThreadCompletionMarker,
   nestedThreadParentError,
   relatedThreadRows,
 } from "./mobile-thread-hierarchy";
@@ -320,6 +321,46 @@ describe("mobile nested threads", () => {
     expect(layout(threads).items.map((item) => item.thread.id)).toEqual(["parent", "sibling"]);
   });
 
+  it("uses an errored session timestamp when a failed child has no completed turn", () => {
+    const failedChild = {
+      ...child,
+      session: {
+        threadId: child.id,
+        status: "error" as const,
+        providerName: null,
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: "Provider failed",
+        updatedAt: NOW,
+      },
+    };
+    expect(nestedThreadCompletionMarker(failedChild)).toBe(NOW);
+    expect(
+      layout([parent, failedChild], {
+        threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+      }).items.map((item) => item.thread.id),
+    ).toEqual([parent.id]);
+  });
+
+  it("keeps a read terminal child visible while it is selected", () => {
+    const completedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("completed-child"),
+        state: "completed" as const,
+        requestedAt: NOW,
+        startedAt: NOW,
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    const result = layout([parent, completedChild], {
+      selectedThreadKey: `${environmentId}:${child.id}`,
+      threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+    });
+    expect(result.items.map((item) => item.thread.id)).toEqual([parent.id, child.id]);
+  });
+
   it("shows failed provider agents and promotes their shelved ancestors until dismissed", () => {
     const failedParent = {
       ...parent,
@@ -398,6 +439,30 @@ describe("mobile nested threads", () => {
       layout([finished], { dismissedAgentRunKeys: [`${environmentId}:agent-run:parent:task-1`] })
         .items,
     ).toHaveLength(1);
+  });
+
+  it("keeps completed provider runs in a matching parent search", () => {
+    const result = layout(
+      [
+        {
+          ...parent,
+          backgroundAgentRuns: [
+            {
+              taskId: "completed",
+              name: "Completed check",
+              status: "completed" as const,
+              startedAt: NOW,
+              completedAt: NOW,
+            },
+          ],
+        },
+      ],
+      { searchQuery: "Parent" },
+    );
+    expect(result.items.map((item) => item.thread.id)).toEqual([
+      parent.id,
+      "agent-run:parent:completed",
+    ]);
   });
 
   it("keeps parentage and child notification timestamps through live shell replacement and resnapshot", () => {

@@ -183,6 +183,7 @@ export function buildHomeListLayout(input: {
       {
         readMarkers: input.threadChildReadAt,
         includeReadCompletedChildren: input.showAllThreads === true,
+        selectedThreadKey: input.selectedThreadKey,
       },
     ).sort((left, right) => ordinal(left.mostRecentThread) - ordinal(right.mostRecentThread));
     const matchingThreadKeys = input.showAllThreads

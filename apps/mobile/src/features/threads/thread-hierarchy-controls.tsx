@@ -47,12 +47,18 @@ function markNestedThreadRead(
 
 export function useMarkNestedThreadRead(thread: MobileThreadShell | null) {
   const focused = useIsFocused();
+  const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
   useEffect(() => {
     if (!focused || thread === null || thread.parentThreadId == null) return;
-    if (AppState.currentState !== "active") return;
-    markNestedThreadRead(thread, save);
-  }, [focused, save, thread]);
+    const markRead = () => {
+      if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
+      markNestedThreadRead(thread, save);
+    };
+    markRead();
+    const subscription = AppState.addEventListener("change", markRead);
+    return () => subscription.remove();
+  }, [focused, result, save, thread]);
 }
 
 type NotificationStamp = {

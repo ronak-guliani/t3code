@@ -35,11 +35,14 @@ export function nestedThreadCompletionMarker(thread: MobileThreadShell): string 
     if (thread.virtualAgentRun.status === "running") return null;
     return thread.virtualAgentRun.completedAt ?? thread.updatedAt;
   }
-  if (thread.parentThreadId == null || thread.latestTurn === null) return null;
-  if (thread.latestTurn.state === "running" || thread.latestTurn.completedAt === null) {
-    return null;
+  if (thread.parentThreadId == null) return null;
+  if (thread.latestTurn) {
+    if (thread.latestTurn.state !== "running" && thread.latestTurn.completedAt !== null) {
+      return thread.latestTurn.completedAt;
+    }
+    if (thread.latestTurn.state === "running") return null;
   }
-  return thread.latestTurn.completedAt;
+  return thread.session?.status === "error" ? thread.session.updatedAt : null;
 }
 
 export function isNestedThreadRead(
@@ -128,6 +131,7 @@ export function buildMobileThreadTree(
   options: {
     readonly readMarkers?: NestedThreadReadMarkers;
     readonly includeReadCompletedChildren?: boolean;
+    readonly selectedThreadKey?: string | null;
   } = {},
 ): MobileThreadTreeNode[] {
   const dismissed = new Set(dismissedAgentRunKeys);
@@ -165,6 +169,7 @@ export function buildMobileThreadTree(
         if (options.includeReadCompletedChildren === true || thread.parentThreadId == null) {
           return true;
         }
+        if (hierarchyThreadKey(thread) === options.selectedThreadKey) return true;
         const status = resolveNestedThreadStatus(thread);
         if (status === "approval" || status === "input" || status === "working") return true;
         const completionMarker = nestedThreadCompletionMarker(thread);
@@ -253,6 +258,27 @@ export function nestedVirtualAgentKeys(
   return keys;
 }
 
+export function nestedVirtualAgentSearchKeys(
+  nodes: readonly MobileThreadTreeNode[],
+  query: string,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (normalizedQuery.length === 0) return keys;
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (
+      node.thread.virtualAgentRun &&
+      node.thread.title.toLocaleLowerCase().includes(normalizedQuery)
+    ) {
+      keys.add(node.threadKey);
+    }
+    pending.push(...node.children);
+  }
+  return keys;
+}
+
 export function mobileThreadTreeRows(
   nodes: readonly MobileThreadTreeNode[],
   options: {
@@ -335,7 +361,18 @@ export function selectMatchingThreadTree(
       const match = retained.get(child.threadKey);
       return match ? [match] : [];
     });
-    if (matches.has(hierarchyThreadKey(node.thread)) || children.length > 0) {
+    const nodeMatches = matches.has(hierarchyThreadKey(node.thread));
+    if (nodeMatches) {
+      for (const child of node.children) {
+        if (
+          child.thread.virtualAgentRun &&
+          !children.some((item) => item.threadKey === child.threadKey)
+        ) {
+          children.push(child);
+        }
+      }
+    }
+    if (nodeMatches || children.length > 0) {
       // Keep full-subtree status and archive guards even when siblings are hidden.
       retained.set(node.threadKey, { ...node, children });
     }

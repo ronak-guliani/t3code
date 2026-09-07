@@ -24,6 +24,7 @@ import {
   selectMatchingThreadTree,
   nestedThreadRevealKeys,
   nestedVirtualAgentKeys,
+  nestedVirtualAgentSearchKeys,
   type NestedThreadReadMarkers,
   type MobileThreadTreeRow,
   type MobileThreadShell,
@@ -393,9 +394,14 @@ export function buildThreadListV2Items(input: {
     {
       readMarkers: input.threadChildReadAt,
       includeReadCompletedChildren: query.length > 0,
+      selectedThreadKey: input.selectedThreadKey,
     },
   );
-  const roots = query.length > 0 ? selectMatchingThreadTree(tree, matchingKeys) : tree;
+  const searchKeys =
+    query.length > 0
+      ? new Set([...matchingKeys, ...nestedVirtualAgentSearchKeys(tree, query)])
+      : matchingKeys;
+  const roots = query.length > 0 ? selectMatchingThreadTree(tree, searchKeys) : tree;
   const nodesByKey = new Map(tree.map((node) => [node.threadKey, node]));
   const rowsByRootKey = new Map(
     roots.map((node) => [
@@ -404,7 +410,7 @@ export function buildThreadListV2Items(input: {
         selectedThreadKey: input.selectedThreadKey,
         revealThreadKeys:
           query.length > 0
-            ? new Set([...matchingKeys, ...nestedVirtualAgentKeys([node]).values()])
+            ? new Set([...searchKeys, ...nestedVirtualAgentKeys([node]).values()])
             : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
       }),
     ]),
