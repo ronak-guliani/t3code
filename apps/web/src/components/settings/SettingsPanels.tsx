@@ -3198,6 +3198,10 @@ export function GeneralSettingsPanel() {
             ) : null;
           return (
             <ProviderInstanceCard
+              automaticPrFeedback={settings.copilotAutomaticPrFeedback[row.instanceId] === true}
+              onAutomaticPrFeedbackChange={(enabled) =>
+                updateSettings({ copilotAutomaticPrFeedback: { [row.instanceId]: enabled } })
+              }
               key={row.instanceId}
               instanceId={row.instanceId}
               instance={row.instance}

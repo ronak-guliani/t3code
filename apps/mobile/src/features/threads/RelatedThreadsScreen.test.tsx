@@ -65,6 +65,7 @@ vi.mock("../../components/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../../components/EmptyState", () => ({ EmptyState: () => null }));
 vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../state/entities", () => ({
+  useProjects: () => [],
   useThreadShells: () => harness.threads,
   useServerConfigs: () =>
     new Map([
@@ -89,6 +90,7 @@ vi.mock("./use-nested-thread-actions", () => ({
     dismissAgentRun: harness.dismissAgentRun,
   }),
 }));
+vi.mock("../../state/use-thread-pr", () => ({ useThreadPr: () => null }));
 vi.mock("./thread-list-items", () => ({
   ThreadListRow: (props: { thread: MobileThreadShell }) => {
     harness.legacy.push(props.thread.title);

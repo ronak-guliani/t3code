@@ -2382,7 +2382,6 @@ describe("buildThreadFeed", () => {
     const rows = deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), "now");
     expect(rows.map((entry) => entry.type)).toEqual(["message", "thinking"]);
     expect(rows[1]).toMatchObject({ id: "thinking", createdAt: "now", turnId });
-    // The row identity is stable across re-derivations so the list can reuse it.
     expect(deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), "now")[1]).toBe(
       rows[1],
     );
@@ -2391,6 +2390,15 @@ describe("buildThreadFeed", () => {
       deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), null).map(
         (entry) => entry.type,
       ),
+    ).toEqual(["message"]);
+    expect(
+      deriveThreadFeedPresentation(
+        feed,
+        { ...latestTurn, state: "completed", completedAt: "2026-04-01T00:00:02.000Z" },
+        new Set(),
+        new Set(),
+        latestTurn.startedAt,
+      ).map((entry) => entry.type),
     ).toEqual(["message"]);
   });
 

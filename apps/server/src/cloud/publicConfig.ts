@@ -2,6 +2,7 @@ import {
   connectLoopbackRedirectUri,
   CONNECT_OAUTH_SCOPES,
   DEFAULT_HOSTED_APP_URL,
+  normalizeHostedAppUrl,
 } from "@t3tools/shared/connectAuth";
 import { clerkFrontendApiUrlFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
@@ -110,31 +111,19 @@ export const hostedAppUrlConfig = makePublicValueConfig(
   DEFAULT_HOSTED_APP_URL,
 ).pipe(
   Config.mapOrFail((value) => {
-    try {
-      const url = new URL(value);
-      const isLoopbackHttp =
-        url.protocol === "http:" &&
-        (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]");
-      if (
-        (url.protocol !== "https:" && !isLoopbackHttp) ||
-        url.pathname !== "/" ||
-        url.search !== "" ||
-        url.hash !== ""
-      ) {
-        throw new Error("invalid hosted app origin");
-      }
-      return Effect.succeed(url.origin);
-    } catch {
-      return Effect.fail(
-        new Config.ConfigError(
-          new Schema.SchemaError(
-            new SchemaIssue.InvalidValue(Option.some(value), {
-              message: "Hosted app URL must be an absolute HTTPS origin (or HTTP loopback origin).",
-            }),
+    const origin = normalizeHostedAppUrl(value);
+    return origin === null
+      ? Effect.fail(
+          new Config.ConfigError(
+            new Schema.SchemaError(
+              new SchemaIssue.InvalidValue(Option.some(value), {
+                message:
+                  "Hosted app URL must be an absolute HTTPS origin (or HTTP loopback origin).",
+              }),
+            ),
           ),
-        ),
-      );
-    }
+        )
+      : Effect.succeed(origin);
   }),
 );
 

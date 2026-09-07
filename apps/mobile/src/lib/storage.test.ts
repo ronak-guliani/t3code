@@ -239,6 +239,7 @@ describe("mobile connection storage", () => {
       threadExpandedOverrides: { "environment-1:parent": true },
       dismissedAgentRunKeys: ["environment-1:agent-run:parent:task"],
       threadChildNotificationReadAt: { "environment-1:parent": "2026-09-05T12:00:00Z" },
+      threadChildReadAt: { "environment-1:child": "2026-09-05T12:00:00Z" },
     };
     await expect(savePreferencesPatch(preferences)).resolves.toEqual(preferences);
     await expect(loadPreferences()).resolves.toEqual(preferences);
@@ -251,6 +252,7 @@ describe("mobile connection storage", () => {
         threadExpandedOverrides: { valid: false, invalid: "true" },
         dismissedAgentRunKeys: ["valid", 42],
         threadChildNotificationReadAt: { valid: "2026-09-05T12:00:00Z", invalid: "yesterday" },
+        threadChildReadAt: { valid: "2026-09-05T12:00:00Z", invalid: "yesterday" },
       }),
       10,
     );
@@ -258,6 +260,7 @@ describe("mobile connection storage", () => {
       threadExpandedOverrides: { valid: false },
       dismissedAgentRunKeys: ["valid"],
       threadChildNotificationReadAt: { valid: "2026-09-05T12:00:00Z" },
+      threadChildReadAt: { valid: "2026-09-05T12:00:00Z" },
     });
   });
 

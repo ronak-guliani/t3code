@@ -17,6 +17,7 @@ import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
@@ -188,6 +189,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly thread: MobileThreadShell;
+  readonly projectCwd?: string | null;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly hideRelated?: boolean;
   readonly variant: "card" | "slim";
@@ -275,6 +277,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const drawerColor = theme["--color-drawer"];
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
+  const pullRequest = useThreadPr(thread, props.projectCwd ?? null);
 
   const status = resolveThreadListV2Status(thread);
   // Settled rows label by the same stamp they sort by, so order and label
@@ -589,6 +592,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       sidebar={sidebarPane}
       showDivider={props.showTrailingDivider !== false}
       related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
+      pullRequest={pullRequest}
       searchMatch={props.searchMatch}
       searchQuery={props.searchQuery}
       accessibilityHint={swipeAccessibilityHint}

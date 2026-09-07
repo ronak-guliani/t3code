@@ -10,7 +10,8 @@ import {
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
-import type { MobileThreadTreeRow } from "./mobile-thread-hierarchy";
+import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
+import { markNestedThreadRead } from "./nested-thread-read";
 
 const NO_DISMISSED_RUNS: readonly string[] = [];
 export function useDismissedAgentRunKeys(): readonly string[] {
@@ -18,6 +19,29 @@ export function useDismissedAgentRunKeys(): readonly string[] {
   return AsyncResult.isSuccess(result)
     ? (result.value.dismissedAgentRunKeys ?? NO_DISMISSED_RUNS)
     : NO_DISMISSED_RUNS;
+}
+
+export function useThreadChildReadAt(): Readonly<Record<string, string>> {
+  const result = useAtomValue(mobilePreferencesAtom);
+  return AsyncResult.isSuccess(result) ? (result.value.threadChildReadAt ?? {}) : {};
+}
+
+export function useMarkNestedThreadRead(thread: MobileThreadShell | null) {
+  const focused = useIsFocused();
+  const result = useAtomValue(mobilePreferencesAtom);
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  useEffect(() => {
+    if (!focused || thread === null || thread.parentThreadId == null) return;
+    const markRead = () => {
+      if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
+      const current = appAtomRegistry.get(mobilePreferencesAtom);
+      if (!AsyncResult.isSuccess(current)) return;
+      markNestedThreadRead(thread, current.value, save);
+    };
+    markRead();
+    const subscription = AppState.addEventListener("change", markRead);
+    return () => subscription.remove();
+  }, [focused, result, save, thread]);
 }
 
 type NotificationStamp = {

@@ -3,7 +3,42 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+vi.hoisted(() => {
+  class TestEventEmitter {
+    addListener() {
+      return { remove() {} };
+    }
+    removeListener() {}
+    removeAllListeners() {}
+    emit() {
+      return false;
+    }
+    listenerCount() {
+      return 0;
+    }
+  }
+  const global = globalThis as unknown as {
+    __DEV__?: boolean;
+    expo?: { EventEmitter: typeof TestEventEmitter; modules: Record<string, unknown> };
+  };
+  global.__DEV__ = false;
+  global.expo = { EventEmitter: TestEventEmitter, modules: {} };
+});
+vi.mock("expo-crypto", () => ({
+  getRandomBytes: (length: number) => new Uint8Array(length),
+  randomUUID: () => "00000000-0000-4000-8000-000000000000",
+}));
+vi.mock("expo-secure-store", () => ({
+  deleteItemAsync: async () => {},
+  getItemAsync: async () => null,
+  setItemAsync: async () => {},
+}));
+vi.mock("../../state/use-thread-pr", () => ({
+  useThreadPr: () => null,
+}));
+
 import { CompactThreadRow } from "./compact-thread-row";
+import { presentThreadPr } from "../../state/thread-pr-presentation";
 import { PendingTaskListRow, ThreadListRow } from "./thread-list-items";
 import { ThreadListV2PendingRow, ThreadListV2Row } from "./thread-list-v2-items";
 import type { PendingDraftTask } from "../../state/pending-new-tasks-model";
@@ -31,6 +66,10 @@ const harness = vi.hoisted(() => ({
 }));
 vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
+  Platform: {
+    OS: "ios",
+    select: <T,>(options: { ios?: T; default?: T }) => options.ios ?? options.default,
+  },
   useWindowDimensions: () => ({ width: 402 }),
   StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 0.5 },
   View: ({ children }: TestProps) => createElement("div", null, children),
@@ -297,6 +336,33 @@ describe("compact inbox row", () => {
     expect(harness.menus[0]?.accessibilityLabel).toContain("You: Needle");
     harness.pressables[0]?.onPress?.();
     expect(onPress).toHaveBeenCalledOnce();
+  });
+
+  it("renders a pull request badge alongside the thread row", () => {
+    const pullRequest = presentThreadPr(
+      {
+        number: 3774,
+        title: "Desktop-style pull request indicator",
+        url: "https://github.com/t3tools/t3code/pull/3774",
+        baseRef: "main",
+        headRef: "feature/pr",
+        state: "open",
+      },
+      undefined,
+    );
+    const markup = renderToStaticMarkup(
+      <CompactThreadRow
+        title={parent.title}
+        timestamp="2m"
+        status="ready"
+        pullRequest={pullRequest}
+        onPress={() => {}}
+      />,
+    );
+    expect(markup).toContain(">3774<");
+    expect(
+      harness.pressables.find((item) => item.accessibilityLabel === "#3774 pull request open"),
+    ).toBeDefined();
   });
 
   it.each(["working", "approval", "input", "failed", "queued", "draft", "plan-ready"] as const)(

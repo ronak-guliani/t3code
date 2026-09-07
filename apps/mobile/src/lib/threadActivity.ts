@@ -1612,6 +1612,7 @@ export function deriveThreadFeedPresentation(
   // shimmering (no tools yet, or the latest failed), that row is "Thinking".
   if (
     activeWorkStartedAt !== null &&
+    unsettledTurnId !== null &&
     !result.some((row) => row.type === "work-toggle" && row.shimmer)
   ) {
     result.push(thinkingRow(activeWorkStartedAt, unsettledTurnId));
