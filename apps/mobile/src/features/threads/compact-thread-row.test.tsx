@@ -4,8 +4,20 @@ import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 vi.hoisted(() => {
-  class TestEventEmitter {}
-  const global = globalThis as {
+  class TestEventEmitter {
+    addListener() {
+      return { remove() {} };
+    }
+    removeListener() {}
+    removeAllListeners() {}
+    emit() {
+      return false;
+    }
+    listenerCount() {
+      return 0;
+    }
+  }
+  const global = globalThis as unknown as {
     __DEV__?: boolean;
     expo?: { EventEmitter: typeof TestEventEmitter; modules: Record<string, unknown> };
   };
