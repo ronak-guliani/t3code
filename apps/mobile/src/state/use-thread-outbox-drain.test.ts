@@ -11,6 +11,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import type { PreparedTurnAttachments } from "../lib/attachmentUpload";
 
 const harness = vi.hoisted(() => ({
+  parent: null as {
+    readonly projectId: ProjectId;
+    readonly archivedAt: string | null;
+  } | null,
+  threads: [] as Array<{
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly projectId: ProjectId;
+    readonly archivedAt: string | null;
+  }>,
   manager: null as unknown as ReturnType<
     typeof import("./thread-outbox-manager").createThreadOutboxManager
   >,
@@ -87,9 +97,16 @@ vi.mock("./server", async () => {
   return { serverEnvironment: { configValueAtom: Atom.family(() => Atom.make(null)) } };
 });
 
-vi.mock("./threads", () => ({
-  threadEnvironment: {},
-}));
+vi.mock("./threads", async () => {
+  const { Atom } = await import("effect/unstable/reactivity");
+  return {
+    threadEnvironment: {},
+    environmentThreadShells: {
+      threadShellsAtom: Atom.make(harness.threads),
+      threadShellAtom: () => Atom.make(harness.parent),
+    },
+  };
+});
 
 vi.mock("./use-atom-command", () => ({
   useAtomCommand: () => async () => undefined,
@@ -197,6 +214,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  harness.parent = null;
+  harness.threads.length = 0;
   appAtomRegistry.set(harness.manager.queuedMessagesByThreadKeyAtom, {});
   appAtomRegistry.set(composerDrafts.composerDraftsAtom, {});
   appAtomRegistry.set(composerDrafts.composerCloudDraftsAtom, { accountId: null, signedOut: {} });
@@ -582,6 +601,116 @@ describe("thread outbox delivered creation recovery", () => {
 });
 
 describe("thread outbox recovery rollback", () => {
+  it("restores a rejected subchat as its own draft with valid ancestry", async () => {
+    harness.parent = { projectId: ProjectId.make("project-1"), archivedAt: null };
+    harness.threads.push({
+      environmentId: EnvironmentId.make("environment-1"),
+      id: ThreadId.make("parent-thread"),
+      projectId: ProjectId.make("project-1"),
+      archivedAt: null,
+    });
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "nested-rejection", text: "subchat instructions" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        parentThreadId: ThreadId.make("parent-thread"),
+        workspaceMode: "local",
+        branch: "feature",
+        worktreePath: "/repo-child",
+      },
+    };
+    await harness.manager.enqueue(message);
+
+    await expect(restoreRejectedQueuedMessage(message, "Model unavailable")).resolves.toBe(
+      "restored",
+    );
+
+    expect(
+      composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
+    ).toMatchObject({
+      text: message.text,
+      parentThreadId: message.creation!.parentThreadId,
+      project: { environmentId: message.environmentId, projectId: message.creation!.projectId },
+      workspaceSelection: { mode: "local", branch: "feature", worktreePath: "/repo-child" },
+    });
+  });
+
+  it("drops unavailable ancestry when restoring a rejected subchat", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "orphan-rejection", text: "recover me" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        parentThreadId: ThreadId.make("missing-parent"),
+        workspaceMode: "local",
+        branch: null,
+        worktreePath: null,
+      },
+    };
+    await harness.manager.enqueue(message);
+
+    await expect(restoreRejectedQueuedMessage(message, "Parent unavailable")).resolves.toBe(
+      "restored",
+    );
+
+    expect(
+      composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
+    ).toMatchObject({
+      text: message.text,
+      parentThreadId: undefined,
+      project: { environmentId: message.environmentId, projectId: message.creation!.projectId },
+    });
+    expect(harness.setPendingConnectionError).toHaveBeenCalledWith(
+      expect.stringContaining("without a parent"),
+    );
+  });
+
+  it("retries as a parentless draft if the parent disappears during recovery", async () => {
+    harness.threads.push({
+      environmentId: EnvironmentId.make("environment-1"),
+      id: ThreadId.make("parent-thread"),
+      projectId: ProjectId.make("project-1"),
+      archivedAt: null,
+    });
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "parent-disappears", text: "keep exactly once" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        parentThreadId: ThreadId.make("parent-thread"),
+        workspaceMode: "local",
+        branch: null,
+        worktreePath: null,
+      },
+    };
+    await harness.manager.enqueue(message);
+    const merge = composerDrafts.mergeComposerDraftContent;
+    const spy = vi
+      .spyOn(composerDrafts, "mergeComposerDraftContent")
+      .mockImplementationOnce(async (...args) => {
+        const result = await merge(...args);
+        harness.threads.length = 0;
+        return result;
+      });
+
+    try {
+      await expect(restoreRejectedQueuedMessage(message, "Rejected")).resolves.toBe("retry");
+      expect(remainingMessages()).toEqual([message]);
+      expect(
+        composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`).text,
+      ).toBe("");
+
+      await expect(restoreRejectedQueuedMessage(message, "Rejected")).resolves.toBe("restored");
+      expect(
+        composerDrafts.getComposerDraftSnapshot(`new-task:restored-${message.messageId}`),
+      ).toMatchObject({ text: message.text, parentThreadId: undefined });
+      expect(remainingMessages()).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("restores a rejected new task as its own draft for the project", async () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),

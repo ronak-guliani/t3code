@@ -73,7 +73,7 @@ function threadDetailToShell(
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasActionableProposedPlan: false,
-    hasPendingQueuedTurn: false,
+    hasPendingQueuedTurn: (thread.queuedTurns ?? []).some((turn) => turn.failedAt === null),
   };
 }
 

@@ -99,5 +99,9 @@ export function isWorkspaceVideoPreviewPath(path: string): boolean {
 }
 
 export function isWorkspacePreviewEntryPath(path: string): boolean {
-  return isWorkspaceBrowserPreviewPath(path) || isWorkspaceImagePreviewPath(path);
+  return (
+    isWorkspaceBrowserPreviewPath(path) ||
+    isWorkspaceImagePreviewPath(path) ||
+    isWorkspaceVideoPreviewPath(path)
+  );
 }

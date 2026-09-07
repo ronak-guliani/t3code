@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type {
   EnvironmentId,
   ModelSelection,
@@ -135,6 +136,8 @@ export function branchBadgeLabel(input: {
 }
 
 type NewTaskFlowContextValue = {
+  readonly parentThreadId: ThreadId | null;
+  readonly beginSubchat: (project: EnvironmentProject, parent: EnvironmentThreadShell) => void;
   readonly projectScopes: ReadonlyArray<HomeProjectScope>;
   readonly selectedEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
@@ -403,6 +406,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     );
   }, [activeDraftKey, editingPendingTask, selectedProject]);
   const selectedProjectDraft = useComposerDraft(selectedProjectDraftKey);
+  const parentThreadId = selectedProjectDraft.parentThreadId ?? null;
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   // Default mode until the user picks one explicitly — same resolution web
@@ -450,10 +454,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // Antigravity keeps unavailable selections so sign-out or a catalog change
   // cannot switch the user's model. Other providers retain their fallback
   // rules. Implicit defaults also exclude legacy models for those providers.
-  const draftModelSelection = resolveSelectableModelSelection(
-    selectedEnvironmentServerConfig,
-    selectedProjectDraft.modelSelection ?? null,
-  );
+  const draftModelSelection = parentThreadId
+    ? (selectedProjectDraft.modelSelection ?? null)
+    : resolveSelectableModelSelection(
+        selectedEnvironmentServerConfig,
+        selectedProjectDraft.modelSelection ?? null,
+      );
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     selectedProject?.defaultModelSelection ??
@@ -678,6 +684,29 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     [carryDraftContentTo],
   );
 
+  const beginSubchat = useCallback(
+    (project: EnvironmentProject, parent: EnvironmentThreadShell) => {
+      const draftKey = createNewTaskDraft({
+        environmentId: project.environmentId,
+        projectId: project.id,
+        parentThreadId: parent.id,
+      });
+      updateComposerDraftSettings(draftKey, {
+        modelSelection: parent.modelSelection,
+        // "local" inherits the parent's checkout; "worktree" would create a new one.
+        workspaceSelection: {
+          mode: "local",
+          branch: parent.branch,
+          worktreePath: parent.worktreePath,
+        },
+      });
+      setActiveDraftKey(draftKey);
+      setSelectedEnvironmentId(project.environmentId);
+      setSelectedProjectKey(scopedProjectKey(project.environmentId, project.id));
+    },
+    [],
+  );
+
   const openDraft = useCallback(
     (draftKey: string): boolean => {
       const draft = appAtomRegistry.get(composerDraftsAtom)[draftKey];
@@ -893,6 +922,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       setComposerDraftText(draftKey, message.text);
       replaceComposerDraftAttachments(draftKey, message.attachments);
       updateComposerDraftSettings(draftKey, {
+        parentThreadId: message.creation.parentThreadId,
         modelSelection: message.modelSelection,
         runtimeMode: message.runtimeMode,
         interactionMode: message.interactionMode,
@@ -925,10 +955,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       // Use the displayed selection rules without substituting an unavailable
       // Antigravity model while the task is queued.
       const draftModelSelection =
-        resolveSelectableModelSelection(
-          selectedEnvironmentServerConfig,
-          draft.modelSelection ?? null,
-        ) ?? selectedModel;
+        (draft.parentThreadId
+          ? draft.modelSelection
+          : resolveSelectableModelSelection(
+              selectedEnvironmentServerConfig,
+              draft.modelSelection ?? null,
+            )) ?? selectedModel;
       if (text.length === 0 || !draftModelSelection) {
         return null;
       }
@@ -967,6 +999,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         }),
         creation: {
           projectId: selectedProject.id,
+          ...(draft.parentThreadId ? { parentThreadId: draft.parentThreadId } : {}),
           ...(projectTitle !== undefined ? { projectTitle } : {}),
           ...(projectCwd !== undefined ? { projectCwd } : {}),
           workspaceMode: mode,
@@ -1105,6 +1138,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const value = useMemo<NewTaskFlowContextValue>(
     () => ({
       projectScopes,
+      parentThreadId,
+      beginSubchat,
       selectedEnvironmentId,
       selectedProjectKey,
       selectedModelKey,
@@ -1164,6 +1199,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     }),
     [
       attachments,
+      parentThreadId,
+      beginSubchat,
       availableBranches,
       beginEditingPendingTask,
       branchQuery,

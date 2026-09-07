@@ -1135,7 +1135,6 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadPinReorderCommand,
-  ThreadActiveReorderCommand,
   ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
   ThreadWorkspaceHandoffCommand,
@@ -1172,7 +1171,6 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPinCommand,
   ThreadUnpinCommand,
   ThreadPinReorderCommand,
-  ThreadActiveReorderCommand,
   ThreadDecoupleCommand,
   ThreadMetaUpdateCommand,
   ThreadWorkspaceHandoffCommand,
@@ -1196,6 +1194,7 @@ export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 // Client-only additions are sent only after checking the server's advertised capabilities.
 export const CapabilityClientOrchestrationCommand = Schema.Union([
   ClientOrchestrationCommand,
+  ThreadActiveReorderCommand,
   Schema.Struct({
     ...ClientThreadTurnStartCommand.fields,
     message: Schema.Struct({

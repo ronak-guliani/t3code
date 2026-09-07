@@ -78,12 +78,21 @@ export function buildComposerSlashCommandItems(input: {
   // Providers expand commands only at the start of a message. T3 commands
   // change local state and do not have this restriction.
   if (!input.atMessageStart) return items;
+  if (input.hasThread && input.offersUsageLimits && USAGE_LIMITS_COMMAND.name.includes(query)) {
+    items.push({
+      id: `pcmd:${USAGE_LIMITS_COMMAND.name}`,
+      type: "provider-slash-command",
+      command: USAGE_LIMITS_COMMAND,
+      label: `/${USAGE_LIMITS_COMMAND.name}`,
+      description: USAGE_LIMITS_COMMAND.description,
+    });
+  }
   for (const command of input.selectedProviderStatus?.slashCommands ?? []) {
     if (!command.name.toLowerCase().includes(query)) continue;
     if (command.name === "compact" && !input.hasCompactableConversation) continue;
     // T3's own limits command is answered by the thread composer; New Task has
     // nowhere to show it. A provider's same-named command is left alone.
-    if (command.name === USAGE_LIMITS_COMMAND.name && input.offersUsageLimits && !input.hasThread) {
+    if (command.name === USAGE_LIMITS_COMMAND.name && input.offersUsageLimits) {
       continue;
     }
     if (

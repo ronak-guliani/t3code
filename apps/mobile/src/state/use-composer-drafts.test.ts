@@ -1186,6 +1186,24 @@ describe("mobile composer drafts", () => {
     expect(getComposerDraftSnapshot(second).text).toBe("second idea");
   });
 
+  it("keeps nested-thread ancestry on its own id-keyed draft", async () => {
+    const parentThreadId = ThreadId.make("parent-thread");
+    const key = createNewTaskDraft({
+      environmentId: EnvironmentId.make("environment-1"),
+      projectId: ProjectId.make("project-1"),
+      parentThreadId,
+    });
+    setComposerDraftText(key, "follow up");
+
+    await flushComposerDrafts();
+
+    expect(getComposerDraftSnapshot(key)).toMatchObject({
+      text: "follow up",
+      parentThreadId,
+      project: { environmentId: "environment-1", projectId: "project-1" },
+    });
+  });
+
   it("retargets a new-task draft to another project without losing its text", () => {
     const from = {
       environmentId: EnvironmentId.make("environment-1"),
@@ -1214,6 +1232,7 @@ describe("mobile composer drafts", () => {
     expect(moved.runtimeMode).toBe("approval-required");
     // Branch and worktree belong to the old repo.
     expect(moved.workspaceSelection).toBeUndefined();
+    expect(moved.parentThreadId).toBeUndefined();
     expect(moved.project).toEqual({ ...to, createdAt });
     expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), from)).toEqual([]);
     expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), to)).toEqual([key]);

@@ -10,6 +10,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type MessageId,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
@@ -22,6 +23,7 @@ import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn"
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
+import { nestedThreadParentError } from "../features/threads/mobile-thread-hierarchy";
 import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useServerConfigs, useThreadShells } from "./entities";
 import { serverEnvironment } from "./server";
@@ -332,7 +334,8 @@ export async function restoreRejectedQueuedMessage(
   queuedMessage: QueuedThreadMessage,
   message: string,
 ): Promise<"restored" | "deferred" | "blocked" | "retry"> {
-  const draftKey = recoveryDraftKey(queuedMessage);
+  const recovery = recoveryDraft(queuedMessage);
+  const draftKey = recovery.key;
   // Set once the merge publishes, cleared once the queued message is removed.
   // The catch below uses it to take the merged content back out, so a retry
   // after a mid-recovery failure cannot append the recovered text again.
@@ -395,6 +398,7 @@ export async function restoreRejectedQueuedMessage(
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
         ? {
+            parentThreadId: recovery.parentThreadId,
             workspaceSelection: {
               mode: queuedMessage.creation.workspaceMode,
               branch: queuedMessage.creation.branch,
@@ -409,6 +413,10 @@ export async function restoreRejectedQueuedMessage(
     const restoredDraft = getComposerDraftSnapshot(draftKey);
     rollback = { snapshot: originalDraft, merged: restoredDraft };
     await flushComposerDrafts();
+    if (recoveryDraft(queuedMessage).parentThreadId !== recovery.parentThreadId) {
+      await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
+      return "retry";
+    }
     if (
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
       !(await confirmThreadOutboxMessageQueued(queuedMessage)) ||
@@ -423,7 +431,9 @@ export async function restoreRejectedQueuedMessage(
       !(await removeThreadOutboxMessage(
         queuedMessage,
         revision,
-        () => !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
+        () =>
+          !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] &&
+          recoveryDraft(queuedMessage).parentThreadId === recovery.parentThreadId,
       ))
     ) {
       await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
@@ -432,7 +442,11 @@ export async function restoreRejectedQueuedMessage(
     // The queued message is gone; from here the draft owns the content and
     // must never be rolled back.
     rollback = null;
-    setPendingConnectionError(message);
+    setPendingConnectionError(
+      queuedMessage.creation?.parentThreadId && recovery.parentThreadId === undefined
+        ? `${message} Recovered to a project draft without a parent. Open New chat to review and send it.`
+        : message,
+    );
     return "restored";
   } catch (error) {
     if (rollback !== null) {
@@ -459,10 +473,24 @@ export async function restoreRejectedQueuedMessage(
  * message id so a retry after a mid-recovery failure lands on the same draft
  * instead of minting another.
  */
-function recoveryDraftKey(queuedMessage: QueuedThreadMessage): string {
-  return queuedMessage.creation
-    ? newTaskDraftKey(`restored-${queuedMessage.messageId}`)
-    : scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
+function recoveryDraft(queuedMessage: QueuedThreadMessage): {
+  readonly key: string;
+  readonly parentThreadId?: ThreadId;
+} {
+  const creation = queuedMessage.creation;
+  if (!creation) {
+    return { key: scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId) };
+  }
+  const threads = appAtomRegistry
+    .get(environmentThreadShells.threadShellsAtom)
+    .filter((thread) => thread.environmentId === queuedMessage.environmentId);
+  return {
+    key: newTaskDraftKey(`restored-${queuedMessage.messageId}`),
+    ...(nestedThreadParentError(creation.parentThreadId, creation.projectId, threads) === null &&
+    creation.parentThreadId
+      ? { parentThreadId: creation.parentThreadId }
+      : {}),
+  };
 }
 
 function stampRecoveryDraftProject(queuedMessage: QueuedThreadMessage, draftKey: string): void {
@@ -570,7 +598,7 @@ export function useThreadOutboxDrain(): void {
       }
 
       if (!blockedRecoverySubscriptionsRef.current.has(queuedMessage.messageId)) {
-        const draftKey = recoveryDraftKey(queuedMessage);
+        const draftKey = recoveryDraft(queuedMessage).key;
         const editorDraftKey = queuedMessage.creation
           ? `pending-task:${queuedMessage.messageId}`
           : null;
@@ -891,10 +919,19 @@ export function useThreadOutboxDrain(): void {
         settings,
         currentConfig.providers,
       );
+      const parentError = nestedThreadParentError(
+        creation.parentThreadId,
+        creation.projectId,
+        appAtomRegistry
+          .get(environmentThreadShells.threadShellsAtom)
+          .filter((thread) => thread.environmentId === queuedMessage.environmentId),
+      );
+      if (parentError !== null) return restoreQueuedMessage(persistedMessage, parentError);
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
           projectId: creation.projectId,
+          parentThreadId: creation.parentThreadId,
           projectCwd,
           threadId: queuedMessage.threadId,
           commandId: queuedMessage.commandId,

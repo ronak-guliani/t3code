@@ -16,6 +16,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { beginPendingThreadOrder, getPendingThreadOrder } from "../../state/thread-order";
 import { createPendingThreadOrder, createThreadMovePlanner } from "../threads/threadOrder";
 import { getThreadListV2OrderedSection } from "../threads/threadListV2";
+import { buildMobileThreadTree } from "../threads/mobile-thread-hierarchy";
 
 /** Version skew: never send settle/unsettle to a server that predates them
     (capability defaults false on decode for older servers). */
@@ -117,18 +118,23 @@ function useThreadActionExecutor(
           );
           return false;
         }
-        // Archive keeps its original, narrower guard: never interrupt a
-        // thread mid-turn.
-        if (
-          action === "archive" &&
-          thread.session?.status === "running" &&
-          thread.session.activeTurnId != null
-        ) {
-          Alert.alert(
-            actionFailureTitle(action),
-            "This thread is working. Interrupt it first, then try again.",
+        if (action === "archive") {
+          const pending = buildMobileThreadTree(
+            appAtomRegistry
+              .get(environmentThreadShells.threadShellsAtom)
+              .filter((candidate) => candidate.environmentId === thread.environmentId),
           );
-          return false;
+          while (pending.length > 0) {
+            const node = pending.pop()!;
+            if (node.thread.id === thread.id && node.archiveBlocked) {
+              Alert.alert(
+                actionFailureTitle(action),
+                "This chat or a nested chat has active work. Interrupt it or wait for queued work to finish, then try again.",
+              );
+              return false;
+            }
+            for (const child of node.children) pending.push(child);
+          }
         }
         const result =
           action === "unsettle"

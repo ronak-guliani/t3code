@@ -40,7 +40,9 @@ export function resolveFileChipTarget(
 }
 
 function fileChipMetadata(target: FileChipTarget) {
-  const path = target.fullPath ?? target.relativePath;
+  // The current server only issues asset URLs for files contained by the
+  // thread workspace. A full path without a relative counterpart is outside.
+  const path = target.relativePath;
   if (!path) return null;
   const name = fileBasename(path);
   const dot = name.lastIndexOf(".");

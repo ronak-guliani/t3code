@@ -48,15 +48,9 @@ describe("file chip downloads", () => {
   const threadId = ThreadId.make("thread-1");
 
   it.each([
-    [
-      "/tmp/maria-counter/maria-counter-final.mp4",
-      "/tmp/maria-counter/maria-counter-final.mp4",
-      "video/mp4",
-    ],
-    ["/tmp/take%2520%23one.mp4:12", "/tmp/take%20#one.mp4", "video/mp4"],
-    ["/tmp/report.pdf", "/tmp/report.pdf", "application/pdf"],
-    ["screens/image.PNG", "/repo/screens/image.PNG", "image/png"],
-  ])("offers a host download for %s", (href, path, mimeType) => {
+    ["clips/demo.mp4", "clips/demo.mp4", "video/mp4"],
+    ["screens/image.PNG", "screens/image.PNG", "image/png"],
+  ])("offers a workspace download for %s", (href, path, mimeType) => {
     const target = resolveFileChipTarget(href, "/repo")!;
     expect(fileChipMenu(target).actions).toContainEqual({
       id: "save",
@@ -78,7 +72,7 @@ describe("file chip downloads", () => {
   });
 
   it("does not offer downloads the host asset endpoint cannot serve", () => {
-    for (const href of ["src/app.ts", "/tmp/archive.zip", "/tmp/clip.mp4.txt"]) {
+    for (const href of ["src/app.ts", "/tmp/report.pdf", "/tmp/clip.mp4", "/tmp/clip.mp4.txt"]) {
       const target = resolveFileChipTarget(href, "/repo")!;
       expect(fileChipShareSource(target, threadId)).toBeNull();
       expect(fileChipMenu(target).actions.some(({ id }) => id === "save")).toBe(false);

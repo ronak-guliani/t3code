@@ -6,6 +6,7 @@ import {
   ProjectId as ProjectIdSchema,
   ProviderInteractionMode as ProviderInteractionModeSchema,
   RuntimeMode as RuntimeModeSchema,
+  ThreadId,
   type EnvironmentId,
   type ModelSelection,
   type ProjectId,
@@ -60,6 +61,7 @@ export class ComposerDraftPersistenceError extends Schema.TaggedErrorClass<Compo
 }
 
 export interface ComposerDraft {
+  readonly parentThreadId?: ThreadId | undefined;
   readonly text: string;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
   readonly importedShareIds?: ReadonlyArray<string>;
@@ -96,7 +98,12 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection" | "project"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "workspaceSelection"
+  | "project"
+  | "parentThreadId"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -113,6 +120,7 @@ const ComposerDraftProjectSchema = Schema.Struct({
 });
 
 const ComposerDraftSchema = Schema.Struct({
+  parentThreadId: Schema.optional(ThreadId),
   text: Schema.String,
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   importedShareIds: Schema.optional(Schema.Array(Schema.String)),
@@ -212,7 +220,8 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.modelSelection === undefined &&
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
-    draft.workspaceSelection === undefined
+    draft.workspaceSelection === undefined &&
+    draft.parentThreadId === undefined
   );
 }
 
@@ -1370,6 +1379,7 @@ export function removeComposerDraftsForEnvironment(
 export function createNewTaskDraft(project: {
   readonly environmentId: EnvironmentId;
   readonly projectId: ProjectId;
+  readonly parentThreadId?: ThreadId;
 }): string {
   const draftKey = newTaskDraftKey(newDraftId());
   const stamp: ComposerDraftProject = {
@@ -1379,7 +1389,11 @@ export function createNewTaskDraft(project: {
   };
   updateComposerDrafts((current) => ({
     ...current,
-    [draftKey]: { ...EMPTY_DRAFT, project: stamp },
+    [draftKey]: {
+      ...EMPTY_DRAFT,
+      project: stamp,
+      ...(project.parentThreadId ? { parentThreadId: project.parentThreadId } : {}),
+    },
   }));
   return draftKey;
 }
@@ -1403,7 +1417,11 @@ export function retargetNewTaskDraft(
     ) {
       return current;
     }
-    const { workspaceSelection: _workspaceSelection, ...retained } = normalizeDraft(existing);
+    const {
+      workspaceSelection: _workspaceSelection,
+      parentThreadId: _parentThreadId,
+      ...retained
+    } = normalizeDraft(existing);
     // Pending uploads live on one server. Crossing environments keeps the
     // local bytes (the upload worker re-sends them to the new environment)
     // but drops the old stamp, so it cannot pin the source environment's

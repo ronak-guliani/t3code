@@ -93,4 +93,25 @@ describe("mobile slash commands", () => {
       }),
     ).toEqual({ text: "/plan ", cursor: 6, interactionMode: null });
   });
+
+  it("adds one T3 usage-limits command when the provider offers limits", () => {
+    const items = buildComposerSlashCommandItems({
+      query: "usage",
+      atMessageStart: true,
+      hasThread: true,
+      offersUsageLimits: true,
+      allowInteractionMode: true,
+      selectedProviderStatus: {
+        driver: ProviderDriverKind.make("codex"),
+        slashCommands: [{ name: "usage-limits", description: "Provider duplicate" }],
+      },
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "pcmd:usage-limits",
+      type: "provider-slash-command",
+      label: "/usage-limits",
+    });
+  });
 });

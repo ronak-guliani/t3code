@@ -13,7 +13,7 @@ import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
-import { threadEnvironment } from "../../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import { prepareTurnAttachments, validateDraftFileAttachments } from "../../lib/attachmentUpload";
 import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/commandMetadata";
@@ -27,6 +27,7 @@ import { validateProjectThreadCreation } from "./projectThreadCreationValidation
 import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { resolveProviderInteractionMode } from "./legacy-plan-mode";
+import { nestedThreadParentError } from "./mobile-thread-hierarchy";
 
 export function useCreateProjectThread() {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
@@ -34,6 +35,7 @@ export function useCreateProjectThread() {
   return useCallback(
     async (input: {
       readonly project: EnvironmentProject;
+      readonly parentThreadId?: ThreadId;
       readonly modelSelection: ModelSelection;
       readonly envMode: "local" | "worktree";
       readonly branch: string | null;
@@ -127,11 +129,23 @@ export function useCreateProjectThread() {
       const provider = serverConfig?.providers.find(
         (candidate) => candidate.instanceId === input.modelSelection.instanceId,
       );
+      const parentError = nestedThreadParentError(
+        input.parentThreadId,
+        input.project.id,
+        appAtomRegistry
+          .get(environmentThreadShells.threadShellsAtom)
+          .filter((thread) => thread.environmentId === input.project.environmentId),
+      );
+      if (parentError !== null) {
+        setPendingConnectionError(parentError);
+        return AsyncResult.failure(Cause.fail(new Error(parentError)));
+      }
 
       const result = await startTurn({
         environmentId: input.project.environmentId,
         input: buildProjectThreadStartTurnInput({
           projectId: input.project.id,
+          parentThreadId: input.parentThreadId,
           projectCwd: input.project.workspaceRoot,
           threadId: metadata.threadId,
           commandId: metadata.commandId,

@@ -1,7 +1,7 @@
 import {
   CommandId,
   ORCHESTRATION_WS_METHODS,
-  type ClientOrchestrationCommand,
+  type CapabilityClientOrchestrationCommand as ClientOrchestrationCommand,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -33,6 +33,7 @@ export type UpdateProjectInput = CommandInput<"project.meta.update">;
 export type DeleteProjectInput = CommandInput<"project.delete">;
 export type CreateThreadInput = CommandInput<"thread.create">;
 export type DeleteThreadInput = CommandInput<"thread.delete">;
+export type DecoupleThreadInput = CommandInput<"thread.decouple">;
 export type ArchiveThreadInput = CommandInput<"thread.archive">;
 export type UnarchiveThreadInput = CommandInput<"thread.unarchive">;
 export type SettleThreadInput = CommandInput<"thread.settle">;
@@ -157,6 +158,16 @@ export const unarchiveThread: (input: UnarchiveThreadInput) => CommandEffect = E
   return yield* dispatch({
     ...input,
     type: "thread.unarchive",
+    commandId: yield* commandId(input),
+  });
+});
+
+export const decoupleThread: (input: DecoupleThreadInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.decoupleThread",
+)(function* (input) {
+  return yield* dispatch({
+    ...input,
+    type: "thread.decouple",
     commandId: yield* commandId(input),
   });
 });
