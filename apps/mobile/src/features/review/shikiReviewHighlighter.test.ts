@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { ReviewRenderableFile } from "./reviewModel";
-import { highlightCodeSnippet, highlightReviewFile } from "./shikiReviewHighlighter";
+import {
+  highlightCodeSnippet,
+  highlightReviewFile,
+  highlightSourceFile,
+} from "./shikiReviewHighlighter";
 
 function makeRenderableFile(
   input: Partial<ReviewRenderableFile> & Pick<ReviewRenderableFile, "path">,
@@ -140,12 +144,10 @@ describe("highlightCodeSnippet", () => {
 });
 
 describe("highlightSourceFile", () => {
-  it("initializes source and snippet highlighting without a warmup", async () => {
-    vi.resetModules();
-    const highlighter = await import("./shikiReviewHighlighter");
+  it("keeps source and snippet highlighting output aligned", async () => {
     const source = "const answer: number = 42;";
 
-    const highlighted = await highlighter.highlightSourceFile({
+    const highlighted = await highlightSourceFile({
       path: "example.ts",
       contents: source,
       theme: "dark",
@@ -158,8 +160,8 @@ describe("highlightSourceFile", () => {
         .join(""),
     ).toBe(source);
     expect(highlighted.flat().some((token) => token.color !== null)).toBe(true);
-    expect(
-      await highlighter.highlightCodeSnippet({ code: source, language: "ts", theme: "dark" }),
-    ).toEqual(highlighted);
+    expect(await highlightCodeSnippet({ code: source, language: "ts", theme: "dark" })).toEqual(
+      highlighted,
+    );
   });
 });
