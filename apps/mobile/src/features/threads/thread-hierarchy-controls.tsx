@@ -11,8 +11,12 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { AppText as Text } from "../../components/AppText";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
-import type { MobileThreadTreeRow } from "./mobile-thread-hierarchy";
-import { NO_THREAD_EXPANSION_OVERRIDES } from "./mobile-thread-hierarchy";
+import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
+import {
+  nestedThreadCompletionMarker,
+  nestedThreadKey,
+  NO_THREAD_EXPANSION_OVERRIDES,
+} from "./mobile-thread-hierarchy";
 import { SymbolView } from "../../components/AppSymbol";
 
 const NO_DISMISSED_RUNS: readonly string[] = [];
@@ -21,6 +25,40 @@ export function useDismissedAgentRunKeys(): readonly string[] {
   return AsyncResult.isSuccess(result)
     ? (result.value.dismissedAgentRunKeys ?? NO_DISMISSED_RUNS)
     : NO_DISMISSED_RUNS;
+}
+
+export function useThreadChildReadAt(): Readonly<Record<string, string>> {
+  const result = useAtomValue(mobilePreferencesAtom);
+  return AsyncResult.isSuccess(result) ? (result.value.threadChildReadAt ?? {}) : {};
+}
+
+function markNestedThreadRead(
+  thread: MobileThreadShell,
+  save: (patch: { readonly threadChildReadAt: Readonly<Record<string, string>> }) => void,
+): void {
+  const marker = nestedThreadCompletionMarker(thread);
+  if (marker === null) return;
+  const current = appAtomRegistry.get(mobilePreferencesAtom);
+  if (!AsyncResult.isSuccess(current)) return;
+  const key = nestedThreadKey(thread);
+  const previous = current.value.threadChildReadAt?.[key];
+  if (previous && Date.parse(previous) >= Date.parse(marker)) return;
+  save({
+    threadChildReadAt: {
+      ...current.value.threadChildReadAt,
+      [key]: marker,
+    },
+  });
+}
+
+export function useMarkNestedThreadRead(thread: MobileThreadShell | null) {
+  const focused = useIsFocused();
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  useEffect(() => {
+    if (!focused || thread === null || thread.parentThreadId == null) return;
+    if (AppState.currentState !== "active") return;
+    markNestedThreadRead(thread, save);
+  }, [focused, save, thread]);
 }
 
 export function useThreadExpandedOverrides(): ReadonlyMap<string, boolean> {

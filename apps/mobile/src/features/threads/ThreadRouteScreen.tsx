@@ -69,7 +69,10 @@ import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
-import { useMarkChildNotificationsRead } from "./thread-hierarchy-controls";
+import {
+  useMarkChildNotificationsRead,
+  useMarkNestedThreadRead,
+} from "./thread-hierarchy-controls";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import {
   useAdaptiveWorkspaceLayout,
@@ -155,6 +158,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
       : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
   const selectedThreadDetailState = useSelectedThreadDetailState();
   useMarkChildNotificationsRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
+  useMarkNestedThreadRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
   useEffect(() => {
     const project = removedThreadProject({
       route: selectedThreadRef,

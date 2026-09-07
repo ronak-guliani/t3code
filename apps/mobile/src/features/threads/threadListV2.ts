@@ -22,6 +22,8 @@ import {
   mobileThreadTreeRows,
   resolveNestedThreadStatus,
   selectMatchingThreadTree,
+  nestedThreadRevealKeys,
+  type NestedThreadReadMarkers,
   type MobileThreadTreeRow,
   type MobileThreadShell,
 } from "./mobile-thread-hierarchy";
@@ -332,6 +334,7 @@ export function buildThreadListV2Items(input: {
   readonly selectedThreadKey?: string | null;
   readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean>;
   readonly dismissedAgentRunKeys?: readonly string[];
+  readonly threadChildReadAt?: NestedThreadReadMarkers;
 }): ThreadListV2Layout {
   const now = input.now;
   const query = input.searchQuery.trim().toLocaleLowerCase();
@@ -363,6 +366,10 @@ export function buildThreadListV2Items(input: {
     scopedThreads,
     compareNestedThreads,
     input.dismissedAgentRunKeys,
+    {
+      readMarkers: input.threadChildReadAt,
+      includeReadCompletedChildren: query.length > 0,
+    },
   );
   const roots = query.length > 0 ? selectMatchingThreadTree(tree, matchingKeys) : tree;
   const nodesByKey = new Map(tree.map((node) => [node.threadKey, node]));
@@ -372,7 +379,10 @@ export function buildThreadListV2Items(input: {
       mobileThreadTreeRows([node], {
         expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
         selectedThreadKey: input.selectedThreadKey,
-        ...(query.length > 0 ? { revealThreadKeys: matchingKeys } : {}),
+        revealThreadKeys:
+          query.length > 0
+            ? matchingKeys
+            : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
       }),
     ]),
   );

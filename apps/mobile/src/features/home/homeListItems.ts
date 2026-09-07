@@ -3,8 +3,10 @@ import type { HomeThreadGroup } from "./homeThreadList";
 import {
   buildMobileThreadTree,
   mobileThreadTreeRows,
+  nestedThreadRevealKeys,
   type MobileThreadTreeRow,
   type MobileThreadShell,
+  type NestedThreadReadMarkers,
   compareNestedThreads,
 } from "../threads/mobile-thread-hierarchy";
 
@@ -138,6 +140,7 @@ export function buildHomeListLayout(input: {
   readonly showAllThreads?: boolean;
   readonly expandedOverrideByThreadKey?: ReadonlyMap<string, boolean>;
   readonly dismissedAgentRunKeys?: readonly string[];
+  readonly threadChildReadAt?: NestedThreadReadMarkers;
   readonly selectedThreadKey?: string | null;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
@@ -173,6 +176,10 @@ export function buildHomeListLayout(input: {
       group.threads,
       (left, right) => ordinal(left) - ordinal(right) || compareNestedThreads(left, right),
       input.dismissedAgentRunKeys,
+      {
+        readMarkers: input.threadChildReadAt,
+        includeReadCompletedChildren: input.showAllThreads === true,
+      },
     ).sort((left, right) => ordinal(left.mostRecentThread) - ordinal(right.mostRecentThread));
     const totalCount = roots.length;
     // Default to the group's recent-activity window (last few days, or a small
@@ -204,13 +211,10 @@ export function buildHomeListLayout(input: {
       mobileThreadTreeRows([root], {
         expandedOverrideByThreadKey: input.expandedOverrideByThreadKey,
         selectedThreadKey: input.selectedThreadKey,
-        ...(input.showAllThreads
-          ? {
-              revealThreadKeys: new Set(
-                group.threads.map((thread) => `${thread.environmentId}:${thread.id}`),
-              ),
-            }
-          : {}),
+        revealThreadKeys:
+          input.showAllThreads === true
+            ? new Set(group.threads.map((thread) => `${thread.environmentId}:${thread.id}`))
+            : nestedThreadRevealKeys([root], input.threadChildReadAt ?? {}),
       }),
     );
     const visibleThreads = rows

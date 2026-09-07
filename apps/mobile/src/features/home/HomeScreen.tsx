@@ -60,6 +60,7 @@ import { useThreadListV2ShelfPreferences } from "../threads/use-thread-list-v2-s
 import {
   useThreadExpandedOverrides,
   useDismissedAgentRunKeys,
+  useThreadChildReadAt,
 } from "../threads/thread-hierarchy-controls";
 import type { HomeListFilterMenuEnvironment } from "./home-list-filter-menu";
 import {
@@ -216,6 +217,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const threadListV2Enabled = useThreadListV2Enabled();
   const expandedOverrideByThreadKey = useThreadExpandedOverrides();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
+  const threadChildReadAt = useThreadChildReadAt();
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const listRef = useRef<LegendListRef | null>(null);
@@ -420,6 +422,7 @@ export function HomeScreen(props: HomeScreenProps) {
             showAllThreads: hasSearchQuery,
             expandedOverrideByThreadKey,
             dismissedAgentRunKeys,
+            threadChildReadAt,
           }),
     [
       threadListV2Enabled,
@@ -428,6 +431,7 @@ export function HomeScreen(props: HomeScreenProps) {
       hasSearchQuery,
       expandedOverrideByThreadKey,
       dismissedAgentRunKeys,
+      threadChildReadAt,
     ],
   );
 
@@ -683,6 +687,7 @@ export function HomeScreen(props: HomeScreenProps) {
       threads: props.threads,
       expandedOverrideByThreadKey,
       dismissedAgentRunKeys,
+      threadChildReadAt,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -699,6 +704,7 @@ export function HomeScreen(props: HomeScreenProps) {
     nowMinute,
     expandedOverrideByThreadKey,
     dismissedAgentRunKeys,
+    threadChildReadAt,
     snoozeWakeTick,
     snoozedShelfExpanded,
     settledShelfExpanded,

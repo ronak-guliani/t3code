@@ -15,9 +15,41 @@ export interface MobileThreadShell extends EnvironmentThreadShell {
     readonly parentThreadId: ThreadId;
   };
 }
+export type NestedThreadReadMarkers = Readonly<Record<string, string>>;
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus>;
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus>;
 export const NO_THREAD_EXPANSION_OVERRIDES: ReadonlyMap<string, boolean> = new Map();
+
+export function nestedThreadKey(thread: MobileThreadShell): string {
+  return thread.virtualAgentRun
+    ? `${thread.environmentId}:agent-run:${thread.virtualAgentRun.parentThreadId}:${thread.virtualAgentRun.taskId}`
+    : `${thread.environmentId}:${thread.id}`;
+}
+
+export function nestedThreadCompletionMarker(thread: MobileThreadShell): string | null {
+  if (thread.virtualAgentRun) {
+    if (thread.virtualAgentRun.status === "running") return null;
+    return thread.virtualAgentRun.completedAt ?? thread.updatedAt;
+  }
+  if (thread.parentThreadId == null || thread.latestTurn === null) return null;
+  if (thread.latestTurn.state === "running" || thread.latestTurn.completedAt === null) {
+    return null;
+  }
+  return thread.latestTurn.completedAt;
+}
+
+export function isNestedThreadRead(
+  thread: MobileThreadShell,
+  readMarkers: NestedThreadReadMarkers,
+): boolean {
+  const marker = nestedThreadCompletionMarker(thread);
+  if (marker === null) return false;
+  const readMarker = readMarkers[nestedThreadKey(thread)];
+  if (!readMarker) return false;
+  const markerMs = Date.parse(marker);
+  const readMarkerMs = Date.parse(readMarker);
+  return Number.isFinite(markerMs) && Number.isFinite(readMarkerMs) && markerMs <= readMarkerMs;
+}
 
 export function nestedThreadParentError(
   parentThreadId: ThreadId | undefined,
@@ -85,6 +117,10 @@ export function buildMobileThreadTree(
   threads: readonly EnvironmentThreadShell[],
   compare = compareNestedThreads,
   dismissedAgentRunKeys: readonly string[] = [],
+  options: {
+    readonly readMarkers?: NestedThreadReadMarkers;
+    readonly includeReadCompletedChildren?: boolean;
+  } = {},
 ): MobileThreadTreeNode[] {
   const dismissed = new Set(dismissedAgentRunKeys);
   const expanded: MobileThreadShell[] = selectVisibleThreads(threads).flatMap((thread) => [
@@ -114,13 +150,60 @@ export function buildMobileThreadTree(
         }),
       ),
   ]);
+  const readMarkers = options.readMarkers ?? {};
+  const visibleKeys = new Set(
+    expanded
+      .filter(
+        (thread) =>
+          options.includeReadCompletedChildren === true ||
+          thread.parentThreadId == null ||
+          resolveNestedThreadStatus(thread) !== "ready" ||
+          !isNestedThreadRead(thread, readMarkers),
+      )
+      .map((thread) => hierarchyThreadKey(thread)),
+  );
+  const threadsByKey = new Map(expanded.map((thread) => [hierarchyThreadKey(thread), thread]));
+  for (const thread of expanded) {
+    if (!visibleKeys.has(hierarchyThreadKey(thread))) continue;
+    let parentThreadId = thread.parentThreadId;
+    while (parentThreadId != null) {
+      const parentKey = hierarchyThreadKey({
+        environmentId: thread.environmentId,
+        id: parentThreadId,
+      });
+      if (!threadsByKey.has(parentKey)) break;
+      visibleKeys.add(parentKey);
+      parentThreadId = threadsByKey.get(parentKey)?.parentThreadId ?? null;
+    }
+  }
   return buildThreadTree({
-    threads: expanded,
+    threads: expanded.filter((thread) => visibleKeys.has(hierarchyThreadKey(thread))),
     compare,
     resolveStatus: resolveNestedThreadStatus,
     rollUpStatus: rollUpNestedThreadStatus,
     isArchiveBlocked: isThreadArchiveBlocked,
   });
+}
+
+export function nestedThreadRevealKeys(
+  nodes: readonly MobileThreadTreeNode[],
+  readMarkers: NestedThreadReadMarkers,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (
+      node.thread.parentThreadId != null &&
+      node.status === "ready" &&
+      nestedThreadCompletionMarker(node.thread) !== null &&
+      !isNestedThreadRead(node.thread, readMarkers)
+    ) {
+      keys.add(node.threadKey);
+    }
+    pending.push(...node.children);
+  }
+  return keys;
 }
 
 export function mobileThreadTreeRows(

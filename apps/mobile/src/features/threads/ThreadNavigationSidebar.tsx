@@ -30,7 +30,11 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
-import { useThreadExpandedOverrides, useDismissedAgentRunKeys } from "./thread-hierarchy-controls";
+import {
+  useThreadExpandedOverrides,
+  useDismissedAgentRunKeys,
+  useThreadChildReadAt,
+} from "./thread-hierarchy-controls";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -166,6 +170,7 @@ function ThreadNavigationSidebarPane(
   const threadListV2Enabled = useThreadListV2Enabled();
   const expandedOverrideByThreadKey = useThreadExpandedOverrides();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
+  const threadChildReadAt = useThreadChildReadAt();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(
@@ -356,6 +361,7 @@ function ThreadNavigationSidebarPane(
             showAllThreads: hasSearchQuery,
             expandedOverrideByThreadKey,
             dismissedAgentRunKeys,
+            threadChildReadAt,
             selectedThreadKey: props.selectedThreadKey,
           }),
     [
@@ -366,6 +372,7 @@ function ThreadNavigationSidebarPane(
       expandedOverrideByThreadKey,
       props.selectedThreadKey,
       dismissedAgentRunKeys,
+      threadChildReadAt,
     ],
   );
   const projectCwdByKey = useMemo(() => {
@@ -508,6 +515,7 @@ function ThreadNavigationSidebarPane(
       threads,
       expandedOverrideByThreadKey,
       dismissedAgentRunKeys,
+      threadChildReadAt,
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,
@@ -524,6 +532,7 @@ function ThreadNavigationSidebarPane(
     nowMinute,
     expandedOverrideByThreadKey,
     dismissedAgentRunKeys,
+    threadChildReadAt,
     snoozeWakeTick,
     snoozedShelfExpanded,
     settledShelfExpanded,
