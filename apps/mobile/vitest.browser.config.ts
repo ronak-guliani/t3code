@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
-import { defineConfig } from "vite-plus";
+import { defineConfig } from "vitest/config";
 
 // Exercises React lifecycle only; DOM primitives cannot assert native layout or gestures.
 export default defineConfig({
