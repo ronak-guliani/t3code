@@ -13,7 +13,7 @@ export function createDeferredRouteScreen<Props extends object>(
 
   function DeferredRouteScreen(props: Props) {
     const [Screen, setScreen] = useState<ComponentType<Props> | null>(() => screenModule.peek());
-    const [error, setError] = useState<unknown>(null);
+    const [failed, setFailed] = useState(false);
     const [attempt, setAttempt] = useState(0);
 
     useEffect(() => {
@@ -32,7 +32,7 @@ export function createDeferredRouteScreen<Props extends object>(
             return;
           }
           reportClientError(`[deferred-route] ${routeName} module load failed`, cause);
-          setError(cause);
+          setFailed(true);
         },
       );
       return () => {
@@ -40,7 +40,7 @@ export function createDeferredRouteScreen<Props extends object>(
       };
     }, [Screen, attempt]);
 
-    if (error !== null) {
+    if (failed) {
       return (
         <View className="flex-1 items-center justify-center bg-screen px-6">
           <EmptyState
@@ -48,7 +48,7 @@ export function createDeferredRouteScreen<Props extends object>(
             detail="This screen hit an unexpected error. Your threads are safe — try again."
             actionLabel="Try again"
             onAction={() => {
-              setError(null);
+              setFailed(false);
               setAttempt((value) => value + 1);
             }}
           />
