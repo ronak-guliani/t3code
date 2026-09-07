@@ -18,14 +18,14 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 
+import { scopedThreadKey } from "../lib/scopedEntities";
 import { reportClientWarning } from "../lib/clientLogger";
-import { scopedProjectKey, scopedThreadKey } from "../lib/scopedEntities";
+import { recordOutboxDiagnostic } from "../connection/diagnostic-store";
 import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn";
-import { nestedThreadParentError } from "../features/threads/mobile-thread-hierarchy";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
-import { recordOutboxDiagnostic } from "../connection/diagnostic-store";
 import { isModelSelectionUnavailable } from "../lib/modelOptions";
+import { nestedThreadParentError } from "../features/threads/mobile-thread-hierarchy";
 import { appAtomRegistry } from "./atom-registry";
 import { useProjects, useServerConfigs, useThreadShells } from "./entities";
 import { serverEnvironment } from "./server";
@@ -57,6 +57,7 @@ import {
   type ComposerDraft,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
+  newTaskDraftKey,
   replaceComposerDraftAttachments,
   removeDeliveredCloudQueuedMessage,
   undoComposerDraftMerge,
@@ -377,6 +378,7 @@ export async function restoreRejectedQueuedMessage(
 
     let mergedDraft: ComposerDraft;
     try {
+      stampRecoveryDraftProject(queuedMessage, draftKey);
       await mergeComposerDraftContent(draftKey, {
         text: queuedMessage.text,
         attachments: queuedMessage.attachments,
@@ -416,7 +418,7 @@ export async function restoreRejectedQueuedMessage(
     const restoredDraft = getComposerDraftSnapshot(draftKey);
     rollback = { snapshot: originalDraft, merged: restoredDraft };
     await flushComposerDrafts();
-    if (recoveryDraft(queuedMessage).key !== draftKey) {
+    if (recoveryDraft(queuedMessage).parentThreadId !== recovery.parentThreadId) {
       await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
       return "retry";
     }
@@ -436,18 +438,18 @@ export async function restoreRejectedQueuedMessage(
         revision,
         () =>
           !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] &&
-          recoveryDraft(queuedMessage).key === draftKey,
+          recoveryDraft(queuedMessage).parentThreadId === recovery.parentThreadId,
       ))
     ) {
       await undoComposerDraftMerge(draftKey, originalDraft, restoredDraft);
-      return recoveryDraft(queuedMessage).key === draftKey ? "deferred" : "retry";
+      return "deferred";
     }
     // The queued message is gone; from here the draft owns the content and
     // must never be rolled back.
     rollback = null;
     setPendingConnectionError(
       queuedMessage.creation?.parentThreadId && recovery.parentThreadId === undefined
-        ? `${message} Recovered to the project's new-chat draft without a parent. Open New chat to review and send it.`
+        ? `${message} Recovered to a project draft without a parent. Open it from the inbox to review and send it.`
         : message,
     );
     return "restored";
@@ -470,28 +472,43 @@ export async function restoreRejectedQueuedMessage(
   }
 }
 
+/**
+ * A rejected creation becomes its own new-task draft rather than merging into
+ * whatever the user is typing for that project. The key derives from the
+ * message id so a retry after a mid-recovery failure lands on the same draft
+ * instead of minting another.
+ */
 function recoveryDraft(queuedMessage: QueuedThreadMessage): {
   readonly key: string;
   readonly parentThreadId?: ThreadId;
 } {
   const creation = queuedMessage.creation;
-  if (!creation)
+  if (!creation) {
     return { key: scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId) };
-  if (creation.parentThreadId) {
-    const parent = appAtomRegistry.get(
-      environmentThreadShells.threadShellAtom({
-        environmentId: queuedMessage.environmentId,
-        threadId: creation.parentThreadId,
-      }),
-    );
-    if (parent?.archivedAt === null && parent.projectId === creation.projectId) {
-      return {
-        key: `subchat:${queuedMessage.environmentId}:${creation.parentThreadId}`,
-        parentThreadId: creation.parentThreadId,
-      };
-    }
   }
-  return { key: `new-task:${scopedProjectKey(queuedMessage.environmentId, creation.projectId)}` };
+  const threads = appAtomRegistry
+    .get(environmentThreadShells.threadShellsAtom)
+    .filter((thread) => thread.environmentId === queuedMessage.environmentId);
+  return {
+    key: newTaskDraftKey(`restored-${queuedMessage.messageId}`),
+    ...(nestedThreadParentError(creation.parentThreadId, creation.projectId, threads) === null &&
+    creation.parentThreadId
+      ? { parentThreadId: creation.parentThreadId }
+      : {}),
+  };
+}
+
+function stampRecoveryDraftProject(queuedMessage: QueuedThreadMessage, draftKey: string): void {
+  if (!queuedMessage.creation) {
+    return;
+  }
+  updateComposerDraftSettings(draftKey, {
+    project: {
+      environmentId: queuedMessage.environmentId,
+      projectId: queuedMessage.creation.projectId,
+      createdAt: queuedMessage.createdAt,
+    },
+  });
 }
 
 async function preserveUploadedAttachmentsForEditor(

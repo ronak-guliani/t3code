@@ -67,10 +67,10 @@ use `pnpm ios:update` and install the resulting Preview build.
 Long-press a chat and choose **New subchat**, or use **Chat actions** in its header.
 The draft inherits the parent's provider instance, model options and checkout without
 copying conversation history. Choose a new worktree explicitly to isolate its workspace.
-Each parent has its own persisted subchat draft; offline queued creation and rejection
+Subchat drafts persist independently of the parent conversation and other drafts; offline queued creation and rejection
 recovery retain parentage, model options and checkout selection.
 If a rejected queued subchat's parent is unavailable, its content and settings are recovered
-to the project's new-chat draft without parentage. Review and send it explicitly; recovery
+to a separate project draft without parentage. Open it from the inbox and send it explicitly; recovery
 never sends it automatically.
 
 Home and the iPad sidebar use compact, single-line rows in both list modes. Device, checkout
@@ -86,6 +86,11 @@ Search reveals matching descendants on collapsed shelves without indentation or 
 siblings. Content search can show a matching excerpt. The selected iPad conversation remains
 directly reachable even when it belongs to a group. On iPhone, search lives below the header;
 filter, settings and compose actions no longer float over the list.
+
+Unsent drafts and queued tasks use the same compact rows and remain editable from the inbox.
+Pinned chats retain manual ordering; active-chat ordering is not offered until the server supports it.
+Project favicon thumbnails are cached locally while requests retain the `projectId` wire format
+used by already-installed apps and servers.
 
 **Go to parent chat** navigates up one level. **Decouple chat** makes the selected chat a root
 without changing its checkout. Archive includes active descendants and is blocked while that

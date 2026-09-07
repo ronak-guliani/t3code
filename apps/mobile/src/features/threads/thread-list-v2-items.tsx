@@ -10,6 +10,7 @@ import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSw
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { CompactThreadRow } from "./compact-thread-row";
+import { PendingTaskListRow } from "./thread-list-items";
 import type { MobileThreadTreeRow, MobileThreadShell } from "./mobile-thread-hierarchy";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { cn } from "../../lib/cn";
@@ -159,17 +160,6 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   );
 });
 
-const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
-  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
-];
-
-/**
- * A queued new task, in the same idiom as an active v2 row: it is work the
- * user wrote, so it reads like the threads it will become. "Queued" takes
- * the status slot — the state is the one thing that differs — and stays
- * uncolored because nothing is asked of the user; the environment is simply
- * not reachable yet.
- */
 export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props: {
   readonly pendingTask: PendingNewTask;
   readonly pane?: "screen" | "sidebar";
@@ -180,30 +170,17 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
 }) {
-  const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
-  const sidebarPane = props.pane === "sidebar";
-
-  const handleMenuAction = useCallback(
-    ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
-      if (nativeEvent.event === "delete") onDeletePendingTask(pendingTask);
-    },
-    [onDeletePendingTask, pendingTask],
-  );
-
   return (
     <>
       {props.showPendingDivider ? (
-        <ThreadListV2SectionDivider label="Pending" pane={props.pane} />
+        <ThreadListV2SectionDivider label="Unsent" pane={props.pane} />
       ) : null}
-      <CompactThreadRow
-        menu={{ actions: PENDING_TASK_MENU_ACTIONS, onPressAction: handleMenuAction }}
-        accessibilityHint="Opens the queued task for editing"
-        title={pendingTask.title}
-        timestamp={relativeTime(pendingTask.message.createdAt)}
-        status="queued"
-        sidebar={sidebarPane}
-        showDivider={props.showTrailingDivider !== false}
-        onPress={() => onSelectPendingTask(pendingTask)}
+      <PendingTaskListRow
+        variant={props.pane === "sidebar" ? "sidebar" : "compact"}
+        pendingTask={props.pendingTask}
+        isLast={props.showTrailingDivider === false}
+        onSelectPendingTask={props.onSelectPendingTask}
+        onDeletePendingTask={props.onDeletePendingTask}
       />
     </>
   );

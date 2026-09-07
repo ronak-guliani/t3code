@@ -58,6 +58,7 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
       >
         <ProjectFavicon
           environmentId={props.project.environmentId}
+          projectId={props.project.id}
           faviconPath={props.project.faviconPath}
           open={!props.collapsed}
           size={16}
@@ -127,6 +128,10 @@ const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+const DRAFT_TASK_MENU_ACTIONS: MenuAction[] = [
+  { id: "delete", title: "Discard", image: "trash", attributes: { destructive: true } },
+];
+
 export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   readonly variant: ThreadListVariant;
   readonly pendingTask: PendingNewTask;
@@ -143,13 +148,20 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   );
   return (
     <CompactThreadRow
-      menu={{ actions: PENDING_TASK_MENU_ACTIONS, onPressAction: handleMenuAction }}
+      menu={{
+        actions: pendingTask.kind === "draft" ? DRAFT_TASK_MENU_ACTIONS : PENDING_TASK_MENU_ACTIONS,
+        onPressAction: handleMenuAction,
+      }}
       title={pendingTask.title}
-      timestamp={relativeTime(pendingTask.message.createdAt)}
-      status="queued"
+      timestamp={relativeTime(pendingTask.createdAt)}
+      status={pendingTask.kind === "draft" ? "draft" : "queued"}
       sidebar={props.variant === "sidebar"}
       showDivider={!props.isLast}
-      accessibilityHint="Opens the queued task for editing"
+      accessibilityHint={
+        pendingTask.kind === "draft"
+          ? "Opens the draft for editing"
+          : "Opens the queued task for editing"
+      }
       onPress={() => onSelectPendingTask(pendingTask)}
     />
   );

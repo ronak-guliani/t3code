@@ -12,6 +12,7 @@ import {
 export const EnvironmentMachineKind = Schema.Literals([
   "server",
   "cloud",
+  "linux",
   "desktop",
   "laptop",
   "mac-mini",

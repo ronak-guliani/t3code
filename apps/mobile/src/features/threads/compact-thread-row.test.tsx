@@ -1,9 +1,12 @@
-import { createElement, type ReactNode } from "react";
+import { createElement, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { CompactThreadRow } from "./compact-thread-row";
+import { PendingTaskListRow, ThreadListRow } from "./thread-list-items";
+import { ThreadListV2PendingRow, ThreadListV2Row } from "./thread-list-v2-items";
+import type { PendingDraftTask } from "../../state/pending-new-tasks-model";
 import {
   buildMobileThreadTree,
   mobileThreadTreeRows,
@@ -17,6 +20,8 @@ interface TestProps {
   numberOfLines?: number;
   onPress?: () => void;
   onAccessibilityTap?: () => void;
+  actions?: NonNullable<ComponentProps<typeof CompactThreadRow>["menu"]>["actions"];
+  onPressAction?: NonNullable<ComponentProps<typeof CompactThreadRow>["menu"]>["onPressAction"];
 }
 const harness = vi.hoisted(() => ({
   pressables: [] as TestProps[],
@@ -25,6 +30,8 @@ const harness = vi.hoisted(() => ({
   navigate: vi.fn(),
 }));
 vi.mock("react-native", () => ({
+  Alert: { alert: vi.fn() },
+  useWindowDimensions: () => ({ width: 402 }),
   StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 0.5 },
   View: ({ children }: TestProps) => createElement("div", null, children),
   Pressable: (props: TestProps) => {
@@ -37,6 +44,22 @@ vi.mock("../../components/AppText", () => ({
     createElement("span", { "data-lines": props.numberOfLines }, props.children),
 }));
 vi.mock("../../components/AppSymbol", () => ({ SymbolView: () => null }));
+vi.mock("../../components/ProjectFavicon", () => ({ ProjectFavicon: () => null }));
+vi.mock("../home/thread-swipe-actions", () => ({
+  ThreadSwipeable: ({ children }: { children: (close: () => void) => ReactNode }) =>
+    children(() => {}),
+}));
+vi.mock("./use-nested-thread-actions", () => ({
+  useNestedThreadActions: () => ({
+    actions: [],
+    handleAction: () => {},
+    openParent: () => {},
+    dismissAgentRun: () => {},
+  }),
+}));
+vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
+  useAppearancePreferences: () => ({ themeAppearance: "light" }),
+}));
 vi.mock("../../components/ControlPill", () => ({
   ControlPillMenu: (props: TestProps) => {
     harness.menus.push(props);
@@ -86,6 +109,102 @@ beforeEach(() => {
 });
 
 describe("compact inbox row", () => {
+  it.each(["legacy", "v2"] as const)(
+    "keeps the %s list consumer compact with related navigation",
+    (mode) => {
+      const hierarchy = mobileThreadTreeRows(
+        buildMobileThreadTree([
+          parent,
+          { ...parent, id: ThreadId.make("child"), parentThreadId: parent.id },
+        ]),
+      )[0]!;
+      const onSelectThread = vi.fn();
+      const shared = {
+        thread: parent,
+        hierarchy,
+        onSelectThread,
+        onArchiveThread: vi.fn(),
+        onDeleteThread: vi.fn(),
+        onRegenerateThreadTitle: vi.fn(),
+        titleRegenerationSupported: true,
+        onSwipeableWillOpen: vi.fn(),
+        onSwipeableClose: vi.fn(),
+      };
+      const markup = renderToStaticMarkup(
+        mode === "legacy" ? (
+          <ThreadListRow {...shared} variant="compact" isLast />
+        ) : (
+          <ThreadListV2Row
+            {...shared}
+            variant="card"
+            snoozePresetMinute="2026-09-06T20:00"
+            settlementSupported
+            snoozeSupported
+            pinningSupported
+            onSettleThread={vi.fn()}
+            onUnsettleThread={vi.fn()}
+            onSnoozeThread={vi.fn()}
+            onUnsnoozeThread={vi.fn()}
+            onPinThread={vi.fn()}
+            onUnpinThread={vi.fn()}
+            onMovePinnedThread={vi.fn()}
+          />
+        ),
+      );
+      expect(markup).toContain('data-lines="1"');
+      expect(markup).not.toContain('data-lines="2"');
+      expect(markup).not.toContain(parent.branch);
+      expect(markup).not.toContain(parent.worktreePath);
+      expect(markup).not.toContain("Child update");
+      harness.pressables
+        .find((item) => item.accessibilityLabel?.startsWith("Related chats"))
+        ?.onPress?.();
+      expect(harness.navigate).toHaveBeenCalledWith("RelatedThreads", {
+        environmentId: parent.environmentId,
+        threadId: parent.id,
+      });
+      harness.menus[0]?.onAccessibilityTap?.();
+      expect(onSelectThread).toHaveBeenCalledWith(parent);
+    },
+  );
+
+  it.each(["legacy", "v2"] as const)("renders editable drafts in the %s compact list", (mode) => {
+    const draft: PendingDraftTask = {
+      kind: "draft",
+      key: "draft-task:new-task:one",
+      draftKey: "new-task:one",
+      environmentId: parent.environmentId,
+      projectId: parent.projectId,
+      projectTitle: undefined,
+      projectCwd: undefined,
+      branch: "hidden-branch",
+      title: "Unsent idea",
+      createdAt: parent.createdAt,
+      draft: { text: "Unsent idea", attachments: [] },
+    };
+    const shared = {
+      pendingTask: draft,
+      onSelectPendingTask: vi.fn(),
+      onDeletePendingTask: vi.fn(),
+    };
+    const markup = renderToStaticMarkup(
+      mode === "legacy" ? (
+        <PendingTaskListRow {...shared} variant="compact" isLast />
+      ) : (
+        <ThreadListV2PendingRow {...shared} showPendingDivider />
+      ),
+    );
+    expect(markup).toContain('data-lines="1"');
+    expect(markup).not.toContain("hidden-branch");
+    const menu = harness.menus[0];
+    expect(menu?.actions?.map((action) => action.title)).toEqual(["Discard"]);
+    expect(harness.pressables[0]?.accessibilityLabel).toContain("Draft");
+    harness.pressables[0]?.onPress?.();
+    expect(shared.onSelectPendingTask).toHaveBeenCalledWith(draft);
+    menu?.onPressAction?.({ nativeEvent: { event: "delete" } });
+    expect(shared.onDeletePendingTask).toHaveBeenCalledWith(draft);
+  });
+
   it("keeps related navigation outside the primary context menu and preserves activation", () => {
     const onPress = vi.fn();
     const hierarchy = mobileThreadTreeRows(
@@ -180,7 +299,7 @@ describe("compact inbox row", () => {
     expect(onPress).toHaveBeenCalledOnce();
   });
 
-  it.each(["working", "approval", "input", "failed", "queued", "plan-ready"] as const)(
+  it.each(["working", "approval", "input", "failed", "queued", "draft", "plan-ready"] as const)(
     "announces %s without adding routine status text",
     (status) => {
       const markup = renderToStaticMarkup(

@@ -16,7 +16,7 @@ import type {
 import { useUnreadChildNotification } from "./thread-hierarchy-controls";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
-export type CompactThreadStatus = NestedThreadStatus | "queued" | "plan-ready";
+export type CompactThreadStatus = NestedThreadStatus | "queued" | "draft" | "plan-ready";
 
 const STATUS: Record<CompactThreadStatus, { label: string; color: string; action?: string }> = {
   ready: { label: "", color: "bg-transparent" },
@@ -25,6 +25,7 @@ const STATUS: Record<CompactThreadStatus, { label: string; color: string; action
   input: { label: "Awaiting input", color: "bg-adaptive-indigo-600-300", action: "Input" },
   failed: { label: "Failed", color: "bg-adaptive-red-700-300", action: "Failed" },
   queued: { label: "Queued", color: "bg-foreground-tertiary" },
+  draft: { label: "Draft", color: "bg-adaptive-amber-700-300" },
   "plan-ready": { label: "Plan ready", color: "bg-adaptive-violet-700-300", action: "Plan" },
 };
 
