@@ -21,6 +21,7 @@ import {
   isPendingUserInputOptionSelected,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
+  workEntryRowLabel,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
 } from "./threadActivity";
@@ -702,6 +703,95 @@ describe("buildThreadFeed", () => {
     const [row] = group.activities;
     expect(row?.workEntry.detail).toBe(command);
     expect(row?.getFullDetail()).toBe(`${command}\n\n${command}`);
+    // Opening it would only repeat the command the row already shows.
+    expect(row?.canExpand).toBe(false);
+  });
+
+  it.each([
+    {
+      name: "a task summary that is its own detail",
+      activity: {
+        kind: "task.completed" as const,
+        tone: "info" as const,
+        summary: "Task completed",
+        payload: {
+          taskId: "bh2p996o4",
+          status: "completed",
+          title: "Check CI on the new head",
+          summary: "Check CI on the new head",
+          detail: "Check CI on the new head",
+          agentKind: "background",
+          taskType: "local_bash",
+        },
+      },
+      label: "Check CI on the new head",
+      canExpand: false,
+    },
+    {
+      name: "a runtime warning with only its message",
+      activity: {
+        kind: "runtime.warning" as const,
+        tone: "info" as const,
+        summary: "Bash is unusable in this environment",
+        payload: { detail: "Bash is unusable in this environment" },
+      },
+      label: "Bash is unusable in this environment",
+      canExpand: false,
+    },
+    {
+      name: "a multi-line task report",
+      activity: {
+        kind: "task.completed" as const,
+        tone: "info" as const,
+        summary: "Task completed",
+        payload: {
+          taskId: "ae3f85a",
+          status: "completed",
+          title: "Audit the PR",
+          detail: "**Tooling note:** Bash is unusable.\n\n# Audit\n\nNo blockers.",
+          agentKind: "agent",
+          taskType: "local_agent",
+        },
+      },
+      label: "**Tooling note:** Bash is unusable. # Audit No blockers.",
+      canExpand: true,
+    },
+    {
+      name: "a command whose output differs from the command",
+      activity: {
+        kind: "tool.completed" as const,
+        tone: "tool" as const,
+        summary: "Command run",
+        payload: {
+          itemType: "command_execution",
+          title: "Command run",
+          detail: "Bash: printf hello",
+          data: { toolName: "Bash", command: "printf hello", rawOutput: { content: "hello" } },
+        },
+      },
+      label: "printf hello",
+      canExpand: true,
+    },
+  ])("only lets $name expand when the body adds something: $canExpand", (input) => {
+    const thread = makeThread({
+      id: ThreadId.make("thread-expand-rule"),
+      projectId: ProjectId.make("project-1"),
+      title: "Expand rule",
+      activities: [
+        makeActivity({
+          id: EventId.make("expand-rule"),
+          createdAt: "2026-09-01T00:00:00.000Z",
+          ...input.activity,
+        }),
+      ],
+    });
+
+    const [group] = buildThreadFeed(thread);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const [row] = group.activities;
+    expect(workEntryRowLabel(row!.workEntry)).toBe(input.label);
+    expect(row?.canExpand).toBe(input.canExpand);
   });
 
   it("drops a truncated Claude echo of a long command", () => {
@@ -1556,7 +1646,7 @@ describe("buildThreadFeed", () => {
         ],
       };
       const terminalRows = present(terminalThread);
-      expect(terminalRows.slice(0, 2)).toMatchObject([
+      expect(terminalRows).toMatchObject([
         {
           type: "work-toggle",
           groupId,
@@ -1566,6 +1656,7 @@ describe("buildThreadFeed", () => {
           summaryToolIcon: "browser",
           hasFailure,
           live: true,
+          // A successful trailing call keeps shining; a failure hands off to "Thinking".
           shimmer: !hasFailure,
         },
         {
@@ -1580,14 +1671,8 @@ describe("buildThreadFeed", () => {
             },
           ],
         },
+        ...(hasFailure ? [{ type: "thinking", turnId }] : []),
       ]);
-      if (hasFailure) {
-        expect(terminalRows.at(-1)).toMatchObject({
-          type: "thinking",
-          id: "thinking",
-          turnId,
-        });
-      }
       const terminalGroup = terminalRows[1];
       if (terminalGroup?.type !== "activity-group") return;
       const activity = terminalGroup.activities[0]!;
@@ -2235,8 +2320,12 @@ describe("buildThreadFeed", () => {
         shimmer,
       });
       expect(rows[0]).toMatchObject({ live: false, shimmer: false });
+      // Exactly one live activity: the shimmering call, or "Thinking" once it fails.
+      expect(rows.filter((entry) => entry.type === "thinking")).toHaveLength(shimmer ? 0 : 1);
+      expect(rows.at(-1)?.type).toBe(shimmer ? "work-toggle" : "thinking");
 
       const stoppedRows = deriveThreadFeedPresentation(feed, latestTurn, new Set());
+      expect(stoppedRows.some((entry) => entry.type === "thinking")).toBe(false);
       expect(stoppedRows.filter((entry) => entry.type === "work-toggle")).toMatchObject([
         { live: false, shimmer: false },
         {
@@ -2296,6 +2385,7 @@ describe("buildThreadFeed", () => {
     expect(deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), "now")[1]).toBe(
       rows[1],
     );
+    // Idle threads show no live activity.
     expect(
       deriveThreadFeedPresentation(feed, latestTurn, new Set(), new Set(), null).map(
         (entry) => entry.type,

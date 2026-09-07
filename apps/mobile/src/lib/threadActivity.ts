@@ -878,13 +878,43 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
   return blocks.length > 0 ? blocks.join("\n\n") : null;
 }
 
-function workEntryHasExpandedBody(entry: WorkLogEntry): boolean {
-  return (
-    (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) ||
-    Boolean((entry.rawCommand ?? entry.command)?.trim()) ||
-    Boolean(entry.detail?.trim()) ||
-    (entry.changedFiles?.some((path) => path.trim().length > 0) ?? false)
-  );
+/**
+ * A row only opens when its body says more than its collapsed line. A row
+ * whose only detail is the single-line text it already shows (a runtime
+ * warning, a task summary, a short command) has nothing to reveal.
+ * Multi-line text still expands: the collapsed row truncates it to one line.
+ * Cheap field checks come first so large tool payloads are not serialized
+ * for every row (see the deferred-expansion test).
+ */
+function workEntryHasExpandedBody(entry: WorkLogEntry, collapsedText: string): boolean {
+  if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
+  if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
+  const parts = [entry.rawCommand ?? entry.command, entry.detail]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (parts.length === 0) return false;
+  if (parts.length > 1 && new Set(parts).size > 1) return true;
+  const only = parts[0]!;
+  return only.includes("\n") || collapseWhitespace(only) !== collapseWhitespace(collapsedText);
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function stripShellWrapper(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^\/bin\/zsh -lc ['"]?([\s\S]*?)['"]?$/);
+  return (match?.[1] ?? trimmed).trim();
+}
+
+/** The one-line text a collapsed work row shows. */
+export function workEntryRowLabel(entry: WorkLogEntry): string {
+  const presentation = resolveWorkEntryToolPresentation(entry);
+  if (presentation) return presentation.displayName;
+  const preview = workEntryPreview(entry);
+  const compactPreview = preview === null ? null : collapseWhitespace(stripShellWrapper(preview));
+  return compactPreview || workEntryHeading(entry);
 }
 
 function memoizeValue<T>(build: () => T): () => T {
@@ -1719,8 +1749,8 @@ function appendToolGroupRows(
   const active = latestActiveActivity !== undefined;
   const live = activeTail || active;
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
-  // The trailing run keeps shimmering after a successful call; failures hand
-  // the live slot off to the Thinking row below the feed.
+  // Like web, the trailing run keeps shining after its latest call succeeds;
+  // only a failed, declined, or stopped call hands the live slot to "Thinking".
   const shimmer = active || (activeTail && latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
   const summary = live
@@ -2098,7 +2128,7 @@ function toThreadFeedActivityEntry(
       turnId: entry.turnId,
       summary,
       detail,
-      canExpand: workEntryHasExpandedBody(entry),
+      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry)),
       getFullDetail,
       getCopyText,
       icon: workEntryIcon(entry),

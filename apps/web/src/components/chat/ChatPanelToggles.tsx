@@ -1,5 +1,11 @@
 import { memo } from "react";
-import { ActivityIcon, DiffIcon, GlobeIcon, TerminalSquareIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  DiffIcon,
+  FolderTreeIcon,
+  GlobeIcon,
+  TerminalSquareIcon,
+} from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { Toggle } from "../ui/toggle";
@@ -8,6 +14,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 export interface ChatPanelTogglesState {
   terminalAvailable: boolean;
   terminalOpen: boolean;
+  filesAvailable: boolean;
+  filesOpen: boolean;
   browserPreviewOpen: boolean;
   insightsOpen: boolean;
   diffOpen: boolean;
@@ -15,6 +23,7 @@ export interface ChatPanelTogglesState {
   terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
   onToggleTerminal: () => void;
+  onToggleFiles: () => void;
   onToggleBrowserPreview: () => void;
   onToggleInsights: () => void;
   onToggleDiff: () => void;
@@ -28,7 +37,7 @@ interface ChatPanelTogglesProps extends ChatPanelTogglesState {
 const TOGGLE_CLASS = "shrink-0 border-transparent shadow-none hover:border-input hover:shadow-xs/5";
 
 /**
- * The four panel toggles (insights, browser, terminal, diff).
+ * The five panel toggles (insights, browser, files, terminal, diff).
  *
  * They used to sit in the header next to label-bearing controls whose intrinsic
  * widths made the trailing cluster look unevenly spaced. On a wide pane they
@@ -46,6 +55,8 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   className,
   terminalAvailable,
   terminalOpen,
+  filesAvailable,
+  filesOpen,
   browserPreviewOpen,
   insightsOpen,
   diffOpen,
@@ -53,6 +64,7 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
   terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
   onToggleTerminal,
+  onToggleFiles,
   onToggleBrowserPreview,
   onToggleInsights,
   onToggleDiff,
@@ -105,6 +117,28 @@ export const ChatPanelToggles = memo(function ChatPanelToggles({
           }
         />
         <TooltipPopup side={tooltipSide}>Toggle browser preview</TooltipPopup>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Toggle
+              className={TOGGLE_CLASS}
+              pressed={filesOpen}
+              onPressedChange={onToggleFiles}
+              aria-label="Toggle file browser"
+              variant="outline"
+              size="xs"
+              disabled={!filesAvailable}
+            >
+              <FolderTreeIcon className="size-3" />
+            </Toggle>
+          }
+        />
+        <TooltipPopup side={tooltipSide}>
+          {filesAvailable
+            ? "Toggle file browser"
+            : "File browser is unavailable until this thread has an active project."}
+        </TooltipPopup>
       </Tooltip>
       <Tooltip>
         <TooltipTrigger

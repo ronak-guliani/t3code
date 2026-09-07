@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./automaticPrFeedback": {
+      "types": "./src/automaticPrFeedback.ts",
+      "import": "./src/automaticPrFeedback.ts"
+    },
     "./cliRuntime": {
       "types": "./src/cliRuntime.ts",
       "import": "./src/cliRuntime.ts"
