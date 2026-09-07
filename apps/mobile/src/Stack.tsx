@@ -15,18 +15,15 @@ import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native"
 import { useResolveClassNames } from "uniwind";
 
 import { AppText as Text } from "./components/AppText";
+import { createDeferredRouteScreen } from "./components/DeferredRouteScreen";
 import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { getCompactBrandHeaderOptions } from "./components/CompactBrandTitle";
 import { ArchivedThreadsRouteScreen } from "./features/archive/ArchivedThreadsRouteScreen";
 import { useAgentNotificationNavigation } from "./features/agent-awareness/notificationNavigation";
 import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboardingRouteScreen";
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
-import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import { HardwareKeyboardCommandProvider } from "./features/keyboard/HardwareKeyboardCommandProvider";
-import { ReviewCommentComposerSheet } from "./features/review/ReviewCommentComposerSheet";
-import { ReviewSheet } from "./features/review/ReviewSheet";
-import { ThreadTerminalRouteScreen } from "./features/terminal/ThreadTerminalRouteScreen";
 import { GitBranchesSheet } from "./features/threads/git/GitBranchesSheet";
 import { GitCommitSheet } from "./features/threads/git/GitCommitSheet";
 import { GitConfirmSheet } from "./features/threads/git/GitConfirmSheet";
@@ -34,7 +31,6 @@ import { GitOverviewSheet } from "./features/threads/git/GitOverviewSheet";
 import { ThreadRouteScreen } from "./features/threads/ThreadRouteScreen";
 import { RelatedThreadsScreen } from "./features/threads/RelatedThreadsScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
-import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
 import { HomeRouteScreen } from "./features/home/HomeRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
 import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
@@ -56,7 +52,6 @@ import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppea
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
-import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import { SettingsProjectGroupingRouteScreen } from "./features/settings/SettingsProjectGroupingRouteScreen";
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
@@ -65,7 +60,7 @@ import { ShowcaseCaptureCoordinator } from "./features/showcase/ShowcaseCaptureC
 import {
   SettingsLegalDocumentCloseHeaderButton,
   SettingsLegalDocumentExternalHeaderButton,
-} from "./features/settings/components/SettingsLegalDocumentRouteScreen";
+} from "./features/settings/components/SettingsLegalDocumentHeaderButtons";
 import { useAppShortcuts } from "./features/shortcuts/useAppShortcuts";
 import { useIncomingShare } from "./features/sharing/IncomingShareProvider";
 import {
@@ -77,6 +72,33 @@ import { nativeHeaderScrollEdgeEffects } from "./native/StackHeader";
 import { FORM_SHEET_PRESENTATION_OPTIONS } from "./native/sheet-surface";
 import { useThreadOutboxDrain } from "./state/use-thread-outbox-drain";
 import { useComposerAttachmentUploadWorker } from "./state/composer-attachment-uploads";
+import { deferredRouteLoaders } from "./deferred-route-loaders";
+
+const DeferredConnectionsNewRouteScreen = createDeferredRouteScreen(
+  deferredRouteLoaders.connectionsNew,
+  "ConnectionsNew",
+);
+const DeferredSettingsLegalRouteScreen = createDeferredRouteScreen(
+  deferredRouteLoaders.legal,
+  "SettingsLegal",
+);
+const DeferredThreadTerminalRouteScreen = createDeferredRouteScreen(
+  deferredRouteLoaders.terminal,
+  "ThreadTerminal",
+);
+const DeferredReviewSheet = createDeferredRouteScreen(deferredRouteLoaders.review, "ThreadReview");
+const DeferredReviewCommentComposerSheet = createDeferredRouteScreen(
+  deferredRouteLoaders.reviewComment,
+  "ThreadReviewComment",
+);
+const DeferredThreadFilesTreeScreen = createDeferredRouteScreen(
+  deferredRouteLoaders.threadFiles,
+  "ThreadFiles",
+);
+const DeferredThreadFileScreen = createDeferredRouteScreen(
+  deferredRouteLoaders.threadFile,
+  "ThreadFile",
+);
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -161,7 +183,7 @@ const SettingsContentStack = createNativeStackNavigator({
       },
     }),
     SettingsEnvironmentNew: createNativeStackScreen({
-      screen: ConnectionsNewRouteScreen,
+      screen: DeferredConnectionsNewRouteScreen,
       linking: "environment-new",
       options: {
         title: "Add Environment",
@@ -480,17 +502,17 @@ export const RootStack = createNativeStackNavigator({
       options: SOLID_HEADER_OPTIONS,
     }),
     ThreadTerminal: createNativeStackScreen({
-      screen: ThreadTerminalRouteScreen,
+      screen: DeferredThreadTerminalRouteScreen,
       linking: `${THREAD_LINKING_PREFIX}/terminal`,
       options: SOLID_HEADER_OPTIONS,
     }),
     ThreadReview: createNativeStackScreen({
-      screen: ReviewSheet,
+      screen: DeferredReviewSheet,
       linking: `${THREAD_LINKING_PREFIX}/review`,
       options: SOLID_HEADER_OPTIONS,
     }),
     ThreadReviewComment: createNativeStackScreen({
-      screen: ReviewCommentComposerSheet,
+      screen: DeferredReviewCommentComposerSheet,
       linking: `${THREAD_LINKING_PREFIX}/review-comment`,
       options: {
         // Android cannot host the keyboard-driven comment composer inside a
@@ -503,7 +525,7 @@ export const RootStack = createNativeStackNavigator({
       },
     }),
     ThreadFiles: createNativeStackScreen({
-      screen: ThreadFilesTreeScreen,
+      screen: DeferredThreadFilesTreeScreen,
       linking: `${THREAD_LINKING_PREFIX}/files`,
       options: {
         ...GLASS_HEADER_OPTIONS,
@@ -511,7 +533,7 @@ export const RootStack = createNativeStackNavigator({
       },
     }),
     ThreadFile: createNativeStackScreen({
-      screen: ThreadFileScreen,
+      screen: DeferredThreadFileScreen,
       linking: `${THREAD_LINKING_PREFIX}/files/:path*`,
       options: SOLID_HEADER_OPTIONS,
     }),
@@ -583,7 +605,7 @@ export const RootStack = createNativeStackNavigator({
       },
     }),
     SettingsLegal: createNativeStackScreen({
-      screen: SettingsLegalRouteScreen,
+      screen: DeferredSettingsLegalRouteScreen,
       linking: "settings/legal",
       options: {
         ...LEGAL_DOCUMENT_HEADER_OPTIONS,
@@ -621,7 +643,7 @@ export const RootStack = createNativeStackNavigator({
       },
     }),
     ConnectionsNew: createNativeStackScreen({
-      screen: ConnectionsNewRouteScreen,
+      screen: DeferredConnectionsNewRouteScreen,
       linking: "connections/new",
       options: {
         ...FORM_SHEET_PRESENTATION_OPTIONS,

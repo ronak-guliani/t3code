@@ -193,15 +193,14 @@ export function resetComposerDraftsLoadState(): void {
 }
 
 function normalizeDraft(draft: ComposerDraft | undefined): ComposerDraft {
-  if (!draft) {
-    return EMPTY_DRAFT;
-  }
-  return {
-    ...draft,
-    text: draft.text,
-    attachments: draft.attachments,
-  };
+  return draft ?? EMPTY_DRAFT;
 }
+
+export const composerDraftAtom = Atom.family((draftKey: string | null) =>
+  Atom.map(composerDraftsAtom, (drafts) =>
+    draftKey === null ? EMPTY_DRAFT : normalizeDraft(drafts[draftKey]),
+  ),
+);
 
 export function getComposerDraftSnapshot(draftKey: string): ComposerDraft {
   return normalizeDraft(appAtomRegistry.get(composerDraftsAtom)[draftKey]);
@@ -1489,11 +1488,11 @@ export async function clearComposerDraftsEnvironment(environmentId: EnvironmentI
 }
 
 export function useComposerDraft(draftKey: string | null): ComposerDraft {
-  const drafts = useAtomValue(composerDraftsAtom);
+  const draft = useAtomValue(composerDraftAtom(draftKey));
   useEffect(() => {
     ensureComposerDraftsLoaded();
   }, []);
-  return draftKey ? normalizeDraft(drafts[draftKey]) : EMPTY_DRAFT;
+  return draft;
 }
 
 export function useStickyComposerModelSelection(): ModelSelection | null {

@@ -39,7 +39,6 @@ import {
   appendComposerDraftAttachments,
   appendComposerDraftText,
   clearComposerDraftContent,
-  composerDraftsAtom,
   ensureComposerDraftsLoaded,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
@@ -68,7 +67,7 @@ export function appendReviewCommentToDraft(input: {
   readonly attachments?: ReadonlyArray<DraftComposerImageAttachment>;
 }): void {
   const threadKey = scopedThreadKey(input.environmentId, input.threadId);
-  const existing = appAtomRegistry.get(composerDraftsAtom)[threadKey]?.text ?? "";
+  const existing = getComposerDraftSnapshot(threadKey).text;
   const separator = existing.trim().length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
   setComposerDraftText(threadKey, `${existing}${separator}${input.text}`);
   if (input.attachments && input.attachments.length > 0) {
@@ -102,7 +101,6 @@ export function useThreadDraftForThread(input: {
 export function useThreadComposerState() {
   const { selectedThread: selectedThreadShell, selectedEnvironmentRuntime } = useThreadSelection();
   const selectedThreadDetail = useSelectedThreadDetail();
-  const composerDrafts = useAtomValue(composerDraftsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const [feedbackSubmissionsByThreadKey, setFeedbackSubmissionsByThreadKey] = useState<
@@ -119,6 +117,7 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  const selectedDraft = useComposerDraft(selectedThreadKey);
   const selectedThreadQueuedMessages = useMemo(
     () => (selectedThreadKey ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []) : []),
     [queuedMessagesByThreadKey, selectedThreadKey],
@@ -150,9 +149,8 @@ export function useThreadComposerState() {
     [selectedThreadActivities, selectedThreadMessages],
   );
 
-  const selectedDraft = selectedThreadKey ? composerDrafts[selectedThreadKey] : null;
-  const draftMessage = selectedDraft?.text ?? "";
-  const draftAttachments = selectedDraft?.attachments ?? [];
+  const draftMessage = selectedDraft.text;
+  const draftAttachments = selectedDraft.attachments;
   const selectedThreadQueueCount = selectedThreadQueuedMessages.length;
   const selectedThread = selectedThreadDetail ?? selectedThreadShell;
   const modelSelection = selectedDraft?.modelSelection ?? selectedThread?.modelSelection ?? null;
@@ -404,7 +402,7 @@ export function useThreadComposerState() {
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const capabilities = selectedEnvironmentRuntime?.serverConfig?.environment.capabilities;
     const result = await pickComposerMedia({
-      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+      existingCount: getComposerDraftSnapshot(threadKey).attachments.length,
       maxVideoBytes:
         capabilities?.attachmentUploads === true
           ? capabilities.fileAttachments?.maxUploadBytes
@@ -420,7 +418,7 @@ export function useThreadComposerState() {
     if (problems.length > 0) {
       Alert.alert("Could not attach photo or video", problems.join("\n\n"));
     }
-  }, [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
+  }, [selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
 
   const onPickDraftFiles = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -437,7 +435,7 @@ export function useThreadComposerState() {
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     // pickComposerFiles clamps the advertised limit to the contract maximum.
     const result = await pickComposerFiles({
-      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+      existingCount: getComposerDraftSnapshot(threadKey).attachments.length,
       maxBytes,
     });
     const rejectedCount = appendComposerDraftAttachments(threadKey, result.files);
@@ -452,7 +450,7 @@ export function useThreadComposerState() {
     if (problems.length > 0) {
       Alert.alert("Could not attach file", problems.join("\n\n"));
     }
-  }, [composerDrafts, selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
+  }, [selectedEnvironmentRuntime?.serverConfig, selectedThreadShell]);
 
   const onPasteIntoDraft = useCallback(async () => {
     if (!selectedThreadShell) {
@@ -461,7 +459,7 @@ export function useThreadComposerState() {
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const result = await pasteComposerClipboard({
-      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+      existingCount: getComposerDraftSnapshot(threadKey).attachments.length,
     });
     const rejectedPasteCount = appendComposerDraftAttachments(threadKey, result.images);
     if (result.text) {
@@ -474,7 +472,7 @@ export function useThreadComposerState() {
         `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`,
       );
     }
-  }, [composerDrafts, selectedThreadShell]);
+  }, [selectedThreadShell]);
 
   const onNativePasteImages = useCallback(
     async (uris: ReadonlyArray<string>) => {
@@ -486,7 +484,7 @@ export function useThreadComposerState() {
       try {
         const images = await convertPastedImagesToAttachments({
           uris,
-          existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+          existingCount: getComposerDraftSnapshot(threadKey).attachments.length,
         });
         if (images.length > 0) {
           appendComposerDraftAttachments(threadKey, images);
@@ -500,7 +498,7 @@ export function useThreadComposerState() {
         });
       }
     },
-    [composerDrafts, selectedThreadShell],
+    [selectedThreadShell],
   );
 
   const onRemoveDraftImage = useCallback(
