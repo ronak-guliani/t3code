@@ -437,6 +437,9 @@ export const ServerSettings = Schema.Struct({
   autoLaunchPrMonitorFallback: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),
+  copilotAutomaticPrFeedback: Schema.Record(ProviderInstanceId, Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -588,6 +591,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   autoMonitorPullRequestsOnCreate: Schema.optionalKey(Schema.Boolean),
   autoLaunchPrMonitorFallback: Schema.optionalKey(Schema.Boolean),
+  copilotAutomaticPrFeedback: Schema.optionalKey(Schema.Record(ProviderInstanceId, Schema.Boolean)),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),
