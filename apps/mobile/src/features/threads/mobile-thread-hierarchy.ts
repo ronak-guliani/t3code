@@ -240,6 +240,19 @@ export function nestedThreadRevealKeys(
   return keys;
 }
 
+export function nestedVirtualAgentKeys(
+  nodes: readonly MobileThreadTreeNode[],
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const pending = [...nodes];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.thread.virtualAgentRun) keys.add(node.threadKey);
+    pending.push(...node.children);
+  }
+  return keys;
+}
+
 export function mobileThreadTreeRows(
   nodes: readonly MobileThreadTreeNode[],
   options: {

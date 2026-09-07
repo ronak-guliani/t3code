@@ -4,6 +4,7 @@ import {
   buildMobileThreadTree,
   mobileThreadTreeRows,
   nestedThreadRevealKeys,
+  nestedVirtualAgentKeys,
   type MobileThreadTreeRow,
   type MobileThreadShell,
   type NestedThreadReadMarkers,
@@ -217,8 +218,9 @@ export function buildHomeListLayout(input: {
     const rows = roots.map((root) =>
       mobileThreadTreeRows([root], {
         selectedThreadKey: input.selectedThreadKey,
-        revealThreadKeys:
-          matchingThreadKeys ?? nestedThreadRevealKeys([root], input.threadChildReadAt ?? {}),
+        revealThreadKeys: matchingThreadKeys
+          ? new Set([...matchingThreadKeys, ...nestedVirtualAgentKeys([root])])
+          : nestedThreadRevealKeys([root], input.threadChildReadAt ?? {}),
       }),
     );
     const visibleThreads = rows

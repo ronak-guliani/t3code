@@ -211,6 +211,25 @@ describe("mobile nested threads", () => {
     ).toEqual([parent.id, child.id]);
   });
 
+  it("hides read terminal failures from the default list", () => {
+    const failedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("failed-child-turn"),
+        state: "error" as const,
+        requestedAt: "2026-06-01T23:00:00.000Z",
+        startedAt: "2026-06-01T23:01:00.000Z",
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    expect(
+      layout([parent, failedChild], {
+        threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+      }).items.map((item) => item.thread.id),
+    ).toEqual([parent.id]);
+  });
+
   it("sorts siblings and roots by subtree activity without detaching children", () => {
     const newer = makeThread({
       id: ThreadId.make("newer"),

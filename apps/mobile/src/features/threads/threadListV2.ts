@@ -23,6 +23,7 @@ import {
   resolveNestedThreadStatus,
   selectMatchingThreadTree,
   nestedThreadRevealKeys,
+  nestedVirtualAgentKeys,
   type NestedThreadReadMarkers,
   type MobileThreadTreeRow,
   type MobileThreadShell,
@@ -403,7 +404,7 @@ export function buildThreadListV2Items(input: {
         selectedThreadKey: input.selectedThreadKey,
         revealThreadKeys:
           query.length > 0
-            ? matchingKeys
+            ? new Set([...matchingKeys, ...nestedVirtualAgentKeys([node]).values()])
             : nestedThreadRevealKeys([node], input.threadChildReadAt ?? {}),
       }),
     ]),
