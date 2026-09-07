@@ -1,5 +1,29 @@
 # Background service
 
+## Install or update the CLI from this fork
+
+Pulling source changes does not rebuild an existing `t3` executable. If another Mac still prints
+`Start T3 to provision this environment.` after accepting background setup, update its CLI rather
+than repeatedly running the old installer. From an up-to-date checkout with dependencies installed:
+
+```sh
+pnpm install:t3:cli --connect
+```
+
+This builds the web assets and CLI with the public Connect configuration, installs a self-contained
+runtime under `~/.local/share/t3`, updates the existing user-owned `t3` symlink on PATH, and runs
+Connect setup using that exact new binary. It waits for relay readiness and fails explicitly
+if setup does not come online instead of treating account authorization as a working connection.
+It does not modify the desktop app, delete old CLI
+installations, or migrate account data. With no existing CLI, a user-owned bin directory must be
+on PATH. Regular executable files and system-owned installations are not overwritten.
+
+Use `--base-dir /path/to/existing/home` when the host uses a custom data directory. Stop a
+foreground T3 server using that directory before setup. Complete browser sign-in and the
+background-service prompt when shown. Without `--connect`, the command only updates the CLI.
+Re-run it after pulling future CLI fixes; merging or updating source alone does not update
+installed binaries.
+
 `t3 service install` installs the exact packaged CLI and its installed production dependencies as a per-user service and starts it immediately. The private snapshot includes native assets, does not depend on the original checkout's `node_modules`, and is checked before replacing a working service. Re-running install repairs the definition and replaces the runtime, so run it again from the newly installed packaged CLI after an upgrade.
 
 For T3 Connect, start with `t3 connect`: sign in and accept the background-service prompt. You do

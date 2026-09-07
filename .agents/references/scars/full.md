@@ -61,6 +61,7 @@
 - Nested-thread creation must use the authenticated T3 MCP boundary, not ambient provider shell variables: inject the authoritative parent thread ID, provider instance, and runtime mode, then route through the active server's CLI path and `baseDir`.
 - Nested-thread recovery needs parentage in CLI summaries and a direct `chat list --parent` filter; ambiguous creation failures cannot be resolved safely by title or project-wide scans.
 - CLI live-target discovery must distinguish a missing runtime-state file from an invalid or unreadable one. Keep tolerant runtime-state reads for cleanup/discovery callers, but surface the file path and remediation from interactive CLI commands.
+- Reconstructing a path from missing ancestors must use `basename`, never `slice(parent.length + 1)`: root parents (`/` and `C:\\`) have no trailing separator, so the slice drops the first character of the child. Existence helpers used as assertions must rethrow non-`ENOENT` errors instead of treating every `lstat` failure as absence.
 - CLI integration tests must use the production runtime layer and exercise the real entrypoint when checking service wiring; embedded server layers can leak services and mask missing CLI dependencies.
 - Internal CLI calls that parse stdout as structured data must force error-only logging so startup logs cannot corrupt the payload.
 - Delegated isolation belongs to the child: create and bind its worktree through `create_nested_thread.workspace` before the first child turn; never hand off the parent as preparation for delegation.
@@ -101,6 +102,7 @@
 
 ## Release builds and mobile integration
 
+- Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
 - Desktop browser tests must mock Electron mode before module evaluation and supply the real query provider; installing a bridge fixture later cannot change `env.ts`'s captured desktop flag.
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
 - Workspace dependency patches do not ship in the published CLI manifest; when runtime behavior depends on a patched package, bundle that package into `dist/bin.mjs` and verify the packed artifact contains the patch.
