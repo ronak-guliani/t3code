@@ -1,8 +1,9 @@
 import "../../index.css";
 import { EventId, type OrchestrationThreadActivity } from "@t3tools/contracts";
 import { page } from "vitest/browser";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { render } from "vitest-browser-react";
+import { useUiStateStore } from "../../uiStateStore";
 import { CopilotCompletionWarning } from "./CopilotCompletionWarning";
 
 const warning = (id: string): OrchestrationThreadActivity => ({
@@ -16,6 +17,10 @@ const warning = (id: string): OrchestrationThreadActivity => ({
 });
 
 describe("CopilotCompletionWarning", () => {
+  beforeEach(() => {
+    useUiStateStore.setState({ dismissedCopilotWarningIds: new Set() });
+  });
+
   it("surfaces late activity, dismisses only that warning, and shows a new runtime warning", async () => {
     const first = warning("first");
     const screen = await render(<CopilotCompletionWarning activities={[first]} />);
@@ -42,5 +47,23 @@ describe("CopilotCompletionWarning", () => {
       />,
     );
     await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("retains independent dismissals across keyed thread remounts", async () => {
+    const first = warning("thread-a-warning");
+    const second = warning("thread-b-warning");
+    const screen = await render(<CopilotCompletionWarning key="a" activities={[first]} />);
+    await page.getByRole("button", { name: "Dismiss Copilot completion warning" }).click();
+    await screen.rerender(<CopilotCompletionWarning key="b" activities={[second]} />);
+    await expect.element(page.getByRole("alert")).toBeVisible();
+    await page.getByRole("button", { name: "Dismiss Copilot completion warning" }).click();
+    await screen.rerender(<CopilotCompletionWarning key="a" activities={[first]} />);
+    await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+    await screen.rerender(<CopilotCompletionWarning key="b" activities={[second]} />);
+    await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+    await screen.rerender(
+      <CopilotCompletionWarning key="a" activities={[first, warning("new-thread-a-warning")]} />,
+    );
+    await expect.element(page.getByRole("alert")).toBeVisible();
   });
 });

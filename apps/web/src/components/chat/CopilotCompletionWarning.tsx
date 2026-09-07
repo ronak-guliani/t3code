@@ -1,6 +1,7 @@
 import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 import { AlertTriangle, X } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo } from "react";
+import { useUiStateStore } from "../../uiStateStore";
 import { Button } from "../ui/button";
 
 const EMPTY_ACTIVITIES: readonly OrchestrationThreadActivity[] = [];
@@ -10,7 +11,6 @@ export const CopilotCompletionWarning = memo(function CopilotCompletionWarning({
 }: {
   activities?: readonly OrchestrationThreadActivity[] | undefined;
 }) {
-  const [dismissedId, setDismissedId] = useState<string | null>(null);
   const warning = useMemo(
     () =>
       activities.findLast((activity) => {
@@ -27,7 +27,10 @@ export const CopilotCompletionWarning = memo(function CopilotCompletionWarning({
       }),
     [activities],
   );
-  if (!warning || warning.id === dismissedId) return null;
+  const dismissed = useUiStateStore(
+    (state) => warning !== undefined && state.dismissedCopilotWarningIds.has(warning.id),
+  );
+  if (!warning || dismissed) return null;
 
   return (
     <div
@@ -50,7 +53,7 @@ export const CopilotCompletionWarning = memo(function CopilotCompletionWarning({
         variant="ghost"
         size="icon-xs"
         aria-label="Dismiss Copilot completion warning"
-        onClick={() => setDismissedId(warning.id)}
+        onClick={() => useUiStateStore.getState().dismissCopilotWarning(warning.id)}
       >
         <X className="size-3" />
       </Button>
