@@ -66,7 +66,7 @@ export function appendReviewCommentToDraft(input: {
   readonly attachments?: ReadonlyArray<DraftComposerImageAttachment>;
 }): void {
   const threadKey = scopedThreadKey(input.environmentId, input.threadId);
-  const existing = appAtomRegistry.get(composerDraftsAtom)[threadKey]?.text ?? "";
+  const existing = getComposerDraftSnapshot(threadKey).text;
   const separator = existing.trim().length > 0 && !existing.endsWith("\n") ? "\n\n" : "";
   setComposerDraftText(threadKey, `${existing}${separator}${input.text}`);
   if (input.attachments && input.attachments.length > 0) {
