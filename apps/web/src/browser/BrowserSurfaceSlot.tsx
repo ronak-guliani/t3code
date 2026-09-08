@@ -27,17 +27,20 @@ export function BrowserSurfaceSlot(props: {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const presentationRef = useRef({ visible, cornerRadius, zIndex });
   const updateRef = useRef<(() => void) | null>(null);
-  const ownerRef = useRef<symbol | null>(null);
+
+  useLayoutEffect(() => {
+    presentationRef.current = { visible, cornerRadius, zIndex };
+  }, [cornerRadius, visible, zIndex]);
 
   useLayoutEffect(() => {
     const element = elementRef.current;
-    if (!element) return;
+    if (!element || !visible) return;
+    // Hidden retained slots must not displace the visible panel or mini-player.
     let lease = acquireBrowserSurface(tabId, fitSourceContent);
-    ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
     const update = () => {
       const rect = element.getBoundingClientRect();
       const presentation = presentationRef.current;
-      const presented = lease.present(
+      lease.present(
         {
           x: Math.round(rect.x),
           y: Math.round(rect.y),
@@ -48,24 +51,6 @@ export function BrowserSurfaceSlot(props: {
         presentation.cornerRadius,
         presentation.zIndex,
       );
-      if (presentation.visible && !presented) {
-        lease.release();
-        lease = acquireBrowserSurface(tabId, fitSourceContent);
-        ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
-        lease.present(
-          {
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.max(1, Math.round(rect.width)),
-            height: Math.max(1, Math.round(rect.height)),
-          },
-          rect.width > 0 && rect.height > 0,
-          presentation.cornerRadius,
-          presentation.zIndex,
-        );
-      } else {
-        ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
-      }
     };
     updateRef.current = update;
     update();
@@ -73,26 +58,25 @@ export function BrowserSurfaceSlot(props: {
     observer.observe(element);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
-    const unsubscribe = useBrowserSurfaceStore.subscribe((state) => {
-      const currentOwner = state.byTabId[tabId]?.owner ?? null;
-      if (currentOwner === ownerRef.current) return;
-      // Another slot claimed this tab. Reclaim immediately when this slot is visible.
-      if (presentationRef.current.visible) update();
-      else ownerRef.current = currentOwner;
+    const unsubscribe = useBrowserSurfaceStore.subscribe(() => {
+      // Read live state: an earlier listener may already have filled the vacancy.
+      // Never displace an owner, including our own claim's synchronous notification.
+      if (useBrowserSurfaceStore.getState().byTabId[tabId]?.owner != null) return;
+      lease.release();
+      lease = acquireBrowserSurface(tabId, fitSourceContent);
+      update();
     });
     return () => {
+      unsubscribe();
       observer.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
-      unsubscribe();
       if (updateRef.current === update) updateRef.current = null;
-      ownerRef.current = null;
       lease.release();
     };
-  }, [fitSourceContent, tabId]);
+  }, [fitSourceContent, tabId, visible]);
 
   useLayoutEffect(() => {
-    presentationRef.current = { visible, cornerRadius, zIndex };
     updateRef.current?.();
   }, [cornerRadius, layoutVersion, visible, zIndex]);
 

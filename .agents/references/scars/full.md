@@ -135,6 +135,7 @@
 
 ## Desktop browser surfaces
 
+- Acquire surface leases only for visible slots and release them when hidden. Recover displaced visible slots only when the live store has no owner; reclaiming an occupied surface from synchronous notifications re-enters acquisition before the new lease is assigned and overflows the stack.
 - Mount exactly one desktop browser host at authenticated app lifetime, not thread-route lifetime. Duplicate hosts register competing native guests for the same tab, letting a blank guest cover or replace the loaded capture target.
 - Floating browser surfaces in fill mode must reflow to the owning slot; reserve `fitSourceContent` for explicit fixed/device viewports or a resized mini-player will keep the old panel aspect ratio.
 - A retained floating-preview preference is not surface ownership: the visible panel must present its browser while the matching mini-player is suppressed, then return it to the mini-player when closed.
