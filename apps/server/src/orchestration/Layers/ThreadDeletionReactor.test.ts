@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 
@@ -186,8 +186,10 @@ describe("logCleanupCauseUnlessInterrupted", () => {
 
   describe("ThreadDeletionReactorLive", () => {
     it("removes a clean archived merged-PR worktree from a disposable Git repository", async () => {
-      const repositoryRoot = await mkdtemp(path.join(tmpdir(), "t3-cleanup-reactor-"));
-      const worktreePath = path.join(repositoryRoot, "feature");
+      const fixtureRoot = await mkdtemp(path.join(tmpdir(), "t3-cleanup-reactor-"));
+      const repositoryRoot = path.join(fixtureRoot, "repo");
+      const worktreePath = path.join(fixtureRoot, "feature");
+      await mkdir(repositoryRoot);
       const runGit = async (cwd: string, args: ReadonlyArray<string>) => {
         const result = await runProcess("git", args, {
           cwd,
@@ -326,7 +328,7 @@ describe("logCleanupCauseUnlessInterrupted", () => {
         }
       } finally {
         await runtime.dispose();
-        await rm(repositoryRoot, { recursive: true, force: true });
+        await rm(fixtureRoot, { recursive: true, force: true });
       }
     });
   });

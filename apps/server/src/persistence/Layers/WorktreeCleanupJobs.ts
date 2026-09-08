@@ -90,38 +90,58 @@ const make = Effect.gen(function* () {
         )
         ON CONFLICT (thread_id)
         DO UPDATE SET
-          cwd = excluded.cwd,
-          worktree_path = excluded.worktree_path,
-          canonical_worktree_path = excluded.canonical_worktree_path,
-          requested_at = excluded.requested_at,
-          source = excluded.source,
+          cwd = CASE
+            WHEN worktree_cleanup_jobs.status = 'removing'
+              THEN worktree_cleanup_jobs.cwd
+            ELSE excluded.cwd
+          END,
+          worktree_path = CASE
+            WHEN worktree_cleanup_jobs.status = 'removing'
+              THEN worktree_cleanup_jobs.worktree_path
+            ELSE excluded.worktree_path
+          END,
+          canonical_worktree_path = CASE
+            WHEN worktree_cleanup_jobs.status = 'removing'
+              THEN worktree_cleanup_jobs.canonical_worktree_path
+            ELSE excluded.canonical_worktree_path
+          END,
+          requested_at = CASE
+            WHEN worktree_cleanup_jobs.status = 'removing'
+              THEN worktree_cleanup_jobs.requested_at
+            ELSE excluded.requested_at
+          END,
+          source = CASE
+            WHEN worktree_cleanup_jobs.status = 'removing'
+              THEN worktree_cleanup_jobs.source
+            ELSE excluded.source
+          END,
           status = CASE
             WHEN ${allowTerminalReset}
-              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed', 'needs-attention')
               THEN 'waiting'
             ELSE worktree_cleanup_jobs.status
           END,
           attempt_count = CASE
             WHEN ${allowTerminalReset}
-              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed', 'needs-attention')
               THEN 0
             ELSE worktree_cleanup_jobs.attempt_count
           END,
           next_attempt_at = CASE
             WHEN ${allowTerminalReset}
-              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed', 'needs-attention')
               THEN excluded.next_attempt_at
             ELSE worktree_cleanup_jobs.next_attempt_at
           END,
           last_reason = CASE
             WHEN ${allowTerminalReset}
-              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed', 'needs-attention')
               THEN NULL
             ELSE worktree_cleanup_jobs.last_reason
           END,
           last_error = CASE
             WHEN ${allowTerminalReset}
-              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed', 'needs-attention')
               THEN NULL
             ELSE worktree_cleanup_jobs.last_error
           END

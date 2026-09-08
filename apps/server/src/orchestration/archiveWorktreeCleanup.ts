@@ -1,12 +1,19 @@
 /**
  * Pure helpers for deciding whether an archived chat should schedule worktree cleanup.
  */
+import path from "node:path";
 
 export function isRemovableArchiveWorktreePath(input: {
   readonly canonicalWorktreePath: string;
   readonly canonicalWorkspaceRoot: string;
 }): boolean {
-  return input.canonicalWorktreePath !== input.canonicalWorkspaceRoot;
+  const relativePath = path.relative(input.canonicalWorkspaceRoot, input.canonicalWorktreePath);
+  return (
+    relativePath !== "" &&
+    (relativePath === ".." ||
+      relativePath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativePath))
+  );
 }
 
 export function shouldScheduleArchiveWorktreeCleanup(input: {

@@ -270,19 +270,29 @@ export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
         ),
       { concurrency: 4 },
     ).pipe(Effect.map((entries) => entries.flat()));
+    const unregisteredJobsByPath = new Map<string, Array<(typeof jobs)[number]>>();
+    for (const job of jobs) {
+      if (registeredPaths.has(job.canonicalWorktreePath)) {
+        continue;
+      }
+      const pathJobs = unregisteredJobsByPath.get(job.canonicalWorktreePath) ?? [];
+      pathJobs.push(job);
+      unregisteredJobsByPath.set(job.canonicalWorktreePath, pathJobs);
+    }
     return HttpServerResponse.jsonUnsafe(
       {
         worktrees,
-        unregisteredCleanupIntents: jobs
-          .filter((job) => !registeredPaths.has(job.canonicalWorktreePath))
-          .map((job) => ({
-            threadId: job.threadId,
-            path: job.worktreePath,
-            source: job.source,
-            status: job.status,
-            reason: job.lastReason,
-            nextAttemptAt: job.nextAttemptAt,
+        unregisteredCleanupIntents: Array.from(unregisteredJobsByPath, ([path, pathJobs]) => ({
+          path,
+          owners: owners.get(path) ?? [],
+          cleanupIntents: pathJobs.map((cleanup) => ({
+            threadId: cleanup.threadId,
+            source: cleanup.source,
+            status: cleanup.status,
+            reason: cleanup.lastReason,
+            nextAttemptAt: cleanup.nextAttemptAt,
           })),
+        })),
       },
       { status: 200 },
     );

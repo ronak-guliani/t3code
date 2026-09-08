@@ -186,11 +186,17 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
       const lifecycleRefresh = yield* jobs.enqueue(
         intent({
           id: "cleanup-removing",
-          path: "/tmp/removing",
+          path: "/tmp/reassigned",
           allowTerminalReset: true,
+          source: "delete",
+          requestedAt: at(10),
         }),
       );
       assert.equal(lifecycleRefresh.status, "removing");
+      assert.equal(lifecycleRefresh.worktreePath, "/tmp/removing");
+      assert.equal(lifecycleRefresh.canonicalWorktreePath, "/tmp/removing");
+      assert.equal(lifecycleRefresh.requestedAt, at(0));
+      assert.equal(lifecycleRefresh.source, "archive");
 
       yield* jobs.cancelByThreadId(cleanup.threadId);
 
@@ -199,6 +205,44 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
         "removing",
       );
       assert.isTrue(yield* jobs.hasReservationByPath("/tmp/removing"));
+    }),
+  );
+
+  it.effect("revives needs-attention only for explicit cleanup consent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(
+        intent({ id: "cleanup-needs-attention", path: "/tmp/reviewed" }),
+      );
+      yield* jobs.tryReserveForRemoval({
+        threadId: cleanup.threadId,
+        canonicalWorktreePath: "/tmp/reviewed",
+        reservedAt: at(0),
+      });
+      yield* jobs.recordFailure({
+        threadId: cleanup.threadId,
+        error: "permanent failure",
+        now: at(1),
+        maxAttempts: 1,
+      });
+
+      const reactivated = yield* jobs.enqueue(
+        intent({
+          id: "cleanup-needs-attention",
+          path: "/tmp/reviewed-again",
+          source: "delete",
+          requestedAt: at(10),
+          allowTerminalReset: true,
+        }),
+      );
+
+      assert.equal(reactivated.status, "waiting");
+      assert.equal(reactivated.worktreePath, "/tmp/reviewed-again");
+      assert.equal(reactivated.source, "delete");
+      assert.equal(reactivated.attemptCount, 0);
+      assert.equal(reactivated.nextAttemptAt, at(10));
+      assert.equal(reactivated.lastReason, null);
+      assert.equal(reactivated.lastError, null);
     }),
   );
 

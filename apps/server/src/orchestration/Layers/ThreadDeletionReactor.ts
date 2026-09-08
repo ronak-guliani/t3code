@@ -219,7 +219,7 @@ const make = Effect.gen(function* () {
     }
 
     const canonicalWorkspaceRoot = yield* Effect.promise(() =>
-      canonicalizeWorktreePath(project.workspaceRoot),
+      canonicalizeWorktreePath(cleanup.cwd),
     );
     if (
       !isRemovableArchiveWorktreePath({
@@ -257,7 +257,7 @@ const make = Effect.gen(function* () {
 
       const resolved = yield* gitManager
         .resolvePullRequest({
-          cwd: project.workspaceRoot,
+          cwd: cleanup.cwd,
           reference: String(pullRequest.number),
         })
         .pipe(
