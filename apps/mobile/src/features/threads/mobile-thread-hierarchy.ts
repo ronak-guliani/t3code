@@ -171,14 +171,27 @@ export function buildMobileThreadTree(
   // Read filtering affects rendered descendants, not whether the parent has
   // related chats that remain reachable from its row.
   const parentByKey = normalizeParentThreadKeys(expanded);
+  const remainingChildrenByKey = new Map<string, number>();
+  for (const parentKey of parentByKey.values()) {
+    remainingChildrenByKey.set(parentKey, (remainingChildrenByKey.get(parentKey) ?? 0) + 1);
+  }
   const relatedChildCountByKey = new Map<string, number>();
-  for (const thread of expanded) {
-    let parentKey = parentByKey.get(hierarchyThreadKey(thread));
-    const visited = new Set<string>();
-    while (parentKey !== undefined && !visited.has(parentKey)) {
-      relatedChildCountByKey.set(parentKey, (relatedChildCountByKey.get(parentKey) ?? 0) + 1);
-      visited.add(parentKey);
-      parentKey = parentByKey.get(parentKey);
+  const pendingCountKeys = expanded
+    .map(hierarchyThreadKey)
+    .filter((threadKey) => !remainingChildrenByKey.has(threadKey));
+  while (pendingCountKeys.length > 0) {
+    const threadKey = pendingCountKeys.pop()!;
+    const parentKey = parentByKey.get(threadKey);
+    if (parentKey === undefined) continue;
+    relatedChildCountByKey.set(
+      parentKey,
+      (relatedChildCountByKey.get(parentKey) ?? 0) +
+        1 +
+        (relatedChildCountByKey.get(threadKey) ?? 0),
+    );
+    const remainingChildren = (remainingChildrenByKey.get(parentKey) ?? 0) - 1;
+    if (remainingChildren === 0) {
+      pendingCountKeys.push(parentKey);
     }
   }
   const visibleKeys = new Set(

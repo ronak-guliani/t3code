@@ -207,39 +207,70 @@ describe("compact inbox row", () => {
     },
   );
 
-  it("keeps related navigation after a completed child is acknowledged", () => {
-    const child = {
-      ...parent,
-      id: ThreadId.make("child"),
-      parentThreadId: parent.id,
-      latestTurn: {
-        turnId: TurnId.make("child-turn"),
-        state: "completed" as const,
-        requestedAt: parent.createdAt,
-        startedAt: parent.createdAt,
-        completedAt: parent.updatedAt,
-        assistantMessageId: null,
-      },
-    };
-    const hierarchy = mobileThreadTreeRows(
-      buildMobileThreadTree([parent, child], undefined, [], {
-        readMarkers: { [`${parent.environmentId}:${child.id}`]: child.updatedAt },
-      }),
-    )[0]!;
-    renderToStaticMarkup(
-      <CompactThreadRow
-        title={parent.title}
-        timestamp="1m"
-        status="ready"
-        onPress={() => {}}
-        related={{ thread: parent, hierarchy }}
-      />,
-    );
-    expect(hierarchy).toMatchObject({ childCount: 0, relatedChildCount: 1 });
-    expect(
-      harness.pressables.find((item) => item.accessibilityLabel?.startsWith("Related chats")),
-    ).toBeDefined();
-  });
+  it.each(["legacy", "v2"] as const)(
+    "keeps related navigation after a completed child is acknowledged through the %s row consumer",
+    (mode) => {
+      const child = {
+        ...parent,
+        id: ThreadId.make("child"),
+        parentThreadId: parent.id,
+        latestTurn: {
+          turnId: TurnId.make("child-turn"),
+          state: "completed" as const,
+          requestedAt: parent.createdAt,
+          startedAt: parent.createdAt,
+          completedAt: parent.updatedAt,
+          assistantMessageId: null,
+        },
+      };
+      const hierarchy = mobileThreadTreeRows(
+        buildMobileThreadTree([parent, child], undefined, [], {
+          readMarkers: { [`${parent.environmentId}:${child.id}`]: child.updatedAt },
+        }),
+      )[0]!;
+      const onSelectThread = vi.fn();
+      const shared = {
+        thread: parent,
+        hierarchy,
+        onSelectThread,
+        onArchiveThread: vi.fn(),
+        onDeleteThread: vi.fn(),
+        onRegenerateThreadTitle: vi.fn(),
+        titleRegenerationSupported: true,
+        onSwipeableWillOpen: vi.fn(),
+        onSwipeableClose: vi.fn(),
+      };
+      renderToStaticMarkup(
+        mode === "legacy" ? (
+          <ThreadListRow {...shared} variant="compact" isLast />
+        ) : (
+          <ThreadListV2Row
+            {...shared}
+            variant="card"
+            snoozePresetMinute="2026-09-06T20:00"
+            settlementSupported
+            snoozeSupported
+            pinningSupported
+            onSettleThread={vi.fn()}
+            onUnsettleThread={vi.fn()}
+            onSnoozeThread={vi.fn()}
+            onUnsnoozeThread={vi.fn()}
+            onPinThread={vi.fn()}
+            onUnpinThread={vi.fn()}
+            onMovePinnedThread={vi.fn()}
+          />
+        ),
+      );
+      expect(hierarchy).toMatchObject({ childCount: 0, relatedChildCount: 1 });
+      harness.pressables
+        .find((item) => item.accessibilityLabel?.startsWith("Related chats"))
+        ?.onPress?.();
+      expect(harness.navigate).toHaveBeenCalledWith("RelatedThreads", {
+        environmentId: parent.environmentId,
+        threadId: parent.id,
+      });
+    },
+  );
 
   it.each(["legacy", "v2"] as const)("renders editable drafts in the %s compact list", (mode) => {
     const draft: PendingDraftTask = {
