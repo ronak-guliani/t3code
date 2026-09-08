@@ -74,6 +74,66 @@ describe("ChatMarkdown", () => {
     expect(markup).not.toContain('target="_blank"');
   });
 
+  it("classifies reference-style canonical thread URLs before external links", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={
+          "[new thread][child]\n\n[child]: /environment-other/bc880b45-fd48-42db-98fa-f211bae7cc0a"
+        }
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("chat-markdown-thread-link");
+    expect(markup).toContain("new thread");
+    expect(markup).not.toContain('target="_blank"');
+  });
+
+  it("classifies reference-style canonical pull request URLs", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={"[pull request][pr]\n\n[pr]: https://github.com/owner/repo/pull/42"}
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain('href="https://github.com/owner/repo/pull/42"');
+    expect(markup).toContain('target="_blank"');
+  });
+
+  it("keeps qualified GitHub references clickable without fabricating a PR", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="See owner/repo#42 for the related change."
+        cwd="/Users/julius/project"
+        threadRef={scopeThreadRef(
+          EnvironmentId.make("environment-local"),
+          ThreadId.make("current-thread"),
+        )}
+      />,
+    );
+
+    expect(markup).toContain('href="https://github.com/owner/repo/issues/42"');
+    expect(markup).toContain("owner/repo#42");
+    expect(markup).not.toContain("data-git-hub-pull-request-url");
+  });
+
+  it("does not infer a repository for bare GitHub references", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="See #42 for the related change."
+        cwd="/Users/julius/project"
+        threadRef={scopeThreadRef(
+          EnvironmentId.make("environment-local"),
+          ThreadId.make("current-thread"),
+        )}
+      />,
+    );
+
+    expect(markup).not.toContain('href="https://github.com/');
+    expect(markup).toContain("#42");
+  });
+
   it("does not trust route-shaped links on unrelated origins", () => {
     const markup = renderToStaticMarkup(
       <ChatMarkdown

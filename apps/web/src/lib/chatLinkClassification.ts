@@ -9,7 +9,7 @@ export const THREAD_REFERENCE_PATTERN = new RegExp(
   "gi",
 );
 
-const GITHUB_SHORTHAND_PATTERN = /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)\b/g;
+const GITHUB_REFERENCE_PATTERN = /(?:\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#([1-9]\d*)\b/g;
 
 export interface TrustedThreadOrigin {
   readonly origin: string;
@@ -24,6 +24,15 @@ export interface ExplicitThreadLink {
 export interface GitHubShorthandReference {
   readonly repository: string;
   readonly number: number;
+}
+
+export interface GitHubReference {
+  readonly repository: string | null;
+  readonly number: number;
+}
+
+export function buildGitHubIssueReferenceUrl(reference: GitHubShorthandReference): string {
+  return `https://github.com/${reference.repository}/issues/${reference.number}`;
 }
 
 function normalizeOrigin(value: string): string | null {
@@ -100,12 +109,18 @@ export function resolveExplicitThreadLink(
 }
 
 export function parseGitHubShorthandReferences(text: string): Array<GitHubShorthandReference> {
-  return [...text.matchAll(GITHUB_SHORTHAND_PATTERN)].flatMap((match) => {
+  return parseGitHubReferences(text).flatMap((reference) =>
+    reference.repository ? [{ repository: reference.repository, number: reference.number }] : [],
+  );
+}
+
+export function parseGitHubReferences(text: string): Array<GitHubReference> {
+  return [...text.matchAll(GITHUB_REFERENCE_PATTERN)].flatMap((match) => {
     const repository = match[1];
     const rawNumber = match[2];
     const number = rawNumber ? Number(rawNumber) : NaN;
-    return repository && Number.isSafeInteger(number) && number > 0
-      ? [{ repository: repository.toLowerCase(), number }]
+    return Number.isSafeInteger(number) && number > 0
+      ? [{ repository: repository?.toLowerCase() ?? null, number }]
       : [];
   });
 }

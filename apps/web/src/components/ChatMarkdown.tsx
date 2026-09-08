@@ -22,6 +22,7 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useShallow } from "zustand/react/shallow";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { stackedThreadToast, toastManager } from "./ui/toast";
@@ -45,11 +46,13 @@ import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
 import { useSavedEnvironmentRegistryStore } from "~/environments/runtime/catalog";
 import {
   isThreadId,
-  parseGitHubShorthandReferences,
+  buildGitHubIssueReferenceUrl,
+  parseGitHubReferences,
   resolveExplicitThreadLink,
   THREAD_REFERENCE_PATTERN,
 } from "../lib/chatLinkClassification";
 import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPullRequestLink";
+import { usePrimaryEnvironmentId } from "~/environments/primary";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
@@ -157,6 +160,7 @@ type MarkdownAstNode = {
   type: string;
   value?: string;
   url?: string;
+  identifier?: string;
   children?: Array<MarkdownAstNode>;
   data?: {
     hProperties?: Record<string, unknown>;
@@ -230,7 +234,7 @@ function linkChatReferencesInText(
     if (match.labelStart > cursor) {
       nextNodes.push({ type: "text", value: text.slice(cursor, match.labelStart) });
     }
-    const normalizedValue = normalizeThreadId(match.value);
+    const normalizedValue = match.kind === "thread" ? normalizeThreadId(match.value) : match.value;
     if (match.kind === "thread" && isThreadId(match.value)) {
       nextNodes.push({
         type: "link",
@@ -249,11 +253,15 @@ function linkChatReferencesInText(
       nextNodes.push({
         type: "link",
         url,
-        data: {
-          hProperties: {
-            dataGitHubPullRequestUrl: url,
-          },
-        },
+        ...(githubPullRequestNavigation(url)
+          ? {
+              data: {
+                hProperties: {
+                  dataGitHubPullRequestUrl: url,
+                },
+              },
+            }
+          : {}),
         children: [{ type: "text", value: match.value }],
       });
     }
@@ -285,6 +293,41 @@ function remarkClassifyChatLinks(input: {
   readonly githubReferences: ReadonlyMap<string, string>;
 }) {
   return () => (tree: MarkdownAstNode) => {
+    const definitions = new Map<string, string>();
+    const collectDefinitions = (node: MarkdownAstNode) => {
+      if (node.type === "definition" && node.identifier && node.url) {
+        definitions.set(normalizeReferenceIdentifier(node.identifier), node.url);
+      }
+      node.children?.forEach(collectDefinitions);
+    };
+    collectDefinitions(tree);
+
+    const classifyLinkDestination = (node: MarkdownAstNode, href: string) => {
+      const threadLink = resolveExplicitThreadLink(href, {
+        baseOrigin: input.baseOrigin,
+        trustedOrigins: input.trustedOrigins,
+      });
+      if (threadLink) {
+        node.url = threadLink.href;
+        node.data = {
+          ...node.data,
+          hProperties: threadLinkProperties(threadLink.ref.environmentId, threadLink.ref.threadId),
+        };
+        return;
+      }
+
+      const pullRequest = githubPullRequestNavigation(href);
+      if (pullRequest) {
+        node.data = {
+          ...node.data,
+          hProperties: {
+            ...node.data?.hProperties,
+            dataGitHubPullRequestUrl: href,
+          },
+        };
+      }
+    };
+
     const visit = (node: MarkdownAstNode, insideLink: boolean) => {
       const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
       if (!node.children || childInsideLink) return;
@@ -323,30 +366,11 @@ function remarkClassifyChatLinks(input: {
     const visitLinks = (node: MarkdownAstNode, insideLink: boolean) => {
       const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
       if (node.type === "link" && !insideLink && node.url) {
-        const threadLink = resolveExplicitThreadLink(node.url, {
-          baseOrigin: input.baseOrigin,
-          trustedOrigins: input.trustedOrigins,
-        });
-        if (threadLink) {
-          node.url = threadLink.href;
-          node.data = {
-            ...node.data,
-            hProperties: threadLinkProperties(
-              threadLink.ref.environmentId,
-              threadLink.ref.threadId,
-            ),
-          };
-        } else {
-          const pullRequest = githubPullRequestNavigation(node.url);
-          if (pullRequest) {
-            node.data = {
-              ...node.data,
-              hProperties: {
-                ...node.data?.hProperties,
-                dataGitHubPullRequestUrl: node.url,
-              },
-            };
-          }
+        classifyLinkDestination(node, node.url);
+      } else if (node.type === "linkReference" && !insideLink && node.identifier) {
+        const href = definitions.get(normalizeReferenceIdentifier(node.identifier));
+        if (href) {
+          classifyLinkDestination(node, href);
         }
       }
       node.children?.forEach((child) => visitLinks(child, childInsideLink));
@@ -355,6 +379,10 @@ function remarkClassifyChatLinks(input: {
     visit(tree, false);
     visitLinks(tree, false);
   };
+}
+
+function normalizeReferenceIdentifier(identifier: string): string {
+  return identifier.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function remarkTagInlineCode(cwd?: string) {
@@ -809,6 +837,31 @@ function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<
   return suffixByPath;
 }
 
+function githubRepositoryForProject(
+  project:
+    | {
+        readonly repositoryIdentity?: {
+          readonly provider?: string;
+          readonly owner?: string;
+          readonly name?: string;
+          readonly canonicalKey: string;
+        } | null;
+      }
+    | undefined,
+): string | null {
+  const identity = project?.repositoryIdentity;
+  if (identity?.provider !== "github") return null;
+  if (identity.owner && identity.name) {
+    return `${identity.owner}/${identity.name}`.toLowerCase();
+  }
+
+  const segments = identity.canonicalKey.split("/").filter(Boolean);
+  if (segments.length !== 3 || segments[0]?.toLowerCase() !== "github.com") {
+    return null;
+  }
+  return `${segments[1]}/${segments[2]}`.toLowerCase();
+}
+
 function buildFileLinkLabel(meta: MarkdownFileLinkMeta, parentSuffix?: string): string {
   const labelParts = [meta.basename];
   if (parentSuffix) {
@@ -1056,8 +1109,11 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     () => normalizeChatMarkdownText(text, isStreaming),
     [isStreaming, text],
   );
-  const environmentStateById = useStore((state) => state.environmentStateById);
+  const environmentIds = useStore(
+    useShallow((state) => Object.keys(state.environmentStateById) as EnvironmentId[]),
+  );
   const savedEnvironmentById = useSavedEnvironmentRegistryStore((state) => state.byId);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const currentThread = useStore((state) =>
     threadRef
       ? state.environmentStateById[threadRef.environmentId]?.threadShellById[threadRef.threadId]
@@ -1079,7 +1135,13 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
             ? "http://localhost"
             : (window.location?.origin ?? "http://localhost"),
       },
-      ...Object.keys(environmentStateById).flatMap((environmentId) => {
+      ...(primaryEnvironmentId
+        ? (() => {
+            const httpBaseUrl = getEnvironmentHttpBaseUrl(primaryEnvironmentId);
+            return httpBaseUrl ? [{ origin: httpBaseUrl }] : [];
+          })()
+        : []),
+      ...environmentIds.flatMap((environmentId) => {
         const httpBaseUrl = getEnvironmentHttpBaseUrl(EnvironmentId.make(environmentId));
         return httpBaseUrl ? [{ origin: httpBaseUrl }] : [];
       }),
@@ -1087,35 +1149,44 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         origin: environment.httpBaseUrl,
       })),
     ],
-    [environmentStateById, savedEnvironmentById],
+    [environmentIds, primaryEnvironmentId, savedEnvironmentById],
   );
   const githubReferences = useMemo(() => {
     const references = new Map<string, string>();
     const navigation = currentThread?.pullRequest?.url
       ? githubPullRequestNavigation(currentThread.pullRequest.url)
       : null;
-    if (!navigation) return references;
+    const repository = githubRepositoryForProject(currentProject);
+    const authoritativeRepository = navigation?.repository.toLowerCase() ?? repository;
 
-    const repository = currentProject?.repositoryIdentity?.canonicalKey
-      ?.split("/")
-      .slice(-2)
-      .join("/")
-      .toLowerCase();
-    const shorthandReferences = parseGitHubShorthandReferences(normalizedText);
-    for (const reference of shorthandReferences) {
-      if (
-        reference.repository === navigation.repository.toLowerCase() &&
-        reference.number === navigation.number
-      ) {
-        references.set(`${reference.repository}#${reference.number}`, navigation.url);
-      }
+    for (const reference of parseGitHubReferences(normalizedText)) {
+      const referenceRepository = reference.repository ?? authoritativeRepository;
+      if (!referenceRepository) continue;
+
+      const key = reference.repository
+        ? `${reference.repository}#${reference.number}`
+        : `#${reference.number}`;
+      const isCurrentPullRequest =
+        navigation !== null &&
+        referenceRepository === navigation.repository.toLowerCase() &&
+        reference.number === navigation.number;
+      references.set(
+        key,
+        isCurrentPullRequest
+          ? navigation.url
+          : buildGitHubIssueReferenceUrl({
+              repository: referenceRepository,
+              number: reference.number,
+            }),
+      );
     }
-    if (repository === navigation.repository.toLowerCase()) {
-      references.set(`#${navigation.number}`, navigation.url);
-    }
+
     return references;
   }, [
     currentProject?.repositoryIdentity?.canonicalKey,
+    currentProject?.repositoryIdentity?.name,
+    currentProject?.repositoryIdentity?.owner,
+    currentProject?.repositoryIdentity?.provider,
     currentThread?.pullRequest?.url,
     normalizedText,
   ]);

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 
 import {
+  buildGitHubIssueReferenceUrl,
   parseCanonicalThreadPath,
+  parseGitHubReferences,
   parseGitHubShorthandReferences,
   resolveExplicitThreadLink,
 } from "./chatLinkClassification";
@@ -61,5 +63,23 @@ describe("parseGitHubShorthandReferences", () => {
     expect(parseGitHubShorthandReferences("See owner/repo#42 and #42.")).toEqual([
       { repository: "owner/repo", number: 42 },
     ]);
+  });
+});
+
+describe("parseGitHubReferences", () => {
+  it("keeps bare references separate from qualified repository identity", () => {
+    expect(parseGitHubReferences("See owner/repo#42 and #43.")).toEqual([
+      { repository: "owner/repo", number: 42 },
+      { repository: null, number: 43 },
+    ]);
+  });
+
+  it("builds an ambiguity-preserving GitHub issue destination", () => {
+    expect(
+      buildGitHubIssueReferenceUrl({
+        repository: "owner/repo",
+        number: 42,
+      }),
+    ).toBe("https://github.com/owner/repo/issues/42");
   });
 });
