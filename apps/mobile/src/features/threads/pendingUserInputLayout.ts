@@ -39,5 +39,12 @@ export function derivePendingUserInputMaxHeight(input: {
 export function derivePendingApprovalMaxHeight(
   input: Parameters<typeof derivePendingUserInputMaxHeight>[0],
 ): number {
-  return derivePendingUserInputMaxHeight(input);
+  const availableHeight =
+    input.windowHeight -
+    Math.max(0, input.keyboardHeight) -
+    Math.max(0, input.navigationHeaderHeight) -
+    Math.max(0, input.composerOverlapHeight) -
+    PENDING_USER_INPUT_VERTICAL_GAP;
+
+  return Math.min(PENDING_USER_INPUT_MAX_HEIGHT, Math.max(0, availableHeight));
 }

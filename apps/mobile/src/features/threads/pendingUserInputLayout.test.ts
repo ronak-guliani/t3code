@@ -49,4 +49,26 @@ describe("derivePendingUserInputMaxHeight", () => {
       }),
     ).toBe(225);
   });
+
+  it("never expands an approval beyond the actual available height", () => {
+    expect(
+      derivePendingApprovalMaxHeight({
+        windowHeight: 180,
+        keyboardHeight: 0,
+        navigationHeaderHeight: 44,
+        composerOverlapHeight: 94,
+      }),
+    ).toBe(30);
+  });
+
+  it("clamps an approval to zero when the viewport has no remaining space", () => {
+    expect(
+      derivePendingApprovalMaxHeight({
+        windowHeight: 120,
+        keyboardHeight: 0,
+        navigationHeaderHeight: 44,
+        composerOverlapHeight: 94,
+      }),
+    ).toBe(0);
+  });
 });
