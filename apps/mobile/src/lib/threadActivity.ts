@@ -211,6 +211,10 @@ const turnFoldRowsCache = new WeakMap<
   ThreadFeedEntry,
   Extract<ThreadFeedEntry, { readonly type: "turn-fold" }>
 >();
+const turnWorkSummaryCache = new WeakMap<
+  ThreadFeedActivityGroup,
+  { readonly groups: readonly ThreadFeedActivityGroup[]; readonly label: string }
+>();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
 export function isContextCompactionActivityGroup(
@@ -1550,14 +1554,13 @@ export function deriveThreadFeedPresentation(
     }
   }
 
-  const workByTurn = new Map<TurnId, WorkLogEntry[]>();
+  const workByTurn = new Map<TurnId, ThreadFeedActivityGroup[]>();
   if (foldsByAnchorId.size > 0) {
     for (const item of sourceFeed) {
       if (item.type !== "activity-group" || item.turnId === null) continue;
-      const work = item.activities.map((activity) => presentationEntryForActivity(activity));
       const previous = workByTurn.get(item.turnId);
-      if (previous) previous.push(...work);
-      else workByTurn.set(item.turnId, work);
+      if (previous) previous.push(item);
+      else workByTurn.set(item.turnId, [item]);
     }
   }
   const result: ThreadFeedEntry[] = [];
@@ -1573,9 +1576,10 @@ export function deriveThreadFeedPresentation(
     if (fold) {
       const expanded = expandedTurnIds.has(fold.turnId);
       const turnWork = workByTurn.get(fold.turnId) ?? [];
-      const activity = deriveWorkGroupActivity(turnWork, false);
       const label =
-        !expanded && turnWork.length > 0 ? `${activity.label} · ${fold.label}` : fold.label;
+        !expanded && turnWork.length > 0
+          ? `${completedTurnWorkLabel(turnWork)} · ${fold.label}`
+          : fold.label;
       let row = turnFoldRowsCache.get(entry);
       if (
         !row ||
@@ -1597,6 +1601,8 @@ export function deriveThreadFeedPresentation(
       result.push(row);
     }
     const hasExpandedWork =
+      collapsedEntryIds.has(entry.id) &&
+      expandedWorkGroupIds.size > 0 &&
       entry.type === "activity-group" &&
       entry.activities.some((activity) => {
         const work = activity.workEntry;
@@ -1731,15 +1737,35 @@ function appendActivityGroupRows(
   flushGroupableRun(true);
 }
 
+function completedTurnWorkLabel(groups: readonly ThreadFeedActivityGroup[]): string {
+  const first = groups[0]!;
+  const cached = turnWorkSummaryCache.get(first);
+  if (
+    cached &&
+    cached.groups.length === groups.length &&
+    cached.groups.every((group, index) => group === groups[index])
+  ) {
+    return cached.label;
+  }
+  const entries = groups.flatMap((group) =>
+    group.activities.map((activity) => presentationEntryForActivity(activity)),
+  );
+  const label = deriveWorkGroupActivity(entries, false).label;
+  turnWorkSummaryCache.set(first, { groups, label });
+  return label;
+}
+
 function presentationEntryForActivity(activity: ThreadFeedActivity, active = false): WorkLogEntry {
+  const toolLifecycleStatus =
+    activity.status === "failure" &&
+    activity.lifecycleStatus !== "declined" &&
+    activity.lifecycleStatus !== "stopped"
+      ? "failed"
+      : (activity.lifecycleStatus ?? (active ? "inProgress" : undefined));
+  if (activity.workEntry.toolLifecycleStatus === toolLifecycleStatus) return activity.workEntry;
   return {
     ...activity.workEntry,
-    toolLifecycleStatus:
-      activity.status === "failure" &&
-      activity.lifecycleStatus !== "declined" &&
-      activity.lifecycleStatus !== "stopped"
-        ? "failed"
-        : (activity.lifecycleStatus ?? (active ? "inProgress" : undefined)),
+    toolLifecycleStatus,
   };
 }
 
@@ -1787,7 +1813,9 @@ function appendToolGroupRows(
         ? singleToolCallLabel(singleActivity)
         : singleActivity !== null && !singleActivity.toolLike
           ? singleActivity.workEntry.label
-          : summarizeToolGroup(activities.map((activity) => activity.workEntry));
+          : singleActivity !== null
+            ? summarizeToolGroup([singleActivity.workEntry])
+            : groupActivity.label;
   const primarySourceActivity = activities.find(
     (activity) => activity.workEntry.toolSource !== undefined,
   );

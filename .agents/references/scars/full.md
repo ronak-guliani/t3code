@@ -190,6 +190,7 @@
 
 - Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
 - Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
+- Bound disclosure batches inside history groups, not just the number of group headers. Cache completed-turn labels against every contributing immutable group, and keep detail-expansion state out of history grouping dependencies.
 
 - Workspace autosave sessions belong to the environment/workspace/file, not the preview mount: retain failed drafts and retry state across remounts, flush only unsaved revisions, and let a post-confirmation read retire only the draft it captured. Content-only autosaves must not rebuild the file tree.
 

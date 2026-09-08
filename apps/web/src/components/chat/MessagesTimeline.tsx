@@ -68,7 +68,6 @@ import {
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
-  type WorkGroupExpansionOverride,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -1033,12 +1032,9 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const onlyToolEntries =
     groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
   const groupKey = groupedEntries[0]?.stableId ?? groupedEntries[0]?.id ?? "";
-  const [expansionOverride, setExpansionOverride] = useState<WorkGroupExpansionOverride>(() =>
-    workGroupExpansion.get(groupKey) ? "expanded" : null,
-  );
-  const isExpanded = expansionOverride === "expanded";
+  const [isExpanded, setIsExpanded] = useState(() => workGroupExpansion.get(groupKey) ?? false);
   const detailsId = useId();
-  const [showAll, setShowAll] = useState(false);
+  const [visibleGroupCount, setVisibleGroupCount] = useState(6);
   const activity = useMemo(
     () =>
       deriveWorkGroupActivity(
@@ -1060,7 +1056,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
       open={isExpanded}
       onOpenChange={(expanded) => {
         workGroupExpansion.set(groupKey, expanded);
-        setExpansionOverride(expanded ? "expanded" : "collapsed");
+        setIsExpanded(expanded);
       }}
     >
       <CollapsibleTrigger
@@ -1119,8 +1115,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
           <WorkGroupHistory
             entries={groupedEntries}
             workspaceRoot={workspaceRoot}
-            showAll={showAll}
-            onShowAll={() => setShowAll(true)}
+            visibleGroupCount={visibleGroupCount}
+            onShowMore={() => setVisibleGroupCount((count) => count + 6)}
           />
         </div>
       </CollapsibleContent>
@@ -1131,18 +1127,19 @@ const WorkGroupSection = memo(function WorkGroupSection({
 function WorkGroupHistory({
   entries,
   workspaceRoot,
-  showAll,
-  onShowAll,
+  visibleGroupCount,
+  onShowMore,
 }: {
   entries: TimelineWorkEntry[];
   workspaceRoot: string | undefined;
-  showAll: boolean;
-  onShowAll: () => void;
+  visibleGroupCount: number;
+  onShowMore: () => void;
 }) {
   const groups = useMemo(() => groupConsecutiveWorkEntries(entries, (entry) => entry), [entries]);
+  const nextGroupCount = Math.min(6, groups.length - visibleGroupCount);
   return (
     <>
-      {(showAll ? groups : groups.slice(-6)).map((group) => (
+      {groups.slice(-visibleGroupCount).map((group) => (
         <WorkHistoryGroup
           key={group.entries[0]!.stableId ?? group.entries[0]!.id}
           entries={group.entries}
@@ -1150,13 +1147,13 @@ function WorkGroupHistory({
           workspaceRoot={workspaceRoot}
         />
       ))}
-      {!showAll && groups.length > 6 ? (
+      {groups.length > visibleGroupCount ? (
         <button
           type="button"
           className="mt-1 rounded-sm px-2 py-2 text-[0.9em] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-          onClick={onShowAll}
+          onClick={onShowMore}
         >
-          Show all {entries.length} actions
+          Show {nextGroupCount} earlier {nextGroupCount === 1 ? "group" : "groups"}
         </button>
       ) : null}
     </>
@@ -1173,6 +1170,7 @@ function WorkHistoryGroup({
   workspaceRoot: string | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(50);
   if (entries.length === 1)
     return (
       <SimpleWorkEntryRow
@@ -1199,7 +1197,7 @@ function WorkHistoryGroup({
       </CollapsibleTrigger>
       <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
         <div className="ml-3 border-l border-border/60 pl-2">
-          {entries.map((entry) => (
+          {entries.slice(0, visibleCount).map((entry) => (
             <SimpleWorkEntryRow
               key={entry.stableId ?? entry.id}
               canExpandCommand
@@ -1208,6 +1206,16 @@ function WorkHistoryGroup({
               workspaceRoot={workspaceRoot}
             />
           ))}
+          {entries.length > visibleCount ? (
+            <button
+              type="button"
+              className="rounded-sm px-2 py-2 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              onClick={() => setVisibleCount((count) => count + 50)}
+            >
+              Show {Math.min(50, entries.length - visibleCount)} more actions (
+              {entries.length - visibleCount} remaining)
+            </button>
+          ) : null}
         </div>
       </CollapsibleContent>
     </Collapsible>

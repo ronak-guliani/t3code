@@ -63,6 +63,23 @@ describe("live activity strips", () => {
     });
   });
 
+  it.each(["inProgress", "failed", "stopped"] as const)(
+    "does not summarize completed history while showing a %s lead",
+    (status) => {
+      let historicalLabelReads = 0;
+      const history = Array.from({ length: 5_000 }, () => ({
+        ...read("done.ts"),
+        get label() {
+          historicalLabelReads += 1;
+          return "Read file";
+        },
+      }));
+      const activity = deriveWorkGroupActivity([...history, read("lead.ts", status)], true);
+      expect(activity.label).toContain("lead.ts");
+      expect(historicalLabelReads).toBe(0);
+    },
+  );
+
   it("keeps earlier failures visible when later work succeeds", () => {
     expect(
       deriveWorkGroupActivity([read("failed.ts", "failed"), read("done.ts")], false),

@@ -1746,6 +1746,87 @@ describe("buildThreadFeed", () => {
     },
   );
 
+  it("reuses completed-turn summaries across live updates and invalidates changed groups", () => {
+    const turnId = TurnId.make("historical-turn");
+    const activeTurnId = TurnId.make("active-turn");
+    const createdAt = "2026-04-01T00:00:00.000Z";
+    let historicalLabelReads = 0;
+    const makeGroup = (id: string): Extract<ThreadFeedEntry, { type: "activity-group" }> => ({
+      type: "activity-group",
+      id,
+      turnId,
+      createdAt,
+      activities: Array.from({ length: 2_500 }, (_, index) => ({
+        id: `${id}-${index}`,
+        turnId,
+        createdAt,
+        summary: "Read file",
+        detail: null,
+        canExpand: false,
+        getFullDetail: () => null,
+        getCopyText: () => "",
+        icon: "eye",
+        toolLike: true,
+        status: "success",
+        lifecycleStatus: "completed",
+        workEntry: {
+          id: `${id}-${index}`,
+          turnId,
+          createdAt,
+          tone: "tool",
+          toolLifecycleStatus: "completed",
+          detail: `/src/${id}-${index}.ts`,
+          get label() {
+            historicalLabelReads += 1;
+            return "Read file";
+          },
+        },
+      })),
+    });
+    const first = makeGroup("first");
+    const second = makeGroup("second");
+    const liveTurn = {
+      turnId: activeTurnId,
+      state: "running" as const,
+      startedAt: createdAt,
+      completedAt: null,
+    };
+    const initial = deriveThreadFeedPresentation([first, second], liveTurn, new Set());
+    expect(initial[0]).toMatchObject({
+      type: "turn-fold",
+      label: "Read 5000 files · Worked for 1ms",
+    });
+    expect(historicalLabelReads).toBeGreaterThan(0);
+    historicalLabelReads = 0;
+    for (let index = 0; index < 10; index += 1) {
+      const activeGroup = {
+        ...second,
+        id: `active-${index}`,
+        turnId: activeTurnId,
+        activities: [],
+      };
+      const updated = deriveThreadFeedPresentation(
+        [first, second, activeGroup],
+        liveTurn,
+        new Set(),
+        new Set(),
+        createdAt,
+      );
+      expect(updated[0]).toBe(initial[0]);
+    }
+    expect(historicalLabelReads).toBe(0);
+    const changedSecond = {
+      ...second,
+      activities: second.activities.slice(1),
+    };
+    const changed = deriveThreadFeedPresentation([first, changedSecond], liveTurn, new Set());
+    expect(changed[0]).toMatchObject({
+      type: "turn-fold",
+      label: "Read 4999 files · Worked for 1ms",
+    });
+    expect(historicalLabelReads).toBeGreaterThan(0);
+  });
+
   it("defers large tool output expansion until a work row is opened or copied", () => {
     let serializedToolOutputs = 0;
     const activities = Array.from({ length: 5_000 }, (_, index) =>

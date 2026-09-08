@@ -397,12 +397,12 @@ interface ThreadWorkLogProps {
 }
 
 export function ThreadWorkLog(props: ThreadWorkLogProps) {
-  const activities = useMemo(() => {
-    if (!props.activities[0]?.groupedToolDetail) return props.activities;
+  const historyGroups = useMemo(() => {
+    if (!props.activities[0]?.groupedToolDetail) return null;
     return groupConsecutiveWorkEntries(props.activities, (row) =>
       row.status === "failure" ? { ...row.workEntry, tone: "error" } : row.workEntry,
-    ).flatMap((group) => {
-      if (group.entries.length === 1) return group.entries;
+    ).map((group) => {
+      if (group.entries.length === 1) return { summaryRow: null, entries: group.entries };
       const first = group.entries[0]!;
       const id = `history-group:${first.id}`;
       const summaryRow: ThreadFeedActivity = {
@@ -422,9 +422,20 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
         getFullDetail: () => null,
         getCopyText: () => group.entries.map((row) => row.getCopyText()).join("\n\n"),
       };
-      return props.expandedRows[id] ? [summaryRow, ...group.entries] : [summaryRow];
+      return { summaryRow, entries: group.entries };
     });
-  }, [props.activities, props.expandedRows]);
+  }, [props.activities]);
+  const activities = useMemo(
+    () =>
+      historyGroups?.flatMap(({ summaryRow, entries }) =>
+        summaryRow === null
+          ? entries
+          : props.expandedRows[summaryRow.id]
+            ? [summaryRow, ...entries]
+            : [summaryRow],
+      ) ?? props.activities,
+    [historyGroups, props.activities, props.expandedRows],
+  );
   const renderRow = useCallback(
     (row: ThreadFeedActivity) => (
       <ThreadWorkLogRow

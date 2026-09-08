@@ -11,7 +11,6 @@ import {
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
-  resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -337,33 +336,6 @@ describe("resolveAssistantMessageCopyState", () => {
       text: "Interim thought",
       visible: false,
     });
-  });
-});
-
-describe("resolveWorkGroupExpanded", () => {
-  it("auto-collapses by default but respects explicit expansion", () => {
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: true,
-        expansionOverride: null,
-      }),
-    ).toBe(false);
-
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: true,
-        expansionOverride: "expanded",
-      }),
-    ).toBe(true);
-  });
-
-  it("keeps an explicit collapse while auto-collapse is inactive", () => {
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: false,
-        expansionOverride: "collapsed",
-      }),
-    ).toBe(false);
   });
 });
 

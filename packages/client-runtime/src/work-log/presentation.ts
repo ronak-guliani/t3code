@@ -150,15 +150,12 @@ export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
         : stopped
           ? "stopped"
           : "complete";
-  const summary =
-    entries.length === 1 ? compactWorkEntryLabel(entries[0]!) : summarizeToolGroup(entries);
   const failureLabel = failed ? compactWorkEntryLabel(failed) : null;
   return {
     state,
     lead,
     activeCount: active.length,
     shimmer: state === "active",
-    summary,
     label: approval
       ? approval.sourceActivityKind === "user-input.requested"
         ? "Input needed"
@@ -171,7 +168,9 @@ export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
           ? compactWorkEntryLabel(active[0])
           : stopped
             ? compactWorkEntryLabel({ ...stopped, toolLifecycleStatus: "stopped" })
-            : summary || "Work log",
+            : (entries.length === 1
+                ? compactWorkEntryLabel(entries[0]!)
+                : summarizeToolGroup(entries)) || "Work log",
   } as const;
 }
 
