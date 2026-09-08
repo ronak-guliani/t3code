@@ -2,7 +2,11 @@
 
 import { useLayoutEffect, useRef } from "react";
 
-import { acquireBrowserSurface, useBrowserSurfaceStore } from "./browserSurfaceStore";
+import {
+  acquireBrowserSurface,
+  useBrowserSurfaceStore,
+  type BrowserSurfaceLease,
+} from "./browserSurfaceStore";
 
 export function BrowserSurfaceSlot(props: {
   readonly tabId: string;
@@ -25,33 +29,31 @@ export function BrowserSurfaceSlot(props: {
     fitSourceContent = false,
   } = props;
   const elementRef = useRef<HTMLDivElement | null>(null);
-  const presentationRef = useRef({ visible, cornerRadius, zIndex });
+  const presentationRef = useRef({ cornerRadius, zIndex });
   const updateRef = useRef<(() => void) | null>(null);
-  const ownerRef = useRef<symbol | null>(null);
 
   useLayoutEffect(() => {
     const element = elementRef.current;
-    if (!element) return;
-    let lease = acquireBrowserSurface(tabId, fitSourceContent);
-    ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
+    if (!element || !visible) return;
+    let lease: BrowserSurfaceLease | null = null;
+    let updating = false;
     const update = () => {
-      const rect = element.getBoundingClientRect();
-      const presentation = presentationRef.current;
-      const presented = lease.present(
-        {
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          width: Math.max(1, Math.round(rect.width)),
-          height: Math.max(1, Math.round(rect.height)),
-        },
-        presentation.visible && rect.width > 0 && rect.height > 0,
-        presentation.cornerRadius,
-        presentation.zIndex,
-      );
-      if (presentation.visible && !presented) {
-        lease.release();
-        lease = acquireBrowserSurface(tabId, fitSourceContent);
-        ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
+      if (updating) return;
+      updating = true;
+      try {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          lease?.release();
+          lease = null;
+          return;
+        }
+        // A newly visible slot takes ownership. Displaced slots wait for a
+        // release instead of synchronously fighting the current owner.
+        if (!lease || useBrowserSurfaceStore.getState().byTabId[tabId]?.owner == null) {
+          lease?.release();
+          lease = acquireBrowserSurface(tabId, fitSourceContent);
+        }
+        const presentation = presentationRef.current;
         lease.present(
           {
             x: Math.round(rect.x),
@@ -59,12 +61,12 @@ export function BrowserSurfaceSlot(props: {
             width: Math.max(1, Math.round(rect.width)),
             height: Math.max(1, Math.round(rect.height)),
           },
-          rect.width > 0 && rect.height > 0,
+          true,
           presentation.cornerRadius,
           presentation.zIndex,
         );
-      } else {
-        ownerRef.current = useBrowserSurfaceStore.getState().byTabId[tabId]?.owner ?? null;
+      } finally {
+        updating = false;
       }
     };
     updateRef.current = update;
@@ -73,12 +75,8 @@ export function BrowserSurfaceSlot(props: {
     observer.observe(element);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
-    const unsubscribe = useBrowserSurfaceStore.subscribe((state) => {
-      const currentOwner = state.byTabId[tabId]?.owner ?? null;
-      if (currentOwner === ownerRef.current) return;
-      // Another slot claimed this tab. Reclaim immediately when this slot is visible.
-      if (presentationRef.current.visible) update();
-      else ownerRef.current = currentOwner;
+    const unsubscribe = useBrowserSurfaceStore.subscribe((state, previous) => {
+      if (state.byTabId[tabId]?.owner == null && previous.byTabId[tabId]?.owner != null) update();
     });
     return () => {
       observer.disconnect();
@@ -86,13 +84,12 @@ export function BrowserSurfaceSlot(props: {
       window.removeEventListener("scroll", update, true);
       unsubscribe();
       if (updateRef.current === update) updateRef.current = null;
-      ownerRef.current = null;
-      lease.release();
+      lease?.release();
     };
-  }, [fitSourceContent, tabId]);
+  }, [fitSourceContent, tabId, visible]);
 
   useLayoutEffect(() => {
-    presentationRef.current = { visible, cornerRadius, zIndex };
+    presentationRef.current = { cornerRadius, zIndex };
     updateRef.current?.();
   }, [cornerRadius, layoutVersion, visible, zIndex]);
 

@@ -230,7 +230,7 @@ const waitForRenderedViewport = async (
   });
 };
 
-const currentStatus = async (
+export const readPreviewAutomationStatus = async (
   threadRef: ScopedThreadRef,
   requestedTabId: string | null,
 ): Promise<PreviewAutomationStatus> => {
@@ -248,7 +248,7 @@ const currentStatus = async (
   };
   if (runtimeTabId && tabId && previewBridge && state.desktopByTabId[tabId]) {
     const status = await previewBridge.automation.status(runtimeTabId);
-    return { ...status, visible, ...viewportStatus };
+    return { ...status, tabId, visible, ...viewportStatus };
   }
   const navStatus = snapshot?.navStatus;
   return {
@@ -479,7 +479,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         };
         switch (request.operation) {
           case "status":
-            return await currentStatus(threadRef, tabId);
+            return await readPreviewAutomationStatus(threadRef, tabId);
           case "open": {
             const input = request.input as PreviewAutomationOpenInput;
             const resolvedInputUrl = input.url
@@ -574,7 +574,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 request.timeoutMs,
               );
             }
-            return await currentStatus(threadRef, activeTabId);
+            return await readPreviewAutomationStatus(threadRef, activeTabId);
           }
           case "navigate": {
             const ready = await requireReadyTab();
@@ -596,7 +596,7 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               input.readiness ?? "load",
               input.timeoutMs ?? request.timeoutMs,
             );
-            return await currentStatus(threadRef, ready.tabId);
+            return await readPreviewAutomationStatus(threadRef, ready.tabId);
           }
           case "resize": {
             const ready = await requireReadyTab();
