@@ -41,8 +41,13 @@ export function BrowserSurfaceSlot(props: {
     if (!element || !visible) return;
     let lease: BrowserSurfaceLease | null = null;
     let updating = false;
+    let frameId: number | null = null;
     const update = () => {
       if (updating) return;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+      }
       updating = true;
       try {
         const rect = element.getBoundingClientRect();
@@ -77,8 +82,15 @@ export function BrowserSurfaceSlot(props: {
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
+    const scheduleUpdate = () => {
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        update();
+      });
+    };
+    window.addEventListener("resize", scheduleUpdate);
+    window.addEventListener("scroll", scheduleUpdate, { capture: true, passive: true });
     const unsubscribe = useBrowserSurfaceStore.subscribe((state, previous) => {
       if (state.byTabId[tabId]?.owner != null || previous.byTabId[tabId]?.owner == null) return;
       // An earlier listener may already have filled the vacancy.
@@ -88,8 +100,9 @@ export function BrowserSurfaceSlot(props: {
     return () => {
       unsubscribe();
       observer.disconnect();
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate, true);
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
       if (updateRef.current === update) updateRef.current = null;
       lease?.release();
     };
