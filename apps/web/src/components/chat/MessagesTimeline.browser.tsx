@@ -1,6 +1,6 @@
 import "../../index.css";
 
-import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { createRef } from "react";
 import type { LegendListRef } from "@legendapp/list/react";
 import { page } from "vitest/browser";
@@ -108,7 +108,7 @@ describe("MessagesTimeline", () => {
       await expect
         .element(page.getByText("Send a message to start the conversation."))
         .not.toBeInTheDocument();
-      await expect.element(page.getByText("Thinking - Inspecting repository state")).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Expand Work log (1)" })).toBeVisible();
     } finally {
       await screen.unmount();
     }
@@ -151,7 +151,7 @@ describe("MessagesTimeline", () => {
         />,
       );
 
-      await expect.element(page.getByText("Thinking - Inspecting repository state")).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Expand Work log (1)" })).toBeVisible();
       expect(props.onIsAtEndChange).toHaveBeenCalledWith(true);
       expect(scrollToEndSpy).toHaveBeenCalledWith({ animated: false });
       expect(requestAnimationFrameSpy).toHaveBeenCalled();
@@ -219,5 +219,99 @@ describe("MessagesTimeline", () => {
     } finally {
       await screen.unmount();
     }
+  });
+
+  it("keeps active work compact, expands grouped history and preserves disclosure through completion", async () => {
+    const turnId = TurnId.make("turn-activity");
+    const props = buildProps();
+    const createdAt = new Date().toISOString();
+    const entries = ["a.ts", "b.ts", "live.ts", "parallel.ts"].map((name, index) => ({
+      id: name,
+      kind: "work" as const,
+      createdAt,
+      entry: {
+        id: name,
+        stableId: name,
+        createdAt,
+        turnId,
+        tone: "tool" as const,
+        label: "Read file",
+        detail: `/workspace/src/${name}`,
+        toolLifecycleStatus: index < 2 ? ("completed" as const) : ("inProgress" as const),
+        isComplete: index < 2,
+      },
+    }));
+    const screen = await render(
+      <MessagesTimeline
+        {...props}
+        activeTurnId={turnId}
+        activeTurnInProgress
+        timelineEntries={entries}
+      />,
+    );
+    await expect.element(page.getByText("Reading live.ts", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/4 actions.*\+1 active/)).toBeVisible();
+    expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(1);
+    await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
+    await page.getByRole("button", { name: "Read 2 files" }).click();
+    await page.getByRole("button", { name: "Expand details: Read a.ts" }).click();
+    await expect.element(page.getByText("/workspace/src/a.ts", { exact: true })).toBeVisible();
+    await screen.rerender(
+      <MessagesTimeline
+        {...props}
+        timelineEntries={entries.map((entry) => ({
+          ...entry,
+          entry: { ...entry.entry, toolLifecycleStatus: "completed", isComplete: true },
+        }))}
+      />,
+    );
+    await expect
+      .element(page.getByRole("button", { name: "Collapse Tool Calls (4)" }))
+      .toBeVisible();
+    expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(0);
+    await screen.unmount();
+  });
+
+  it("keeps failures visible in a collapsed receipt after later successful work", async () => {
+    const createdAt = new Date().toISOString();
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "failed",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "failed",
+              createdAt,
+              tone: "tool",
+              label: "Ran command",
+              command: "pnpm test",
+              toolLifecycleStatus: "failed",
+              isComplete: true,
+            },
+          },
+          {
+            id: "success",
+            kind: "work",
+            createdAt,
+            entry: {
+              id: "success",
+              createdAt,
+              tone: "tool",
+              label: "Read file",
+              detail: "/src/file.ts",
+              toolLifecycleStatus: "completed",
+              isComplete: true,
+            },
+          },
+        ]}
+      />,
+    );
+    await expect.element(page.getByText("Failed pnpm", { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Expand Tool Calls (2)" })).toBeVisible();
+    expect(document.querySelector(".work-activity-shimmer")).toBeNull();
+    await screen.unmount();
   });
 });

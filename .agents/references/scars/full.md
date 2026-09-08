@@ -188,6 +188,8 @@
 
 ## Client state and completion
 
+- Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
+
 - Workspace autosave sessions belong to the environment/workspace/file, not the preview mount: retain failed drafts and retry state across remounts, flush only unsaved revisions, and let a post-confirmation read retire only the draft it captured. Content-only autosaves must not rebuild the file tree.
 
 - Child lifecycle notifications are not parent execution status. Keep unread child updates in activity/tooltip surfaces, not sidebar status dots or badges; they must not override the parent's own completion.

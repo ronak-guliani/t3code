@@ -1533,10 +1533,12 @@ describe("buildThreadFeed", () => {
     ).toMatchObject([
       {
         type: "work-toggle",
-        summary: "Clicking in the preview browser",
+        summary: "Clicked in the preview browser",
         summaryToolIcon: "browser",
         live: true,
+        shimmer: false,
       },
+      { type: "thinking" },
     ]);
   });
 
@@ -1544,7 +1546,7 @@ describe("buildThreadFeed", () => {
     {
       status: "completed",
       displayName: "Clicked in the preview browser",
-      liveDisplayName: "Clicking in the preview browser",
+      liveDisplayName: "Clicked in the preview browser",
       detail: "Clicked Continue",
       hasFailure: false,
     },
@@ -1656,8 +1658,7 @@ describe("buildThreadFeed", () => {
           summaryToolIcon: "browser",
           hasFailure,
           live: true,
-          // A successful trailing call keeps shining; a failure hands off to "Thinking".
-          shimmer: !hasFailure,
+          shimmer: false,
         },
         {
           type: "activity-group",
@@ -1671,7 +1672,7 @@ describe("buildThreadFeed", () => {
             },
           ],
         },
-        ...(hasFailure ? [{ type: "thinking", turnId }] : []),
+        { type: "thinking", turnId },
       ]);
       const terminalGroup = terminalRows[1];
       if (terminalGroup?.type !== "activity-group") return;
@@ -1867,7 +1868,7 @@ describe("buildThreadFeed", () => {
     ]);
     expect(collapsed[1]).toMatchObject({
       type: "turn-fold",
-      label: "Worked for 17s",
+      label: "Read files · Worked for 17s",
       expanded: false,
     });
 
@@ -1886,7 +1887,7 @@ describe("buildThreadFeed", () => {
     );
     expect(interrupted[1]).toMatchObject({
       type: "turn-fold",
-      label: "You stopped after 19s",
+      label: "Read files · You stopped after 19s",
       expanded: false,
     });
     const retimed = deriveThreadFeedPresentation(
@@ -1900,8 +1901,15 @@ describe("buildThreadFeed", () => {
       null,
       new Set(),
     );
-    expect(retimed[1]).toMatchObject({ type: "turn-fold", label: "Worked for 23s" });
-    expect(collapsed[1]).toMatchObject({ type: "turn-fold", label: "Worked for 17s" });
+    expect(retimed[1]).toMatchObject({ type: "turn-fold", label: "Read files · Worked for 23s" });
+    expect(collapsed[1]).toMatchObject({ type: "turn-fold", label: "Read files · Worked for 17s" });
+    const manuallyExpanded = deriveThreadFeedPresentation(
+      feed,
+      thread.latestTurn,
+      new Set(),
+      new Set(["work-group:tool-completed"]),
+    );
+    expect(manuallyExpanded.some((entry) => entry.type === "activity-group")).toBe(true);
   });
 
   it("folds assistant messages between the first and terminal messages", () => {
@@ -2033,7 +2041,7 @@ describe("buildThreadFeed", () => {
     const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
     expect(collapsed.find((entry) => entry.type === "turn-fold")).toMatchObject({
       turnId: firstTurnId,
-      label: "Worked for 12s",
+      label: "Ran command · Worked for 12s",
     });
   });
 
@@ -2087,7 +2095,7 @@ describe("buildThreadFeed", () => {
     expect(deriveThreadFeedPresentation(feed, thread.latestTurn, new Set())).toMatchObject([
       {
         type: "work-toggle",
-        summary: "Ran 2 commands",
+        summary: "Failed command",
         hiddenCount: 2,
         hasFailure: true,
       },
@@ -2220,7 +2228,7 @@ describe("buildThreadFeed", () => {
       (
         [
           { lifecycleStatus: "inProgress", summary: "Running pnpm", shimmer: true },
-          { lifecycleStatus: "completed", summary: "Running pnpm", shimmer: true },
+          { lifecycleStatus: "completed", summary: "Ran pnpm", shimmer: false },
           { lifecycleStatus: "failed", summary: "Failed pnpm", shimmer: false },
           { lifecycleStatus: "declined", summary: "Declined pnpm", shimmer: false },
           { lifecycleStatus: "stopped", summary: "Stopped pnpm", shimmer: false },
@@ -2331,7 +2339,7 @@ describe("buildThreadFeed", () => {
         {
           live: false,
           shimmer: false,
-          summary: lifecycleStatus === "inProgress" ? "printf done" : command,
+          summary: lifecycleStatus === "inProgress" ? "Ran printf" : summary,
         },
       ]);
 
@@ -2662,7 +2670,7 @@ describe("buildThreadFeed", () => {
     expect(runningRows.find((entry) => entry.type === "activity-group")).toMatchObject({
       id: `work-details:${groupId}`,
       activities: [
-        { id: "call-a-1", lifecycleStatus: "inProgress", groupedToolDetail: true, live: false },
+        { id: "call-a-1", lifecycleStatus: "inProgress", groupedToolDetail: true, live: true },
         { id: "call-b-2", lifecycleStatus: "inProgress", groupedToolDetail: true, live: true },
       ],
     });

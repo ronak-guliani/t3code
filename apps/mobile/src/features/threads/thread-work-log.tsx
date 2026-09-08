@@ -21,6 +21,7 @@ import {
   AccessibilityInfo,
   AppState,
   type ColorValue,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -42,6 +43,8 @@ import {
 } from "./thread-feed-live-follow";
 import {
   resolveWorkEntryToolPresentation,
+  compactWorkEntryLabel,
+  groupConsecutiveWorkEntries,
   type ToolGroupSummaryKind,
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
@@ -62,6 +65,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { useAssetUrl } from "../../state/assets";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const SHIMMER_WIDTH = 72;
 const SHIMMER_SWEEP_MS = 1_350;
@@ -255,7 +259,7 @@ export function ShimmeringWorkContent(props: {
         icon={props.icon}
         iconSubtleColor={props.iconSubtleColor}
         label={props.label}
-        showIcon={props.showIcon}
+        showIcon={false}
         themeAppearance={props.themeAppearance}
         toolIcon={props.toolIcon}
         onTextLayout={(event) => setTextWidth(event.nativeEvent.lines[0]?.width ?? 0)}
@@ -356,7 +360,7 @@ const WORK_LOG_BOTTOM_MARGIN = 3.5; // mb-1 with the mobile 14px rem
 const WORK_GROUP_MAX_HEIGHT = 256;
 const WORK_GROUP_EDGE_FADE_HEIGHT = 12;
 
-export const WORK_GROUP_TOGGLE_HEIGHT = THREAD_WORK_ROW_MIN_HEIGHT;
+export const WORK_GROUP_TOGGLE_HEIGHT = 52;
 
 function workLogRowsHeight(
   activities: ReadonlyArray<ThreadFeedActivity>,
@@ -394,6 +398,34 @@ interface ThreadWorkLogProps {
 }
 
 export function ThreadWorkLog(props: ThreadWorkLogProps) {
+  const activities = useMemo(() => {
+    if (!props.activities[0]?.groupedToolDetail) return props.activities;
+    return groupConsecutiveWorkEntries(props.activities, (row) =>
+      row.status === "failure" ? { ...row.workEntry, tone: "error" } : row.workEntry,
+    ).flatMap((group) => {
+      if (group.entries.length === 1) return group.entries;
+      const first = group.entries[0]!;
+      const id = `history-group:${first.id}`;
+      const summaryRow: ThreadFeedActivity = {
+        ...first,
+        id,
+        summary: group.label,
+        groupSummary: true,
+        canExpand: true,
+        workEntry: {
+          ...first.workEntry,
+          label: group.label,
+          toolTitle: group.label,
+          command: undefined,
+          detail: undefined,
+          changedFiles: undefined,
+        },
+        getFullDetail: () => null,
+        getCopyText: () => group.entries.map((row) => row.getCopyText()).join("\n\n"),
+      };
+      return props.expandedRows[id] ? [summaryRow, ...group.entries] : [summaryRow];
+    });
+  }, [props.activities, props.expandedRows]);
   const renderRow = useCallback(
     (row: ThreadFeedActivity) => (
       <ThreadWorkLogRow
@@ -431,7 +463,7 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
     <View className="-mx-1 mb-1 px-1 py-0">
       {props.activities[0]?.groupedToolDetail ? (
         <ThreadWorkGroupList
-          activities={props.activities}
+          activities={activities}
           edgeFadeColor={props.edgeFadeColor}
           expandedRows={props.expandedRows}
           groupId={props.anchorKey}
@@ -714,7 +746,11 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const fullDetail = expanded ? row.getFullDetail() : null;
   const viewedImagePath = workEntryViewedImagePath(row.workEntry);
   const toolPresentation = resolveWorkEntryToolPresentation(row.workEntry);
-  const previewText = workEntryRowLabel(row.workEntry);
+  const previewText = row.groupSummary
+    ? row.summary
+    : row.groupedToolDetail
+      ? compactWorkEntryLabel(row.workEntry)
+      : workEntryRowLabel(row.workEntry);
   const displayText =
     !toolPresentation && expanded && row.workEntry.command?.trim() ? "Command" : previewText;
   const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
@@ -827,7 +863,15 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         </View>
       </Pressable>
 
-      {fullDetail ? (
+      {fullDetail && fullDetail.length > 400 && !viewedImagePath ? (
+        <WorkDetailSheet
+          title={previewText}
+          detail={fullDetail}
+          copied={props.copied}
+          onCopy={() => props.onCopyRow(row.id, row.getCopyText())}
+          onClose={() => props.onToggleRow(row.id, props.anchorKey)}
+        />
+      ) : fullDetail ? (
         <Animated.View
           entering={WORK_LOG_DETAIL_ENTER_TRANSITION}
           exiting={WORK_LOG_DETAIL_EXIT_TRANSITION}
@@ -856,11 +900,65 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   );
 });
 
+function WorkDetailSheet(props: {
+  readonly title: string;
+  readonly detail: string;
+  readonly copied: boolean;
+  readonly onCopy: () => void;
+  readonly onClose: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal
+      visible
+      presentationStyle="pageSheet"
+      animationType="none"
+      onRequestClose={props.onClose}
+    >
+      <View
+        className="flex-1 bg-background"
+        style={{ paddingTop: insets.top, paddingBottom: insets.bottom }}
+      >
+        <View className="min-h-14 flex-row items-center gap-3 border-b border-adaptive-neutral-300-a60-white-a12 px-4">
+          <Text
+            className="min-w-0 flex-1 font-t3-medium text-base text-foreground"
+            numberOfLines={2}
+          >
+            {props.title}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Copy tool details"
+            onPress={props.onCopy}
+            className="min-h-12 justify-center px-2"
+          >
+            <Text className="text-sm text-foreground">{props.copied ? "Copied" : "Copy"}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close tool details"
+            onPress={props.onClose}
+            className="min-h-12 justify-center px-2"
+          >
+            <Text className="text-sm text-foreground">Done</Text>
+          </Pressable>
+        </View>
+        <ScrollView contentContainerStyle={{ padding: 16 }}>
+          <Text selectable className="font-mono text-xs leading-normal text-foreground-muted">
+            {props.detail}
+          </Text>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
 export function ThreadWorkGroupToggle(props: {
   readonly environmentId: EnvironmentId;
   readonly rowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
   readonly expanded: boolean;
   readonly hiddenCount: number;
+  readonly activeCount: number;
   readonly iconSubtleColor: import("react-native").ColorValue;
   readonly summary: string;
   readonly summaryKind: ToolGroupSummaryKind;
@@ -872,9 +970,7 @@ export function ThreadWorkGroupToggle(props: {
   readonly shimmer: boolean;
   readonly onToggle: () => void;
 }) {
-  const accessibilityLabel = props.hasFailure
-    ? `${props.summary}, tool call failed`
-    : props.summary;
+  const accessibilityLabel = props.summary;
   const icon =
     props.summaryToolIcon ??
     (props.toolSurface
@@ -893,46 +989,55 @@ export function ThreadWorkGroupToggle(props: {
           void Haptics.selectionAsync();
           props.onToggle();
         }}
-        className="min-h-8 flex-row items-center gap-1.5 rounded-md px-0.5 py-0 active:bg-subtle"
-        style={{ minHeight: props.rowSizing.estimatedRowHeight }}
+        className="rounded-xl border border-adaptive-neutral-300-a60-white-a12 px-2 py-1 active:bg-subtle"
+        style={{ minHeight: WORK_GROUP_TOGGLE_HEIGHT }}
       >
-        {props.shimmer ? (
-          <ShimmeringWorkContent
-            key={props.rowSizing.textSizeKey}
-            environmentId={props.environmentId}
-            icon={icon}
-            iconSubtleColor={props.iconSubtleColor}
-            label={props.summary}
-            showIcon
-            themeAppearance={props.themeAppearance}
-            toolIcon={props.toolIcon}
-          />
-        ) : (
-          <>
-            <View className="h-6 w-6 items-center justify-center">
-              <ToolActivityIconView
-                environmentId={props.environmentId}
-                icon={props.toolIcon}
-                fallback={icon}
-                fallbackColor={props.iconSubtleColor}
-                themeAppearance={props.themeAppearance}
-              />
-            </View>
-            <Text
+        <View className="min-h-8 flex-row items-center gap-1.5">
+          {props.shimmer ? (
+            <ShimmeringWorkContent
               key={props.rowSizing.textSizeKey}
-              className="min-w-0 flex-1 text-sm text-foreground-muted"
-              numberOfLines={1}
-            >
-              {props.summary}
-            </Text>
-          </>
-        )}
-        <ThreadDisclosureChevron
-          expanded={props.expanded}
-          collapsedDirection="down"
-          size={11}
-          tintColor={props.iconSubtleColor}
-        />
+              environmentId={props.environmentId}
+              icon={icon}
+              iconSubtleColor={props.iconSubtleColor}
+              label={props.summary}
+              showIcon
+              themeAppearance={props.themeAppearance}
+              toolIcon={props.toolIcon}
+            />
+          ) : (
+            <>
+              <View className="h-6 w-6 items-center justify-center">
+                <ToolActivityIconView
+                  environmentId={props.environmentId}
+                  icon={props.toolIcon}
+                  fallback={props.hasFailure ? "exclamationmark.circle" : "checkmark"}
+                  fallbackColor={props.iconSubtleColor}
+                  themeAppearance={props.themeAppearance}
+                />
+              </View>
+              <Text
+                key={props.rowSizing.textSizeKey}
+                className={cn(
+                  "min-w-0 flex-1 text-sm text-foreground-muted",
+                  props.hasFailure && "text-adaptive-rose-600-400",
+                )}
+                numberOfLines={1}
+              >
+                {props.summary}
+              </Text>
+            </>
+          )}
+          <ThreadDisclosureChevron
+            expanded={props.expanded}
+            collapsedDirection="down"
+            size={11}
+            tintColor={props.iconSubtleColor}
+          />
+        </View>
+        <Text className="ml-7 text-3xs text-foreground-muted">
+          {props.hiddenCount} {props.hiddenCount === 1 ? "action" : "actions"}
+          {props.activeCount > 1 ? ` · +${props.activeCount - 1} active` : ""}
+        </Text>
       </Pressable>
     </View>
   );
@@ -1081,6 +1186,8 @@ function toolGroupSummarySymbolName(kind: ToolGroupSummaryKind): AppSymbolName {
       return "magnifyingglass";
     case "other":
       return { ios: "wrench", android: "build" };
+    case "skill":
+      return { ios: "sparkles", android: "auto_awesome" };
     case "agent-tool":
       return { ios: "sparkles", android: "auto_awesome" };
     case "tone-tool":

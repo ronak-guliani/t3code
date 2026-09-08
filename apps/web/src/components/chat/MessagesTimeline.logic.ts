@@ -592,6 +592,11 @@ function areWorkLogEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
   if (a === b) return true;
   return (
     a.id === b.id &&
+    a.stableId === b.stableId &&
+    a.turnId === b.turnId &&
+    a.requestId === b.requestId &&
+    a.toolLifecycleStatus === b.toolLifecycleStatus &&
+    a.toolData === b.toolData &&
     a.sourceActivityKind === b.sourceActivityKind &&
     a.createdAt === b.createdAt &&
     a.label === b.label &&

@@ -1582,7 +1582,13 @@ describe("deriveWorkLogEntries", () => {
       stableId: "tool:tool-copilot-read-1",
       toolTitle: "Read file",
       itemType: "dynamic_tool_call",
+      sourceActivityKind: "tool.completed",
+      toolLifecycleStatus: "completed",
+      toolData: { rawOutput: { content: "export function deriveWorkLogEntries() {}\n" } },
     });
+    expect(deriveWorkLogEntries([toolUpdate], undefined)[0]?.toolLifecycleStatus).toBe(
+      "inProgress",
+    );
     expect(initialTimelineEntries[0]?.id).toBe("tool:tool-copilot-read-1");
     expect(completedTimelineEntries[1]?.id).toBe("tool:tool-copilot-read-1");
   });

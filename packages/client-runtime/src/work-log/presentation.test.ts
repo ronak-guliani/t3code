@@ -4,6 +4,11 @@ import { ThreadId } from "@t3tools/contracts";
 
 import {
   commandDetailRepeatsCommand,
+  compactWorkEntryLabel,
+  deriveWorkGroupActivity,
+  extractWorkLogToolLifecycleStatus,
+  groupConsecutiveWorkEntries,
+  mergeWorkLogToolData,
   extractCommandOutputText,
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
@@ -13,6 +18,143 @@ import {
   type WorkLogPresentationEntry,
   workEntryViewedImagePath,
 } from "./presentation.js";
+
+describe("live activity strips", () => {
+  const read = (name: string, status = "completed"): WorkLogPresentationEntry => ({
+    label: "Read file",
+    tone: "tool",
+    detail: `/workspace/src/${name}`,
+    toolLifecycleStatus: status,
+  });
+
+  it("keeps the oldest active call in front and counts parallel work", () => {
+    const entries = [
+      read("done.ts"),
+      read("first.ts", "inProgress"),
+      read("second.ts", "inProgress"),
+    ];
+    expect(deriveWorkGroupActivity(entries, true)).toMatchObject({
+      label: "Reading first.ts",
+      activeCount: 2,
+      shimmer: true,
+    });
+    expect(deriveWorkGroupActivity(entries.slice(1), true).lead).toBe(entries[1]);
+    expect(deriveWorkGroupActivity(entries, false)).toMatchObject({
+      activeCount: 0,
+      shimmer: false,
+    });
+  });
+
+  it("does not shimmer a completed call between tools", () => {
+    expect(deriveWorkGroupActivity([read("done.ts")], true)).toMatchObject({
+      state: "complete",
+      label: "Read done.ts",
+      shimmer: false,
+    });
+  });
+
+  it("keeps earlier failures visible when later work succeeds", () => {
+    expect(
+      deriveWorkGroupActivity([read("failed.ts", "failed"), read("done.ts")], false),
+    ).toMatchObject({
+      state: "failed",
+      label: "Failed failed.ts",
+      shimmer: false,
+    });
+  });
+
+  it("keeps unresolved approval and input requests above active tools", () => {
+    const approval: WorkLogPresentationEntry = {
+      label: "Approve command",
+      tone: "info",
+      requestId: "approval-1",
+      sourceActivityKind: "approval.requested",
+    };
+    const active = read("live.ts", "inProgress");
+    expect(deriveWorkGroupActivity([approval, active], true)).toMatchObject({
+      label: "Approval needed",
+      shimmer: false,
+      activeCount: 1,
+    });
+    expect(
+      deriveWorkGroupActivity(
+        [approval, { ...approval, sourceActivityKind: "approval.resolved" }, active],
+        true,
+      ),
+    ).toMatchObject({
+      label: "Reading live.ts",
+      shimmer: true,
+    });
+    expect(
+      deriveWorkGroupActivity([{ ...approval, sourceActivityKind: "user-input.requested" }], true)
+        .label,
+    ).toBe("Input needed");
+  });
+
+  it("groups only adjacent successful actions without swallowing active or failed work", () => {
+    const entries = [
+      read("a.ts"),
+      read("b.ts"),
+      read("c.ts", "failed"),
+      read("d.ts", "inProgress"),
+      read("e.ts"),
+    ];
+    const groups = groupConsecutiveWorkEntries(entries, (entry) => entry);
+    expect(groups.map((group) => group.entries.length)).toEqual([2, 1, 1, 1]);
+    expect(groups[0]?.label).toBe("Read 2 files");
+    expect(groups.flatMap((group) => group.entries)).toEqual(entries);
+  });
+
+  it("uses concise cross-platform filenames and command names without dropping detail", () => {
+    const entry = { ...read("a.ts"), detail: "C:\\work\\src\\a.ts" };
+    expect(compactWorkEntryLabel(entry)).toBe("Read a.ts");
+    expect(entry.detail).toBe("C:\\work\\src\\a.ts");
+    expect(
+      compactWorkEntryLabel({
+        label: "Run",
+        tone: "tool",
+        command: "pnpm test --run",
+        toolLifecycleStatus: "inProgress",
+      }),
+    ).toBe("Running pnpm");
+  });
+
+  it("normalizes interrupted and background task lifecycles", () => {
+    expect(extractWorkLogToolLifecycleStatus({ status: "cancelled" })).toBe("stopped");
+    expect(extractWorkLogToolLifecycleStatus({ status: "idle", taskType: "subagent_batch" })).toBe(
+      "stopped",
+    );
+    expect(extractWorkLogToolLifecycleStatus({ status: "running" })).toBe("inProgress");
+    expect(extractWorkLogToolLifecycleStatus({ status: "unknown" })).toBeUndefined();
+  });
+
+  it("retains the input filename when completed output replaces the preview", () => {
+    const toolData = mergeWorkLogToolData(
+      { rawInput: { path: "/src/activity.ts" } },
+      { rawOutput: { content: "export const activity = 1;" } },
+    );
+    expect(
+      compactWorkEntryLabel({
+        label: "Read file",
+        tone: "tool",
+        detail: "export const activity = 1;",
+        toolData,
+      }),
+    ).toBe("Read activity.ts");
+    expect(toolData).toEqual({
+      rawInput: { path: "/src/activity.ts" },
+      rawOutput: { content: "export const activity = 1;" },
+    });
+  });
+
+  it("preserves merged payload identity when unchanged history is re-derived", () => {
+    const started = { item: { server: "t3-code", tool: "preview_click" } };
+    const completed = { item: { result: "Clicked" } };
+    const merged = mergeWorkLogToolData(started, completed);
+    expect(mergeWorkLogToolData(started, completed)).toBe(merged);
+    expect(mergeWorkLogToolData(started, { item: { result: "Failed" } })).not.toBe(merged);
+  });
+});
 
 describe("summarizeToolGroup", () => {
   it.each(["command", "file-read", "file-change"])(

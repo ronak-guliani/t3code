@@ -154,7 +154,6 @@ import {
   ThreadWorkGroupToggle,
   ThreadThinkingRow,
   ThreadWorkLog,
-  WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import {
@@ -1356,7 +1355,8 @@ function renderFeedEntry(
       >
         <Text
           key={props.workRowSizing.textSizeKey}
-          className="font-t3-medium text-sm tabular-nums text-foreground-muted"
+          className="min-w-0 flex-1 font-t3-medium text-sm tabular-nums text-foreground-muted"
+          numberOfLines={2}
         >
           {entry.label}
         </Text>
@@ -1381,6 +1381,7 @@ function renderFeedEntry(
         rowSizing={props.workRowSizing}
         expanded={entry.expanded}
         hiddenCount={entry.hiddenCount}
+        activeCount={entry.activeCount}
         iconSubtleColor={iconSubtleColor}
         summary={entry.summary}
         summaryKind={entry.summaryKind}
@@ -2589,12 +2590,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       }
       switch (entry.type) {
         case "turn-fold":
-          return TURN_FOLD_HEIGHT;
+          return undefined;
         case "work-toggle":
+          return undefined;
         case "thinking":
-          return WORK_GROUP_TOGGLE_HEIGHT;
+          return workRowSizing.fixedRowHeight;
         case "activity-group":
-          if (isContextCompactionActivityGroup(entry)) {
+          if (isContextCompactionActivityGroup(entry) || entry.activities[0]?.groupedToolDetail) {
             return undefined;
           }
           // Expanded rows append a variable detail block — fall back to

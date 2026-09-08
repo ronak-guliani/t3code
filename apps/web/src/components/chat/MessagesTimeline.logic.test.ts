@@ -770,6 +770,32 @@ describe("deriveMessagesTimelineRows", () => {
 });
 
 describe("computeStableMessagesTimelineRows", () => {
+  it("refreshes a stable tool row when only its lifecycle or output changes", () => {
+    const entry = {
+      id: "work-1",
+      createdAt: "2026-09-08T00:00:00Z",
+      tone: "tool" as const,
+      label: "Ran command",
+      isComplete: true,
+      toolLifecycleStatus: "completed" as const,
+    };
+    const row = {
+      id: "work-1",
+      kind: "work" as const,
+      createdAt: entry.createdAt,
+      groupedEntries: [entry],
+      shouldAutoCollapse: true,
+    };
+    const initial = computeStableMessagesTimelineRows([row], { byId: new Map(), result: [] });
+    for (const changes of [
+      { toolLifecycleStatus: "failed" as const },
+      { toolData: { stdout: "new output" } },
+    ]) {
+      const changed = { ...row, groupedEntries: [{ ...entry, ...changes }] };
+      expect(computeStableMessagesTimelineRows([changed], initial).result[0]).toBe(changed);
+    }
+  });
+
   it("returns the previous result when row order and content are unchanged", () => {
     const firstUserMessage = {
       id: "user-1" as never,
