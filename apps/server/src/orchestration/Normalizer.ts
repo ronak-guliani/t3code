@@ -10,6 +10,7 @@ import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts
 import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
+import { consumeCrossThreadDispatchCapability } from "./CrossThreadDispatchCapability.ts";
 
 export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
@@ -65,6 +66,20 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
 
     if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.create") {
       return command as OrchestrationCommand;
+    }
+
+    const { crossThreadDispatchCapability, ...trustedCommand } = command;
+    if (
+      command.crossThreadSourceThreadId !== undefined &&
+      (crossThreadDispatchCapability === undefined ||
+        !consumeCrossThreadDispatchCapability(
+          crossThreadDispatchCapability,
+          command.crossThreadSourceThreadId,
+        ))
+    ) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: "Invalid cross-thread dispatch capability.",
+      });
     }
 
     const normalizedAttachments = yield* Effect.forEach(
@@ -132,9 +147,9 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       { concurrency: 1 },
     );
 
-    if (command.type === "thread.turn.start") {
+    if (trustedCommand.type === "thread.turn.start") {
       return {
-        ...command,
+        ...trustedCommand,
         message: {
           ...command.message,
           attachments: normalizedAttachments,
@@ -143,7 +158,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
     }
 
     return {
-      ...command,
+      ...trustedCommand,
       message: {
         ...command.message,
         attachments: normalizedAttachments,

@@ -2339,6 +2339,11 @@ const chatQueueAddCommand = Command.make("add", {
   ...modelSelectionFlags,
   chat: Argument.string("chat").pipe(Argument.withDescription("Thread id or title.")),
   prompt: Argument.string("prompt").pipe(Argument.withDescription("Queued prompt text.")),
+  crossThreadSource: Flag.string("cross-thread-source").pipe(
+    Flag.optional,
+    Flag.withDescription("Authenticated source thread for a queued cross-thread message."),
+  ),
+  crossThreadCapability: Flag.string("cross-thread-capability").pipe(Flag.optional),
 }).pipe(
   Command.withDescription("Add a queued turn."),
   Command.withHandler((flags) =>
@@ -2358,6 +2363,12 @@ const chatQueueAddCommand = Command.make("add", {
             attachments: [],
           },
           ...(Option.isSome(modelSelection) ? { modelSelection: modelSelection.value } : {}),
+          ...(Option.isSome(flags.crossThreadSource)
+            ? {
+                crossThreadSourceThreadId: ThreadId.make(flags.crossThreadSource.value),
+                crossThreadDispatchCapability: Option.getOrUndefined(flags.crossThreadCapability),
+              }
+            : {}),
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: new Date().toISOString(),

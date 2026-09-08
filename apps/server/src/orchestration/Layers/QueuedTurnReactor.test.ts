@@ -1,10 +1,14 @@
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  CommandId,
+  EventId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
   QueuedTurnId,
   ThreadId,
+  TurnId,
+  type OrchestrationEvent,
   type OrchestrationCommand,
   type OrchestrationQueuedTurn,
   type OrchestrationReadModel,
@@ -148,6 +152,10 @@ async function runReactor(
     readonly snapshotError?: PullRequestOperationError;
     readonly onRetryQueuedDelivery?: (deliveryId: string) => void;
     readonly retryQueuedDeliveryError?: PullRequestMonitorError;
+    readonly resume?: {
+      readonly readModel: OrchestrationReadModel;
+      readonly event: OrchestrationEvent;
+    };
   },
 ): Promise<ReadonlyArray<OrchestrationCommand>> {
   let readModel = readModelInput;
@@ -194,7 +202,17 @@ async function runReactor(
         return { sequence: 2 };
       }),
     withWorktreeLock: (effect) => effect,
-    streamDomainEvents: Stream.never,
+    streamDomainEvents: options?.resume
+      ? Stream.fromEffect(
+          Effect.sync(() => {
+            const resume = options.resume;
+            if (!resume) throw new Error("Expected a resume event.");
+            expect(commands).toHaveLength(0);
+            readModel = resume.readModel;
+            return resume.event;
+          }),
+        )
+      : Stream.never,
     // Unused by these tests; Effect.never satisfies the scoped subscription type.
     acquireDomainEventSubscription: Effect.never,
   });
@@ -235,6 +253,65 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("waits for the destination turn to finish before dispatching a persisted cross-thread message", async () => {
+    const ready = queuedReadModel({
+      origin: {
+        kind: "cross-thread",
+        sourceThreadId: ThreadId.make("source-no-longer-active"),
+        sourceMessageId: MessageId.make("original-source-message"),
+        sourceThreadTitle: "Source",
+      },
+    });
+    const busy = {
+      ...ready,
+      threads: ready.threads.map((thread) => ({
+        ...thread,
+        session: {
+          threadId,
+          status: "running" as const,
+          providerName: "copilot",
+          runtimeMode: "approval-required" as const,
+          activeTurnId: TurnId.make("destination-turn"),
+          lastError: null,
+          updatedAt: now,
+        },
+      })),
+    };
+    expect(await runReactor(busy, monitorSnapshot("head-current"))).toEqual([]);
+    const commands = await runReactor(busy, monitorSnapshot("head-current"), {
+      resume: {
+        readModel: ready,
+        event: {
+          sequence: 2,
+          eventId: EventId.make("destination-idle"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          type: "thread.session-set",
+          occurredAt: now,
+          commandId: CommandId.make("destination-idle"),
+          causationEventId: null,
+          correlationId: CommandId.make("destination-idle"),
+          metadata: {},
+          payload: {
+            threadId,
+            session: {
+              threadId,
+              status: "ready",
+              providerName: "copilot",
+              runtimeMode: "approval-required",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: now,
+            },
+          },
+        },
+      },
+    });
+    expect(commands).toEqual([
+      expect.objectContaining({ type: "thread.queued-turn.dispatch", threadId, queuedTurnId }),
+    ]);
+  });
+
   it("dispatches a persisted continuation exactly once when the server restarts", async () => {
     const commands = await runReactor(queuedReadModel(), monitorSnapshot("head-current"));
 

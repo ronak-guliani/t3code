@@ -12,6 +12,7 @@ import {
   EventId,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -49,6 +50,7 @@ import { GitStatusBroadcaster } from "./git/Services/GitStatusBroadcaster.ts";
 import { ProjectSetupScriptRunner } from "./project/Services/ProjectSetupScriptRunner.ts";
 import { runProcess } from "./processRunner.ts";
 import { ServerRuntimeStartup } from "./serverRuntimeStartup.ts";
+import { issueCrossThreadDispatchCapability } from "./orchestration/CrossThreadDispatchCapability.ts";
 
 const runCli = (args: ReadonlyArray<string>) => Command.runWith(cli, { version: "0.0.0" })(args);
 const runCliWithRuntime = (args: ReadonlyArray<string>) =>
@@ -923,6 +925,80 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             baseDir,
           ]);
 
+          const engine = yield* OrchestrationEngineService;
+          const sourceThreadId = ThreadId.make(created.threadId);
+          const sourceThread = (yield* engine.getReadModel()).threads.find(
+            (thread) => thread.id === sourceThreadId,
+          );
+          const sourceMessage = sourceThread?.messages.findLast(
+            (message) => message.role === "user",
+          );
+          if (!sourceMessage) return assert.fail("Expected the source turn's user message.");
+          yield* engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make("source-session"),
+            threadId: sourceThreadId,
+            createdAt: new Date().toISOString(),
+            session: {
+              threadId: sourceThreadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "approval-required",
+              activeTurnId: TurnId.make("source-turn"),
+              activeMessageId: sourceMessage.id,
+              lastError: null,
+              updatedAt: new Date().toISOString(),
+            },
+          });
+          const capability = issueCrossThreadDispatchCapability(sourceThreadId);
+          const crossThreadArgs = [
+            "chat",
+            "queue",
+            "add",
+            newChat.threadId,
+            "cross-thread-prompt",
+            "--cross-thread-source",
+            sourceThreadId,
+            "--base-dir",
+            baseDir,
+          ];
+          const crossThreadOutput = yield* captureStdout(
+            runCli([...crossThreadArgs, "--cross-thread-capability", capability]),
+          );
+          const crossThreadQueued = JSON.parse(crossThreadOutput.output) as {
+            readonly queuedTurnId: string;
+          };
+          for (const invalidCapability of [
+            undefined,
+            "invalid",
+            capability,
+            issueCrossThreadDispatchCapability(ThreadId.make(newChat.threadId)),
+          ]) {
+            const rejected = yield* Effect.exit(
+              runCliWithRuntime([
+                ...crossThreadArgs,
+                ...(invalidCapability === undefined
+                  ? []
+                  : ["--cross-thread-capability", invalidCapability]),
+              ]),
+            );
+            assert.equal(rejected._tag, "Failure");
+          }
+          const queuedChild = (yield* engine.getReadModel()).threads.find(
+            (thread) => thread.id === newChat.threadId,
+          );
+          assert.equal(queuedChild?.queuedTurns?.length, 1);
+          assert.deepStrictEqual(queuedChild?.queuedTurns?.[0]?.origin, {
+            kind: "cross-thread",
+            sourceThreadId,
+            sourceMessageId: sourceMessage.id,
+            sourceThreadTitle: "Turn Chat",
+          });
+          assert.equal(queuedChild?.queuedTurns?.[0]?.id, crossThreadQueued.queuedTurnId);
+          assert.isFalse(
+            queuedChild?.messages.some((message) => message.text === "cross-thread-prompt"),
+          );
+
           const queuedOutput = yield* captureStdout(
             runCli([
               "chat",
@@ -1022,6 +1098,24 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
           );
         }),
       );
+      const restored = yield* readPersistedSnapshot(baseDir);
+      const restoredChild = restored.threads.find((thread) => thread.title === "New Turn Chat");
+      assert.equal(restoredChild?.queuedTurns?.length, 1);
+      assert.equal(restoredChild?.queuedTurns?.[0]?.message.text, "cross-thread-prompt");
+      assert.equal(restoredChild?.queuedTurns?.[0]?.origin?.kind, "cross-thread");
+      const restoredSource = restored.threads.find((thread) => thread.title === "Turn Chat");
+      const restoredSourceMessage = restoredSource?.messages.findLast(
+        (message) => message.role === "user",
+      );
+      if (!restoredSource || !restoredSourceMessage) {
+        return assert.fail("Expected the persisted source thread and message.");
+      }
+      assert.deepStrictEqual(restoredChild?.queuedTurns?.[0]?.origin, {
+        kind: "cross-thread",
+        sourceThreadId: restoredSource.id,
+        sourceMessageId: restoredSourceMessage.id,
+        sourceThreadTitle: "Turn Chat",
+      });
     }),
   );
 
