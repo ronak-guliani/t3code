@@ -245,6 +245,7 @@
 
 ## Mobile drafts and navigation
 
+- Count related descendants before read filtering, decrement each parent's pending-child count when rolling branches up, and use normalized parent keys for visibility walks so cycles cannot hang the inbox.
 - Upstream consumer imports must preserve fork-owned inbox composition. Exercise the real legacy and V2 row consumers, not only an orphanable compact component, so imports cannot silently restore metadata rows or remove related-chat navigation.
 - Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.

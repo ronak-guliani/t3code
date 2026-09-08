@@ -190,6 +190,7 @@ export function buildMobileThreadTree(
         (relatedChildCountByKey.get(threadKey) ?? 0),
     );
     const remainingChildren = (remainingChildrenByKey.get(parentKey) ?? 0) - 1;
+    remainingChildrenByKey.set(parentKey, remainingChildren);
     if (remainingChildren === 0) {
       pendingCountKeys.push(parentKey);
     }
@@ -197,7 +198,10 @@ export function buildMobileThreadTree(
   const visibleKeys = new Set(
     expanded
       .filter((thread) => {
-        if (options.includeReadCompletedChildren === true || thread.parentThreadId == null) {
+        if (
+          options.includeReadCompletedChildren === true ||
+          !parentByKey.has(hierarchyThreadKey(thread))
+        ) {
           return true;
         }
         if (hierarchyThreadKey(thread) === options.selectedThreadKey) return true;
@@ -208,18 +212,11 @@ export function buildMobileThreadTree(
       })
       .map((thread) => hierarchyThreadKey(thread)),
   );
-  const threadsByKey = new Map(expanded.map((thread) => [hierarchyThreadKey(thread), thread]));
-  for (const thread of expanded) {
-    if (!visibleKeys.has(hierarchyThreadKey(thread))) continue;
-    let parentThreadId = thread.parentThreadId;
-    while (parentThreadId != null) {
-      const parentKey = hierarchyThreadKey({
-        environmentId: thread.environmentId,
-        id: parentThreadId,
-      });
-      if (!threadsByKey.has(parentKey)) break;
+  for (const threadKey of visibleKeys) {
+    let parentKey = parentByKey.get(threadKey);
+    while (parentKey !== undefined && !visibleKeys.has(parentKey)) {
       visibleKeys.add(parentKey);
-      parentThreadId = threadsByKey.get(parentKey)?.parentThreadId ?? null;
+      parentKey = parentByKey.get(parentKey);
     }
   }
   const tree: MobileThreadTreeNode[] = buildThreadTree({
@@ -338,8 +335,8 @@ export function mobileThreadTreeRows(
   }
   while (pending.length > 0) {
     const { node, depth } = pending.pop()!;
-    // Search and the selected iPad conversation stay directly reachable.
-    // Activity alone never expands the inbox into a tree.
+    // Keep quiet descendants behind the group control; callers explicitly reveal
+    // active, unread, or matching chats alongside the selected iPad conversation.
     if (
       depth === 0 ||
       node.threadKey === options.selectedThreadKey ||

@@ -2,6 +2,7 @@ import { createElement, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { StyleProp, ViewStyle } from "react-native";
 
 vi.hoisted(() => {
   class TestEventEmitter {
@@ -45,6 +46,7 @@ import type { PendingDraftTask } from "../../state/pending-new-tasks-model";
 import {
   buildMobileThreadTree,
   mobileThreadTreeRows,
+  relatedThreadRows,
   type MobileThreadShell,
 } from "./mobile-thread-hierarchy";
 
@@ -54,6 +56,7 @@ interface TestProps {
   accessibilityRole?: string;
   numberOfLines?: number;
   onPress?: () => void;
+  style?: StyleProp<ViewStyle>;
   onAccessibilityTap?: () => void;
   actions?: NonNullable<ComponentProps<typeof CompactThreadRow>["menu"]>["actions"];
   onPressAction?: NonNullable<ComponentProps<typeof CompactThreadRow>["menu"]>["onPressAction"];
@@ -61,6 +64,7 @@ interface TestProps {
 const harness = vi.hoisted(() => ({
   pressables: [] as TestProps[],
   menus: [] as TestProps[],
+  views: [] as TestProps[],
   unread: false,
   navigate: vi.fn(),
 }));
@@ -72,7 +76,10 @@ vi.mock("react-native", () => ({
   },
   useWindowDimensions: () => ({ width: 402 }),
   StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 0.5 },
-  View: ({ children }: TestProps) => createElement("div", null, children),
+  View: (props: TestProps) => {
+    harness.views.push(props);
+    return createElement("div", null, props.children);
+  },
   Pressable: (props: TestProps) => {
     harness.pressables.push(props);
     return createElement("button", { "aria-label": props.accessibilityLabel }, props.children);
@@ -143,11 +150,98 @@ const parent: MobileThreadShell = {
 beforeEach(() => {
   harness.pressables.length = 0;
   harness.menus.length = 0;
+  harness.views.length = 0;
   harness.unread = false;
   harness.navigate.mockClear();
 });
 
 describe("compact inbox row", () => {
+  it.each([
+    { mode: "legacy", sidebar: false },
+    { mode: "legacy", sidebar: true },
+    { mode: "v2", sidebar: false },
+    { mode: "v2", sidebar: true },
+  ] as const)(
+    "indents $mode subchats in sidebar=$sidebar, including related groups",
+    ({ mode, sidebar }) => {
+      const child = { ...parent, id: ThreadId.make("child"), parentThreadId: parent.id };
+      const hierarchy = relatedThreadRows(
+        buildMobileThreadTree([parent, child]),
+        `${parent.environmentId}:${parent.id}`,
+      )[1]!;
+      const shared = {
+        thread: child,
+        hierarchy,
+        hideRelated: true,
+        onSelectThread: vi.fn(),
+        onArchiveThread: vi.fn(),
+        onDeleteThread: vi.fn(),
+        onRegenerateThreadTitle: vi.fn(),
+        titleRegenerationSupported: true,
+        onSwipeableWillOpen: vi.fn(),
+        onSwipeableClose: vi.fn(),
+      };
+      renderToStaticMarkup(
+        mode === "legacy" ? (
+          <ThreadListRow {...shared} variant={sidebar ? "sidebar" : "compact"} isLast />
+        ) : (
+          <ThreadListV2Row
+            {...shared}
+            variant="card"
+            pane={sidebar ? "sidebar" : "screen"}
+            snoozePresetMinute="2026-09-06T20:00"
+            settlementSupported
+            snoozeSupported
+            pinningSupported
+            onSettleThread={vi.fn()}
+            onUnsettleThread={vi.fn()}
+            onSnoozeThread={vi.fn()}
+            onUnsnoozeThread={vi.fn()}
+            onPinThread={vi.fn()}
+            onUnpinThread={vi.fn()}
+          />
+        ),
+      );
+      expect(harness.views[0]?.style).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            paddingStart: (sidebar ? 12 : 18) + 12,
+            paddingEnd: sidebar ? 12 : 18,
+          }),
+        ]),
+      );
+      expect(
+        harness.pressables.some((item) => item.accessibilityLabel?.startsWith("Related")),
+      ).toBe(false);
+      harness.pressables[0]?.onPress?.();
+      expect(shared.onSelectThread).toHaveBeenCalledWith(child);
+    },
+  );
+
+  it.each([
+    { depth: undefined, indent: 0 },
+    { depth: 0, indent: 0 },
+    { depth: 1, indent: 12 },
+    { depth: 2, indent: 24 },
+    { depth: 3, indent: 36 },
+    { depth: 10, indent: 36 },
+  ])("bounds the shared row indentation at depth $depth", ({ depth, indent }) => {
+    renderToStaticMarkup(
+      <CompactThreadRow
+        title="Chat"
+        timestamp="1m"
+        status="ready"
+        depth={depth}
+        onPress={vi.fn()}
+      />,
+    );
+    expect(harness.views[0]?.style).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ paddingStart: 18 + indent, paddingEnd: 18 }),
+      ]),
+    );
+  });
+
   it.each(["legacy", "v2"] as const)(
     "keeps the %s list consumer compact with related navigation",
     (mode) => {

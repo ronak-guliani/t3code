@@ -165,6 +165,7 @@ describe("related screen lifecycle parity", () => {
     );
     expect(titles(1)).toEqual(["Archive", "Delete"]);
     expect(harness.rows.every((row) => row.related === undefined)).toBe(true);
+    expect(harness.rows.map((row) => row.depth)).toEqual([0, 1]);
     harness.swipes[0]?.primaryAction?.onPress();
     expect(harness.actions.settleThread).toHaveBeenCalledWith(parent);
     harness.swipes[1]?.primaryAction?.onPress();
@@ -223,6 +224,7 @@ describe("related screen lifecycle parity", () => {
     ];
     render(child.id);
     expect(titles()).toEqual(["Archive", "Delete"]);
+    expect(harness.rows.map((row) => row.depth)).toEqual([0, 1]);
     harness.swipes[0]?.primaryAction?.onPress();
     expect(harness.actions.archiveThread).toHaveBeenCalledWith(child);
   });

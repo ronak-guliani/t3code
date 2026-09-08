@@ -283,6 +283,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           )}
           status={status}
           sidebar={props.variant === "sidebar"}
+          depth={props.hierarchy?.depth}
           selected={props.selected}
           showDivider={!props.isLast}
           related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}

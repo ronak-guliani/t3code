@@ -590,6 +590,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       muted={variant === "slim"}
       pinned={pinnedRow}
       sidebar={sidebarPane}
+      depth={props.hierarchy?.depth}
       showDivider={props.showTrailingDivider !== false}
       related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
       pullRequest={pullRequest}

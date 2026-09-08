@@ -248,6 +248,75 @@ describe("mobile nested threads", () => {
     ).toEqual([parent.id, child.id]);
   });
 
+  it("counts every branch after completed descendants are read", () => {
+    const descendants = [
+      child,
+      leaf,
+      { ...leaf, id: ThreadId.make("second-leaf") },
+      { ...child, id: ThreadId.make("sibling") },
+    ].map((thread) => ({
+      ...thread,
+      latestTurn: {
+        turnId: TurnId.make(`${thread.id}-turn`),
+        state: "completed" as const,
+        requestedAt: NOW,
+        startedAt: NOW,
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    }));
+    const threadChildReadAt = Object.fromEntries(
+      descendants.map((thread) => [`${environmentId}:${thread.id}`, NOW]),
+    );
+    const result = layout([parent, ...descendants], { threadChildReadAt });
+    expect(result.items.map((item) => item.thread.id)).toEqual([parent.id]);
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      childCount: 0,
+      relatedChildCount: 4,
+    });
+    const group = relatedThreadRows(
+      buildMobileThreadTree([parent, ...descendants]),
+      `${environmentId}:${parent.id}`,
+    );
+    expect(group[0]?.relatedChildCount).toBe(4);
+    expect(group.find((row) => row.thread.id === child.id)?.relatedChildCount).toBe(2);
+  });
+
+  it("uses normalized roots for completed children whose parent is missing", () => {
+    const completedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("orphan-turn"),
+        state: "completed" as const,
+        requestedAt: NOW,
+        startedAt: NOW,
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    const threadChildReadAt = { [`${environmentId}:${child.id}`]: NOW };
+    expect(layout([completedChild], { threadChildReadAt }).items[0]?.hierarchy).toMatchObject({
+      threadKey: `${environmentId}:${child.id}`,
+      depth: 0,
+    });
+    expect(
+      layout([{ ...parent, archivedAt: NOW }, completedChild], { threadChildReadAt }).items,
+    ).toEqual([]);
+  });
+
+  it("normalizes cyclic parentage before revealing ancestors", () => {
+    const tree = buildMobileThreadTree([{ ...parent, parentThreadId: leaf.id }, child, leaf]);
+    expect(tree).toHaveLength(1);
+    const root = tree[0]!;
+    const rows = relatedThreadRows(tree, root.threadKey);
+    expect(new Set(rows.map((row) => row.threadKey)).size).toBe(3);
+    expect(rows.map((row) => row.depth)).toEqual([0, 1, 2]);
+    expect(root.relatedChildCount).toBe(2);
+    expect(
+      buildMobileThreadTree([{ ...parent, parentThreadId: parent.id }])[0]?.descendantCount,
+    ).toBe(0);
+  });
+
   it("hides read terminal failures from the default list", () => {
     const failedChild = {
       ...child,
