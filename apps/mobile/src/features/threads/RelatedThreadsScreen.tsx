@@ -22,6 +22,7 @@ import {
 } from "./mobile-thread-hierarchy";
 import {
   useDismissedAgentRunKeys,
+  useThreadCompletionReadAt,
   useMarkThreadGroupNotificationsRead,
 } from "./thread-hierarchy-controls";
 
@@ -45,6 +46,7 @@ export function RelatedThreadsScreen(
     [projects],
   );
   const dismissed = useDismissedAgentRunKeys();
+  const completionReadAt = useThreadCompletionReadAt();
   const { environmentId, threadId } = props.route.params;
   const rows = useMemo(() => {
     const tree = buildMobileThreadTree(
@@ -133,6 +135,7 @@ export function RelatedThreadsScreen(
           index === 0 ? rootState : { variant: "card" as const, snoozed: false, pinned: false };
         return (
           <ThreadListV2Row
+            completionReadAt={completionReadAt}
             thread={item.thread}
             projectCwd={projectCwdByKey.get(
               scopedProjectKey(item.thread.environmentId, item.thread.projectId),
@@ -172,6 +175,7 @@ export function RelatedThreadsScreen(
       }
       return (
         <ThreadListRow
+          completionReadAt={completionReadAt}
           variant="compact"
           thread={item.thread}
           projectCwd={projectCwdByKey.get(

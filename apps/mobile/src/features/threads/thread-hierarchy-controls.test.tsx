@@ -1,14 +1,22 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { AsyncResult } from "effect/unstable/reactivity";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { useMarkThreadGroupNotificationsRead } from "./thread-hierarchy-controls";
+import {
+  useMarkRootThreadCompletionRead,
+  useMarkThreadGroupNotificationsRead,
+} from "./thread-hierarchy-controls";
+import type { MobileThreadShell } from "./mobile-thread-hierarchy";
 
 const harness = vi.hoisted(() => ({
   focused: true,
   active: true,
   loaded: true,
-  preferences: { threadChildNotificationReadAt: {} as Record<string, string> },
+  preferences: {
+    threadChildNotificationReadAt: {} as Record<string, string>,
+    threadCompletionReadAt: {} as Record<string, string>,
+  },
   effects: [] as Array<() => void | (() => void)>,
   foreground: undefined as (() => void) | undefined,
   save: vi.fn(),
@@ -57,8 +65,19 @@ const rows = [
   { threadKey: "local:child", latestRelatedNotificationAt: NOW },
   { threadKey: "local:leaf", latestRelatedNotificationAt: null },
 ];
+const rootThread = {
+  environmentId: EnvironmentId.make("local"),
+  id: ThreadId.make("root"),
+  parentThreadId: null,
+  virtualAgentRun: undefined,
+  latestTurn: { completedAt: NOW },
+} as MobileThreadShell;
 function Group(props: { rows: typeof rows }) {
   useMarkThreadGroupNotificationsRead(props.rows);
+  return null;
+}
+function Root() {
+  useMarkRootThreadCompletionRead(rootThread);
   return null;
 }
 function mount() {
@@ -69,7 +88,10 @@ beforeEach(() => {
   harness.focused = true;
   harness.active = true;
   harness.loaded = true;
-  harness.preferences = { threadChildNotificationReadAt: {} };
+  harness.preferences = {
+    threadChildNotificationReadAt: {},
+    threadCompletionReadAt: {},
+  };
   harness.effects.length = 0;
   harness.foreground = undefined;
   harness.save.mockReset().mockImplementation((patch: typeof harness.preferences) => {
@@ -83,6 +105,7 @@ describe("related group notification acknowledgement", () => {
     expect(harness.save).toHaveBeenCalledExactlyOnceWith({
       threadChildNotificationReadAt: { "local:parent": NOW, "local:child": NOW },
     });
+
     harness.foreground?.();
     mount();
     expect(harness.save).toHaveBeenCalledOnce();
@@ -100,6 +123,22 @@ describe("related group notification acknowledgement", () => {
       "local:parent": NOW,
       "local:child": LATER,
       "remote:child": LATER,
+    });
+  });
+
+  describe("root completion acknowledgement", () => {
+    it("records the completion timestamp only while focused and active", () => {
+      renderToStaticMarkup(<Root />);
+      const cleanup = harness.effects.splice(0).map((effect) => effect());
+      expect(harness.preferences.threadCompletionReadAt).toEqual({ "local:root": NOW });
+      cleanup.forEach((dispose) => dispose?.());
+    });
+
+    it("does not rewrite a newer completion marker", () => {
+      harness.preferences.threadCompletionReadAt = { "local:root": LATER };
+      renderToStaticMarkup(<Root />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences.threadCompletionReadAt).toEqual({ "local:root": LATER });
     });
   });
 

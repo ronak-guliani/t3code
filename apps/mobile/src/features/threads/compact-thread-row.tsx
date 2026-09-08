@@ -18,7 +18,12 @@ import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import { useUnreadChildNotification } from "./thread-hierarchy-controls";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
-export type CompactThreadStatus = NestedThreadStatus | "queued" | "draft" | "plan-ready";
+export type CompactThreadStatus =
+  | NestedThreadStatus
+  | "completed"
+  | "queued"
+  | "draft"
+  | "plan-ready";
 
 const NESTED_INDENT = 12;
 const MAX_NESTED_INDENT_DEPTH = 3;
@@ -26,9 +31,11 @@ const MAX_NESTED_INDENT_DEPTH = 3;
 const STATUS: Record<CompactThreadStatus, { label: string; color: string; action?: string }> = {
   ready: { label: "", color: "bg-transparent" },
   working: { label: "Working", color: "bg-adaptive-sky-600-400" },
+  connecting: { label: "Connecting", color: "bg-adaptive-sky-600-400" },
   approval: { label: "Needs approval", color: "bg-adaptive-amber-700-300", action: "Approval" },
   input: { label: "Awaiting input", color: "bg-adaptive-indigo-600-300", action: "Input" },
   failed: { label: "Failed", color: "bg-adaptive-red-700-300", action: "Failed" },
+  completed: { label: "Done", color: "bg-adaptive-emerald-600-400", action: "Done" },
   queued: { label: "Queued", color: "bg-foreground-tertiary" },
   draft: { label: "Draft", color: "bg-adaptive-amber-700-300" },
   "plan-ready": { label: "Plan ready", color: "bg-adaptive-violet-700-300", action: "Plan" },

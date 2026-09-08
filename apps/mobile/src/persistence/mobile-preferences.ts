@@ -49,6 +49,7 @@ export interface Preferences {
   readonly dismissedAgentRunKeys?: readonly string[];
   readonly threadChildNotificationReadAt?: Readonly<Record<string, string>>;
   readonly threadChildReadAt?: Readonly<Record<string, string>>;
+  readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -112,17 +113,30 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     dismissedAgentRunKeys?: readonly string[];
     threadChildNotificationReadAt?: Readonly<Record<string, string>>;
     threadChildReadAt?: Readonly<Record<string, string>>;
+    threadCompletionReadAt?: Readonly<Record<string, string>>;
   } = {};
+
+  const sanitizeTimestampMap = (
+    value: unknown,
+    maxEntries = 1_000,
+  ): Readonly<Record<string, string>> | undefined => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+    const entries = Object.entries(value)
+      .filter(
+        ([, candidate]) => typeof candidate === "string" && Number.isFinite(Date.parse(candidate)),
+      )
+      .sort(([, left], [, right]) => Date.parse(right) - Date.parse(left))
+      .slice(0, maxEntries);
+    return entries.length > 0 ? Object.fromEntries(entries) : {};
+  };
 
   if (
     parsed.threadChildNotificationReadAt &&
     typeof parsed.threadChildNotificationReadAt === "object" &&
     !Array.isArray(parsed.threadChildNotificationReadAt)
   ) {
-    preferences.threadChildNotificationReadAt = Object.fromEntries(
-      Object.entries(parsed.threadChildNotificationReadAt).filter(
-        ([, value]) => typeof value === "string" && Number.isFinite(Date.parse(value)),
-      ),
+    preferences.threadChildNotificationReadAt = sanitizeTimestampMap(
+      parsed.threadChildNotificationReadAt,
     );
   }
   if (Array.isArray(parsed.dismissedAgentRunKeys)) {
@@ -135,11 +149,14 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     typeof parsed.threadChildReadAt === "object" &&
     !Array.isArray(parsed.threadChildReadAt)
   ) {
-    preferences.threadChildReadAt = Object.fromEntries(
-      Object.entries(parsed.threadChildReadAt).filter(
-        ([, value]) => typeof value === "string" && Number.isFinite(Date.parse(value)),
-      ),
-    );
+    preferences.threadChildReadAt = sanitizeTimestampMap(parsed.threadChildReadAt);
+  }
+  if (
+    parsed.threadCompletionReadAt &&
+    typeof parsed.threadCompletionReadAt === "object" &&
+    !Array.isArray(parsed.threadCompletionReadAt)
+  ) {
+    preferences.threadCompletionReadAt = sanitizeTimestampMap(parsed.threadCompletionReadAt);
   }
   if (
     parsed.threadExpandedOverrides &&

@@ -1,6 +1,10 @@
 import type { StatusTone } from "../../components/StatusPill";
-import type { OrchestrationLatestTurn, OrchestrationSession } from "@t3tools/contracts";
-import { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  hasUnseenThreadCompletion,
+  isLatestTurnSettled,
+  resolveThreadSemanticStatus,
+} from "@t3tools/client-runtime/state/thread-status";
+import type { MobileThreadShell } from "./mobile-thread-hierarchy";
 
 export type ThreadStatusKind =
   | "pending-approval"
@@ -8,7 +12,8 @@ export type ThreadStatusKind =
   | "working"
   | "connecting"
   | "error"
-  | "plan-ready";
+  | "plan-ready"
+  | "completed";
 
 export interface ThreadStatusPresentation extends StatusTone {
   readonly kind: ThreadStatusKind;
@@ -20,25 +25,34 @@ export interface ThreadStatusPresentation extends StatusTone {
   readonly pulse: boolean;
 }
 
-function isLatestTurnSettled(
-  latestTurn: OrchestrationLatestTurn | null,
-  session: OrchestrationSession | null,
-): boolean {
-  if (!latestTurn?.startedAt) return false;
-  if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  return session.status !== "running";
-}
-
 /**
  * Resolves the user-facing status of a thread, in priority order. Returns
  * `null` for quiescent threads so rows stay free of "Idle"-style noise.
  * Mirrors `resolveThreadStatusPill` in apps/web/src/components/Sidebar.logic.ts.
  */
 export function resolveThreadStatus(
-  thread: EnvironmentThreadShell,
+  thread: MobileThreadShell,
+  lastVisitedAt?: string | null,
 ): ThreadStatusPresentation | null {
-  if (thread.hasPendingApprovals) {
+  const hasPlanReady =
+    thread.interactionMode === "plan" &&
+    isLatestTurnSettled(thread.latestTurn, thread.session) &&
+    thread.hasActionableProposedPlan;
+  const semanticStatus = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+    hasPlanReady,
+    hasUnseenCompletion: hasUnseenThreadCompletion({
+      latestTurn: thread.latestTurn,
+      lastVisitedAt,
+    }),
+  });
+
+  if (semanticStatus === "approval") {
     return {
       kind: "pending-approval",
       label: "Needs Approval",
@@ -50,7 +64,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.hasPendingUserInput) {
+  if (semanticStatus === "input") {
     return {
       kind: "awaiting-input",
       label: "Awaiting Input",
@@ -62,7 +76,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "running") {
+  if (semanticStatus === "working") {
     return {
       kind: "working",
       label: "Working",
@@ -74,7 +88,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "starting") {
+  if (semanticStatus === "connecting") {
     return {
       kind: "connecting",
       label: "Connecting",
@@ -86,7 +100,7 @@ export function resolveThreadStatus(
     };
   }
 
-  if (thread.session?.status === "error" || thread.latestTurn?.state === "error") {
+  if (semanticStatus === "failed") {
     return {
       kind: "error",
       label: "Error",
@@ -98,11 +112,7 @@ export function resolveThreadStatus(
     };
   }
 
-  const hasPlanReadyPrompt =
-    thread.interactionMode === "plan" &&
-    isLatestTurnSettled(thread.latestTurn, thread.session) &&
-    thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
+  if (semanticStatus === "plan-ready") {
     return {
       kind: "plan-ready",
       label: "Plan Ready",
@@ -110,6 +120,18 @@ export function resolveThreadStatus(
       textClassName: "text-adaptive-violet-700-300",
       iconColor: "#bf5af2",
       iconBackground: "rgba(191,90,242,0.22)",
+      pulse: false,
+    };
+  }
+
+  if (semanticStatus === "completed") {
+    return {
+      kind: "completed",
+      label: "Done",
+      pillClassName: "bg-adaptive-emerald-500-a12-a16",
+      textClassName: "text-adaptive-emerald-700-300",
+      iconColor: "#30d158",
+      iconBackground: "rgba(48,209,88,0.22)",
       pulse: false,
     };
   }
