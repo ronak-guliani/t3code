@@ -56,6 +56,14 @@ export function isCurrentMarkdownImageRequest(
   );
 }
 
+export function isCurrentMarkdownImageSource(
+  state: Pick<MarkdownImageLoadState, "sourceKey" | "uri">,
+  sourceKey: string,
+  uri: string | null,
+): boolean {
+  return state.sourceKey === sourceKey && state.uri === uri;
+}
+
 export function reduceMarkdownImageLoadState(
   state: MarkdownImageLoadState,
   event: MarkdownImageLoadEvent,
@@ -91,12 +99,16 @@ export function reduceMarkdownImageLoadState(
 
 export function shouldAutomaticallyRetryMarkdownImage(
   state: MarkdownImageLoadState,
-  input: { readonly uri: string | null; readonly unavailable: boolean },
+  input: {
+    readonly sourceKey: string;
+    readonly uri: string | null;
+    readonly unavailable: boolean;
+  },
 ): boolean {
   return (
     !input.unavailable &&
     input.uri !== null &&
-    state.uri === input.uri &&
+    isCurrentMarkdownImageSource(state, input.sourceKey, input.uri) &&
     state.failed &&
     state.automaticRetryCount < MAX_AUTOMATIC_MARKDOWN_IMAGE_RETRIES
   );

@@ -20,6 +20,7 @@ import {
   createMarkdownImageLoadState,
   createMarkdownImageRequestKey,
   isCurrentMarkdownImageRequest,
+  isCurrentMarkdownImageSource,
   type MarkdownImageRequestIdentity,
   reduceMarkdownImageLoadState,
   shouldAutomaticallyRetryMarkdownImage,
@@ -55,6 +56,7 @@ export function ThreadMarkdownImageView(props: {
   useEffect(() => {
     if (
       !shouldAutomaticallyRetryMarkdownImage(imageLoadState, {
+        sourceKey: props.sourceKey,
         uri: props.uri,
         unavailable: props.unavailable,
       })
@@ -65,8 +67,11 @@ export function ThreadMarkdownImageView(props: {
       dispatchImageLoad({ type: "retry", automatic: true });
     }, 500);
     return () => clearTimeout(retryTimer);
-  }, [imageLoadState, props.unavailable, props.uri]);
+  }, [imageLoadState, props.sourceKey, props.unavailable, props.uri]);
 
+  const requestVersion = isCurrentMarkdownImageSource(imageLoadState, props.sourceKey, props.uri)
+    ? imageLoadState.requestVersion
+    : 0;
   const latestRequestIdentityRef = useRef<MarkdownImageRequestIdentity | null>(null);
   latestRequestIdentityRef.current =
     props.uri === null
@@ -74,7 +79,7 @@ export function ThreadMarkdownImageView(props: {
       : {
           sourceKey: props.sourceKey,
           uri: props.uri,
-          requestVersion: imageLoadState.requestVersion,
+          requestVersion,
         };
 
   const retryImage = useCallback(() => {
@@ -163,13 +168,13 @@ export function ThreadMarkdownImageView(props: {
                   key={createMarkdownImageRequestKey({
                     sourceKey: props.sourceKey,
                     uri: props.uri!,
-                    requestVersion: imageLoadState.requestVersion,
+                    requestVersion,
                   })}
                   onLoad={(sourceSize) => {
                     const request: MarkdownImageRequestIdentity = {
                       sourceKey: props.sourceKey,
                       uri: props.uri!,
-                      requestVersion: imageLoadState.requestVersion,
+                      requestVersion,
                     };
                     dispatchImageLoad({ type: "loaded", request });
                     if (

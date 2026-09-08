@@ -25,6 +25,7 @@ describe("markdown image load recovery", () => {
 
     expect(
       shouldAutomaticallyRetryMarkdownImage(failed, {
+        sourceKey: initial.sourceKey,
         uri: initial.uri,
         unavailable: false,
       }),
@@ -65,6 +66,7 @@ describe("markdown image load recovery", () => {
       });
       expect(
         shouldAutomaticallyRetryMarkdownImage(state, {
+          sourceKey: state.sourceKey,
           uri: state.uri,
           unavailable: false,
         }),
@@ -83,6 +85,7 @@ describe("markdown image load recovery", () => {
     expect(state.failed).toBe(true);
     expect(
       shouldAutomaticallyRetryMarkdownImage(state, {
+        sourceKey: state.sourceKey,
         uri: state.uri,
         unavailable: false,
       }),
@@ -134,6 +137,24 @@ describe("markdown image load recovery", () => {
     expect(
       reduceMarkdownImageLoadState(retried, { type: "failed", request: staleRequest }),
     ).toEqual(retried);
+  });
+
+  it("does not retry a failed request after a same-URL source replacement", () => {
+    const failed = {
+      ...createMarkdownImageLoadState({
+        sourceKey: "first",
+        uri: "https://example.test/image.png",
+      }),
+      failed: true,
+    };
+
+    expect(
+      shouldAutomaticallyRetryMarkdownImage(failed, {
+        sourceKey: "second",
+        uri: failed.uri,
+        unavailable: false,
+      }),
+    ).toBe(false);
   });
 
   it("remounts the native request when source identity changes at the same URL", () => {
