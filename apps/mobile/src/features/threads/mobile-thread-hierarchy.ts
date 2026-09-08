@@ -7,13 +7,25 @@ import {
   type ThreadTreeRow,
 } from "@t3tools/client-runtime/state/thread-hierarchy";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { resolveThreadSemanticStatus } from "@t3tools/client-runtime/state/thread-status";
 import { ThreadId, type OrchestrationBackgroundAgentRunShell } from "@t3tools/contracts";
 
-export type NestedThreadStatus = "approval" | "input" | "working" | "failed" | "ready";
+export type NestedThreadStatus =
+  | "approval"
+  | "input"
+  | "working"
+  | "connecting"
+  | "failed"
+  | "ready";
 export interface MobileThreadShell extends EnvironmentThreadShell {
   readonly virtualAgentRun?: OrchestrationBackgroundAgentRunShell & {
     readonly parentThreadId: ThreadId;
   };
+}
+export function isRootThread(
+  thread: Pick<MobileThreadShell, "parentThreadId" | "virtualAgentRun">,
+) {
+  return thread.parentThreadId == null && thread.virtualAgentRun === undefined;
 }
 export type NestedThreadReadMarkers = Readonly<Record<string, string>>;
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
@@ -81,29 +93,22 @@ export function resolveNestedThreadStatus(
   thread: Pick<EnvironmentThreadShell, "hasPendingApprovals" | "hasPendingUserInput" | "session"> &
     Partial<Pick<MobileThreadShell, "hasPendingQueuedTurn" | "latestTurn" | "virtualAgentRun">>,
 ): NestedThreadStatus {
-  if (thread.hasPendingApprovals) return "approval";
-  if (thread.hasPendingUserInput) return "input";
-  if (
-    thread.virtualAgentRun?.status === "running" ||
-    thread.hasPendingQueuedTurn ||
-    thread.latestTurn?.state === "running" ||
-    thread.session?.status === "starting" ||
-    thread.session?.status === "running"
-  )
-    return "working";
-  if (
-    thread.virtualAgentRun?.status === "failed" ||
-    thread.session?.status === "error" ||
-    thread.latestTurn?.state === "error"
-  )
-    return "failed";
-  return "ready";
+  const status = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+  });
+  return status === "plan-ready" || status === "completed" ? "ready" : status;
 }
 
 const STATUS_PRIORITY: readonly NestedThreadStatus[] = [
   "approval",
   "input",
   "working",
+  "connecting",
   "failed",
   "ready",
 ];
@@ -206,7 +211,13 @@ export function buildMobileThreadTree(
         }
         if (hierarchyThreadKey(thread) === options.selectedThreadKey) return true;
         const status = resolveNestedThreadStatus(thread);
-        if (status === "approval" || status === "input" || status === "working") return true;
+        if (
+          status === "approval" ||
+          status === "input" ||
+          status === "working" ||
+          status === "connecting"
+        )
+          return true;
         const completionMarker = nestedThreadCompletionMarker(thread);
         return completionMarker === null || !isNestedThreadRead(thread, readMarkers);
       })

@@ -23,6 +23,7 @@ import {
   type MobileThreadTreeRow,
   type MobileThreadShell,
 } from "./mobile-thread-hierarchy";
+import { hierarchyThreadKey } from "@t3tools/client-runtime/state/thread-hierarchy";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { resolveThreadStatus } from "./threadPresentation";
@@ -175,6 +176,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
+  readonly completionReadAt?: Readonly<Record<string, string>>;
   readonly isLast: boolean;
   readonly selected?: boolean;
   readonly hideRelated?: boolean;
@@ -254,10 +256,16 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     [nesting.handleAction, handleArchive, handleDelete, onRegenerateThreadTitle, thread],
   );
   const ownStatus = resolveNestedThreadStatus(thread);
+  const semanticStatus = resolveThreadStatus(
+    thread,
+    props.completionReadAt?.[hierarchyThreadKey(thread)],
+  );
   const status =
-    ownStatus === "ready" && resolveThreadStatus(thread)?.kind === "plan-ready"
+    ownStatus === "ready" && semanticStatus?.kind === "plan-ready"
       ? "plan-ready"
-      : ownStatus;
+      : semanticStatus?.kind === "completed"
+        ? "completed"
+        : ownStatus;
   return (
     <ThreadSwipeable
       backgroundColor={

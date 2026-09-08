@@ -78,6 +78,7 @@ vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
 }));
 vi.mock("./thread-hierarchy-controls", () => ({
   useDismissedAgentRunKeys: () => [],
+  useThreadCompletionReadAt: () => ({}),
   useMarkThreadGroupNotificationsRead: (rows: MobileThreadTreeRow[]) => harness.markRead(rows),
 }));
 vi.mock("./use-thread-list-v2-enabled", () => ({ useThreadListV2Enabled: () => harness.v2 }));

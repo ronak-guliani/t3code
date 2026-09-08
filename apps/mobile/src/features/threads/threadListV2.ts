@@ -9,6 +9,10 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
+  hasUnseenThreadCompletion,
+  resolveThreadSemanticStatus,
+} from "@t3tools/client-runtime/state/thread-status";
+import {
   activeThreadAnchorTimestampMs,
   resolveSettledThreadTimestamp,
   sortPinnedThreadsByOrderKey,
@@ -19,6 +23,7 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildMobileThreadTree,
   compareNestedThreads,
+  isRootThread,
   mobileThreadTreeRows,
   resolveNestedThreadStatus,
   selectMatchingThreadTree,
@@ -40,7 +45,7 @@ export { snoozeWakeLabel };
  * Approval, input, work and failure roll up from descendants. Ready is the
  * unlabeled resting state.
  */
-export type ThreadListV2Status = "approval" | "input" | "working" | "failed" | "ready";
+export type ThreadListV2Status = NestedThreadStatus | "completed";
 export type ThreadListV2SwipeAction = "archive" | "settle" | "unsettle" | "snooze" | "unsnooze";
 
 export function resolveThreadListV2SnoozeMenuSelection(input: {
@@ -140,8 +145,23 @@ export function resolveThreadListV2Enabled(input: {
 
 export function resolveThreadListV2Status(
   thread: Parameters<typeof resolveNestedThreadStatus>[0],
+  lastVisitedAt?: string | null,
 ): ThreadListV2Status {
-  return resolveNestedThreadStatus(thread);
+  const status = resolveThreadSemanticStatus({
+    hasPendingApprovals: thread.hasPendingApprovals,
+    hasPendingUserInput: thread.hasPendingUserInput,
+    hasPendingQueuedTurn: thread.hasPendingQueuedTurn,
+    latestTurn: thread.latestTurn,
+    session: thread.session,
+    virtualAgentRun: thread.virtualAgentRun,
+    hasUnseenCompletion:
+      isRootThread(thread) &&
+      hasUnseenThreadCompletion({
+        latestTurn: thread.latestTurn,
+        lastVisitedAt,
+      }),
+  });
+  return status === "plan-ready" ? "ready" : status;
 }
 
 /** NaN-safe Date.parse for sort comparators: a malformed timestamp must not

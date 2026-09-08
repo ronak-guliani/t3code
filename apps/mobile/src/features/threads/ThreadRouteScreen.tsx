@@ -52,7 +52,10 @@ import { useThreadSelection } from "../../state/use-thread-selection";
 import { useEnvironmentShellState, useThreadShell } from "../../state/entities";
 import { removedThreadProject } from "./threadSelectionLifecycle";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { useMarkChildNotificationsRead } from "./thread-hierarchy-controls";
+import {
+  useMarkChildNotificationsRead,
+  useMarkRootThreadCompletionRead,
+} from "./thread-hierarchy-controls";
 import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
 import {
   buildTerminalMenuSessions,
@@ -165,6 +168,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
       : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
   const selectedThreadDetailState = useSelectedThreadDetailState();
   useMarkChildNotificationsRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
+  useMarkRootThreadCompletionRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
   useMarkNestedThreadRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
   useEffect(() => {
     const project = removedThreadProject({

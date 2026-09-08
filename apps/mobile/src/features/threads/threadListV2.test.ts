@@ -82,6 +82,22 @@ describe("mobile nested threads", () => {
   ) =>
     buildThreadListV2Items({ threads, environmentId: null, searchQuery: "", now: NOW, ...extra });
 
+  it("does not show root completion Done for child rows", () => {
+    expect(
+      resolveThreadListV2Status({
+        ...child,
+        latestTurn: {
+          turnId: TurnId.make("child-turn"),
+          state: "completed",
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          assistantMessageId: null,
+        },
+      }),
+    ).toBe("ready");
+  });
+
   it("preserves root and child order without depending on ES2023 copy-array methods", () => {
     const reverse = vi.spyOn(Array.prototype, "toReversed").mockImplementation(() => {
       throw new TypeError("toReversed is unavailable");

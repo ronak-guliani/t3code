@@ -29,7 +29,11 @@ import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2Enabled } from "./use-thread-list-v2-enabled";
-import { useDismissedAgentRunKeys, useThreadChildReadAt } from "./thread-hierarchy-controls";
+import {
+  useDismissedAgentRunKeys,
+  useThreadChildReadAt,
+  useThreadCompletionReadAt,
+} from "./thread-hierarchy-controls";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { environmentServerConfigsAtom } from "../../state/server";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
@@ -175,6 +179,7 @@ function ThreadNavigationSidebarPane(
   const threadListV2Enabled = useThreadListV2Enabled();
   const dismissedAgentRunKeys = useDismissedAgentRunKeys();
   const threadChildReadAt = useThreadChildReadAt();
+  const threadCompletionReadAt = useThreadCompletionReadAt();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } = usePendingTaskListActions();
   const environments = useMemo(
@@ -825,6 +830,7 @@ function ThreadNavigationSidebarPane(
           const thread = item.item.thread;
           return (
             <ThreadListV2Row
+              completionReadAt={threadCompletionReadAt}
               hierarchy={item.item.hierarchy}
               thread={thread}
               projectCwd={projectCwdByKey.get(
@@ -942,6 +948,7 @@ function ThreadNavigationSidebarPane(
           const thread = item.thread;
           return (
             <ThreadListRow
+              completionReadAt={threadCompletionReadAt}
               hierarchy={item.hierarchy}
               variant="sidebar"
               thread={thread}

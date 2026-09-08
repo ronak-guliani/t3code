@@ -20,6 +20,10 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import {
+  isLatestTurnSettled as resolveLatestTurnSettled,
+  isThreadActivelyWorking as resolveThreadActivelyWorking,
+} from "@t3tools/client-runtime/state/thread-status";
+import {
   isChildLifecycleThreadActivity,
   isTurnLifecycleInsightActivity,
 } from "@t3tools/shared/orchestrationActivity";
@@ -252,15 +256,6 @@ export function latestValidTimestamp(
 type LatestTurnTiming = Pick<OrchestrationLatestTurn, "turnId" | "startedAt" | "completedAt">;
 type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeTurnId">;
 
-function isTerminalSessionActivity(session: SessionActivityState | null): boolean {
-  return (
-    session?.orchestrationStatus === "idle" ||
-    session?.orchestrationStatus === "interrupted" ||
-    session?.orchestrationStatus === "stopped" ||
-    session?.orchestrationStatus === "error"
-  );
-}
-
 /**
  * Non-failed queued turns mean the thread still has work to do — including the
  * gap between a workspace-handoff turn completing and its continuation starting.
@@ -276,47 +271,14 @@ export function isThreadActivelyWorking(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (isTerminalSessionActivity(session)) {
-    return false;
-  }
-
-  if (latestTurn?.startedAt && !latestTurn.completedAt) {
-    return true;
-  }
-
-  if (session?.orchestrationStatus !== "running") {
-    return false;
-  }
-
-  if (!session.activeTurnId) {
-    return false;
-  }
-
-  if (!latestTurn) {
-    return true;
-  }
-
-  if (latestTurn.turnId !== session.activeTurnId) {
-    return true;
-  }
-
-  return !latestTurn.completedAt;
+  return resolveThreadActivelyWorking({ latestTurn, session });
 }
 
 export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (!latestTurn) {
-    return !(session?.orchestrationStatus === "running" && session.activeTurnId);
-  }
-  if (isTerminalSessionActivity(session)) return true;
-  if (!latestTurn.startedAt) return false;
-  if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  if (session.orchestrationStatus !== "running") return true;
-  if (!session.activeTurnId) return true;
-  return session.activeTurnId === latestTurn.turnId;
+  return resolveLatestTurnSettled(latestTurn, session);
 }
 
 export function deriveActiveWorkStartedAt(

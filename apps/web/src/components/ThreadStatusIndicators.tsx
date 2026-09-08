@@ -241,6 +241,7 @@ const CORNER_BADGE_SPECS: Record<ThreadStatusPill["label"], CornerBadgeSpec | nu
     showElapsed: false,
   },
   Connecting: null,
+  Failed: null,
   "Pending Approval": null,
   "Awaiting Input": null,
   "Plan Ready": null,

@@ -27,6 +27,7 @@ import {
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
 } from "./threadListV2";
+import { hierarchyThreadKey } from "@t3tools/client-runtime/state/thread-hierarchy";
 
 /**
  * Active work and the quieter settled tail share compact rows, with their
@@ -247,6 +248,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
+  readonly completionReadAt?: Readonly<Record<string, string>>;
   readonly simultaneousSwipeGesture?: ComponentProps<
     typeof ThreadSwipeable
   >["simultaneousWithExternalGesture"];
@@ -279,7 +281,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const selected = props.selected === true;
   const pullRequest = useThreadPr(thread, props.projectCwd ?? null);
 
-  const status = resolveThreadListV2Status(thread);
+  const status = resolveThreadListV2Status(
+    thread,
+    props.completionReadAt?.[hierarchyThreadKey(thread)],
+  );
   // Settled rows label by the same stamp they sort by, so order and label
   // can't disagree. updatedAt is always present, so the resolver never
   // returns null here.

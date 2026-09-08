@@ -264,6 +264,26 @@ describe("mobile connection storage", () => {
     });
   });
 
+  it("preserves valid completion receipts beyond the old entry cap", async () => {
+    const threadCompletionReadAt = Object.fromEntries(
+      Array.from({ length: 1_001 }, (_, index) => [
+        `environment-1:thread-${index}`,
+        "2026-09-05T12:00:00Z",
+      ]),
+    );
+    mocks.setPreferencesJson(JSON.stringify({ threadCompletionReadAt }), 10);
+
+    await expect(loadPreferences()).resolves.toEqual({ threadCompletionReadAt });
+  });
+
+  it("persists the root completion receipt migration version", async () => {
+    const preferences = {
+      threadCompletionReadAtMigrationVersion: 1,
+    };
+    await expect(savePreferencesPatch(preferences)).resolves.toEqual(preferences);
+    await expect(loadPreferences()).resolves.toEqual(preferences);
+  });
+
   it("drops legacy and invalid thread list shelf expansion preferences", async () => {
     mocks.setPreferencesJson(
       JSON.stringify({
