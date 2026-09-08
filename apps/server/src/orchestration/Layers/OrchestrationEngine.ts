@@ -232,6 +232,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           readModel,
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+        // A failed metadata precondition is an accepted no-op. Persist its
+        // receipt so retrying the same command cannot apply it to a later state.
+        if (
+          eventBases.length === 0 &&
+          command.type === "thread.meta.update" &&
+          command.expectedUpdatedAt !== undefined
+        ) {
+          yield* commandReceiptRepository.upsert({
+            commandId: command.commandId,
+            aggregateKind: aggregateRef.aggregateKind,
+            aggregateId: aggregateRef.aggregateId,
+            acceptedAt: new Date().toISOString(),
+            resultSequence: readModel.snapshotSequence,
+            status: "accepted",
+            error: null,
+          });
+          return dispatchResult(command, readModel.snapshotSequence);
+        }
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {

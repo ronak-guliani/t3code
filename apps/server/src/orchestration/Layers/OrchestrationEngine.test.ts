@@ -103,6 +103,92 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("accepts stale conditional metadata as a durable no-op through real dispatch", async () => {
+    const projected: OrchestrationEvent[] = [];
+    const system = await createOrchestrationSystem((event) =>
+      Effect.sync(() => {
+        projected.push(event);
+      }),
+    );
+    const projectId = ProjectId.make("conditional-project");
+    const threadId = ThreadId.make("conditional-thread");
+    const createdAt = now();
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("conditional-project"),
+          projectId,
+          title: "Conditional metadata",
+          workspaceRoot: "/tmp/conditional-metadata",
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("conditional-thread"),
+          threadId,
+          projectId,
+          title: "Conditional metadata",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: "feature",
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      const before = await system.run(system.engine.getReadModel());
+      const pullRequest = {
+        number: 42,
+        title: "Recovered",
+        url: "https://github.com/acme/app/pull/42",
+        baseBranch: "main",
+        headBranch: "feature",
+        state: "open" as const,
+      };
+      const command = {
+        type: "thread.meta.update" as const,
+        commandId: CommandId.make("stale-conditional"),
+        threadId,
+        expectedUpdatedAt: "2000-01-01T00:00:00.000Z",
+        pullRequest,
+      };
+      const eventCount = projected.length;
+      const result = await system.run(system.engine.dispatch(command));
+      expect(result.sequence).toBe(before.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+      expect(projected).toHaveLength(eventCount);
+
+      // A retry whose precondition now matches must still replay the receipt.
+      expect(
+        await system.run(
+          system.engine.dispatch({
+            ...command,
+            expectedUpdatedAt: before.threads[0]!.updatedAt,
+          }),
+        ),
+      ).toEqual(result);
+      expect(projected).toHaveLength(eventCount);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+
+      await system.run(
+        system.engine.dispatch({
+          ...command,
+          commandId: CommandId.make("fresh-conditional"),
+          expectedUpdatedAt: before.threads[0]!.updatedAt,
+        }),
+      );
+      expect((await system.run(system.engine.getReadModel())).threads[0]?.pullRequest).toEqual(
+        pullRequest,
+      );
+      expect(projected).toHaveLength(eventCount + 1);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   for (const queued of [false, true]) {
     for (const first of ["manual", "admission"] as const) {
       it(`serializes ${queued ? "queued" : "direct"} admission through pending commit when ${first} acquires first`, async () => {

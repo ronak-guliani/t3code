@@ -172,6 +172,9 @@ async function harness() {
 describe("reportedPullRequestUrl", () => {
   it("reads plain and Markdown URLs, deduplicating repeated links", () => {
     expect(reportedPullRequestUrl({ messages: [message(`${url}\n[PR](${url})`)] })).toBe(url);
+    for (const text of [`<${url}>`, `"${url}"`, `\`${url}\``]) {
+      expect(reportedPullRequestUrl({ messages: [message(text)] })).toBe(url);
+    }
   });
 
   it("does not infer from user input, partial streams, or ambiguous references", () => {
@@ -181,6 +184,9 @@ describe("reportedPullRequestUrl", () => {
       [message(`${url} https://github.com/acme/app/pull/43`)],
       [message(), message("No PR was created.")],
       [message("https://github.com.evil.example/acme/app/pull/42")],
+      [message(`https://example.test/${url}`)],
+      [message(`https://example.test/?redirect=${url}`)],
+      [message(`prefix${url}`)],
     ]) {
       expect(reportedPullRequestUrl({ messages })).toBeNull();
     }

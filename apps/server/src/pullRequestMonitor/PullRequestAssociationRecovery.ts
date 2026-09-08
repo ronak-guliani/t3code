@@ -15,7 +15,7 @@ export function reportedPullRequestUrl(
   const urls = new Set(
     Array.from(
       message.text.matchAll(
-        /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*(?=$|[\s)>\]?#.,])/g,
+        /(?<=^|[\s(<"'`])https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*(?=$|[\s)>"'`\]?#.,])/g,
       ),
       (match) => match[0],
     ),
