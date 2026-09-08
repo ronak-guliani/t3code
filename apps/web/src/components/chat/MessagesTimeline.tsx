@@ -13,7 +13,6 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -93,7 +92,7 @@ import {
   compactWorkEntryLabel,
   deriveWorkGroupActivity,
   extractCommandOutputText,
-  groupConsecutiveWorkEntries,
+  workGroupReceiptLabel,
   toolGroupAction,
   workEntryNeedsAttention,
   workGroupAccessibleLabel,
@@ -487,7 +486,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
   return (
     <div
       className={cn(
-        "pb-4",
+        row.kind === "work" || row.kind === "working" ? "pb-2" : "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
       )}
       data-timeline-row-id={row.id}
@@ -792,12 +791,13 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         })()}
 
       {row.kind === "working" && (
-        <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[7.5px] text-muted-foreground/50">
-            <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
+        <div className="py-0.5">
+          <div className="chat-work-text flex items-center gap-1.5 text-muted-foreground">
+            <span
+              className="inline-flex w-[1em] shrink-0 items-center justify-center"
+              aria-hidden="true"
+            >
+              <span className="h-1 w-1 rounded-full bg-muted-foreground animate-status-pulse motion-reduce:animate-none" />
             </span>
             <span>
               {row.createdAt ? (
@@ -1032,9 +1032,16 @@ const WorkGroupSection = memo(function WorkGroupSection({
   const onlyToolEntries =
     groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
   const groupKey = groupedEntries[0]?.stableId ?? groupedEntries[0]?.id ?? "";
-  const [isExpanded, setIsExpanded] = useState(() => workGroupExpansion.get(groupKey) ?? false);
-  const detailsId = useId();
-  const [visibleGroupCount, setVisibleGroupCount] = useState(6);
+  const working =
+    !shouldAutoCollapse &&
+    activeTurnInProgress &&
+    groupedEntries.some((entry) => !entry.turnId || entry.turnId === activeTurnId);
+  const disclosureKey = `${groupKey}:${working ? "working" : "settled"}`;
+  const [disclosure, setDisclosure] = useState<{ key: string; expanded: boolean } | null>(null);
+  const isExpanded =
+    disclosure?.key === disclosureKey
+      ? disclosure.expanded
+      : (workGroupExpansion.get(disclosureKey) ?? working);
   const activity = useMemo(
     () =>
       deriveWorkGroupActivity(
@@ -1055,41 +1062,44 @@ const WorkGroupSection = memo(function WorkGroupSection({
       className="work-group-section"
       open={isExpanded}
       onOpenChange={(expanded) => {
-        workGroupExpansion.set(groupKey, expanded);
-        setIsExpanded(expanded);
+        workGroupExpansion.set(disclosureKey, expanded);
+        setDisclosure({ key: disclosureKey, expanded });
       }}
     >
       <CollapsibleTrigger
-        className={cn(
-          "flex min-h-8 w-fit max-w-full items-center gap-1.5 rounded-sm px-0.5 py-1 text-left text-sm leading-relaxed transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring pointer-coarse:min-h-11",
-          attention ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
-        )}
-        aria-controls={detailsId}
+        className="chat-work-trigger text-muted-foreground"
         aria-label={workGroupAccessibleLabel(
           `${toggleLabel} ${groupLabel} (${groupedEntries.length})`,
           activity.activeCount,
         )}
       >
-        <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden="true">
+        <span
+          data-work-icon
+          className={cn(
+            "flex items-center justify-center",
+            attention && "text-amber-700 dark:text-amber-400",
+          )}
+          aria-hidden="true"
+        >
           {attention ? (
-            <CircleAlertIcon className="size-3.5" />
+            <CircleAlertIcon className="size-full" />
           ) : activity.lead ? (
-            createElement(workEntryIcon(activity.lead), { className: "size-3.5" })
+            createElement(workEntryIcon(activity.lead), { className: "size-full" })
           ) : activity.state === "stopped" ? (
-            <Minimize2Icon className="size-3.5" />
+            <Minimize2Icon className="size-full" />
           ) : (
-            <CheckIcon className="size-3.5" />
+            <CheckIcon className="size-full" />
           )}
         </span>
         <span
-          className={cn("min-w-0 truncate", activity.shimmer && "work-activity-shimmer")}
+          className={cn("chat-work-label", activity.shimmer && "work-activity-shimmer")}
           title={activity.label}
         >
           {activity.label}
         </span>
         {activity.activeCount > 1 ? (
           <span
-            className="shrink-0 text-xs text-muted-foreground"
+            className="shrink-0 text-muted-foreground"
             title={`${activity.activeCount - 1} more active`}
           >
             +{activity.activeCount - 1}
@@ -1103,21 +1113,13 @@ const WorkGroupSection = memo(function WorkGroupSection({
           )}
         />
       </CollapsibleTrigger>
-      <CollapsibleContent
-        id={detailsId}
-        className="duration-150 ease-out motion-reduce:transition-none"
-      >
-        <div className="pb-1 pl-2 pt-0.5">
-          <p className="px-2 py-1 text-[0.85em] text-muted-foreground">
+      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          <p className="sr-only">
             {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
             {activity.activeCount > 1 ? ` · ${activity.activeCount} active` : ""}
           </p>
-          <WorkGroupHistory
-            entries={groupedEntries}
-            workspaceRoot={workspaceRoot}
-            visibleGroupCount={visibleGroupCount}
-            onShowMore={() => setVisibleGroupCount((count) => count + 6)}
-          />
+          <WorkGroupHistory entries={groupedEntries} workspaceRoot={workspaceRoot} />
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -1127,98 +1129,33 @@ const WorkGroupSection = memo(function WorkGroupSection({
 function WorkGroupHistory({
   entries,
   workspaceRoot,
-  visibleGroupCount,
-  onShowMore,
 }: {
   entries: TimelineWorkEntry[];
   workspaceRoot: string | undefined;
-  visibleGroupCount: number;
-  onShowMore: () => void;
 }) {
-  const groups = useMemo(() => groupConsecutiveWorkEntries(entries, (entry) => entry), [entries]);
-  const nextGroupCount = Math.min(6, groups.length - visibleGroupCount);
+  const [visibleCount, setVisibleCount] = useState(50);
   return (
     <>
-      {groups.slice(-visibleGroupCount).map((group) => (
-        <WorkHistoryGroup
-          key={group.entries[0]!.stableId ?? group.entries[0]!.id}
-          entries={group.entries}
-          label={group.label}
+      {entries.slice(-visibleCount).map((entry) => (
+        <SimpleWorkEntryRow
+          key={entry.stableId ?? entry.id}
+          canExpandCommand
+          compact
+          workEntry={entry}
           workspaceRoot={workspaceRoot}
         />
       ))}
-      {groups.length > visibleGroupCount ? (
+      {entries.length > visibleCount ? (
         <button
           type="button"
-          className="mt-1 rounded-sm px-2 py-2 text-[0.9em] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-          onClick={onShowMore}
+          className="chat-work-trigger mt-1 text-muted-foreground"
+          onClick={() => setVisibleCount((count) => count + 50)}
         >
-          Show {nextGroupCount} earlier {nextGroupCount === 1 ? "group" : "groups"}
+          Show {Math.min(50, entries.length - visibleCount)} earlier actions (
+          {entries.length - visibleCount} remaining)
         </button>
       ) : null}
     </>
-  );
-}
-
-function WorkHistoryGroup({
-  entries,
-  label,
-  workspaceRoot,
-}: {
-  entries: TimelineWorkEntry[];
-  label: string;
-  workspaceRoot: string | undefined;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(50);
-  if (entries.length === 1)
-    return (
-      <SimpleWorkEntryRow
-        canExpandCommand
-        workEntry={entries[0]!}
-        workspaceRoot={workspaceRoot}
-        compact
-      />
-    );
-  return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <CollapsibleTrigger className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-muted-foreground hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring">
-        {createElement(workEntryIcon(entries[0]!), {
-          className: "size-3.5 shrink-0",
-          "aria-hidden": true,
-        })}
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        <ChevronRightIcon
-          className={cn(
-            "size-3 transition-transform duration-150 motion-reduce:transition-none",
-            expanded && "rotate-90",
-          )}
-        />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
-        <div className="ml-3 border-l border-border/60 pl-2">
-          {entries.slice(0, visibleCount).map((entry) => (
-            <SimpleWorkEntryRow
-              key={entry.stableId ?? entry.id}
-              canExpandCommand
-              compact
-              workEntry={entry}
-              workspaceRoot={workspaceRoot}
-            />
-          ))}
-          {entries.length > visibleCount ? (
-            <button
-              type="button"
-              className="rounded-sm px-2 py-2 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
-              onClick={() => setVisibleCount((count) => count + 50)}
-            >
-              Show {Math.min(50, entries.length - visibleCount)} more actions (
-              {entries.length - visibleCount} remaining)
-            </button>
-          ) : null}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
   );
 }
 
@@ -1227,43 +1164,80 @@ const ReasoningSection = memo(function ReasoningSection({
 }: {
   row: Extract<MessagesTimelineRow, { kind: "reasoning" }>;
 }) {
-  const { workGroupExpansion } = use(TimelineRowCtx);
-  const [isExpanded, setIsExpanded] = useState(() =>
-    row.rows.some(
-      (entry) =>
-        entry.kind === "work" &&
-        workGroupExpansion.get(
-          entry.groupedEntries[0]?.stableId ?? entry.groupedEntries[0]?.id ?? "",
-        ),
-    ),
-  );
-  const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
+  const { workGroupExpansion, workspaceRoot } = use(TimelineRowCtx);
+  const [isExpanded, setIsExpanded] = useState(() => workGroupExpansion.get(row.id) ?? false);
+  const [visibleCount, setVisibleCount] = useState(50);
+  const { history, summary } = useMemo(() => {
+    type HistoryItem =
+      | (typeof row.rows)[number]
+      | { kind: "work-entry"; id: string; entry: TimelineWorkEntry };
+    const history: HistoryItem[] = [];
+    const work: TimelineWorkEntry[] = [];
+    for (const nestedRow of row.rows) {
+      if (nestedRow.kind === "work") {
+        for (const entry of nestedRow.groupedEntries) {
+          history.push({ kind: "work-entry", id: entry.stableId ?? entry.id, entry });
+          work.push(entry);
+        }
+      } else {
+        history.push(nestedRow);
+      }
+    }
+    return { history, summary: work.length ? workGroupReceiptLabel(work) : null };
+  }, [row.rows]);
   const label = row.workedFor ? `Worked for ${row.workedFor}` : "Worked";
 
   return (
-    <div className="my-2 px-1">
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="inline-flex shrink-0 items-center gap-1 text-[9px] text-muted-foreground/50 transition-colors hover:text-foreground/70"
-          onClick={() => setIsExpanded((value) => !value)}
-          aria-expanded={isExpanded}
-        >
-          <span>{label}</span>
-          <CollapseIcon className="size-3" />
-        </button>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-      {(isExpanded || row.rows.some((entry) => entry.kind === "work")) && (
-        <div className="mt-3">
-          {row.rows
-            .filter((entry) => isExpanded || entry.kind === "work")
-            .map((nestedRow) => (
-              <TimelineRowContent key={`reasoning-row:${nestedRow.id}`} row={nestedRow} />
-            ))}
+    <Collapsible
+      className="work-group-section"
+      open={isExpanded}
+      onOpenChange={(expanded) => {
+        workGroupExpansion.set(row.id, expanded);
+        setIsExpanded(expanded);
+      }}
+    >
+      <CollapsibleTrigger className="chat-work-trigger text-muted-foreground">
+        <span className="chat-work-label">
+          {label}
+          {summary ? ` · ${summary}` : ""}
+        </span>
+        <ChevronRightIcon
+          className={cn(
+            "transition-transform duration-150 motion-reduce:transition-none",
+            isExpanded && "rotate-90",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          {history
+            .slice(-visibleCount)
+            .map((nestedRow) =>
+              nestedRow.kind === "work-entry" ? (
+                <SimpleWorkEntryRow
+                  key={nestedRow.id}
+                  workEntry={nestedRow.entry}
+                  canExpandCommand
+                  compact
+                  workspaceRoot={workspaceRoot}
+                />
+              ) : (
+                <TimelineRowContent key={nestedRow.id} row={nestedRow} />
+              ),
+            )}
+          {history.length > visibleCount && (
+            <button
+              type="button"
+              className="chat-work-trigger"
+              onClick={() => setVisibleCount((count) => count + 50)}
+            >
+              Show {Math.min(50, history.length - visibleCount)} earlier entries (
+              {history.length - visibleCount} remaining)
+            </button>
+          )}
         </div>
-      )}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 });
 
@@ -1807,7 +1781,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     const detail = [
       fullCommand,
       output ?? workEntry.detail,
-      ...(workEntry.changedFiles ?? []),
+      ...(output ? [] : (workEntry.changedFiles ?? [])),
       isCommandExpanded && workEntry.toolData != null && !output
         ? JSON.stringify(workEntry.toolData, null, 2)
         : undefined,
@@ -1818,7 +1792,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     const label = compactWorkEntryLabel(workEntry);
     const failed = workEntryNeedsAttention(workEntry);
     return (
-      <div className="rounded-lg">
+      <div>
         <button
           type="button"
           disabled={!hasDetail}
@@ -1827,23 +1801,23 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           aria-label={
             hasDetail ? `${isCommandExpanded ? "Collapse" : "Expand"} details: ${label}` : label
           }
-          className={cn(
-            "flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-muted/40 disabled:cursor-default focus-visible:outline-2 focus-visible:outline-ring",
-            failed ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
-          )}
+          className="chat-work-trigger text-muted-foreground disabled:cursor-default"
         >
-          {entryIcon}
-          <span className="min-w-0 flex-1 truncate" title={label}>
+          {failed ? (
+            <CircleAlertIcon className="text-amber-700 dark:text-amber-400" aria-hidden="true" />
+          ) : (
+            entryIcon
+          )}
+          <span className="chat-work-label" title={label}>
             {label}
           </span>
-          {failed ? <span className="text-[0.85em]">Failed</span> : null}
           {hasDetail ? <CommandToggleIcon className="size-3 shrink-0" /> : null}
         </button>
         {isCommandExpanded && detail ? (
-          <div className="ml-3 border-l border-border/60 pl-3 pb-2">
+          <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
             <pre
               data-tool-command-details
-              className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/60 p-2 font-mono text-[0.9em] text-muted-foreground"
+              className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
             >
               {detail}
             </pre>

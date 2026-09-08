@@ -44,7 +44,6 @@ import {
 import {
   resolveWorkEntryToolPresentation,
   compactWorkEntryLabel,
-  groupConsecutiveWorkEntries,
   workGroupAccessibleLabel,
   type ToolGroupSummaryKind,
   workEntryViewedImagePath,
@@ -70,7 +69,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 const SHIMMER_WIDTH = 72;
 const SHIMMER_SWEEP_MS = 1_350;
 const SHIMMER_PAUSE_MS = 1_450;
-const SHIMMER_ICON_AND_GAP_WIDTH = 30;
+const SHIMMER_ICON_AND_GAP_WIDTH = 23;
 export const THREAD_DISCLOSURE_TRANSITION_MS = 180;
 const WORK_LOG_DETAIL_ENTER_TRANSITION = FadeIn.duration(140).reduceMotion(ReduceMotion.System);
 const WORK_LOG_DETAIL_EXIT_TRANSITION = FadeOut.duration(120).reduceMotion(ReduceMotion.System);
@@ -91,7 +90,7 @@ function WorkLogIcon(props: {
   return (
     <SymbolView
       name={props.icon === "browser" ? { ios: "globe", android: "public" } : props.icon}
-      size={14}
+      size={12}
       weight="medium"
       {...(colorClassName ? { tintColorClassName: colorClassName } : { tintColor: props.color })}
       type="monochrome"
@@ -150,7 +149,7 @@ function ShimmerWorkContent(props: {
 }) {
   return (
     <View className="flex-row items-center gap-1.5">
-      <View className="h-6 w-6 shrink-0 items-center justify-center">
+      <View className="h-5 w-5 shrink-0 items-center justify-center">
         {props.showIcon && props.toolIcon && props.environmentId ? (
           <ToolActivityIconView
             environmentId={props.environmentId}
@@ -169,10 +168,9 @@ function ShimmerWorkContent(props: {
       </View>
       <Text
         className={cn(
-          "min-w-0 shrink text-sm",
+          "min-w-0 shrink text-xs",
           props.highlighted ? "text-foreground" : "text-foreground-muted",
         )}
-        numberOfLines={1}
         onTextLayout={props.onTextLayout}
       >
         {props.label}
@@ -249,7 +247,7 @@ export function ShimmeringWorkContent(props: {
 
   return (
     <View
-      className="min-w-0 flex-1 overflow-hidden"
+      className="min-w-0 shrink overflow-hidden"
       onLayout={(event) => setAvailableWidth(event.nativeEvent.layout.width)}
     >
       <ShimmerWorkContent
@@ -261,7 +259,9 @@ export function ShimmeringWorkContent(props: {
         showIcon={props.showIcon}
         themeAppearance={props.themeAppearance}
         toolIcon={props.toolIcon}
-        onTextLayout={(event) => setTextWidth(event.nativeEvent.lines[0]?.width ?? 0)}
+        onTextLayout={(event) =>
+          setTextWidth(Math.max(0, ...event.nativeEvent.lines.map((line) => line.width)))
+        }
       />
       {!reducedMotion && appIsActive && screenIsFocused && contentWidth > 0 ? (
         <Animated.View
@@ -355,7 +355,6 @@ function isFreshRow(createdAt: string): boolean {
 // accessibility scaling can make the single-line text taller than that minimum.
 const WORK_ROW_HEIGHT = THREAD_WORK_ROW_MIN_HEIGHT;
 const WORK_ROW_GAP = 1; // gap-px
-const WORK_LOG_BOTTOM_MARGIN = 3.5; // mb-1 with the mobile 14px rem
 const WORK_GROUP_MAX_HEIGHT = 256;
 const WORK_GROUP_EDGE_FADE_HEIGHT = 12;
 
@@ -366,17 +365,6 @@ function workLogRowsHeight(
   rowHeight = WORK_ROW_HEIGHT,
 ): number {
   return activities.length * rowHeight + Math.max(0, activities.length - 1) * WORK_ROW_GAP;
-}
-
-export function collapsedWorkLogHeight(activities: ReadonlyArray<ThreadFeedActivity>): number {
-  if (activities.length === 0) {
-    return 0;
-  }
-  const height = workLogRowsHeight(activities);
-  return (
-    WORK_LOG_BOTTOM_MARGIN +
-    (activities[0]?.groupedToolDetail ? Math.min(height, WORK_GROUP_MAX_HEIGHT) : height)
-  );
 }
 
 interface ThreadWorkLogProps {
@@ -397,45 +385,7 @@ interface ThreadWorkLogProps {
 }
 
 export function ThreadWorkLog(props: ThreadWorkLogProps) {
-  const historyGroups = useMemo(() => {
-    if (!props.activities[0]?.groupedToolDetail) return null;
-    return groupConsecutiveWorkEntries(props.activities, (row) =>
-      row.status === "failure" ? { ...row.workEntry, tone: "error" } : row.workEntry,
-    ).map((group) => {
-      if (group.entries.length === 1) return { summaryRow: null, entries: group.entries };
-      const first = group.entries[0]!;
-      const id = `history-group:${first.id}`;
-      const summaryRow: ThreadFeedActivity = {
-        ...first,
-        id,
-        summary: group.label,
-        groupSummary: true,
-        canExpand: true,
-        workEntry: {
-          ...first.workEntry,
-          label: group.label,
-          toolTitle: group.label,
-          command: undefined,
-          detail: undefined,
-          changedFiles: undefined,
-        },
-        getFullDetail: () => null,
-        getCopyText: () => group.entries.map((row) => row.getCopyText()).join("\n\n"),
-      };
-      return { summaryRow, entries: group.entries };
-    });
-  }, [props.activities]);
-  const activities = useMemo(
-    () =>
-      historyGroups?.flatMap(({ summaryRow, entries }) =>
-        summaryRow === null
-          ? entries
-          : props.expandedRows[summaryRow.id]
-            ? [summaryRow, ...entries]
-            : [summaryRow],
-      ) ?? props.activities,
-    [historyGroups, props.activities, props.expandedRows],
-  );
+  const activities = props.activities;
   const renderRow = useCallback(
     (row: ThreadFeedActivity) => (
       <ThreadWorkLogRow
@@ -631,13 +581,6 @@ function ThreadWorkGroupList(props: {
     onContentSizeChangeRef.current(list.getState().contentLength);
     return unsubscribe;
   }, []);
-  const getFixedItemSize = useCallback(
-    (row: ThreadFeedActivity, index: number) =>
-      props.expandedRows[row.id] || props.rowSizing.fixedRowHeight === undefined
-        ? undefined
-        : props.rowSizing.fixedRowHeight + (index < props.activities.length - 1 ? WORK_ROW_GAP : 0),
-    [props.activities.length, props.expandedRows, props.rowSizing.fixedRowHeight],
-  );
   const renderItem = useCallback(
     ({ item, index }: { item: ThreadFeedActivity; index: number }) => (
       <View className={index < props.activities.length - 1 ? "pb-px" : undefined}>
@@ -654,7 +597,6 @@ function ThreadWorkGroupList(props: {
         data={props.activities}
         keyExtractor={workLogRowKey}
         estimatedItemSize={props.rowSizing.estimatedRowHeight + WORK_ROW_GAP}
-        getFixedItemSize={getFixedItemSize}
         initialScrollIndex={initialScrollIndex}
         // Bootstrap overscan is only 50px. An offset inside expanded detail can
         // otherwise leave its own row unmeasured until after scroll restoration.
@@ -762,13 +704,10 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const fullDetail = expanded ? row.getFullDetail() : null;
   const viewedImagePath = workEntryViewedImagePath(row.workEntry);
   const toolPresentation = resolveWorkEntryToolPresentation(row.workEntry);
-  const previewText = row.groupSummary
-    ? row.summary
-    : row.groupedToolDetail
-      ? compactWorkEntryLabel(row.workEntry)
-      : workEntryRowLabel(row.workEntry);
-  const displayText =
-    !toolPresentation && expanded && row.workEntry.command?.trim() ? "Command" : previewText;
+  const previewText = row.groupedToolDetail
+    ? compactWorkEntryLabel(row.workEntry)
+    : workEntryRowLabel(row.workEntry);
+  const displayText = previewText;
   const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
   const failed = row.status === "failure";
   const toolIcon = row.workEntry.toolIcon ?? row.workEntry.toolSource?.icon;
@@ -809,7 +748,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
             />
           ) : (
             <>
-              <View className="h-6 w-6 shrink-0 items-center justify-center">
+              <View className="h-5 w-5 shrink-0 items-center justify-center">
                 {toolIcon ? (
                   <ToolActivityIconView
                     environmentId={props.environmentId}
@@ -834,10 +773,9 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
               </View>
               <Text
                 className={cn(
-                  "min-w-0 flex-1 text-sm text-foreground-muted",
+                  "min-w-0 shrink text-xs text-foreground-muted",
                   iconIsDestructive && "font-t3-medium text-adaptive-rose-600-400",
                 )}
-                numberOfLines={1}
               >
                 {displayText}
               </Text>
@@ -890,7 +828,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         <Animated.View
           entering={WORK_LOG_DETAIL_ENTER_TRANSITION}
           exiting={WORK_LOG_DETAIL_EXIT_TRANSITION}
-          className="ml-7 border-l border-adaptive-neutral-300-a60-white-a12 pb-1 pl-3 pt-0.5"
+          className="ml-3 border-l border-adaptive-neutral-300-a60-white-a12 pb-1 pl-3 pt-0.5"
         >
           {viewedImagePath ? (
             <View className="pb-1.5">
@@ -904,7 +842,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
             className="max-h-60"
             contentContainerStyle={{ paddingRight: 8 }}
           >
-            <Text selectable className="font-mono text-2xs leading-normal text-foreground-muted">
+            <Text selectable className="font-mono text-xs leading-normal text-foreground-muted">
               {fullDetail}
             </Text>
           </ScrollView>
@@ -1022,7 +960,7 @@ export function ThreadWorkGroupToggle(props: {
             />
           ) : (
             <>
-              <View className="h-6 w-6 items-center justify-center">
+              <View className="h-5 w-5 items-center justify-center">
                 <ToolActivityIconView
                   environmentId={props.environmentId}
                   icon={props.toolIcon}
@@ -1033,20 +971,14 @@ export function ThreadWorkGroupToggle(props: {
               </View>
               <Text
                 key={props.rowSizing.textSizeKey}
-                className={cn(
-                  "min-w-0 flex-1 text-sm text-foreground-muted",
-                  props.hasFailure && "text-adaptive-rose-600-400",
-                )}
-                numberOfLines={1}
+                className="min-w-0 shrink text-xs text-foreground-muted"
               >
                 {props.summary}
               </Text>
             </>
           )}
           {props.activeCount > 1 ? (
-            <Text className="shrink-0 text-3xs text-foreground-muted">
-              +{props.activeCount - 1}
-            </Text>
+            <Text className="shrink-0 text-xs text-foreground-muted">+{props.activeCount - 1}</Text>
           ) : null}
           <ThreadDisclosureChevron
             expanded={props.expanded}

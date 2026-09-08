@@ -6,6 +6,7 @@ import {
   commandDetailRepeatsCommand,
   compactWorkEntryLabel,
   deriveWorkGroupActivity,
+  workGroupReceiptLabel,
   extractWorkLogToolLifecycleStatus,
   groupConsecutiveWorkEntries,
   mergeWorkLogToolData,
@@ -132,6 +133,18 @@ describe("live activity strips", () => {
     expect(groups.flatMap((group) => group.entries)).toEqual(entries);
   });
 
+  it("keeps mixed completed receipts compact without hiding failures", () => {
+    const command = {
+      label: "Run command",
+      tone: "tool" as const,
+      command: "pnpm test",
+      toolLifecycleStatus: "completed",
+    };
+    expect(workGroupReceiptLabel([read("a.ts"), command])).toBe("2 actions");
+    expect(workGroupReceiptLabel([read("a.ts"), read("b.ts")])).toBe("Read 2 files");
+    expect(workGroupReceiptLabel([read("a.ts", "failed"), command])).toBe("Failed a.ts");
+  });
+
   it("uses concise cross-platform filenames and command names without dropping detail", () => {
     const entry = { ...read("a.ts"), detail: "C:\\work\\src\\a.ts" };
     expect(compactWorkEntryLabel(entry)).toBe("Read a.ts");
@@ -146,6 +159,31 @@ describe("live activity strips", () => {
     ).toBe("Running pnpm");
   });
 
+  it("prefers the complete input path over a shortened provider preview", () => {
+    const filename = "durable-worktree-cleanup-reconciliation.integration.test.ts";
+    expect(
+      compactWorkEntryLabel({
+        label: "Edit file",
+        tone: "tool",
+        changedFiles: ["/src/durable-worktree-c..."],
+        detail: "/src/durable-worktree-c...",
+        toolData: { rawInput: { filePath: `/src/${filename}` } },
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe(`Edited ${filename}`);
+  });
+
+  it("does not expose generic provider categories as action labels", () => {
+    expect(compactWorkEntryLabel({ label: "other", tone: "tool" })).toBe("Used tool");
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        tone: "tool",
+        toolData: { toolName: "inspect_workspace" },
+      }),
+    ).toBe("inspect workspace");
+  });
+
   it("normalizes interrupted and background task lifecycles", () => {
     expect(extractWorkLogToolLifecycleStatus({ status: "cancelled" })).toBe("stopped");
     expect(extractWorkLogToolLifecycleStatus({ status: "idle", taskType: "subagent_batch" })).toBe(
@@ -153,6 +191,37 @@ describe("live activity strips", () => {
     );
     expect(extractWorkLogToolLifecycleStatus({ status: "running" })).toBe("inProgress");
     expect(extractWorkLogToolLifecycleStatus({ status: "unknown" })).toBeUndefined();
+  });
+
+  it.each([
+    [
+      { toolName: "other", rawInput: { skill: "typescript-best-practices" } },
+      undefined,
+      "Loaded typescript-best-practices",
+    ],
+    [
+      { toolName: "other", rawInput: { pattern: "extractCommandOutputText" } },
+      undefined,
+      "Searched code",
+    ],
+    [{ toolName: "functions.rg" }, undefined, "Searched code"],
+    [
+      { toolName: "other" },
+      'Skill "typescript-best-practices" loaded successfully.',
+      "Loaded typescript-best-practices",
+    ],
+    [{ toolName: "other" }, undefined, "Used tool"],
+  ])("uses meaningful names for generic provider categories: %j", (toolData, detail, expected) => {
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        toolTitle: "other",
+        tone: "tool",
+        toolData,
+        ...(detail ? { detail } : {}),
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe(expected);
   });
 
   it("retains the input filename when completed output replaces the preview", () => {
@@ -212,7 +281,7 @@ describe("summarizeToolGroup", () => {
           ...approvals,
           { label: "Read", tone: "tool", itemType: "dynamic_tool_call" },
         ]),
-      ).toBe("Received 3 updates and used 1 tool");
+      ).toBe("Received 3 updates and read 1 file");
       expect(summarizeToolGroup(approvals)).toBe("Received 3 updates");
       expect(toolGroupSummaryKind(approvals)).toBe("update");
     },
@@ -571,7 +640,7 @@ describe("workEntryViewedImagePath", () => {
     expect(
       workEntryViewedImagePath({ ...entry, itemType: "image_view", detail: "a.png\nb.png" }),
     ).toBeNull();
-    expect(workEntryViewedImagePath({ ...entry, detail: "a.png" })).toBeNull();
+    expect(workEntryViewedImagePath({ ...entry, label: "Search", detail: "a.png" })).toBeNull();
   });
 });
 

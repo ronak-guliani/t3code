@@ -149,7 +149,6 @@ import {
   type ThreadWorkGroupScrollPosition,
 } from "./thread-feed-live-follow";
 import {
-  collapsedWorkLogHeight,
   ThreadDisclosureChevron,
   ThreadWorkGroupToggle,
   ThreadThinkingRow,
@@ -1320,7 +1319,12 @@ function renderFeedEntry(
     readonly terminalAssistantMessageIds: ReadonlySet<string>;
     readonly unsettledTurnId: TurnId | null;
     readonly onCopyWorkRow: (rowId: string, value: string) => void;
-    readonly onToggleWorkGroup: (groupId: string, anchorKey: string) => void;
+    readonly onToggleWorkGroup: (
+      groupId: string,
+      anchorKey: string,
+      expanded: boolean,
+      live: boolean,
+    ) => void;
     readonly onToggleWorkRow: (rowId: string, anchorKey: string) => void;
     readonly onToggleTurnFold: (turnId: TurnId) => void;
     readonly onPressPreview: (source: FilePreviewSource) => void;
@@ -1355,8 +1359,7 @@ function renderFeedEntry(
       >
         <Text
           key={props.workRowSizing.textSizeKey}
-          className="min-w-0 flex-1 font-t3-medium text-sm tabular-nums text-foreground-muted"
-          numberOfLines={2}
+          className="min-w-0 shrink text-xs tabular-nums text-foreground-muted"
         >
           {entry.label}
         </Text>
@@ -1391,7 +1394,9 @@ function renderFeedEntry(
         summaryToolIcon={entry.summaryToolIcon}
         hasFailure={entry.hasFailure}
         shimmer={entry.shimmer}
-        onToggle={() => props.onToggleWorkGroup(entry.groupId, entry.id)}
+        onToggle={() =>
+          props.onToggleWorkGroup(entry.groupId, entry.id, entry.expanded, entry.live)
+        }
       />
     );
   }
@@ -1933,15 +1938,23 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const [interactionState, setInteractionState] = useState<{
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
+    readonly collapsedLiveWorkGroupIds: ReadonlySet<string>;
     readonly expandedWorkRows: Record<string, boolean>;
     readonly expandedTurnIds: ReadonlySet<TurnId>;
   }>({
     copiedRowId: null,
     expandedWorkGroups: {},
+    collapsedLiveWorkGroupIds: new Set(),
     expandedWorkRows: {},
     expandedTurnIds: new Set(),
   });
-  const { copiedRowId, expandedWorkGroups, expandedWorkRows, expandedTurnIds } = interactionState;
+  const {
+    copiedRowId,
+    expandedWorkGroups,
+    collapsedLiveWorkGroupIds,
+    expandedWorkRows,
+    expandedTurnIds,
+  } = interactionState;
   const [expandedFile, setExpandedFile] = useState<FilePreviewSource | null>(null);
   const [expandedVideo, setExpandedVideo] = useState<VideoPreviewSource | null>(null);
   const fileShareSourceIdentifier = useId();
@@ -2360,10 +2373,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         expandedTurnIds,
         expandedWorkGroupIds,
         props.activeWorkStartedAt,
+        collapsedLiveWorkGroupIds,
       ),
     [
       expandedTurnIds,
       expandedWorkGroupIds,
+      collapsedLiveWorkGroupIds,
       props.activeWorkStartedAt,
       props.feed,
       props.latestTurn,
@@ -2480,7 +2495,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     if (disclosureAnchorKeyRef.current !== null) {
       settleDisclosureAfterLayout();
     }
-  }, [expandedTurnIds, expandedWorkGroups, expandedWorkRows, settleDisclosureAfterLayout]);
+  }, [
+    expandedTurnIds,
+    expandedWorkGroups,
+    collapsedLiveWorkGroupIds,
+    expandedWorkRows,
+    settleDisclosureAfterLayout,
+  ]);
 
   const handleItemSizeChanged = useCallback(() => {
     if (disclosureAnchorKeyRef.current !== null) {
@@ -2520,15 +2541,20 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }, []);
 
   const onToggleWorkGroup = useCallback(
-    (groupId: string, anchorKey: string) => {
+    (groupId: string, anchorKey: string, expanded: boolean, live: boolean) => {
       suspendEndScrollMaintenanceForDisclosure(anchorKey);
-      setInteractionState((current) => ({
-        ...current,
-        expandedWorkGroups: {
-          ...current.expandedWorkGroups,
-          [groupId]: !(current.expandedWorkGroups[groupId] ?? false),
-        },
-      }));
+      setInteractionState((current) => {
+        if (live) {
+          const collapsed = new Set(current.collapsedLiveWorkGroupIds);
+          if (expanded) collapsed.add(groupId);
+          else collapsed.delete(groupId);
+          return { ...current, collapsedLiveWorkGroupIds: collapsed };
+        }
+        return {
+          ...current,
+          expandedWorkGroups: { ...current.expandedWorkGroups, [groupId]: !expanded },
+        };
+      });
     },
     [suspendEndScrollMaintenanceForDisclosure],
   );
@@ -2596,19 +2622,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         case "thinking":
           return workRowSizing.fixedRowHeight;
         case "activity-group":
-          if (isContextCompactionActivityGroup(entry) || entry.activities[0]?.groupedToolDetail) {
-            return undefined;
-          }
-          // Expanded rows append a variable detail block — fall back to
-          // measurement for those groups.
-          return entry.activities.some((activity) => expandedWorkRows[activity.id])
-            ? undefined
-            : collapsedWorkLogHeight(entry.activities);
+          return undefined;
         default:
           return undefined;
       }
     },
-    [expandedWorkRows, workRowSizing.fixedRowHeight],
+    [workRowSizing.fixedRowHeight],
   );
 
   // Disclosures can mount existing offscreen rows as well as new work rows.

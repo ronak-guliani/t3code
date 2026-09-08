@@ -44,10 +44,22 @@ describe("ThreadFeed native positioning", () => {
       ts.ScriptKind.TSX,
     );
     const layoutProps: ts.JsxAttribute[] = [];
+    const fixedWorkRowProps: ts.JsxAttribute[] = [];
+    const clippedWorkLabels: ts.JsxAttribute[] = [];
     const shimmerIcons: string[] = [];
     const visit = (node: ts.Node) => {
       if (ts.isJsxAttribute(node) && node.name.getText(source) === "layout") {
         layoutProps.push(node);
+      }
+      if (ts.isJsxAttribute(node) && node.name.getText(source) === "getFixedItemSize") {
+        fixedWorkRowProps.push(node);
+      }
+      if (
+        ts.isJsxAttribute(node) &&
+        node.name.getText(source) === "numberOfLines" &&
+        node.initializer?.getText(source) === "{1}"
+      ) {
+        clippedWorkLabels.push(node);
       }
       if (
         ts.isJsxSelfClosingElement(node) &&
@@ -63,6 +75,8 @@ describe("ThreadFeed native positioning", () => {
     };
     visit(source);
     expect(layoutProps).toHaveLength(0);
+    expect(fixedWorkRowProps).toHaveLength(0);
+    expect(clippedWorkLabels).toHaveLength(0);
     expect(shimmerIcons).toEqual(["{props.showIcon}", "{props.showIcon}"]);
   });
 });

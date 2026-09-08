@@ -17,6 +17,7 @@ import {
   commandDetailRepeatsCommand,
   compactWorkEntryLabel,
   extractCommandOutputText,
+  workGroupReceiptLabel,
   isWorktreeSetupActivity,
   deriveWorkGroupActivity,
   extractWorkLogToolLifecycleStatus,
@@ -88,7 +89,6 @@ export interface ThreadFeedActivity {
   readonly lifecycleStatus?: WorkLogToolLifecycleStatus;
   readonly workEntry: WorkLogEntry;
   readonly groupedToolDetail?: boolean;
-  readonly groupSummary?: boolean;
   readonly live?: boolean;
 }
 
@@ -204,6 +204,7 @@ const presentedActivityGroupsCache = new WeakMap<
     readonly unsettledTurnId: TurnId | null;
     readonly isWorking: boolean;
     readonly activeTail: boolean;
+    readonly consolidated: boolean;
     readonly rows: ReadonlyArray<ThreadFeedEntry>;
   }
 >();
@@ -869,19 +870,19 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   return "zap";
 }
 
-function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
+function buildWorkEntryExpandedBody(entry: WorkLogEntry, output: string | null): string | null {
   const blocks: string[] = [];
   const appendBlock = (value: string | null | undefined) => {
     const trimmed = value?.trim();
     if (trimmed && (entry.command || !blocks.includes(trimmed))) blocks.push(trimmed);
   };
 
-  if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
+  if (!output && entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
     appendBlock(`MCP call\n${JSON.stringify(entry.toolData, null, 2)}`);
   }
   appendBlock(entry.rawCommand ?? entry.command);
-  appendBlock(entry.detail);
-  if ((entry.changedFiles?.length ?? 0) > 0) {
+  appendBlock(output ?? entry.detail);
+  if (!output && (entry.changedFiles?.length ?? 0) > 0) {
     appendBlock(entry.changedFiles!.join("\n"));
   }
 
@@ -892,20 +893,28 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
  * A row only opens when its body says more than its collapsed line. A row
  * whose only detail is the single-line text it already shows (a runtime
  * warning, a task summary, a short command) has nothing to reveal.
- * Multi-line text still expands: the collapsed row truncates it to one line.
+ * Multi-line text still expands: the collapsed label normalizes its whitespace.
  * Cheap field checks come first so large tool payloads are not serialized
  * for every row (see the deferred-expansion test).
  */
-function workEntryHasExpandedBody(entry: WorkLogEntry, collapsedText: string): boolean {
+function workEntryHasExpandedBody(
+  entry: WorkLogEntry,
+  collapsedText: string,
+  getOutput: () => string | null,
+): boolean {
   if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
   if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
   const parts = [entry.rawCommand ?? entry.command, entry.detail]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
-  if (parts.length === 0) return false;
+  if (parts.length === 0) return getOutput() !== null;
   if (parts.length > 1 && new Set(parts).size > 1) return true;
   const only = parts[0]!;
-  return only.includes("\n") || collapseWhitespace(only) !== collapseWhitespace(collapsedText);
+  return (
+    only.includes("\n") ||
+    collapseWhitespace(only) !== collapseWhitespace(collapsedText) ||
+    getOutput() !== null
+  );
 }
 
 function collapseWhitespace(value: string): string {
@@ -1534,6 +1543,7 @@ export function deriveThreadFeedPresentation(
   expandedTurnIds: ReadonlySet<TurnId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
+  collapsedLiveWorkGroupIds: ReadonlySet<string> = new Set(),
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
     (entry) =>
@@ -1546,7 +1556,9 @@ export function deriveThreadFeedPresentation(
   const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const isWorking = activeWorkStartedAt !== null;
   const collapsedEntryIds = new Set<string>();
+  const foldedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
+    for (const entryId of fold.hiddenEntryIds) foldedEntryIds.add(entryId);
     if (!expandedTurnIds.has(fold.turnId)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
@@ -1600,18 +1612,7 @@ export function deriveThreadFeedPresentation(
       }
       result.push(row);
     }
-    const hasExpandedWork =
-      collapsedEntryIds.has(entry.id) &&
-      expandedWorkGroupIds.size > 0 &&
-      entry.type === "activity-group" &&
-      entry.activities.some((activity) => {
-        const work = activity.workEntry;
-        const identity = work.toolCallId
-          ? `tool:${work.turnId ?? "no-turn"}:${work.toolCallId}`
-          : activity.id;
-        return expandedWorkGroupIds.has(`work-group:${identity}`);
-      });
-    if (!collapsedEntryIds.has(entry.id) || hasExpandedWork) {
+    if (!collapsedEntryIds.has(entry.id)) {
       appendPresentedFeedEntry(
         result,
         entry,
@@ -1619,6 +1620,8 @@ export function deriveThreadFeedPresentation(
         unsettledTurnId,
         isWorking,
         isActiveTailGroup,
+        foldedEntryIds.has(entry.id),
+        collapsedLiveWorkGroupIds,
       );
     }
   }
@@ -1648,6 +1651,8 @@ function appendPresentedFeedEntry(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  consolidated: boolean,
+  collapsedLiveWorkGroupIds: ReadonlySet<string>,
 ): void {
   if (entry.type !== "activity-group") {
     result.push(entry);
@@ -1664,8 +1669,13 @@ function appendPresentedFeedEntry(
     cached.unsettledTurnId !== unsettledTurnId ||
     cached.isWorking !== isWorking ||
     cached.activeTail !== activeTail ||
+    cached.consolidated !== consolidated ||
     cached.rows.some(
-      (row) => row.type === "work-toggle" && expandedWorkGroupIds.has(row.groupId) !== row.expanded,
+      (row) =>
+        row.type === "work-toggle" &&
+        (row.live
+          ? !collapsedLiveWorkGroupIds.has(row.groupId)
+          : expandedWorkGroupIds.has(row.groupId)) !== row.expanded,
     )
   ) {
     const rows: ThreadFeedEntry[] = [];
@@ -1676,8 +1686,10 @@ function appendPresentedFeedEntry(
       unsettledTurnId,
       isWorking,
       activeTail,
+      consolidated,
+      collapsedLiveWorkGroupIds,
     );
-    cached = { unsettledTurnId, isWorking, activeTail, rows };
+    cached = { unsettledTurnId, isWorking, activeTail, consolidated, rows };
     presentedActivityGroupsCache.set(entry, cached);
   }
   for (const row of cached.rows) {
@@ -1692,10 +1704,13 @@ function appendActivityGroupRows(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  consolidated: boolean,
+  collapsedLiveWorkGroupIds: ReadonlySet<string>,
 ): void {
   const activities = omitSupersededLifecycleMarkers(
     entry.activities.filter(
       (activity) =>
+        consolidated ||
         !(activity.toolLike && activity.status === "neutral") ||
         (isWorking &&
           activity.lifecycleStatus === "inProgress" &&
@@ -1717,6 +1732,8 @@ function appendActivityGroupRows(
       unsettledTurnId,
       isWorking,
       activeTail && isTrailingRun,
+      consolidated,
+      collapsedLiveWorkGroupIds,
     );
     groupableRun = [];
   };
@@ -1750,7 +1767,7 @@ function completedTurnWorkLabel(groups: readonly ThreadFeedActivityGroup[]): str
   const entries = groups.flatMap((group) =>
     group.activities.map((activity) => presentationEntryForActivity(activity)),
   );
-  const label = deriveWorkGroupActivity(entries, false).label;
+  const label = workGroupReceiptLabel(entries);
   turnWorkSummaryCache.set(first, { groups, label });
   return label;
 }
@@ -1777,13 +1794,17 @@ function appendToolGroupRows(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  consolidated: boolean,
+  collapsedLiveWorkGroupIds: ReadonlySet<string>,
 ): void {
   const firstEntry = activities[0]!.workEntry;
   const identity = firstEntry.toolCallId
     ? `tool:${firstEntry.turnId ?? "no-turn"}:${firstEntry.toolCallId}`
     : activities[0]!.id;
   const groupId = `work-group:${identity}`;
-  const expanded = expandedWorkGroupIds.has(groupId);
+  const expanded =
+    consolidated ||
+    (activeTail ? !collapsedLiveWorkGroupIds.has(groupId) : expandedWorkGroupIds.has(groupId));
   const latestActiveActivity = activities.find(
     (activity) =>
       isWorking &&
@@ -1793,8 +1814,7 @@ function appendToolGroupRows(
           activity.lifecycleStatus === undefined &&
           (activity.workEntry.sourceActivityKind === "task.progress" || activity.toolLike))),
   );
-  const active = latestActiveActivity !== undefined;
-  const live = activeTail || active;
+  const live = activeTail;
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
   const groupActivity = deriveWorkGroupActivity(
     activities.map((activity) =>
@@ -1844,26 +1864,27 @@ function appendToolGroupRows(
         toolGroupAction(singleActivity.workEntry) !== "edit"
       ? resolveWorkEntryToolPresentation(singleActivity.workEntry, "completed")?.icon
       : undefined;
-  result.push({
-    type: "work-toggle",
-    id: `${live ? "work-live" : "work-toggle"}:${groupId}`,
-    createdAt: sourceGroup.createdAt,
-    turnId: sourceGroup.turnId,
-    groupId,
-    hiddenCount: activities.length,
-    activeCount: groupActivity.activeCount,
-    expanded,
-    summary,
-    summaryKind: toolGroupSummaryKind(
-      (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
-    ),
-    ...(groupToolSurface ? { toolSurface: groupToolSurface } : {}),
-    ...(groupToolIcon ? { toolIcon: groupToolIcon } : {}),
-    ...(summaryToolIcon ? { summaryToolIcon } : {}),
-    hasFailure: groupActivity.state === "failed" || groupActivity.state === "approval",
-    live,
-    shimmer,
-  });
+  if (!consolidated)
+    result.push({
+      type: "work-toggle",
+      id: `${live ? "work-live" : "work-toggle"}:${groupId}`,
+      createdAt: sourceGroup.createdAt,
+      turnId: sourceGroup.turnId,
+      groupId,
+      hiddenCount: activities.length,
+      activeCount: groupActivity.activeCount,
+      expanded,
+      summary,
+      summaryKind: toolGroupSummaryKind(
+        (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
+      ),
+      ...(groupToolSurface ? { toolSurface: groupToolSurface } : {}),
+      ...(groupToolIcon ? { toolIcon: groupToolIcon } : {}),
+      ...(summaryToolIcon ? { summaryToolIcon } : {}),
+      hasFailure: groupActivity.state === "failed" || groupActivity.state === "approval",
+      live,
+      shimmer,
+    });
   if (!expanded) {
     return;
   }
@@ -2135,7 +2156,11 @@ function toThreadFeedActivityEntry(
 ): Extract<RawThreadFeedEntry, { readonly type: "activity" }> {
   const summary = workEntryHeading(entry);
   const detail = workEntryPreview(entry);
-  const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry));
+  const getOutput = memoizeValue(() => {
+    const output = extractCommandOutputText(entry.toolData);
+    return entry.command && output ? stripTrailingExitCode(output).output : output;
+  });
+  const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry, getOutput()));
   const getCopyText = memoizeValue(() => {
     const copyLabel = capitalizePhrase(normalizeCompactToolLabel(entry.toolTitle || entry.label));
     const fullDetail = getFullDetail();
@@ -2146,7 +2171,7 @@ function toThreadFeedActivityEntry(
         .filter((value): value is string => Boolean(value))
         .join("\n");
     }
-    return [copyLabel, detail, fullDetail]
+    return [copyLabel, getOutput() ? null : detail, fullDetail]
       .filter((value, index, values): value is string => {
         return Boolean(value) && values.indexOf(value) === index;
       })
@@ -2163,7 +2188,7 @@ function toThreadFeedActivityEntry(
       turnId: entry.turnId,
       summary,
       detail,
-      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry)),
+      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry), getOutput),
       getFullDetail,
       getCopyText,
       icon: workEntryIcon(entry),

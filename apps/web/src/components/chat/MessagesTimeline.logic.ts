@@ -239,7 +239,6 @@ export function deriveMessagesTimelineRows(input: {
         createdAt: timelineEntry.createdAt,
         groupedEntries,
         shouldAutoCollapse: shouldAutoCollapseWorkGroup({
-          groupedEntries,
           nextEntry,
           isWorking: input.isWorking,
         }),
@@ -423,6 +422,13 @@ function collapseReasoningRows(
         section = [];
       };
       for (const entry of reasoningRows) {
+        if (
+          entry.kind === "message" &&
+          !entry.message.text.trim() &&
+          !entry.message.attachments?.length
+        ) {
+          continue;
+        }
         if (entry.kind === "context-compaction") {
           flushSection(entry.id, entry.createdAt);
           collapsedRows.push(entry);
@@ -450,15 +456,12 @@ function collapseReasoningRows(
 }
 
 function shouldAutoCollapseWorkGroup({
-  groupedEntries,
   nextEntry,
   isWorking,
 }: {
-  groupedEntries: ReadonlyArray<WorkLogEntry>;
   nextEntry: TimelineEntry | undefined;
   isWorking: boolean;
 }): boolean {
-  if (groupedEntries.length <= 1) return false;
   if (isWorking) return isAssistantTextBoundary(nextEntry);
   return true;
 }

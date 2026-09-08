@@ -76,13 +76,13 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
             ? active
             : complete;
   const action = toolGroupAction(entry);
-  const data = asRecord(entry.toolData);
-  const input = asRecord(data?.rawInput) ?? asRecord(asRecord(data?.item)?.input);
+  const input = toolInput(entry);
   const path =
-    entry.changedFiles?.[0] ??
-    entry.viewedImagePath ??
     nonEmptyString(input?.path) ??
     nonEmptyString(input?.file_path) ??
+    nonEmptyString(input?.filePath) ??
+    entry.changedFiles?.[0] ??
+    entry.viewedImagePath ??
     entry.detail;
   const filename = path && !/[\r\n]/.test(path) ? path.trim().split(/[/\\]/).at(-1) : undefined;
   if (action === "read") return `${verb("Reading", "Read")} ${filename || "file"}`;
@@ -92,10 +92,35 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
     return `${verb("Running", "Ran")} ${program && !/^(?:bash|zsh|sh|fish):$/.test(program) ? program : "command"}`;
   }
   if (action === "skill") {
-    const name = /Skill\s*[-:]\s*["']?([^"'\n]+)/i.exec(entry.detail ?? "")?.[1]?.trim();
+    const name =
+      nonEmptyString(input?.skill) ??
+      nonEmptyString(input?.name) ??
+      /Skill(?:\s*[-:]\s*|\s+["'])([^"'\n]+)/i.exec(entry.detail ?? "")?.[1]?.trim();
     return `${verb("Loading", "Loaded")} ${name || "skill"}`;
   }
-  return normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  if (action === "code-search") return verb("Searching code", "Searched code");
+  if (action === "search") return verb("Searching the web", "Searched the web");
+  const label = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  if (/^(other|tool|tool call)$/i.test(label)) {
+    const toolName = workToolName(entry);
+    if (toolName) return toolName.replaceAll("_", " ");
+    return `${verb("Using", "Used")} tool`;
+  }
+
+  return label;
+}
+
+function toolInput(entry: WorkLogPresentationEntry): Record<string, unknown> | null {
+  const data = asRecord(entry.toolData);
+  return asRecord(data?.rawInput) ?? asRecord(data?.input) ?? asRecord(asRecord(data?.item)?.input);
+}
+
+function workToolName(entry: WorkLogPresentationEntry): string | undefined {
+  const data = asRecord(entry.toolData);
+  const item = asRecord(data?.item);
+  return [data?.toolName, data?.tool, item?.toolName, item?.name, entry.toolTitle, entry.label]
+    .map((value) => (typeof value === "string" ? normalizeCompactToolLabel(value) : ""))
+    .find((value) => value.length > 0 && !/^(other|tool|tool call)$/i.test(value));
 }
 
 export function workEntryNeedsAttention(entry: WorkLogPresentationEntry): boolean {
@@ -199,6 +224,15 @@ export function groupConsecutiveWorkEntries<T>(
     entries: group.entries,
     label: summarizeToolGroup(group.entries.map(entryFor)),
   }));
+}
+
+export function workGroupReceiptLabel(entries: readonly WorkLogPresentationEntry[]): string {
+  const activity = deriveWorkGroupActivity(entries, false);
+  if (activity.state !== "complete" || toolGroupSummaryKind(entries) !== "mixed") {
+    return activity.label;
+  }
+  const count = omitSupersededLifecycleMarkers(entries, (entry) => entry).length;
+  return `${count} actions`;
 }
 
 export type ToolGroupAction =
@@ -515,8 +549,26 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
   }
   if (resolveWorkEntryToolPresentation(entry)?.icon === "browser") return "browser";
   const title = normalizeCompactToolLabel(entry.toolTitle ?? entry.label).toLowerCase();
-  if (/^skill\b/.test(title) || /^Skill\s*[-:]/i.test(entry.detail ?? "")) return "skill";
+  const name = workToolName(entry)?.split(".").at(-1)?.toLowerCase();
+  const input = toolInput(entry);
   if (
+    name === "skill" ||
+    nonEmptyString(input?.skill) ||
+    /^skill\b/.test(title) ||
+    /^Skill(?:\s*[-:]|\s+["'])/i.test(entry.detail ?? "")
+  )
+    return "skill";
+  if (
+    name === "rg" ||
+    name === "grep" ||
+    name === "glob" ||
+    (!name && nonEmptyString(input?.pattern))
+  )
+    return "code-search";
+  if (
+    name === "view" ||
+    name === "read" ||
+    name === "read_file" ||
     entry.requestKind === "file-read" ||
     entry.itemType === "image_view" ||
     entry.viewedImagePath !== undefined ||
