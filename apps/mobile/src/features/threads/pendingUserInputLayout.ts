@@ -35,3 +35,21 @@ export function derivePendingUserInputMaxHeight(input: {
     Math.max(PENDING_USER_INPUT_MIN_HEIGHT, availableHeight),
   );
 }
+
+export function derivePendingApprovalMaxHeight(
+  input: Parameters<typeof derivePendingUserInputMaxHeight>[0],
+): number {
+  const availableHeight =
+    input.windowHeight -
+    Math.max(0, input.keyboardHeight) -
+    Math.max(0, input.navigationHeaderHeight) -
+    Math.max(0, input.composerOverlapHeight) -
+    PENDING_USER_INPUT_VERTICAL_GAP;
+
+  // The approval detail ScrollView shrinks within this bound, but the header
+  // and decision controls must remain inside the card's hit-test bounds.
+  return Math.min(
+    PENDING_USER_INPUT_MAX_HEIGHT,
+    Math.max(PENDING_USER_INPUT_MIN_HEIGHT, availableHeight),
+  );
+}

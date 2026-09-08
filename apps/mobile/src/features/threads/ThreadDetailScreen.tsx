@@ -84,6 +84,7 @@ import {
   type FloatingWorkingStatus,
 } from "./floating-working-control";
 import {
+  derivePendingApprovalMaxHeight,
   derivePendingUserInputMaxHeight,
   ESTIMATED_KEYBOARD_HEIGHT,
   USER_INPUT_TOGGLE_DURATION_MS,
@@ -455,6 +456,14 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     // The questionnaire owns the composer slot, so only the composer's
     // bottom inset still overlaps.
     composerOverlapHeight: composerBottomInset,
+  });
+  const pendingApprovalMaxHeight = derivePendingApprovalMaxHeight({
+    windowHeight,
+    keyboardHeight: isKeyboardVisible
+      ? Math.max(liveKeyboardHeight, lastKnownKeyboardHeight, ESTIMATED_KEYBOARD_HEIGHT)
+      : 0,
+    navigationHeaderHeight,
+    composerOverlapHeight,
   });
   const estimatedOverlayHeight = composerOverlapHeight;
   // The overlay's measured height includes the home-indicator inset (the
@@ -876,8 +885,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 {props.activePendingApproval || props.activePendingUserInput ? (
                   <Animated.View
                     className="shrink-0 gap-3 px-4 pb-3"
-                    // The questionnaire replaces the composer, so it must pad
-                    // the home indicator the composer normally covers.
+                    // Only questionnaires replace the composer; approvals keep
+                    // it mounted and reserve its full overlap in maxHeight.
                     style={
                       activeUserInputRequestId !== null
                         ? { paddingBottom: composerBottomInset }
@@ -889,6 +898,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     {props.activePendingApproval ? (
                       <PendingApprovalCard
                         approval={props.activePendingApproval}
+                        maxHeight={pendingApprovalMaxHeight}
                         respondingApprovalId={props.respondingApprovalId}
                         onRespond={props.onRespondToApproval}
                       />
