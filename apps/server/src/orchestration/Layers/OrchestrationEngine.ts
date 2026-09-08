@@ -496,10 +496,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.dispatch") {
       return worktreeProcess;
     }
-    const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+    const thread = commandReadModel.threads.find((entry) => entry.id === command.threadId);
     const bootstrap = command.type === "thread.turn.start" ? command.bootstrap : undefined;
     const projectId = thread?.projectId ?? bootstrap?.createThread?.projectId;
-    const project = readModel.projects.find((entry) => entry.id === projectId);
+    const project = commandReadModel.projects.find((entry) => entry.id === projectId);
     const cwd =
       thread?.worktreePath ?? bootstrap?.createThread?.worktreePath ?? project?.workspaceRoot;
     // This is the command worker itself, not dispatch(). Release after the
