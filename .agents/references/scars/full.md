@@ -2,6 +2,8 @@
 
 ## Browser access and initial navigation
 
+- When starting Vite separately from the dev runner, set `VITE_DEV_SERVER_URL` as well as backend HTTP/WS URLs. Without the dev origin, cookie-auth requests bypass the same-origin proxy and can fail CORS despite a healthy backend.
+
 - Browser cookie import must use the registered environment ID and selected persistent profile; a literal `default` environment silently writes into a partition no real tab uses. Reset consent when the target changes.
 - Guest keyboard isolation must route zoom directly to the preview's tab-owned zoom operations. Reject unsupported popup URLs without loading them into the opener; Electron cannot harden inherited `about:blank` preferences.
 
@@ -30,6 +32,11 @@
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
 - `provider_session_runtime.status = running` means the provider runtime is alive, not that a turn is active; clear `runtime_payload_json.activeTurnId` after `ProviderService.sendTurn` settles and retain a Copilot smoke test that starts, selects a model, sends, observes, and stops.
 - Before a Copilot session exits, emit `task.completed` with `status = stopped` for every running background agent, and reconcile unmatched starts on server startup so crashes cannot leave sidebar runs permanently active.
+- Copilot ACP `end_turn` can precede attached-shell completion and autonomous follow-up edits. Keep automatic PR feedback opt-in, surface unowned activity without reassigning it, and never use quiet time or log-file tailing as completion authority. This is containment, not a checkpoint/completion fix; track upstream [completion](https://github.com/github/copilot-cli/issues/4743) and [follow-up abort](https://github.com/github/copilot-cli/issues/4555).
+- Copilot ACP events do not reliably identify their originating prompt. Once a follow-up is active, old continuation events can still be attributed to it by existing handlers; no-active-turn warnings do not solve that ambiguity. Do not claim cross-turn attribution safety without an upstream correlation/completion contract.
+- Automatic PR fallback bypasses the owner-thread queue. Gate both the existing Copilot session and destination before automatic takeover, even when switching to another provider. Keep explicit requests distinct; policy-disabled feedback remains pending, not failed.
+- Keep orchestration opt-ins outside provider runtime config: config changes close and rebuild provider scopes. Derive pending reasons from the shared policy and let settings changes resume eligible queued feedback without edit/save recovery.
+- Consent changes must wake ownerless fallback as well as owner queues. Reuse the fresh-snapshot and lease path rather than launching directly from the settings watcher; surface late ACP activity near the composer without treating its warning as proof of current liveness.
 
 ## Desktop packaging and React state
 
@@ -70,6 +77,7 @@
 - A live Copilot runtime restart must distinguish a missing resume session from a stale contract: missing state is an error, but a contract mismatch starts a fresh ACP session.
 - Internal CLI failure classification must inspect structured process output, never flattened diagnostics containing agent-controlled argv. Immediately remove a delegated worktree only when `thread.create` provably did not commit; after creation, request durable server cleanup so provider and terminal teardown finish before removal, and preserve the worktree on lost or ambiguous responses.
 - Cross-thread dispatch must carry the source thread ID through the client HTTP schema while deriving message provenance server-side; projection session upserts must preserve an omitted active message while the same turn remains active.
+- Cross-thread sends must enqueue even for idle destinations to avoid check-then-start races. Authenticate in the shared client normalizer and freeze source provenance at enqueue time; dispatch must not require the source turn to remain active.
 - System-authored user turns need explicit server-only message provenance at creation; never infer UI indicators from message ID prefixes or prompt text.
 - Provider-backed queued turns must revalidate at dispatch, refresh mixed batches, and return terminal recheck failures to durable delivery retry before unblocking the queue.
 - Queue readiness must find the latest user message rather than inspect only the final timeline message; a later system message can otherwise hide an unacknowledged turn start and dispatch the next queued item concurrently.
@@ -91,6 +99,8 @@
 
 - Review findings must never be silently dropped: reviewers cite file line numbers that often land on unchanged context, so anchor findings to any line the diff renders and only discard ones naming a file outside the reviewed diff. Review threads stay conversational — refresh the result on every turn that emits reviewer JSON, re-resolve the snapshot it is anchored to, and identify the raw-JSON message by content rather than assuming it is the last assistant message.
 - PR metadata writes preserve monitor ownership by default. Only commands carrying explicit transfer intent may replace an owner; inherited/refresh writes use ancestry only as an ownerless fallback, validated before a compare-and-swap claim.
+- Agent PR creation can succeed without the follow-up association tool. Recover from persisted, unambiguous assistant PR URLs only after fresh checkout validation; retry missing metadata after restart and guard dispatch against concurrent thread updates. Never infer an association from branch equality alone.
+- Conditional metadata no-ops must be accepted and receipted by the real orchestration engine, not only the decider; the normal dispatch path rejects empty event batches. Exercise stale writes and receipt replay through the production engine.
 - Pull-request review snapshots must use the aggregate `gh pr diff`, never `--patch`; per-commit output repeats file paths and can make the renderer show an earlier commit while hiding later findings.
 - Shared Git checkpoint refs need worktree provenance; validate a baseline against the thread's current worktree before reuse after handoff. Full-thread diffs must use chat-attributed `turnFiles`, and only file-change activities may contribute paths.
 - Checkpoint diff consumers must share one unified-diff parse; attach each raw file section to its parsed metadata instead of reparsing sections or repeatedly splitting their lines.
@@ -102,6 +112,7 @@
 
 ## Release builds and mobile integration
 
+- Keep mobile chat virtual-cell geometry synchronous: interrupted Reanimated layout transitions can finish at stale positions after text resizing or scroll-anchor corrections. Preserve opacity/chevron animations, and inspect native frames visually; LegendList's reported positions can remain correct while UIKit draws gaps or overlaps.
 - Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
 - Desktop browser tests must mock Electron mode before module evaluation and supply the real query provider; installing a bridge fixture later cannot change `env.ts`'s captured desktop flag.
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
@@ -126,6 +137,9 @@
 
 ## Desktop browser surfaces
 
+- Acquire surface leases only for visible, measured slots and release them when hidden or zero-sized. Recover displaced visible slots only when the live store has no owner; reclaiming an occupied surface from synchronous notifications re-enters acquisition before the new lease is assigned and overflows the stack.
+- Coalesce browser surface scroll/window-resize measurements per animation frame, but keep initial presentation, explicit layout changes, resize-observer delivery, and ownership recovery synchronous; cancel queued measurements on hide or unmount.
+- Agent-facing preview responses must return server tab IDs, never desktop runtime IDs. The automation broker pins the returned ID for subsequent commands, so leaking a runtime ID from status/open/navigation strands the session on a nonexistent server tab.
 - Mount exactly one desktop browser host at authenticated app lifetime, not thread-route lifetime. Duplicate hosts register competing native guests for the same tab, letting a blank guest cover or replace the loaded capture target.
 - Floating browser surfaces in fill mode must reflow to the owning slot; reserve `fitSourceContent` for explicit fixed/device viewports or a resized mini-player will keep the old panel aspect ratio.
 - A retained floating-preview preference is not surface ownership: the visible panel must present its browser while the matching mini-player is suppressed, then return it to the mini-player when closed.
@@ -140,6 +154,9 @@
 - A user-requested workflow run must be reconciled inline before its RPC resolves; leaving worker-thread creation to the coordinator's event-stream pass makes the client poll for a thread that does not exist yet. Keep the periodic sweep idempotent but cheap — never re-dispatch a worker turn for a thread that already has activity, or every domain event costs an artifact read plus a command-queue hop per incomplete run and delays the next requested run.
 - Once a new thread's first turn is accepted, route visibility and navigation failures must not trigger a compensating `thread.delete`; the provider may already be doing work that a lagging shell projection has not exposed yet.
 - Worktree cleanup intent must be persisted as a durable job from `thread.deleted`; suppress intent while any active thread owns a canonical path alias, canonicalize paths, reserve pending paths against reassignment, recheck active ownership under the worktree lock, release the lock before Git I/O while the pending row remains the reservation, bound retries for permanent failures, and never force-remove a dirty worktree. The durable cleanup worker must own provider and terminal teardown so restored or periodically swept jobs cannot bypass it; clients must not tear down runtime state before deletion commits.
+- Durable cleanup intent and removal reservation are different lifecycles: waiting, dirty, or review-only rows must not block workspace admission, while cancellation and unarchive may not release a reservation once Git removal is in progress. A reserved removal must either complete or return through an explicit recovery path.
+- Acquire the removal reservation before provider/terminal teardown. Serialize unarchive and turn-start admission against that reservation; otherwise a stale queued cleanup can stop a newly resumed thread after eligibility has changed. Release the global lock before slow teardown and Git I/O.
+- Reconciliation must prove both repository identity and checkout association before trusting historical PR metadata. A stale PR number or a path that is merely present on disk is not authorization to remove a registered checkout.
 - `Effect.all` defaults to sequential execution: independent I/O — especially `gh`/network calls — must pass `{ concurrency: "unbounded" }` or the latencies add up silently. Gate a client's pre-navigation wait on exactly what the destination route requires (thread existence), never on a stricter signal like the first turn being projected, or navigation blocks on work the route never needed.
 - Copilot ACP session startup splits into a thread-independent prefix (`spawn` + `initialize` + `authenticate`, ~650ms) and a thread-bound `session/new` (~1.5s) that carries the per-thread MCP bearer credential issued by `McpSessionRegistry`. Only the prefix may be prewarmed: adopting a fully-created session would attribute another thread's MCP tool calls to the wrong thread. Key a warmed process by everything that shapes the spawn (binary, runtime-mode args, cwd, env/custom-instructions dir), verify liveness and TTL before adopting, and apply the adopting thread's `mcpServers` last so no override can reintroduce a foreign credential.
 - Review-capture prewarm is one explicit prewarm/claim pair for one `pull-request` click only; never cache it in the shared resolver or use it for mutable working-tree scopes. A PR head can change, `git status --short` cannot validate an already-modified file's diff, and the post-review verifier needs a fresh snapshot. Park the deferred success value so waiter interruption cannot evict a healthy capture; prewarm RPCs should acknowledge only, not return the capture.
@@ -166,6 +183,7 @@
 
 ## Mobile protocol compatibility
 
+- Favicon caches may key by workspace and icon revision locally, but keep `projectId` in the asset request; replacing it with required `cwd` breaks both old-client/new-server and new-client/old-server pairings.
 - Official mobile compatibility is an additive protocol boundary: retain legacy bootstrap and `wsToken` routes while serving scoped OAuth access tokens and `wsTicket`; persist granted scopes because role-derived authorization cannot represent restricted upstream tokens.
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.
 - Mobile capability flags are executable protocol promises: advertise a feature only when every current RPC it gates is implemented, and send explicit `false` when current clients distinguish disabled behavior from legacy absence.
@@ -177,6 +195,13 @@
 - Divergent ledgers can also skip mid-range column migrations while still advancing past them (e.g. 29-34 reused for unrelated names). Later startup then fails with `no such column` on shell/thread projection (`parent_thread_id`, `pending_runtime_mode`, `resume_cursor_json`, turn-file checkpoint columns). Append an idempotent repair migration above every historical ledger ID rather than rewriting the skipped IDs.
 
 ## Client state and completion
+
+- Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
+- Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
+- Bound disclosure batches inside history groups, not just the number of group headers. Cache completed-turn labels against every contributing immutable group, and keep detail-expansion state out of history grouping dependencies.
+- Work headers, history rows, details, and working indicators share one explicit text scale; inherited percentage sizes drift across disclosure levels. Preserve full input filenames and measure wrapping native rows instead of declaring them fixed-height.
+- Expanded and copied tool details must prefer authoritative provider output on both clients, not append shortened detail/file previews. Test native feed derivation with wire-shaped payloads and preserve deferred output processing.
+- Completed work receipts own their contents: expansion reveals action rows directly, and child overrides must not escape a collapsed parent. Scope live disclosure overrides to the work phase so assistant-text boundaries auto-collapse even single-action groups.
 
 - Workspace autosave sessions belong to the environment/workspace/file, not the preview mount: retain failed drafts and retry state across remounts, flush only unsaved revisions, and let a post-confirmation read retire only the draft it captured. Content-only autosaves must not rebuild the file tree.
 
@@ -213,6 +238,7 @@
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
 - Automatic Git mutations must check cleanliness with `--untracked-files=all --ignore-submodules=none`; user status preferences can otherwise hide local work. Disable autostash and recheck checkout identity and active turns immediately before pulling.
 - Checkout reservations must never span orchestration dispatch or ingestion receipt waits: the command worker may already be waiting for that checkout to admit a turn. Establish completion exclusion before publishing idle state, keep it through checkpoint finalization, and lock the full HEAD/worktree/index snapshot sequence even when staging uses a temporary index.
+- A workspace handoff is not cleanup authorization. Discover released checkouts through Git's registered-worktree inventory; do not manufacture thread IDs and non-executable cleanup jobs to duplicate that inventory.
 
 ## Mobile capabilities and cross-platform tests
 
@@ -244,7 +270,11 @@
 
 ## Mobile drafts and navigation
 
+- Deferred route failures need an explicit failed state: a rejected promise can carry `null`, so using the rejection value as the loading/error sentinel can strand the screen without a retry action.
+
+- Upstream consumer imports must preserve fork-owned inbox composition. Exercise the real legacy and V2 row consumers, not only an orphanable compact component, so imports cannot silently restore metadata rows or remove related-chat navigation.
 - Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.
 - Independent iPad sidebar stacks own header chrome only; carry app navigation across that boundary for chat and queued-draft actions.
 - Rejected subchats must recover to a reachable project draft when their parent disappears; recheck the recovery destination before removing the outbox entry.
+- Count related descendants before read filtering, decrement each parent's pending-child count when rolling branches up, and use normalized parent keys for visibility walks so cycles cannot hang the inbox.

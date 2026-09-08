@@ -2,7 +2,7 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -167,9 +167,43 @@ describe("buildHomeListLayout", () => {
     });
     expect(
       virtual.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
-    ).toEqual([parent.id, group.threads[1]!.id]);
+    ).toEqual([parent.id, `agent-run:${parent.id}:run`, group.threads[1]!.id]);
     expect(virtual.items.find((item) => item.type === "thread")).toMatchObject({
       hierarchy: { childCount: 3, displayStatus: "working", archiveBlocked: true },
+    });
+  });
+
+  it("keeps unread terminal nested rows visible and hides them after acknowledgement", () => {
+    const parent = makeThread("parent", ProjectId.make("nested"));
+    const child = {
+      ...makeThread("child", parent.projectId),
+      parentThreadId: parent.id,
+      latestTurn: {
+        turnId: TurnId.make("child-turn"),
+        state: "completed" as const,
+        requestedAt: "2026-06-01T23:00:00.000Z",
+        startedAt: "2026-06-01T23:01:00.000Z",
+        completedAt: "2026-06-02T00:00:00.000Z",
+        assistantMessageId: null,
+      },
+    };
+    const group = makeGroup("nested", 0);
+    const threads = { ...group, threads: [parent, child], recentThreads: [parent, child] };
+    const unread = buildHomeListLayout({ groups: [threads], displayStates: new Map() });
+    expect(
+      unread.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
+    ).toEqual([parent.id, child.id]);
+    const read = buildHomeListLayout({
+      groups: [threads],
+      displayStates: new Map(),
+      threadChildReadAt: { [`${environmentId}:${child.id}`]: child.latestTurn.completedAt },
+    });
+    expect(
+      read.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
+    ).toEqual([parent.id]);
+    expect(read.items.find((item) => item.type === "thread")?.hierarchy).toMatchObject({
+      childCount: 0,
+      relatedChildCount: 1,
     });
   });
 

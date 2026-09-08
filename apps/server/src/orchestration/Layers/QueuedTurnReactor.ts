@@ -7,7 +7,9 @@ import {
 } from "@t3tools/contracts";
 import { Cause, Duration, Effect, Layer, Option, Result, Stream } from "effect";
 
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { PullRequestService } from "../../pullRequest/PullRequestService.ts";
+import { automaticPrFeedbackBlockReason } from "@t3tools/shared/automaticPrFeedback";
 import {
   feedbackStableKeyOf,
   reconcileFeedbackItem,
@@ -38,6 +40,7 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const pullRequests = yield* PullRequestService;
   const monitorFeedback = yield* PullRequestMonitorFeedbackService;
+  const serverSettings = yield* ServerSettingsService;
   const drainingThreadIds = new Set<string>();
 
   const failQueuedTurn = (input: {
@@ -66,10 +69,21 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         return;
       }
 
-      const nextQueuedTurn = queuedTurns[0];
-      if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) {
-        return;
+      let nextQueuedTurn = queuedTurns[0];
+      if (queuedTurns.some((turn) => turn.origin?.kind === "pull-request-monitor")) {
+        const settings = yield* serverSettings.getSettings;
+        nextQueuedTurn = queuedTurns.find(
+          (turn) =>
+            turn.failedAt !== null ||
+            turn.origin?.kind !== "pull-request-monitor" ||
+            automaticPrFeedbackBlockReason(
+              settings,
+              turn.modelSelection?.instanceId ?? thread.modelSelection.instanceId,
+              thread.session,
+            ) === null,
+        );
       }
+      if (!nextQueuedTurn || nextQueuedTurn.failedAt !== null) return;
 
       const origin = nextQueuedTurn.origin;
       if (origin?.kind === "pull-request-monitor" && origin.headSha !== undefined) {
@@ -281,6 +295,9 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         const threadId = threadIdForEvent(event);
         return threadId === null ? Effect.void : drainThreadSafely(threadId);
       }),
+    );
+    yield* Effect.forkScoped(
+      Stream.runForEach(serverSettings.streamChanges, () => drainQueuedThreads),
     );
     yield* Effect.forkScoped(
       Effect.sleep(MONITOR_REVALIDATION_RETRY_INTERVAL).pipe(

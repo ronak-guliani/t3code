@@ -23,9 +23,11 @@ import {
   type MobileThreadTreeRow,
   type MobileThreadShell,
 } from "./mobile-thread-hierarchy";
+import { hierarchyThreadKey } from "@t3tools/client-runtime/state/thread-hierarchy";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
 import { resolveThreadStatus } from "./threadPresentation";
+import { useThreadPr } from "../../state/use-thread-pr";
 
 export type ThreadListVariant = "compact" | "sidebar";
 export const THREAD_LIST_COMPACT_INSET = HOME_HORIZONTAL_INSET;
@@ -58,6 +60,7 @@ export const ThreadListGroupHeader = memo(function ThreadListGroupHeader(props: 
       >
         <ProjectFavicon
           environmentId={props.project.environmentId}
+          projectId={props.project.id}
           faviconPath={props.project.faviconPath}
           open={!props.collapsed}
           size={16}
@@ -127,6 +130,10 @@ const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
   { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
 ];
 
+const DRAFT_TASK_MENU_ACTIONS: MenuAction[] = [
+  { id: "delete", title: "Discard", image: "trash", attributes: { destructive: true } },
+];
+
 export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   readonly variant: ThreadListVariant;
   readonly pendingTask: PendingNewTask;
@@ -143,13 +150,20 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
   );
   return (
     <CompactThreadRow
-      menu={{ actions: PENDING_TASK_MENU_ACTIONS, onPressAction: handleMenuAction }}
+      menu={{
+        actions: pendingTask.kind === "draft" ? DRAFT_TASK_MENU_ACTIONS : PENDING_TASK_MENU_ACTIONS,
+        onPressAction: handleMenuAction,
+      }}
       title={pendingTask.title}
-      timestamp={relativeTime(pendingTask.message.createdAt)}
-      status="queued"
+      timestamp={relativeTime(pendingTask.createdAt)}
+      status={pendingTask.kind === "draft" ? "draft" : "queued"}
       sidebar={props.variant === "sidebar"}
       showDivider={!props.isLast}
-      accessibilityHint="Opens the queued task for editing"
+      accessibilityHint={
+        pendingTask.kind === "draft"
+          ? "Opens the draft for editing"
+          : "Opens the queued task for editing"
+      }
       onPress={() => onSelectPendingTask(pendingTask)}
     />
   );
@@ -158,9 +172,11 @@ export const PendingTaskListRow = memo(function PendingTaskListRow(props: {
 export const ThreadListRow = memo(function ThreadListRow(props: {
   readonly variant: ThreadListVariant;
   readonly thread: MobileThreadShell;
+  readonly projectCwd?: string | null;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
+  readonly completionReadAt?: Readonly<Record<string, string>>;
   readonly isLast: boolean;
   readonly selected?: boolean;
   readonly hideRelated?: boolean;
@@ -180,6 +196,7 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
   const theme = useUniwindTheme();
   const { thread, onSelectThread, onArchiveThread, onDeleteThread, onRegenerateThreadTitle } =
     props;
+  const pullRequest = useThreadPr(thread, props.projectCwd ?? null);
   const nesting = useNestedThreadActions(thread);
   const handleDelete = useCallback(
     () => (thread.virtualAgentRun ? nesting.dismissAgentRun() : onDeleteThread(thread)),
@@ -239,10 +256,16 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
     [nesting.handleAction, handleArchive, handleDelete, onRegenerateThreadTitle, thread],
   );
   const ownStatus = resolveNestedThreadStatus(thread);
+  const semanticStatus = resolveThreadStatus(
+    thread,
+    props.completionReadAt?.[hierarchyThreadKey(thread)],
+  );
   const status =
-    ownStatus === "ready" && resolveThreadStatus(thread)?.kind === "plan-ready"
+    ownStatus === "ready" && semanticStatus?.kind === "plan-ready"
       ? "plan-ready"
-      : ownStatus;
+      : semanticStatus?.kind === "completed"
+        ? "completed"
+        : ownStatus;
   return (
     <ThreadSwipeable
       backgroundColor={
@@ -268,9 +291,11 @@ export const ThreadListRow = memo(function ThreadListRow(props: {
           )}
           status={status}
           sidebar={props.variant === "sidebar"}
+          depth={props.hierarchy?.depth}
           selected={props.selected}
           showDivider={!props.isLast}
           related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
+          pullRequest={pullRequest}
           searchMatch={props.searchMatch}
           searchQuery={props.searchQuery}
           accessibilityHint="Opens the thread. Swipe left for archive and delete actions."

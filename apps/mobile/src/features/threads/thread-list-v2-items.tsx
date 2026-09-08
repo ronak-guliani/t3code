@@ -10,12 +10,14 @@ import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSw
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { CompactThreadRow } from "./compact-thread-row";
+import { PendingTaskListRow } from "./thread-list-items";
 import type { MobileThreadTreeRow, MobileThreadShell } from "./mobile-thread-hierarchy";
 import { useNestedThreadActions } from "./use-nested-thread-actions";
 import { cn } from "../../lib/cn";
 import { relativeTime } from "../../lib/time";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
+import { useThreadPr } from "../../state/use-thread-pr";
 import { ThreadSwipeable } from "../home/thread-swipe-actions";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { buildThreadTitleRegenerationMenuItems } from "./thread-title-regeneration-menu";
@@ -25,6 +27,7 @@ import {
   resolveThreadListV2Status,
   resolveThreadListV2SwipeActions,
 } from "./threadListV2";
+import { hierarchyThreadKey } from "@t3tools/client-runtime/state/thread-hierarchy";
 
 /**
  * Active work and the quieter settled tail share compact rows, with their
@@ -159,17 +162,6 @@ export const ThreadListV2SettledShelfHeader = memo(function ThreadListV2SettledS
   );
 });
 
-const PENDING_TASK_MENU_ACTIONS: MenuAction[] = [
-  { id: "delete", title: "Delete", image: "trash", attributes: { destructive: true } },
-];
-
-/**
- * A queued new task, in the same idiom as an active v2 row: it is work the
- * user wrote, so it reads like the threads it will become. "Queued" takes
- * the status slot — the state is the one thing that differs — and stays
- * uncolored because nothing is asked of the user; the environment is simply
- * not reachable yet.
- */
 export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props: {
   readonly pendingTask: PendingNewTask;
   readonly pane?: "screen" | "sidebar";
@@ -180,30 +172,17 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
   readonly onSelectPendingTask: (pendingTask: PendingNewTask) => void;
   readonly onDeletePendingTask: (pendingTask: PendingNewTask) => void;
 }) {
-  const { pendingTask, onSelectPendingTask, onDeletePendingTask } = props;
-  const sidebarPane = props.pane === "sidebar";
-
-  const handleMenuAction = useCallback(
-    ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
-      if (nativeEvent.event === "delete") onDeletePendingTask(pendingTask);
-    },
-    [onDeletePendingTask, pendingTask],
-  );
-
   return (
     <>
       {props.showPendingDivider ? (
-        <ThreadListV2SectionDivider label="Pending" pane={props.pane} />
+        <ThreadListV2SectionDivider label="Unsent" pane={props.pane} />
       ) : null}
-      <CompactThreadRow
-        menu={{ actions: PENDING_TASK_MENU_ACTIONS, onPressAction: handleMenuAction }}
-        accessibilityHint="Opens the queued task for editing"
-        title={pendingTask.title}
-        timestamp={relativeTime(pendingTask.message.createdAt)}
-        status="queued"
-        sidebar={sidebarPane}
-        showDivider={props.showTrailingDivider !== false}
-        onPress={() => onSelectPendingTask(pendingTask)}
+      <PendingTaskListRow
+        variant={props.pane === "sidebar" ? "sidebar" : "compact"}
+        pendingTask={props.pendingTask}
+        isLast={props.showTrailingDivider === false}
+        onSelectPendingTask={props.onSelectPendingTask}
+        onDeletePendingTask={props.onDeletePendingTask}
       />
     </>
   );
@@ -211,6 +190,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly thread: MobileThreadShell;
+  readonly projectCwd?: string | null;
   readonly hierarchy?: MobileThreadTreeRow | undefined;
   readonly hideRelated?: boolean;
   readonly variant: "card" | "slim";
@@ -268,6 +248,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onSwipeableClose: (methods: SwipeableMethods) => void;
   readonly searchMatch?: EnvironmentThreadSearchMatch;
   readonly searchQuery?: string;
+  readonly completionReadAt?: Readonly<Record<string, string>>;
   readonly simultaneousSwipeGesture?: ComponentProps<
     typeof ThreadSwipeable
   >["simultaneousWithExternalGesture"];
@@ -298,8 +279,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const drawerColor = theme["--color-drawer"];
   const sidebarPane = props.pane === "sidebar";
   const selected = props.selected === true;
+  const pullRequest = useThreadPr(thread, props.projectCwd ?? null);
 
-  const status = resolveThreadListV2Status(thread);
+  const status = resolveThreadListV2Status(
+    thread,
+    props.completionReadAt?.[hierarchyThreadKey(thread)],
+  );
   // Settled rows label by the same stamp they sort by, so order and label
   // can't disagree. updatedAt is always present, so the resolver never
   // returns null here.
@@ -610,8 +595,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       muted={variant === "slim"}
       pinned={pinnedRow}
       sidebar={sidebarPane}
+      depth={props.hierarchy?.depth}
       showDivider={props.showTrailingDivider !== false}
       related={props.hideRelated ? undefined : { thread, hierarchy: props.hierarchy }}
+      pullRequest={pullRequest}
       searchMatch={props.searchMatch}
       searchQuery={props.searchQuery}
       accessibilityHint={swipeAccessibilityHint}

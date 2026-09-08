@@ -12,6 +12,7 @@ import type {
 import { Effect, Option } from "effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
 import {
   listThreadsByProjectId,
   requireProject,
@@ -282,7 +283,10 @@ function buildTurnStartEvents(input: {
 }
 
 function deriveCrossThreadOrigin(input: {
-  readonly command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
+  readonly command: Extract<
+    OrchestrationCommand,
+    { type: "thread.turn.start" | "thread.queued-turn.create" }
+  >;
   readonly sourceThreadId: ThreadId;
   readonly targetThread: OrchestrationReadModel["threads"][number];
   readonly readModel: OrchestrationReadModel;
@@ -881,6 +885,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        (command.expectedUpdatedAt !== undefined &&
+          command.expectedUpdatedAt !== thread.updatedAt) ||
+        (command.expectedWorkspaceCwd !== undefined &&
+          command.expectedWorkspaceCwd !==
+            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects }))
+      ) {
+        return [];
+      }
       const occurredAt = nowIso();
       const metaUpdatedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
@@ -1398,6 +1411,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Queued turn '${command.queuedTurnId}' already exists on thread '${command.threadId}'.`,
         });
       }
+      const origin =
+        command.crossThreadSourceThreadId === undefined
+          ? command.origin
+          : yield* deriveCrossThreadOrigin({
+              command,
+              sourceThreadId: command.crossThreadSourceThreadId,
+              targetThread: thread,
+              readModel,
+            });
       const queuedTurn = {
         id: command.queuedTurnId,
         threadId: command.threadId,
@@ -1409,7 +1431,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(command.sourceProposedPlan !== undefined
           ? { sourceProposedPlan: command.sourceProposedPlan }
           : {}),
-        ...(command.origin !== undefined ? { origin: command.origin } : {}),
+        ...(origin !== undefined ? { origin } : {}),
         createdAt: command.createdAt,
         updatedAt: command.createdAt,
         failedAt: null,

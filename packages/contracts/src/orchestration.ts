@@ -516,6 +516,7 @@ export type ThreadLinkedPullRequest = typeof ThreadLinkedPullRequest.Type;
 
 export const OrchestrationThread = Schema.Struct({
   linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
+  branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   id: ThreadId,
   projectId: ProjectId,
@@ -602,6 +603,7 @@ export type OrchestrationBackgroundAgentRunShell = typeof OrchestrationBackgroun
 
 export const OrchestrationThreadShell = Schema.Struct({
   linkedPullRequest: Schema.optionalKey(Schema.NullOr(ThreadLinkedPullRequest)),
+  branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   unsettledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   id: ThreadId,
   projectId: ProjectId,
@@ -808,6 +810,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
+  expectedUpdatedAt: Schema.optional(IsoDateTime),
+  expectedWorkspaceCwd: Schema.optional(TrimmedNonEmptyString),
   title: Schema.optional(TrimmedNonEmptyString),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   modelSelection: Schema.optional(ModelSelection),
@@ -926,7 +930,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
-    attachments: Schema.Array(UploadChatAttachment),
+    attachments: Schema.Array(Schema.Union([UploadChatAttachment, ChatAttachment])),
   }),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
@@ -951,6 +955,7 @@ const ThreadQueuedTurnCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   origin: Schema.optional(MessageOrigin),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
 });
 
@@ -965,6 +970,8 @@ const ClientThreadQueuedTurnCreateCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
+  crossThreadDispatchCapability: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 

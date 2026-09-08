@@ -24,6 +24,15 @@ describe("archiveWorktreeCleanup", () => {
     ).toBe(true);
   });
 
+  it("rejects worktree paths nested below the project workspace root", () => {
+    expect(
+      isRemovableArchiveWorktreePath({
+        canonicalWorktreePath: "/repo/nested/feature",
+        canonicalWorkspaceRoot: "/repo",
+      }),
+    ).toBe(false);
+  });
+
   it("schedules only merged sole-owner removable paths", () => {
     expect(
       shouldScheduleArchiveWorktreeCleanup({

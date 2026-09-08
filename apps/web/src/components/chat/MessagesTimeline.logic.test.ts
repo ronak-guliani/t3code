@@ -11,7 +11,6 @@ import {
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
-  resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
@@ -47,6 +46,29 @@ describe("compaction timeline boundaries", () => {
       id: "compact",
       label: "Compacted context 173K → 5.69K tokens",
     });
+  });
+
+  it("does not create an empty worked-for disclosure for blank assistant placeholders", () => {
+    const entries: TimelineEntry[] = [
+      ["user", "user", "Inspect the code"],
+      ["placeholder", "assistant", ""],
+      ["response", "assistant", "Finished."],
+    ].map(([id, role, text]) => ({
+      kind: "message",
+      id: id!,
+      createdAt: "2026-09-08T10:00:00.000Z",
+      message: {
+        id: MessageId.make(id!),
+        role: role === "user" ? "user" : "assistant",
+        text: text!,
+        createdAt: "2026-09-08T10:00:00.000Z",
+        streaming: false,
+        ...(id === "response" ? { completedAt: "2026-09-08T10:00:10.000Z" } : {}),
+      },
+    }));
+    const rows = derive(entries);
+    expect(rows.some((row) => row.kind === "reasoning")).toBe(false);
+    expect(rows.map((row) => row.id)).toEqual(["user", "response"]);
   });
 
   it("keeps automatic compaction visible between completed reasoning sections", () => {
@@ -337,33 +359,6 @@ describe("resolveAssistantMessageCopyState", () => {
       text: "Interim thought",
       visible: false,
     });
-  });
-});
-
-describe("resolveWorkGroupExpanded", () => {
-  it("auto-collapses by default but respects explicit expansion", () => {
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: true,
-        expansionOverride: null,
-      }),
-    ).toBe(false);
-
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: true,
-        expansionOverride: "expanded",
-      }),
-    ).toBe(true);
-  });
-
-  it("keeps an explicit collapse while auto-collapse is inactive", () => {
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: false,
-        expansionOverride: "collapsed",
-      }),
-    ).toBe(false);
   });
 });
 
@@ -770,6 +765,32 @@ describe("deriveMessagesTimelineRows", () => {
 });
 
 describe("computeStableMessagesTimelineRows", () => {
+  it("refreshes a stable tool row when only its lifecycle or output changes", () => {
+    const entry = {
+      id: "work-1",
+      createdAt: "2026-09-08T00:00:00Z",
+      tone: "tool" as const,
+      label: "Ran command",
+      isComplete: true,
+      toolLifecycleStatus: "completed" as const,
+    };
+    const row = {
+      id: "work-1",
+      kind: "work" as const,
+      createdAt: entry.createdAt,
+      groupedEntries: [entry],
+      shouldAutoCollapse: true,
+    };
+    const initial = computeStableMessagesTimelineRows([row], { byId: new Map(), result: [] });
+    for (const changes of [
+      { toolLifecycleStatus: "failed" as const },
+      { toolData: { stdout: "new output" } },
+    ]) {
+      const changed = { ...row, groupedEntries: [{ ...entry, ...changes }] };
+      expect(computeStableMessagesTimelineRows([changed], initial).result[0]).toBe(changed);
+    }
+  });
+
   it("returns the previous result when row order and content are unchanged", () => {
     const firstUserMessage = {
       id: "user-1" as never,

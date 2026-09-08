@@ -65,6 +65,7 @@ vi.mock("../../components/AppSymbol", () => ({ SymbolView: () => null }));
 vi.mock("../../components/EmptyState", () => ({ EmptyState: () => null }));
 vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../state/entities", () => ({
+  useProjects: () => [],
   useThreadShells: () => harness.threads,
   useServerConfigs: () =>
     new Map([
@@ -77,6 +78,7 @@ vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
 }));
 vi.mock("./thread-hierarchy-controls", () => ({
   useDismissedAgentRunKeys: () => [],
+  useThreadCompletionReadAt: () => ({}),
   useMarkThreadGroupNotificationsRead: (rows: MobileThreadTreeRow[]) => harness.markRead(rows),
 }));
 vi.mock("./use-thread-list-v2-enabled", () => ({ useThreadListV2Enabled: () => harness.v2 }));
@@ -89,6 +91,7 @@ vi.mock("./use-nested-thread-actions", () => ({
     dismissAgentRun: harness.dismissAgentRun,
   }),
 }));
+vi.mock("../../state/use-thread-pr", () => ({ useThreadPr: () => null }));
 vi.mock("./thread-list-items", () => ({
   ThreadListRow: (props: { thread: MobileThreadShell }) => {
     harness.legacy.push(props.thread.title);
@@ -163,6 +166,7 @@ describe("related screen lifecycle parity", () => {
     );
     expect(titles(1)).toEqual(["Archive", "Delete"]);
     expect(harness.rows.every((row) => row.related === undefined)).toBe(true);
+    expect(harness.rows.map((row) => row.depth)).toEqual([0, 1]);
     harness.swipes[0]?.primaryAction?.onPress();
     expect(harness.actions.settleThread).toHaveBeenCalledWith(parent);
     harness.swipes[1]?.primaryAction?.onPress();
@@ -221,6 +225,7 @@ describe("related screen lifecycle parity", () => {
     ];
     render(child.id);
     expect(titles()).toEqual(["Archive", "Delete"]);
+    expect(harness.rows.map((row) => row.depth)).toEqual([0, 1]);
     harness.swipes[0]?.primaryAction?.onPress();
     expect(harness.actions.archiveThread).toHaveBeenCalledWith(child);
   });

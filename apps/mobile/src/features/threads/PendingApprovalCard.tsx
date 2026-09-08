@@ -3,13 +3,14 @@ import type {
   ProviderApprovalDecision,
   ProviderApprovalOption,
 } from "@t3tools/contracts";
-import { Pressable, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
 import type { PendingApproval } from "../../lib/threadActivity";
 
 export interface PendingApprovalCardProps {
   readonly approval: PendingApproval;
+  readonly maxHeight: number;
   readonly respondingApprovalId: ApprovalRequestId | null;
   readonly onRespond: (
     requestId: ApprovalRequestId,
@@ -30,23 +31,36 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   // Opaque for the same reason as PendingUserInputCard: nothing blurs the feed
   // behind this card, so a translucent surface bleeds messages through it.
   return (
-    <View className="gap-2.5 rounded-[20px] border border-adaptive-neutral-200-white-a6 bg-adaptive-neutral-100-900 p-4">
+    <View
+      className="min-h-0 gap-2.5 rounded-[20px] border border-adaptive-neutral-200-white-a6 bg-adaptive-neutral-100-900 p-4"
+      style={{ maxHeight: props.maxHeight }}
+    >
       <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-adaptive-sky-700-300">
         Approval needed
       </Text>
       <Text className="font-t3-bold text-lg text-adaptive-neutral-950-50">
         {props.approval.appName ?? props.approval.requestKind}
       </Text>
-      {props.approval.detail ? (
-        <Text className="font-sans text-sm leading-normal text-adaptive-neutral-600-400">
-          {props.approval.detail}
-        </Text>
-      ) : null}
-      {warning ? (
-        <Text className="font-sans text-xs leading-normal text-adaptive-amber-700-300">
-          {warning}
-        </Text>
-      ) : null}
+      <ScrollView
+        bounces={false}
+        className="min-h-0"
+        contentContainerClassName="gap-2.5"
+        keyboardShouldPersistTaps="handled"
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+        style={{ flexShrink: 1 }}
+      >
+        {props.approval.detail ? (
+          <Text className="font-sans text-sm leading-normal text-adaptive-neutral-600-400">
+            {props.approval.detail}
+          </Text>
+        ) : null}
+        {warning ? (
+          <Text className="font-sans text-xs leading-normal text-adaptive-amber-700-300">
+            {warning}
+          </Text>
+        ) : null}
+      </ScrollView>
       <View className="flex-row flex-wrap gap-2.5">
         {options.map((option) => (
           <Pressable

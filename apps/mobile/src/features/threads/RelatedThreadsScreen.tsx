@@ -7,7 +7,8 @@ import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/threa
 
 import { AppText as Text } from "../../components/AppText";
 import { EmptyState } from "../../components/EmptyState";
-import { useServerConfigs, useThreadShells } from "../../state/entities";
+import { scopedProjectKey } from "../../lib/scopedEntities";
+import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { useThreadListActions } from "../home/useThreadListActions";
 import { ThreadListRow } from "./thread-list-items";
@@ -21,6 +22,7 @@ import {
 } from "./mobile-thread-hierarchy";
 import {
   useDismissedAgentRunKeys,
+  useThreadCompletionReadAt,
   useMarkThreadGroupNotificationsRead,
 } from "./thread-hierarchy-controls";
 
@@ -32,7 +34,19 @@ export function RelatedThreadsScreen(
 ) {
   const navigation = useNavigation();
   const threads = useThreadShells();
+  const projects = useProjects();
+  const projectCwdByKey = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          scopedProjectKey(project.environmentId, project.id),
+          project.workspaceRoot,
+        ]),
+      ),
+    [projects],
+  );
   const dismissed = useDismissedAgentRunKeys();
+  const completionReadAt = useThreadCompletionReadAt();
   const { environmentId, threadId } = props.route.params;
   const rows = useMemo(() => {
     const tree = buildMobileThreadTree(
@@ -121,7 +135,11 @@ export function RelatedThreadsScreen(
           index === 0 ? rootState : { variant: "card" as const, snoozed: false, pinned: false };
         return (
           <ThreadListV2Row
+            completionReadAt={completionReadAt}
             thread={item.thread}
+            projectCwd={projectCwdByKey.get(
+              scopedProjectKey(item.thread.environmentId, item.thread.projectId),
+            )}
             hierarchy={item}
             hideRelated
             {...state}
@@ -157,8 +175,12 @@ export function RelatedThreadsScreen(
       }
       return (
         <ThreadListRow
+          completionReadAt={completionReadAt}
           variant="compact"
           thread={item.thread}
+          projectCwd={projectCwdByKey.get(
+            scopedProjectKey(item.thread.environmentId, item.thread.projectId),
+          )}
           hierarchy={item}
           hideRelated
           isLast={index === rows.length - 1}

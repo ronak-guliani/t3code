@@ -266,7 +266,7 @@ describe("associate_pull_request MCP tool", () => {
 });
 
 describe("send_to_thread MCP tool", () => {
-  it("sends through the authenticated source thread", async () => {
+  it("queues through the authenticated source thread", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "t3-mcp-send-thread-"));
     const cliPath = path.join(root, "t3-test");
     const argsPath = path.join(root, "cli-args.txt");
@@ -297,7 +297,8 @@ describe("send_to_thread MCP tool", () => {
       expect((await readFile(argsPath, "utf8")).trim().split("\n")).toEqual([
         "server.mjs",
         "chat",
-        "send",
+        "queue",
+        "add",
         "target-1",
         "Investigate this.",
         "--cross-thread-source",

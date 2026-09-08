@@ -103,6 +103,123 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("accepts stale conditional metadata as a durable no-op through real dispatch", async () => {
+    const projected: OrchestrationEvent[] = [];
+    const system = await createOrchestrationSystem((event) =>
+      Effect.sync(() => {
+        projected.push(event);
+      }),
+    );
+    const projectId = ProjectId.make("conditional-project");
+    const threadId = ThreadId.make("conditional-thread");
+    const createdAt = now();
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("conditional-project"),
+          projectId,
+          title: "Conditional metadata",
+          workspaceRoot: "/tmp/conditional-metadata",
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("conditional-thread"),
+          threadId,
+          projectId,
+          title: "Conditional metadata",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5-codex" },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: "feature",
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      const before = await system.run(system.engine.getReadModel());
+      const pullRequest = {
+        number: 42,
+        title: "Recovered",
+        url: "https://github.com/acme/app/pull/42",
+        baseBranch: "main",
+        headBranch: "feature",
+        state: "open" as const,
+      };
+      const command = {
+        type: "thread.meta.update" as const,
+        commandId: CommandId.make("stale-conditional"),
+        threadId,
+        expectedUpdatedAt: "2000-01-01T00:00:00.000Z",
+        pullRequest,
+      };
+      const eventCount = projected.length;
+      const result = await system.run(system.engine.dispatch(command));
+      expect(result.sequence).toBe(before.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+      expect(projected).toHaveLength(eventCount);
+
+      // A retry whose precondition now matches must still replay the receipt.
+      expect(
+        await system.run(
+          system.engine.dispatch({
+            ...command,
+            expectedUpdatedAt: before.threads[0]!.updatedAt,
+          }),
+        ),
+      ).toEqual(result);
+      expect(projected).toHaveLength(eventCount);
+      expect(await system.run(system.engine.getReadModel())).toEqual(before);
+
+      await system.run(
+        system.engine.dispatch({
+          type: "project.meta.update",
+          commandId: CommandId.make("move-project-checkout"),
+          projectId,
+          workspaceRoot: "/tmp/moved-checkout",
+        }),
+      );
+      const afterMove = await system.run(system.engine.getReadModel());
+      expect(afterMove.threads[0]?.updatedAt).toBe(before.threads[0]?.updatedAt);
+      const staleWorkspaceCommand = {
+        ...command,
+        commandId: CommandId.make("stale-workspace"),
+        expectedUpdatedAt: before.threads[0]!.updatedAt,
+        expectedWorkspaceCwd: "/tmp/conditional-metadata",
+      };
+      const staleWorkspaceResult = await system.run(system.engine.dispatch(staleWorkspaceCommand));
+      expect(staleWorkspaceResult.sequence).toBe(afterMove.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(afterMove);
+      expect(projected).toHaveLength(eventCount + 1);
+      expect(
+        await system.run(
+          system.engine.dispatch({
+            ...staleWorkspaceCommand,
+            expectedWorkspaceCwd: "/tmp/moved-checkout",
+          }),
+        ),
+      ).toEqual(staleWorkspaceResult);
+      expect(await system.run(system.engine.getReadModel())).toEqual(afterMove);
+
+      await system.run(
+        system.engine.dispatch({
+          ...command,
+          commandId: CommandId.make("fresh-conditional"),
+          expectedUpdatedAt: before.threads[0]!.updatedAt,
+          expectedWorkspaceCwd: "/tmp/moved-checkout",
+        }),
+      );
+      expect((await system.run(system.engine.getReadModel())).threads[0]?.pullRequest).toEqual(
+        pullRequest,
+      );
+      expect(projected).toHaveLength(eventCount + 2);
+    } finally {
+      await system.dispose();
+    }
+  });
+
   for (const queued of [false, true]) {
     for (const first of ["manual", "admission"] as const) {
       it(`serializes ${queued ? "queued" : "direct"} admission through pending commit when ${first} acquires first`, async () => {
@@ -346,7 +463,7 @@ describe("OrchestrationEngine", () => {
     }
   });
 
-  it("rejects assigning a worktree while its cleanup job is pending", async () => {
+  it("does not block assigning a worktree for an unreserved cleanup intent", async () => {
     const system = await createOrchestrationSystem();
     const createdAt = now();
     const projectId = asProjectId("project-pending-worktree");
@@ -410,14 +527,119 @@ describe("OrchestrationEngine", () => {
         createdAt,
       } as const;
 
-      await expect(system.run(system.engine.dispatch(retryableCommand))).rejects.toThrow(
-        "pending cleanup",
-      );
-
-      await system.run(system.worktreeCleanupJobs.cancelByThreadId(deletedThreadId));
       await expect(system.run(system.engine.dispatch(retryableCommand))).resolves.toEqual({
         sequence: 4,
       });
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("blocks unarchive while cleanup holds the removal reservation", async () => {
+    const system = await createOrchestrationSystem();
+    const createdAt = now();
+    const projectId = asProjectId("project-reserved-unarchive");
+    const threadId = ThreadId.make("thread-reserved-unarchive");
+    const worktreePath = "/tmp/reserved-unarchive";
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-reserved-unarchive"),
+          projectId,
+          title: "Reserved unarchive",
+          workspaceRoot: "/tmp/project-reserved-unarchive",
+          defaultModelSelection: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-reserved-unarchive"),
+          threadId,
+          projectId,
+          title: "Reserved unarchive",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: "feature/reserved-unarchive",
+          worktreePath,
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-archive-reserved-unarchive"),
+          threadId,
+        }),
+      );
+
+      await system.run(
+        system.worktreeCleanupJobs.enqueue({
+          threadId,
+          cwd: "/tmp/project-reserved-unarchive",
+          worktreePath,
+          canonicalWorktreePath: worktreePath,
+          requestedAt: createdAt,
+          source: "archive",
+          allowTerminalReset: false,
+        }),
+      );
+      const reservation = await system.run(
+        system.worktreeCleanupJobs.tryReserveForRemoval({
+          threadId,
+          canonicalWorktreePath: worktreePath,
+          reservedAt: createdAt,
+        }),
+      );
+      expect(Option.isSome(reservation)).toBe(true);
+      expect(
+        (await system.run(system.worktreeCleanupJobs.getByThreadId(threadId))).pipe(
+          Option.getOrThrow,
+        ).status,
+      ).toBe("removing");
+      expect(await system.run(system.worktreeCleanupJobs.hasReservationByPath(worktreePath))).toBe(
+        true,
+      );
+
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make("cmd-unarchive-reserved-unarchive"),
+            threadId,
+          }),
+        ),
+      ).rejects.toThrow("cleanup");
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-resume-reserved-unarchive"),
+            threadId,
+            message: {
+              messageId: MessageId.make("message-resume-reserved-unarchive"),
+              role: "user",
+              text: "resume",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt,
+          }),
+        ),
+      ).rejects.toThrow("cleanup");
+      expect(
+        (await system.run(system.worktreeCleanupJobs.getByThreadId(threadId))).pipe(
+          Option.getOrThrow,
+        ).status,
+      ).toBe("removing");
     } finally {
       await system.dispose();
     }

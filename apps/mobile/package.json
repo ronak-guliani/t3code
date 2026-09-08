@@ -41,6 +41,7 @@
     "sync:pierre-icons": "node modules/t3-markdown-text/scripts/sync-pierre-file-icons.mjs",
     "generate": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/generate-uniwind-themes.mts",
     "test": "vp test run",
+    "test:browser": "vp test run --config vitest.browser.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -131,8 +132,10 @@
     "@pierre/trees": "1.0.0-beta.4",
     "@types/react": "~19.2.0",
     "@types/react-dom": "^19.2.3",
+    "@vitest/browser-playwright": "^4.0.18",
     "babel-preset-expo": "~57.0.9",
     "eas-cli": "23.2.0",
+    "playwright": "^1.58.2",
     "tailwindcss": "^4.0.0",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

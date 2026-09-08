@@ -8,12 +8,14 @@ import {
 import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-images";
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
 
 export function isWorktreeSetupActivity(kind: string): boolean {
   return kind === "setup-script.requested" || kind === "setup-script.started";
 }
 
 export interface WorkLogPresentationEntry {
+  readonly requestId?: string;
   readonly label: string;
   readonly toolTitle?: string;
   readonly toolData?: unknown;
@@ -32,6 +34,207 @@ export interface WorkLogPresentationEntry {
   readonly toolSource?: ToolActivitySource;
 }
 
+export type WorkLogToolLifecycleStatus =
+  | "inProgress"
+  | "completed"
+  | "failed"
+  | "declined"
+  | "stopped";
+
+export function extractWorkLogToolLifecycleStatus(
+  payload: Record<string, unknown> | null,
+): WorkLogToolLifecycleStatus | undefined {
+  const status = payload?.status;
+  if (status === "idle" && payload?.taskType === "subagent_batch") return "stopped";
+  if (status === "pending" || status === "running" || status === "waiting") return "inProgress";
+  if (status === "cancelled" || status === "interrupted") return "stopped";
+  if (
+    status === "inProgress" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "declined" ||
+    status === "stopped"
+  )
+    return status;
+  return undefined;
+}
+
+/** Compact labels never substitute command output for the action being performed. */
+export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
+  const presentation = resolveWorkEntryToolPresentation(entry);
+  if (presentation) return presentation.displayName;
+  const running = entry.toolLifecycleStatus === "inProgress";
+  const status = entry.toolLifecycleStatus;
+  const verb = (active: string, complete: string) =>
+    status === "failed"
+      ? "Failed"
+      : status === "declined"
+        ? "Declined"
+        : status === "stopped"
+          ? "Stopped"
+          : running
+            ? active
+            : complete;
+  const action = toolGroupAction(entry);
+  const input = toolInput(entry);
+  const path =
+    nonEmptyString(input?.path) ??
+    nonEmptyString(input?.file_path) ??
+    nonEmptyString(input?.filePath) ??
+    entry.changedFiles?.[0] ??
+    entry.viewedImagePath ??
+    entry.detail;
+  const filename = path && !/[\r\n]/.test(path) ? path.trim().split(/[/\\]/).at(-1) : undefined;
+  if (action === "read") return `${verb("Reading", "Read")} ${filename || "file"}`;
+  if (action === "edit") return `${verb("Editing", "Edited")} ${filename || "files"}`;
+  if (action === "command") {
+    const program = commandProgramName(entry.command ?? "");
+    return `${verb("Running", "Ran")} ${program && !/^(?:bash|zsh|sh|fish):$/.test(program) ? program : "command"}`;
+  }
+  if (action === "skill") {
+    const name =
+      nonEmptyString(input?.skill) ??
+      nonEmptyString(input?.name) ??
+      /Skill(?:\s*[-:]\s*|\s+["'])([^"'\n]+)/i.exec(entry.detail ?? "")?.[1]?.trim();
+    return `${verb("Loading", "Loaded")} ${name || "skill"}`;
+  }
+  if (action === "code-search") return verb("Searching code", "Searched code");
+  if (action === "search") return verb("Searching the web", "Searched the web");
+  const label = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  if (/^(other|tool|tool call)$/i.test(label)) {
+    const toolName = workToolName(entry);
+    if (toolName) return toolName.replaceAll("_", " ");
+    return `${verb("Using", "Used")} tool`;
+  }
+
+  return label;
+}
+
+function toolInput(entry: WorkLogPresentationEntry): Record<string, unknown> | null {
+  const data = asRecord(entry.toolData);
+  return asRecord(data?.rawInput) ?? asRecord(data?.input) ?? asRecord(asRecord(data?.item)?.input);
+}
+
+function workToolName(entry: WorkLogPresentationEntry): string | undefined {
+  const data = asRecord(entry.toolData);
+  const item = asRecord(data?.item);
+  return [data?.toolName, data?.tool, item?.toolName, item?.name, entry.toolTitle, entry.label]
+    .map((value) => (typeof value === "string" ? normalizeCompactToolLabel(value) : ""))
+    .find((value) => value.length > 0 && !/^(other|tool|tool call)$/i.test(value));
+}
+
+export function workEntryNeedsAttention(entry: WorkLogPresentationEntry): boolean {
+  return (
+    entry.tone === "error" ||
+    entry.toolLifecycleStatus === "failed" ||
+    entry.toolLifecycleStatus === "declined"
+  );
+}
+
+export function workGroupAccessibleLabel(label: string, activeCount: number): string {
+  return activeCount > 1 ? `${label}, ${activeCount - 1} more active` : label;
+}
+
+export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
+  entries: readonly T[],
+  isWorking: boolean,
+) {
+  const resolvedRequests = new Set(
+    entries
+      .filter(
+        (entry) =>
+          (entry.sourceActivityKind === "approval.resolved" ||
+            entry.sourceActivityKind === "user-input.resolved") &&
+          entry.requestId,
+      )
+      .map((entry) => entry.requestId),
+  );
+  const approval = entries.find(
+    (entry) =>
+      (entry.sourceActivityKind === "approval.requested" ||
+        entry.sourceActivityKind === "user-input.requested") &&
+      (!entry.requestId || !resolvedRequests.has(entry.requestId)),
+  );
+  const failed = entries.findLast(workEntryNeedsAttention);
+  const stopped = entries.findLast(
+    (entry) =>
+      entry.toolLifecycleStatus === "stopped" ||
+      (!isWorking && entry.toolLifecycleStatus === "inProgress"),
+  );
+  const active = isWorking
+    ? entries.filter((entry) => entry.toolLifecycleStatus === "inProgress")
+    : [];
+  // Keep the oldest still-running call in the lead slot; parallel starts don't rotate it.
+  const lead = approval ?? failed ?? active[0];
+  const state = approval
+    ? "approval"
+    : failed
+      ? "failed"
+      : active.length > 0
+        ? "active"
+        : stopped
+          ? "stopped"
+          : "complete";
+  const failureLabel = failed ? compactWorkEntryLabel(failed) : null;
+  return {
+    state,
+    lead,
+    activeCount: active.length,
+    shimmer: state === "active",
+    label: approval
+      ? approval.sourceActivityKind === "user-input.requested"
+        ? "Input needed"
+        : "Approval needed"
+      : failureLabel
+        ? /^(failed|declined)\b/i.test(failureLabel)
+          ? failureLabel
+          : `Failed: ${failureLabel}`
+        : active[0]
+          ? compactWorkEntryLabel(active[0])
+          : stopped
+            ? compactWorkEntryLabel({ ...stopped, toolLifecycleStatus: "stopped" })
+            : (entries.length === 1
+                ? compactWorkEntryLabel(entries[0]!)
+                : summarizeToolGroup(entries)) || "Work log",
+  } as const;
+}
+
+/** Only adjacent successful actions group; attention and live rows remain individually visible. */
+export function groupConsecutiveWorkEntries<T>(
+  entries: readonly T[],
+  entryFor: (entry: T) => WorkLogPresentationEntry,
+): { entries: T[]; label: string }[] {
+  const groups: { entries: T[]; label: string; key: string | null }[] = [];
+  for (const entry of entries) {
+    const work = entryFor(entry);
+    const action = toolGroupAction(work);
+    const key =
+      !workEntryNeedsAttention(work) &&
+      work.toolLifecycleStatus !== "inProgress" &&
+      work.toolLifecycleStatus !== "stopped" &&
+      action !== "update" &&
+      work.tone !== "thinking"
+        ? `${action}:${action === "other" ? (work.toolTitle ?? work.label) : ""}:${work.toolSource?.key ?? ""}`
+        : null;
+    const previous = groups.at(-1);
+    if (key !== null && previous?.key === key) previous.entries.push(entry);
+    else groups.push({ entries: [entry], label: "", key });
+  }
+  return groups.map((group) => ({
+    entries: group.entries,
+    label: summarizeToolGroup(group.entries.map(entryFor)),
+  }));
+}
+
+export function workGroupReceiptLabel(entries: readonly WorkLogPresentationEntry[]): string {
+  const activity = deriveWorkGroupActivity(entries, false);
+  if (activity.state !== "complete" || toolGroupSummaryKind(entries) !== "mixed") {
+    return activity.label;
+  }
+  const count = omitSupersededLifecycleMarkers(entries, (entry) => entry).length;
+  return `${count} actions`;
+}
+
 export type ToolGroupAction =
   | "read"
   | "edit"
@@ -39,6 +242,7 @@ export type ToolGroupAction =
   | "browser"
   | "code-search"
   | "search"
+  | "skill"
   | "other"
   | "update";
 
@@ -161,6 +365,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+const mergedToolDataCache = new WeakMap<object, WeakMap<object, Record<string, unknown>>>();
+
+export function mergeWorkLogToolData(previous: unknown, next: unknown): unknown {
+  const before = asRecord(previous);
+  const after = asRecord(next);
+  if (!before || !after) return next ?? previous;
+  // Activity payloads are immutable. Re-deriving history must preserve merged
+  // payload identity so an unrelated append doesn't invalidate every tool row.
+  const cached = mergedToolDataCache.get(before)?.get(after);
+  if (cached) return cached;
+  const beforeItem = asRecord(before.item);
+  const afterItem = asRecord(after.item);
+  const merged = {
+    ...before,
+    ...after,
+    ...(beforeItem && afterItem ? { item: { ...beforeItem, ...afterItem } } : {}),
+  };
+  const byNext = mergedToolDataCache.get(before) ?? new WeakMap<object, Record<string, unknown>>();
+  byNext.set(after, merged);
+  mergedToolDataCache.set(before, byNext);
+  return merged;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -321,10 +548,31 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
     return "update";
   }
   if (resolveWorkEntryToolPresentation(entry)?.icon === "browser") return "browser";
+  const title = normalizeCompactToolLabel(entry.toolTitle ?? entry.label).toLowerCase();
+  const name = workToolName(entry)?.split(".").at(-1)?.toLowerCase();
+  const input = toolInput(entry);
   if (
+    name === "skill" ||
+    nonEmptyString(input?.skill) ||
+    /^skill\b/.test(title) ||
+    /^Skill(?:\s*[-:]|\s+["'])/i.test(entry.detail ?? "")
+  )
+    return "skill";
+  if (
+    name === "rg" ||
+    name === "grep" ||
+    name === "glob" ||
+    (!name && nonEmptyString(input?.pattern))
+  )
+    return "code-search";
+  if (
+    name === "view" ||
+    name === "read" ||
+    name === "read_file" ||
     entry.requestKind === "file-read" ||
     entry.itemType === "image_view" ||
     entry.viewedImagePath !== undefined ||
+    /^(read|reading|view|viewing) (file|image)\b/.test(title) ||
     (entry.itemType === "dynamic_tool_call" &&
       entry.toolTitle?.trim().toLowerCase() === "read file")
   ) {
@@ -416,6 +664,8 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
   switch (action) {
     case "read":
       return `Read ${count} ${count === 1 ? "file" : "files"}`;
+    case "skill":
+      return `Loaded ${count} ${count === 1 ? "skill" : "skills"}`;
     case "edit":
       return `Changed ${count} ${count === 1 ? "file" : "files"}`;
     case "command":

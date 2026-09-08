@@ -87,6 +87,9 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  worktreeCleanupInventoryRouteLayer,
+  worktreeCleanupKeepRouteLayer,
+  worktreeCleanupRetryRouteLayer,
 } from "./orchestration/http.ts";
 import { NetService } from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -109,6 +112,7 @@ import { layer as PullRequestProviderRegistryLive } from "./pullRequest/PullRequ
 import { layer as PullRequestServiceLive } from "./pullRequest/PullRequestService.ts";
 import { layer as pullRequestMonitorFeedbackServiceLayer } from "./pullRequestMonitor/PullRequestMonitorFeedbackService.ts";
 import { layer as pullRequestMonitorAssociationReactorLayer } from "./pullRequestMonitor/PullRequestMonitorAssociationReactor.ts";
+import { layer as pullRequestAssociationRecoveryLayer } from "./pullRequestMonitor/PullRequestAssociationRecovery.ts";
 import { layer as pullRequestMonitorReviewHandoffReactorLayer } from "./pullRequestMonitor/PullRequestReviewHandoffReactor.ts";
 import { ProjectionStateRepositoryLive } from "./persistence/Layers/ProjectionState.ts";
 import { layer as pullRequestMonitorServiceLayer } from "./pullRequestMonitor/PullRequestMonitorService.ts";
@@ -236,6 +240,7 @@ const PullRequestMonitorServiceLive = pullRequestMonitorServiceLayer.pipe(
 // Associating a pull request with a chat is the ownership signal, so monitoring follows it.
 // provideMerge keeps one monitor service instance shared with the reactor.
 const PullRequestMonitorLayerLive = pullRequestMonitorAssociationReactorLayer.pipe(
+  Layer.provideMerge(pullRequestAssociationRecoveryLayer),
   Layer.provideMerge(pullRequestMonitorReviewHandoffReactorLayer),
   Layer.provideMerge(ProjectionStateRepositoryLive),
   Layer.provideMerge(PullRequestMonitorServiceLive),
@@ -435,6 +440,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  worktreeCleanupInventoryRouteLayer,
+  worktreeCleanupKeepRouteLayer,
+  worktreeCleanupRetryRouteLayer,
   pullRequestHttpApiRoutesLayer,
   ConnectHttpApiRoutesLayerLive,
   remoteAccessRoutes,

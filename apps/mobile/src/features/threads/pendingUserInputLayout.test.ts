@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { derivePendingUserInputMaxHeight } from "./pendingUserInputLayout";
+import {
+  derivePendingApprovalMaxHeight,
+  derivePendingUserInputMaxHeight,
+} from "./pendingUserInputLayout";
 
 describe("derivePendingUserInputMaxHeight", () => {
   it("caps a tall portrait viewport", () => {
@@ -34,5 +37,38 @@ describe("derivePendingUserInputMaxHeight", () => {
         composerOverlapHeight: 94,
       }),
     ).toBe(160);
+  });
+
+  it("bounds approval details in a normal viewport", () => {
+    expect(
+      derivePendingApprovalMaxHeight({
+        windowHeight: 375,
+        keyboardHeight: 0,
+        navigationHeaderHeight: 44,
+        composerOverlapHeight: 94,
+      }),
+    ).toBe(225);
+  });
+
+  it("preserves approval chrome in a short keyboard-open viewport", () => {
+    expect(
+      derivePendingApprovalMaxHeight({
+        windowHeight: 375,
+        keyboardHeight: 240,
+        navigationHeaderHeight: 44,
+        composerOverlapHeight: 94,
+      }),
+    ).toBe(160);
+  });
+
+  it("caps approval details in a tall viewport", () => {
+    expect(
+      derivePendingApprovalMaxHeight({
+        windowHeight: 932,
+        keyboardHeight: 0,
+        navigationHeaderHeight: 103,
+        composerOverlapHeight: 94,
+      }),
+    ).toBe(560);
   });
 });

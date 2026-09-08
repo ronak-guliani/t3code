@@ -29,6 +29,7 @@ export type MarkdownCodeHighlighter = (input: {
   readonly code: string;
   readonly language?: string | null;
   readonly theme: "light" | "dark";
+  readonly signal?: AbortSignal;
 }) => Promise<ReadonlyArray<ReadonlyArray<MarkdownHighlightedToken>>>;
 
 export interface SelectableMarkdownSkill {

@@ -67,10 +67,10 @@ use `pnpm ios:update` and install the resulting Preview build.
 Long-press a chat and choose **New subchat**, or use **Chat actions** in its header.
 The draft inherits the parent's provider instance, model options and checkout without
 copying conversation history. Choose a new worktree explicitly to isolate its workspace.
-Each parent has its own persisted subchat draft; offline queued creation and rejection
+Subchat drafts persist independently of the parent conversation and other drafts; offline queued creation and rejection
 recovery retain parentage, model options and checkout selection.
 If a rejected queued subchat's parent is unavailable, its content and settings are recovered
-to the project's new-chat draft without parentage. Review and send it explicitly; recovery
+to a separate project draft without parentage. Open it from the inbox and send it explicitly; recovery
 never sends it automatically.
 
 Home and the iPad sidebar use compact, single-line rows in both list modes. Device, checkout
@@ -86,6 +86,11 @@ Search reveals matching descendants on collapsed shelves without indentation or 
 siblings. Content search can show a matching excerpt. The selected iPad conversation remains
 directly reachable even when it belongs to a group. On iPhone, search lives below the header;
 filter, settings and compose actions no longer float over the list.
+
+Unsent drafts and queued tasks use the same compact rows and remain editable from the inbox.
+Pinned chats retain manual ordering; active-chat ordering is not offered until the server supports it.
+Project favicon thumbnails are cached locally while requests retain the `projectId` wire format
+used by already-installed apps and servers.
 
 **Go to parent chat** navigates up one level. **Decouple chat** makes the selected chat a root
 without changing its checkout. Archive includes active descendants and is blocked while that
@@ -151,6 +156,29 @@ OTA updates remain disabled. To reinstall an existing build without rebuilding, 
 installation page in the Expo project dashboard on your phone.
 
 ## Development
+
+### Deferred route coverage
+
+From the repository root:
+
+```bash
+pnpm --filter @t3tools/mobile exec playwright install chromium --only-shell
+pnpm --filter @t3tools/mobile test:browser
+```
+
+This runs the real deferred-screen React lifecycle in Chromium with DOM substitutes for native
+primitives. It covers pending route parameter updates, retained surrounding chrome, concurrent
+mounts, StrictMode, leaving during a load, returning to a cached screen, and explicit load-error
+recovery. It does **not** validate native-stack transitions, deep-link parsing, iOS headers,
+Android back handling, or iPad layout, and is not a substitute for device acceptance.
+
+Before releasing deferred-route changes, use an isolated backend and compatible native builds
+on iPhone, iPad, and Android. Exercise cold entry and repeat entry to connection-add (both Home
+and Settings), legal documents, terminal, review/comment, and file/tree routes. Open the thread
+routes by deep link as well as in-app navigation. Confirm route parameters and selected content,
+back/swipe dismissal, sheet headers, and iPad inspector registration and cleanup. Record device,
+build revision, failures, and cold/first-open timing separately from JavaScript lifecycle results.
+If native tooling is unavailable, leave this acceptance gate explicitly open.
 
 Start Metro for the dev client:
 
