@@ -2,7 +2,11 @@
 
 import { useLayoutEffect, useRef } from "react";
 
-import { acquireBrowserSurface, useBrowserSurfaceStore } from "./browserSurfaceStore";
+import {
+  acquireBrowserSurface,
+  useBrowserSurfaceStore,
+  type BrowserSurfaceLease,
+} from "./browserSurfaceStore";
 
 export function BrowserSurfaceSlot(props: {
   readonly tabId: string;
@@ -25,54 +29,82 @@ export function BrowserSurfaceSlot(props: {
     fitSourceContent = false,
   } = props;
   const elementRef = useRef<HTMLDivElement | null>(null);
-  const presentationRef = useRef({ visible, cornerRadius, zIndex });
+  const presentationRef = useRef({ cornerRadius, zIndex });
   const updateRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
-    presentationRef.current = { visible, cornerRadius, zIndex };
+    presentationRef.current = { cornerRadius, zIndex };
   }, [cornerRadius, visible, zIndex]);
 
   useLayoutEffect(() => {
     const element = elementRef.current;
     if (!element || !visible) return;
-    // Hidden retained slots must not displace the visible panel or mini-player.
-    let lease = acquireBrowserSurface(tabId, fitSourceContent);
+    let lease: BrowserSurfaceLease | null = null;
+    let updating = false;
+    let frameId: number | null = null;
     const update = () => {
-      const rect = element.getBoundingClientRect();
-      const presentation = presentationRef.current;
-      lease.present(
-        {
-          x: Math.round(rect.x),
-          y: Math.round(rect.y),
-          width: Math.max(1, Math.round(rect.width)),
-          height: Math.max(1, Math.round(rect.height)),
-        },
-        presentation.visible && rect.width > 0 && rect.height > 0,
-        presentation.cornerRadius,
-        presentation.zIndex,
-      );
+      if (updating) return;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+        frameId = null;
+      }
+      updating = true;
+      try {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) {
+          lease?.release();
+          lease = null;
+          return;
+        }
+        // A newly visible slot takes ownership. Displaced slots wait for a
+        // release instead of synchronously fighting the current owner.
+        if (!lease || useBrowserSurfaceStore.getState().byTabId[tabId]?.owner == null) {
+          lease?.release();
+          lease = acquireBrowserSurface(tabId, fitSourceContent);
+        }
+        const presentation = presentationRef.current;
+        lease.present(
+          {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.max(1, Math.round(rect.width)),
+            height: Math.max(1, Math.round(rect.height)),
+          },
+          true,
+          presentation.cornerRadius,
+          presentation.zIndex,
+        );
+      } finally {
+        updating = false;
+      }
     };
     updateRef.current = update;
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
-    window.addEventListener("resize", update);
-    window.addEventListener("scroll", update, true);
-    const unsubscribe = useBrowserSurfaceStore.subscribe(() => {
-      // Read live state: an earlier listener may already have filled the vacancy.
-      // Never displace an owner, including our own claim's synchronous notification.
+    const scheduleUpdate = () => {
+      if (frameId !== null) return;
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        update();
+      });
+    };
+    window.addEventListener("resize", scheduleUpdate);
+    window.addEventListener("scroll", scheduleUpdate, { capture: true, passive: true });
+    const unsubscribe = useBrowserSurfaceStore.subscribe((state, previous) => {
+      if (state.byTabId[tabId]?.owner != null || previous.byTabId[tabId]?.owner == null) return;
+      // An earlier listener may already have filled the vacancy.
       if (useBrowserSurfaceStore.getState().byTabId[tabId]?.owner != null) return;
-      lease.release();
-      lease = acquireBrowserSurface(tabId, fitSourceContent);
       update();
     });
     return () => {
       unsubscribe();
       observer.disconnect();
-      window.removeEventListener("resize", update);
-      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate, true);
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
       if (updateRef.current === update) updateRef.current = null;
-      lease.release();
+      lease?.release();
     };
   }, [fitSourceContent, tabId, visible]);
 

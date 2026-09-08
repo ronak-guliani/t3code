@@ -137,7 +137,9 @@
 
 ## Desktop browser surfaces
 
-- Acquire surface leases only for visible slots and release them when hidden. Recover displaced visible slots only when the live store has no owner; reclaiming an occupied surface from synchronous notifications re-enters acquisition before the new lease is assigned and overflows the stack.
+- Acquire surface leases only for visible, measured slots and release them when hidden or zero-sized. Recover displaced visible slots only when the live store has no owner; reclaiming an occupied surface from synchronous notifications re-enters acquisition before the new lease is assigned and overflows the stack.
+- Coalesce browser surface scroll/window-resize measurements per animation frame, but keep initial presentation, explicit layout changes, resize-observer delivery, and ownership recovery synchronous; cancel queued measurements on hide or unmount.
+- Agent-facing preview responses must return server tab IDs, never desktop runtime IDs. The automation broker pins the returned ID for subsequent commands, so leaking a runtime ID from status/open/navigation strands the session on a nonexistent server tab.
 - Mount exactly one desktop browser host at authenticated app lifetime, not thread-route lifetime. Duplicate hosts register competing native guests for the same tab, letting a blank guest cover or replace the loaded capture target.
 - Floating browser surfaces in fill mode must reflow to the owning slot; reserve `fitSourceContent` for explicit fixed/device viewports or a resized mini-player will keep the old panel aspect ratio.
 - A retained floating-preview preference is not surface ownership: the visible panel must present its browser while the matching mini-player is suppressed, then return it to the mini-player when closed.
