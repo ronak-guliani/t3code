@@ -9,6 +9,7 @@ import { classifyMarkdownImageSource } from "@t3tools/client-runtime/markdown-im
 import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
+import { extractChangedFilePathCandidatesFromToolPayload } from "@t3tools/shared/toolChangedFiles";
 
 export function isWorktreeSetupActivity(kind: string): boolean {
   return kind === "setup-script.requested" || kind === "setup-script.started";
@@ -77,16 +78,13 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
             : complete;
   const action = toolGroupAction(entry);
   const input = toolInput(entry);
-  const path =
-    nonEmptyString(input?.path) ??
-    nonEmptyString(input?.file_path) ??
-    nonEmptyString(input?.filePath) ??
-    entry.changedFiles?.[0] ??
-    entry.viewedImagePath ??
-    entry.detail;
-  const filename = path && !/[\r\n]/.test(path) ? path.trim().split(/[/\\]/).at(-1) : undefined;
-  if (action === "read") return `${verb("Reading", "Read")} ${filename || "file"}`;
-  if (action === "edit") return `${verb("Editing", "Edited")} ${filename || "files"}`;
+  if (action === "read" || action === "edit") {
+    const path = workEntryDisplayPath(entry);
+    const filename = path && !/[\r\n]/.test(path) ? path.trim().split(/[/\\]/).at(-1) : undefined;
+    return action === "read"
+      ? `${verb("Reading", "Read")} ${filename || "file"}`
+      : `${verb("Editing", "Edited")} ${filename || "files"}`;
+  }
   if (action === "command") {
     const program = commandProgramName(entry.command ?? "");
     return `${verb("Running", "Ran")} ${program && !/^(?:bash|zsh|sh|fish):$/.test(program) ? program : "command"}`;
@@ -115,10 +113,55 @@ function toolInput(entry: WorkLogPresentationEntry): Record<string, unknown> | n
   return asRecord(data?.rawInput) ?? asRecord(data?.input) ?? asRecord(asRecord(data?.item)?.input);
 }
 
+const displayPathCache = new WeakMap<object, string | null>();
+
+/** Display paths need no Git pathspec normalization: absolute provider paths are valid labels. */
+function workEntryDisplayPath(entry: WorkLogPresentationEntry): string | null {
+  const data = asRecord(entry.toolData);
+  let path = data ? displayPathCache.get(data) : null;
+  if (data && path === undefined) {
+    const input = toolInput(entry);
+    const location = Array.isArray(data.locations) ? asRecord(data.locations[0]) : null;
+    path =
+      nonEmptyString(input?.path) ??
+      nonEmptyString(input?.file_path) ??
+      nonEmptyString(input?.filePath) ??
+      nonEmptyString(input?.filename) ??
+      extractChangedFilePathCandidatesFromToolPayload(
+        { rawInput: data.rawInput ?? input },
+        { maxPaths: 1 },
+      )[0] ??
+      nonEmptyString(location?.path) ??
+      extractChangedFilePathCandidatesFromToolPayload(data, { maxPaths: 1 })[0] ??
+      null;
+    displayPathCache.set(data, path);
+  }
+  if (path) return path;
+  for (const value of [entry.viewedImagePath, ...(entry.changedFiles ?? []), entry.detail]) {
+    if (
+      value &&
+      !/(?:\.\.\.|…)$/.test(value.trim()) &&
+      !/[\r\n{}[\]]/.test(value) &&
+      (value.includes("/") || value.includes("\\") || /\.[a-z\d]+$/i.test(value))
+    ) {
+      return value;
+    }
+  }
+  return null;
+}
+
 function workToolName(entry: WorkLogPresentationEntry): string | undefined {
   const data = asRecord(entry.toolData);
   const item = asRecord(data?.item);
-  return [data?.toolName, data?.tool, item?.toolName, item?.name, entry.toolTitle, entry.label]
+  return [
+    data?.toolName,
+    data?.copilotToolName,
+    data?.tool,
+    item?.toolName,
+    item?.name,
+    entry.toolTitle,
+    entry.label,
+  ]
     .map((value) => (typeof value === "string" ? normalizeCompactToolLabel(value) : ""))
     .find((value) => value.length > 0 && !/^(other|tool|tool call)$/i.test(value));
 }
@@ -302,7 +345,7 @@ const T3_MCP_TOOL_LABELS: Record<
 function resolveT3McpToolPresentation(value: string | undefined, status: string | undefined) {
   if (!value) return null;
   const name = normalizeCompactToolLabel(value).replace(
-    /^(?:mcp__(?:t3-code|t3_code|t3code)__|(?:t3-code|t3_code|t3code)(?:[.:/]|\s*·\s*))/i,
+    /^(?:mcp__(?:t3-code|t3_code|t3code)__|(?:t3-code|t3_code|t3code)(?:[.:/-]|\s*·\s*))+/i,
     "",
   );
   if (!Object.hasOwn(T3_MCP_TOOL_LABELS, name)) return null;
@@ -351,7 +394,12 @@ export function resolveWorkEntryToolPresentation(
       return resolveT3McpToolPresentation(`${data.server}.${data.tool}`, status);
     }
     if ("toolName" in data && typeof data.toolName === "string") {
-      return resolveT3McpToolPresentation(data.toolName, status);
+      const presentation = resolveT3McpToolPresentation(data.toolName, status);
+      if (presentation) return presentation;
+    }
+    if ("copilotToolName" in data && typeof data.copilotToolName === "string") {
+      const presentation = resolveT3McpToolPresentation(data.copilotToolName, status);
+      if (presentation) return presentation;
     }
   }
 
@@ -579,6 +627,9 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
     return "read";
   }
   if (
+    name === "apply_patch" ||
+    name === "edit_file" ||
+    name === "write_file" ||
     entry.requestKind === "file-change" ||
     entry.itemType === "file_change" ||
     (entry.changedFiles?.length ?? 0) > 0

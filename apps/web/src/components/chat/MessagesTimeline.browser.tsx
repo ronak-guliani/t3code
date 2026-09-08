@@ -274,7 +274,7 @@ describe("MessagesTimeline", () => {
     await expect.element(page.getByText(/4 actions.*2 active/)).toBeVisible();
     const panel = group.querySelector("[data-slot='collapsible-panel']")!;
     expect(button.getAttribute("aria-controls")).toBe(panel.id);
-    expect(getComputedStyle(panel).transitionDuration).toBe("0.15s");
+    expect(getComputedStyle(panel).transitionDuration).toBe("0.12s");
     await page.getByRole("button", { name: "Expand details: Read a.ts" }).click();
     await expect.element(page.getByText("/workspace/src/a.ts", { exact: true })).toBeVisible();
     await screen.rerender(
@@ -288,7 +288,7 @@ describe("MessagesTimeline", () => {
     );
     await expect.element(page.getByRole("button", { name: "Expand Tool Calls (4)" })).toBeVisible();
     expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(0);
-    await expect.element(page.getByText(/4 actions/)).not.toBeInTheDocument();
+    await expect.element(page.getByText(/4 actions/)).not.toBeVisible();
     await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
     await expect.element(page.getByText(/4 actions/)).toBeVisible();
     await screen.unmount();
@@ -325,7 +325,7 @@ describe("MessagesTimeline", () => {
                   detail: "/workspace/src/durable-worktree-c...",
                   changedFiles: ["/workspace/src/durable-worktree-c..."],
                   toolData: {
-                    rawInput: { filePath: fullPath },
+                    rawInput: `*** Begin Patch\n*** Update File: ${fullPath}\n@@\n-before\n+after\n*** End Patch`,
                     rawOutput: { content: `Modified 1 file(s): ${fullPath}` },
                   },
                   toolLifecycleStatus: "inProgress",
@@ -631,7 +631,7 @@ describe("MessagesTimeline", () => {
         await receipt.click();
         await expect
           .element(page.getByText("Loaded full skill 0", { exact: true }))
-          .not.toBeInTheDocument();
+          .not.toBeVisible();
       } finally {
         await screen.unmount();
       }
@@ -709,7 +709,7 @@ describe("MessagesTimeline", () => {
       const history = receipt
         .element()
         .closest(".work-group-section")!
-        .querySelector("[data-slot='collapsible-panel'] > div")!;
+        .querySelector(".chat-work-panel-body > div")!;
       expect(history.children).toHaveLength(51);
       expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(49);
       await page.getByRole("button", { name: "Show 50 earlier entries (72 remaining)" }).click();

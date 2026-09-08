@@ -50,7 +50,8 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { WorkLogPanel } from "./WorkLogPanel";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -1107,13 +1108,10 @@ const WorkGroupSection = memo(function WorkGroupSection({
         ) : null}
         <ChevronRightIcon
           aria-hidden="true"
-          className={cn(
-            "size-3 shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none",
-            isExpanded && "rotate-90",
-          )}
+          className={cn("size-3 shrink-0 chat-work-chevron", isExpanded && "rotate-90")}
         />
       </CollapsibleTrigger>
-      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+      <WorkLogPanel open={isExpanded}>
         <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
           <p className="sr-only">
             {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
@@ -1121,7 +1119,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
           </p>
           <WorkGroupHistory entries={groupedEntries} workspaceRoot={workspaceRoot} />
         </div>
-      </CollapsibleContent>
+      </WorkLogPanel>
     </Collapsible>
   );
 });
@@ -1201,14 +1199,9 @@ const ReasoningSection = memo(function ReasoningSection({
           {label}
           {summary ? ` · ${summary}` : ""}
         </span>
-        <ChevronRightIcon
-          className={cn(
-            "transition-transform duration-150 motion-reduce:transition-none",
-            isExpanded && "rotate-90",
-          )}
-        />
+        <ChevronRightIcon className={cn("chat-work-chevron", isExpanded && "rotate-90")} />
       </CollapsibleTrigger>
-      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+      <WorkLogPanel open={isExpanded}>
         <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
           {history
             .slice(-visibleCount)
@@ -1236,7 +1229,7 @@ const ReasoningSection = memo(function ReasoningSection({
             </button>
           )}
         </div>
-      </CollapsibleContent>
+      </WorkLogPanel>
     </Collapsible>
   );
 });
@@ -1737,6 +1730,34 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
+const WorkEntryDetails = memo(function WorkEntryDetails({
+  workEntry,
+}: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const output = extractCommandOutputText(workEntry.toolData);
+  const detail = [
+    workEntryFullCommand(workEntry),
+    output ?? workEntry.detail,
+    ...(output ? [] : (workEntry.changedFiles ?? [])),
+    workEntry.toolData != null && !output ? JSON.stringify(workEntry.toolData, null, 2) : undefined,
+  ]
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join("\n\n");
+  if (!detail) return null;
+  return (
+    <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+      <pre
+        data-tool-command-details
+        className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
+      >
+        {detail}
+      </pre>
+      <MessageCopyButton text={detail} size="icon-xs" variant="ghost" />
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   compact?: boolean;
   canExpandCommand?: boolean;
@@ -1777,26 +1798,14 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         : null;
 
   if (props.compact && !workEntry.action) {
-    const output = isCommandExpanded ? extractCommandOutputText(workEntry.toolData) : null;
-    const detail = [
-      fullCommand,
-      output ?? workEntry.detail,
-      ...(output ? [] : (workEntry.changedFiles ?? [])),
-      isCommandExpanded && workEntry.toolData != null && !output
-        ? JSON.stringify(workEntry.toolData, null, 2)
-        : undefined,
-    ]
-      .filter((value, index, values) => value && values.indexOf(value) === index)
-      .join("\n\n");
-    const hasDetail = Boolean(detail) || workEntry.toolData != null;
+    const hasDetail =
+      Boolean(fullCommand || workEntry.detail || hasChangedFiles) || workEntry.toolData != null;
     const label = compactWorkEntryLabel(workEntry);
     const failed = workEntryNeedsAttention(workEntry);
     return (
-      <div>
-        <button
-          type="button"
+      <Collapsible open={isCommandExpanded} onOpenChange={setIsCommandExpanded}>
+        <CollapsibleTrigger
           disabled={!hasDetail}
-          onClick={() => setIsCommandExpanded((value) => !value)}
           aria-expanded={hasDetail ? isCommandExpanded : undefined}
           aria-label={
             hasDetail ? `${isCommandExpanded ? "Collapse" : "Expand"} details: ${label}` : label
@@ -1811,20 +1820,17 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <span className="chat-work-label" title={label}>
             {label}
           </span>
-          {hasDetail ? <CommandToggleIcon className="size-3 shrink-0" /> : null}
-        </button>
-        {isCommandExpanded && detail ? (
-          <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
-            <pre
-              data-tool-command-details
-              className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
-            >
-              {detail}
-            </pre>
-            <MessageCopyButton text={detail} size="icon-xs" variant="ghost" />
-          </div>
-        ) : null}
-      </div>
+          {hasDetail ? (
+            <ChevronRightIcon
+              className={cn("size-3 shrink-0 chat-work-chevron", isCommandExpanded && "rotate-90")}
+              aria-hidden="true"
+            />
+          ) : null}
+        </CollapsibleTrigger>
+        <WorkLogPanel open={isCommandExpanded}>
+          <WorkEntryDetails workEntry={workEntry} />
+        </WorkLogPanel>
+      </Collapsible>
     );
   }
 
