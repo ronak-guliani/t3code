@@ -463,7 +463,7 @@ describe("OrchestrationEngine", () => {
     }
   });
 
-  it("rejects assigning a worktree while its cleanup job is pending", async () => {
+  it("does not block assigning a worktree for an unreserved cleanup intent", async () => {
     const system = await createOrchestrationSystem();
     const createdAt = now();
     const projectId = asProjectId("project-pending-worktree");
@@ -527,14 +527,10 @@ describe("OrchestrationEngine", () => {
         createdAt,
       } as const;
 
-      await expect(system.run(system.engine.dispatch(retryableCommand))).rejects.toThrow(
-        "pending cleanup",
-      );
-
-      await system.run(system.worktreeCleanupJobs.cancelByThreadId(deletedThreadId));
       await expect(system.run(system.engine.dispatch(retryableCommand))).resolves.toEqual({
         sequence: 4,
       });
+
     } finally {
       await system.dispose();
     }
