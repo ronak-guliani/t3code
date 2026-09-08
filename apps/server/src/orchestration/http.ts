@@ -18,6 +18,8 @@ import { GitCore } from "../git/Services/GitCore.ts";
 import { GitStatusBroadcaster } from "../git/Services/GitStatusBroadcaster.ts";
 import { ProjectSetupScriptRunner } from "../project/Services/ProjectSetupScriptRunner.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
+import { canonicalizeWorktreePath } from "../git/worktreePaths.ts";
+import { WorktreeCleanupJobRepository } from "../persistence/Services/WorktreeCleanupJobs.ts";
 import { projectReadModel, projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
 import { makeClientCommandDispatcher } from "./clientCommandDispatcher.ts";
 import { normalizeDispatchCommand } from "./Normalizer.ts";
@@ -175,6 +177,7 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
           }),
       ),
     );
+
     const normalizedCommand = yield* normalizeDispatchCommand(command);
     const dispatchCommand = makeClientCommandDispatcher({
       orchestrationEngine,
@@ -189,6 +192,157 @@ export const orchestrationDispatchRouteLayer = HttpRouter.add(
     Effect.catchTags({
       AuthError: respondToAuthError,
       OrchestrationDispatchCommandError: respondToOrchestrationHttpError,
+    }),
+  ),
+);
+
+export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
+  "GET",
+  "/api/orchestration/worktree-cleanup/inventory",
+  Effect.gen(function* () {
+    yield* authorizeClientSession(AuthOrchestrationReadScope);
+    const orchestrationEngine = yield* OrchestrationEngineService;
+    const git = yield* GitCore;
+    const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const jobs = yield* worktreeCleanupJobs.list();
+    const owners = new Map<string, Array<string>>();
+    yield* Effect.forEach(
+      readModel.threads.filter((thread) => thread.worktreePath !== null),
+      (thread) =>
+        Effect.promise(() => canonicalizeWorktreePath(thread.worktreePath!)).pipe(
+          Effect.map((path) => {
+            const current = owners.get(path) ?? [];
+            current.push(thread.id);
+            owners.set(path, current);
+          }),
+        ),
+      { concurrency: 4, discard: true },
+    );
+    const jobsWithCanonicalPaths = yield* Effect.forEach(
+      jobs,
+      (job) =>
+        Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
+          Effect.map((path) => ({ job, path })),
+        ),
+      { concurrency: 4 },
+    );
+    const jobsByPath = new Map<string, (typeof jobs)[number]>();
+    for (const { job, path } of jobsWithCanonicalPaths) {
+      if (!jobsByPath.has(path)) jobsByPath.set(path, job);
+    }
+    const projects = new Map(
+      readModel.projects
+        .filter((project) => project.deletedAt === null)
+        .map((project) => [project.workspaceRoot, project] as const),
+    );
+    const registeredPaths = new Set<string>();
+    const worktrees = yield* Effect.forEach(
+      projects.values(),
+      (project) =>
+        git.listBranches({ cwd: project.workspaceRoot }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationGetSnapshotError({
+                message: `Failed to inventory Git worktrees for project ${project.id}.`,
+                cause,
+              }),
+          ),
+          Effect.flatMap((result) =>
+            Effect.forEach(
+              result.branches.filter((branch) => branch.worktreePath !== null),
+              (branch) =>
+                Effect.promise(() => canonicalizeWorktreePath(branch.worktreePath!)).pipe(
+                  Effect.map((path) => {
+                    registeredPaths.add(path);
+                    const cleanup = jobsByPath.get(path);
+                    return {
+                      path,
+                      repositoryRoot: project.workspaceRoot,
+                      owners: owners.get(path) ?? [],
+                      cleanup:
+                        cleanup === undefined
+                          ? null
+                          : {
+                              threadId: cleanup.threadId,
+                              source: cleanup.source,
+                              status: cleanup.status,
+                              reason: cleanup.lastReason,
+                              nextAttemptAt: cleanup.nextAttemptAt,
+                            },
+                    };
+                  }),
+                ),
+              { concurrency: 4 },
+            ),
+          ),
+        ),
+      { concurrency: 4 },
+    ).pipe(Effect.map((entries) => entries.flat()));
+    return HttpServerResponse.jsonUnsafe(
+      {
+        worktrees,
+        unregisteredCleanupIntents: jobsWithCanonicalPaths
+          .filter(({ path }) => !registeredPaths.has(path))
+          .map(({ job }) => ({
+            threadId: job.threadId,
+            path: job.worktreePath,
+            source: job.source,
+            status: job.status,
+            reason: job.lastReason,
+            nextAttemptAt: job.nextAttemptAt,
+          })),
+      },
+      { status: 200 },
+    );
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+      OrchestrationGetSnapshotError: respondToOrchestrationHttpError,
+    }),
+  ),
+);
+
+export const worktreeCleanupRetryRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/orchestration/worktree-cleanup/:threadId/retry",
+  Effect.gen(function* () {
+    yield* authorizeClientSession(AuthOrchestrationOperateScope);
+    const params = yield* HttpRouter.params;
+    const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
+    const result = yield* worktreeCleanupJobs.retry({
+      threadId: ThreadId.make(params.threadId ?? ""),
+      nextAttemptAt: new Date().toISOString(),
+    });
+    return result._tag === "None"
+      ? HttpServerResponse.jsonUnsafe(
+          { error: "Cleanup intent is not retryable." },
+          { status: 409 },
+        )
+      : HttpServerResponse.jsonUnsafe(result.value, { status: 200 });
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
+    }),
+  ),
+);
+
+export const worktreeCleanupKeepRouteLayer = HttpRouter.add(
+  "POST",
+  "/api/orchestration/worktree-cleanup/:threadId/keep",
+  Effect.gen(function* () {
+    yield* authorizeClientSession(AuthOrchestrationOperateScope);
+    const params = yield* HttpRouter.params;
+    const threadId = ThreadId.make(params.threadId ?? "");
+    const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
+    yield* worktreeCleanupJobs.cancelByThreadId(threadId);
+    const result = yield* worktreeCleanupJobs.getByThreadId(threadId);
+    return result._tag === "None"
+      ? HttpServerResponse.jsonUnsafe({ error: "Cleanup intent was not found." }, { status: 404 })
+      : HttpServerResponse.jsonUnsafe(result.value, { status: 200 });
+  }).pipe(
+    Effect.catchTags({
+      AuthError: respondToAuthError,
     }),
   ),
 );

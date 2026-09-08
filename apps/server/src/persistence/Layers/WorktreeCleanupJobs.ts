@@ -85,7 +85,7 @@ const make = Effect.gen(function* () {
           'needs-attention',
           0,
           NULL,
-          'legacy-cleanup-intent-requires-review',
+          COALESCE(${job.reason ?? null}, 'legacy-cleanup-intent-requires-review'),
           NULL
         )
         ON CONFLICT (thread_id)
@@ -93,7 +93,8 @@ const make = Effect.gen(function* () {
           cwd = excluded.cwd,
           worktree_path = excluded.worktree_path,
           canonical_worktree_path = excluded.canonical_worktree_path,
-          requested_at = excluded.requested_at
+          requested_at = excluded.requested_at,
+          last_reason = COALESCE(excluded.last_reason, worktree_cleanup_jobs.last_reason)
         WHERE worktree_cleanup_jobs.status NOT IN ('cancelled', 'completed')
       `,
   });
@@ -134,12 +135,7 @@ const make = Effect.gen(function* () {
           worktree_path = excluded.worktree_path,
           canonical_worktree_path = excluded.canonical_worktree_path,
           requested_at = excluded.requested_at,
-          source = excluded.source,
-          status = 'waiting',
-          attempt_count = 0,
-          next_attempt_at = excluded.next_attempt_at,
-          last_reason = NULL,
-          last_error = NULL
+          source = excluded.source
         WHERE worktree_cleanup_jobs.status NOT IN ('cancelled', 'completed')
       `,
   });
@@ -162,7 +158,6 @@ const make = Effect.gen(function* () {
           last_reason AS "lastReason",
           last_error AS "lastError"
         FROM worktree_cleanup_jobs
-        WHERE status IN ('waiting', 'removing')
         ORDER BY requested_at ASC, thread_id ASC
       `,
   });
@@ -323,7 +318,7 @@ const make = Effect.gen(function* () {
     sql.withTransaction(
       Effect.gen(function* () {
         const current = yield* getJobRow({ threadId });
-        if (Option.isNone(current) || current.value.status === "cancelled") {
+        if (Option.isNone(current) || current.value.status !== "removing") {
           return Option.none<WorktreeCleanupJob>();
         }
 
@@ -342,12 +337,133 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const markJobCompletedWithoutRemoval = (threadId: WorktreeCleanupJob["threadId"]) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* getJobRow({ threadId });
+        if (Option.isNone(current) || current.value.status !== "waiting") {
+          return Option.none<WorktreeCleanupJob>();
+        }
+
+        yield* sql`
+          DELETE FROM worktree_cleanup_reservations
+          WHERE thread_id = ${threadId}
+        `;
+        yield* sql`
+          UPDATE worktree_cleanup_jobs
+          SET
+            status = 'completed',
+            next_attempt_at = NULL,
+            last_reason = 'worktree-already-absent'
+          WHERE thread_id = ${threadId}
+            AND status = 'waiting'
+        `;
+        return yield* getJobRow({ threadId });
+      }),
+    );
+
+  const deferJob = (input: {
+    readonly threadId: WorktreeCleanupJob["threadId"];
+    readonly nextAttemptAt: WorktreeCleanupJob["nextAttemptAt"];
+    readonly reason: string;
+    readonly error?: string | undefined;
+  }) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* getJobRow({ threadId: input.threadId });
+        if (
+          Option.isNone(current) ||
+          current.value.status === "cancelled" ||
+          current.value.status === "completed" ||
+          current.value.status === "needs-attention"
+        ) {
+          return Option.none<WorktreeCleanupJob>();
+        }
+
+        yield* sql`
+          UPDATE worktree_cleanup_jobs
+          SET
+            status = 'waiting',
+            next_attempt_at = ${input.nextAttemptAt},
+            last_reason = ${input.reason},
+            last_error = ${input.error ?? null}
+          WHERE thread_id = ${input.threadId}
+            AND status IN ('waiting', 'removing')
+        `;
+        yield* sql`
+          DELETE FROM worktree_cleanup_reservations
+          WHERE thread_id = ${input.threadId}
+        `;
+        return yield* getJobRow({ threadId: input.threadId });
+      }),
+    );
+
+  const retryJob = (input: {
+    readonly threadId: WorktreeCleanupJob["threadId"];
+    readonly nextAttemptAt: WorktreeCleanupJob["nextAttemptAt"];
+  }) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* getJobRow({ threadId: input.threadId });
+        if (Option.isNone(current) || current.value.status !== "needs-attention") {
+          return Option.none<WorktreeCleanupJob>();
+        }
+        yield* sql`
+          UPDATE worktree_cleanup_jobs
+          SET
+            status = 'waiting',
+            next_attempt_at = ${input.nextAttemptAt},
+            last_reason = 'manual-retry',
+            last_error = NULL
+          WHERE thread_id = ${input.threadId}
+            AND status = 'needs-attention'
+        `;
+        return yield* getJobRow({ threadId: input.threadId });
+      }),
+    );
+
+  const recoverRemovingJob = (input: {
+    readonly threadId: WorktreeCleanupJob["threadId"];
+    readonly nextAttemptAt: WorktreeCleanupJob["nextAttemptAt"];
+    readonly reason: string;
+  }) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const current = yield* getJobRow({ threadId: input.threadId });
+        if (Option.isNone(current) || current.value.status !== "removing") {
+          return Option.none<WorktreeCleanupJob>();
+        }
+
+        yield* sql`
+          DELETE FROM worktree_cleanup_reservations
+          WHERE thread_id = ${input.threadId}
+        `;
+        yield* sql`
+          UPDATE worktree_cleanup_jobs
+          SET
+            status = 'waiting',
+            next_attempt_at = ${input.nextAttemptAt},
+            last_reason = ${input.reason},
+            last_error = NULL
+          WHERE thread_id = ${input.threadId}
+            AND status = 'removing'
+        `;
+        return yield* getJobRow({ threadId: input.threadId });
+      }),
+    );
+
   const cancelJob = (threadId: WorktreeCleanupJob["threadId"]) =>
     sql.withTransaction(
       Effect.gen(function* () {
         yield* sql`
           DELETE FROM worktree_cleanup_reservations
           WHERE thread_id = ${threadId}
+            AND EXISTS (
+              SELECT 1
+              FROM worktree_cleanup_jobs
+              WHERE thread_id = ${threadId}
+                AND status IN ('waiting', 'needs-attention')
+            )
         `;
         yield* sql`
           UPDATE worktree_cleanup_jobs
@@ -356,7 +472,7 @@ const make = Effect.gen(function* () {
             next_attempt_at = NULL,
             last_reason = COALESCE(last_reason, 'explicitly-cancelled')
           WHERE thread_id = ${threadId}
-            AND status NOT IN ('cancelled', 'completed')
+            AND status IN ('waiting', 'needs-attention')
         `;
       }),
     );
@@ -487,9 +603,29 @@ const make = Effect.gen(function* () {
           toPersistenceSqlError("WorktreeCleanupJobRepository.markNeedsAttention:query"),
         ),
       ),
+    defer: (input) =>
+      deferJob(input).pipe(
+        Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.defer:query")),
+      ),
+    retry: (input) =>
+      retryJob(input).pipe(
+        Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.retry:query")),
+      ),
+    recoverRemoving: (input) =>
+      recoverRemovingJob(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("WorktreeCleanupJobRepository.recoverRemoving:query"),
+        ),
+      ),
     markCompleted: (input) =>
       markJobCompleted(input.threadId).pipe(
         Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.markCompleted:query")),
+      ),
+    markCompletedWithoutRemoval: (input) =>
+      markJobCompletedWithoutRemoval(input.threadId).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("WorktreeCleanupJobRepository.markCompletedWithoutRemoval:query"),
+        ),
       ),
     cancelByThreadId: (threadId) =>
       cancelJob(threadId).pipe(

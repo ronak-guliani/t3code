@@ -1,6 +1,7 @@
 // @ts-nocheck
 import {
   ApprovalRequestId,
+  ThreadId,
   type ChatAttachment,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
@@ -83,6 +84,14 @@ type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
 const BOOTSTRAP_EVENT_BATCH_SIZE = 256;
+
+const handoffCleanupCandidateThreadId = (
+  threadId: ThreadId,
+  canonicalWorktreePath: string,
+): ThreadId =>
+  ThreadId.make(
+    `${threadId}:handoff:${Buffer.from(canonicalWorktreePath, "utf8").toString("base64url")}`,
+  );
 
 interface ProjectorDefinition {
   readonly name: ProjectorName;
@@ -362,11 +371,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.archived": {
           if (event.payload.worktreeCleanup !== undefined) {
-            yield* worktreeCleanupJobRepository.upsert({
+            yield* worktreeCleanupJobRepository.enqueue({
               threadId: event.payload.threadId,
               cwd: event.payload.worktreeCleanup.cwd,
               worktreePath: event.payload.worktreeCleanup.path,
+              canonicalWorktreePath: yield* Effect.promise(() =>
+                canonicalizeWorktreePath(event.payload.worktreeCleanup!.path),
+              ),
               requestedAt: event.payload.archivedAt,
+              source: "archive",
             });
           }
           const existingRow = yield* projectionThreadRepository.getById({
@@ -562,6 +575,27 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          if (event.payload.previousWorktreePath !== undefined) {
+            const project = yield* projectionProjectRepository.getById({
+              projectId: existingRow.value.projectId,
+            });
+            if (Option.isSome(project)) {
+              const previousWorktreePath = event.payload.previousWorktreePath;
+              const canonicalPreviousPath = yield* Effect.promise(() =>
+                canonicalizeWorktreePath(previousWorktreePath),
+              );
+              yield* worktreeCleanupJobRepository.upsert({
+                threadId: handoffCleanupCandidateThreadId(
+                  event.payload.threadId,
+                  canonicalPreviousPath,
+                ),
+                cwd: project.value.workspaceRoot,
+                worktreePath: previousWorktreePath,
+                requestedAt: event.payload.updatedAt,
+                reason: "workspace-handoff-released-checkout",
+              });
+            }
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
@@ -634,11 +668,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
 
         case "thread.deleted": {
           if (event.payload.worktreeCleanup !== undefined) {
-            yield* worktreeCleanupJobRepository.upsert({
+            yield* worktreeCleanupJobRepository.enqueue({
               threadId: event.payload.threadId,
               cwd: event.payload.worktreeCleanup.cwd,
               worktreePath: event.payload.worktreeCleanup.path,
+              canonicalWorktreePath: yield* Effect.promise(() =>
+                canonicalizeWorktreePath(event.payload.worktreeCleanup!.path),
+              ),
               requestedAt: event.payload.deletedAt,
+              source: "delete",
             });
           }
           const existingRow = yield* projectionThreadRepository.getById({

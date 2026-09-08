@@ -40,6 +40,7 @@ export const WorktreeCleanupJobInput = Schema.Struct({
   cwd: Schema.String,
   worktreePath: Schema.String,
   requestedAt: IsoDateTime,
+  reason: Schema.optional(Schema.String),
 });
 export type WorktreeCleanupJobInput = typeof WorktreeCleanupJobInput.Type;
 
@@ -109,7 +110,25 @@ export interface WorktreeCleanupJobRepositoryShape {
     readonly reason: string;
     readonly error?: string | undefined;
   }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
+  readonly retry: (input: {
+    readonly threadId: ThreadId;
+    readonly nextAttemptAt: IsoDateTime;
+  }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
+  readonly defer: (input: {
+    readonly threadId: ThreadId;
+    readonly nextAttemptAt: IsoDateTime;
+    readonly reason: string;
+    readonly error?: string | undefined;
+  }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
+  readonly recoverRemoving: (input: {
+    readonly threadId: ThreadId;
+    readonly nextAttemptAt: IsoDateTime;
+    readonly reason: string;
+  }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly markCompleted: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
+  readonly markCompletedWithoutRemoval: (input: {
     readonly threadId: ThreadId;
   }) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
   readonly cancelByThreadId: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;

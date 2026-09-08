@@ -392,7 +392,13 @@ describe("decider queued turns", () => {
     const now = "2026-03-01T00:00:00.000Z";
     const threadId = asThreadId("thread-handoff");
     const queuedTurnId = asQueuedTurnId("queued-turn-handoff");
-    const readModel = await makeThreadReadModel({ now, threadId });
+    const baseReadModel = await makeThreadReadModel({ now, threadId });
+    const readModel = {
+      ...baseReadModel,
+      threads: baseReadModel.threads.map((thread) =>
+        thread.id === threadId ? { ...thread, worktreePath: "/tmp/old-handoff" } : thread,
+      ),
+    };
 
     const result = await Effect.runPromise(
       decideOrchestrationCommand({
@@ -434,6 +440,7 @@ describe("decider queued turns", () => {
       threadId,
       branch: "feature/handoff",
       worktreePath: "/tmp/handoff",
+      previousWorktreePath: "/tmp/old-handoff",
     });
     expect(events[1]?.payload).toMatchObject({
       threadId,

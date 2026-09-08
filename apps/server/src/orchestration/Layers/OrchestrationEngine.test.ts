@@ -530,7 +530,6 @@ describe("OrchestrationEngine", () => {
       await expect(system.run(system.engine.dispatch(retryableCommand))).resolves.toEqual({
         sequence: 4,
       });
-
     } finally {
       await system.dispose();
     }

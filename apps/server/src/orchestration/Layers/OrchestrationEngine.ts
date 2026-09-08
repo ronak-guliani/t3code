@@ -155,18 +155,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const isWorktreeCleanupPending = Effect.fn("isWorktreeCleanupPending")(function* (
     worktreePath: string,
   ) {
-    if (yield* worktreeCleanupJobs.existsByPath(worktreePath)) {
-      return true;
-    }
-    const jobs = yield* worktreeCleanupJobs.list();
-    return yield* Effect.forEach(
-      jobs,
-      (job) =>
-        Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
-          Effect.map((pendingPath) => pendingPath === worktreePath),
-        ),
-      { concurrency: 4 },
-    ).pipe(Effect.map((matches) => matches.some(Boolean)));
+    return yield* worktreeCleanupJobs.hasReservationByPath(worktreePath);
   });
 
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
@@ -413,8 +402,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
     );
     const command = envelope.command;
-    const worktreeProcess =
-      commandWorktreePath(command) !== null ? withWorktreeLock(process) : process;
+    const requiresWorktreeLock =
+      commandWorktreePath(command) !== null ||
+      command.type === "thread.archive" ||
+      command.type === "thread.unarchive" ||
+      command.type === "thread.delete";
+    const worktreeProcess = requiresWorktreeLock ? withWorktreeLock(process) : process;
     if (command.type !== "thread.turn.start" && command.type !== "thread.queued-turn.dispatch") {
       return worktreeProcess;
     }
