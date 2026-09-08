@@ -46,5 +46,10 @@ export function derivePendingApprovalMaxHeight(
     Math.max(0, input.composerOverlapHeight) -
     PENDING_USER_INPUT_VERTICAL_GAP;
 
-  return Math.min(PENDING_USER_INPUT_MAX_HEIGHT, Math.max(0, availableHeight));
+  // The approval detail ScrollView shrinks within this bound, but the header
+  // and decision controls must remain inside the card's hit-test bounds.
+  return Math.min(
+    PENDING_USER_INPUT_MAX_HEIGHT,
+    Math.max(PENDING_USER_INPUT_MIN_HEIGHT, availableHeight),
+  );
 }
