@@ -12,15 +12,18 @@ describe("application navigation across independent sidebar chrome", () => {
     const navigate = vi.fn();
     let openSubchat = () => {};
     let openParent = () => {};
+    let openRelated = () => {};
     function SidebarActions() {
       const navigation = useAppNavigation();
       openSubchat = () =>
         navigation.navigate("NewTaskSheet", {
           screen: "NewTaskDraft",
-          params: { environmentId: "local", projectId: "project", parentThreadId: "parent" },
+          params: { environmentId: "local", projectId: "project" },
         });
       openParent = () =>
         navigation.navigate("Thread", { environmentId: "local", threadId: "parent" });
+      openRelated = () =>
+        navigation.navigate("RelatedThreads", { environmentId: "local", threadId: "parent" });
       return null;
     }
     renderToString(
@@ -30,15 +33,20 @@ describe("application navigation across independent sidebar chrome", () => {
     );
     openSubchat();
     openParent();
+    openRelated();
     expect(navigate).toHaveBeenNthCalledWith(1, "NewTaskSheet", {
       screen: "NewTaskDraft",
-      params: { environmentId: "local", projectId: "project", parentThreadId: "parent" },
+      params: { environmentId: "local", projectId: "project" },
     });
     expect(navigate).toHaveBeenNthCalledWith(2, "Thread", {
       environmentId: "local",
       threadId: "parent",
     });
     expect(harness.localNavigate).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenNthCalledWith(3, "RelatedThreads", {
+      environmentId: "local",
+      threadId: "parent",
+    });
   });
 
   it("retains normal screen navigation outside an independent sidebar", () => {

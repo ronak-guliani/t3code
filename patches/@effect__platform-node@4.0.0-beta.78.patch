@@ -1,5 +1,5 @@
 diff --git a/dist/NodeHttpServer.js b/dist/NodeHttpServer.js
-index 4ca746097f782fccc6b595e4d772f98d764278b5..85e03ffea5271290cc9e3ba91db342dc8aa53ced 100644
+index 4ca746097f782fccc6b595e4d772f98d764278b5..2eb1e96c7a7ab252833e18ae551eac537b27a826 100644
 --- a/dist/NodeHttpServer.js
 +++ b/dist/NodeHttpServer.js
 @@ -101,7 +101,8 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (evaluate, options)
@@ -12,8 +12,17 @@ index 4ca746097f782fccc6b595e4d772f98d764278b5..85e03ffea5271290cc9e3ba91db342dc
    })), wss => Effect.callback(resume => {
      wss.close(() => resume(Effect.void));
    })).pipe(Scope.provide(scope), Effect.cached);
+@@ -111,7 +112,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (evaluate, options)
+       path: address
+     } : {
+       _tag: "TcpAddress",
+-      hostname: address.address === "::" ? "0.0.0.0" : address.address,
++      hostname: address.family === "IPv6" ? `[${address.address}]` : address.address,
+       port: address.port
+     },
+     serve: Effect.fnUntraced(function* (httpApp, middleware) {
 diff --git a/src/NodeHttpServer.ts b/src/NodeHttpServer.ts
-index 3bc28527ffad0eda569d89da50a8b8211bc6468c..92f22aa3c246f53a1a6ced35738c89234cb1aede 100644
+index 3bc28527ffad0eda569d89da50a8b8211bc6468c..917b49227c84d74375bd4a79f649c2e074f977a6 100644
 --- a/src/NodeHttpServer.ts
 +++ b/src/NodeHttpServer.ts
 @@ -134,7 +134,12 @@ export const make = Effect.fnUntraced(function*(
@@ -30,3 +39,12 @@ index 3bc28527ffad0eda569d89da50a8b8211bc6468c..92f22aa3c246f53a1a6ced35738c8923
      (wss) =>
        Effect.callback<void>((resume) => {
          wss.close(() => resume(Effect.void))
+@@ -152,7 +157,7 @@ export const make = Effect.fnUntraced(function*(
+       } :
+       {
+         _tag: "TcpAddress",
+-        hostname: address.address === "::" ? "0.0.0.0" : address.address,
++        hostname: address.family === "IPv6" ? `[${address.address}]` : address.address,
+         port: address.port
+       },
+     serve: Effect.fnUntraced(function*(httpApp, middleware) {

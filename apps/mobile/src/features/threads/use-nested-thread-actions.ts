@@ -1,15 +1,16 @@
-import { useAppNavigation } from "../../lib/use-app-navigation";
 import type { MenuAction } from "@react-native-menu/menu";
-import type { MobileThreadShell } from "./mobile-thread-hierarchy";
+import { nestedThreadKey, type MobileThreadShell } from "./mobile-thread-hierarchy";
+import { markNestedThreadRead } from "./nested-thread-read";
 import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { useAtomSet } from "@effect/atom-react";
 import { useCallback, useMemo, useRef } from "react";
 import { Alert } from "react-native";
 
+import { useAppNavigation } from "../../lib/use-app-navigation";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useAtomSet } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 
 export function useNestedThreadActions(thread: MobileThreadShell) {
@@ -17,6 +18,12 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
   const decouple = useAtomCommand(threadEnvironment.decouple, { reportFailure: false });
   const pending = useRef(false);
   const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const markRead = useCallback(() => {
+    if (!thread.virtualAgentRun) return;
+    const preferences = appAtomRegistry.get(mobilePreferencesAtom);
+    if (!AsyncResult.isSuccess(preferences)) return;
+    markNestedThreadRead(thread, preferences.value, savePreferences);
+  }, [savePreferences, thread]);
   const dismissAgentRun = useCallback(() => {
     if (!thread.virtualAgentRun) return;
     if (thread.virtualAgentRun.status === "running") {
@@ -28,7 +35,7 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
       Alert.alert("Preferences are loading", "Try archiving this agent again in a moment.");
       return;
     }
-    const key = `${thread.environmentId}:${thread.id}`;
+    const key = nestedThreadKey(thread);
     savePreferences({
       dismissedAgentRunKeys: [
         ...new Set([...(preferences.value.dismissedAgentRunKeys ?? []), key]),
@@ -64,8 +71,9 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
       );
       return;
     }
+    markRead();
     navigation.navigate("Thread", { environmentId: thread.environmentId, threadId: parent.id });
-  }, [navigation, thread.environmentId, thread.parentThreadId]);
+  }, [markRead, navigation, thread.environmentId, thread.parentThreadId]);
   const decoupleChat = useCallback(async () => {
     if (pending.current) return;
     pending.current = true;
@@ -112,7 +120,7 @@ export function useNestedThreadActions(thread: MobileThreadShell) {
       if (event === "decouple") void decoupleChat();
       if (event === "dismiss-agent-run") dismissAgentRun();
     },
-    [createSubchat, openParent, decoupleChat, dismissAgentRun],
+    [createSubchat, decoupleChat, dismissAgentRun, openParent],
   );
   return { actions, handleAction, createSubchat, openParent, dismissAgentRun };
 }

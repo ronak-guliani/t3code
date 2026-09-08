@@ -48,6 +48,7 @@ export interface Preferences {
   readonly threadExpandedOverrides?: Readonly<Record<string, boolean>>;
   readonly dismissedAgentRunKeys?: readonly string[];
   readonly threadChildNotificationReadAt?: Readonly<Record<string, string>>;
+  readonly threadChildReadAt?: Readonly<Record<string, string>>;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -110,6 +111,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadExpandedOverrides?: Readonly<Record<string, boolean>>;
     dismissedAgentRunKeys?: readonly string[];
     threadChildNotificationReadAt?: Readonly<Record<string, string>>;
+    threadChildReadAt?: Readonly<Record<string, string>>;
   } = {};
 
   if (
@@ -126,6 +128,17 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (Array.isArray(parsed.dismissedAgentRunKeys)) {
     preferences.dismissedAgentRunKeys = parsed.dismissedAgentRunKeys.filter(
       (key) => typeof key === "string",
+    );
+  }
+  if (
+    parsed.threadChildReadAt &&
+    typeof parsed.threadChildReadAt === "object" &&
+    !Array.isArray(parsed.threadChildReadAt)
+  ) {
+    preferences.threadChildReadAt = Object.fromEntries(
+      Object.entries(parsed.threadChildReadAt).filter(
+        ([, value]) => typeof value === "string" && Number.isFinite(Date.parse(value)),
+      ),
     );
   }
   if (

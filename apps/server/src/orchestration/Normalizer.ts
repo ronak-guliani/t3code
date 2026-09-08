@@ -71,6 +71,9 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       command.message.attachments,
       (attachment) =>
         Effect.gen(function* () {
+          // Already-persisted references carry no payload; only dataUrl
+          // uploads need decoding and storing on disk.
+          if (!("dataUrl" in attachment)) return attachment;
           const parsed = parseBase64DataUrl(attachment.dataUrl);
           if (!parsed || !parsed.mimeType.startsWith("image/")) {
             return yield* new OrchestrationDispatchCommandError({
