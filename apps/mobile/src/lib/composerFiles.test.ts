@@ -80,7 +80,10 @@ vi.mock("expo-file-system", () => {
   };
 });
 
-vi.mock("expo-image-picker", () => ({ launchImageLibraryAsync: mocks.pickMedia }));
+vi.mock("expo-image-picker", () => ({
+  launchImageLibraryAsync: mocks.pickMedia,
+  UIImagePickerPreferredAssetRepresentationMode: { Automatic: "automatic" },
+}));
 vi.mock("expo-document-picker", () => ({ getDocumentAsync: mocks.pickFile }));
 vi.mock("./uuid", () => ({ uuidv4: () => "attachment-id" }));
 
@@ -151,6 +154,11 @@ describe("composer file attachments", () => {
         expect(mocks.copy).toHaveBeenCalledWith(
           photo.uri,
           "file:///documents/t3-composer-attachments/attachment-id-photo.HEIC",
+        );
+        expect(mocks.pickMedia).toHaveBeenCalledWith(
+          expect.objectContaining({
+            preferredAssetRepresentationMode: "automatic",
+          }),
         );
         expect(mocks.pickMedia).toHaveBeenCalledWith(
           expect.not.objectContaining({ base64: true, quality: 1 }),

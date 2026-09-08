@@ -437,6 +437,8 @@ export async function pickComposerMedia(input: {
       mediaTypes: input.maxVideoBytes === undefined ? ["images"] : ["images", "videos"],
       allowsMultipleSelection: true,
       selectionLimit: remainingSlots,
+      preferredAssetRepresentationMode:
+        imagePicker.UIImagePickerPreferredAssetRepresentationMode.Automatic,
       shouldDownloadFromNetwork: true,
     });
   } catch (error) {
