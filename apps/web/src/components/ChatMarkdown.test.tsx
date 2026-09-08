@@ -8,7 +8,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useNavigate: () => () => Promise.resolve(),
 }));
 
-import ChatMarkdown from "./ChatMarkdown";
+import ChatMarkdown, { githubRepositoryForProject } from "./ChatMarkdown";
 
 describe("ChatMarkdown", () => {
   it.each([
@@ -42,6 +42,158 @@ describe("ChatMarkdown", () => {
     );
 
     expect(markup).not.toContain("chat-markdown-thread-link");
+  });
+
+  it("keeps unrelated inline UUIDs as code", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="The generated value is `bc880b45-fd48-42db-98fa-f211bae7cc0a`."
+        cwd="/Users/julius/project"
+        threadRef={scopeThreadRef(
+          EnvironmentId.make("environment-local"),
+          ThreadId.make("current-thread"),
+        )}
+      />,
+    );
+
+    expect(markup).not.toContain("chat-markdown-thread-link");
+    expect(markup).toContain("<code>bc880b45-fd48-42db-98fa-f211bae7cc0a</code>");
+  });
+
+  it("classifies explicit canonical thread URLs before external links", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="[new thread](/environment-other/bc880b45-fd48-42db-98fa-f211bae7cc0a)"
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("chat-markdown-thread-link");
+    expect(markup).toContain('href="/environment-other/bc880b45-fd48-42db-98fa-f211bae7cc0a"');
+    expect(markup).toContain("new thread");
+    expect(markup).not.toContain('target="_blank"');
+  });
+
+  it("classifies reference-style canonical thread URLs before external links", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={
+          "[new thread][child]\n\n[child]: /environment-other/bc880b45-fd48-42db-98fa-f211bae7cc0a"
+        }
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("chat-markdown-thread-link");
+    expect(markup).toContain("new thread");
+    expect(markup).not.toContain('target="_blank"');
+  });
+
+  it("classifies reference-style canonical pull request URLs", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text={"[pull request][pr]\n\n[pr]: https://github.com/owner/repo/pull/42"}
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain('href="https://github.com/owner/repo/pull/42"');
+    expect(markup).toContain('target="_blank"');
+  });
+
+  it("keeps qualified GitHub references clickable without fabricating a PR", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="See owner/repo#42 for the related change."
+        cwd="/Users/julius/project"
+        threadRef={scopeThreadRef(
+          EnvironmentId.make("environment-local"),
+          ThreadId.make("current-thread"),
+        )}
+      />,
+    );
+
+    expect(markup).toContain('href="https://github.com/owner/repo/issues/42"');
+    expect(markup).toContain("owner/repo#42");
+    expect(markup).not.toContain("data-git-hub-pull-request-url");
+  });
+
+  it("links qualified GitHub references without a thread context", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown text="See owner/repo#42 for the related change." cwd="/Users/julius/project" />,
+    );
+
+    expect(markup).toContain('href="https://github.com/owner/repo/issues/42"');
+    expect(markup).toContain("owner/repo#42");
+  });
+
+  it("does not infer a repository for bare GitHub references", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="See #42 for the related change."
+        cwd="/Users/julius/project"
+        threadRef={scopeThreadRef(
+          EnvironmentId.make("environment-local"),
+          ThreadId.make("current-thread"),
+        )}
+      />,
+    );
+
+    expect(markup).not.toContain('href="https://github.com/');
+    expect(markup).toContain("#42");
+  });
+
+  it.each([
+    {
+      canonicalKey: "github/acme/repo",
+      expected: { repository: "acme/repo", host: "github" },
+    },
+    {
+      canonicalKey: "github.example.com/acme/repo",
+      expected: { repository: "acme/repo", host: "github.example.com" },
+    },
+    {
+      canonicalKey: "github.com/acme/repo",
+      expected: { repository: "acme/repo", host: "github.com" },
+    },
+  ])("preserves the enterprise host from $canonicalKey", ({ canonicalKey, expected }) => {
+    expect(
+      githubRepositoryForProject({
+        repositoryIdentity: {
+          provider: "github",
+          owner: "acme",
+          name: "repo",
+          canonicalKey,
+        },
+      }),
+    ).toEqual(expected);
+  });
+
+  it("does not misread an owner as a host for owner/repo keys", () => {
+    expect(
+      githubRepositoryForProject({
+        repositoryIdentity: {
+          provider: "github",
+          owner: "acme",
+          name: "repo",
+          canonicalKey: "acme/repo",
+        },
+      }),
+    ).toEqual({ repository: "acme/repo", host: "github.com" });
+  });
+
+  it("does not trust route-shaped links on unrelated origins", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="[thread](https://example.com/environment-local/bc880b45-fd48-42db-98fa-f211bae7cc0a)"
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).not.toContain("chat-markdown-thread-link");
+    expect(markup).toContain(
+      'href="https://example.com/environment-local/bc880b45-fd48-42db-98fa-f211bae7cc0a"',
+    );
   });
 
   it("removes leaked web citation tokens", () => {

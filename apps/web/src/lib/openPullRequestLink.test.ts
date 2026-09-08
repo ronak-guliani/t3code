@@ -91,6 +91,15 @@ describe("githubPullRequestNavigation", () => {
     ).toBeNull();
   });
 
+  it("leaves PR comments and query-bearing URLs faithful to the external destination", () => {
+    expect(
+      githubPullRequestNavigation("https://github.com/t3tools/t3code/pull/4849#issuecomment-1"),
+    ).toBeNull();
+    expect(
+      githubPullRequestNavigation("https://github.com/t3tools/t3code/pull/4849?tab=files"),
+    ).toBeNull();
+  });
+
   it("matches a project by canonical GitHub host and repository", () => {
     const publicProject = makeProject();
     const enterpriseProject = makeProject({
