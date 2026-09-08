@@ -2,7 +2,7 @@
 
 import { useLayoutEffect, useRef } from "react";
 
-import { acquireBrowserSurface } from "./browserSurfaceStore";
+import { acquireBrowserSurface, useBrowserSurfaceStore } from "./browserSurfaceStore";
 
 export function BrowserSurfaceSlot(props: {
   readonly tabId: string;
@@ -36,7 +36,7 @@ export function BrowserSurfaceSlot(props: {
     const element = elementRef.current;
     if (!element || !visible) return;
     // Hidden retained slots must not displace the visible panel or mini-player.
-    const lease = acquireBrowserSurface(tabId, fitSourceContent);
+    let lease = acquireBrowserSurface(tabId, fitSourceContent);
     const update = () => {
       const rect = element.getBoundingClientRect();
       const presentation = presentationRef.current;
@@ -58,7 +58,16 @@ export function BrowserSurfaceSlot(props: {
     observer.observe(element);
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
+    const unsubscribe = useBrowserSurfaceStore.subscribe(() => {
+      // Read live state: an earlier listener may already have filled the vacancy.
+      // Never displace an owner, including our own claim's synchronous notification.
+      if (useBrowserSurfaceStore.getState().byTabId[tabId]?.owner != null) return;
+      lease.release();
+      lease = acquireBrowserSurface(tabId, fitSourceContent);
+      update();
+    });
     return () => {
+      unsubscribe();
       observer.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
