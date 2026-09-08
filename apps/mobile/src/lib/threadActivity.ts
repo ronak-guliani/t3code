@@ -518,7 +518,9 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
   };
   const toolCallId =
-    asTrimmedString(payload?.toolCallId) ?? asTrimmedString(asRecord(payload?.data)?.toolCallId);
+    asTrimmedString(payload?.itemId) ??
+    asTrimmedString(payload?.toolCallId) ??
+    asTrimmedString(asRecord(payload?.data)?.toolCallId);
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }

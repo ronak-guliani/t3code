@@ -3165,6 +3165,49 @@ describe("buildThreadFeed", () => {
       activities: [{ status: "failure", workEntry: { tone: "error" } }],
     });
   });
+
+  it("uses projected item ids to preserve parallel same-label tool calls", () => {
+    const turnId = TurnId.make("turn-parallel-item-ids");
+    const activity = (
+      id: string,
+      itemId: string,
+      kind: "tool.updated" | "tool.completed",
+      status: "inProgress" | "completed",
+    ) =>
+      makeActivity({
+        id: EventId.make(id),
+        kind,
+        tone: "tool",
+        summary: "Tool",
+        createdAt: `2026-09-08T16:00:0${id.at(-1)}.000Z`,
+        turnId,
+        payload: {
+          itemId,
+          itemType: "dynamic_tool_call",
+          status,
+        },
+      });
+    const feed = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-parallel-item-ids"),
+        projectId: ProjectId.make("project-1"),
+        title: "Parallel item ids",
+        activities: [
+          activity("call-a-1", "call-a", "tool.updated", "inProgress"),
+          activity("call-b-2", "call-b", "tool.updated", "inProgress"),
+          activity("call-a-3", "call-a", "tool.completed", "completed"),
+        ],
+      }),
+    );
+    const group = feed.find((entry) => entry.type === "activity-group");
+
+    expect(group).toMatchObject({
+      activities: [
+        { id: "call-a-1", lifecycleStatus: "completed" },
+        { id: "call-b-2", lifecycleStatus: "inProgress" },
+      ],
+    });
+  });
 });
 
 describe("quiet timeline: nested agents", () => {

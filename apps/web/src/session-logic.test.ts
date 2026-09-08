@@ -1593,6 +1593,51 @@ describe("deriveWorkLogEntries", () => {
     expect(completedTimelineEntries[1]?.id).toBe("tool:tool-copilot-read-1");
   });
 
+  it("uses projected item ids to preserve parallel same-label tool calls", () => {
+    const turnId = TurnId.make("turn-parallel-item-ids");
+    const activity = (
+      id: string,
+      itemId: string,
+      kind: "tool.updated" | "tool.completed",
+      status: "inProgress" | "completed",
+    ) =>
+      makeActivity({
+        id,
+        createdAt: `2026-09-08T16:00:0${id.at(-1)}.000Z`,
+        kind,
+        summary: "Tool",
+        turnId,
+        payload: {
+          itemId,
+          itemType: "dynamic_tool_call",
+          status,
+        },
+      });
+    const entries = deriveWorkLogEntries(
+      [
+        activity("call-a-1", "call-a", "tool.updated", "inProgress"),
+        activity("call-b-2", "call-b", "tool.updated", "inProgress"),
+        activity("call-a-3", "call-a", "tool.completed", "completed"),
+      ],
+      turnId,
+    );
+
+    expect(entries).toMatchObject([
+      {
+        id: "call-b-2",
+        stableId: `tool:${turnId}:call-b`,
+        toolCallId: "call-b",
+        toolLifecycleStatus: "inProgress",
+      },
+      {
+        id: "call-a-3",
+        stableId: `tool:${turnId}:call-a`,
+        toolCallId: "call-a",
+        toolLifecycleStatus: "completed",
+      },
+    ]);
+  });
+
   it("scopes stable Copilot tool lifecycle row ids by turn", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({
