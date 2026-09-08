@@ -187,7 +187,7 @@ export function ThreadMarkdownImageView(props: {
                       request: {
                         sourceKey: props.sourceKey,
                         uri: props.uri!,
-                        requestVersion: imageLoadState.requestVersion,
+                        requestVersion,
                       },
                     })
                   }
