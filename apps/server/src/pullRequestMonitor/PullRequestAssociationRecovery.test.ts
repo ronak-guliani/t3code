@@ -183,13 +183,26 @@ describe("reportedPullRequestUrl", () => {
       [{ ...message(), streaming: true }],
       [message(`${url} https://github.com/acme/app/pull/43`)],
       [message(), message("No PR was created.")],
-      [message("https://github.com.evil.example/acme/app/pull/42")],
+      [message("https://github.com@evil.example/acme/app/pull/42")],
       [message(`https://example.test/${url}`)],
       [message(`https://example.test/?redirect=${url}`)],
       [message(`prefix${url}`)],
     ]) {
       expect(reportedPullRequestUrl({ messages })).toBeNull();
     }
+  });
+
+  it("selects the latest completed report while a follow-up is streaming", () => {
+    expect(
+      reportedPullRequestUrl({
+        messages: [message(), { ...message("Working on follow-up"), streaming: true }],
+      }),
+    ).toBe(url);
+  });
+
+  it("recognizes Enterprise-host PR paths", () => {
+    const enterpriseUrl = "https://github.acme.test/acme/app/pull/42";
+    expect(reportedPullRequestUrl({ messages: [message(enterpriseUrl)] })).toBe(enterpriseUrl);
   });
 });
 
@@ -202,6 +215,7 @@ describe("pull request association recovery", () => {
         type: "thread.meta.update",
         threadId,
         expectedUpdatedAt: now,
+        expectedWorkspaceCwd: "/isolated/worktree",
         pullRequest: status.pr,
       }),
     ]);
@@ -227,6 +241,27 @@ describe("pull request association recovery", () => {
     h.updateThread({ messages: [message("PR: https://github.com/other/repo/pull/42")] });
     await Effect.runPromise(h.recovery.sweep);
     expect(h.commands).toEqual([]);
+  });
+
+  it("recovers Enterprise PRs only when the complete checkout URL matches", async () => {
+    const h = await harness();
+    const enterpriseUrl = "https://github.acme.test/acme/app/pull/42";
+    h.updateThread({ messages: [message(enterpriseUrl)] });
+    await Effect.runPromise(h.recovery.sweep);
+    expect(h.commands).toEqual([]);
+    h.setStatus({ ...status, pr: { ...status.pr!, url: enterpriseUrl } });
+    await Effect.runPromise(h.recovery.sweep);
+    expect(h.thread()?.pullRequest?.url).toBe(enterpriseUrl);
+  });
+
+  it("retries completed PR output during a newer stream", async () => {
+    const h = await harness();
+    h.setFailure(true);
+    await Effect.runPromise(h.recovery.sweep);
+    h.updateThread({ messages: [message(), { ...message("Working"), streaming: true }] });
+    h.setFailure(false);
+    await Effect.runPromise(h.recovery.sweep);
+    expect(h.thread()?.pullRequest).toEqual(status.pr);
   });
 
   it("retries failures rather than permanently marking the message handled", async () => {

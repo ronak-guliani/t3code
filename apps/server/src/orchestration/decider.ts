@@ -12,6 +12,7 @@ import type {
 import { Effect, Option } from "effect";
 
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { resolveThreadWorkspaceCwd } from "../checkpointing/Utils.ts";
 import {
   listThreadsByProjectId,
   requireProject,
@@ -885,8 +886,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         threadId: command.threadId,
       });
       if (
-        command.expectedUpdatedAt !== undefined &&
-        command.expectedUpdatedAt !== thread.updatedAt
+        (command.expectedUpdatedAt !== undefined &&
+          command.expectedUpdatedAt !== thread.updatedAt) ||
+        (command.expectedWorkspaceCwd !== undefined &&
+          command.expectedWorkspaceCwd !==
+            resolveThreadWorkspaceCwd({ thread, projects: readModel.projects }))
       ) {
         return [];
       }

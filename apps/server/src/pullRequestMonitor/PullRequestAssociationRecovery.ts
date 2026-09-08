@@ -10,12 +10,14 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 export function reportedPullRequestUrl(
   thread: Pick<OrchestrationThread, "messages">,
 ): string | null {
-  const message = thread.messages.findLast((entry) => entry.role === "assistant");
-  if (!message || message.streaming) return null;
+  const message = thread.messages.findLast(
+    (entry) => entry.role === "assistant" && !entry.streaming,
+  );
+  if (!message) return null;
   const urls = new Set(
     Array.from(
       message.text.matchAll(
-        /(?<=^|[\s(<"'`])https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*(?=$|[\s)>"'`\]?#.,])/g,
+        /(?<=^|[\s(<"'`])https:\/\/[a-zA-Z0-9.-]+(?::\d+)?\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*(?=$|[\s)>"'`\]?#.,])/g,
       ),
       (match) => match[0],
     ),
@@ -54,6 +56,7 @@ export const makePullRequestAssociationRecovery = Effect.gen(function* () {
       commandId: CommandId.make(`server:recover-pr:${crypto.randomUUID()}`),
       threadId,
       expectedUpdatedAt: thread.updatedAt,
+      expectedWorkspaceCwd: cwd,
       pullRequest: status.pr,
     });
   });

@@ -237,7 +237,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         if (
           eventBases.length === 0 &&
           command.type === "thread.meta.update" &&
-          command.expectedUpdatedAt !== undefined
+          (command.expectedUpdatedAt !== undefined || command.expectedWorkspaceCwd !== undefined)
         ) {
           yield* commandReceiptRepository.upsert({
             commandId: command.commandId,

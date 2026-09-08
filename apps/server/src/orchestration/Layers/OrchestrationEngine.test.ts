@@ -175,15 +175,46 @@ describe("OrchestrationEngine", () => {
 
       await system.run(
         system.engine.dispatch({
+          type: "project.meta.update",
+          commandId: CommandId.make("move-project-checkout"),
+          projectId,
+          workspaceRoot: "/tmp/moved-checkout",
+        }),
+      );
+      const afterMove = await system.run(system.engine.getReadModel());
+      expect(afterMove.threads[0]?.updatedAt).toBe(before.threads[0]?.updatedAt);
+      const staleWorkspaceCommand = {
+        ...command,
+        commandId: CommandId.make("stale-workspace"),
+        expectedUpdatedAt: before.threads[0]!.updatedAt,
+        expectedWorkspaceCwd: "/tmp/conditional-metadata",
+      };
+      const staleWorkspaceResult = await system.run(system.engine.dispatch(staleWorkspaceCommand));
+      expect(staleWorkspaceResult.sequence).toBe(afterMove.snapshotSequence);
+      expect(await system.run(system.engine.getReadModel())).toEqual(afterMove);
+      expect(projected).toHaveLength(eventCount + 1);
+      expect(
+        await system.run(
+          system.engine.dispatch({
+            ...staleWorkspaceCommand,
+            expectedWorkspaceCwd: "/tmp/moved-checkout",
+          }),
+        ),
+      ).toEqual(staleWorkspaceResult);
+      expect(await system.run(system.engine.getReadModel())).toEqual(afterMove);
+
+      await system.run(
+        system.engine.dispatch({
           ...command,
           commandId: CommandId.make("fresh-conditional"),
           expectedUpdatedAt: before.threads[0]!.updatedAt,
+          expectedWorkspaceCwd: "/tmp/moved-checkout",
         }),
       );
       expect((await system.run(system.engine.getReadModel())).threads[0]?.pullRequest).toEqual(
         pullRequest,
       );
-      expect(projected).toHaveLength(eventCount + 1);
+      expect(projected).toHaveLength(eventCount + 2);
     } finally {
       await system.dispose();
     }
