@@ -884,6 +884,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedUpdatedAt !== undefined &&
+        command.expectedUpdatedAt !== thread.updatedAt
+      ) {
+        return [];
+      }
       const occurredAt = nowIso();
       const metaUpdatedEvent: PlannedOrchestrationEvent = {
         ...withEventBase({
