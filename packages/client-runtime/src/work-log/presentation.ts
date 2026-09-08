@@ -115,6 +115,12 @@ function toolInput(entry: WorkLogPresentationEntry): Record<string, unknown> | n
 
 const displayPathCache = new WeakMap<object, string | null>();
 
+export function hasWorkLogToolData(data: unknown): boolean {
+  if (typeof data === "string") return data.trim().length > 0;
+  if (data !== null && typeof data === "object") return Object.keys(data).length > 0;
+  return data !== undefined && data !== null;
+}
+
 /** Display paths need no Git pathspec normalization: absolute provider paths are valid labels. */
 function workEntryDisplayPath(entry: WorkLogPresentationEntry): string | null {
   const data = asRecord(entry.toolData);
@@ -273,6 +279,38 @@ export function groupConsecutiveWorkEntries<T>(
     entries: group.entries,
     label: summarizeToolGroup(group.entries.map(entryFor)),
   }));
+}
+
+/** Fold repeated labels for display, never discard calls or cross message/status boundaries. */
+export function groupRepeatedWorkEntries<T>(
+  entries: readonly T[],
+  entryFor: (entry: T) => WorkLogPresentationEntry | null,
+): { entries: T[]; label: string }[] {
+  const groups: { entries: T[]; label: string; key: string | null }[] = [];
+  for (const entry of entries) {
+    const work = entryFor(entry);
+    const repeatable =
+      work?.tone === "tool" &&
+      work.toolLifecycleStatus === "completed" &&
+      !work.taskId &&
+      toolGroupAction(work) !== "update";
+    const label = repeatable ? compactWorkEntryLabel(work) : "";
+    const action = work ? toolGroupAction(work) : null;
+    const key = repeatable
+      ? JSON.stringify([
+          work.turnId,
+          work.toolSource?.key,
+          action,
+          label,
+          work.command,
+          action === "read" || action === "edit" ? workEntryDisplayPath(work) : null,
+        ])
+      : null;
+    const previous = groups.at(-1);
+    if (key !== null && previous?.key === key) previous.entries.push(entry);
+    else groups.push({ entries: [entry], label, key });
+  }
+  return groups.map(({ entries, label }) => ({ entries, label }));
 }
 
 export function workGroupReceiptLabel(entries: readonly WorkLogPresentationEntry[]): string {

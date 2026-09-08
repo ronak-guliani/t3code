@@ -458,9 +458,7 @@ describe("MessagesTimeline", () => {
           page.getByRole("button", { name: /^(Expand|Collapse) details: Read file-/ }).elements(),
         ).toHaveLength(100);
         if (count === 125) {
-          await page
-            .getByRole("button", { name: "Show 25 earlier actions (25 remaining)", exact: true })
-            .click();
+          await page.getByRole("button", { name: "Show 25 earlier actions", exact: true }).click();
           expect(
             page.getByRole("button", { name: /^(Expand|Collapse) details: Read file-/ }).elements(),
           ).toHaveLength(125);
@@ -714,7 +712,7 @@ describe("MessagesTimeline", () => {
       expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(49);
       await page.getByRole("button", { name: "Show 50 earlier entries (72 remaining)" }).click();
       expect(history.children).toHaveLength(101);
-      await page.getByRole("button", { name: "Show 22 earlier entries (22 remaining)" }).click();
+      await page.getByRole("button", { name: "Show 22 earlier entries" }).click();
       expect(history.children).toHaveLength(122);
       expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(120);
       await expect
@@ -724,6 +722,130 @@ describe("MessagesTimeline", () => {
       await screen.unmount();
     }
   });
+
+  it.each([false, true])(
+    "folds repeated calls without hiding their output (settled: %s)",
+    async (settled) => {
+      const createdAt = "2026-09-08T10:00:00.000Z";
+      const turnId = TurnId.make(`repeat-${settled}`);
+      const work: TimelineEntry[] = Array.from({ length: 3 }, (_, index) => ({
+        id: `repeat-${index}`,
+        kind: "work",
+        createdAt,
+        entry: {
+          id: `repeat-${index}`,
+          turnId,
+          createdAt,
+          label: "Edited files",
+          tone: "tool",
+          itemType: "file_change",
+          toolLifecycleStatus: "completed",
+          detail: "Edit applied successfully.",
+          toolData: {
+            rawInput: { path: "/src/file.ts" },
+            rawOutput: { content: `Result ${index}` },
+          },
+        },
+      }));
+      const entries: TimelineEntry[] = settled
+        ? [
+            {
+              id: "repeat-user",
+              kind: "message",
+              createdAt,
+              message: {
+                id: MessageId.make("repeat-user"),
+                role: "user",
+                text: "Edit the file",
+                createdAt,
+                streaming: false,
+              },
+            },
+            ...work,
+            {
+              id: "repeat-response",
+              kind: "message",
+              createdAt,
+              message: {
+                id: MessageId.make("repeat-response"),
+                role: "assistant",
+                turnId,
+                text: "Done",
+                createdAt,
+                completedAt: createdAt,
+                streaming: false,
+              },
+            },
+          ]
+        : [
+            ...work,
+            {
+              id: "active-repeat",
+              kind: "work",
+              createdAt,
+              entry: {
+                id: "active-repeat",
+                turnId,
+                createdAt,
+                label: "Edited files",
+                tone: "tool",
+                itemType: "file_change",
+                toolLifecycleStatus: "inProgress",
+                detail: "/src/file.ts",
+              },
+            },
+          ];
+      const screen = await render(
+        <MessagesTimeline
+          {...buildProps()}
+          activeTurnId={turnId}
+          isWorking={!settled}
+          activeTurnInProgress={!settled}
+          timelineEntries={entries}
+        />,
+      );
+      try {
+        if (settled) await page.getByRole("button", { name: /^Worked/ }).click();
+        const repeat = page.getByRole("button", {
+          name: "Expand 3 calls: Edited file.ts",
+          exact: true,
+        });
+        await expect.element(repeat).toBeVisible();
+        expect(
+          page
+            .getByRole("button", { name: "Expand details: Edited file.ts", exact: true })
+            .elements(),
+        ).toHaveLength(0);
+        if (!settled)
+          await expect
+            .element(
+              page.getByRole("button", { name: "Expand details: Editing file.ts", exact: true }),
+            )
+            .toBeVisible();
+        await repeat.click();
+        const calls = page.getByRole("button", {
+          name: "Expand details: Edited file.ts",
+          exact: true,
+        });
+        expect(calls.elements()).toHaveLength(3);
+        for (let index = 0; index < 3; index += 1) {
+          await calls.first().click();
+          await expect.element(page.getByText(`Result ${index}`, { exact: true })).toBeVisible();
+        }
+        const workDetails = document.querySelectorAll("[data-tool-command-details]");
+        expect(workDetails).toHaveLength(3);
+        for (const detail of workDetails) {
+          expect(detail.parentElement?.querySelector("button")).toBeNull();
+        }
+        await page
+          .getByRole("button", { name: "Collapse 3 calls: Edited file.ts", exact: true })
+          .click();
+        await expect.element(page.getByText("Result 0", { exact: true })).not.toBeVisible();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
 
   it("keeps failures visible in a collapsed receipt after later successful work", async () => {
     const createdAt = new Date().toISOString();

@@ -91,6 +91,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { formatTimestamp } from "../../timestampFormat";
 import {
   compactWorkEntryLabel,
+  groupRepeatedWorkEntries,
+  hasWorkLogToolData,
   deriveWorkGroupActivity,
   extractCommandOutputText,
   workGroupReceiptLabel,
@@ -1134,12 +1136,11 @@ function WorkGroupHistory({
   const [visibleCount, setVisibleCount] = useState(50);
   return (
     <>
-      {entries.slice(-visibleCount).map((entry) => (
-        <SimpleWorkEntryRow
-          key={entry.stableId ?? entry.id}
-          canExpandCommand
-          compact
-          workEntry={entry}
+      {groupRepeatedWorkEntries(entries.slice(-visibleCount), repeatableWorkEntry).map((group) => (
+        <RepeatedWorkRow
+          key={group.entries[0]!.stableId ?? group.entries[0]!.id}
+          entries={group.entries}
+          label={group.label}
           workspaceRoot={workspaceRoot}
         />
       ))}
@@ -1149,11 +1150,69 @@ function WorkGroupHistory({
           className="chat-work-trigger mt-1 text-muted-foreground"
           onClick={() => setVisibleCount((count) => count + 50)}
         >
-          Show {Math.min(50, entries.length - visibleCount)} earlier actions (
-          {entries.length - visibleCount} remaining)
+          Show {Math.min(50, entries.length - visibleCount)} earlier actions
+          {entries.length - visibleCount > 50
+            ? ` (${entries.length - visibleCount} remaining)`
+            : ""}
         </button>
       ) : null}
     </>
+  );
+}
+
+function repeatableWorkEntry(entry: TimelineWorkEntry) {
+  return entry.agentRun || entry.action ? null : entry;
+}
+
+function RepeatedWorkRow({
+  entries,
+  label,
+  workspaceRoot,
+}: {
+  entries: TimelineWorkEntry[];
+  label: string;
+  workspaceRoot: string | undefined;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const first = entries[0]!;
+  if (entries.length === 1) {
+    return (
+      <SimpleWorkEntryRow
+        compact
+        canExpandCommand
+        workEntry={first}
+        workspaceRoot={workspaceRoot}
+      />
+    );
+  }
+  return (
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <CollapsibleTrigger
+        className="chat-work-trigger text-muted-foreground"
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${entries.length} calls: ${label}`}
+      >
+        {createElement(workEntryIcon(first), { className: "size-3", "aria-hidden": true })}
+        <span className="chat-work-label">{label}</span>
+        <span className="shrink-0">×{entries.length}</span>
+        <ChevronRightIcon
+          className={cn("size-3 shrink-0 chat-work-chevron", expanded && "rotate-90")}
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <WorkLogPanel open={expanded}>
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          {entries.map((entry) => (
+            <SimpleWorkEntryRow
+              key={entry.stableId ?? entry.id}
+              compact
+              canExpandCommand
+              workEntry={entry}
+              workspaceRoot={workspaceRoot}
+            />
+          ))}
+        </div>
+      </WorkLogPanel>
+    </Collapsible>
   );
 }
 
@@ -1203,29 +1262,33 @@ const ReasoningSection = memo(function ReasoningSection({
       </CollapsibleTrigger>
       <WorkLogPanel open={isExpanded}>
         <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
-          {history
-            .slice(-visibleCount)
-            .map((nestedRow) =>
-              nestedRow.kind === "work-entry" ? (
-                <SimpleWorkEntryRow
-                  key={nestedRow.id}
-                  workEntry={nestedRow.entry}
-                  canExpandCommand
-                  compact
-                  workspaceRoot={workspaceRoot}
-                />
-              ) : (
-                <TimelineRowContent key={nestedRow.id} row={nestedRow} />
-              ),
-            )}
+          {groupRepeatedWorkEntries(history.slice(-visibleCount), (item) =>
+            item.kind === "work-entry" ? repeatableWorkEntry(item.entry) : null,
+          ).map((group) => {
+            const first = group.entries[0]!;
+            return first.kind === "work-entry" ? (
+              <RepeatedWorkRow
+                key={first.id}
+                entries={group.entries.flatMap((item) =>
+                  item.kind === "work-entry" ? [item.entry] : [],
+                )}
+                label={group.label}
+                workspaceRoot={workspaceRoot}
+              />
+            ) : (
+              <TimelineRowContent key={first.id} row={first} />
+            );
+          })}
           {history.length > visibleCount && (
             <button
               type="button"
               className="chat-work-trigger"
               onClick={() => setVisibleCount((count) => count + 50)}
             >
-              Show {Math.min(50, history.length - visibleCount)} earlier entries (
-              {history.length - visibleCount} remaining)
+              Show {Math.min(50, history.length - visibleCount)} earlier entries
+              {history.length - visibleCount > 50
+                ? ` (${history.length - visibleCount} remaining)`
+                : ""}
             </button>
           )}
         </div>
@@ -1736,11 +1799,16 @@ const WorkEntryDetails = memo(function WorkEntryDetails({
   workEntry: TimelineWorkEntry;
 }) {
   const output = extractCommandOutputText(workEntry.toolData);
+  const command = workEntryFullCommand(workEntry);
+  const fallback =
+    !output && hasWorkLogToolData(workEntry.toolData)
+      ? JSON.stringify(workEntry.toolData, null, 2)
+      : undefined;
   const detail = [
-    workEntryFullCommand(workEntry),
+    command,
     output ?? workEntry.detail,
     ...(output ? [] : (workEntry.changedFiles ?? [])),
-    workEntry.toolData != null && !output ? JSON.stringify(workEntry.toolData, null, 2) : undefined,
+    fallback === "{}" || fallback === "[]" ? undefined : fallback,
   ]
     .filter((value, index, values) => value && values.indexOf(value) === index)
     .join("\n\n");
@@ -1753,7 +1821,6 @@ const WorkEntryDetails = memo(function WorkEntryDetails({
       >
         {detail}
       </pre>
-      <MessageCopyButton text={detail} size="icon-xs" variant="ghost" />
     </div>
   );
 });
@@ -1799,7 +1866,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
 
   if (props.compact && !workEntry.action) {
     const hasDetail =
-      Boolean(fullCommand || workEntry.detail || hasChangedFiles) || workEntry.toolData != null;
+      Boolean(fullCommand || workEntry.detail || hasChangedFiles) ||
+      hasWorkLogToolData(workEntry.toolData);
     const label = compactWorkEntryLabel(workEntry);
     const failed = workEntryNeedsAttention(workEntry);
     return (

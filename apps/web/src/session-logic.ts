@@ -5,6 +5,7 @@ import {
   mergeWorkLogToolData,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { extractNormalizedChangedFilePathsFromToolPayload } from "@t3tools/shared/toolChangedFiles";
+import { extractToolCommandInput } from "@t3tools/shared/toolActivity";
 import {
   ApprovalRequestId,
   type ChildThreadLifecycle,
@@ -1191,34 +1192,11 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   command: string | null;
   rawCommand: string | null;
 } {
-  const data = asRecord(payload?.data);
-  const item = asRecord(data?.item);
-  const itemResult = asRecord(item?.result);
-  const itemInput = asRecord(item?.input);
-  const itemType = asTrimmedString(payload?.itemType);
-  const detail = asTrimmedString(payload?.detail);
-  const candidates: unknown[] = [
-    item?.command,
-    itemInput?.command,
-    itemResult?.command,
-    data?.command,
-    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
-  ];
-
-  for (const candidate of candidates) {
-    const command = normalizeCommandValue(candidate);
-    if (!command) {
-      continue;
-    }
-    return {
-      command,
-      rawCommand: toRawToolCommand(candidate, command),
-    };
-  }
-
+  const candidate = extractToolCommandInput(asRecord(payload?.data) ?? undefined);
+  const command = normalizeCommandValue(candidate);
   return {
-    command: null,
-    rawCommand: null,
+    command,
+    rawCommand: toRawToolCommand(candidate, command),
   };
 }
 
