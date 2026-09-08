@@ -737,9 +737,17 @@ function ThreadNavigationSidebarPane(
       selectedThreadKey: props.selectedThreadKey ?? "",
       serverConfigs,
       snoozePresetMinute: nowMinute,
+      threadCompletionReadAt,
       threadSearchMatchByKey,
     }),
-    [projectCwdByKey, props.selectedThreadKey, serverConfigs, nowMinute, threadSearchMatchByKey],
+    [
+      projectCwdByKey,
+      props.selectedThreadKey,
+      serverConfigs,
+      nowMinute,
+      threadCompletionReadAt,
+      threadSearchMatchByKey,
+    ],
   );
   const sidebarItemsAreEqual = useCallback(
     (previous: SidebarListItem, item: SidebarListItem): boolean => {
@@ -1012,6 +1020,7 @@ function ThreadNavigationSidebarPane(
       savedConnectionsById,
       serverConfigs,
       shelfPreferencesLoaded,
+      threadCompletionReadAt,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
       settleThread,

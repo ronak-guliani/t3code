@@ -835,6 +835,7 @@ export function HomeScreen(props: HomeScreenProps) {
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       threadListV2Items,
+      threadCompletionReadAt,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
       toggleSettledShelf,
@@ -842,6 +843,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.searchQuery,
       nowMinute,
       projectCwdByKey,
+      threadCompletionReadAt,
     ],
   );
   const v2KeyExtractor = useCallback((item: ThreadListV2ListItem) => item.key, []);
@@ -855,18 +857,27 @@ export function HomeScreen(props: HomeScreenProps) {
       serverConfigs,
       searchQuery: props.searchQuery,
       snoozePresetMinute: nowMinute,
+      threadCompletionReadAt,
       threadSearchMatchByKey,
     }),
-    [projectCwdByKey, props.searchQuery, serverConfigs, nowMinute, threadSearchMatchByKey],
+    [
+      projectCwdByKey,
+      props.searchQuery,
+      serverConfigs,
+      nowMinute,
+      threadCompletionReadAt,
+      threadSearchMatchByKey,
+    ],
   );
 
   const extraData = useMemo(
     () => ({
       projectCwdByKey,
       searchQuery: props.searchQuery,
+      threadCompletionReadAt,
       threadSearchMatchByKey,
     }),
-    [projectCwdByKey, props.searchQuery, threadSearchMatchByKey],
+    [projectCwdByKey, props.searchQuery, threadCompletionReadAt, threadSearchMatchByKey],
   );
 
   const renderItem = useCallback(
@@ -954,6 +965,7 @@ export function HomeScreen(props: HomeScreenProps) {
       props.onSelectPendingTask,
       props.onSelectThread,
       props.searchQuery,
+      threadCompletionReadAt,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
       updateGroupDisplay,
