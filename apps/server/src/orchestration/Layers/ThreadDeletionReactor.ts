@@ -149,28 +149,26 @@ const make = Effect.gen(function* () {
   ) {
     const branches = yield* checkoutCoordinator.withCheckout(
       cleanup.cwd,
-      git.listBranches({ cwd: cleanup.cwd }),
+      git.listRegisteredWorktrees(cleanup.cwd),
     );
     if (!branches.isRepo) {
       return { isRepo: false, registered: false, branchName: null };
     }
-    const registeredBranches = yield* Effect.forEach(
-      branches.branches.flatMap((branch) =>
-        branch.worktreePath === null ? [] : [{ name: branch.name, path: branch.worktreePath }],
-      ),
-      ({ name, path }) =>
+    const registeredWorktrees = yield* Effect.forEach(
+      branches.worktrees,
+      ({ branch, path }) =>
         Effect.promise(() => canonicalizeWorktreePath(path)).pipe(
-          Effect.map((canonicalPath) => ({ name, path: canonicalPath })),
+          Effect.map((canonicalPath) => ({ branch, path: canonicalPath })),
         ),
       { concurrency: 4 },
     );
-    const registeredBranch = registeredBranches.find(
+    const registeredWorktree = registeredWorktrees.find(
       ({ path }) => path === cleanup.canonicalWorktreePath,
     );
     return {
       isRepo: true,
-      registered: registeredBranch !== undefined,
-      branchName: registeredBranch?.name ?? null,
+      registered: registeredWorktree !== undefined,
+      branchName: registeredWorktree?.branch ?? null,
     };
   });
 
@@ -491,52 +489,48 @@ const make = Effect.gen(function* () {
       yield* checkoutCoordinator.withCheckout(
         cleanup.cwd,
         Effect.gen(function* () {
-          const branches = yield* git.listBranches({ cwd: cleanup.cwd });
-          if (!branches.isRepo) {
+          const registeredWorktrees = yield* git.listRegisteredWorktrees(cleanup.cwd);
+          if (!registeredWorktrees.isRepo) {
             yield* worktreeCleanupJobs.markNeedsAttention({
               threadId: cleanup.threadId,
               reason: "repository-unavailable",
             });
             return;
           }
-          const registeredBranches = yield* Effect.forEach(
-            branches.branches.flatMap((branch) =>
-              branch.worktreePath === null
-                ? []
-                : [{ name: branch.name, path: branch.worktreePath }],
-            ),
-            ({ name, path }) =>
+          const canonicalWorktrees = yield* Effect.forEach(
+            registeredWorktrees.worktrees,
+            ({ branch, path }) =>
               Effect.promise(() => canonicalizeWorktreePath(path)).pipe(
                 Effect.map((canonicalRegisteredPath) => ({
-                  name,
+                  branch,
                   path: canonicalRegisteredPath,
                 })),
               ),
             { concurrency: 4 },
           );
-          const registeredBranch = registeredBranches.find(({ path }) => path === canonicalPath);
+          const registeredWorktree = canonicalWorktrees.find(({ path }) => path === canonicalPath);
           const exists = yield* fileSystem.exists(canonicalPath);
-          if (!exists && registeredBranch === undefined) {
+          if (!exists && registeredWorktree === undefined) {
             yield* git.pruneWorktrees(cleanup.cwd);
             yield* worktreeCleanupJobs.markCompleted({ threadId: cleanup.threadId });
             return;
           }
-          if (registeredBranch === undefined) {
+          if (registeredWorktree === undefined) {
             yield* worktreeCleanupJobs.markNeedsAttention({
               threadId: cleanup.threadId,
               reason: "worktree-registration-mismatch",
             });
             return;
           }
-          if (preflight.branch === null || registeredBranch.name !== preflight.branch) {
+          if (preflight.branch === null || registeredWorktree.branch !== preflight.branch) {
             yield* worktreeCleanupJobs.markNeedsAttention({
               threadId: cleanup.threadId,
               reason: "worktree-branch-mismatch",
             });
             return;
           }
-          const status = yield* git.statusDetailsLocal(canonicalPath);
-          if (status.hasWorkingTreeChanges) {
+          const isClean = yield* git.isWorktreeCleanForRemoval(canonicalPath);
+          if (!isClean) {
             yield* deferCleanup(
               cleanup.threadId,
               "dirty-worktree",
@@ -822,7 +816,7 @@ const make = Effect.gen(function* () {
     const now = yield* cleanupNow();
     const jobs = yield* worktreeCleanupJobs.list();
     yield* Effect.forEach(
-      jobs.filter((job) => job.status === "removing"),
+      jobs.filter((job) => job.status === "removing" && !queuedWorktreeCleanups.has(job.threadId)),
       (job) =>
         Effect.gen(function* () {
           const exists = yield* fileSystem.exists(job.canonicalWorktreePath);
@@ -844,20 +838,42 @@ const make = Effect.gen(function* () {
             nextAttemptAt: now,
             reason: "recovered-after-restart",
           });
-        }),
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              const nextAttemptAt = yield* cleanupRetryAt(job.attemptCount);
+              yield* worktreeCleanupJobs
+                .recoverRemoving({
+                  threadId: job.threadId,
+                  nextAttemptAt,
+                  reason: "recovery-check-failed",
+                })
+                .pipe(
+                  Effect.catchCause((recoveryCause) =>
+                    Effect.logError("failed to persist worktree removal recovery", {
+                      threadId: job.threadId,
+                      cause: Cause.pretty(recoveryCause),
+                    }),
+                  ),
+                );
+              yield* Effect.logWarning(
+                "worktree removal recovery deferred after transient failure",
+                {
+                  threadId: job.threadId,
+                  cause: Cause.pretty(cause),
+                },
+              );
+            }),
+          ),
+        ),
       { concurrency: 2, discard: true },
     );
   }).pipe(
-    Effect.catchTags({
-      PersistenceSqlError: (error) =>
-        Effect.logWarning("failed to recover interrupted worktree removals", {
-          error: error.message,
-        }),
-      PersistenceDecodeError: (error) =>
-        Effect.logWarning("failed to recover interrupted worktree removals", {
-          error: error.message,
-        }),
-    }),
+    Effect.catchCause((cause) =>
+      Effect.logError("failed to enumerate interrupted worktree removals", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
   );
 
   const enqueueDueWorktreeCleanups = Effect.fn("enqueueDueWorktreeCleanups")(function* () {
@@ -867,7 +883,14 @@ const make = Effect.gen(function* () {
       discard: true,
     });
   });
-  const enqueueDueWorktreeCleanupsSafely = () => enqueueDueWorktreeCleanups();
+  const enqueueDueWorktreeCleanupsSafely = () =>
+    enqueueDueWorktreeCleanups().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("worktree cleanup due sweep failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
   const discoverArchivedCleanupCandidates = Effect.fn("discoverArchivedCleanupCandidates")(
     function* () {
@@ -881,7 +904,14 @@ const make = Effect.gen(function* () {
       });
     },
   );
-  const discoverArchivedCleanupCandidatesSafely = () => discoverArchivedCleanupCandidates();
+  const discoverArchivedCleanupCandidatesSafely = () =>
+    discoverArchivedCleanupCandidates().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("archived worktree cleanup discovery failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
 
   // Associations are written when a PR is opened/linked and otherwise only
   // refreshed on archive cleanup. Without a background pass, sidebar chrome
@@ -976,19 +1006,17 @@ const make = Effect.gen(function* () {
   );
 
   const start: ThreadDeletionReactorShape["start"] = Effect.fn("start")(function* () {
-    yield* recoverInterruptedRemovals.pipe(Effect.ignore);
+    yield* recoverInterruptedRemovals;
     yield* discoverArchivedCleanupCandidatesSafely().pipe(Effect.ignore);
     yield* enqueueDueWorktreeCleanupsSafely().pipe(Effect.ignore);
     yield* Effect.forkScoped(
       enqueueDueWorktreeCleanupsSafely().pipe(
         Effect.repeat(Schedule.spaced(CLEANUP_DUE_SWEEP_INTERVAL)),
-        Effect.ignore,
       ),
     );
     yield* Effect.forkScoped(
       discoverArchivedCleanupCandidatesSafely().pipe(
         Effect.repeat(Schedule.spaced(CLEANUP_RECONCILIATION_INTERVAL)),
-        Effect.ignore,
       ),
     );
     yield* Effect.forkScoped(

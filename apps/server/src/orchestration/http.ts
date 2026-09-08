@@ -234,7 +234,7 @@ export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
     const worktrees = yield* Effect.forEach(
       projects.values(),
       (project) =>
-        git.listBranches({ cwd: project.workspaceRoot }).pipe(
+        git.listRegisteredWorktrees(project.workspaceRoot).pipe(
           Effect.mapError(
             (cause) =>
               new OrchestrationGetSnapshotError({
@@ -244,9 +244,9 @@ export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
           ),
           Effect.flatMap((result) =>
             Effect.forEach(
-              result.branches.filter((branch) => branch.worktreePath !== null),
-              (branch) =>
-                Effect.promise(() => canonicalizeWorktreePath(branch.worktreePath!)).pipe(
+              result.worktrees,
+              (worktree) =>
+                Effect.promise(() => canonicalizeWorktreePath(worktree.path)).pipe(
                   Effect.map((path) => {
                     registeredPaths.add(path);
                     const cleanupIntents = jobsByPath.get(path) ?? [];
