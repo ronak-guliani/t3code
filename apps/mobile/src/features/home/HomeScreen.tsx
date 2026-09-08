@@ -843,7 +843,6 @@ export function HomeScreen(props: HomeScreenProps) {
       props.searchQuery,
       nowMinute,
       projectCwdByKey,
-      threadCompletionReadAt,
     ],
   );
   const v2KeyExtractor = useCallback((item: ThreadListV2ListItem) => item.key, []);
