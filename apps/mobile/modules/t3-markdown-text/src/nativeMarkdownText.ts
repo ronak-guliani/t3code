@@ -48,6 +48,38 @@ export type NativeMarkdownDocumentChunk =
       readonly node: MarkdownNode;
     };
 
+function markdownValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => markdownValuesEqual(value, right[index]))
+    );
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return (
+    keys.length === Object.keys(rightRecord).length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(rightRecord, key) && markdownValuesEqual(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function markdownNodesEqual(left: MarkdownNode, right: MarkdownNode): boolean {
+  return markdownValuesEqual(left, right);
+}
+
 interface RunContext {
   readonly bold: boolean;
   readonly italic: boolean;
@@ -696,19 +728,29 @@ function containsRichBlock(node: MarkdownNode): boolean {
 
 export function nativeMarkdownDocumentChunks(
   document: MarkdownNode,
+  previousChunks: ReadonlyArray<NativeMarkdownDocumentChunk> = [],
 ): ReadonlyArray<NativeMarkdownDocumentChunk> {
   const chunks: NativeMarkdownDocumentChunk[] = [];
+  const previousByKey = new Map(previousChunks.map((chunk) => [chunk.key, chunk]));
   let selectableNodes: MarkdownNode[] = [];
+
+  const appendChunk = (chunk: NativeMarkdownDocumentChunk) => {
+    const previous = previousByKey.get(chunk.key);
+    chunks.push(
+      previous?.kind === chunk.kind && markdownNodesEqual(previous.node, chunk.node)
+        ? previous
+        : chunk,
+    );
+  };
 
   const flushSelectable = () => {
     if (selectableNodes.length === 0) {
       return;
     }
     const first = selectableNodes[0];
-    const last = selectableNodes.at(-1);
-    chunks.push({
+    appendChunk({
       kind: "selectable",
-      key: `selectable:${first?.beg ?? "start"}:${last?.end ?? "end"}`,
+      key: `selectable:${first?.beg ?? chunks.length}`,
       node: {
         type: "document",
         children: selectableNodes,
@@ -724,9 +766,9 @@ export function nativeMarkdownDocumentChunks(
     }
 
     flushSelectable();
-    chunks.push({
+    appendChunk({
       kind: "rich",
-      key: `rich:${child.type}:${child.beg ?? index}:${child.end ?? index}`,
+      key: `rich:${child.type}:${child.beg ?? index}`,
       node: child,
     });
   }
