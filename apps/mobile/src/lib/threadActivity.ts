@@ -869,19 +869,19 @@ function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
   return "zap";
 }
 
-function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
+function buildWorkEntryExpandedBody(entry: WorkLogEntry, output: string | null): string | null {
   const blocks: string[] = [];
   const appendBlock = (value: string | null | undefined) => {
     const trimmed = value?.trim();
     if (trimmed && (entry.command || !blocks.includes(trimmed))) blocks.push(trimmed);
   };
 
-  if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
+  if (!output && entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
     appendBlock(`MCP call\n${JSON.stringify(entry.toolData, null, 2)}`);
   }
   appendBlock(entry.rawCommand ?? entry.command);
-  appendBlock(entry.detail);
-  if ((entry.changedFiles?.length ?? 0) > 0) {
+  appendBlock(output ?? entry.detail);
+  if (!output && (entry.changedFiles?.length ?? 0) > 0) {
     appendBlock(entry.changedFiles!.join("\n"));
   }
 
@@ -892,20 +892,28 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
  * A row only opens when its body says more than its collapsed line. A row
  * whose only detail is the single-line text it already shows (a runtime
  * warning, a task summary, a short command) has nothing to reveal.
- * Multi-line text still expands: the collapsed row truncates it to one line.
+ * Multi-line text still expands: the collapsed label normalizes its whitespace.
  * Cheap field checks come first so large tool payloads are not serialized
  * for every row (see the deferred-expansion test).
  */
-function workEntryHasExpandedBody(entry: WorkLogEntry, collapsedText: string): boolean {
+function workEntryHasExpandedBody(
+  entry: WorkLogEntry,
+  collapsedText: string,
+  getOutput: () => string | null,
+): boolean {
   if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
   if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
   const parts = [entry.rawCommand ?? entry.command, entry.detail]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
-  if (parts.length === 0) return false;
+  if (parts.length === 0) return getOutput() !== null;
   if (parts.length > 1 && new Set(parts).size > 1) return true;
   const only = parts[0]!;
-  return only.includes("\n") || collapseWhitespace(only) !== collapseWhitespace(collapsedText);
+  return (
+    only.includes("\n") ||
+    collapseWhitespace(only) !== collapseWhitespace(collapsedText) ||
+    getOutput() !== null
+  );
 }
 
 function collapseWhitespace(value: string): string {
@@ -2135,7 +2143,11 @@ function toThreadFeedActivityEntry(
 ): Extract<RawThreadFeedEntry, { readonly type: "activity" }> {
   const summary = workEntryHeading(entry);
   const detail = workEntryPreview(entry);
-  const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry));
+  const getOutput = memoizeValue(() => {
+    const output = extractCommandOutputText(entry.toolData);
+    return entry.command && output ? stripTrailingExitCode(output).output : output;
+  });
+  const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry, getOutput()));
   const getCopyText = memoizeValue(() => {
     const copyLabel = capitalizePhrase(normalizeCompactToolLabel(entry.toolTitle || entry.label));
     const fullDetail = getFullDetail();
@@ -2146,7 +2158,7 @@ function toThreadFeedActivityEntry(
         .filter((value): value is string => Boolean(value))
         .join("\n");
     }
-    return [copyLabel, detail, fullDetail]
+    return [copyLabel, getOutput() ? null : detail, fullDetail]
       .filter((value, index, values): value is string => {
         return Boolean(value) && values.indexOf(value) === index;
       })
@@ -2163,7 +2175,7 @@ function toThreadFeedActivityEntry(
       turnId: entry.turnId,
       summary,
       detail,
-      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry)),
+      canExpand: workEntryHasExpandedBody(entry, workEntryRowLabel(entry), getOutput),
       getFullDetail,
       getCopyText,
       icon: workEntryIcon(entry),

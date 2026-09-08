@@ -888,7 +888,7 @@ describe("buildThreadFeed", () => {
     expect(row?.getFullDetail()).toBe(command);
   });
 
-  it("does not show command output when the command input is missing", () => {
+  it("keeps authoritative output expandable when the command input is missing", () => {
     const thread = makeThread({
       id: ThreadId.make("thread-command-without-input"),
       projectId: ProjectId.make("project-1"),
@@ -913,8 +913,116 @@ describe("buildThreadFeed", () => {
     expect(group?.type).toBe("activity-group");
     if (group?.type !== "activity-group") return;
     expect(group.activities[0]?.detail).toBeNull();
-    expect(group.activities[0]?.getFullDetail()).toBeNull();
+    expect(group.activities[0]?.canExpand).toBe(true);
+    expect(group.activities[0]?.getFullDetail()).toBe("output without command metadata");
   });
+
+  it.each(["file_change", "dynamic_tool_call", "mcp_tool_call"])(
+    "prefers full output over shortened previews in expanded and copied %s rows",
+    (itemType) => {
+      const path = `apps/mobile/src/features/threads/${"long-filename-".repeat(12)}.tsx`;
+      const preview = `${path.slice(0, 70)}...`;
+      const output = `Updated ${path}\nAll changes applied.`;
+      const [group] = buildThreadFeed(
+        makeThread({
+          id: ThreadId.make("thread-authoritative-output"),
+          projectId: ProjectId.make("project-1"),
+          title: "Authoritative output",
+          activities: [
+            makeActivity({
+              id: EventId.make("authoritative-output"),
+              createdAt: "2026-09-01T00:00:00.000Z",
+              kind: "tool.completed",
+              tone: "tool",
+              summary: "Edited file",
+              payload: {
+                itemType,
+                title: "Edited file",
+                detail: preview,
+                data: {
+                  toolName: "Edit",
+                  files: [{ path: preview }],
+                  rawInput: { file_path: path },
+                  rawOutput: { content: output },
+                },
+              },
+            }),
+          ],
+        }),
+      );
+      expect(group?.type).toBe("activity-group");
+      if (group?.type !== "activity-group") return;
+      const row = group.activities[0]!;
+      expect(row.workEntry.changedFiles).toEqual([preview]);
+      expect(row.canExpand).toBe(true);
+      expect(row.getFullDetail()).toBe(output);
+      expect(row.getCopyText()).toBe(`Edited file\n${output}`);
+      expect(row.getCopyText()).not.toContain(preview);
+    },
+  );
+
+  it.each([
+    { rawOutput: { content: "Full tool result" } },
+    { item: { result: { content: [{ text: "Full tool result" }] } } },
+    { content: [{ type: "content", content: { text: "Full tool result" } }] },
+  ])("opens output-only tool rows without preview metadata: %j", (data) => {
+    const [group] = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-output-only-tool"),
+        projectId: ProjectId.make("project-1"),
+        title: "Output-only tool",
+        activities: [
+          makeActivity({
+            id: EventId.make("output-only-tool"),
+            createdAt: "2026-09-01T00:00:00.000Z",
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "Inspected workspace",
+            payload: { itemType: "dynamic_tool_call", data },
+          }),
+        ],
+      }),
+    );
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const row = group.activities[0]!;
+    expect(row.canExpand).toBe(true);
+    expect(row.getFullDetail()).toBe("Full tool result");
+    expect(row.getCopyText()).toBe("Inspected workspace\nFull tool result");
+  });
+
+  it.each([undefined, { content: "" }, { content: " \n " }])(
+    "keeps detail and changed-file fallbacks when raw output is empty: %j",
+    (rawOutput) => {
+      const [group] = buildThreadFeed(
+        makeThread({
+          id: ThreadId.make("thread-output-fallback"),
+          projectId: ProjectId.make("project-1"),
+          title: "Output fallback",
+          activities: [
+            makeActivity({
+              id: EventId.make("output-fallback"),
+              createdAt: "2026-09-01T00:00:00.000Z",
+              kind: "tool.completed",
+              tone: "tool",
+              summary: "Edited file",
+              payload: {
+                itemType: "file_change",
+                detail: "Applied patch",
+                data: {
+                  files: [{ path: "src/file.ts" }],
+                  ...(rawOutput ? { rawOutput } : {}),
+                },
+              },
+            }),
+          ],
+        }),
+      );
+      expect(group?.type).toBe("activity-group");
+      if (group?.type !== "activity-group") return;
+      expect(group.activities[0]?.getFullDetail()).toBe("Applied patch\n\nsrc/file.ts");
+    },
+  );
 
   it("keeps setup failures visible without routine setup notices before or after a turn", () => {
     const thread = makeThread({
@@ -1466,7 +1574,7 @@ describe("buildThreadFeed", () => {
     },
   );
 
-  it("retains Claude MCP metadata behind friendly row and running labels", () => {
+  it("prefers Claude MCP results while retaining friendly labels and source metadata", () => {
     const turnId = TurnId.make("turn-claude-mcp");
     const toolData = {
       toolName: "mcp__t3-code__preview_click",
@@ -1519,10 +1627,9 @@ describe("buildThreadFeed", () => {
     });
     if (!group || group.type !== "activity-group") return;
     const activity = group.activities[0]!;
-    const fullDetail = `MCP call\n${JSON.stringify(toolData, null, 2)}\n\n${detail}`;
     expect(activity.workEntry.toolData).toBe(toolData);
-    expect(activity.getFullDetail()).toBe(fullDetail);
-    expect(activity.getCopyText()).toBe(`MCP tool call\n${detail}\n${fullDetail}`);
+    expect(activity.getFullDetail()).toBe("Clicked Continue");
+    expect(activity.getCopyText()).toBe("MCP tool call\nClicked Continue");
     expect(
       deriveThreadFeedPresentation(
         feed,
@@ -1888,6 +1995,49 @@ describe("buildThreadFeed", () => {
     expect(serializedToolOutputs).toBe(1);
     expect(group.activities[0]?.getCopyText()).toContain('"output"');
     expect(serializedToolOutputs).toBe(1);
+  });
+
+  it("defers and memoizes raw file output extraction for collapsed work rows", () => {
+    let outputReads = 0;
+    const output = "Full file contents\n".repeat(2_000);
+    const [group] = buildThreadFeed(
+      makeThread({
+        id: ThreadId.make("thread-deferred-file-output"),
+        projectId: ProjectId.make("project-1"),
+        title: "Deferred file output",
+        activities: Array.from({ length: 5_000 }, (_, index) =>
+          makeActivity({
+            id: EventId.make(`file-output-${index}`),
+            createdAt: new Date(Date.UTC(2026, 3, 1, 0, 0, index)).toISOString(),
+            kind: "tool.completed",
+            tone: "tool",
+            summary: "Edited file",
+            payload: {
+              itemType: "file_change",
+              data: {
+                files: [{ path: `src/file-${index}.ts` }],
+                rawOutput: {
+                  get content() {
+                    outputReads += 1;
+                    return output;
+                  },
+                },
+              },
+            },
+          }),
+        ),
+      }),
+    );
+    expect(outputReads).toBe(0);
+    expect(group?.type).toBe("activity-group");
+    if (group?.type !== "activity-group") return;
+    const row = group.activities[0]!;
+    expect(row.getFullDetail()).toBe(output.trim());
+    const readsAfterExpansion = outputReads;
+    expect(readsAfterExpansion).toBeGreaterThan(0);
+    expect(row.getCopyText()).toBe(`Edited file\n${output.trim()}`);
+    expect(row.getFullDetail()).toBe(output.trim());
+    expect(outputReads).toBe(readsAfterExpansion);
   });
 
   it("keeps the first and terminal assistant messages visible around settled work", () => {
