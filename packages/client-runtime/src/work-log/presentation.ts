@@ -138,10 +138,16 @@ function workEntryDisplayPath(entry: WorkLogPresentationEntry): string | null {
   }
   if (path) return path;
   for (const value of [entry.viewedImagePath, ...(entry.changedFiles ?? []), entry.detail]) {
+    if (!value) continue;
+    try {
+      JSON.parse(value);
+      continue;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
     if (
-      value &&
       !/(?:\.\.\.|…)$/.test(value.trim()) &&
-      !/[\r\n{}[\]]/.test(value) &&
+      !/[\r\n]/.test(value) &&
       (value.includes("/") || value.includes("\\") || /\.[a-z\d]+$/i.test(value))
     ) {
       return value;

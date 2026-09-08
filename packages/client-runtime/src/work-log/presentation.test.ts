@@ -234,6 +234,42 @@ describe("live activity strips", () => {
     expect(compactWorkEntryLabel({ label: "Read file", tone: "tool", detail })).toBe("Read file");
   });
 
+  describe.each(["detail", "changedFiles", "viewedImagePath"] as const)(
+    "%s filename fallback",
+    (source) => {
+      const entry = (value: string): WorkLogPresentationEntry => ({
+        label: "Read file",
+        tone: "tool",
+        ...(source === "changedFiles"
+          ? { changedFiles: [value] }
+          : source === "viewedImagePath"
+            ? { viewedImagePath: value }
+            : { detail: value }),
+      });
+
+      it.each([
+        '"/src/file.ts"',
+        ' "README.md" ',
+        JSON.stringify("C:\\src\\file.ts"),
+        '{"path":"/src/file.ts"}',
+        '["/src/file.ts"]',
+        "1.25",
+      ])("rejects the complete JSON value %s", (value) => {
+        expect(compactWorkEntryLabel(entry(value))).toBe("Read file");
+      });
+
+      it.each([
+        ["/src/[id].tsx", "[id].tsx"],
+        ["/src/{locale}.ts", "{locale}.ts"],
+        ["C:\\src\\[slug].tsx", "[slug].tsx"],
+        ["[...slug].tsx", "[...slug].tsx"],
+        ['[id]/{"version":1}.ts', '{"version":1}.ts'],
+      ])("preserves valid path %s", (value, filename) => {
+        expect(compactWorkEntryLabel(entry(value))).toBe(`Read ${filename}`);
+      });
+    },
+  );
+
   it.each([
     "t3-code-preview_status",
     "t3-code.t3-code-preview_status",
