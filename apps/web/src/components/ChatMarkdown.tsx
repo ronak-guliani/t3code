@@ -182,13 +182,16 @@ function threadLinkProperties(environmentId: EnvironmentId, threadId: string) {
 function linkChatReferencesInText(
   node: MarkdownAstNode,
   input: {
-    readonly environmentId: EnvironmentId;
+    readonly environmentId?: EnvironmentId;
     readonly githubReferences: ReadonlyMap<string, string>;
   },
 ): MarkdownAstNode[] {
   const text = node.value ?? "";
   const matches = [
     ...[...text.matchAll(THREAD_REFERENCE_PATTERN)].flatMap((match) => {
+      // Thread references resolve against an environment; without one the raw
+      // text must pass through untouched.
+      if (!input.environmentId) return [];
       const matchIndex = match.index;
       const prefix = match[1];
       const threadId = match[2];
@@ -236,7 +239,7 @@ function linkChatReferencesInText(
       nextNodes.push({ type: "text", value: text.slice(cursor, match.labelStart) });
     }
     const normalizedValue = match.kind === "thread" ? normalizeThreadId(match.value) : match.value;
-    if (match.kind === "thread" && isThreadId(match.value)) {
+    if (match.kind === "thread" && input.environmentId && isThreadId(match.value)) {
       nextNodes.push({
         type: "link",
         url: buildThreadPath({
@@ -352,12 +355,13 @@ function remarkClassifyChatLinks(input: {
 
       node.children = node.children.flatMap((child) => {
         if (child.type === "text") {
-          return input.environmentId
-            ? linkChatReferencesInText(child, {
-                environmentId: input.environmentId,
-                githubReferences: input.githubReferences,
-              })
-            : [child];
+          // Qualified owner/repo#N references are repository-complete, so link
+          // them even without a thread environment; thread inference still
+          // requires one (enforced inside linkChatReferencesInText).
+          return linkChatReferencesInText(child, {
+            ...(input.environmentId ? { environmentId: input.environmentId } : {}),
+            githubReferences: input.githubReferences,
+          });
         }
         visit(child, false);
         return [child];
@@ -838,7 +842,7 @@ function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<
   return suffixByPath;
 }
 
-function githubRepositoryForProject(
+export function githubRepositoryForProject(
   project:
     | {
         readonly repositoryIdentity?: {
@@ -853,8 +857,15 @@ function githubRepositoryForProject(
   const identity = project?.repositoryIdentity;
   if (identity?.provider !== "github") return null;
   const segments = identity.canonicalKey.split("/").filter(Boolean);
-  const hostSegment = segments[0]?.toLowerCase();
-  const host = hostSegment && hostSegment.includes(".") ? hostSegment : "github.com";
+  // The canonical key leads with the remote hostname whenever it carries a
+  // host/owner/repo shape. Accept single-label intranet hosts that contain
+  // "github" (recognized as GitHub Self-Hosted) alongside dotted hostnames, so
+  // a two-segment owner/repo key never misreads its owner as a host.
+  const hostSegment = segments.length >= 3 ? segments[0]?.toLowerCase() : undefined;
+  const host =
+    hostSegment && (hostSegment.includes(".") || hostSegment.includes("github"))
+      ? hostSegment
+      : "github.com";
   if (identity.owner && identity.name) {
     return { repository: `${identity.owner}/${identity.name}`.toLowerCase(), host };
   }

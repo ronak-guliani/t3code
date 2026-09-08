@@ -8,7 +8,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useNavigate: () => () => Promise.resolve(),
 }));
 
-import ChatMarkdown from "./ChatMarkdown";
+import ChatMarkdown, { githubRepositoryForProject } from "./ChatMarkdown";
 
 describe("ChatMarkdown", () => {
   it.each([
@@ -118,6 +118,15 @@ describe("ChatMarkdown", () => {
     expect(markup).not.toContain("data-git-hub-pull-request-url");
   });
 
+  it("links qualified GitHub references without a thread context", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown text="See owner/repo#42 for the related change." cwd="/Users/julius/project" />,
+    );
+
+    expect(markup).toContain('href="https://github.com/owner/repo/issues/42"');
+    expect(markup).toContain("owner/repo#42");
+  });
+
   it("does not infer a repository for bare GitHub references", () => {
     const markup = renderToStaticMarkup(
       <ChatMarkdown
@@ -132,6 +141,45 @@ describe("ChatMarkdown", () => {
 
     expect(markup).not.toContain('href="https://github.com/');
     expect(markup).toContain("#42");
+  });
+
+  it.each([
+    {
+      canonicalKey: "github/acme/repo",
+      expected: { repository: "acme/repo", host: "github" },
+    },
+    {
+      canonicalKey: "github.example.com/acme/repo",
+      expected: { repository: "acme/repo", host: "github.example.com" },
+    },
+    {
+      canonicalKey: "github.com/acme/repo",
+      expected: { repository: "acme/repo", host: "github.com" },
+    },
+  ])("preserves the enterprise host from $canonicalKey", ({ canonicalKey, expected }) => {
+    expect(
+      githubRepositoryForProject({
+        repositoryIdentity: {
+          provider: "github",
+          owner: "acme",
+          name: "repo",
+          canonicalKey,
+        },
+      }),
+    ).toEqual(expected);
+  });
+
+  it("does not misread an owner as a host for owner/repo keys", () => {
+    expect(
+      githubRepositoryForProject({
+        repositoryIdentity: {
+          provider: "github",
+          owner: "acme",
+          name: "repo",
+          canonicalKey: "acme/repo",
+        },
+      }),
+    ).toEqual({ repository: "acme/repo", host: "github.com" });
   });
 
   it("does not trust route-shaped links on unrelated origins", () => {
