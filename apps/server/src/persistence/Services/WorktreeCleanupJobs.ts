@@ -51,6 +51,7 @@ export const WorktreeCleanupIntent = Schema.Struct({
   canonicalWorktreePath: Schema.String,
   requestedAt: IsoDateTime,
   source: Schema.Literals(["archive", "delete"]),
+  allowTerminalReset: Schema.Boolean,
 });
 export type WorktreeCleanupIntent = typeof WorktreeCleanupIntent.Type;
 

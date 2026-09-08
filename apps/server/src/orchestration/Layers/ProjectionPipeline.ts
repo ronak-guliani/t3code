@@ -380,6 +380,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ),
               requestedAt: event.payload.archivedAt,
               source: "archive",
+              allowTerminalReset: true,
             });
           }
           const existingRow = yield* projectionThreadRepository.getById({
@@ -677,6 +678,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ),
               requestedAt: event.payload.deletedAt,
               source: "delete",
+              allowTerminalReset: true,
             });
           }
           const existingRow = yield* projectionThreadRepository.getById({

@@ -219,17 +219,11 @@ export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
         ),
       { concurrency: 4, discard: true },
     );
-    const jobsWithCanonicalPaths = yield* Effect.forEach(
-      jobs,
-      (job) =>
-        Effect.promise(() => canonicalizeWorktreePath(job.worktreePath)).pipe(
-          Effect.map((path) => ({ job, path })),
-        ),
-      { concurrency: 4 },
-    );
-    const jobsByPath = new Map<string, (typeof jobs)[number]>();
-    for (const { job, path } of jobsWithCanonicalPaths) {
-      if (!jobsByPath.has(path)) jobsByPath.set(path, job);
+    const jobsByPath = new Map<string, Array<(typeof jobs)[number]>>();
+    for (const job of jobs) {
+      const pathJobs = jobsByPath.get(job.canonicalWorktreePath) ?? [];
+      pathJobs.push(job);
+      jobsByPath.set(job.canonicalWorktreePath, pathJobs);
     }
     const projects = new Map(
       readModel.projects
@@ -255,21 +249,18 @@ export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
                 Effect.promise(() => canonicalizeWorktreePath(branch.worktreePath!)).pipe(
                   Effect.map((path) => {
                     registeredPaths.add(path);
-                    const cleanup = jobsByPath.get(path);
+                    const cleanupIntents = jobsByPath.get(path) ?? [];
                     return {
                       path,
                       repositoryRoot: project.workspaceRoot,
                       owners: owners.get(path) ?? [],
-                      cleanup:
-                        cleanup === undefined
-                          ? null
-                          : {
-                              threadId: cleanup.threadId,
-                              source: cleanup.source,
-                              status: cleanup.status,
-                              reason: cleanup.lastReason,
-                              nextAttemptAt: cleanup.nextAttemptAt,
-                            },
+                      cleanupIntents: cleanupIntents.map((cleanup) => ({
+                        threadId: cleanup.threadId,
+                        source: cleanup.source,
+                        status: cleanup.status,
+                        reason: cleanup.lastReason,
+                        nextAttemptAt: cleanup.nextAttemptAt,
+                      })),
                     };
                   }),
                 ),
@@ -282,9 +273,9 @@ export const worktreeCleanupInventoryRouteLayer = HttpRouter.add(
     return HttpServerResponse.jsonUnsafe(
       {
         worktrees,
-        unregisteredCleanupIntents: jobsWithCanonicalPaths
-          .filter(({ path }) => !registeredPaths.has(path))
-          .map(({ job }) => ({
+        unregisteredCleanupIntents: jobs
+          .filter((job) => !registeredPaths.has(job.canonicalWorktreePath))
+          .map((job) => ({
             threadId: job.threadId,
             path: job.worktreePath,
             source: job.source,
@@ -337,9 +328,22 @@ export const worktreeCleanupKeepRouteLayer = HttpRouter.add(
     const worktreeCleanupJobs = yield* WorktreeCleanupJobRepository;
     yield* worktreeCleanupJobs.cancelByThreadId(threadId);
     const result = yield* worktreeCleanupJobs.getByThreadId(threadId);
-    return result._tag === "None"
-      ? HttpServerResponse.jsonUnsafe({ error: "Cleanup intent was not found." }, { status: 404 })
-      : HttpServerResponse.jsonUnsafe(result.value, { status: 200 });
+    if (result._tag === "None") {
+      return HttpServerResponse.jsonUnsafe(
+        { error: "Cleanup intent was not found." },
+        { status: 404 },
+      );
+    }
+    if (result.value.status === "removing") {
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "Cleanup removal is already in progress and could not be kept.",
+          cleanup: result.value,
+        },
+        { status: 409 },
+      );
+    }
+    return HttpServerResponse.jsonUnsafe(result.value, { status: 200 });
   }).pipe(
     Effect.catchTags({
       AuthError: respondToAuthError,

@@ -101,8 +101,9 @@ const make = Effect.gen(function* () {
 
   const enqueueJob = SqlSchema.void({
     Request: WorktreeCleanupIntent,
-    execute: (intent) =>
-      sql`
+    execute: (intent) => {
+      const allowTerminalReset = intent.allowTerminalReset ? 1 : 0;
+      return sql`
         INSERT INTO worktree_cleanup_jobs (
           thread_id,
           cwd,
@@ -135,9 +136,41 @@ const make = Effect.gen(function* () {
           worktree_path = excluded.worktree_path,
           canonical_worktree_path = excluded.canonical_worktree_path,
           requested_at = excluded.requested_at,
-          source = excluded.source
+          source = excluded.source,
+          status = CASE
+            WHEN ${allowTerminalReset}
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              THEN 'waiting'
+            ELSE worktree_cleanup_jobs.status
+          END,
+          attempt_count = CASE
+            WHEN ${allowTerminalReset}
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              THEN 0
+            ELSE worktree_cleanup_jobs.attempt_count
+          END,
+          next_attempt_at = CASE
+            WHEN ${allowTerminalReset}
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              THEN excluded.next_attempt_at
+            ELSE worktree_cleanup_jobs.next_attempt_at
+          END,
+          last_reason = CASE
+            WHEN ${allowTerminalReset}
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              THEN NULL
+            ELSE worktree_cleanup_jobs.last_reason
+          END,
+          last_error = CASE
+            WHEN ${allowTerminalReset}
+              AND worktree_cleanup_jobs.status IN ('cancelled', 'completed')
+              THEN NULL
+            ELSE worktree_cleanup_jobs.last_error
+          END
         WHERE worktree_cleanup_jobs.status NOT IN ('cancelled', 'completed')
-      `,
+          OR ${allowTerminalReset}
+      `;
+    },
   });
 
   const listJobs = SqlSchema.findAll({
@@ -405,7 +438,11 @@ const make = Effect.gen(function* () {
     sql.withTransaction(
       Effect.gen(function* () {
         const current = yield* getJobRow({ threadId: input.threadId });
-        if (Option.isNone(current) || current.value.status !== "needs-attention") {
+        if (
+          Option.isNone(current) ||
+          current.value.status !== "needs-attention" ||
+          current.value.source === "legacy"
+        ) {
           return Option.none<WorktreeCleanupJob>();
         }
         yield* sql`

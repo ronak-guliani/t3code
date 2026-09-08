@@ -23,6 +23,7 @@ const intent = (input: {
   readonly path: string;
   readonly source?: "archive" | "delete";
   readonly requestedAt?: string;
+  readonly allowTerminalReset?: boolean;
 }) => ({
   threadId: ThreadId.make(input.id),
   cwd: "/tmp/project",
@@ -30,6 +31,7 @@ const intent = (input: {
   canonicalWorktreePath: input.path,
   requestedAt: input.requestedAt ?? at(0),
   source: input.source ?? "archive",
+  allowTerminalReset: input.allowTerminalReset ?? false,
 });
 
 testLayer("WorktreeCleanupJobRepository", (it) => {
@@ -180,6 +182,14 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
         canonicalWorktreePath: "/tmp/removing",
         reservedAt: at(0),
       });
+      const lifecycleRefresh = yield* jobs.enqueue(
+        intent({
+          id: "cleanup-removing",
+          path: "/tmp/removing",
+          allowTerminalReset: true,
+        }),
+      );
+      assert.equal(lifecycleRefresh.status, "removing");
 
       yield* jobs.cancelByThreadId(cleanup.threadId);
 
@@ -212,8 +222,34 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
       assert.equal(deferred.pipe(Option.getOrThrow).status, "waiting");
       assert.equal(deferred.pipe(Option.getOrThrow).nextAttemptAt, at(10));
       assert.isFalse(yield* jobs.hasReservationByPath("/tmp/deferred"));
-      assert.deepEqual(yield* jobs.listDue({ now: at(9) }), []);
-      assert.equal((yield* jobs.listDue({ now: at(10) })).length, 1);
+      assert.isFalse(
+        (yield* jobs.listDue({ now: at(9) })).some((job) => job.threadId === cleanup.threadId),
+      );
+      assert.isTrue(
+        (yield* jobs.listDue({ now: at(10) })).some((job) => job.threadId === cleanup.threadId),
+      );
+    }),
+  );
+
+  it.effect("reactivates a terminal row only for an explicit new lifecycle", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const cleanup = yield* jobs.enqueue(intent({ id: "cleanup-reused", path: "/tmp/reused" }));
+      yield* jobs.cancelByThreadId(cleanup.threadId);
+
+      const reactivated = yield* jobs.enqueue(
+        intent({
+          id: "cleanup-reused",
+          path: "/tmp/reused-again",
+          source: "delete",
+          allowTerminalReset: true,
+        }),
+      );
+
+      assert.equal(reactivated.status, "waiting");
+      assert.equal(reactivated.worktreePath, "/tmp/reused-again");
+      assert.equal(reactivated.source, "delete");
+      assert.equal(reactivated.attemptCount, 0);
     }),
   );
 
@@ -261,6 +297,32 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
       const cancelled = yield* jobs.getByThreadId(threadId);
       assert.equal(cancelled.pipe(Option.getOrThrow).status, "cancelled");
       assert.equal(cancelled.pipe(Option.getOrThrow).worktreePath, "/tmp/legacy");
+    }),
+  );
+
+  it.effect("does not offer legacy rows for manual retry", () =>
+    Effect.gen(function* () {
+      const jobs = yield* WorktreeCleanupJobRepository;
+      const threadId = ThreadId.make("legacy-retry");
+      yield* jobs.upsert({
+        threadId,
+        cwd: "/tmp/project",
+        worktreePath: "/tmp/legacy-retry",
+        requestedAt: at(0),
+      });
+
+      assert.isTrue(
+        Option.isNone(
+          yield* jobs.retry({
+            threadId,
+            nextAttemptAt: at(1),
+          }),
+        ),
+      );
+      assert.equal(
+        (yield* jobs.getByThreadId(threadId)).pipe(Option.getOrThrow).status,
+        "needs-attention",
+      );
     }),
   );
 });
