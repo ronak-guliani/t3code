@@ -1701,7 +1701,7 @@ const make = Effect.gen(function* () {
       if (event.type === "turn.completed" && event.turnId !== undefined) {
         const cwd =
           thread.worktreePath ??
-          readModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
+          commandModel.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
         if (cwd) {
           // Establish exclusion before any command can publish an idle session.
           // The owned checkpoint handoff releases it after terminal processing.
