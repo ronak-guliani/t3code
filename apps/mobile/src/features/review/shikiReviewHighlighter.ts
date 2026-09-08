@@ -259,6 +259,13 @@ function waitForNextFrame(): Promise<void> {
   });
 }
 
+function throwIfHighlightAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const error = new Error("Code highlighting cancelled.");
+  error.name = "AbortError";
+  throw error;
+}
+
 async function getHighlighter(): Promise<HighlighterCore> {
   if (!highlighterPromise) {
     const configuredHighlighterPromise = (async () => {
@@ -664,12 +671,15 @@ async function highlightLines(
   code: string,
   language: string,
   theme: string,
+  signal?: AbortSignal,
 ): Promise<ReadonlyArray<ReadonlyArray<ReviewHighlightedToken>>> {
+  throwIfHighlightAborted(signal);
   if (code.length === 0) {
     return [];
   }
 
   const highlighter = await getHighlighter();
+  throwIfHighlightAborted(signal);
   const sourceLines = code.split("\n");
   const highlightedLines: Array<ReadonlyArray<ReviewHighlightedToken>> = [];
   const shortLineBatch: string[] = [];
@@ -679,10 +689,12 @@ async function highlightLines(
       return;
     }
 
+    throwIfHighlightAborted(signal);
     const tokenLines = highlighter.codeToTokensBase(shortLineBatch.join("\n"), {
       lang: language,
       theme,
     });
+    throwIfHighlightAborted(signal);
     highlightedLines.push(...normalizeHighlightedLines(tokenLines));
     shortLineBatch.length = 0;
   };
@@ -707,6 +719,7 @@ async function highlightLines(
       (shortLineBatch.length === 0 || line.length > REVIEW_TOKENIZE_MAX_LINE_LENGTH)
     ) {
       await waitForNextFrame();
+      throwIfHighlightAborted(signal);
     }
   }
 
@@ -719,10 +732,18 @@ export async function highlightCodeSnippet(input: {
   readonly code: string;
   readonly language?: string | null;
   readonly theme: ReviewDiffTheme;
+  readonly signal?: AbortSignal;
 }): Promise<ReadonlyArray<ReadonlyArray<ReviewHighlightedToken>>> {
+  throwIfHighlightAborted(input.signal);
   const languageHint = input.language?.trim() || "text";
   const language = await resolveLanguageFromPath(`snippet.${languageHint}`, languageHint);
-  return highlightLines(input.code, language, SHIKI_THEME_NAME_BY_SCHEME[input.theme]);
+  throwIfHighlightAborted(input.signal);
+  return highlightLines(
+    input.code,
+    language,
+    SHIKI_THEME_NAME_BY_SCHEME[input.theme],
+    input.signal,
+  );
 }
 
 export async function highlightSourceFile(input: {

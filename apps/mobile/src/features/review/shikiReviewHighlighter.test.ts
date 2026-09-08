@@ -137,6 +137,45 @@ describe("highlightCodeSnippet", () => {
     ).toBe(source);
     expect(highlighted.flat().some((token) => token.color !== null)).toBe(true);
   });
+
+  it("rejects cancelled work before tokenization", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      highlightCodeSnippet({
+        code: "const answer = 42;",
+        language: "ts",
+        theme: "dark",
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("stops obsolete work at the next batch boundary", async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback) => {
+      controller.abort();
+      if (typeof callback === "function") callback();
+      return 0 as ReturnType<typeof setTimeout>;
+    });
+
+    try {
+      await expect(
+        highlightCodeSnippet({
+          code: Array.from({ length: 201 }, (_, index) => `const value${index} = ${index};`).join(
+            "\n",
+          ),
+          language: "ts",
+          theme: "dark",
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(timeout).toHaveBeenCalledTimes(1);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
 });
 
 describe("highlightSourceFile", () => {

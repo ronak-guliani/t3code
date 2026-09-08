@@ -8,20 +8,20 @@ import { nativeMarkdownDocumentRuns, nativeMarkdownListItemBlocks } from "./nati
 import { NativeMarkdownSelectableText } from "./NativeMarkdownSelectableText.ios";
 import type {
   MarkdownCodeHighlighter,
-  MarkdownHighlightedToken,
   MarkdownImageRenderer,
   NativeMarkdownTextStyle,
   SelectableMarkdownSkill,
 } from "./SelectableMarkdownText.types";
+import {
+  createCodeHighlightLifecycle,
+  type HighlightedCode,
+  isHighlightAbortError,
+} from "./codeHighlightLifecycle";
 
 /** Set by SelectableMarkdownText so images anywhere in the block tree can use it. */
 export const MarkdownImageRendererContext = createContext<MarkdownImageRenderer | null>(null);
 
-type HighlightedCode = ReadonlyArray<ReadonlyArray<MarkdownHighlightedToken>>;
-
-const highlightedCodeCache = new Map<string, HighlightedCode>();
-const highlightedCodePromiseCache = new Map<string, Promise<HighlightedCode>>();
-const HIGHLIGHTED_CODE_CACHE_LIMIT = 64;
+const codeHighlightLifecycle = createCodeHighlightLifecycle();
 const MONO_FONT_FAMILY = Platform.select({
   ios: "ui-monospace",
   android: "monospace",
@@ -67,101 +67,36 @@ function SelectableNode(props: {
   );
 }
 
-function codeHighlightCacheKey(
-  code: string,
-  language: string | undefined,
-  theme: "light" | "dark",
-): string {
-  return `${theme}:${language ?? "text"}:${code}`;
-}
-
-function cacheHighlightedCode(key: string, tokens: HighlightedCode): void {
-  highlightedCodeCache.delete(key);
-  highlightedCodeCache.set(key, tokens);
-
-  while (highlightedCodeCache.size > HIGHLIGHTED_CODE_CACHE_LIMIT) {
-    const oldestKey = highlightedCodeCache.keys().next().value;
-    if (oldestKey === undefined) {
-      break;
-    }
-    highlightedCodeCache.delete(oldestKey);
-  }
-}
-
-function loadHighlightedCode(
-  code: string,
-  language: string | undefined,
-  theme: "light" | "dark",
-  highlightCode: MarkdownCodeHighlighter,
-): Promise<HighlightedCode> {
-  const key = codeHighlightCacheKey(code, language, theme);
-  const cached = highlightedCodeCache.get(key);
-  if (cached) {
-    return Promise.resolve(cached);
-  }
-
-  const pending = highlightedCodePromiseCache.get(key);
-  if (pending) {
-    return pending;
-  }
-
-  const promise = highlightCode({ code, language, theme })
-    .then((tokens) => {
-      cacheHighlightedCode(key, tokens);
-      highlightedCodePromiseCache.delete(key);
-      return tokens;
-    })
-    .catch((error) => {
-      highlightedCodePromiseCache.delete(key);
-      throw error;
-    });
-  highlightedCodePromiseCache.set(key, promise);
-  return promise;
-}
-
 function useHighlightedCode(
   code: string,
   language: string | undefined,
   theme: "light" | "dark",
   highlightCode: MarkdownCodeHighlighter,
 ): HighlightedCode | null {
-  const key = codeHighlightCacheKey(code, language, theme);
-  const [highlighted, setHighlighted] = useState<{
-    readonly key: string;
-    readonly tokens: HighlightedCode | null;
-  }>(() => ({
-    key,
-    tokens: highlightedCodeCache.get(key) ?? null,
-  }));
+  const [highlighted, setHighlighted] = useState<HighlightedCode | null>(null);
 
   useEffect(() => {
     let active = true;
-    const cached = highlightedCodeCache.get(key);
-    if (cached) {
-      cacheHighlightedCode(key, cached);
-      setHighlighted({ key, tokens: cached });
-      return () => {
-        active = false;
-      };
-    }
-
-    void loadHighlightedCode(code, language, theme, highlightCode)
+    setHighlighted(null);
+    const lease = codeHighlightLifecycle.acquire({ code, language, theme, highlightCode });
+    void lease.promise
       .then((tokens) => {
         if (active) {
-          setHighlighted({ key, tokens });
+          setHighlighted(tokens);
         }
       })
-      .catch(() => {
-        if (active) {
-          setHighlighted({ key, tokens: null });
+      .catch((error: unknown) => {
+        if (!isHighlightAbortError(error)) {
+          console.error("Markdown code highlighting failed", error);
         }
       });
     return () => {
       active = false;
+      lease.release();
     };
-  }, [code, highlightCode, key, language, theme]);
+  }, [code, highlightCode, language, theme]);
 
-  return highlighted.key === key ? highlighted.tokens : null;
+  return highlighted;
 }
 
 function HighlightedCodeText(props: {
