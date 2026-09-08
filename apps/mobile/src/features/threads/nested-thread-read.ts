@@ -3,6 +3,7 @@ import { hierarchyThreadKey } from "@t3tools/client-runtime/state/thread-hierarc
 import {
   nestedThreadCompletionMarker,
   nestedThreadKey,
+  isRootThread,
   type MobileThreadShell,
 } from "./mobile-thread-hierarchy";
 
@@ -25,8 +26,24 @@ export function markNestedThreadRead(
 }
 
 export function rootThreadCompletionMarker(thread: MobileThreadShell): string | null {
-  if (thread.parentThreadId !== null || thread.virtualAgentRun !== undefined) return null;
+  if (!isRootThread(thread)) return null;
   return thread.latestTurn?.completedAt ?? null;
+}
+
+export function seedRootThreadCompletionReadAt(
+  threads: readonly MobileThreadShell[],
+  existing: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> | undefined {
+  let changed = false;
+  const seeded = { ...existing };
+  for (const thread of threads) {
+    if (!isRootThread(thread)) continue;
+    const marker = rootThreadCompletionMarker(thread);
+    if (marker === null || seeded[hierarchyThreadKey(thread)] !== undefined) continue;
+    seeded[hierarchyThreadKey(thread)] = marker;
+    changed = true;
+  }
+  return changed ? seeded : existing;
 }
 
 export function markRootThreadCompletionRead(

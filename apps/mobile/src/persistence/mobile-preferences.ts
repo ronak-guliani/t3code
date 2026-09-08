@@ -116,17 +116,13 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadCompletionReadAt?: Readonly<Record<string, string>>;
   } = {};
 
-  const sanitizeTimestampMap = (
-    value: unknown,
-    maxEntries = 1_000,
-  ): Readonly<Record<string, string>> | undefined => {
+  const sanitizeTimestampMap = (value: unknown): Readonly<Record<string, string>> | undefined => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
     const entries = Object.entries(value)
       .filter(
         ([, candidate]) => typeof candidate === "string" && Number.isFinite(Date.parse(candidate)),
       )
-      .sort(([, left], [, right]) => Date.parse(right) - Date.parse(left))
-      .slice(0, maxEntries);
+      .sort(([left], [right]) => left.localeCompare(right));
     return entries.length > 0 ? Object.fromEntries(entries) : {};
   };
 

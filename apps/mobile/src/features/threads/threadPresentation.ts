@@ -4,7 +4,7 @@ import {
   isLatestTurnSettled,
   resolveThreadSemanticStatus,
 } from "@t3tools/client-runtime/state/thread-status";
-import type { MobileThreadShell } from "./mobile-thread-hierarchy";
+import { isRootThread, type MobileThreadShell } from "./mobile-thread-hierarchy";
 
 export type ThreadStatusKind =
   | "pending-approval"
@@ -46,10 +46,12 @@ export function resolveThreadStatus(
     session: thread.session,
     virtualAgentRun: thread.virtualAgentRun,
     hasPlanReady,
-    hasUnseenCompletion: hasUnseenThreadCompletion({
-      latestTurn: thread.latestTurn,
-      lastVisitedAt,
-    }),
+    hasUnseenCompletion:
+      isRootThread(thread) &&
+      hasUnseenThreadCompletion({
+        latestTurn: thread.latestTurn,
+        lastVisitedAt,
+      }),
   });
 
   if (semanticStatus === "approval") {

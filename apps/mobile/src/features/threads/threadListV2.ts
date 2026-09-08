@@ -23,6 +23,7 @@ import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildMobileThreadTree,
   compareNestedThreads,
+  isRootThread,
   mobileThreadTreeRows,
   resolveNestedThreadStatus,
   selectMatchingThreadTree,
@@ -153,10 +154,12 @@ export function resolveThreadListV2Status(
     latestTurn: thread.latestTurn,
     session: thread.session,
     virtualAgentRun: thread.virtualAgentRun,
-    hasUnseenCompletion: hasUnseenThreadCompletion({
-      latestTurn: thread.latestTurn,
-      lastVisitedAt,
-    }),
+    hasUnseenCompletion:
+      isRootThread(thread) &&
+      hasUnseenThreadCompletion({
+        latestTurn: thread.latestTurn,
+        lastVisitedAt,
+      }),
   });
   return status === "plan-ready" ? "ready" : status;
 }

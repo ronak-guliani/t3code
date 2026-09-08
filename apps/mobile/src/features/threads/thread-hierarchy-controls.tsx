@@ -11,7 +11,11 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell
 import { appAtomRegistry } from "../../state/atom-registry";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
 import type { MobileThreadShell, MobileThreadTreeRow } from "./mobile-thread-hierarchy";
-import { markNestedThreadRead, markRootThreadCompletionRead } from "./nested-thread-read";
+import {
+  markNestedThreadRead,
+  markRootThreadCompletionRead,
+  seedRootThreadCompletionReadAt,
+} from "./nested-thread-read";
 
 const NO_DISMISSED_RUNS: readonly string[] = [];
 export function useDismissedAgentRunKeys(): readonly string[] {
@@ -31,12 +35,25 @@ export function useThreadCompletionReadAt(): Readonly<Record<string, string>> {
   return AsyncResult.isSuccess(result) ? (result.value.threadCompletionReadAt ?? {}) : {};
 }
 
+export function useSeedRootThreadCompletionReadAt(threads: readonly MobileThreadShell[]) {
+  const result = useAtomValue(mobilePreferencesAtom);
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  useEffect(() => {
+    if (!AsyncResult.isSuccess(result) || threads.length === 0) return;
+    const current = appAtomRegistry.get(mobilePreferencesAtom);
+    if (!AsyncResult.isSuccess(current)) return;
+    const existing = current.value.threadCompletionReadAt;
+    const seeded = seedRootThreadCompletionReadAt(threads, existing);
+    if (seeded !== existing) save({ threadCompletionReadAt: seeded });
+  }, [result, save, threads]);
+}
+
 export function useMarkRootThreadCompletionRead(thread: MobileThreadShell | null) {
   const focused = useIsFocused();
   const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
   useEffect(() => {
-    if (!focused || thread === null || thread.parentThreadId !== null) return;
+    if (!focused || thread === null || thread.parentThreadId != null) return;
     const markRead = () => {
       if (AppState.currentState !== "active" || !AsyncResult.isSuccess(result)) return;
       const current = appAtomRegistry.get(mobilePreferencesAtom);

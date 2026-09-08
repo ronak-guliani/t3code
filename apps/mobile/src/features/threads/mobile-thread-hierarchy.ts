@@ -22,6 +22,11 @@ export interface MobileThreadShell extends EnvironmentThreadShell {
     readonly parentThreadId: ThreadId;
   };
 }
+export function isRootThread(
+  thread: Pick<MobileThreadShell, "parentThreadId" | "virtualAgentRun">,
+) {
+  return thread.parentThreadId == null && thread.virtualAgentRun === undefined;
+}
 export type NestedThreadReadMarkers = Readonly<Record<string, string>>;
 export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThreadStatus> & {
   latestRelatedNotificationAt?: string | null;

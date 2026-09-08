@@ -8,6 +8,7 @@ import {
   useMarkThreadGroupNotificationsRead,
 } from "./thread-hierarchy-controls";
 import type { MobileThreadShell } from "./mobile-thread-hierarchy";
+import { markRootThreadCompletionRead, seedRootThreadCompletionReadAt } from "./nested-thread-read";
 
 const harness = vi.hoisted(() => ({
   focused: true,
@@ -72,6 +73,7 @@ const rootThread = {
   virtualAgentRun: undefined,
   latestTurn: { completedAt: NOW },
 } as MobileThreadShell;
+const legacyRootThread = { ...rootThread, parentThreadId: undefined } as MobileThreadShell;
 function Group(props: { rows: typeof rows }) {
   useMarkThreadGroupNotificationsRead(props.rows);
   return null;
@@ -139,6 +141,23 @@ describe("related group notification acknowledgement", () => {
       renderToStaticMarkup(<Root />);
       harness.effects.splice(0).forEach((effect) => effect());
       expect(harness.preferences.threadCompletionReadAt).toEqual({ "local:root": LATER });
+    });
+
+    it("accepts legacy roots whose parent id is omitted", () => {
+      const save = vi.fn();
+      markRootThreadCompletionRead(legacyRootThread, { threadCompletionReadAt: {} }, save);
+      expect(save).toHaveBeenCalledWith({
+        threadCompletionReadAt: { "local:root": NOW },
+      });
+    });
+
+    it("seeds missing root receipts without overwriting existing values", () => {
+      expect(seedRootThreadCompletionReadAt([legacyRootThread], {})).toEqual({
+        "local:root": NOW,
+      });
+      expect(seedRootThreadCompletionReadAt([legacyRootThread], { "local:root": LATER })).toEqual({
+        "local:root": LATER,
+      });
     });
   });
 
