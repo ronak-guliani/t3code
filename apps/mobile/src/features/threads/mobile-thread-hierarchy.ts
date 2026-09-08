@@ -1,6 +1,7 @@
 import {
   buildThreadTree,
   hierarchyThreadKey,
+  normalizeParentThreadKeys,
   selectVisibleThreads,
   type ThreadTreeNode,
   type ThreadTreeRow,
@@ -19,11 +20,13 @@ export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThrea
   latestRelatedNotificationAt?: string | null;
   relatedStatus?: NestedThreadStatus;
   hasUnreadDescendant?: boolean;
+  relatedChildCount?: number;
 };
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
   readonly latestRelatedNotificationAt?: string | null;
   readonly relatedStatus?: NestedThreadStatus;
   readonly hasUnreadDescendant?: boolean;
+  readonly relatedChildCount?: number;
 };
 
 export function nestedThreadKey(thread: MobileThreadShell): string {
@@ -165,6 +168,32 @@ export function buildMobileThreadTree(
       ),
   ]);
   const readMarkers = options.readMarkers ?? {};
+  // Read filtering affects rendered descendants, not whether the parent has
+  // related chats that remain reachable from its row.
+  const parentByKey = normalizeParentThreadKeys(expanded);
+  const remainingChildrenByKey = new Map<string, number>();
+  for (const parentKey of parentByKey.values()) {
+    remainingChildrenByKey.set(parentKey, (remainingChildrenByKey.get(parentKey) ?? 0) + 1);
+  }
+  const relatedChildCountByKey = new Map<string, number>();
+  const pendingCountKeys = expanded
+    .map(hierarchyThreadKey)
+    .filter((threadKey) => !remainingChildrenByKey.has(threadKey));
+  while (pendingCountKeys.length > 0) {
+    const threadKey = pendingCountKeys.pop()!;
+    const parentKey = parentByKey.get(threadKey);
+    if (parentKey === undefined) continue;
+    relatedChildCountByKey.set(
+      parentKey,
+      (relatedChildCountByKey.get(parentKey) ?? 0) +
+        1 +
+        (relatedChildCountByKey.get(threadKey) ?? 0),
+    );
+    const remainingChildren = (remainingChildrenByKey.get(parentKey) ?? 0) - 1;
+    if (remainingChildren === 0) {
+      pendingCountKeys.push(parentKey);
+    }
+  }
   const visibleKeys = new Set(
     expanded
       .filter((thread) => {
@@ -200,6 +229,12 @@ export function buildMobileThreadTree(
     rollUpStatus: rollUpNestedThreadStatus,
     isArchiveBlocked: isThreadArchiveBlocked,
   });
+  const visibleTreePending = [...tree];
+  while (visibleTreePending.length > 0) {
+    const node = visibleTreePending.pop()!;
+    node.relatedChildCount = relatedChildCountByKey.get(node.threadKey) ?? node.descendantCount;
+    visibleTreePending.push(...node.children);
+  }
   // A collapsed group must retain notifications from deeper branches, including during search.
   const traversal: MobileThreadTreeNode[] = [];
   const pending: MobileThreadTreeNode[] = [...tree];
@@ -322,6 +357,7 @@ export function mobileThreadTreeRows(
         latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
         relatedStatus: node.relatedStatus ?? "ready",
         hasUnreadDescendant: node.hasUnreadDescendant === true,
+        relatedChildCount: node.relatedChildCount ?? node.descendantCount,
       });
     }
     for (let index = node.children.length - 1; index >= 0; index--) {

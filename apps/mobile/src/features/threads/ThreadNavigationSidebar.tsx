@@ -745,6 +745,7 @@ function ThreadNavigationSidebarPane(
           previous.item.hierarchy?.depth === item.item.hierarchy?.depth &&
           previous.item.hierarchy?.isExpanded === item.item.hierarchy?.isExpanded &&
           previous.item.hierarchy?.childCount === item.item.hierarchy?.childCount &&
+          previous.item.hierarchy?.relatedChildCount === item.item.hierarchy?.relatedChildCount &&
           previous.item.hierarchy?.displayStatus === item.item.hierarchy?.displayStatus &&
           previous.item.hierarchy?.relatedStatus === item.item.hierarchy?.relatedStatus &&
           previous.item.hierarchy?.archiveBlocked === item.item.hierarchy?.archiveBlocked &&
