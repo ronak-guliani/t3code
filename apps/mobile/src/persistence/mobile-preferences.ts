@@ -8,6 +8,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { reportClientWarning } from "../lib/clientLogger";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
+import { ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION } from "../state/thread-completion-read-migration";
 
 import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
@@ -50,6 +51,7 @@ export interface Preferences {
   readonly threadChildNotificationReadAt?: Readonly<Record<string, string>>;
   readonly threadChildReadAt?: Readonly<Record<string, string>>;
   readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
+  readonly threadCompletionReadAtMigrationVersion?: number;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedErrorClass<MobilePreferencesLoadError>()(
@@ -114,6 +116,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadChildNotificationReadAt?: Readonly<Record<string, string>>;
     threadChildReadAt?: Readonly<Record<string, string>>;
     threadCompletionReadAt?: Readonly<Record<string, string>>;
+    threadCompletionReadAtMigrationVersion?: number;
   } = {};
 
   const sanitizeTimestampMap = (value: unknown): Readonly<Record<string, string>> | undefined => {
@@ -153,6 +156,14 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     !Array.isArray(parsed.threadCompletionReadAt)
   ) {
     preferences.threadCompletionReadAt = sanitizeTimestampMap(parsed.threadCompletionReadAt);
+  }
+  if (
+    typeof parsed.threadCompletionReadAtMigrationVersion === "number" &&
+    Number.isInteger(parsed.threadCompletionReadAtMigrationVersion) &&
+    parsed.threadCompletionReadAtMigrationVersion >= ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION
+  ) {
+    preferences.threadCompletionReadAtMigrationVersion =
+      parsed.threadCompletionReadAtMigrationVersion;
   }
   if (
     parsed.threadExpandedOverrides &&

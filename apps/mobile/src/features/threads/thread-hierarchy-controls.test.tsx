@@ -6,9 +6,12 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   useMarkRootThreadCompletionRead,
   useMarkThreadGroupNotificationsRead,
+  useSeedRootThreadCompletionReadAt,
 } from "./thread-hierarchy-controls";
 import type { MobileThreadShell } from "./mobile-thread-hierarchy";
 import { markRootThreadCompletionRead, seedRootThreadCompletionReadAt } from "./nested-thread-read";
+import { resolveThreadListV2Status } from "./threadListV2";
+import { ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION } from "../../state/thread-completion-read-migration";
 
 const harness = vi.hoisted(() => ({
   focused: true,
@@ -17,6 +20,7 @@ const harness = vi.hoisted(() => ({
   preferences: {
     threadChildNotificationReadAt: {} as Record<string, string>,
     threadCompletionReadAt: {} as Record<string, string>,
+    threadCompletionReadAtMigrationVersion: undefined as number | undefined,
   },
   effects: [] as Array<() => void | (() => void)>,
   foreground: undefined as (() => void) | undefined,
@@ -74,12 +78,29 @@ const rootThread = {
   latestTurn: { completedAt: NOW },
 } as MobileThreadShell;
 const legacyRootThread = { ...rootThread, parentThreadId: undefined } as MobileThreadShell;
+const runningRootThread = {
+  ...rootThread,
+  latestTurn: {
+    turnId: "turn-running",
+    state: "running",
+    startedAt: NOW,
+    completedAt: null,
+  },
+} as MobileThreadShell;
+const completedRootThread = {
+  ...runningRootThread,
+  latestTurn: { ...runningRootThread.latestTurn, state: "completed", completedAt: LATER },
+} as MobileThreadShell;
 function Group(props: { rows: typeof rows }) {
   useMarkThreadGroupNotificationsRead(props.rows);
   return null;
 }
 function Root() {
   useMarkRootThreadCompletionRead(rootThread);
+  return null;
+}
+function Seed(props: { readonly threads: readonly MobileThreadShell[] }) {
+  useSeedRootThreadCompletionReadAt(props.threads);
   return null;
 }
 function mount() {
@@ -93,6 +114,7 @@ beforeEach(() => {
   harness.preferences = {
     threadChildNotificationReadAt: {},
     threadCompletionReadAt: {},
+    threadCompletionReadAtMigrationVersion: undefined,
   };
   harness.effects.length = 0;
   harness.foreground = undefined;
@@ -158,6 +180,37 @@ describe("related group notification acknowledgement", () => {
       expect(seedRootThreadCompletionReadAt([legacyRootThread], { "local:root": LATER })).toEqual({
         "local:root": LATER,
       });
+    });
+
+    it("seeds upgrade receipts once, then leaves a newly completed root unread", () => {
+      renderToStaticMarkup(<Seed threads={[runningRootThread]} />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences).toMatchObject({
+        threadCompletionReadAt: {},
+        threadCompletionReadAtMigrationVersion: ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION,
+      });
+
+      renderToStaticMarkup(<Seed threads={[completedRootThread]} />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences.threadCompletionReadAt).toEqual({});
+      expect(resolveThreadListV2Status(completedRootThread)).toBe("completed");
+
+      markRootThreadCompletionRead(completedRootThread, harness.preferences, harness.save);
+      expect(resolveThreadListV2Status(completedRootThread, LATER)).toBe("ready");
+    });
+
+    it("seeds roots completed before migration exactly once", () => {
+      renderToStaticMarkup(<Seed threads={[rootThread]} />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences).toMatchObject({
+        threadCompletionReadAt: { "local:root": NOW },
+        threadCompletionReadAtMigrationVersion: ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION,
+      });
+
+      harness.preferences.threadCompletionReadAt = {};
+      renderToStaticMarkup(<Seed threads={[rootThread]} />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences.threadCompletionReadAt).toEqual({});
     });
   });
 

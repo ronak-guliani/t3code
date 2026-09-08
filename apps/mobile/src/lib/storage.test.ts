@@ -276,6 +276,14 @@ describe("mobile connection storage", () => {
     await expect(loadPreferences()).resolves.toEqual({ threadCompletionReadAt });
   });
 
+  it("persists the root completion receipt migration version", async () => {
+    const preferences = {
+      threadCompletionReadAtMigrationVersion: 1,
+    };
+    await expect(savePreferencesPatch(preferences)).resolves.toEqual(preferences);
+    await expect(loadPreferences()).resolves.toEqual(preferences);
+  });
+
   it("drops legacy and invalid thread list shelf expansion preferences", async () => {
     mocks.setPreferencesJson(
       JSON.stringify({
