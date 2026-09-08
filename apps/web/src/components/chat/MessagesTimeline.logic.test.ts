@@ -48,6 +48,29 @@ describe("compaction timeline boundaries", () => {
     });
   });
 
+  it("does not create an empty worked-for disclosure for blank assistant placeholders", () => {
+    const entries: TimelineEntry[] = [
+      ["user", "user", "Inspect the code"],
+      ["placeholder", "assistant", ""],
+      ["response", "assistant", "Finished."],
+    ].map(([id, role, text]) => ({
+      kind: "message",
+      id: id!,
+      createdAt: "2026-09-08T10:00:00.000Z",
+      message: {
+        id: MessageId.make(id!),
+        role: role === "user" ? "user" : "assistant",
+        text: text!,
+        createdAt: "2026-09-08T10:00:00.000Z",
+        streaming: false,
+        ...(id === "response" ? { completedAt: "2026-09-08T10:00:10.000Z" } : {}),
+      },
+    }));
+    const rows = derive(entries);
+    expect(rows.some((row) => row.kind === "reasoning")).toBe(false);
+    expect(rows.map((row) => row.id)).toEqual(["user", "response"]);
+  });
+
   it("keeps automatic compaction visible between completed reasoning sections", () => {
     const rows = derive([
       {

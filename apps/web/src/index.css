@@ -839,6 +839,16 @@ label:has(> select#reasoning-effort) select {
   white-space: normal;
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .chat-work-trigger[aria-expanded="false"] > .lucide-chevron-right:last-child {
+    opacity: 0;
+  }
+  .chat-work-trigger[aria-expanded="false"]:is(:hover, :focus-visible)
+    > .lucide-chevron-right:last-child {
+    opacity: 1;
+  }
+}
+
 @media (pointer: coarse) {
   .chat-work-trigger {
     min-height: 2rem;

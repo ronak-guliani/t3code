@@ -17,6 +17,7 @@ import {
   commandDetailRepeatsCommand,
   compactWorkEntryLabel,
   extractCommandOutputText,
+  workGroupReceiptLabel,
   isWorktreeSetupActivity,
   deriveWorkGroupActivity,
   extractWorkLogToolLifecycleStatus,
@@ -88,7 +89,6 @@ export interface ThreadFeedActivity {
   readonly lifecycleStatus?: WorkLogToolLifecycleStatus;
   readonly workEntry: WorkLogEntry;
   readonly groupedToolDetail?: boolean;
-  readonly groupSummary?: boolean;
   readonly live?: boolean;
 }
 
@@ -204,6 +204,7 @@ const presentedActivityGroupsCache = new WeakMap<
     readonly unsettledTurnId: TurnId | null;
     readonly isWorking: boolean;
     readonly activeTail: boolean;
+    readonly consolidated: boolean;
     readonly rows: ReadonlyArray<ThreadFeedEntry>;
   }
 >();
@@ -1542,6 +1543,7 @@ export function deriveThreadFeedPresentation(
   expandedTurnIds: ReadonlySet<TurnId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
+  collapsedLiveWorkGroupIds: ReadonlySet<string> = new Set(),
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
     (entry) =>
@@ -1554,7 +1556,9 @@ export function deriveThreadFeedPresentation(
   const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
   const isWorking = activeWorkStartedAt !== null;
   const collapsedEntryIds = new Set<string>();
+  const foldedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
+    for (const entryId of fold.hiddenEntryIds) foldedEntryIds.add(entryId);
     if (!expandedTurnIds.has(fold.turnId)) {
       for (const entryId of fold.hiddenEntryIds) {
         collapsedEntryIds.add(entryId);
@@ -1608,18 +1612,7 @@ export function deriveThreadFeedPresentation(
       }
       result.push(row);
     }
-    const hasExpandedWork =
-      collapsedEntryIds.has(entry.id) &&
-      expandedWorkGroupIds.size > 0 &&
-      entry.type === "activity-group" &&
-      entry.activities.some((activity) => {
-        const work = activity.workEntry;
-        const identity = work.toolCallId
-          ? `tool:${work.turnId ?? "no-turn"}:${work.toolCallId}`
-          : activity.id;
-        return expandedWorkGroupIds.has(`work-group:${identity}`);
-      });
-    if (!collapsedEntryIds.has(entry.id) || hasExpandedWork) {
+    if (!collapsedEntryIds.has(entry.id)) {
       appendPresentedFeedEntry(
         result,
         entry,
@@ -1627,6 +1620,8 @@ export function deriveThreadFeedPresentation(
         unsettledTurnId,
         isWorking,
         isActiveTailGroup,
+        foldedEntryIds.has(entry.id),
+        collapsedLiveWorkGroupIds,
       );
     }
   }
@@ -1656,6 +1651,8 @@ function appendPresentedFeedEntry(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  consolidated: boolean,
+  collapsedLiveWorkGroupIds: ReadonlySet<string>,
 ): void {
   if (entry.type !== "activity-group") {
     result.push(entry);
@@ -1672,8 +1669,13 @@ function appendPresentedFeedEntry(
     cached.unsettledTurnId !== unsettledTurnId ||
     cached.isWorking !== isWorking ||
     cached.activeTail !== activeTail ||
+    cached.consolidated !== consolidated ||
     cached.rows.some(
-      (row) => row.type === "work-toggle" && expandedWorkGroupIds.has(row.groupId) !== row.expanded,
+      (row) =>
+        row.type === "work-toggle" &&
+        (row.live
+          ? !collapsedLiveWorkGroupIds.has(row.groupId)
+          : expandedWorkGroupIds.has(row.groupId)) !== row.expanded,
     )
   ) {
     const rows: ThreadFeedEntry[] = [];
@@ -1684,8 +1686,10 @@ function appendPresentedFeedEntry(
       unsettledTurnId,
       isWorking,
       activeTail,
+      consolidated,
+      collapsedLiveWorkGroupIds,
     );
-    cached = { unsettledTurnId, isWorking, activeTail, rows };
+    cached = { unsettledTurnId, isWorking, activeTail, consolidated, rows };
     presentedActivityGroupsCache.set(entry, cached);
   }
   for (const row of cached.rows) {
@@ -1700,10 +1704,13 @@ function appendActivityGroupRows(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  consolidated: boolean,
+  collapsedLiveWorkGroupIds: ReadonlySet<string>,
 ): void {
   const activities = omitSupersededLifecycleMarkers(
     entry.activities.filter(
       (activity) =>
+        consolidated ||
         !(activity.toolLike && activity.status === "neutral") ||
         (isWorking &&
           activity.lifecycleStatus === "inProgress" &&
@@ -1725,6 +1732,8 @@ function appendActivityGroupRows(
       unsettledTurnId,
       isWorking,
       activeTail && isTrailingRun,
+      consolidated,
+      collapsedLiveWorkGroupIds,
     );
     groupableRun = [];
   };
@@ -1758,7 +1767,7 @@ function completedTurnWorkLabel(groups: readonly ThreadFeedActivityGroup[]): str
   const entries = groups.flatMap((group) =>
     group.activities.map((activity) => presentationEntryForActivity(activity)),
   );
-  const label = deriveWorkGroupActivity(entries, false).label;
+  const label = workGroupReceiptLabel(entries);
   turnWorkSummaryCache.set(first, { groups, label });
   return label;
 }
@@ -1785,13 +1794,17 @@ function appendToolGroupRows(
   unsettledTurnId: TurnId | null,
   isWorking: boolean,
   activeTail: boolean,
+  consolidated: boolean,
+  collapsedLiveWorkGroupIds: ReadonlySet<string>,
 ): void {
   const firstEntry = activities[0]!.workEntry;
   const identity = firstEntry.toolCallId
     ? `tool:${firstEntry.turnId ?? "no-turn"}:${firstEntry.toolCallId}`
     : activities[0]!.id;
   const groupId = `work-group:${identity}`;
-  const expanded = expandedWorkGroupIds.has(groupId);
+  const expanded =
+    consolidated ||
+    (activeTail ? !collapsedLiveWorkGroupIds.has(groupId) : expandedWorkGroupIds.has(groupId));
   const latestActiveActivity = activities.find(
     (activity) =>
       isWorking &&
@@ -1801,8 +1814,7 @@ function appendToolGroupRows(
           activity.lifecycleStatus === undefined &&
           (activity.workEntry.sourceActivityKind === "task.progress" || activity.toolLike))),
   );
-  const active = latestActiveActivity !== undefined;
-  const live = activeTail || active;
+  const live = activeTail;
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
   const groupActivity = deriveWorkGroupActivity(
     activities.map((activity) =>
@@ -1852,26 +1864,27 @@ function appendToolGroupRows(
         toolGroupAction(singleActivity.workEntry) !== "edit"
       ? resolveWorkEntryToolPresentation(singleActivity.workEntry, "completed")?.icon
       : undefined;
-  result.push({
-    type: "work-toggle",
-    id: `${live ? "work-live" : "work-toggle"}:${groupId}`,
-    createdAt: sourceGroup.createdAt,
-    turnId: sourceGroup.turnId,
-    groupId,
-    hiddenCount: activities.length,
-    activeCount: groupActivity.activeCount,
-    expanded,
-    summary,
-    summaryKind: toolGroupSummaryKind(
-      (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
-    ),
-    ...(groupToolSurface ? { toolSurface: groupToolSurface } : {}),
-    ...(groupToolIcon ? { toolIcon: groupToolIcon } : {}),
-    ...(summaryToolIcon ? { summaryToolIcon } : {}),
-    hasFailure: groupActivity.state === "failed" || groupActivity.state === "approval",
-    live,
-    shimmer,
-  });
+  if (!consolidated)
+    result.push({
+      type: "work-toggle",
+      id: `${live ? "work-live" : "work-toggle"}:${groupId}`,
+      createdAt: sourceGroup.createdAt,
+      turnId: sourceGroup.turnId,
+      groupId,
+      hiddenCount: activities.length,
+      activeCount: groupActivity.activeCount,
+      expanded,
+      summary,
+      summaryKind: toolGroupSummaryKind(
+        (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
+      ),
+      ...(groupToolSurface ? { toolSurface: groupToolSurface } : {}),
+      ...(groupToolIcon ? { toolIcon: groupToolIcon } : {}),
+      ...(summaryToolIcon ? { summaryToolIcon } : {}),
+      hasFailure: groupActivity.state === "failed" || groupActivity.state === "approval",
+      live,
+      shimmer,
+    });
   if (!expanded) {
     return;
   }

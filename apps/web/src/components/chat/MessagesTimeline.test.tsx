@@ -781,7 +781,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Ran command");
   });
 
-  it("keeps completed tool-call groups compact and still while the response is active", async () => {
+  it("keeps completed calls visible and still until an assistant response starts", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -817,7 +817,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Tool Calls (2)");
-    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain("Read 1 file");
     expect(markup).not.toContain("work-activity-shimmer");
     expect(markup).toContain("work-group-section");
@@ -969,7 +969,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Worked for 1m 55s");
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toContain("Read files");
-    expect(markup).toContain('aria-label="Expand Tool Calls (1)"');
+    expect(markup).not.toContain('aria-label="Expand Tool Calls (1)"');
     expect(markup).not.toContain(">Response<");
     expect(markup).toContain("Here is the review.");
   });
@@ -1026,7 +1026,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Here is the review.");
   });
 
-  it("shows only active work while incomplete work-log groups are collapsed", async () => {
+  it("shows work history automatically during an active work phase", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1063,8 +1063,8 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Work log (2)");
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain("Plan updated");
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain("Plan updated");
     expect(markup).toContain("Reading file");
     expect(markup).toContain("work-activity-shimmer");
   });

@@ -47,6 +47,7 @@ vi.mock("@legendapp/list/react", async () => {
 });
 
 import { MessagesTimeline } from "./MessagesTimeline";
+import type { TimelineEntry } from "../../session-logic";
 
 function buildProps() {
   return {
@@ -222,7 +223,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("keeps active work compact, expands grouped history and preserves disclosure through completion", async () => {
+  it("shows live history and collapses it automatically when work completes", async () => {
     const turnId = TurnId.make("turn-activity");
     const props = buildProps();
     const createdAt = new Date().toISOString();
@@ -247,14 +248,15 @@ describe("MessagesTimeline", () => {
         {...props}
         activeTurnId={turnId}
         activeTurnInProgress
+        isWorking
         timelineEntries={entries}
       />,
     );
-    await expect.element(page.getByText("Reading live.ts", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Reading live.ts", { exact: true }).first()).toBeVisible();
     await expect.element(page.getByText("+1", { exact: true })).toBeVisible();
-    await expect.element(page.getByText(/4 actions/)).not.toBeInTheDocument();
+    expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(4);
     const trigger = page.getByRole("button", {
-      name: "Expand Tool Calls (4), 1 more active",
+      name: "Collapse Tool Calls (4), 1 more active",
       exact: true,
     });
     const button = trigger.element();
@@ -264,16 +266,15 @@ describe("MessagesTimeline", () => {
     expect(getComputedStyle(button).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(button.getBoundingClientRect().height).toBeLessThanOrEqual(44);
     expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(1);
-    await trigger.click();
     await expect
       .element(
         page.getByRole("button", { name: "Collapse Tool Calls (4), 1 more active", exact: true }),
       )
       .toBeVisible();
     await expect.element(page.getByText(/4 actions.*2 active/)).toBeVisible();
-    const panel = document.getElementById(button.getAttribute("aria-controls")!)!;
+    const panel = group.querySelector("[data-slot='collapsible-panel']")!;
+    expect(button.getAttribute("aria-controls")).toBe(panel.id);
     expect(getComputedStyle(panel).transitionDuration).toBe("0.15s");
-    await page.getByRole("button", { name: "Read 2 files" }).click();
     await page.getByRole("button", { name: "Expand details: Read a.ts" }).click();
     await expect.element(page.getByText("/workspace/src/a.ts", { exact: true })).toBeVisible();
     await screen.rerender(
@@ -285,11 +286,8 @@ describe("MessagesTimeline", () => {
         }))}
       />,
     );
-    await expect
-      .element(page.getByRole("button", { name: "Collapse Tool Calls (4)" }))
-      .toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Expand Tool Calls (4)" })).toBeVisible();
     expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(0);
-    await page.getByRole("button", { name: "Collapse Tool Calls (4)" }).click();
     await expect.element(page.getByText(/4 actions/)).not.toBeInTheDocument();
     await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
     await expect.element(page.getByText(/4 actions/)).toBeVisible();
@@ -339,7 +337,7 @@ describe("MessagesTimeline", () => {
         </div>,
       );
       try {
-        const header = page.getByRole("button", { name: "Expand Tool Calls (1)", exact: true });
+        const header = page.getByRole("button", { name: "Collapse Tool Calls (1)", exact: true });
         await expect.element(header).toBeVisible();
         const working = document.querySelector(
           "[data-timeline-row-kind='working'] .chat-work-text",
@@ -351,7 +349,6 @@ describe("MessagesTimeline", () => {
         expect(getComputedStyle(label).textOverflow).not.toBe("ellipsis");
         expect(getComputedStyle(label).whiteSpace).toBe("normal");
         expect(header.element().getBoundingClientRect().width).toBeLessThanOrEqual(320);
-        await header.click();
         const detailButton = page.getByRole("button", {
           name: `Expand details: Editing ${filename}`,
           exact: true,
@@ -439,13 +436,12 @@ describe("MessagesTimeline", () => {
         await page
           .getByRole("button", { name: `Expand Tool Calls (${count})`, exact: true })
           .click();
-        await page.getByRole("button", { name: `Read ${count} files`, exact: true }).click();
         expect(
           page.getByRole("button", { name: /^Expand details: Read file-/ }).elements(),
         ).toHaveLength(50);
         await page
           .getByRole("button", {
-            name: `Show 50 more actions (${count - 50} remaining)`,
+            name: `Show 50 earlier actions (${count - 50} remaining)`,
             exact: true,
           })
           .click();
@@ -453,23 +449,23 @@ describe("MessagesTimeline", () => {
           page.getByRole("button", { name: /^(Expand|Collapse) details: Read file-/ }).elements(),
         ).toHaveLength(100);
         await page
-          .getByRole("button", { name: "Expand details: Read file-99.ts", exact: true })
+          .getByRole("button", { name: `Expand details: Read file-${count - 1}.ts`, exact: true })
           .click();
-        await expect.element(page.getByText("/src/file-99.ts", { exact: true })).toBeVisible();
-        await page.getByRole("button", { name: `Read ${count} files`, exact: true }).click();
-        await page.getByRole("button", { name: `Read ${count} files`, exact: true }).click();
+        await expect
+          .element(page.getByText(`/src/file-${count - 1}.ts`, { exact: true }))
+          .toBeVisible();
         expect(
           page.getByRole("button", { name: /^(Expand|Collapse) details: Read file-/ }).elements(),
         ).toHaveLength(100);
         if (count === 125) {
           await page
-            .getByRole("button", { name: "Show 25 more actions (25 remaining)", exact: true })
+            .getByRole("button", { name: "Show 25 earlier actions (25 remaining)", exact: true })
             .click();
           expect(
             page.getByRole("button", { name: /^(Expand|Collapse) details: Read file-/ }).elements(),
           ).toHaveLength(125);
           await expect
-            .element(page.getByRole("button", { name: /more actions/ }))
+            .element(page.getByRole("button", { name: /earlier actions/ }))
             .not.toBeInTheDocument();
         }
       } finally {
@@ -478,7 +474,7 @@ describe("MessagesTimeline", () => {
     },
   );
 
-  it("reveals earlier history in six-group batches without dropping the final group", async () => {
+  it("shows mixed work directly without nested category disclosures", async () => {
     const createdAt = new Date().toISOString();
     const screen = await render(
       <MessagesTimeline
@@ -502,13 +498,227 @@ describe("MessagesTimeline", () => {
     );
     try {
       await page.getByRole("button", { name: "Expand Tool Calls (13)", exact: true }).click();
-      expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(6);
-      await page.getByRole("button", { name: "Show 6 earlier groups", exact: true }).click();
-      expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(12);
-      await page.getByRole("button", { name: "Show 1 earlier group", exact: true }).click();
       expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(13);
       await expect
         .element(page.getByRole("button", { name: /earlier group/ }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it.each([1, 3])(
+    "consolidates %i calls into Worked for and auto-collapses at the response boundary",
+    async (count) => {
+      const props = buildProps();
+      const turnId = TurnId.make("phase-turn");
+      const user = {
+        id: "phase-user",
+        kind: "message" as const,
+        createdAt: "2026-09-08T10:00:00.000Z",
+        message: {
+          id: MessageId.make("phase-user"),
+          role: "user" as const,
+          text: "Inspect the work log",
+          createdAt: "2026-09-08T10:00:00.000Z",
+          streaming: false,
+        },
+      };
+      const work = Array.from({ length: count }, (_, index) => ({
+        id: `phase-work-${index}`,
+        kind: "work" as const,
+        createdAt: "2026-09-08T10:00:01.000Z",
+        entry: {
+          id: `phase-work-${index}`,
+          createdAt: "2026-09-08T10:00:01.000Z",
+          turnId,
+          label: "other",
+          toolTitle: "other",
+          tone: "tool" as const,
+          toolLifecycleStatus: "completed" as const,
+          toolData: {
+            toolName: "skill",
+            rawInput: { skill: `skill-${index}` },
+            rawOutput: { content: `Loaded full skill ${index}` },
+          },
+        },
+      }));
+      const response = {
+        id: "phase-response",
+        kind: "message" as const,
+        createdAt: "2026-09-08T10:00:10.000Z",
+        message: {
+          id: MessageId.make("phase-response"),
+          role: "assistant" as const,
+          turnId,
+          text: "Here is what I found.",
+          createdAt: "2026-09-08T10:00:10.000Z",
+          streaming: true,
+        },
+      };
+      const activeProps = {
+        ...props,
+        isWorking: true,
+        activeTurnInProgress: true,
+        activeTurnId: turnId,
+      };
+      const screen = await render(
+        <MessagesTimeline {...activeProps} timelineEntries={[user, ...work]} />,
+      );
+      try {
+        const close = page.getByRole("button", {
+          name: `Collapse Tool Calls (${count})`,
+          exact: true,
+        });
+        await expect.element(close).toBeVisible();
+        expect(
+          page.getByRole("button", { name: /^Expand details: Loaded skill-/ }).elements(),
+        ).toHaveLength(count);
+        await expect.element(page.getByText("other", { exact: true })).not.toBeInTheDocument();
+        await close.click();
+        await screen.rerender(
+          <MessagesTimeline {...activeProps} timelineEntries={[user, ...work]} />,
+        );
+        await expect
+          .element(page.getByRole("button", { name: `Expand Tool Calls (${count})` }))
+          .toBeVisible();
+        await page.getByRole("button", { name: `Expand Tool Calls (${count})` }).click();
+        await screen.rerender(
+          <MessagesTimeline {...activeProps} timelineEntries={[user, ...work, response]} />,
+        );
+        await expect
+          .element(page.getByRole("button", { name: `Expand Tool Calls (${count})` }))
+          .toBeVisible();
+        await expect
+          .element(page.getByRole("button", { name: /^Expand details: Loaded skill-/ }).first())
+          .not.toBeInTheDocument();
+        await page.getByRole("button", { name: `Expand Tool Calls (${count})` }).click();
+        await expect
+          .element(
+            page.getByRole("button", { name: "Expand details: Loaded skill-0", exact: true }),
+          )
+          .toBeVisible();
+        await screen.rerender(
+          <MessagesTimeline
+            {...props}
+            timelineEntries={[
+              user,
+              ...work,
+              {
+                ...response,
+                message: {
+                  ...response.message,
+                  streaming: false,
+                  completedAt: "2026-09-08T10:00:12.000Z",
+                },
+              },
+            ]}
+          />,
+        );
+        const receipt = page.getByRole("button", { name: /^Worked for/ });
+        await expect.element(receipt).toHaveAttribute("aria-expanded", "false");
+        await expect
+          .element(page.getByRole("button", { name: /Tool Calls/ }))
+          .not.toBeInTheDocument();
+        await receipt.click();
+        expect(
+          page.getByRole("button", { name: /^Expand details: Loaded skill-/ }).elements(),
+        ).toHaveLength(count);
+        await page
+          .getByRole("button", { name: "Expand details: Loaded skill-0", exact: true })
+          .click();
+        await expect.element(page.getByText("Loaded full skill 0", { exact: true })).toBeVisible();
+        await receipt.click();
+        await expect
+          .element(page.getByText("Loaded full skill 0", { exact: true }))
+          .not.toBeInTheDocument();
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
+
+  it("bounds consolidated history across multiple work phases to 50 entries", async () => {
+    const createdAt = "2026-09-08T10:00:00.000Z";
+    const turnId = TurnId.make("bounded-receipt");
+    const timelineEntries: TimelineEntry[] = [
+      {
+        id: "bounded-user",
+        kind: "message",
+        createdAt,
+        message: {
+          id: MessageId.make("bounded-user"),
+          role: "user",
+          text: "Inspect the repository",
+          createdAt,
+          streaming: false,
+        },
+      },
+    ];
+    for (let index = 0; index < 120; index += 1) {
+      timelineEntries.push({
+        id: `bounded-${index}`,
+        kind: "work",
+        createdAt,
+        entry: {
+          id: `bounded-${index}`,
+          turnId,
+          label: "Read file",
+          detail: `/src/file-${index}.ts`,
+          tone: "tool",
+          createdAt,
+          toolLifecycleStatus: "completed",
+        },
+      });
+      if (index === 39 || index === 79) {
+        timelineEntries.push({
+          id: `progress-${index}`,
+          kind: "message",
+          createdAt,
+          message: {
+            id: MessageId.make(`progress-${index}`),
+            role: "assistant",
+            turnId,
+            text: `Inspected ${index + 1} files.`,
+            createdAt,
+            streaming: false,
+          },
+        });
+      }
+    }
+    timelineEntries.push({
+      id: "bounded-response",
+      kind: "message",
+      createdAt,
+      message: {
+        id: MessageId.make("bounded-response"),
+        role: "assistant",
+        turnId,
+        text: "Finished.",
+        createdAt,
+        completedAt: "2026-09-08T10:00:10.000Z",
+        streaming: false,
+      },
+    });
+    const screen = await render(
+      <MessagesTimeline {...buildProps()} timelineEntries={timelineEntries} />,
+    );
+    try {
+      const receipt = page.getByRole("button", { name: /^Worked for/ });
+      await receipt.click();
+      const history = receipt
+        .element()
+        .closest(".work-group-section")!
+        .querySelector("[data-slot='collapsible-panel'] > div")!;
+      expect(history.children).toHaveLength(51);
+      expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(49);
+      await page.getByRole("button", { name: "Show 50 earlier entries (72 remaining)" }).click();
+      expect(history.children).toHaveLength(101);
+      await page.getByRole("button", { name: "Show 22 earlier entries (22 remaining)" }).click();
+      expect(history.children).toHaveLength(122);
+      expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(120);
+      await expect
+        .element(page.getByRole("button", { name: /Tool Calls/ }))
         .not.toBeInTheDocument();
     } finally {
       await screen.unmount();

@@ -44,7 +44,6 @@ import {
 import {
   resolveWorkEntryToolPresentation,
   compactWorkEntryLabel,
-  groupConsecutiveWorkEntries,
   workGroupAccessibleLabel,
   type ToolGroupSummaryKind,
   workEntryViewedImagePath,
@@ -386,49 +385,7 @@ interface ThreadWorkLogProps {
 }
 
 export function ThreadWorkLog(props: ThreadWorkLogProps) {
-  const historyGroups = useMemo(() => {
-    if (!props.activities[0]?.groupedToolDetail) return null;
-    const groups = groupConsecutiveWorkEntries(props.activities, (row) =>
-      row.status === "failure" ? { ...row.workEntry, tone: "error" } : row.workEntry,
-    );
-    if (groups.length === 1 && props.activities.length <= 50) {
-      return [{ summaryRow: null, entries: props.activities }];
-    }
-    return groups.map((group) => {
-      if (group.entries.length === 1) return { summaryRow: null, entries: group.entries };
-      const first = group.entries[0]!;
-      const id = `history-group:${first.id}`;
-      const summaryRow: ThreadFeedActivity = {
-        ...first,
-        id,
-        summary: group.label,
-        groupSummary: true,
-        canExpand: true,
-        workEntry: {
-          ...first.workEntry,
-          label: group.label,
-          toolTitle: group.label,
-          command: undefined,
-          detail: undefined,
-          changedFiles: undefined,
-        },
-        getFullDetail: () => null,
-        getCopyText: () => group.entries.map((row) => row.getCopyText()).join("\n\n"),
-      };
-      return { summaryRow, entries: group.entries };
-    });
-  }, [props.activities]);
-  const activities = useMemo(
-    () =>
-      historyGroups?.flatMap(({ summaryRow, entries }) =>
-        summaryRow === null
-          ? entries
-          : props.expandedRows[summaryRow.id]
-            ? [summaryRow, ...entries]
-            : [summaryRow],
-      ) ?? props.activities,
-    [historyGroups, props.activities, props.expandedRows],
-  );
+  const activities = props.activities;
   const renderRow = useCallback(
     (row: ThreadFeedActivity) => (
       <ThreadWorkLogRow
@@ -747,11 +704,9 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
   const fullDetail = expanded ? row.getFullDetail() : null;
   const viewedImagePath = workEntryViewedImagePath(row.workEntry);
   const toolPresentation = resolveWorkEntryToolPresentation(row.workEntry);
-  const previewText = row.groupSummary
-    ? row.summary
-    : row.groupedToolDetail
-      ? compactWorkEntryLabel(row.workEntry)
-      : workEntryRowLabel(row.workEntry);
+  const previewText = row.groupedToolDetail
+    ? compactWorkEntryLabel(row.workEntry)
+    : workEntryRowLabel(row.workEntry);
   const displayText = previewText;
   const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
   const failed = row.status === "failure";
