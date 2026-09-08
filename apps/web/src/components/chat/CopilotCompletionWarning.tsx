@@ -35,15 +35,17 @@ export const CopilotCompletionWarning = memo(function CopilotCompletionWarning({
   return (
     <div
       role="alert"
-      className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs"
+      className="flex items-start gap-2 border-b border-amber-500/20 bg-amber-500/[0.06] px-4 py-2 text-xs"
     >
       <AlertTriangle
-        className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+        className="mt-0.5 size-3.5 shrink-0 text-amber-600/80 dark:text-amber-400/80"
         aria-hidden
       />
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">Copilot activity continued after completion</p>
-        <p className="mt-1 text-muted-foreground">
+      <div className="min-w-0 flex-1 leading-5">
+        <p className="inline font-medium text-foreground/90">
+          Copilot activity continued after completion
+        </p>{" "}
+        <p className="inline text-foreground/70">
           Background work may still be running. Review the session before sending or interrupting;
           later edits may be missing from the completion checkpoint.
         </p>
@@ -52,6 +54,7 @@ export const CopilotCompletionWarning = memo(function CopilotCompletionWarning({
         type="button"
         variant="ghost"
         size="icon-xs"
+        className="text-muted-foreground/60 hover:text-foreground/80"
         aria-label="Dismiss Copilot completion warning"
         onClick={() => useUiStateStore.getState().dismissCopilotWarning(warning.id)}
       >
