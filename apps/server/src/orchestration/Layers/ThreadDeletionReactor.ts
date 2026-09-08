@@ -16,7 +16,6 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import {
   isRemovableArchiveWorktreePath,
-  shouldScheduleArchiveWorktreeCleanup,
 } from "../archiveWorktreeCleanup.ts";
 import { OrchestrationEngineService, readCommandModel } from "../Services/OrchestrationEngine.ts";
 import {
@@ -221,20 +220,20 @@ const make = Effect.gen(function* () {
       return false;
     }
 
-        // Archive cleanup can race unarchive: the job still names this thread, but
-        // ownership checks exclude it. If the owner is active again, abort removal.
-        const cleanupOwnerIsActive =
-          cleanupThread !== undefined &&
-          cleanupThread.deletedAt === null &&
-          cleanupThread.archivedAt === null;
-        if (cleanupOwnerIsActive) {
-          yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
-          yield* Effect.logInfo("cancelled worktree cleanup after owner became active again", {
-            threadId: cleanup.threadId,
-            worktreePath: canonicalPath,
-          });
-          return Option.none();
-        }
+    // Archive cleanup can race unarchive: the job still names this thread, but
+    // ownership checks exclude it. If the owner is active again, abort removal.
+    const cleanupOwnerIsActive =
+      cleanupThread !== undefined &&
+      cleanupThread.deletedAt === null &&
+      cleanupThread.archivedAt === null;
+    if (cleanupOwnerIsActive) {
+      yield* worktreeCleanupJobs.cancelByThreadId(cleanup.threadId);
+      yield* Effect.logInfo("cancelled worktree cleanup after owner became active again", {
+        threadId: cleanup.threadId,
+        worktreePath: canonicalPath,
+      });
+      return Option.none();
+    }
 
     const canonicalWorkspaceRoot = yield* Effect.promise(() =>
       canonicalizeWorktreePath(cleanup.cwd),
