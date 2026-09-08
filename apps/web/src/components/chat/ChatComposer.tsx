@@ -2124,7 +2124,7 @@ export const ChatComposer = memo(
             onPointerEnter={onComposerIntent}
             onBlurCapture={scheduleComposerCollapseCheck}
           >
-            <CopilotCompletionWarning key={activeThreadId} activities={activeThread?.activities} />
+            <CopilotCompletionWarning activities={activeThread?.activities} />
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
                 policyBlocks={queuedPolicyBlocks}
