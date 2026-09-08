@@ -47,7 +47,7 @@ function RelatedThreadsButton(props: {
     props.thread,
     props.hierarchy?.latestRelatedNotificationAt,
   );
-  const count = props.hierarchy?.childCount ?? 0;
+  const count = props.hierarchy?.relatedChildCount ?? props.hierarchy?.childCount ?? 0;
   if (count === 0 && !unread) return null;
   const groupStatus = props.hierarchy?.relatedStatus ?? "ready";
   const status = STATUS[groupStatus];

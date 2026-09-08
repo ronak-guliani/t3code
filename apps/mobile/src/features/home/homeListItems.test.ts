@@ -201,6 +201,10 @@ describe("buildHomeListLayout", () => {
     expect(
       read.items.filter((item) => item.type === "thread").map((item) => item.thread.id),
     ).toEqual([parent.id]);
+    expect(read.items.find((item) => item.type === "thread")?.hierarchy).toMatchObject({
+      childCount: 0,
+      relatedChildCount: 1,
+    });
   });
 
   it("renders a header plus all threads for a small group without a show-more row", () => {

@@ -213,6 +213,9 @@ describe("mobile nested threads", () => {
         (item) => item.thread.id,
       ),
     ).toEqual([parent.id]);
+    expect(
+      layout([parent, completedChild], { threadChildReadAt: readMarkers }).items[0]?.hierarchy,
+    ).toMatchObject({ childCount: 0, relatedChildCount: 1 });
 
     const workingChild = {
       ...completedChild,

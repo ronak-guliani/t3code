@@ -1,6 +1,6 @@
 import { createElement, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 vi.hoisted(() => {
@@ -206,6 +206,40 @@ describe("compact inbox row", () => {
       expect(onSelectThread).toHaveBeenCalledWith(parent);
     },
   );
+
+  it("keeps related navigation after a completed child is acknowledged", () => {
+    const child = {
+      ...parent,
+      id: ThreadId.make("child"),
+      parentThreadId: parent.id,
+      latestTurn: {
+        turnId: TurnId.make("child-turn"),
+        state: "completed" as const,
+        requestedAt: parent.createdAt,
+        startedAt: parent.createdAt,
+        completedAt: parent.updatedAt,
+        assistantMessageId: null,
+      },
+    };
+    const hierarchy = mobileThreadTreeRows(
+      buildMobileThreadTree([parent, child], undefined, [], {
+        readMarkers: { [`${parent.environmentId}:${child.id}`]: child.updatedAt },
+      }),
+    )[0]!;
+    renderToStaticMarkup(
+      <CompactThreadRow
+        title={parent.title}
+        timestamp="1m"
+        status="ready"
+        onPress={() => {}}
+        related={{ thread: parent, hierarchy }}
+      />,
+    );
+    expect(hierarchy).toMatchObject({ childCount: 0, relatedChildCount: 1 });
+    expect(
+      harness.pressables.find((item) => item.accessibilityLabel?.startsWith("Related chats")),
+    ).toBeDefined();
+  });
 
   it.each(["legacy", "v2"] as const)("renders editable drafts in the %s compact list", (mode) => {
     const draft: PendingDraftTask = {

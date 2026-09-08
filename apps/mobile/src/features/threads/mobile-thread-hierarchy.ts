@@ -19,11 +19,13 @@ export type MobileThreadTreeNode = ThreadTreeNode<MobileThreadShell, NestedThrea
   latestRelatedNotificationAt?: string | null;
   relatedStatus?: NestedThreadStatus;
   hasUnreadDescendant?: boolean;
+  relatedChildCount?: number;
 };
 export type MobileThreadTreeRow = ThreadTreeRow<MobileThreadShell, NestedThreadStatus> & {
   readonly latestRelatedNotificationAt?: string | null;
   readonly relatedStatus?: NestedThreadStatus;
   readonly hasUnreadDescendant?: boolean;
+  readonly relatedChildCount?: number;
 };
 
 export function nestedThreadKey(thread: MobileThreadShell): string {
@@ -165,6 +167,20 @@ export function buildMobileThreadTree(
       ),
   ]);
   const readMarkers = options.readMarkers ?? {};
+  const fullTree = buildThreadTree({
+    threads: expanded,
+    compare,
+    resolveStatus: resolveNestedThreadStatus,
+    rollUpStatus: rollUpNestedThreadStatus,
+    isArchiveBlocked: isThreadArchiveBlocked,
+  });
+  const descendantCountByKey = new Map<string, number>();
+  const fullTreePending = [...fullTree];
+  while (fullTreePending.length > 0) {
+    const node = fullTreePending.pop()!;
+    descendantCountByKey.set(node.threadKey, node.descendantCount);
+    fullTreePending.push(...node.children);
+  }
   const visibleKeys = new Set(
     expanded
       .filter((thread) => {
@@ -200,6 +216,12 @@ export function buildMobileThreadTree(
     rollUpStatus: rollUpNestedThreadStatus,
     isArchiveBlocked: isThreadArchiveBlocked,
   });
+  const visibleTreePending = [...tree];
+  while (visibleTreePending.length > 0) {
+    const node = visibleTreePending.pop()!;
+    node.relatedChildCount = descendantCountByKey.get(node.threadKey) ?? node.descendantCount;
+    visibleTreePending.push(...node.children);
+  }
   // A collapsed group must retain notifications from deeper branches, including during search.
   const traversal: MobileThreadTreeNode[] = [];
   const pending: MobileThreadTreeNode[] = [...tree];
@@ -322,6 +344,7 @@ export function mobileThreadTreeRows(
         latestRelatedNotificationAt: node.latestRelatedNotificationAt ?? null,
         relatedStatus: node.relatedStatus ?? "ready",
         hasUnreadDescendant: node.hasUnreadDescendant === true,
+        relatedChildCount: node.relatedChildCount ?? node.descendantCount,
       });
     }
     for (let index = node.children.length - 1; index >= 0; index--) {
