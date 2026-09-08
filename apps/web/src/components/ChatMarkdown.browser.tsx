@@ -5,7 +5,7 @@ import { page } from "vitest/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 const {
   createAssetUrlMock,
@@ -114,6 +114,41 @@ function addThreadSummary(
       ...state.environmentStateById,
       [threadRef.environmentId]: {
         ...environmentState,
+        threadShellById: {
+          ...environmentState.threadShellById,
+          [threadId]: {
+            id: threadId,
+            environmentId: threadRef.environmentId,
+            codexThreadId: null,
+            projectId: ProjectId.make("project-markdown"),
+            parentThreadId: null,
+            title,
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5.4",
+            },
+            runtimeMode: "full-access",
+            pendingRuntimeMode: null,
+            interactionMode: "default",
+            error: null,
+            createdAt: "2026-07-31T00:00:00.000Z",
+            archivedAt: null,
+            branch: null,
+            worktreePath: null,
+            ...(pullRequest
+              ? {
+                  pullRequest: {
+                    number: pullRequest.number,
+                    title,
+                    url: pullRequest.url,
+                    baseBranch: "main",
+                    headBranch: "feature",
+                    state: "open" as const,
+                  },
+                }
+              : {}),
+          },
+        },
         sidebarThreadSummaryById: {
           ...environmentState.sidebarThreadSummaryById,
           [threadId]: {
@@ -429,6 +464,88 @@ describe("ChatMarkdown", () => {
         );
       });
       expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+      await screen.unmount();
+    }
+  });
+
+  it("routes context-qualified GitHub shorthand through internal navigation", async () => {
+    const eventHandler = vi.fn();
+    window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+    addThreadSummary(threadRef.threadId, "Current thread", {
+      number: 42,
+      url: "https://github.com/owner/repo/pull/42",
+    });
+    const screen = await render(
+      <ChatMarkdown
+        text="See owner/repo#42 for the related change."
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "owner/repo#42" });
+      await expect.element(link).toHaveAttribute("href", "https://github.com/owner/repo/pull/42");
+      await link.click();
+      await vi.waitFor(() => {
+        expect(eventHandler).toHaveBeenCalledWith(
+          expect.objectContaining({
+            detail: {
+              host: "github.com",
+              repository: "owner/repo",
+              number: 42,
+              url: "https://github.com/owner/repo/pull/42",
+            },
+          }),
+        );
+      });
+      expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+      await screen.unmount();
+    }
+  });
+
+  it("keeps PR URLs with query strings or fragments on the external-link path", async () => {
+    openPreviewMock.mockResolvedValueOnce({
+      _tag: "Success",
+      value: {
+        threadId: threadRef.threadId,
+        tabId: "tab-pr-discussion",
+        navStatus: {
+          _tag: "Loading",
+          url: "https://github.com/owner/repo/pull/42?tab=files#discussion_r1",
+          title: "",
+        },
+        canGoBack: false,
+        canGoForward: false,
+        updatedAt: "2026-08-10T00:00:00.000Z",
+      },
+    });
+    const eventHandler = vi.fn();
+    window.addEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
+    const url = "https://github.com/owner/repo/pull/42?tab=files#discussion_r1";
+    const screen = await render(
+      <ChatMarkdown text={`[discussion](${url})`} cwd="/repo/project" threadRef={threadRef} />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "discussion" });
+      await expect.element(link).toHaveAttribute("href", url);
+      await expect.element(link).toHaveAttribute("target", "_blank");
+      await link.click();
+      await vi.waitFor(() => {
+        expect(openPreviewMock).toHaveBeenCalledWith({
+          environmentId: threadRef.environmentId,
+          input: expect.objectContaining({
+            threadId: threadRef.threadId,
+            url,
+          }),
+        });
+      });
+      expect(eventHandler).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener(INTERNAL_PULL_REQUEST_NAVIGATION_EVENT, eventHandler);
       await screen.unmount();
