@@ -565,7 +565,12 @@ const make = Effect.gen(function* () {
     yield* processAfterWorktreeReservation(
       orchestrationEngine.withWorktreeLock,
       reserveCleanup(threadId),
-      runReservedCleanup,
+      (reservation) =>
+        runAfterThreadRuntimeTeardown(
+          stopActiveProviderSession(threadId),
+          closeThreadTerminalsEffect(threadId),
+          runReservedCleanup(reservation),
+        ),
     );
   });
 
@@ -621,11 +626,7 @@ const make = Effect.gen(function* () {
   const queuedWorktreeCleanups = new Set<ThreadDeletedEvent["payload"]["threadId"]>();
   const worktreeCleanupWorker = yield* makeDrainableWorker(
     (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
-      runAfterThreadRuntimeTeardown(
-        stopActiveProviderSession(threadId),
-        closeThreadTerminalsEffect(threadId),
-        processWorktreeCleanup(threadId),
-      ).pipe(
+      processWorktreeCleanup(threadId).pipe(
         Effect.catchCause((cause) => {
           if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);

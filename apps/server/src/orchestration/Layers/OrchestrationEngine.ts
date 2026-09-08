@@ -1,6 +1,7 @@
 import type {
   DispatchResult,
   OrchestrationEvent,
+  OrchestrationReadModel,
   ProjectId,
   ThreadId,
   WorkflowRunId,
@@ -134,6 +135,30 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     }
   };
 
+  const cleanupWorktreePath = (
+    command: OrchestrationCommand,
+    model: OrchestrationReadModel,
+  ): string | null => {
+    const directPath = commandWorktreePath(command);
+    if (directPath !== null) {
+      return directPath;
+    }
+    switch (command.type) {
+      case "thread.unarchive":
+      case "thread.queued-turn.create":
+      case "thread.queued-turn.dispatch":
+        return model.threads.find((thread) => thread.id === command.threadId)?.worktreePath ?? null;
+      case "thread.turn.start":
+        return (
+          model.threads.find((thread) => thread.id === command.threadId)?.worktreePath ??
+          command.bootstrap?.createThread?.worktreePath ??
+          null
+        );
+      default:
+        return null;
+    }
+  };
+
   const canonicalizeCommandWorktree = Effect.fn("canonicalizeCommandWorktree")(function* (
     command: OrchestrationCommand,
   ) {
@@ -208,7 +233,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
-        const worktreePath = commandWorktreePath(command);
+        const worktreePath = cleanupWorktreePath(command, readModel);
         if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
           return yield* new OrchestrationCommandWorktreeCleanupPendingError({
             commandType: command.type,
@@ -402,8 +427,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ),
     );
     const command = envelope.command;
+    const cleanupPath = cleanupWorktreePath(command, readModel);
     const requiresWorktreeLock =
-      commandWorktreePath(command) !== null ||
+      cleanupPath !== null ||
       command.type === "thread.archive" ||
       command.type === "thread.unarchive" ||
       command.type === "thread.delete";

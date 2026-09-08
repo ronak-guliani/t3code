@@ -9,7 +9,18 @@ import {
   ThreadId,
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
-import { Cause, Effect, Exit, Layer, ManagedRuntime, Option, Scope, Stream } from "effect";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Scope,
+  Stream,
+} from "effect";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { describe, expect, it } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
@@ -112,6 +123,62 @@ describe("logCleanupCauseUnlessInterrupted", () => {
             Effect.sync(() => {
               expect(lockHeld).toBe(false);
             }),
+        ),
+      );
+    });
+
+    it("skips stale queued cleanup after unarchive before worker execution", async () => {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const blockerStarted = yield* Deferred.make<void>();
+            const releaseBlocker = yield* Deferred.make<void>();
+            let archived = true;
+            let stopSessionCalls = 0;
+            let terminalCloseCalls = 0;
+            let terminalHistoryDeletes = 0;
+            let worktreeRemovalCalls = 0;
+
+            const worker = yield* makeDrainableWorker<"block" | "cleanup", never, never>(
+              (item): Effect.Effect<void, never, never> =>
+                item === "block"
+                  ? Deferred.succeed(blockerStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseBlocker)),
+                    )
+                  : processAfterWorktreeReservation(
+                      (effect: Effect.Effect<Option.Option<string>, never, never>) => effect,
+                      Effect.sync(() =>
+                        archived ? Option.some("reserved") : Option.none<string>(),
+                      ),
+                      () =>
+                        runAfterThreadRuntimeTeardown(
+                          Effect.sync(() => {
+                            stopSessionCalls += 1;
+                          }),
+                          Effect.sync(() => {
+                            terminalCloseCalls += 1;
+                            terminalHistoryDeletes += 1;
+                          }),
+                          Effect.sync(() => {
+                            worktreeRemovalCalls += 1;
+                          }),
+                        ),
+                    ),
+            );
+
+            yield* worker.enqueue("block");
+            yield* worker.enqueue("cleanup");
+            yield* Deferred.await(blockerStarted);
+
+            archived = false;
+            yield* Deferred.succeed(releaseBlocker, undefined);
+            yield* worker.drain;
+
+            expect(stopSessionCalls).toBe(0);
+            expect(terminalCloseCalls).toBe(0);
+            expect(terminalHistoryDeletes).toBe(0);
+            expect(worktreeRemovalCalls).toBe(0);
+          }),
         ),
       );
     });

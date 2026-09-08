@@ -18,6 +18,8 @@ Branches are never deleted and Git removal is never forced. Dirty, unregistered,
 
 Cleanup intent is stored separately from the canonical-path removal reservation. Waiting or review-only work therefore does not block a new workspace assignment; only a path reserved for an in-progress removal does.
 
+The cleanup worker obtains that removal reservation before stopping the target provider session or deleting terminal history. While the reservation is held, unarchive and turn-start commands for the checkout are rejected under the orchestration worktree lock; if those commands win the race first, the worker observes the cancelled/ineligible intent and performs no teardown. Slow provider, terminal, and Git I/O runs after the lock is released.
+
 Migration 085 converts legacy rows to `needs-attention` unless they were explicitly cancelled. Startup recovery inspects `removing` rows against the real Git registration and filesystem state: a path already absent after a successful Git removal is completed, while an unresolved reservation is returned to retryable waiting state or surfaced for review. Repeated discovery preserves attempt counts, backoff, and explicit cancellation.
 
 The registered-worktree inventory is bounded to known, non-deleted project repositories. It reports owners, cleanup status, reason, and next retry time. Retry and keep actions are explicit; they do not perform cleanup directly.
