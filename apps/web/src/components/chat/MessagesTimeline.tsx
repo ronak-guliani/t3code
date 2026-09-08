@@ -487,7 +487,7 @@ function TimelineRowContent(props: { row: TimelineRow }) {
   return (
     <div
       className={cn(
-        "pb-4",
+        row.kind === "work" || row.kind === "working" ? "pb-2" : "pb-4",
         row.kind === "message" && row.message.role === "assistant" ? "group/assistant" : null,
       )}
       data-timeline-row-id={row.id}
@@ -792,12 +792,13 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         })()}
 
       {row.kind === "working" && (
-        <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[7.5px] text-muted-foreground/50">
-            <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
+        <div className="py-0.5">
+          <div className="chat-work-text flex items-center gap-1.5 text-muted-foreground">
+            <span
+              className="inline-flex w-[1em] shrink-0 items-center justify-center"
+              aria-hidden="true"
+            >
+              <span className="h-1 w-1 rounded-full bg-muted-foreground animate-status-pulse motion-reduce:animate-none" />
             </span>
             <span>
               {row.createdAt ? (
@@ -1060,36 +1061,40 @@ const WorkGroupSection = memo(function WorkGroupSection({
       }}
     >
       <CollapsibleTrigger
-        className={cn(
-          "flex min-h-8 w-fit max-w-full items-center gap-1.5 rounded-sm px-0.5 py-1 text-left text-sm leading-relaxed transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring pointer-coarse:min-h-11",
-          attention ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
-        )}
+        className="chat-work-trigger text-muted-foreground"
         aria-controls={detailsId}
         aria-label={workGroupAccessibleLabel(
           `${toggleLabel} ${groupLabel} (${groupedEntries.length})`,
           activity.activeCount,
         )}
       >
-        <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden="true">
+        <span
+          data-work-icon
+          className={cn(
+            "flex items-center justify-center",
+            attention && "text-amber-700 dark:text-amber-400",
+          )}
+          aria-hidden="true"
+        >
           {attention ? (
-            <CircleAlertIcon className="size-3.5" />
+            <CircleAlertIcon className="size-full" />
           ) : activity.lead ? (
-            createElement(workEntryIcon(activity.lead), { className: "size-3.5" })
+            createElement(workEntryIcon(activity.lead), { className: "size-full" })
           ) : activity.state === "stopped" ? (
-            <Minimize2Icon className="size-3.5" />
+            <Minimize2Icon className="size-full" />
           ) : (
-            <CheckIcon className="size-3.5" />
+            <CheckIcon className="size-full" />
           )}
         </span>
         <span
-          className={cn("min-w-0 truncate", activity.shimmer && "work-activity-shimmer")}
+          className={cn("chat-work-label", activity.shimmer && "work-activity-shimmer")}
           title={activity.label}
         >
           {activity.label}
         </span>
         {activity.activeCount > 1 ? (
           <span
-            className="shrink-0 text-xs text-muted-foreground"
+            className="shrink-0 text-muted-foreground"
             title={`${activity.activeCount - 1} more active`}
           >
             +{activity.activeCount - 1}
@@ -1107,8 +1112,8 @@ const WorkGroupSection = memo(function WorkGroupSection({
         id={detailsId}
         className="duration-150 ease-out motion-reduce:transition-none"
       >
-        <div className="pb-1 pl-2 pt-0.5">
-          <p className="px-2 py-1 text-[0.85em] text-muted-foreground">
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          <p className="sr-only">
             {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
             {activity.activeCount > 1 ? ` · ${activity.activeCount} active` : ""}
           </p>
@@ -1137,6 +1142,17 @@ function WorkGroupHistory({
 }) {
   const groups = useMemo(() => groupConsecutiveWorkEntries(entries, (entry) => entry), [entries]);
   const nextGroupCount = Math.min(6, groups.length - visibleGroupCount);
+  if (groups.length === 1 && entries.length <= 50) {
+    return entries.map((entry) => (
+      <SimpleWorkEntryRow
+        key={entry.stableId ?? entry.id}
+        canExpandCommand
+        compact
+        workEntry={entry}
+        workspaceRoot={workspaceRoot}
+      />
+    ));
+  }
   return (
     <>
       {groups.slice(-visibleGroupCount).map((group) => (
@@ -1150,7 +1166,7 @@ function WorkGroupHistory({
       {groups.length > visibleGroupCount ? (
         <button
           type="button"
-          className="mt-1 rounded-sm px-2 py-2 text-[0.9em] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          className="chat-work-trigger mt-1 text-muted-foreground"
           onClick={onShowMore}
         >
           Show {nextGroupCount} earlier {nextGroupCount === 1 ? "group" : "groups"}
@@ -1182,12 +1198,12 @@ function WorkHistoryGroup({
     );
   return (
     <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <CollapsibleTrigger className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-muted-foreground hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring">
+      <CollapsibleTrigger className="chat-work-trigger text-muted-foreground">
         {createElement(workEntryIcon(entries[0]!), {
-          className: "size-3.5 shrink-0",
+          className: "size-3 shrink-0",
           "aria-hidden": true,
         })}
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="chat-work-label">{label}</span>
         <ChevronRightIcon
           className={cn(
             "size-3 transition-transform duration-150 motion-reduce:transition-none",
@@ -1196,7 +1212,7 @@ function WorkHistoryGroup({
         />
       </CollapsibleTrigger>
       <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
-        <div className="ml-3 border-l border-border/60 pl-2">
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em]">
           {entries.slice(0, visibleCount).map((entry) => (
             <SimpleWorkEntryRow
               key={entry.stableId ?? entry.id}
@@ -1209,7 +1225,7 @@ function WorkHistoryGroup({
           {entries.length > visibleCount ? (
             <button
               type="button"
-              className="rounded-sm px-2 py-2 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              className="chat-work-trigger text-muted-foreground"
               onClick={() => setVisibleCount((count) => count + 50)}
             >
               Show {Math.min(50, entries.length - visibleCount)} more actions (
@@ -1245,7 +1261,7 @@ const ReasoningSection = memo(function ReasoningSection({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          className="inline-flex shrink-0 items-center gap-1 text-[9px] text-muted-foreground/50 transition-colors hover:text-foreground/70"
+          className="chat-work-text inline-flex shrink-0 items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
           onClick={() => setIsExpanded((value) => !value)}
           aria-expanded={isExpanded}
         >
@@ -1255,7 +1271,7 @@ const ReasoningSection = memo(function ReasoningSection({
         <span className="h-px flex-1 bg-border" />
       </div>
       {(isExpanded || row.rows.some((entry) => entry.kind === "work")) && (
-        <div className="mt-3">
+        <div className="mt-1">
           {row.rows
             .filter((entry) => isExpanded || entry.kind === "work")
             .map((nestedRow) => (
@@ -1807,7 +1823,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     const detail = [
       fullCommand,
       output ?? workEntry.detail,
-      ...(workEntry.changedFiles ?? []),
+      ...(output ? [] : (workEntry.changedFiles ?? [])),
       isCommandExpanded && workEntry.toolData != null && !output
         ? JSON.stringify(workEntry.toolData, null, 2)
         : undefined,
@@ -1818,7 +1834,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     const label = compactWorkEntryLabel(workEntry);
     const failed = workEntryNeedsAttention(workEntry);
     return (
-      <div className="rounded-lg">
+      <div>
         <button
           type="button"
           disabled={!hasDetail}
@@ -1827,23 +1843,23 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           aria-label={
             hasDetail ? `${isCommandExpanded ? "Collapse" : "Expand"} details: ${label}` : label
           }
-          className={cn(
-            "flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-muted/40 disabled:cursor-default focus-visible:outline-2 focus-visible:outline-ring",
-            failed ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
-          )}
+          className="chat-work-trigger text-muted-foreground disabled:cursor-default"
         >
-          {entryIcon}
-          <span className="min-w-0 flex-1 truncate" title={label}>
+          {failed ? (
+            <CircleAlertIcon className="text-amber-700 dark:text-amber-400" aria-hidden="true" />
+          ) : (
+            entryIcon
+          )}
+          <span className="chat-work-label" title={label}>
             {label}
           </span>
-          {failed ? <span className="text-[0.85em]">Failed</span> : null}
           {hasDetail ? <CommandToggleIcon className="size-3 shrink-0" /> : null}
         </button>
         {isCommandExpanded && detail ? (
-          <div className="ml-3 border-l border-border/60 pl-3 pb-2">
+          <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
             <pre
               data-tool-command-details
-              className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/60 p-2 font-mono text-[0.9em] text-muted-foreground"
+              className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
             >
               {detail}
             </pre>

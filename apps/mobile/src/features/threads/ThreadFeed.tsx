@@ -149,7 +149,6 @@ import {
   type ThreadWorkGroupScrollPosition,
 } from "./thread-feed-live-follow";
 import {
-  collapsedWorkLogHeight,
   ThreadDisclosureChevron,
   ThreadWorkGroupToggle,
   ThreadThinkingRow,
@@ -1355,8 +1354,7 @@ function renderFeedEntry(
       >
         <Text
           key={props.workRowSizing.textSizeKey}
-          className="min-w-0 flex-1 font-t3-medium text-sm tabular-nums text-foreground-muted"
-          numberOfLines={2}
+          className="min-w-0 shrink text-xs tabular-nums text-foreground-muted"
         >
           {entry.label}
         </Text>
@@ -2596,19 +2594,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         case "thinking":
           return workRowSizing.fixedRowHeight;
         case "activity-group":
-          if (isContextCompactionActivityGroup(entry) || entry.activities[0]?.groupedToolDetail) {
-            return undefined;
-          }
-          // Expanded rows append a variable detail block — fall back to
-          // measurement for those groups.
-          return entry.activities.some((activity) => expandedWorkRows[activity.id])
-            ? undefined
-            : collapsedWorkLogHeight(entry.activities);
+          return undefined;
         default:
           return undefined;
       }
     },
-    [expandedWorkRows, workRowSizing.fixedRowHeight],
+    [workRowSizing.fixedRowHeight],
   );
 
   // Disclosures can mount existing offscreen rows as well as new work rows.

@@ -146,6 +146,31 @@ describe("live activity strips", () => {
     ).toBe("Running pnpm");
   });
 
+  it("prefers the complete input path over a shortened provider preview", () => {
+    const filename = "durable-worktree-cleanup-reconciliation.integration.test.ts";
+    expect(
+      compactWorkEntryLabel({
+        label: "Edit file",
+        tone: "tool",
+        changedFiles: ["/src/durable-worktree-c..."],
+        detail: "/src/durable-worktree-c...",
+        toolData: { rawInput: { filePath: `/src/${filename}` } },
+        toolLifecycleStatus: "completed",
+      }),
+    ).toBe(`Edited ${filename}`);
+  });
+
+  it("does not expose generic provider categories as action labels", () => {
+    expect(compactWorkEntryLabel({ label: "other", tone: "tool" })).toBe("Used tool");
+    expect(
+      compactWorkEntryLabel({
+        label: "other",
+        tone: "tool",
+        toolData: { toolName: "inspect_workspace" },
+      }),
+    ).toBe("inspect workspace");
+  });
+
   it("normalizes interrupted and background task lifecycles", () => {
     expect(extractWorkLogToolLifecycleStatus({ status: "cancelled" })).toBe("stopped");
     expect(extractWorkLogToolLifecycleStatus({ status: "idle", taskType: "subagent_batch" })).toBe(

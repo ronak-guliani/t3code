@@ -81,6 +81,7 @@ describe("MessagesTimeline", () => {
     getStateSpy.mockClear();
     vi.restoreAllMocks();
     document.body.innerHTML = "";
+    document.documentElement.style.removeProperty("--app-tool-font-size");
   });
 
   it("renders activity rows instead of the empty placeholder when a thread has non-message timeline data", async () => {
@@ -293,6 +294,122 @@ describe("MessagesTimeline", () => {
     await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
     await expect.element(page.getByText(/4 actions/)).toBeVisible();
     await screen.unmount();
+  });
+
+  it.each([10, 12, 16])(
+    "uses a consistent %ipx work scale without clipping long filenames",
+    async (fontSize) => {
+      document.documentElement.style.setProperty("--app-tool-font-size", `${fontSize}px`);
+      const turnId = TurnId.make("long-label-turn");
+      const createdAt = new Date().toISOString();
+      const filename =
+        "durable-worktree-cleanup-reconciliation-and-workspace-reservation.integration.test.ts";
+      const fullPath = `/workspace/src/${filename}`;
+      const screen = await render(
+        <div style={{ width: 320 }}>
+          <MessagesTimeline
+            {...buildProps()}
+            activeTurnId={turnId}
+            activeTurnInProgress
+            isWorking
+            activeTurnStartedAt={createdAt}
+            timelineEntries={[
+              {
+                id: "long-edit",
+                kind: "work",
+                createdAt,
+                entry: {
+                  id: "long-edit",
+                  createdAt,
+                  turnId,
+                  tone: "tool",
+                  label: "Edit file",
+                  detail: "/workspace/src/durable-worktree-c...",
+                  changedFiles: ["/workspace/src/durable-worktree-c..."],
+                  toolData: {
+                    rawInput: { filePath: fullPath },
+                    rawOutput: { content: `Modified 1 file(s): ${fullPath}` },
+                  },
+                  toolLifecycleStatus: "inProgress",
+                  isComplete: false,
+                },
+              },
+            ]}
+          />
+        </div>,
+      );
+      try {
+        const header = page.getByRole("button", { name: "Expand Tool Calls (1)", exact: true });
+        await expect.element(header).toBeVisible();
+        const working = document.querySelector(
+          "[data-timeline-row-kind='working'] .chat-work-text",
+        )!;
+        expect(getComputedStyle(working).fontSize).toBe(`${fontSize}px`);
+        expect(getComputedStyle(header.element()).fontSize).toBe(`${fontSize}px`);
+        const label = header.element().querySelector(".chat-work-label")!;
+        expect(label.textContent).toBe(`Editing ${filename}`);
+        expect(getComputedStyle(label).textOverflow).not.toBe("ellipsis");
+        expect(getComputedStyle(label).whiteSpace).toBe("normal");
+        expect(header.element().getBoundingClientRect().width).toBeLessThanOrEqual(320);
+        await header.click();
+        const detailButton = page.getByRole("button", {
+          name: `Expand details: Editing ${filename}`,
+          exact: true,
+        });
+        await expect.element(detailButton).toBeVisible();
+        expect(getComputedStyle(detailButton.element()).fontSize).toBe(`${fontSize}px`);
+        await detailButton.click();
+        const detail = document.querySelector("[data-tool-command-details]")!;
+        expect(detail.textContent).toContain(`Modified 1 file(s): ${fullPath}`);
+        expect(detail.textContent).not.toContain("/workspace/src/durable-worktree-c...");
+        expect(getComputedStyle(detail).fontSize).toBe(`${fontSize}px`);
+        expect(getComputedStyle(detail).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+        expect(detail.scrollWidth).toBeLessThanOrEqual(detail.clientWidth + 1);
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
+
+  it("opens a short history directly without a duplicate summary disclosure", async () => {
+    const createdAt = new Date().toISOString();
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={["one.ts", "two.ts", "three.ts"].map((name) => ({
+          id: name,
+          kind: "work",
+          createdAt,
+          entry: {
+            id: name,
+            createdAt,
+            tone: "tool",
+            label: "Read file",
+            detail: `/src/${name}`,
+            toolLifecycleStatus: "completed",
+            isComplete: true,
+          },
+        }))}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: "Expand Tool Calls (3)", exact: true }).click();
+      expect(page.getByRole("button", { name: /^Expand details:/ }).elements()).toHaveLength(3);
+      await expect
+        .element(page.getByRole("button", { name: "Read 3 files", exact: true }))
+        .not.toBeInTheDocument();
+      const rows = page.getByRole("button", { name: /^Expand details:/ }).elements();
+      for (const row of rows) {
+        expect(row.getBoundingClientRect().height).toBeLessThanOrEqual(26);
+        const label = row.querySelector(".chat-work-label")!;
+        const chevron = row.querySelector("svg:last-child")!;
+        expect(
+          chevron.getBoundingClientRect().left - label.getBoundingClientRect().right,
+        ).toBeLessThanOrEqual(8);
+      }
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it.each([125, 5_000])(

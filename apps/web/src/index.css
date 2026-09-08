@@ -797,8 +797,58 @@ label:has(> select#reasoning-effort) select {
 }
 
 /* Work group / tool output font size */
-.work-group-section {
+.work-group-section,
+.chat-work-text {
   font-size: var(--app-tool-font-size);
+  line-height: 1.6;
+}
+
+.chat-work-trigger {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 1.75em;
+  padding-block: 0.125em;
+  text-align: left;
+  border-radius: 0.125rem;
+}
+
+.chat-work-trigger > svg,
+.chat-work-trigger > [data-work-icon] {
+  align-self: flex-start;
+  flex-shrink: 0;
+  width: 1em;
+  height: 1em;
+  margin-top: 0.3em;
+}
+
+.chat-work-trigger:hover {
+  color: var(--foreground);
+}
+
+.chat-work-trigger:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.chat-work-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+@media (pointer: coarse) {
+  .chat-work-trigger {
+    min-height: 2rem;
+    align-items: center;
+  }
+  .chat-work-trigger > svg,
+  .chat-work-trigger > [data-work-icon] {
+    align-self: center;
+    margin-top: 0;
+  }
 }
 
 /* Chat message content font size (applies to user & assistant messages) */

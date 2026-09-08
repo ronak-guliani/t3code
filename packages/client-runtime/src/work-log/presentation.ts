@@ -79,10 +79,11 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
   const data = asRecord(entry.toolData);
   const input = asRecord(data?.rawInput) ?? asRecord(asRecord(data?.item)?.input);
   const path =
-    entry.changedFiles?.[0] ??
-    entry.viewedImagePath ??
     nonEmptyString(input?.path) ??
     nonEmptyString(input?.file_path) ??
+    nonEmptyString(input?.filePath) ??
+    entry.changedFiles?.[0] ??
+    entry.viewedImagePath ??
     entry.detail;
   const filename = path && !/[\r\n]/.test(path) ? path.trim().split(/[/\\]/).at(-1) : undefined;
   if (action === "read") return `${verb("Reading", "Read")} ${filename || "file"}`;
@@ -95,7 +96,13 @@ export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
     const name = /Skill\s*[-:]\s*["']?([^"'\n]+)/i.exec(entry.detail ?? "")?.[1]?.trim();
     return `${verb("Loading", "Loaded")} ${name || "skill"}`;
   }
-  return normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  const label = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  if (/^(other|tool|tool call)$/i.test(label)) {
+    const toolName = nonEmptyString(data?.toolName) ?? nonEmptyString(data?.tool);
+    if (toolName) return toolName.replaceAll("_", " ");
+    return `${verb("Using", "Used")} tool`;
+  }
+  return label;
 }
 
 export function workEntryNeedsAttention(entry: WorkLogPresentationEntry): boolean {
