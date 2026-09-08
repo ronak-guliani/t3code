@@ -294,6 +294,82 @@ describe("MessagesTimeline", () => {
     await screen.unmount();
   });
 
+  it("shimmers the current task after an earlier skill call completes", async () => {
+    const turnId = TurnId.make("turn-current-activity");
+    const createdAt = "2026-09-08T16:00:00.000Z";
+    const entries: TimelineEntry[] = [
+      {
+        id: "skill-loading",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "skill-loading",
+          createdAt,
+          turnId,
+          label: "other",
+          toolTitle: "other",
+          tone: "tool",
+          sourceActivityKind: "tool.updated",
+          toolLifecycleStatus: "inProgress",
+          toolData: { toolName: "skill" },
+        },
+      },
+      {
+        id: "skill-loaded",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "skill-loaded",
+          createdAt,
+          turnId,
+          label: "other",
+          toolTitle: "other",
+          tone: "tool",
+          sourceActivityKind: "tool.completed",
+          toolLifecycleStatus: "completed",
+          detail: 'Skill "blast-radius" loaded successfully.',
+          toolData: { toolName: "skill" },
+        },
+      },
+      {
+        id: "analyze-updates",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "analyze-updates",
+          createdAt,
+          turnId,
+          label: "Analyze missing iOS updates",
+          tone: "thinking",
+          sourceActivityKind: "task.progress",
+          toolLifecycleStatus: "inProgress",
+        },
+      },
+    ];
+    const screen = await render(
+      <MessagesTimeline
+        {...buildProps()}
+        activeTurnId={turnId}
+        activeTurnInProgress
+        isWorking
+        timelineEntries={entries}
+      />,
+    );
+
+    try {
+      const trigger = page.getByRole("button", { name: "Collapse Work log (3)" });
+      await expect.element(trigger).toBeVisible();
+      await expect
+        .element(trigger.getByText("Analyze missing iOS updates", { exact: true }))
+        .toBeVisible();
+      expect(trigger.element().querySelectorAll(".work-activity-shimmer")).toHaveLength(1);
+      expect(trigger.element().textContent).not.toContain("Loading skill");
+      expect(trigger.element().textContent).not.toContain("+1");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it.each([10, 12, 16])(
     "uses a consistent %ipx work scale without clipping long filenames",
     async (fontSize) => {

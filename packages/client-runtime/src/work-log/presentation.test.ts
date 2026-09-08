@@ -64,6 +64,65 @@ describe("live activity strips", () => {
     });
   });
 
+  it("shimmers current work instead of a superseded skill marker", () => {
+    const loadingSkill: WorkLogPresentationEntry = {
+      label: "other",
+      toolTitle: "other",
+      tone: "tool",
+      sourceActivityKind: "tool.updated",
+      toolLifecycleStatus: "inProgress",
+      toolData: { toolName: "skill" },
+    };
+    const loadedSkill: WorkLogPresentationEntry = {
+      label: "other",
+      toolTitle: "other",
+      tone: "tool",
+      sourceActivityKind: "tool.completed",
+      toolLifecycleStatus: "completed",
+      detail: 'Skill "blast-radius" loaded successfully.',
+      toolData: { toolName: "skill" },
+    };
+    const currentWork: WorkLogPresentationEntry = {
+      label: "Analyze missing iOS updates",
+      tone: "thinking",
+      sourceActivityKind: "task.progress",
+      toolLifecycleStatus: "inProgress",
+    };
+
+    expect(deriveWorkGroupActivity([loadingSkill, loadedSkill, currentWork], true)).toMatchObject({
+      state: "active",
+      lead: currentWork,
+      label: "Analyze missing iOS updates",
+      activeCount: 1,
+      shimmer: true,
+    });
+  });
+
+  it("keeps a later matching tool call active after an earlier call completes", () => {
+    const firstCall = {
+      ...read("same.ts", "inProgress"),
+      sourceActivityKind: "tool.updated",
+      toolCallId: "read-1",
+    };
+    const firstComplete = {
+      ...read("same.ts"),
+      sourceActivityKind: "tool.completed",
+      toolCallId: "read-1",
+    };
+    const secondCall = {
+      ...read("same.ts", "inProgress"),
+      sourceActivityKind: "tool.updated",
+      toolCallId: "read-2",
+    };
+
+    expect(deriveWorkGroupActivity([firstCall, firstComplete, secondCall], true)).toMatchObject({
+      lead: secondCall,
+      label: "Reading same.ts",
+      activeCount: 1,
+      shimmer: true,
+    });
+  });
+
   it.each(["inProgress", "failed", "stopped"] as const)(
     "does not summarize completed history while showing a %s lead",
     (status) => {
