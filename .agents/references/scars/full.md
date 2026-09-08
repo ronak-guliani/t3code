@@ -2,6 +2,8 @@
 
 ## Browser access and initial navigation
 
+- When starting Vite separately from the dev runner, set `VITE_DEV_SERVER_URL` as well as backend HTTP/WS URLs. Without the dev origin, cookie-auth requests bypass the same-origin proxy and can fail CORS despite a healthy backend.
+
 - Browser cookie import must use the registered environment ID and selected persistent profile; a literal `default` environment silently writes into a partition no real tab uses. Reset consent when the target changes.
 - Guest keyboard isolation must route zoom directly to the preview's tab-owned zoom operations. Reject unsupported popup URLs without loading them into the opener; Electron cannot harden inherited `about:blank` preferences.
 
@@ -30,6 +32,11 @@
 - History pagination availability must follow the rendered turn, not total thread activity; during live caps, mark history only when an activity from that turn is actually evicted.
 - `provider_session_runtime.status = running` means the provider runtime is alive, not that a turn is active; clear `runtime_payload_json.activeTurnId` after `ProviderService.sendTurn` settles and retain a Copilot smoke test that starts, selects a model, sends, observes, and stops.
 - Before a Copilot session exits, emit `task.completed` with `status = stopped` for every running background agent, and reconcile unmatched starts on server startup so crashes cannot leave sidebar runs permanently active.
+- Copilot ACP `end_turn` can precede attached-shell completion and autonomous follow-up edits. Keep automatic PR feedback opt-in, surface unowned activity without reassigning it, and never use quiet time or log-file tailing as completion authority. This is containment, not a checkpoint/completion fix; track upstream [completion](https://github.com/github/copilot-cli/issues/4743) and [follow-up abort](https://github.com/github/copilot-cli/issues/4555).
+- Copilot ACP events do not reliably identify their originating prompt. Once a follow-up is active, old continuation events can still be attributed to it by existing handlers; no-active-turn warnings do not solve that ambiguity. Do not claim cross-turn attribution safety without an upstream correlation/completion contract.
+- Automatic PR fallback bypasses the owner-thread queue. Gate both the existing Copilot session and destination before automatic takeover, even when switching to another provider. Keep explicit requests distinct; policy-disabled feedback remains pending, not failed.
+- Keep orchestration opt-ins outside provider runtime config: config changes close and rebuild provider scopes. Derive pending reasons from the shared policy and let settings changes resume eligible queued feedback without edit/save recovery.
+- Consent changes must wake ownerless fallback as well as owner queues. Reuse the fresh-snapshot and lease path rather than launching directly from the settings watcher; surface late ACP activity near the composer without treating its warning as proof of current liveness.
 
 ## Desktop packaging and React state
 
@@ -61,6 +68,7 @@
 - Nested-thread creation must use the authenticated T3 MCP boundary, not ambient provider shell variables: inject the authoritative parent thread ID, provider instance, and runtime mode, then route through the active server's CLI path and `baseDir`.
 - Nested-thread recovery needs parentage in CLI summaries and a direct `chat list --parent` filter; ambiguous creation failures cannot be resolved safely by title or project-wide scans.
 - CLI live-target discovery must distinguish a missing runtime-state file from an invalid or unreadable one. Keep tolerant runtime-state reads for cleanup/discovery callers, but surface the file path and remediation from interactive CLI commands.
+- Reconstructing a path from missing ancestors must use `basename`, never `slice(parent.length + 1)`: root parents (`/` and `C:\\`) have no trailing separator, so the slice drops the first character of the child. Existence helpers used as assertions must rethrow non-`ENOENT` errors instead of treating every `lstat` failure as absence.
 - CLI integration tests must use the production runtime layer and exercise the real entrypoint when checking service wiring; embedded server layers can leak services and mask missing CLI dependencies.
 - Internal CLI calls that parse stdout as structured data must force error-only logging so startup logs cannot corrupt the payload.
 - Delegated isolation belongs to the child: create and bind its worktree through `create_nested_thread.workspace` before the first child turn; never hand off the parent as preparation for delegation.
@@ -102,6 +110,8 @@
 
 ## Release builds and mobile integration
 
+- Keep mobile chat virtual-cell geometry synchronous: interrupted Reanimated layout transitions can finish at stale positions after text resizing or scroll-anchor corrections. Preserve opacity/chevron animations, and inspect native frames visually; LegendList's reported positions can remain correct while UIKit draws gaps or overlaps.
+- Installer path checks may ascend missing ancestors only after `ENOENT` and an absent `lstat` entry; permission/I/O errors and dangling or looping symlinks must not become accepted lexical paths.
 - Desktop browser tests must mock Electron mode before module evaluation and supply the real query provider; installing a bridge fixture later cannot change `env.ts`'s captured desktop flag.
 - Web store event handlers must not rebuild domain objects field by field: the live `thread.message-sent` path silently dropped a newly added message field that the snapshot path carried, so the UI was correct only after a reload. Spread the payload, and test the store-to-timeline seam rather than feeding hand-built objects straight into derivation.
 - Workspace dependency patches do not ship in the published CLI manifest; when runtime behavior depends on a patched package, bundle that package into `dist/bin.mjs` and verify the packed artifact contains the patch.
@@ -121,6 +131,7 @@
 - Windows Smoke must keep the broad package suite but use a curated server seam; the full server suite contains POSIX service, path, permission, and descriptor contracts that belong on the Linux quality runner.
 - Background-service health must use an instance-private PID-owned state file while the server also maintains shared CLI discovery state; a shared health file lets unrelated foreground servers satisfy or erase service health.
 - LaunchAgent bootstrap already starts `RunAtLoad` jobs: never immediately kill that process with `kickstart -k`. Wait for asynchronous bootout to fully unload before restarting, then wait boundedly for a running PID before probing it. Copy installed production dependencies with the CLI; a relocated `dist` alone cannot resolve external packages.
+- Connect origins must use the actual TCP listener address and port, mapping wildcard IPv4/IPv6 to their matching loopback addresses. Preserve IPv6 in the Node adapter patch (with URL brackets), and test through `NodeHttpServer.layer`, not fabricated addresses: upstream normalizes `::` to IPv4. `localhost` can reach another environment on the same port in the other family; a registered tunnel is not proof that the public endpoint identifies the intended host.
 
 ## Desktop browser surfaces
 
@@ -164,6 +175,7 @@
 
 ## Mobile protocol compatibility
 
+- Favicon caches may key by workspace and icon revision locally, but keep `projectId` in the asset request; replacing it with required `cwd` breaks both old-client/new-server and new-client/old-server pairings.
 - Official mobile compatibility is an additive protocol boundary: retain legacy bootstrap and `wsToken` routes while serving scoped OAuth access tokens and `wsTicket`; persist granted scopes because role-derived authorization cannot represent restricted upstream tokens.
 - Effect RPC request IDs changed wire types across mobile releases; accept safe numeric and decimal-string IDs, normalize them internally, and echo each connection's original representation in chunks, exits, and defects.
 - Mobile capability flags are executable protocol promises: advertise a feature only when every current RPC it gates is implemented, and send explicit `false` when current clients distinguish disabled behavior from legacy absence.
@@ -214,6 +226,8 @@
 
 ## Mobile capabilities and cross-platform tests
 
+- Node test support for an Array method is not a promise about every mobile engine. Keep shared inbox traversal free of unpolyfilled ES2023 copy-array methods and cover it with the method unavailable.
+
 - Mobile capability flags are promises across both orchestration and `mobile.v1`; command schemas, mobile allowlists, server dispatch guards, and every exported live-event reducer must move together before advertising support.
 - Long-running mobile mutations need durable pending state plus correlated completion commands; clear interrupted work on reactor startup and ignore stale completions so reconnects and manual edits cannot be overwritten.
 - Use `Schema.is` rather than `instanceof` for Effect Schema types; the patched Windows TypeScript runner treats `instanceof` diagnostics as fatal.
@@ -240,6 +254,10 @@
 
 ## Mobile drafts and navigation
 
+- Deferred route failures need an explicit failed state: a rejected promise can carry `null`, so using the rejection value as the loading/error sentinel can strand the screen without a retry action.
+
+- Upstream consumer imports must preserve fork-owned inbox composition. Exercise the real legacy and V2 row consumers, not only an orphanable compact component, so imports cannot silently restore metadata rows or remove related-chat navigation.
+- Native menu hosts expose their UIButton content as one accessibility element. Keep related-chat controls outside that host, put primary activation semantics on the menu, and verify both targets in the simulator accessibility tree.
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.
 - Independent iPad sidebar stacks own header chrome only; carry app navigation across that boundary for chat and queued-draft actions.
 - Rejected subchats must recover to a reachable project draft when their parent disappears; recheck the recovery destination before removing the outbox entry.

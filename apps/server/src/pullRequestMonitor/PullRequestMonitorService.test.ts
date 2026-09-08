@@ -2,12 +2,15 @@ import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   PullRequestMonitorError,
   PullRequestOperationError,
   ThreadId,
   type ModelSelection,
   type PullRequestMonitorFeedbackDeliveryId,
   type PullRequestMonitorSnapshot,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -15,6 +18,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as PubSub from "effect/PubSub";
+import * as Fiber from "effect/Fiber";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TestClock } from "effect/testing";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -176,6 +182,7 @@ const knownThreads = new Map<
     worktreePath: string | null;
     archivedAt: string | null;
     busy: boolean;
+    copilotSession?: boolean;
     pullRequest: { number: number; url: string } | null;
   }
 >();
@@ -213,7 +220,15 @@ const fakeProjections = {
         archivedAt: row.archivedAt,
         modelSelection: { instanceId: "copilot", model: "gpt-test" },
         latestTurn: row.busy ? { state: "running" } : null,
-        session: row.busy ? { status: "running", activeTurnId: "turn-1" } : null,
+        session:
+          row.busy || row.copilotSession
+            ? {
+                status: row.busy ? "running" : "ready",
+                activeTurnId: row.busy ? "turn-1" : null,
+                providerName: "copilot",
+                providerInstanceId: ProviderInstanceId.make("copilot"),
+              }
+            : null,
         hasPendingQueuedTurn: false,
       } as never);
     }),
@@ -293,19 +308,35 @@ const fakeGit = {
     }),
 } as unknown as GitManager["Service"];
 
-const fakeSettings = {
-  getSettings: Effect.succeed({
-    ...DEFAULT_SERVER_SETTINGS,
-    autoMonitorPullRequestsOnCreate: true,
-    autoLaunchPrMonitorFallback: true,
-    textGenerationModelSelection: {
-      instanceId: "openai",
-      model: "gpt-test",
-    } as ModelSelection,
+const defaultSettings: ServerSettings = {
+  ...DEFAULT_SERVER_SETTINGS,
+  autoMonitorPullRequestsOnCreate: true,
+  autoLaunchPrMonitorFallback: true,
+  textGenerationModelSelection: {
+    instanceId: "openai",
+    model: "gpt-test",
+  } as ModelSelection,
+};
+let currentSettings = defaultSettings;
+
+const SettingsLayer = Layer.effect(
+  ServerSettingsService,
+  Effect.gen(function* () {
+    const changes = yield* PubSub.unbounded<ServerSettings>();
+    return ServerSettingsService.of({
+      start: Effect.void,
+      ready: Effect.void,
+      getSettings: Effect.sync(() => currentSettings),
+      updateSettings: (patch) =>
+        Effect.gen(function* () {
+          currentSettings = applyServerSettingsPatch(currentSettings, patch);
+          yield* PubSub.publish(changes, currentSettings);
+          return currentSettings;
+        }),
+      streamChanges: Stream.fromPubSub(changes),
+    });
   }),
-  updateSettings: () => Effect.die("unused"),
-  streamChanges: Stream.empty,
-} as unknown as ServerSettingsService["Service"];
+);
 
 const MigratedSql = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -328,7 +359,7 @@ const TestLayer = pullRequestMonitorServiceLayer.pipe(
   Layer.provide(Layer.succeed(PullRequestService.PullRequestService, fakePullRequests)),
   Layer.provideMerge(FeedbackLayer),
   Layer.provide(Layer.succeed(GitManager, fakeGit)),
-  Layer.provide(Layer.succeed(ServerSettingsService, fakeSettings)),
+  Layer.provideMerge(SettingsLayer),
   Layer.provideMerge(Layer.succeed(ProjectionSnapshotQuery, fakeProjections)),
   Layer.provideMerge(Layer.succeed(OrchestrationEngineService, fakeEngine)),
   Layer.provideMerge(MigratedSql),
@@ -807,6 +838,199 @@ layer("PullRequestMonitorService", (it) => {
       assert.strictEqual(again.skippedReason, "recent-fallback-cooldown");
       assert.strictEqual(again.fallbackThreadId, fallback.fallbackThreadId);
     }),
+  );
+
+  for (const [index, scenario] of [
+    { name: "Copilot default-off", driver: "copilot", optIn: false, launch: false },
+    {
+      name: "explicit opt-in",
+      driver: "copilot",
+      optIn: true,
+      launch: true,
+    },
+    { name: "other provider", driver: "codex", optIn: false, launch: true },
+  ].entries()) {
+    it.effect(`automatic fallback respects ${scenario.name}`, () =>
+      Effect.gen(function* () {
+        const service = yield* PullRequestMonitorService;
+        const store = yield* PullRequestMonitorStore.make;
+        const instanceId = ProviderInstanceId.make("fallback-provider");
+        currentSettings = {
+          ...defaultSettings,
+          textGenerationModelSelection: { instanceId, model: "gpt-test" },
+          copilotAutomaticPrFeedback: { [instanceId]: scenario.optIn },
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make(scenario.driver),
+              displayName: "Fallback provider",
+              enabled: true,
+            },
+          },
+        };
+        currentSnapshot = sampleSnapshot({
+          checkRuns: [
+            {
+              id: "fallback-check",
+              name: "ci",
+              status: "failure",
+              headSha: "deadbeef",
+              url: null,
+              description: null,
+            },
+          ],
+        });
+        const before = dispatchedCommands.length;
+        const refsBefore = preparedPrReferences.length;
+        const started = yield* service.start({
+          projectId,
+          repository: "acme/app",
+          number: 300 + index,
+        });
+        const launch = yield* store.latestFallbackLaunch(started.monitor.id);
+        assert.strictEqual(launch?.status, scenario.launch ? "launched" : undefined);
+        const commands = dispatchedCommands.slice(before);
+        if (scenario.launch) {
+          assert.isTrue(commands.some((command) => command.type === "thread.turn.start"));
+          assert.strictEqual(preparedPrReferences.length, refsBefore + 1);
+        } else {
+          assert.deepStrictEqual(commands, []);
+          assert.strictEqual(preparedPrReferences.length, refsBefore);
+          assert.isNull(launch);
+          const status = yield* service.status({ monitorId: started.monitor.id });
+          assert.isNull(status.monitor?.ownerThreadId);
+          assert.isAbove(status.openFeedback.length, 0);
+          assert.include(status.automationBlockReason ?? "", "Automatic PR feedback is pending");
+          assert.isNull(status.monitor?.lastError);
+
+          // Explicit operator requests remain possible without enabling automation.
+          const explicit = yield* service.launchFallback({ monitorId: started.monitor.id });
+          assert.isTrue(explicit.launched);
+        }
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            currentSettings = defaultSettings;
+            currentSnapshot = sampleSnapshot();
+          }),
+        ),
+      ),
+    );
+  }
+
+  for (const busy of [false, true]) {
+    it.effect(
+      `blocks a Codex fallback from taking over an unavailable Copilot owner (busy=${busy})`,
+      () =>
+        Effect.gen(function* () {
+          const service = yield* PullRequestMonitorService;
+          const store = yield* PullRequestMonitorStore.make;
+          const owner = ThreadId.make(`copilot-fallback-owner-${busy}`);
+          const number = busy ? 341 : 340;
+          seedThread(owner);
+          const started = yield* service.start({
+            projectId,
+            repository: "acme/app",
+            number,
+            ownerThreadId: owner,
+          });
+          const row = knownThreads.get(owner)!;
+          knownThreads.set(owner, {
+            ...row,
+            archivedAt: "1970-01-01T00:00:00.000Z",
+            busy,
+            copilotSession: true,
+          });
+          currentSettings = {
+            ...defaultSettings,
+            providerInstances: {},
+            textGenerationModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-test",
+            },
+          };
+          currentSnapshot = sampleSnapshot({
+            checkRuns: [
+              {
+                id: "busy-owner-check",
+                name: "ci",
+                status: "failure",
+                headSha: "deadbeef",
+                url: null,
+                description: null,
+              },
+            ],
+          });
+          const before = dispatchedCommands.length;
+          const refsBefore = preparedPrReferences.length;
+          yield* service.start({ projectId, repository: "acme/app", number });
+          assert.deepStrictEqual(dispatchedCommands.slice(before), []);
+          assert.strictEqual(preparedPrReferences.length, refsBefore);
+          assert.strictEqual(knownThreads.get(owner)?.busy, busy);
+          const status = yield* service.status({ monitorId: started.monitor.id });
+          assert.strictEqual(status.monitor?.ownerThreadId, owner);
+          const launch = yield* store.latestFallbackLaunch(started.monitor.id);
+          assert.isNull(launch);
+          assert.include(status.automationBlockReason ?? "", "protect existing Copilot work");
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              currentSettings = defaultSettings;
+              currentSnapshot = sampleSnapshot();
+            }),
+          ),
+        ),
+    );
+  }
+
+  it.effect("reconsiders pending fallback after opt-in without requiring new feedback", () =>
+    Effect.gen(function* () {
+      const service = yield* PullRequestMonitorService;
+      const instanceId = ProviderInstanceId.make("copilot");
+      currentSettings = {
+        ...defaultSettings,
+        textGenerationModelSelection: { instanceId, model: "gpt-test" },
+      };
+      currentSnapshot = sampleSnapshot({
+        checkRuns: [
+          {
+            id: "resume-check",
+            name: "ci",
+            status: "failure",
+            headSha: "deadbeef",
+            url: null,
+            description: null,
+          },
+        ],
+      });
+      const input = { projectId, repository: "acme/app", number: 350 };
+      const started = yield* service.start(input);
+      assert.isNull(started.monitor.ownerThreadId);
+      const settings = yield* ServerSettingsService;
+      const takeover = yield* service.subscribeList({ projectId }).pipe(
+        Stream.filter((result) =>
+          result.monitors.some(
+            (monitor) => monitor.id === started.monitor.id && monitor.ownerThreadId !== null,
+          ),
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* settings.updateSettings({ copilotAutomaticPrFeedback: { [instanceId]: true } });
+      yield* Fiber.join(takeover);
+      const status = yield* service.status({ monitorId: started.monitor.id });
+      assert.isNotNull(status.monitor?.ownerThreadId);
+      assert.isUndefined(status.automationBlockReason);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          currentSettings = defaultSettings;
+          currentSnapshot = sampleSnapshot();
+          monitorSnapshotHook = Effect.void;
+        }),
+      ),
+    ),
   );
 
   it.effect("launchFallback relaunches when cooldown owner is deleted", () =>

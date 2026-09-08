@@ -1,14 +1,4 @@
-import { createHighlighterCore, type HighlighterCore } from "@shikijs/core";
-import { createJavaScriptRegexEngine } from "@shikijs/engine-javascript";
-import bashLanguage from "@shikijs/langs/bash";
-import javascriptLanguage from "@shikijs/langs/javascript";
-import jsonLanguage from "@shikijs/langs/json";
-import jsxLanguage from "@shikijs/langs/jsx";
-import tsxLanguage from "@shikijs/langs/tsx";
-import typescriptLanguage from "@shikijs/langs/typescript";
-import yamlLanguage from "@shikijs/langs/yaml";
-import githubDarkDefault from "@shikijs/themes/github-dark-default";
-import githubLightDefault from "@shikijs/themes/github-light-default";
+import type { HighlighterCore } from "@shikijs/core";
 import { getFiletypeFromFileName } from "@pierre/diffs/utils/getFiletypeFromFileName";
 import * as Schema from "effect/Schema";
 
@@ -75,15 +65,6 @@ const REVIEW_HIGHLIGHT_CHUNK_SIZE = 200;
 const REVIEW_TOKENIZE_MAX_LINE_LENGTH = 1_000;
 const highlightCache = new Map<string, Promise<ReviewHighlightedFile>>();
 const resolvedHighlightCache = new Map<string, ReviewHighlightedFile>();
-const REVIEW_INITIAL_LANGUAGE_MODULES = [
-  bashLanguage,
-  javascriptLanguage,
-  jsonLanguage,
-  jsxLanguage,
-  tsxLanguage,
-  typescriptLanguage,
-  yamlLanguage,
-] satisfies Parameters<typeof createHighlighterCore>[0]["langs"];
 const loadedLanguages = new Set<string>([
   "text",
   "bash",
@@ -199,11 +180,41 @@ const languageAliases: Record<string, string> = {
   txt: "text",
 };
 let highlighterPromise: Promise<HighlighterCore> | null = null;
-let activeHighlighterEnginePromise: Promise<ReviewHighlighterEngine> | null = null;
+let activeHighlighterEngine: ReviewHighlighterEngine | null = null;
 
 type LoadedLanguageModule = {
   default: Parameters<HighlighterCore["loadLanguage"]>[0];
 };
+
+async function loadInitialShikiRuntime() {
+  const [core, bash, javascript, json, jsx, tsx, typescript, yaml, githubDark, githubLight] =
+    await Promise.all([
+      import("@shikijs/core"),
+      import("@shikijs/langs/bash"),
+      import("@shikijs/langs/javascript"),
+      import("@shikijs/langs/json"),
+      import("@shikijs/langs/jsx"),
+      import("@shikijs/langs/tsx"),
+      import("@shikijs/langs/typescript"),
+      import("@shikijs/langs/yaml"),
+      import("@shikijs/themes/github-dark-default"),
+      import("@shikijs/themes/github-light-default"),
+    ]);
+
+  return {
+    createHighlighterCore: core.createHighlighterCore,
+    langs: [
+      bash.default,
+      javascript.default,
+      json.default,
+      jsx.default,
+      tsx.default,
+      typescript.default,
+      yaml.default,
+    ] satisfies Parameters<typeof core.createHighlighterCore>[0]["langs"],
+    themes: [githubLight.default, githubDark.default],
+  };
+}
 
 function resolveReviewHighlighterBooleanFlag(
   value: string | undefined,
@@ -271,11 +282,14 @@ async function getHighlighter(): Promise<HighlighterCore> {
         resultCacheDisabled: REVIEW_HIGHLIGHTER_DISABLE_RESULT_CACHE,
       });
 
-      const themes = [githubLightDefault, githubDarkDefault];
+      const runtimePromise = loadInitialShikiRuntime();
 
       if (REVIEW_HIGHLIGHTER_ENGINE_PREFERENCE !== "javascript") {
         try {
-          const nativeEngineModule = await import("react-native-shiki-engine");
+          const [runtime, nativeEngineModule] = await Promise.all([
+            runtimePromise,
+            import("react-native-shiki-engine"),
+          ]);
           nativeEngineAvailable = nativeEngineModule.isNativeEngineAvailable();
           logReviewHighlighterDiagnostic("checked native engine availability", {
             nativeEngineAvailable,
@@ -283,9 +297,9 @@ async function getHighlighter(): Promise<HighlighterCore> {
 
           if (nativeEngineAvailable) {
             logReviewHighlighterDiagnostic("creating native regex engine");
-            const highlighter = await createHighlighterCore({
-              themes,
-              langs: REVIEW_INITIAL_LANGUAGE_MODULES,
+            const highlighter = await runtime.createHighlighterCore({
+              themes: runtime.themes,
+              langs: runtime.langs,
               engine: nativeEngineModule.createNativeEngine(),
             });
             logReviewHighlighterDiagnostic("using native engine");
@@ -318,10 +332,14 @@ async function getHighlighter(): Promise<HighlighterCore> {
       );
       let highlighter: HighlighterCore;
       try {
-        highlighter = await createHighlighterCore({
-          themes,
-          langs: REVIEW_INITIAL_LANGUAGE_MODULES,
-          engine: createJavaScriptRegexEngine(),
+        const [runtime, javascriptEngineModule] = await Promise.all([
+          runtimePromise,
+          import("@shikijs/engine-javascript"),
+        ]);
+        highlighter = await runtime.createHighlighterCore({
+          themes: runtime.themes,
+          langs: runtime.langs,
+          engine: javascriptEngineModule.createJavaScriptRegexEngine(),
         });
       } catch (cause) {
         const javascriptError = new ReviewHighlighterEngineInitializationError({
@@ -350,16 +368,13 @@ async function getHighlighter(): Promise<HighlighterCore> {
     })();
 
     highlighterPromise = configuredHighlighterPromise
-      .then((result) => result.highlighter)
+      .then((result) => {
+        activeHighlighterEngine = result.engine;
+        return result.highlighter;
+      })
       .catch((error) => {
         highlighterPromise = null;
-        activeHighlighterEnginePromise = null;
-        throw error;
-      });
-    activeHighlighterEnginePromise = configuredHighlighterPromise
-      .then((result) => result.engine)
-      .catch((error) => {
-        activeHighlighterEnginePromise = null;
+        activeHighlighterEngine = null;
         throw error;
       });
   }
@@ -369,7 +384,7 @@ async function getHighlighter(): Promise<HighlighterCore> {
 
 export async function getActiveReviewHighlighterEngine(): Promise<ReviewHighlighterEngine> {
   await getHighlighter();
-  return activeHighlighterEnginePromise ?? Promise.resolve("javascript");
+  return activeHighlighterEngine ?? "javascript";
 }
 
 export async function prepareReviewHighlighter(): Promise<void> {

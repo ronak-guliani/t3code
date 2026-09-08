@@ -285,6 +285,12 @@ export const ServerConfig = Schema.Struct({
   threadResumeCompletionMarker: Schema.optionalKey(Schema.Boolean),
   threadSnapshotPagination: Schema.optionalKey(Schema.Boolean),
   lifecycleVersion: Schema.optionalKey(NonNegativeInt),
+  /**
+   * Quota reported by configured usage-limit sources. Never sent in a config
+   * snapshot: the source stream emits the current set on subscribe, and it
+   * stays absent for subscribers that did not opt in.
+   */
+  usageLimitSources: Schema.optional(UsageLimitSourceSnapshots),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
@@ -628,4 +634,4 @@ export const ServerSignalProcessResult = Schema.Struct({
 });
 export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 
-import { ServerProviderUsageLimits } from "./providerUsageLimits.ts";
+import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";

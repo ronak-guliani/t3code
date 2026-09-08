@@ -27,6 +27,10 @@ describe("workspace file previews", () => {
     expect(isWorkspacePreviewEntryPath(path)).toBe(true);
   });
 
+  it.each(["recording.mp4", "clip.WEBM"])("recognizes video preview path %s", (path) => {
+    expect(isWorkspacePreviewEntryPath(path)).toBe(true);
+  });
+
   it.each(["README.md", "src/index.ts", "image.png.ts", "png"])(
     "rejects non-preview path %s",
     (path) => {

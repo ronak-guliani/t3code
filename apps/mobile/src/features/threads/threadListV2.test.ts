@@ -10,10 +10,15 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
-import { buildMobileThreadTree, nestedThreadParentError } from "./mobile-thread-hierarchy";
+import {
+  buildMobileThreadTree,
+  nestedThreadCompletionMarker,
+  nestedThreadParentError,
+  relatedThreadRows,
+} from "./mobile-thread-hierarchy";
 import { applyShellStreamEvent } from "@t3tools/client-runtime";
 import {
   buildThreadListV2Items,
@@ -77,15 +82,62 @@ describe("mobile nested threads", () => {
   ) =>
     buildThreadListV2Items({ threads, environmentId: null, searchQuery: "", now: NOW, ...extra });
 
-  it("defaults quiet trees closed and keeps a selected grandchild visible after collapse", () => {
+  it("preserves root and child order without depending on ES2023 copy-array methods", () => {
+    const reverse = vi.spyOn(Array.prototype, "toReversed").mockImplementation(() => {
+      throw new TypeError("toReversed is unavailable");
+    });
+    try {
+      const other = makeThread({ id: ThreadId.make("other"), title: "Other", updatedAt: NOW });
+      expect(layout([leaf, child, parent, other]).items.map((item) => item.thread.id)).toEqual([
+        "other",
+        "parent",
+      ]);
+      expect(
+        relatedThreadRows(
+          buildMobileThreadTree([leaf, child, parent, other]),
+          `${environmentId}:parent`,
+        ).map((row) => row.thread.id),
+      ).toEqual(["parent", "child", "leaf"]);
+    } finally {
+      reverse.mockRestore();
+    }
+  });
+
+  it("keeps descendant attention separate from the parent's higher-priority state during search", () => {
+    const result = layout(
+      [
+        { ...parent, hasPendingApprovals: true },
+        {
+          ...child,
+          latestTurn: {
+            turnId: TurnId.make("failed-turn"),
+            state: "error",
+            requestedAt: NOW,
+            startedAt: NOW,
+            completedAt: NOW,
+            assistantMessageId: null,
+          },
+        },
+      ],
+      { searchQuery: "Parent" },
+    );
+    expect(result.items[0]?.hierarchy).toMatchObject({
+      displayStatus: "approval",
+      relatedStatus: "failed",
+      childCount: 1,
+    });
+    expect(
+      layout([{ ...parent, hasPendingApprovals: true }, child]).items[0]?.hierarchy,
+    ).toMatchObject({ displayStatus: "approval", relatedStatus: "ready" });
+  });
+
+  it("keeps the inbox flat while retaining the selected iPad conversation", () => {
     expect(layout([leaf, parent, child]).items.map((item) => item.thread.id)).toEqual(["parent"]);
     const items = layout([leaf, parent, child], {
       selectedThreadKey: `${environmentId}:leaf`,
-      expandedOverrideByThreadKey: new Map([[`${environmentId}:parent`, false]]),
     }).items;
     expect(items.map((item) => [item.thread.id, item.hierarchy?.depth])).toEqual([
       ["parent", 0],
-      ["child", 1],
       ["leaf", 2],
     ]);
   });
@@ -102,7 +154,117 @@ describe("mobile nested threads", () => {
       displayStatus: "approval",
       archiveBlocked: true,
     });
-    expect(result.items).toHaveLength(3);
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
+    expect(result.items[0]?.hierarchy?.childCount).toBe(2);
+  });
+
+  it.each(["snoozed", "settled"] as const)(
+    "promotes a %s parent for an unread completed descendant without changing its status",
+    (shelf) => {
+      const completedChild = {
+        ...child,
+        latestTurn: {
+          turnId: TurnId.make("completed-child-turn"),
+          state: "completed" as const,
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          assistantMessageId: null,
+        },
+      };
+      const shelvedParent =
+        shelf === "snoozed"
+          ? { ...parent, snoozedUntil: "2026-06-03T00:00:00.000Z" }
+          : { ...parent, settledOverride: "settled" as const, settledAt: NOW };
+      const result = layout([shelvedParent, completedChild], {
+        snoozedShelfExpanded: false,
+        settledShelfExpanded: false,
+      });
+      expect(result.snoozedCount).toBe(0);
+      expect(result.settledCount).toBe(0);
+      expect(result.items.map((item) => item.thread.id)).toEqual([parent.id, child.id]);
+      expect(result.items[0]?.hierarchy).toMatchObject({
+        displayStatus: "ready",
+        relatedStatus: "ready",
+        hasUnreadDescendant: true,
+      });
+    },
+  );
+
+  it("keeps terminal children until they are read, while active children ignore read markers", () => {
+    const completedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("child-turn"),
+        state: "completed" as const,
+        requestedAt: "2026-06-01T23:00:00.000Z",
+        startedAt: "2026-06-01T23:01:00.000Z",
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    const readMarkers = { [`${environmentId}:${child.id}`]: NOW };
+    expect(layout([parent, completedChild]).items.map((item) => item.thread.id)).toEqual([
+      parent.id,
+      child.id,
+    ]);
+    expect(
+      layout([parent, completedChild], { threadChildReadAt: readMarkers }).items.map(
+        (item) => item.thread.id,
+      ),
+    ).toEqual([parent.id]);
+    expect(
+      layout([parent, completedChild], { threadChildReadAt: readMarkers }).items[0]?.hierarchy,
+    ).toMatchObject({ childCount: 0, relatedChildCount: 1 });
+
+    const workingChild = {
+      ...completedChild,
+      latestTurn: { ...completedChild.latestTurn, state: "running" as const },
+    };
+    expect(
+      layout([parent, workingChild], { threadChildReadAt: readMarkers }).items.map(
+        (item) => item.thread.id,
+      ),
+    ).toEqual([parent.id, child.id]);
+  });
+
+  it("shows read terminal children when searching", () => {
+    const completedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("child-turn"),
+        state: "error" as const,
+        requestedAt: "2026-06-01T23:00:00.000Z",
+        startedAt: "2026-06-01T23:01:00.000Z",
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    expect(
+      layout([parent, completedChild], {
+        searchQuery: "Child",
+        threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+      }).items.map((item) => item.thread.id),
+    ).toEqual([parent.id, child.id]);
+  });
+
+  it("hides read terminal failures from the default list", () => {
+    const failedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("failed-child-turn"),
+        state: "error" as const,
+        requestedAt: "2026-06-01T23:00:00.000Z",
+        startedAt: "2026-06-01T23:01:00.000Z",
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    expect(
+      layout([parent, failedChild], {
+        threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+      }).items.map((item) => item.thread.id),
+    ).toEqual([parent.id]);
   });
 
   it("sorts siblings and roots by subtree activity without detaching children", () => {
@@ -117,11 +279,16 @@ describe("mobile nested threads", () => {
       title: "Other",
       updatedAt: "2026-06-01T12:00:00Z",
     });
+    expect(layout([parent, child, newer, other]).items.map((item) => item.thread.id)).toEqual([
+      "parent",
+      "other",
+    ]);
     expect(
-      layout([parent, child, newer, other], {
-        expandedOverrideByThreadKey: new Map([[`${environmentId}:parent`, true]]),
-      }).items.map((item) => item.thread.id),
-    ).toEqual(["parent", "newer", "child", "other"]);
+      relatedThreadRows(
+        buildMobileThreadTree([parent, child, newer, other]),
+        `${environmentId}:parent`,
+      ).map((row) => row.thread.id),
+    ).toEqual(["parent", "newer", "child"]);
   });
 
   it("keeps ancestry during content search and roots the child only after parent deletion", () => {
@@ -130,7 +297,7 @@ describe("mobile nested threads", () => {
         searchQuery: "needle",
         matchedThreadKeys: new Set([threadSearchMatchKey({ environmentId, threadId: leaf.id })]),
       }).items.map((item) => item.thread.id),
-    ).toEqual(["parent", "child", "leaf"]);
+    ).toEqual(["parent", "leaf"]);
     expect(layout([child]).items[0]?.hierarchy?.depth).toBe(0);
     expect(layout([{ ...parent, archivedAt: NOW }, child, leaf]).items).toEqual([]);
   });
@@ -163,7 +330,7 @@ describe("mobile nested threads", () => {
           ...options,
           searchQuery: kind === "title" ? "Leaf" : "needle",
         }).items.map((item) => item.thread.id),
-      ).toEqual(["parent", "child", "leaf"]);
+      ).toEqual(["parent", "leaf"]);
       expect(layout(threads, { ...options, searchQuery: "" }).items).toEqual([]);
     }
   });
@@ -178,9 +345,8 @@ describe("mobile nested threads", () => {
     const threads = [parent, child, leaf, sibling];
     const result = layout(threads, {
       searchQuery: "Leaf",
-      expandedOverrideByThreadKey: new Map([[`${environmentId}:parent`, true]]),
     });
-    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "leaf"]);
     expect(result.items[0]?.hierarchy).toMatchObject({
       archiveBlocked: true,
       displayStatus: "working",
@@ -188,7 +354,47 @@ describe("mobile nested threads", () => {
     expect(layout(threads, { searchQuery: "Parent" }).items.map((item) => item.thread.id)).toEqual([
       "parent",
     ]);
-    expect(layout(threads).items).toHaveLength(3);
+    expect(layout(threads).items.map((item) => item.thread.id)).toEqual(["parent", "sibling"]);
+  });
+
+  it("uses an errored session timestamp when a failed child has no completed turn", () => {
+    const failedChild = {
+      ...child,
+      session: {
+        threadId: child.id,
+        status: "error" as const,
+        providerName: null,
+        runtimeMode: "full-access" as const,
+        activeTurnId: null,
+        lastError: "Provider failed",
+        updatedAt: NOW,
+      },
+    };
+    expect(nestedThreadCompletionMarker(failedChild)).toBe(NOW);
+    expect(
+      layout([parent, failedChild], {
+        threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+      }).items.map((item) => item.thread.id),
+    ).toEqual([parent.id]);
+  });
+
+  it("keeps a read terminal child visible while it is selected", () => {
+    const completedChild = {
+      ...child,
+      latestTurn: {
+        turnId: TurnId.make("completed-child"),
+        state: "completed" as const,
+        requestedAt: NOW,
+        startedAt: NOW,
+        completedAt: NOW,
+        assistantMessageId: null,
+      },
+    };
+    const result = layout([parent, completedChild], {
+      selectedThreadKey: `${environmentId}:${child.id}`,
+      threadChildReadAt: { [`${environmentId}:${child.id}`]: NOW },
+    });
+    expect(result.items.map((item) => item.thread.id)).toEqual([parent.id, child.id]);
   });
 
   it("shows failed provider agents and promotes their shelved ancestors until dismissed", () => {
@@ -223,7 +429,7 @@ describe("mobile nested threads", () => {
       selectedThreadKey: `${environmentId}:leaf`,
     });
     expect(result.settledCount).toBe(2);
-    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "child", "leaf"]);
+    expect(result.items.map((item) => item.thread.id)).toEqual(["parent", "leaf"]);
   });
 
   it("shows provider background runs as local children, never as independent server threads", () => {
@@ -248,7 +454,12 @@ describe("mobile nested threads", () => {
       displayStatus: "working",
       archiveBlocked: true,
     });
-    expect(result.items[1]?.thread.virtualAgentRun?.parentThreadId).toBe(parent.id);
+    const group = relatedThreadRows(
+      buildMobileThreadTree(result.items.map((item) => item.thread)),
+      `${environmentId}:parent`,
+    );
+    expect(group.map((row) => row.thread.id)).toEqual(["parent", "agent-run:parent:task-1"]);
+    expect(group[1]?.thread.virtualAgentRun?.parentThreadId).toBe(parent.id);
     const finished = {
       ...parent,
       backgroundAgentRuns: [
@@ -264,6 +475,30 @@ describe("mobile nested threads", () => {
       layout([finished], { dismissedAgentRunKeys: [`${environmentId}:agent-run:parent:task-1`] })
         .items,
     ).toHaveLength(1);
+  });
+
+  it("keeps completed provider runs in a matching parent search", () => {
+    const result = layout(
+      [
+        {
+          ...parent,
+          backgroundAgentRuns: [
+            {
+              taskId: "completed",
+              name: "Completed check",
+              status: "completed" as const,
+              startedAt: NOW,
+              completedAt: NOW,
+            },
+          ],
+        },
+      ],
+      { searchQuery: "Parent" },
+    );
+    expect(result.items.map((item) => item.thread.id)).toEqual([
+      parent.id,
+      "agent-run:parent:completed",
+    ]);
   });
 
   it("keeps parentage and child notification timestamps through live shell replacement and resnapshot", () => {
@@ -304,6 +539,41 @@ describe("mobile nested threads", () => {
       "different project",
     );
     expect(nestedThreadParentError(parent.id, parent.projectId, [parent])).toBeNull();
+  });
+
+  it("opens a complete flat group without mixing environments or losing deeper descendants", () => {
+    const otherEnvironment = EnvironmentId.make("another-environment");
+    const tree = buildMobileThreadTree([
+      parent,
+      child,
+      leaf,
+      { ...parent, environmentId: otherEnvironment },
+    ]);
+    const rows = relatedThreadRows(tree, `${environmentId}:parent`);
+    expect(rows.map((row) => row.thread.id)).toEqual(["parent", "child", "leaf"]);
+    expect(rows.every((row) => row.thread.environmentId === environmentId)).toBe(true);
+    expect(relatedThreadRows(tree, `${otherEnvironment}:parent`)).toHaveLength(1);
+    expect(relatedThreadRows(tree, `${environmentId}:missing`)).toEqual([]);
+    expect(
+      relatedThreadRows(
+        buildMobileThreadTree([{ ...parent, archivedAt: NOW }, child, leaf]),
+        `${environmentId}:parent`,
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps deep unread activity on the group control even when search hides its branch", () => {
+    const threads = [parent, { ...child, latestChildNotificationAt: NOW }, leaf];
+    expect(layout(threads).items[0]?.hierarchy?.latestRelatedNotificationAt).toBe(NOW);
+    expect(layout(threads, { searchQuery: "Parent" }).items[0]?.hierarchy).toMatchObject({
+      childCount: 2,
+      latestRelatedNotificationAt: NOW,
+      displayStatus: "ready",
+    });
+    expect(
+      relatedThreadRows(buildMobileThreadTree(threads), `${environmentId}:parent`)[0]
+        ?.latestRelatedNotificationAt,
+    ).toBe(NOW);
   });
 });
 
@@ -1048,6 +1318,14 @@ describe("buildThreadListV2Items settled paging", () => {
 
 function makePendingTask(id: string): PendingNewTask {
   return {
+    kind: "pending",
+    key: `pending-task:${id}`,
+    environmentId,
+    projectId: ProjectId.make("project-1"),
+    projectTitle: undefined,
+    projectCwd: undefined,
+    branch: null,
+    createdAt: NOW,
     message: {
       environmentId,
       threadId: ThreadId.make(`thread-${id}`),

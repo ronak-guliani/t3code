@@ -8,12 +8,21 @@ import {
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
-import { EnvironmentId, ThreadId, type ProjectScript } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  ThreadId,
+  type ProjectScript,
+} from "@t3tools/contracts";
 import {
   requestOlderThreadTurns,
   threadHasOlderTurns,
 } from "@t3tools/client-runtime/state/threads";
-import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
+import {
+  projectScriptCwd,
+  projectScriptRuntimeEnv,
+  resolveProjectScripts,
+} from "@t3tools/shared/projectScripts";
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
@@ -42,6 +51,8 @@ import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { useEnvironmentShellState, useThreadShell } from "../../state/entities";
 import { removedThreadProject } from "./threadSelectionLifecycle";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { useMarkChildNotificationsRead } from "./thread-hierarchy-controls";
 import { GitActionProgressOverlay } from "./GitActionProgressOverlay";
 import {
   buildTerminalMenuSessions,
@@ -67,10 +78,9 @@ import { useSelectedThreadRequests } from "../../state/use-selected-thread-reque
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { useNestedThreadActions } from "./use-nested-thread-actions";
-import { useMarkChildNotificationsRead } from "./thread-hierarchy-controls";
+import { useMarkNestedThreadRead } from "./thread-hierarchy-controls";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
+import { useNestedThreadActions } from "./use-nested-thread-actions";
 import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
@@ -155,6 +165,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
       : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
   const selectedThreadDetailState = useSelectedThreadDetailState();
   useMarkChildNotificationsRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
+  useMarkNestedThreadRead(selectedThreadKey === routeThreadKey ? selectedThread : null);
   useEffect(() => {
     const project = removedThreadProject({
       route: selectedThreadRef,
@@ -208,8 +219,8 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
 
 function ThreadRouteContent(
   props: ThreadRouteScreenProps & {
+    readonly thread: NonNullable<ReturnType<typeof useThreadSelection>["selectedThread"]>;
     readonly selectedThreadDetailState: ReturnType<typeof useSelectedThreadDetailState>;
-    readonly thread: EnvironmentThreadShell;
   },
 ) {
   const {
@@ -658,6 +669,16 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
+  const projectScripts = useMemo(
+    () =>
+      selectedThreadProject
+        ? resolveProjectScripts(
+            routeEnvironmentRuntime?.serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
+            selectedThreadProject,
+          )
+        : [],
+    [routeEnvironmentRuntime?.serverConfig?.settings, selectedThreadProject],
+  );
   const threadGitControlProps = useMemo(
     () => ({
       environmentId: environmentIdRaw ?? "",
@@ -679,7 +700,7 @@ function ThreadRouteContent(
       gitOperationLabel: gitState.gitOperationLabel,
       canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
       canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
-      projectScripts: selectedThreadProject?.scripts ?? [],
+      projectScripts,
       terminalSessions: terminalMenuSessions,
       showDirectFileControl: layout.usesSplitView,
       onOpenTerminal: handleOpenTerminal,
@@ -705,7 +726,7 @@ function ThreadRouteContent(
       layout.usesSplitView,
       selectedThread?.branch,
       selectedThreadCwd,
-      selectedThreadProject?.scripts,
+      projectScripts,
       selectedThreadProject?.workspaceRoot,
       terminalMenuSessions,
     ],
@@ -762,7 +783,7 @@ function ThreadRouteContent(
       icon: "plus.bubble",
       onPress: nesting.createSubchat,
     });
-    if (selectedThread.parentThreadId != null) {
+    if (selectedThread?.parentThreadId != null) {
       actions.push({
         accessibilityLabel: "Go to parent chat",
         icon: "arrow.turn.up.left",
@@ -806,7 +827,7 @@ function ThreadRouteContent(
   }, [
     nesting.createSubchat,
     nesting.openParent,
-    selectedThread.parentThreadId,
+    selectedThread?.parentThreadId,
     fileInspector.supported,
     handleOpenFilesInspector,
     handleOpenTerminal,
@@ -862,6 +883,8 @@ function ThreadRouteContent(
           screenTone={connectionTone(routeConnectionState)}
           connectionError={routeConnectionError}
           environmentLabel={selectedEnvironmentConnection?.environmentLabel ?? null}
+          feedbackSubmissions={composer.feedbackSubmissions}
+          onDismissFeedback={composer.dismissFeedback}
           selectedThreadFeed={composer.selectedThreadFeed}
           activeWorkStartedAt={composer.activeWorkStartedAt}
           isCompacting={composer.isCompacting}
@@ -908,6 +931,7 @@ function ThreadRouteContent(
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
       <NativeStackScreenOptions
+        optionsVersion={threadGitControlProps.projectScripts}
         options={{
           // Android draws its own in-flow header (AndroidScreenHeader below);
           // the native stack header stays iOS-only.
