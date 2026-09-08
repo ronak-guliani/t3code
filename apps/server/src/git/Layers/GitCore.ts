@@ -1379,40 +1379,12 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     const result = yield* executeGit(
       "GitCore.isWorktreeCleanForRemoval",
       cwd,
-      ["status", "--porcelain=2", "--branch", "--untracked-files=all", "--ignore-submodules=none"],
+      ["status", "--porcelain=2", "--untracked-files=all", "--ignore-submodules=none"],
       {
         timeoutMs: 10_000,
-        allowNonZeroExit: true,
       },
-    ).pipe(
-      Effect.catchIf(isMissingGitCwdError, () =>
-        Effect.succeed({
-          code: 128,
-          stdout: "",
-          stderr: "fatal: not a git repository",
-          stdoutTruncated: false,
-          stderrTruncated: false,
-        }),
-      ),
     );
-    if (result.code !== 0) {
-      if (result.stderr.toLowerCase().includes("not a git repository")) {
-        return false;
-      }
-      return yield* createGitCommandError(
-        "GitCore.isWorktreeCleanForRemoval",
-        cwd,
-        [
-          "status",
-          "--porcelain=2",
-          "--branch",
-          "--untracked-files=all",
-          "--ignore-submodules=none",
-        ],
-        result.stderr.trim() || "git status failed",
-      );
-    }
-    return result.stdout.split("\n").every((line) => line.length === 0 || line.startsWith("# "));
+    return !result.stdoutTruncated && result.stdout.length === 0;
   });
 
   const statusDetails: GitCoreShape["statusDetails"] = Effect.fn("statusDetails")(function* (cwd) {

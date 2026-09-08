@@ -31,19 +31,6 @@ export const WorktreeCleanupJob = Schema.Struct({
 });
 export type WorktreeCleanupJob = typeof WorktreeCleanupJob.Type;
 
-/**
- * Compatibility input used by the projection projector until orchestration wiring
- * is moved to the explicit source-aware intent API.
- */
-export const WorktreeCleanupJobInput = Schema.Struct({
-  threadId: ThreadId,
-  cwd: Schema.String,
-  worktreePath: Schema.String,
-  requestedAt: IsoDateTime,
-  reason: Schema.optional(Schema.String),
-});
-export type WorktreeCleanupJobInput = typeof WorktreeCleanupJobInput.Type;
-
 export const WorktreeCleanupIntent = Schema.Struct({
   threadId: ThreadId,
   cwd: Schema.String,
@@ -72,10 +59,6 @@ export const WorktreeCleanupFailureResult = Schema.Struct({
 export type WorktreeCleanupFailureResult = typeof WorktreeCleanupFailureResult.Type;
 
 export interface WorktreeCleanupJobRepositoryShape {
-  /**
-   * Legacy projection seam. New callers should use `enqueue`.
-   */
-  readonly upsert: (job: WorktreeCleanupJobInput) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly enqueue: (
     intent: WorktreeCleanupIntent,
   ) => Effect.Effect<WorktreeCleanupJob, ProjectionRepositoryError>;
@@ -86,12 +69,6 @@ export interface WorktreeCleanupJobRepositoryShape {
   readonly getByThreadId: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
-  readonly getPendingByThreadId: (
-    threadId: ThreadId,
-  ) => Effect.Effect<Option.Option<WorktreeCleanupJob>, ProjectionRepositoryError>;
-  readonly existsByPath: (
-    worktreePath: string,
-  ) => Effect.Effect<boolean, ProjectionRepositoryError>;
   readonly hasReservationByPath: (
     canonicalWorktreePath: string,
   ) => Effect.Effect<boolean, ProjectionRepositoryError>;
@@ -141,7 +118,6 @@ export interface WorktreeCleanupJobRepositoryShape {
     readonly now?: IsoDateTime | undefined;
     readonly maxAttempts: number;
   }) => Effect.Effect<Option.Option<WorktreeCleanupFailureResult>, ProjectionRepositoryError>;
-  readonly deleteByThreadId: (threadId: ThreadId) => Effect.Effect<void, ProjectionRepositoryError>;
 }
 
 export class WorktreeCleanupJobRepository extends Context.Service<

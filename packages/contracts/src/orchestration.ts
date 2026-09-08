@@ -817,11 +817,6 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  /**
-   * Handoff-only provenance for the checkout that was released. Consumers must
-   * treat this as a review candidate, never as cleanup authorization.
-   */
-  previousWorktreePath: Schema.optional(TrimmedNonEmptyString),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
 }).check(
@@ -1498,8 +1493,6 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  /** Review-only provenance for a checkout released by workspace handoff. */
-  previousWorktreePath: Schema.optional(TrimmedNonEmptyString),
   pullRequest: Schema.optional(Schema.NullOr(GitPullRequestAssociation)),
   pullRequestOwnership: Schema.optional(Schema.Literal("transfer")),
   updatedAt: IsoDateTime,

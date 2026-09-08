@@ -177,12 +177,6 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     }
   });
 
-  const isWorktreeCleanupPending = Effect.fn("isWorktreeCleanupPending")(function* (
-    worktreePath: string,
-  ) {
-    return yield* worktreeCleanupJobs.hasReservationByPath(worktreePath);
-  });
-
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
     const dispatchStartSequence = readModel.snapshotSequence;
     const processingStartedAtMs = Date.now();
@@ -234,7 +228,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         }
 
         const worktreePath = cleanupWorktreePath(command, readModel);
-        if (worktreePath !== null && (yield* isWorktreeCleanupPending(worktreePath))) {
+        if (
+          worktreePath !== null &&
+          (yield* worktreeCleanupJobs.hasReservationByPath(worktreePath))
+        ) {
           return yield* new OrchestrationCommandWorktreeCleanupPendingError({
             commandType: command.type,
             worktreePath,

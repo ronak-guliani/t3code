@@ -877,21 +877,20 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const enqueueDueWorktreeCleanups = Effect.fn("enqueueDueWorktreeCleanups")(function* () {
-    const jobs = yield* worktreeCleanupJobs.listDue({ now: yield* cleanupNow() });
-    yield* Effect.forEach(jobs, (job) => enqueueWorktreeCleanup(job.threadId), {
-      concurrency: 1,
-      discard: true,
-    });
-  });
-  const enqueueDueWorktreeCleanupsSafely = () =>
-    enqueueDueWorktreeCleanups().pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("worktree cleanup due sweep failed", {
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    );
+  const enqueueDueWorktreeCleanups = Effect.fn("enqueueDueWorktreeCleanups")(
+    function* () {
+      const jobs = yield* worktreeCleanupJobs.listDue({ now: yield* cleanupNow() });
+      yield* Effect.forEach(jobs, (job) => enqueueWorktreeCleanup(job.threadId), {
+        concurrency: 1,
+        discard: true,
+      });
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("worktree cleanup due sweep failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
+  );
 
   const discoverArchivedCleanupCandidates = Effect.fn("discoverArchivedCleanupCandidates")(
     function* () {
@@ -904,15 +903,12 @@ const make = Effect.gen(function* () {
         discard: true,
       });
     },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("archived worktree cleanup discovery failed", {
+        cause: Cause.pretty(cause),
+      }),
+    ),
   );
-  const discoverArchivedCleanupCandidatesSafely = () =>
-    discoverArchivedCleanupCandidates().pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("archived worktree cleanup discovery failed", {
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    );
 
   // Associations are written when a PR is opened/linked and otherwise only
   // refreshed on archive cleanup. Without a background pass, sidebar chrome
@@ -1008,15 +1004,13 @@ const make = Effect.gen(function* () {
 
   const start: ThreadDeletionReactorShape["start"] = Effect.fn("start")(function* () {
     yield* recoverInterruptedRemovals;
-    yield* discoverArchivedCleanupCandidatesSafely().pipe(Effect.ignore);
-    yield* enqueueDueWorktreeCleanupsSafely().pipe(Effect.ignore);
+    yield* discoverArchivedCleanupCandidates();
+    yield* enqueueDueWorktreeCleanups();
     yield* Effect.forkScoped(
-      enqueueDueWorktreeCleanupsSafely().pipe(
-        Effect.repeat(Schedule.spaced(CLEANUP_DUE_SWEEP_INTERVAL)),
-      ),
+      enqueueDueWorktreeCleanups().pipe(Effect.repeat(Schedule.spaced(CLEANUP_DUE_SWEEP_INTERVAL))),
     );
     yield* Effect.forkScoped(
-      discoverArchivedCleanupCandidatesSafely().pipe(
+      discoverArchivedCleanupCandidates().pipe(
         Effect.repeat(Schedule.spaced(CLEANUP_RECONCILIATION_INTERVAL)),
       ),
     );

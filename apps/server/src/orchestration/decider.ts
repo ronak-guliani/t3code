@@ -1143,9 +1143,6 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           branch: command.branch,
           worktreePath: command.worktreePath,
-          ...(thread.worktreePath !== null && thread.worktreePath !== command.worktreePath
-            ? { previousWorktreePath: thread.worktreePath }
-            : {}),
           updatedAt: occurredAt,
         },
       };

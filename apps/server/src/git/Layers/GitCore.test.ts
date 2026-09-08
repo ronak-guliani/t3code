@@ -4,7 +4,7 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Latch, Layer, PlatformError, Scope } from "effect";
+import { Effect, Exit, FileSystem, Latch, Layer, PlatformError, Scope } from "effect";
 import { describe, expect, vi } from "vitest";
 
 import { GitCoreLive, makeGitCore, applyWindowsGitLongPathArgs } from "./GitCore.ts";
@@ -1966,10 +1966,21 @@ it.layer(TestLayer)("git integration", (it) => {
 
         expect(yield* core.isWorktreeCleanForRemoval(tmp)).toBe(true);
 
+        yield* git(tmp, ["config", "status.showUntrackedFiles", "no"]);
         yield* makeDirectory(path.join(tmp, "nested"));
         yield* writeTextFile(path.join(tmp, "nested", "untracked.txt"), "untracked\n");
 
         expect(yield* core.isWorktreeCleanForRemoval(tmp)).toBe(false);
+      }),
+    );
+
+    it.effect("reports cleanup inspection failures instead of treating them as dirtiness", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const core = yield* GitCore;
+        const result = yield* core.isWorktreeCleanForRemoval(tmp).pipe(Effect.exit);
+
+        expect(Exit.isFailure(result)).toBe(true);
       }),
     );
 

@@ -1,6 +1,7 @@
 import { ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 import { WorktreeCleanupJobRepositoryLive } from "./WorktreeCleanupJobs.ts";
@@ -275,41 +276,21 @@ testLayer("WorktreeCleanupJobRepository", (it) => {
     }),
   );
 
-  it.effect("keeps legacy projection upserts manual-review and non-reactivating", () =>
-    Effect.gen(function* () {
-      const jobs = yield* WorktreeCleanupJobRepository;
-      const threadId = ThreadId.make("legacy-cleanup");
-      const input = {
-        threadId,
-        cwd: "/tmp/project",
-        worktreePath: "/tmp/legacy",
-        requestedAt: at(0),
-      };
-
-      yield* jobs.upsert(input);
-      const legacy = yield* jobs.getByThreadId(threadId);
-      assert.equal(legacy.pipe(Option.getOrThrow).source, "legacy");
-      assert.equal(legacy.pipe(Option.getOrThrow).status, "needs-attention");
-      assert.isFalse(yield* jobs.existsByPath("/tmp/legacy"));
-
-      yield* jobs.cancelByThreadId(threadId);
-      yield* jobs.upsert({ ...input, worktreePath: "/tmp/legacy-renamed" });
-      const cancelled = yield* jobs.getByThreadId(threadId);
-      assert.equal(cancelled.pipe(Option.getOrThrow).status, "cancelled");
-      assert.equal(cancelled.pipe(Option.getOrThrow).worktreePath, "/tmp/legacy");
-    }),
-  );
-
   it.effect("does not offer legacy rows for manual retry", () =>
     Effect.gen(function* () {
       const jobs = yield* WorktreeCleanupJobRepository;
       const threadId = ThreadId.make("legacy-retry");
-      yield* jobs.upsert({
-        threadId,
-        cwd: "/tmp/project",
-        worktreePath: "/tmp/legacy-retry",
-        requestedAt: at(0),
-      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO worktree_cleanup_jobs (
+          thread_id, cwd, worktree_path, canonical_worktree_path,
+          requested_at, source, status
+        )
+        VALUES (
+          ${threadId}, '/tmp/project', '/tmp/legacy-retry', '/tmp/legacy-retry',
+          ${at(0)}, 'legacy', 'needs-attention'
+        )
+      `;
 
       assert.isTrue(
         Option.isNone(

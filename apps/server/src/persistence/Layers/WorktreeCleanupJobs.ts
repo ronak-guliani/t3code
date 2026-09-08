@@ -7,7 +7,6 @@ import {
   WorktreeCleanupFailureResult,
   WorktreeCleanupIntent,
   WorktreeCleanupJob,
-  WorktreeCleanupJobInput,
   WorktreeCleanupJobRepository,
   WorktreeCleanupReservation,
   type WorktreeCleanupJobRepositoryShape,
@@ -55,47 +54,6 @@ const make = Effect.gen(function* () {
           reserved_at AS "reservedAt"
         FROM worktree_cleanup_reservations
         WHERE canonical_worktree_path = ${canonicalWorktreePath}
-      `,
-  });
-
-  const upsertLegacyJob = SqlSchema.void({
-    Request: WorktreeCleanupJobInput,
-    execute: (job) =>
-      sql`
-        INSERT INTO worktree_cleanup_jobs (
-          thread_id,
-          cwd,
-          worktree_path,
-          canonical_worktree_path,
-          requested_at,
-          source,
-          status,
-          attempt_count,
-          next_attempt_at,
-          last_reason,
-          last_error
-        )
-        VALUES (
-          ${job.threadId},
-          ${job.cwd},
-          ${job.worktreePath},
-          ${job.worktreePath},
-          ${job.requestedAt},
-          'legacy',
-          'needs-attention',
-          0,
-          NULL,
-          COALESCE(${job.reason ?? null}, 'legacy-cleanup-intent-requires-review'),
-          NULL
-        )
-        ON CONFLICT (thread_id)
-        DO UPDATE SET
-          cwd = excluded.cwd,
-          worktree_path = excluded.worktree_path,
-          canonical_worktree_path = excluded.canonical_worktree_path,
-          requested_at = excluded.requested_at,
-          last_reason = COALESCE(excluded.last_reason, worktree_cleanup_jobs.last_reason)
-        WHERE worktree_cleanup_jobs.status NOT IN ('cancelled', 'completed')
       `,
   });
 
@@ -216,29 +174,6 @@ const make = Effect.gen(function* () {
         WHERE status = 'waiting'
           AND (next_attempt_at IS NULL OR next_attempt_at <= ${now})
         ORDER BY next_attempt_at ASC, requested_at ASC, thread_id ASC
-      `,
-  });
-
-  const getPendingJob = SqlSchema.findOneOption({
-    Request: ThreadRequest,
-    Result: WorktreeCleanupJob,
-    execute: ({ threadId }) =>
-      sql`
-        SELECT
-          thread_id AS "threadId",
-          cwd,
-          worktree_path AS "worktreePath",
-          canonical_worktree_path AS "canonicalWorktreePath",
-          requested_at AS "requestedAt",
-          source,
-          status,
-          attempt_count AS "attemptCount",
-          next_attempt_at AS "nextAttemptAt",
-          last_reason AS "lastReason",
-          last_error AS "lastError"
-        FROM worktree_cleanup_jobs
-        WHERE thread_id = ${threadId}
-          AND status IN ('waiting', 'removing')
       `,
   });
 
@@ -514,20 +449,6 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const deleteJob = (threadId: WorktreeCleanupJob["threadId"]) =>
-    sql.withTransaction(
-      Effect.gen(function* () {
-        yield* sql`
-          DELETE FROM worktree_cleanup_reservations
-          WHERE thread_id = ${threadId}
-        `;
-        yield* sql`
-          DELETE FROM worktree_cleanup_jobs
-          WHERE thread_id = ${threadId}
-        `;
-      }),
-    );
-
   const recordJobFailure = (input: {
     readonly threadId: WorktreeCleanupJob["threadId"];
     readonly error: string;
@@ -580,10 +501,6 @@ const make = Effect.gen(function* () {
     });
 
   return {
-    upsert: (job) =>
-      upsertLegacyJob(job).pipe(
-        Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.upsert:query")),
-      ),
     enqueue: (intent) =>
       enqueueJob(intent).pipe(
         Effect.flatMap(() => getJobRow({ threadId: intent.threadId })),
@@ -609,17 +526,6 @@ const make = Effect.gen(function* () {
     getByThreadId: (threadId) =>
       getJobRow({ threadId }).pipe(
         Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.getByThreadId:query")),
-      ),
-    getPendingByThreadId: (threadId) =>
-      getPendingJob({ threadId }).pipe(
-        Effect.mapError(
-          toPersistenceSqlError("WorktreeCleanupJobRepository.getPendingByThreadId:query"),
-        ),
-      ),
-    existsByPath: (worktreePath) =>
-      pathHasReservation({ canonicalWorktreePath: worktreePath }).pipe(
-        Effect.map((row) => row.found === 1),
-        Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.existsByPath:query")),
       ),
     hasReservationByPath: (canonicalWorktreePath) =>
       pathHasReservation({ canonicalWorktreePath }).pipe(
@@ -673,12 +579,6 @@ const make = Effect.gen(function* () {
     recordFailure: (input) =>
       recordJobFailure(input).pipe(
         Effect.mapError(toPersistenceSqlError("WorktreeCleanupJobRepository.recordFailure:query")),
-      ),
-    deleteByThreadId: (threadId) =>
-      deleteJob(threadId).pipe(
-        Effect.mapError(
-          toPersistenceSqlError("WorktreeCleanupJobRepository.deleteByThreadId:query"),
-        ),
       ),
   } satisfies WorktreeCleanupJobRepositoryShape;
 });

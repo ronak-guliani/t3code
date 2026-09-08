@@ -233,7 +233,7 @@
 - Projection schema changes must update repository SQL plus every full, shell, and targeted snapshot query and mapper; a passing projection write test does not prove reconnect or CLI reads decode.
 - Automatic Git mutations must check cleanliness with `--untracked-files=all --ignore-submodules=none`; user status preferences can otherwise hide local work. Disable autostash and recheck checkout identity and active turns immediately before pulling.
 - Checkout reservations must never span orchestration dispatch or ingestion receipt waits: the command worker may already be waiting for that checkout to admit a turn. Establish completion exclusion before publishing idle state, keep it through checkpoint finalization, and lock the full HEAD/worktree/index snapshot sequence even when staging uses a temporary index.
-- Workspace handoff releases are provenance candidates only. Persist a slash-free, deterministic candidate identifier, keep the candidate in manual review, and never infer delete authorization from the fact that a thread moved to another checkout.
+- A workspace handoff is not cleanup authorization. Discover released checkouts through Git's registered-worktree inventory; do not manufacture thread IDs and non-executable cleanup jobs to duplicate that inventory.
 
 ## Mobile capabilities and cross-platform tests
 
