@@ -1,6 +1,7 @@
 import {
   buildThreadTree,
   hierarchyThreadKey,
+  normalizeParentThreadKeys,
   selectVisibleThreads,
   type ThreadTreeNode,
   type ThreadTreeRow,
@@ -167,19 +168,18 @@ export function buildMobileThreadTree(
       ),
   ]);
   const readMarkers = options.readMarkers ?? {};
-  const fullTree = buildThreadTree({
-    threads: expanded,
-    compare,
-    resolveStatus: resolveNestedThreadStatus,
-    rollUpStatus: rollUpNestedThreadStatus,
-    isArchiveBlocked: isThreadArchiveBlocked,
-  });
-  const descendantCountByKey = new Map<string, number>();
-  const fullTreePending = [...fullTree];
-  while (fullTreePending.length > 0) {
-    const node = fullTreePending.pop()!;
-    descendantCountByKey.set(node.threadKey, node.descendantCount);
-    fullTreePending.push(...node.children);
+  // Read filtering affects rendered descendants, not whether the parent has
+  // related chats that remain reachable from its row.
+  const parentByKey = normalizeParentThreadKeys(expanded);
+  const relatedChildCountByKey = new Map<string, number>();
+  for (const thread of expanded) {
+    let parentKey = parentByKey.get(hierarchyThreadKey(thread));
+    const visited = new Set<string>();
+    while (parentKey !== undefined && !visited.has(parentKey)) {
+      relatedChildCountByKey.set(parentKey, (relatedChildCountByKey.get(parentKey) ?? 0) + 1);
+      visited.add(parentKey);
+      parentKey = parentByKey.get(parentKey);
+    }
   }
   const visibleKeys = new Set(
     expanded
@@ -219,7 +219,7 @@ export function buildMobileThreadTree(
   const visibleTreePending = [...tree];
   while (visibleTreePending.length > 0) {
     const node = visibleTreePending.pop()!;
-    node.relatedChildCount = descendantCountByKey.get(node.threadKey) ?? node.descendantCount;
+    node.relatedChildCount = relatedChildCountByKey.get(node.threadKey) ?? node.descendantCount;
     visibleTreePending.push(...node.children);
   }
   // A collapsed group must retain notifications from deeper branches, including during search.
