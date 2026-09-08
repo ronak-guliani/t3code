@@ -57,6 +57,8 @@ export function githubPullRequestNavigation(url: string): InternalPullRequestNav
       repository &&
       pull === "pull" &&
       rest.length === 0 &&
+      parsed.search.length === 0 &&
+      parsed.hash.length === 0 &&
       Number.isSafeInteger(parsedNumber) &&
       parsedNumber > 0
       ? {

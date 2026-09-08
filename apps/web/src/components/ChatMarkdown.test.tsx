@@ -44,6 +44,50 @@ describe("ChatMarkdown", () => {
     expect(markup).not.toContain("chat-markdown-thread-link");
   });
 
+  it("keeps unrelated inline UUIDs as code", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="The generated value is `bc880b45-fd48-42db-98fa-f211bae7cc0a`."
+        cwd="/Users/julius/project"
+        threadRef={scopeThreadRef(
+          EnvironmentId.make("environment-local"),
+          ThreadId.make("current-thread"),
+        )}
+      />,
+    );
+
+    expect(markup).not.toContain("chat-markdown-thread-link");
+    expect(markup).toContain("<code>bc880b45-fd48-42db-98fa-f211bae7cc0a</code>");
+  });
+
+  it("classifies explicit canonical thread URLs before external links", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="[new thread](/environment-other/bc880b45-fd48-42db-98fa-f211bae7cc0a)"
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).toContain("chat-markdown-thread-link");
+    expect(markup).toContain('href="/environment-other/bc880b45-fd48-42db-98fa-f211bae7cc0a"');
+    expect(markup).toContain("new thread");
+    expect(markup).not.toContain('target="_blank"');
+  });
+
+  it("does not trust route-shaped links on unrelated origins", () => {
+    const markup = renderToStaticMarkup(
+      <ChatMarkdown
+        text="[thread](https://example.com/environment-local/bc880b45-fd48-42db-98fa-f211bae7cc0a)"
+        cwd="/Users/julius/project"
+      />,
+    );
+
+    expect(markup).not.toContain("chat-markdown-thread-link");
+    expect(markup).toContain(
+      'href="https://example.com/environment-local/bc880b45-fd48-42db-98fa-f211bae7cc0a"',
+    );
+  });
+
   it("removes leaked web citation tokens", () => {
     const markup = renderToStaticMarkup(
       <ChatMarkdown

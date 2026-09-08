@@ -1,5 +1,6 @@
 import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { buildThreadPath } from "@t3tools/shared/threadUrl";
 import { useNavigate } from "@tanstack/react-router";
 import { CheckIcon, CopyIcon, MessageSquareIcon } from "lucide-react";
 import React, {
@@ -39,11 +40,19 @@ import {
 } from "../markdown-links";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
-import { selectSidebarThreadSummaryByRef, useStore } from "../store";
+import { selectProjectByRef, selectSidebarThreadSummaryByRef, useStore } from "../store";
+import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
+import { useSavedEnvironmentRegistryStore } from "~/environments/runtime/catalog";
+import {
+  isThreadId,
+  parseGitHubShorthandReferences,
+  resolveExplicitThreadLink,
+  THREAD_REFERENCE_PATTERN,
+} from "../lib/chatLinkClassification";
+import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPullRequestLink";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
-import { getEnvironmentHttpBaseUrl } from "~/environments/runtime";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -154,13 +163,6 @@ type MarkdownAstNode = {
   };
 };
 
-const THREAD_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const THREAD_ID_PATTERN = new RegExp(`^${THREAD_ID_SOURCE}$`, "i");
-const THREAD_REFERENCE_PATTERN = new RegExp(
-  `\\b(Thread\\s*:?[ \\t]+)(${THREAD_ID_SOURCE})\\b`,
-  "gi",
-);
-
 function normalizeThreadId(threadId: string): string {
   return threadId.toLowerCase();
 }
@@ -172,38 +174,90 @@ function threadLinkProperties(environmentId: EnvironmentId, threadId: string) {
   };
 }
 
-function buildThreadHref(environmentId: EnvironmentId, threadId: string): string {
-  return `/${encodeURIComponent(environmentId)}/${encodeURIComponent(normalizeThreadId(threadId))}`;
-}
-
-function linkThreadReferencesInText(
+function linkChatReferencesInText(
   node: MarkdownAstNode,
-  environmentId: EnvironmentId,
+  input: {
+    readonly environmentId: EnvironmentId;
+    readonly githubReferences: ReadonlyMap<string, string>;
+  },
 ): MarkdownAstNode[] {
   const text = node.value ?? "";
+  const matches = [
+    ...[...text.matchAll(THREAD_REFERENCE_PATTERN)].flatMap((match) => {
+      const matchIndex = match.index;
+      const prefix = match[1];
+      const threadId = match[2];
+      if (matchIndex === undefined || !prefix || !threadId) return [];
+      return [
+        {
+          start: matchIndex,
+          end: matchIndex + prefix.length + threadId.length,
+          kind: "thread" as const,
+          labelStart: matchIndex + prefix.length,
+          value: threadId,
+        },
+      ];
+    }),
+    ...[...text.matchAll(/(?:\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#([1-9]\d*)\b/g)].flatMap(
+      (match) => {
+        const matchIndex = match.index;
+        const repository = match[1];
+        const rawNumber = match[2];
+        if (matchIndex === undefined || !rawNumber) return [];
+        const value = repository ? `${repository}#${rawNumber}` : `#${rawNumber}`;
+        const url = input.githubReferences.get(value.toLowerCase());
+        if (!url) return [];
+        return [
+          {
+            start: matchIndex,
+            end: matchIndex + value.length,
+            kind: "pull-request" as const,
+            labelStart: matchIndex,
+            labelEnd: matchIndex + value.length,
+            value,
+            url,
+          },
+        ];
+      },
+    ),
+  ].sort((left, right) => left.start - right.start);
+
   const nextNodes: MarkdownAstNode[] = [];
   let cursor = 0;
 
-  for (const match of text.matchAll(THREAD_REFERENCE_PATTERN)) {
-    const matchIndex = match.index;
-    const prefix = match[1];
-    const threadId = match[2];
-    if (matchIndex === undefined || !prefix || !threadId) continue;
-    const normalizedThreadId = normalizeThreadId(threadId);
-
-    const threadIdStart = matchIndex + prefix.length;
-    if (threadIdStart > cursor) {
-      nextNodes.push({ type: "text", value: text.slice(cursor, threadIdStart) });
+  for (const match of matches) {
+    if (match.start < cursor) continue;
+    if (match.labelStart > cursor) {
+      nextNodes.push({ type: "text", value: text.slice(cursor, match.labelStart) });
     }
-    nextNodes.push({
-      type: "link",
-      url: buildThreadHref(environmentId, normalizedThreadId),
-      data: {
-        hProperties: threadLinkProperties(environmentId, normalizedThreadId),
-      },
-      children: [{ type: "text", value: normalizedThreadId }],
-    });
-    cursor = threadIdStart + threadId.length;
+    const normalizedValue = normalizeThreadId(match.value);
+    if (match.kind === "thread" && isThreadId(match.value)) {
+      nextNodes.push({
+        type: "link",
+        url: buildThreadPath({
+          environmentId: input.environmentId,
+          threadId: ThreadId.make(normalizedValue),
+        }),
+        data: {
+          hProperties: threadLinkProperties(input.environmentId, normalizedValue),
+        },
+        children: [{ type: "text", value: normalizedValue }],
+      });
+    } else if (match.kind === "pull-request") {
+      const url = "url" in match ? match.url : undefined;
+      if (!url) continue;
+      nextNodes.push({
+        type: "link",
+        url,
+        data: {
+          hProperties: {
+            dataGitHubPullRequestUrl: url,
+          },
+        },
+        children: [{ type: "text", value: match.value }],
+      });
+    }
+    cursor = match.end;
   }
 
   if (nextNodes.length === 0) return [node];
@@ -213,35 +267,93 @@ function linkThreadReferencesInText(
   return nextNodes;
 }
 
-function remarkLinkThreadReferences(environmentId?: EnvironmentId) {
+function hasThreadContextBeforeInlineCode(
+  children: ReadonlyArray<MarkdownAstNode>,
+  index: number,
+): boolean {
+  const previous = children[index - 1];
+  return (
+    previous?.type === "text" &&
+    /(?:\bthread(?:\s+id)?|thread[_-]?id)\s*:?[ \t]*$/i.test(previous.value ?? "")
+  );
+}
+
+function remarkClassifyChatLinks(input: {
+  readonly environmentId?: EnvironmentId;
+  readonly baseOrigin: string;
+  readonly trustedOrigins: ReadonlyArray<{ readonly origin: string }>;
+  readonly githubReferences: ReadonlyMap<string, string>;
+}) {
   return () => (tree: MarkdownAstNode) => {
-    if (!environmentId) return;
-
     const visit = (node: MarkdownAstNode, insideLink: boolean) => {
-      if (node.type === "inlineCode" && THREAD_ID_PATTERN.test(node.value ?? "")) {
-        node.data = {
-          ...node.data,
-          hProperties: {
-            ...node.data?.hProperties,
-            ...threadLinkProperties(environmentId, node.value ?? ""),
-          },
-        };
-        return;
-      }
-
       const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
       if (!node.children || childInsideLink) return;
 
+      node.children.forEach((child, index) => {
+        if (
+          input.environmentId &&
+          child.type === "inlineCode" &&
+          isThreadId(child.value ?? "") &&
+          hasThreadContextBeforeInlineCode(node.children ?? [], index)
+        ) {
+          child.data = {
+            ...child.data,
+            hProperties: {
+              ...child.data?.hProperties,
+              ...threadLinkProperties(input.environmentId, child.value ?? ""),
+            },
+          };
+        }
+      });
+
       node.children = node.children.flatMap((child) => {
         if (child.type === "text") {
-          return linkThreadReferencesInText(child, environmentId);
+          return input.environmentId
+            ? linkChatReferencesInText(child, {
+                environmentId: input.environmentId,
+                githubReferences: input.githubReferences,
+              })
+            : [child];
         }
         visit(child, false);
         return [child];
       });
     };
 
+    const visitLinks = (node: MarkdownAstNode, insideLink: boolean) => {
+      const childInsideLink = insideLink || node.type === "link" || node.type === "linkReference";
+      if (node.type === "link" && !insideLink && node.url) {
+        const threadLink = resolveExplicitThreadLink(node.url, {
+          baseOrigin: input.baseOrigin,
+          trustedOrigins: input.trustedOrigins,
+        });
+        if (threadLink) {
+          node.url = threadLink.href;
+          node.data = {
+            ...node.data,
+            hProperties: threadLinkProperties(
+              threadLink.ref.environmentId,
+              threadLink.ref.threadId,
+            ),
+          };
+        } else {
+          const pullRequest = githubPullRequestNavigation(node.url);
+          if (pullRequest) {
+            node.data = {
+              ...node.data,
+              hProperties: {
+                ...node.data?.hProperties,
+                dataGitHubPullRequestUrl: node.url,
+              },
+            };
+          }
+        }
+      }
+      node.children?.forEach((child) => visitLinks(child, childInsideLink));
+    };
+
     visit(tree, false);
+    visitLinks(tree, false);
   };
 }
 
@@ -465,6 +577,8 @@ interface MarkdownFileLinkProps {
 interface MarkdownThreadLinkProps {
   threadRef: ScopedThreadRef;
   className?: string | undefined;
+  children?: ReactNode;
+  preserveLabel?: boolean;
 }
 
 type MarkdownExternalLinkProps = Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> & {
@@ -486,23 +600,41 @@ function resolveMarkdownThreadRef(
   const environmentId = properties?.dataThreadEnvironmentId;
   const threadId = properties?.dataThreadId;
   if (typeof environmentId !== "string" || typeof threadId !== "string") return null;
-  if (!THREAD_ID_PATTERN.test(threadId)) return null;
+  if (!isThreadId(threadId)) return null;
   return {
     environmentId: EnvironmentId.make(environmentId),
     threadId: ThreadId.make(threadId),
   };
 }
 
+function resolveMarkdownPullRequestUrl(
+  properties: Record<string, unknown> | undefined,
+): string | null {
+  const url = properties?.dataGitHubPullRequestUrl;
+  return typeof url === "string" && githubPullRequestNavigation(url) ? url : null;
+}
+
 const MarkdownThreadLink = memo(function MarkdownThreadLink({
   threadRef,
   className,
+  children,
+  preserveLabel = false,
 }: MarkdownThreadLinkProps) {
   const navigate = useNavigate();
-  const href = buildThreadHref(threadRef.environmentId, threadRef.threadId);
+  const href = buildThreadPath(threadRef);
   const threadTitle = useStore(
     (state) => selectSidebarThreadSummaryByRef(state, threadRef)?.title.trim() || null,
   );
-  const label = threadTitle ?? threadRef.threadId;
+  const environmentKnown = useStore((state) =>
+    Boolean(state.environmentStateById[threadRef.environmentId]),
+  );
+  const threadShell = useStore(
+    (state) =>
+      state.environmentStateById[threadRef.environmentId]?.threadShellById[threadRef.threadId],
+  );
+  const label = preserveLabel
+    ? nodeToPlainText(children) || threadRef.threadId
+    : (threadTitle ?? threadRef.threadId);
 
   return (
     <a
@@ -520,6 +652,26 @@ const MarkdownThreadLink = memo(function MarkdownThreadLink({
           event.shiftKey ||
           event.altKey
         ) {
+          return;
+        }
+        if (!environmentKnown) {
+          event.preventDefault();
+          event.stopPropagation();
+          toastManager.add({
+            type: "error",
+            title: "Thread environment unavailable",
+            description: `Connect environment ${threadRef.environmentId} before opening this thread.`,
+          });
+          return;
+        }
+        if (threadShell?.archivedAt) {
+          event.preventDefault();
+          event.stopPropagation();
+          toastManager.add({
+            type: "error",
+            title: "Thread is archived",
+            description: "Restore the archived thread before opening it from chat.",
+          });
           return;
         }
         event.preventDefault();
@@ -566,6 +718,28 @@ const MarkdownExternalLink = memo(function MarkdownExternalLink({
       });
     },
     [href, openLink],
+  );
+
+  return (
+    <a {...props} href={href} target="_blank" rel="noopener noreferrer" onClick={handleClick}>
+      {children}
+    </a>
+  );
+});
+
+const MarkdownPullRequestLink = memo(function MarkdownPullRequestLink({
+  href,
+  children,
+  ...props
+}: MarkdownExternalLinkProps) {
+  const handleClick = useCallback(
+    (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      openPullRequestLink(event, href);
+    },
+    [href],
   );
 
   return (
@@ -882,6 +1056,69 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     () => normalizeChatMarkdownText(text, isStreaming),
     [isStreaming, text],
   );
+  const environmentStateById = useStore((state) => state.environmentStateById);
+  const savedEnvironmentById = useSavedEnvironmentRegistryStore((state) => state.byId);
+  const currentThread = useStore((state) =>
+    threadRef
+      ? state.environmentStateById[threadRef.environmentId]?.threadShellById[threadRef.threadId]
+      : undefined,
+  );
+  const currentProject = useStore((state) =>
+    currentThread
+      ? selectProjectByRef(state, {
+          environmentId: currentThread.environmentId,
+          projectId: currentThread.projectId,
+        })
+      : undefined,
+  );
+  const trustedOrigins = useMemo(
+    () => [
+      {
+        origin:
+          typeof window === "undefined"
+            ? "http://localhost"
+            : (window.location?.origin ?? "http://localhost"),
+      },
+      ...Object.keys(environmentStateById).flatMap((environmentId) => {
+        const httpBaseUrl = getEnvironmentHttpBaseUrl(EnvironmentId.make(environmentId));
+        return httpBaseUrl ? [{ origin: httpBaseUrl }] : [];
+      }),
+      ...Object.values(savedEnvironmentById).map((environment) => ({
+        origin: environment.httpBaseUrl,
+      })),
+    ],
+    [environmentStateById, savedEnvironmentById],
+  );
+  const githubReferences = useMemo(() => {
+    const references = new Map<string, string>();
+    const navigation = currentThread?.pullRequest?.url
+      ? githubPullRequestNavigation(currentThread.pullRequest.url)
+      : null;
+    if (!navigation) return references;
+
+    const repository = currentProject?.repositoryIdentity?.canonicalKey
+      ?.split("/")
+      .slice(-2)
+      .join("/")
+      .toLowerCase();
+    const shorthandReferences = parseGitHubShorthandReferences(normalizedText);
+    for (const reference of shorthandReferences) {
+      if (
+        reference.repository === navigation.repository.toLowerCase() &&
+        reference.number === navigation.number
+      ) {
+        references.set(`${reference.repository}#${reference.number}`, navigation.url);
+      }
+    }
+    if (repository === navigation.repository.toLowerCase()) {
+      references.set(`#${navigation.number}`, navigation.url);
+    }
+    return references;
+  }, [
+    currentProject?.repositoryIdentity?.canonicalKey,
+    currentThread?.pullRequest?.url,
+    normalizedText,
+  ]);
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
@@ -909,7 +1146,20 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     ({ node, href, ...props }: MarkdownFunctionComponentProps<"a">) => {
       const linkedThreadRef = resolveMarkdownThreadRef(node?.properties);
       if (linkedThreadRef) {
-        return <MarkdownThreadLink threadRef={linkedThreadRef} className={props.className} />;
+        return (
+          <MarkdownThreadLink threadRef={linkedThreadRef} className={props.className} preserveLabel>
+            {props.children}
+          </MarkdownThreadLink>
+        );
+      }
+
+      const linkedPullRequestUrl = resolveMarkdownPullRequestUrl(node?.properties);
+      if (linkedPullRequestUrl) {
+        return (
+          <MarkdownPullRequestLink href={linkedPullRequestUrl} {...props}>
+            {props.children}
+          </MarkdownPullRequestLink>
+        );
       }
 
       const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
@@ -1013,7 +1263,15 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       <ReactMarkdown
         remarkPlugins={[
           remarkGfm,
-          remarkLinkThreadReferences(threadRef?.environmentId),
+          remarkClassifyChatLinks({
+            ...(threadRef ? { environmentId: threadRef.environmentId } : {}),
+            baseOrigin:
+              typeof window === "undefined"
+                ? "http://localhost"
+                : (window.location?.origin ?? "http://localhost"),
+            trustedOrigins,
+            githubReferences,
+          }),
           remarkTagInlineCode(cwd),
         ]}
         components={markdownComponents}

@@ -303,6 +303,38 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("navigates explicit T3 thread links internally instead of opening preview", async () => {
+    const linkedThreadId = ThreadId.make("bc880b45-fd48-42db-98fa-f211bae7cc0a");
+    addThreadSummary(linkedThreadId, "Replacement thread");
+    const screen = await render(
+      <ChatMarkdown
+        text={`[new thread](${globalThis.location.origin}/${threadRef.environmentId}/${linkedThreadId})`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: "Open thread new thread" });
+      await expect
+        .element(link)
+        .toHaveAttribute("href", `/${threadRef.environmentId}/${linkedThreadId}`);
+      await link.click();
+      await vi.waitFor(() => {
+        expect(navigateMock).toHaveBeenCalledWith({
+          to: "/$environmentId/$threadId",
+          params: {
+            environmentId: threadRef.environmentId,
+            threadId: linkedThreadId,
+          },
+        });
+      });
+      expect(openPreviewMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps table headers from inheriting emergency word breaks", async () => {
     const screen = await render(
       <ChatMarkdown

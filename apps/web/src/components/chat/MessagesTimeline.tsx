@@ -1768,6 +1768,7 @@ const AgentRunRow = memo(function AgentRunRow({
   agentRun: AgentRun;
   workspaceRoot: string | undefined;
 }) {
+  const { activeThreadEnvironmentId, activeThreadId } = use(TimelineRowCtx);
   const [isExpanded, setIsExpanded] = useState(agentRun.status === "running");
   const ToggleIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
   const status =
@@ -1792,7 +1793,15 @@ const AgentRunRow = memo(function AgentRunRow({
         <span className="text-[0.8em] text-muted-foreground/65">{status}</span>
       </button>
       {isExpanded && (
-        <AgentRunTranscript agentRun={agentRun} workspaceRoot={workspaceRoot} compact />
+        <AgentRunTranscript
+          agentRun={agentRun}
+          workspaceRoot={workspaceRoot}
+          threadRef={{
+            environmentId: activeThreadEnvironmentId,
+            threadId: activeThreadId,
+          }}
+          compact
+        />
       )}
     </div>
   );
@@ -1801,10 +1810,12 @@ const AgentRunRow = memo(function AgentRunRow({
 const AgentRunTranscript = memo(function AgentRunTranscript({
   agentRun,
   workspaceRoot,
+  threadRef,
   compact = false,
 }: {
   agentRun: AgentRun;
   workspaceRoot: string | undefined;
+  threadRef: { environmentId: EnvironmentId; threadId: ThreadId };
   compact?: boolean;
 }) {
   return (
@@ -1831,10 +1842,22 @@ const AgentRunTranscript = memo(function AgentRunTranscript({
       ))}
       {agentRun.summary ? (
         compact ? (
-          <div className="whitespace-pre-wrap text-muted-foreground/80">{agentRun.summary}</div>
+          <div className="min-w-0 px-1 py-0.5 text-muted-foreground/80">
+            <ChatMarkdown
+              text={agentRun.summary}
+              cwd={workspaceRoot}
+              isStreaming={false}
+              threadRef={threadRef}
+            />
+          </div>
         ) : (
           <div className="min-w-0 px-1 py-0.5">
-            <ChatMarkdown text={agentRun.summary} cwd={workspaceRoot} isStreaming={false} />
+            <ChatMarkdown
+              text={agentRun.summary}
+              cwd={workspaceRoot}
+              isStreaming={false}
+              threadRef={threadRef}
+            />
           </div>
         )
       ) : null}
