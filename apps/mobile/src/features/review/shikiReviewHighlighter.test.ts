@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { ReviewRenderableFile } from "./reviewModel";
 import { highlightCodeSnippet, highlightReviewFile } from "./shikiReviewHighlighter";
@@ -154,11 +154,14 @@ describe("highlightCodeSnippet", () => {
 
   it("stops obsolete work at the next batch boundary", async () => {
     const controller = new AbortController();
-    const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback) => {
+    const originalSetTimeout = globalThis.setTimeout;
+    let timeoutCalls = 0;
+    globalThis.setTimeout = ((callback: () => void) => {
+      timeoutCalls += 1;
       controller.abort();
-      if (typeof callback === "function") callback();
+      callback();
       return 0 as ReturnType<typeof setTimeout>;
-    });
+    }) as typeof setTimeout;
 
     try {
       await expect(
@@ -171,16 +174,17 @@ describe("highlightCodeSnippet", () => {
           signal: controller.signal,
         }),
       ).rejects.toMatchObject({ name: "AbortError" });
-      expect(timeout).toHaveBeenCalledTimes(1);
+      expect(timeoutCalls).toBe(1);
     } finally {
-      timeout.mockRestore();
+      globalThis.setTimeout = originalSetTimeout;
     }
   });
 });
 
 describe("highlightSourceFile", () => {
   it("initializes source and snippet highlighting without a warmup", async () => {
-    vi.resetModules();
+    const testApi = await import("vite-plus/test");
+    testApi.vi.resetModules();
     const highlighter = await import("./shikiReviewHighlighter");
     const source = "const answer: number = 42;";
 
