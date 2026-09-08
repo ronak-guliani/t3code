@@ -73,8 +73,7 @@ export function ThreadMarkdownImageView(props: {
   const requestVersion = isCurrentMarkdownImageSource(imageLoadState, props.sourceKey, props.uri)
     ? imageLoadState.requestVersion
     : 0;
-  const latestRequestIdentityRef = useRef<MarkdownImageRequestIdentity | null>(null);
-  latestRequestIdentityRef.current =
+  const request: MarkdownImageRequestIdentity | null =
     props.uri === null
       ? null
       : {
@@ -82,6 +81,8 @@ export function ThreadMarkdownImageView(props: {
           uri: props.uri,
           requestVersion,
         };
+  const latestRequestIdentityRef = useRef<MarkdownImageRequestIdentity | null>(null);
+  latestRequestIdentityRef.current = request;
 
   const retryImage = useCallback(() => {
     if (props.uri === null || props.unavailable) {
@@ -162,21 +163,12 @@ export function ThreadMarkdownImageView(props: {
               >
                 <ThreadMarkdownImageRequest
                   uri={props.uri!}
-                  key={createMarkdownImageRequestKey({
-                    sourceKey: props.sourceKey,
-                    uri: props.uri!,
-                    requestVersion,
-                  })}
+                  key={createMarkdownImageRequestKey(request!)}
                   onLoad={(sourceSize) => {
-                    const request: MarkdownImageRequestIdentity = {
-                      sourceKey: props.sourceKey,
-                      uri: props.uri!,
-                      requestVersion,
-                    };
-                    dispatchImageLoad({ type: "loaded", request });
+                    dispatchImageLoad({ type: "loaded", request: request! });
                     if (
                       latestRequestIdentityRef.current !== null &&
-                      isCurrentMarkdownImageRequest(latestRequestIdentityRef.current, request)
+                      isCurrentMarkdownImageRequest(latestRequestIdentityRef.current, request!)
                     ) {
                       setSourceSize(sourceSize);
                     }
@@ -184,11 +176,7 @@ export function ThreadMarkdownImageView(props: {
                   onError={() =>
                     dispatchImageLoad({
                       type: "failed",
-                      request: {
-                        sourceKey: props.sourceKey,
-                        uri: props.uri!,
-                        requestVersion,
-                      },
+                      request: request!,
                     })
                   }
                 />
