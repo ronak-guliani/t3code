@@ -89,18 +89,29 @@ export function resolveExplicitThreadLink(
     return null;
   }
 
-  const trustedOrigins = new Map(
-    input.trustedOrigins.flatMap((entry) => {
-      const origin = normalizeOrigin(entry.origin);
-      return origin ? [[origin, entry.environmentId] as const] : [];
-    }),
-  );
+  const trustedOrigins = new Map<string, { unconstrained: boolean; ids: Set<EnvironmentId> }>();
+  for (const entry of input.trustedOrigins) {
+    const origin = normalizeOrigin(entry.origin);
+    if (!origin) continue;
+    let record = trustedOrigins.get(origin);
+    if (!record) {
+      record = { unconstrained: false, ids: new Set<EnvironmentId>() };
+      trustedOrigins.set(origin, record);
+    }
+    if (!entry.environmentId) {
+      record.unconstrained = true;
+    } else {
+      record.ids.add(entry.environmentId);
+    }
+  }
   const origin = url.origin.toLowerCase();
-  if (!trustedOrigins.has(origin)) return null;
+  const trustedOrigin = trustedOrigins.get(origin);
+  if (!trustedOrigin) return null;
   if (url.search || url.hash) return null;
 
   const ref = parseCanonicalThreadPath(url.pathname, input.trustedEnvironmentIds);
   if (!ref) return null;
+  if (!trustedOrigin.unconstrained && !trustedOrigin.ids.has(ref.environmentId)) return null;
 
   return {
     ref,

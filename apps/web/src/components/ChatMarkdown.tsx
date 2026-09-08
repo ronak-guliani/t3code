@@ -50,6 +50,7 @@ import {
   parseGitHubReferences,
   resolveExplicitThreadLink,
   THREAD_REFERENCE_PATTERN,
+  type TrustedThreadOrigin,
 } from "../lib/chatLinkClassification";
 import { githubPullRequestNavigation, openPullRequestLink } from "../lib/openPullRequestLink";
 import { usePrimaryEnvironmentId } from "~/environments/primary";
@@ -289,7 +290,7 @@ function hasThreadContextBeforeInlineCode(
 function remarkClassifyChatLinks(input: {
   readonly environmentId?: EnvironmentId;
   readonly baseOrigin: string;
-  readonly trustedOrigins: ReadonlyArray<{ readonly origin: string }>;
+  readonly trustedOrigins: ReadonlyArray<TrustedThreadOrigin>;
   readonly githubReferences: ReadonlyMap<string, string>;
 }) {
   return () => (tree: MarkdownAstNode) => {
@@ -1127,7 +1128,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         })
       : undefined,
   );
-  const trustedOrigins = useMemo(
+  const trustedOrigins: ReadonlyArray<TrustedThreadOrigin> = useMemo(
     () => [
       {
         origin:
@@ -1138,15 +1139,20 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
       ...(primaryEnvironmentId
         ? (() => {
             const httpBaseUrl = getEnvironmentHttpBaseUrl(primaryEnvironmentId);
-            return httpBaseUrl ? [{ origin: httpBaseUrl }] : [];
+            return httpBaseUrl
+              ? [{ origin: httpBaseUrl, environmentId: primaryEnvironmentId }]
+              : [];
           })()
         : []),
       ...environmentIds.flatMap((environmentId) => {
         const httpBaseUrl = getEnvironmentHttpBaseUrl(EnvironmentId.make(environmentId));
-        return httpBaseUrl ? [{ origin: httpBaseUrl }] : [];
+        return httpBaseUrl
+          ? [{ origin: httpBaseUrl, environmentId: EnvironmentId.make(environmentId) }]
+          : [];
       }),
       ...Object.values(savedEnvironmentById).map((environment) => ({
         origin: environment.httpBaseUrl,
+        environmentId: environment.environmentId,
       })),
     ],
     [environmentIds, primaryEnvironmentId, savedEnvironmentById],

@@ -48,6 +48,26 @@ describe("resolveExplicitThreadLink", () => {
     ).toBeNull();
   });
 
+  it("rejects cross-environment paths on a bound environment origin", () => {
+    const threadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
+    expect(
+      resolveExplicitThreadLink(`https://environment.example.test/environment-a/${threadId}`, {
+        baseOrigin: "https://app.example.test",
+        trustedOrigins: [
+          { origin: "https://environment.example.test", environmentId: ENVIRONMENT_ID },
+        ],
+      }),
+    ).not.toBeNull();
+    expect(
+      resolveExplicitThreadLink(`https://environment.example.test/environment-other/${threadId}`, {
+        baseOrigin: "https://app.example.test",
+        trustedOrigins: [
+          { origin: "https://environment.example.test", environmentId: ENVIRONMENT_ID },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it("rejects malformed and non-canonical paths", () => {
     expect(parseCanonicalThreadPath("/environment-a/not-a-thread", new Set([ENVIRONMENT_ID]))).toBe(
       null,
