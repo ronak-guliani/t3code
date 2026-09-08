@@ -45,12 +45,14 @@ const runtimeDependencies = (
 const buildCloudManagedEndpointRuntime = (
   spawner: ReturnType<typeof ChildProcessSpawner.make>,
   relayClientLayer = relayClientAvailableLayer,
+  restartDelay = "0 seconds",
 ) =>
   Effect.gen(function* () {
     const context = yield* Layer.build(
-      ManagedEndpointRuntime.layer.pipe(
-        Layer.provide(runtimeDependencies(spawner, relayClientLayer)),
-      ),
+      Layer.effect(
+        ManagedEndpointRuntime.CloudManagedEndpointRuntime,
+        ManagedEndpointRuntime.makeWithRestartDelay(restartDelay),
+      ).pipe(Layer.provide(runtimeDependencies(spawner, relayClientLayer))),
     );
     return yield* Effect.service(ManagedEndpointRuntime.CloudManagedEndpointRuntime).pipe(
       Effect.provide(context),
@@ -84,6 +86,68 @@ function makeHandle(input: {
 }
 
 describe("CloudManagedEndpointRuntime", () => {
+  it.effect("honors crash backoff when reconciliation polls the exited connector", () =>
+    Effect.gen(function* () {
+      const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      let firstRunning = true;
+      const spawn = vi.fn(() => {
+        const first = spawn.mock.calls.length === 1;
+        return Effect.succeed(
+          makeHandle({
+            pid: first ? 810 : 811,
+            onKill: () => undefined,
+            isRunning: () => !first || firstRunning,
+            exitCode: first ? Deferred.await(exited) : Effect.never,
+          }),
+        );
+      });
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(spawn),
+        relayClientAvailableLayer,
+        "5 seconds",
+      );
+      const config = { providerKind: "cloudflare_tunnel", connectorToken: "token" };
+      yield* runtime.applyConfig(config);
+      firstRunning = false;
+      yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(1));
+      yield* TestClock.adjust("1 second");
+      expect(yield* runtime.applyConfig(config)).toMatchObject({ status: "starting", pid: 810 });
+      yield* TestClock.adjust("3 seconds");
+      yield* runtime.applyConfig(config);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      yield* TestClock.adjust("1 second");
+      yield* runtime.applyConfig(config);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(yield* runtime.getStatus).toMatchObject({ status: "starting", pid: 811 });
+    }),
+  );
+  it.effect("bounds crash restarts and cancels pending restarts when disabled", () =>
+    Effect.gen(function* () {
+      const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+      const spawn = vi.fn(() =>
+        Effect.succeed(
+          makeHandle({
+            pid: 800,
+            onKill: () => undefined,
+            exitCode: Deferred.await(exited),
+          }),
+        ),
+      );
+      const runtime = yield* buildCloudManagedEndpointRuntime(
+        ChildProcessSpawner.make(spawn),
+        relayClientAvailableLayer,
+        "5 seconds",
+      );
+      yield* runtime.applyConfig({ providerKind: "cloudflare_tunnel", connectorToken: "token" });
+      yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(1));
+      yield* TestClock.adjust("4 seconds");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      yield* runtime.applyConfig(null);
+      yield* TestClock.adjust("1 second");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(yield* runtime.getStatus).toEqual({ status: "disabled" });
+    }),
+  );
   it.effect("does not launch a persisted tunnel before desired-link reconciliation", () =>
     Effect.gen(function* () {
       const spawn = vi.fn();
@@ -876,6 +940,62 @@ describe("CloudManagedEndpointRuntime", () => {
       expect(spawn).toHaveBeenCalledTimes(1);
     }),
   );
+
+  for (const stalled of [false, true]) {
+    it.effect(`handles ${stalled ? "stalled" : "slow"} relay-client installation`, () =>
+      Effect.gen(function* () {
+        const spawn = vi.fn(() =>
+          Effect.succeed(makeHandle({ pid: 610, onKill: () => undefined })),
+        );
+        const installEntered = yield* Deferred.make<void>();
+        const runtime = yield* buildCloudManagedEndpointRuntime(
+          ChildProcessSpawner.make(spawn),
+          Layer.succeed(
+            RelayClient.RelayClient,
+            RelayClient.RelayClient.of({
+              resolve: Effect.succeed({
+                status: "missing",
+                version: RelayClient.CLOUDFLARED_VERSION,
+              }),
+              install: Deferred.succeed(installEntered, undefined).pipe(
+                Effect.andThen(stalled ? Effect.never : Effect.sleep("45 seconds")),
+                Effect.as({
+                  status: "available",
+                  executablePath: "managed-cloudflared",
+                  source: "managed",
+                  version: RelayClient.CLOUDFLARED_VERSION,
+                }),
+              ),
+              installWithProgress: () => Effect.die("unused"),
+            }),
+          ),
+        );
+        let completed = false;
+        const starting = yield* runtime
+          .applyConfig({
+            providerKind: "cloudflare_tunnel",
+            connectorToken: "token",
+          })
+          .pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                completed = true;
+              }),
+            ),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(installEntered);
+        yield* TestClock.adjust("30 seconds");
+        expect(completed).toBe(false);
+        expect(spawn).not.toHaveBeenCalled();
+        yield* TestClock.adjust(stalled ? "270 seconds" : "15 seconds");
+        expect(yield* Fiber.join(starting)).toMatchObject({
+          status: stalled ? "failed" : "starting",
+        });
+        expect(spawn).toHaveBeenCalledTimes(stalled ? 0 : 1);
+      }),
+    );
+  }
 
   it.effect("does not launch a tunnel when managed relay-client installation fails", () =>
     Effect.gen(function* () {

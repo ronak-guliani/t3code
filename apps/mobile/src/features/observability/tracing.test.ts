@@ -18,7 +18,12 @@ vi.mock("expo-constants", () => ({
 }));
 
 it.effect("exports spans through the scoped mobile OTLP layer", () => {
-  const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
+  const fetchFn = vi.fn<
+    (
+      input: Parameters<typeof globalThis.fetch>[0] | URL,
+      init?: Parameters<typeof globalThis.fetch>[1],
+    ) => Promise<Response>
+  >(async () => new Response(null, { status: 202 }));
   const tracingLayer = makeTracingLayer(
     {
       tracesUrl: "https://api.axiom.test/v1/traces",
@@ -29,7 +34,7 @@ it.effect("exports spans through the scoped mobile OTLP layer", () => {
       appVariant: "test",
       serviceVersion: "1.2.3",
     },
-  ).pipe(Layer.provide(remoteHttpClientLayer(fetchFn as typeof globalThis.fetch)));
+  ).pipe(Layer.provide(remoteHttpClientLayer((input, init) => fetchFn(input, init))));
   const tracedApplication = Layer.effectDiscard(
     Effect.void.pipe(Effect.withSpan("mobile.test.span"), withRelayClientTracing),
   ).pipe(Layer.provide(tracingLayer));
@@ -54,7 +59,12 @@ it.effect("exports spans through the scoped mobile OTLP layer", () => {
 });
 
 it.effect("does not let OTLP serialization failures alter application effects", () => {
-  const fetchFn = vi.fn<typeof fetch>(async () => new Response(null, { status: 202 }));
+  const fetchFn = vi.fn<
+    (
+      input: Parameters<typeof globalThis.fetch>[0] | URL,
+      init?: Parameters<typeof globalThis.fetch>[1],
+    ) => Promise<Response>
+  >(async () => new Response(null, { status: 202 }));
   const tracingLayer = makeTracingLayer(
     {
       tracesUrl: "https://api.axiom.test/v1/traces",
@@ -65,7 +75,7 @@ it.effect("does not let OTLP serialization failures alter application effects", 
       appVariant: "test",
       serviceVersion: "1.2.3",
     },
-  ).pipe(Layer.provide(remoteHttpClientLayer(fetchFn as typeof globalThis.fetch)));
+  ).pipe(Layer.provide(remoteHttpClientLayer((input, init) => fetchFn(input, init))));
   const failure = { durationNanos: 1n };
   const tracedApplication = Layer.effectDiscard(
     Effect.fail(failure).pipe(

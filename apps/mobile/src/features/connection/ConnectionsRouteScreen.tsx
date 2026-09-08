@@ -1,12 +1,12 @@
 import { NativeHeaderToolbar } from "../../native/StackHeader";
 import { useNavigation } from "@react-navigation/native";
-import { SymbolView } from "expo-symbols";
+import { SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useState } from "react";
-import { ScrollView, View } from "react-native";
+import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useThemeColor } from "../../lib/useThemeColor";
 
+import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { cn } from "../../lib/cn";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -23,28 +23,39 @@ export function ConnectionsRouteScreen() {
   const insets = useSafeAreaInsets();
   const hasEnvironments = connectedEnvironments.length > 0;
   const [expandedId, setExpandedId] = useState<EnvironmentId | null>(null);
-
-  const accentColor = useThemeColor("--color-icon-muted");
-
   const handleToggle = useCallback((environmentId: EnvironmentId) => {
     setExpandedId((prev) => (prev === environmentId ? null : environmentId));
   }, []);
 
   return (
     <View collapsable={false} className="flex-1 bg-sheet">
-      <NativeHeaderToolbar placement="right">
-        <NativeHeaderToolbar.Button
-          icon="plus"
-          onPress={() => navigation.navigate("ConnectionsNew")}
-          separateBackground
+      {Platform.OS === "android" ? (
+        <AndroidScreenHeader
+          title="Environments"
+          onBack={() => navigation.goBack()}
+          actions={[
+            {
+              accessibilityLabel: "Add environment",
+              icon: "plus",
+              onPress: () => navigation.navigate("ConnectionsNew"),
+            },
+          ]}
         />
-      </NativeHeaderToolbar>
+      ) : (
+        <NativeHeaderToolbar placement="right">
+          <NativeHeaderToolbar.Button
+            icon="plus"
+            onPress={() => navigation.navigate("ConnectionsNew")}
+            separateBackground
+          />
+        </NativeHeaderToolbar>
+      )}
       <ScrollView
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
-        style={{ flex: 1 }}
-        contentInset={{ bottom: Math.max(insets.bottom, 18) + 18 }}
+        className="flex-1"
         contentContainerStyle={{
+          paddingBottom: Math.max(insets.bottom, 18) + 18,
           paddingHorizontal: 20,
           paddingTop: 16,
         }}
@@ -55,10 +66,7 @@ export function ConnectionsRouteScreen() {
               <View
                 key={environment.environmentId}
                 collapsable={false}
-                style={{
-                  borderTopWidth: index === 0 ? 0 : 1,
-                }}
-                className={cn(index !== 0 && "border-border")}
+                className={cn(index !== 0 && "border-t border-border")}
               >
                 <ConnectionEnvironmentRow
                   environment={environment}
@@ -77,7 +85,7 @@ export function ConnectionsRouteScreen() {
               <SymbolView
                 name="point.3.connected.trianglepath.dotted"
                 size={20}
-                tintColor={accentColor}
+                tintColorClassName={"accent-icon-muted"}
                 type="monochrome"
               />
             </View>

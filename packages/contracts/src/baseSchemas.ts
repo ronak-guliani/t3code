@@ -1,4 +1,59 @@
-import { Schema } from "effect";
+import { Option, Schema, SchemaTransformation } from "effect";
+
+export const DpopFailureReason = Schema.Literals([
+  "time_window",
+  "key_mismatch",
+  "request_mismatch",
+  "token_mismatch",
+  "replay",
+  "invalid_proof",
+]);
+export type DpopFailureReason = typeof DpopFailureReason.Type;
+
+export const ForwardCompatibleOptional = <Value extends Schema.Top>(value: Value) => {
+  const decodeValue = Schema.decodeUnknownOption(value as never);
+  return Schema.optionalKey(
+    Schema.Unknown.pipe(
+      Schema.decodeTo(
+        Schema.UndefinedOr(value),
+        SchemaTransformation.transform<Value["Encoded"] | undefined, unknown>({
+          decode: (raw) =>
+            Option.isSome(decodeValue(raw)) ? (raw as Value["Encoded"]) : undefined,
+          encode: (raw) => raw,
+        }),
+      ),
+    ),
+  );
+};
+
+export const ForwardCompatibleNullable = <Value extends Schema.Top>(value: Value) => {
+  const decodeValue = Schema.decodeUnknownOption(value as never);
+  return Schema.Unknown.pipe(
+    Schema.decodeTo(
+      Schema.NullOr(value),
+      SchemaTransformation.transform<Value["Encoded"] | null, unknown>({
+        decode: (raw) => (Option.isSome(decodeValue(raw)) ? (raw as Value["Encoded"]) : null),
+        encode: (raw) => raw,
+      }),
+    ),
+  );
+};
+
+export const ForwardCompatibleArray = <Element extends Schema.Top>(element: Element) => {
+  const decodeElement = Schema.decodeUnknownOption(element as never);
+  return Schema.Array(Schema.Unknown).pipe(
+    Schema.decodeTo(
+      Schema.Array(element),
+      SchemaTransformation.transform<ReadonlyArray<Element["Encoded"]>, ReadonlyArray<unknown>>({
+        decode: (values) =>
+          values.filter((value) => Option.isSome(decodeElement(value))) as ReadonlyArray<
+            Element["Encoded"]
+          >,
+        encode: (values) => values,
+      }),
+    ),
+  );
+};
 
 export const TrimmedString = Schema.Trim;
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());

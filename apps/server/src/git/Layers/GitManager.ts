@@ -39,6 +39,7 @@ import {
   type GitRunStackedActionOptions,
 } from "../Services/GitManager.ts";
 import { GitCore } from "../Services/GitCore.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../CheckoutCoordinator.ts";
 import type { GitStatusDetails } from "../Services/GitCore.ts";
 import { GitHubCli, type GitHubPullRequestSummary } from "../Services/GitHubCli.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
@@ -492,6 +493,7 @@ function toPullRequestHeadRemoteInfo(pr: {
 
 export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   const gitCore = yield* GitCore;
+  const checkoutCoordinator = yield* CheckoutCoordinator;
   const gitHubCli = yield* GitHubCli;
   const textGeneration = yield* TextGeneration;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner;
@@ -1378,136 +1380,153 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
       });
       const pullRequest = toResolvedPullRequest(pullRequestSummary);
 
-      if (input.mode === "local") {
-        yield* gitHubCli.checkoutPullRequest({
-          cwd: input.cwd,
-          reference: normalizedReference,
-          force: true,
-        });
-        const details = yield* gitCore.statusDetails(input.cwd);
-        yield* configurePullRequestHeadUpstream(
-          input.cwd,
-          {
-            ...pullRequest,
-            ...toPullRequestHeadRemoteInfo(pullRequestSummary),
-          },
-          details.branch ?? pullRequest.headBranch,
-        );
-        return {
-          pullRequest,
-          branch: details.branch ?? pullRequest.headBranch,
-          worktreePath: null,
-        };
-      }
-
-      const ensureExistingWorktreeUpstream = Effect.fn("ensureExistingWorktreeUpstream")(function* (
-        worktreePath: string,
-      ) {
-        const details = yield* gitCore.statusDetails(worktreePath);
-        yield* configurePullRequestHeadUpstream(
-          worktreePath,
-          {
-            ...pullRequest,
-            ...toPullRequestHeadRemoteInfo(pullRequestSummary),
-          },
-          details.branch ?? pullRequest.headBranch,
-        );
-      });
-
-      const pullRequestWithRemoteInfo = {
-        ...pullRequest,
-        ...toPullRequestHeadRemoteInfo(pullRequestSummary),
-      } as const;
-      const localPullRequestBranch =
-        resolvePullRequestWorktreeLocalBranchName(pullRequestWithRemoteInfo);
-
-      const findLocalHeadBranch = (cwd: string) =>
-        gitCore.listBranches({ cwd }).pipe(
-          Effect.map((result) => {
-            const localBranch = result.branches.find(
-              (branch) => !branch.isRemote && branch.name === localPullRequestBranch,
+      let createdWorktree = false;
+      const prepared = yield* checkoutCoordinator.withCheckout(
+        input.cwd,
+        Effect.gen(function* () {
+          if (input.mode === "local") {
+            yield* gitHubCli.checkoutPullRequest({
+              cwd: input.cwd,
+              reference: normalizedReference,
+              force: true,
+            });
+            const details = yield* gitCore.statusDetails(input.cwd);
+            yield* configurePullRequestHeadUpstream(
+              input.cwd,
+              {
+                ...pullRequest,
+                ...toPullRequestHeadRemoteInfo(pullRequestSummary),
+              },
+              details.branch ?? pullRequest.headBranch,
             );
-            if (localBranch) {
-              return localBranch;
+            return {
+              pullRequest,
+              branch: details.branch ?? pullRequest.headBranch,
+              worktreePath: null,
+            };
+          }
+
+          const pullRequestWithRemoteInfo = {
+            ...pullRequest,
+            ...toPullRequestHeadRemoteInfo(pullRequestSummary),
+          } as const;
+          const localPullRequestBranch =
+            resolvePullRequestWorktreeLocalBranchName(pullRequestWithRemoteInfo);
+
+          const findLocalHeadBranch = (cwd: string) =>
+            gitCore.listBranches({ cwd }).pipe(
+              Effect.map((result) => {
+                const localBranch = result.branches.find(
+                  (branch) => !branch.isRemote && branch.name === localPullRequestBranch,
+                );
+                if (localBranch) {
+                  return localBranch;
+                }
+                if (localPullRequestBranch === pullRequest.headBranch) {
+                  return null;
+                }
+                return (
+                  result.branches.find(
+                    (branch) =>
+                      !branch.isRemote &&
+                      branch.name === pullRequest.headBranch &&
+                      branch.worktreePath !== null &&
+                      canonicalizeExistingPath(branch.worktreePath) !== rootWorktreePath,
+                  ) ?? null
+                );
+              }),
+            );
+
+          const existingBranchBeforeFetch = yield* findLocalHeadBranch(input.cwd);
+          const existingBranchBeforeFetchPath = existingBranchBeforeFetch?.worktreePath
+            ? canonicalizeExistingPath(existingBranchBeforeFetch.worktreePath)
+            : null;
+          if (
+            existingBranchBeforeFetch?.worktreePath &&
+            existingBranchBeforeFetchPath !== rootWorktreePath
+          ) {
+            return {
+              pullRequest,
+              branch: existingBranchBeforeFetch.name,
+              worktreePath: existingBranchBeforeFetch.worktreePath,
+            };
+          }
+          if (existingBranchBeforeFetchPath === rootWorktreePath) {
+            return yield* gitManagerError(
+              "preparePullRequestThread",
+              "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
+            );
+          }
+
+          yield* materializePullRequestHeadBranch(
+            input.cwd,
+            pullRequestWithRemoteInfo,
+            localPullRequestBranch,
+          );
+
+          const existingBranchAfterFetch = yield* findLocalHeadBranch(input.cwd);
+          const existingBranchAfterFetchPath = existingBranchAfterFetch?.worktreePath
+            ? canonicalizeExistingPath(existingBranchAfterFetch.worktreePath)
+            : null;
+          if (
+            existingBranchAfterFetch?.worktreePath &&
+            existingBranchAfterFetchPath !== rootWorktreePath
+          ) {
+            return {
+              pullRequest,
+              branch: existingBranchAfterFetch.name,
+              worktreePath: existingBranchAfterFetch.worktreePath,
+            };
+          }
+          if (existingBranchAfterFetchPath === rootWorktreePath) {
+            return yield* gitManagerError(
+              "preparePullRequestThread",
+              "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
+            );
+          }
+
+          const worktree = yield* gitCore.createWorktree({
+            cwd: input.cwd,
+            branch: localPullRequestBranch,
+            path: null,
+          });
+          createdWorktree = true;
+
+          return {
+            pullRequest,
+            branch: worktree.worktree.branch,
+            worktreePath: worktree.worktree.path,
+          };
+        }),
+      );
+      if (prepared.worktreePath !== null) {
+        const worktreePath = prepared.worktreePath;
+        // Release the source checkout before acquiring the actual worktree.
+        yield* checkoutCoordinator.withCheckout(
+          worktreePath,
+          Effect.gen(function* () {
+            const details = yield* gitCore.statusDetails(worktreePath);
+            if (details.branch !== prepared.branch) {
+              return yield* gitManagerError(
+                "preparePullRequestThread",
+                "The PR worktree changed branches while it was being prepared. Retry the operation.",
+              );
             }
-            if (localPullRequestBranch === pullRequest.headBranch) {
-              return null;
-            }
-            return (
-              result.branches.find(
-                (branch) =>
-                  !branch.isRemote &&
-                  branch.name === pullRequest.headBranch &&
-                  branch.worktreePath !== null &&
-                  canonicalizeExistingPath(branch.worktreePath) !== rootWorktreePath,
-              ) ?? null
+            yield* configurePullRequestHeadUpstream(
+              worktreePath,
+              {
+                ...pullRequest,
+                ...toPullRequestHeadRemoteInfo(pullRequestSummary),
+              },
+              details.branch ?? pullRequest.headBranch,
             );
           }),
         );
-
-      const existingBranchBeforeFetch = yield* findLocalHeadBranch(input.cwd);
-      const existingBranchBeforeFetchPath = existingBranchBeforeFetch?.worktreePath
-        ? canonicalizeExistingPath(existingBranchBeforeFetch.worktreePath)
-        : null;
-      if (
-        existingBranchBeforeFetch?.worktreePath &&
-        existingBranchBeforeFetchPath !== rootWorktreePath
-      ) {
-        yield* ensureExistingWorktreeUpstream(existingBranchBeforeFetch.worktreePath);
-        return {
-          pullRequest,
-          branch: localPullRequestBranch,
-          worktreePath: existingBranchBeforeFetch.worktreePath,
-        };
+        if (createdWorktree) {
+          yield* maybeRunSetupScript(worktreePath);
+        }
       }
-      if (existingBranchBeforeFetchPath === rootWorktreePath) {
-        return yield* gitManagerError(
-          "preparePullRequestThread",
-          "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
-        );
-      }
-
-      yield* materializePullRequestHeadBranch(
-        input.cwd,
-        pullRequestWithRemoteInfo,
-        localPullRequestBranch,
-      );
-
-      const existingBranchAfterFetch = yield* findLocalHeadBranch(input.cwd);
-      const existingBranchAfterFetchPath = existingBranchAfterFetch?.worktreePath
-        ? canonicalizeExistingPath(existingBranchAfterFetch.worktreePath)
-        : null;
-      if (
-        existingBranchAfterFetch?.worktreePath &&
-        existingBranchAfterFetchPath !== rootWorktreePath
-      ) {
-        yield* ensureExistingWorktreeUpstream(existingBranchAfterFetch.worktreePath);
-        return {
-          pullRequest,
-          branch: localPullRequestBranch,
-          worktreePath: existingBranchAfterFetch.worktreePath,
-        };
-      }
-      if (existingBranchAfterFetchPath === rootWorktreePath) {
-        return yield* gitManagerError(
-          "preparePullRequestThread",
-          "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
-        );
-      }
-
-      const worktree = yield* gitCore.createWorktree({
-        cwd: input.cwd,
-        branch: localPullRequestBranch,
-        path: null,
-      });
-      yield* ensureExistingWorktreeUpstream(worktree.worktree.path);
-      yield* maybeRunSetupScript(worktree.worktree.path);
-
-      return {
-        pullRequest,
-        branch: worktree.worktree.branch,
-        worktreePath: worktree.worktree.path,
-      };
+      return prepared;
     }).pipe(Effect.ensuring(invalidateStatus(input.cwd)));
   });
 
@@ -1711,7 +1730,7 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
         return result;
       });
 
-      return yield* runAction().pipe(
+      return yield* checkoutCoordinator.withCheckout(input.cwd, runAction()).pipe(
         Effect.ensuring(invalidateStatus(input.cwd)),
         Effect.tapError((error) =>
           Effect.flatMap(Ref.get(currentPhase), (phase) =>
@@ -1739,4 +1758,6 @@ export const makeGitManager = Effect.fn("makeGitManager")(function* () {
   } satisfies GitManagerShape;
 });
 
-export const GitManagerLive = Layer.effect(GitManager, makeGitManager());
+export const GitManagerLive = Layer.effect(GitManager, makeGitManager()).pipe(
+  Layer.provideMerge(CheckoutCoordinatorLive),
+);

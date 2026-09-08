@@ -25,6 +25,7 @@ import {
   type GitStatusBroadcasterShape,
 } from "../Services/GitStatusBroadcaster.ts";
 import { GitManager } from "../Services/GitManager.ts";
+import { ProjectAutoPull } from "../ProjectAutoPull.ts";
 
 const GIT_STATUS_REFRESH_INTERVAL = Duration.seconds(30);
 
@@ -64,6 +65,7 @@ export const GitStatusBroadcasterLive = Layer.effect(
   GitStatusBroadcaster,
   Effect.gen(function* () {
     const gitManager = yield* GitManager;
+    const autoPull = yield* ProjectAutoPull;
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<GitStatusChange>(),
       (pubsub) => PubSub.shutdown(pubsub),
@@ -197,6 +199,7 @@ export const GitStatusBroadcasterLive = Layer.effect(
     });
 
     const refreshRemoteStatus = Effect.fn("refreshRemoteStatus")(function* (cwd: string) {
+      yield* autoPull.attempt(cwd);
       yield* gitManager.invalidateRemoteStatus(cwd);
       const remote = yield* gitManager.remoteStatus({ cwd });
       return yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
@@ -308,6 +311,25 @@ export const GitStatusBroadcasterLive = Layer.effect(
           ).pipe(Stream.ensuring(release));
         }),
       );
+
+    yield* autoPull.changes.pipe(
+      Stream.runForEach((cwd) =>
+        Effect.gen(function* () {
+          yield* gitManager.invalidateStatus(cwd);
+          const [local, remote] = yield* Effect.all(
+            [gitManager.localStatus({ cwd }), gitManager.remoteStatus({ cwd })],
+            { concurrency: "unbounded" },
+          );
+          yield* updateCachedLocalStatus(cwd, local, { publish: true });
+          yield* updateCachedRemoteStatus(cwd, remote, { publish: true });
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Automatic pull status refresh failed", { cwd, cause }),
+          ),
+        ),
+      ),
+      Effect.forkScoped,
+    );
 
     return {
       getStatus,

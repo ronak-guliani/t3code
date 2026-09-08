@@ -1,5 +1,9 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
+import {
+  extractWorkLogToolLifecycleStatus,
+  mergeWorkLogToolData,
+} from "@t3tools/client-runtime/work-log/presentation";
 import { extractNormalizedChangedFilePathsFromToolPayload } from "@t3tools/shared/toolChangedFiles";
 import {
   ApprovalRequestId,
@@ -55,7 +59,12 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  toolLifecycleStatus?: import("@t3tools/client-runtime/work-log/presentation").WorkLogToolLifecycleStatus;
+  toolData?: unknown;
+  turnId?: string;
+  requestId?: string;
   id: string;
+  sourceActivityKind?: string;
   stableId?: string;
   createdAt: string;
   label: string;
@@ -817,8 +826,14 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
   const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
+    sourceActivityKind: activity.kind,
+    toolData: payload?.data,
+    ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
     createdAt: activity.createdAt,
-    label: taskLabel || activity.summary,
+    label:
+      activity.kind === "context-compaction" && activity.summary === "Context compacted"
+        ? "Compacted context"
+        : taskLabel || activity.summary,
     tone:
       activity.kind === "task.progress"
         ? "thinking"
@@ -829,6 +844,17 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     isComplete: activity.kind !== "tool.updated" && activity.kind !== "task.progress",
     ...(activity.turnId ? { turnId: activity.turnId } : {}),
   };
+  const lifecycleStatus =
+    extractWorkLogToolLifecycleStatus(payload) ??
+    (activity.kind === "tool.completed"
+      ? "completed"
+      : activity.kind === "tool.updated" || activity.kind === "tool.started"
+        ? "inProgress"
+        : undefined);
+  if (lifecycleStatus) {
+    entry.toolLifecycleStatus = lifecycleStatus;
+    entry.isComplete = lifecycleStatus !== "inProgress";
+  }
   const itemType = extractWorkLogItemType(payload);
   const requestKind = extractWorkLogRequestKind(payload);
   const childLifecycleActivity = isChildLifecycleThreadActivity(activity) ? activity : null;
@@ -971,6 +997,7 @@ function mergeDerivedWorkLogEntries(
   return {
     ...previous,
     ...next,
+    toolData: mergeWorkLogToolData(previous.toolData, next.toolData),
     ...(detail ? { detail } : {}),
     ...(command ? { command } : {}),
     ...(rawCommand ? { rawCommand } : {}),

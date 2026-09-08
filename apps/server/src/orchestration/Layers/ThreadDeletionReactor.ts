@@ -3,6 +3,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Effect, Exit, FileSystem, Layer, Option, Schedule, Stream } from "effect";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { CheckoutCoordinator, CheckoutCoordinatorLive } from "../../git/CheckoutCoordinator.ts";
 import { GitManager } from "../../git/Services/GitManager.ts";
 import { GitStatusBroadcaster } from "../../git/Services/GitStatusBroadcaster.ts";
 import { canonicalizeWorktreePath } from "../../git/worktreePaths.ts";
@@ -92,6 +93,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager;
   const git = yield* GitCore;
+  const checkoutCoordinator = yield* CheckoutCoordinator;
   const gitManager = yield* GitManager;
   const gitStatusBroadcaster = yield* GitStatusBroadcaster;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -219,23 +221,32 @@ const make = Effect.gen(function* () {
             );
           }
 
-          const exists = yield* fileSystem.exists(canonicalPath);
-          const outcome = !exists
-            ? yield* git.pruneWorktrees(cleanup.cwd).pipe(Effect.as("removed" as const))
-            : yield* git.statusDetailsLocal(canonicalPath).pipe(
-                Effect.flatMap((status) =>
-                  status.hasWorkingTreeChanges
-                    ? Effect.succeed("retained-dirty" as const)
-                    : git
-                        .removeWorktree({
-                          cwd: cleanup.cwd,
-                          path: canonicalPath,
-                        })
-                        .pipe(Effect.as("removed" as const)),
-                ),
-              );
+          const outcome = yield* checkoutCoordinator.withCheckout(
+            canonicalPath,
+            Effect.gen(function* () {
+              const exists = yield* fileSystem.exists(canonicalPath);
+              return !exists
+                ? ("missing" as const)
+                : yield* git.statusDetailsLocal(canonicalPath).pipe(
+                    Effect.flatMap((status) =>
+                      status.hasWorkingTreeChanges
+                        ? Effect.succeed("retained-dirty" as const)
+                        : git
+                            .removeWorktree({
+                              cwd: cleanup.cwd,
+                              path: canonicalPath,
+                            })
+                            .pipe(Effect.as("removed" as const)),
+                    ),
+                  );
+            }),
+          );
+          // Pruning affects repository metadata, not the missing checkout.
+          if (outcome === "missing") {
+            yield* checkoutCoordinator.withCheckout(cleanup.cwd, git.pruneWorktrees(cleanup.cwd));
+          }
 
-          if (outcome === "removed") {
+          if (outcome === "removed" || outcome === "missing") {
             yield* worktreeCleanupJobs.deleteByThreadId(cleanup.threadId);
             yield* gitStatusBroadcaster
               .refreshStatus(cleanup.cwd)
@@ -704,7 +715,7 @@ const make = Effect.gen(function* () {
                 .map((project) => project.workspaceRoot),
             ),
             (cwd) =>
-              git.pruneWorktrees(cwd).pipe(
+              checkoutCoordinator.withCheckout(cwd, git.pruneWorktrees(cwd)).pipe(
                 Effect.catch((error) =>
                   Effect.logDebug("worktree registration prune skipped", {
                     cwd,
@@ -739,4 +750,5 @@ const make = Effect.gen(function* () {
 
 export const ThreadDeletionReactorLive = Layer.effect(ThreadDeletionReactor, make).pipe(
   Layer.provideMerge(WorktreeCleanupJobRepositoryLive),
+  Layer.provideMerge(CheckoutCoordinatorLive),
 );

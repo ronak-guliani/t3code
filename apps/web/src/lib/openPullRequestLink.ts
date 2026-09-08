@@ -1,6 +1,21 @@
 import { readLocalApi } from "../localApi";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import type { Project } from "../types";
+import type { Project, ThreadShell } from "../types";
+import type { EnvironmentId, PullRequestRef } from "@t3tools/contracts";
+
+export function findPullRequestBrowserThread<
+  T extends Pick<ThreadShell, "id" | "environmentId" | "projectId" | "archivedAt" | "pullRequest">,
+>(threads: readonly T[], environmentId: EnvironmentId, reference: PullRequestRef): T | undefined {
+  return threads.find(
+    (thread) =>
+      thread.environmentId === environmentId &&
+      thread.projectId === reference.projectId &&
+      !thread.archivedAt &&
+      thread.pullRequest?.number === reference.number &&
+      githubPullRequestNavigation(thread.pullRequest.url)?.repository.toLowerCase() ===
+        reference.repository.toLowerCase(),
+  );
+}
 
 export interface InternalPullRequestNavigation {
   readonly host: string;

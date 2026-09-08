@@ -6,6 +6,7 @@ import {
   HostProcessUserId,
 } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -14,7 +15,6 @@ import { constants } from "node:fs";
 import {
   access,
   chmod,
-  cp,
   link,
   mkdir,
   readFile,
@@ -29,10 +29,13 @@ import { basename, dirname, join, resolve } from "node:path";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { runProcess, type ProcessRunResult } from "../processRunner.ts";
+import { runtimePidIsAlive } from "../serverRuntimeState.ts";
+import { copyCliRuntime } from "@t3tools/shared/cliRuntime";
 
 const LABEL_PREFIX = "com.t3tools.t3code.server";
 const COMMAND_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 20_000;
+const START_POLL_INTERVAL_MS = 250;
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_POLL_INTERVAL_MS = 50;
 const LOCK_INCOMPLETE_OWNER_STALE_MS = 2_000;
@@ -89,7 +92,13 @@ export class BootServiceError extends Schema.TaggedErrorClass<BootServiceError>(
   { operation: Schema.String, cause: Schema.Defect() },
 ) {
   override get message(): string {
-    return `Background service operation failed while ${this.operation}.`;
+    const detail =
+      this.cause instanceof Error
+        ? this.cause.message
+        : typeof this.cause === "string"
+          ? this.cause
+          : "";
+    return `Background service operation failed while ${this.operation}.${detail ? ` ${detail}` : ""}`;
   }
 }
 
@@ -106,7 +115,8 @@ export interface ServiceHost {
   readonly writeAtomic: (path: string, contents: string, mode: number) => Promise<void>;
   readonly makeDirectory: (path: string, mode: number) => Promise<void>;
   readonly listDirectory: (path: string) => Promise<ReadonlyArray<string>>;
-  readonly copyDirectory: (source: string, destination: string) => Promise<void>;
+  readonly copyRuntime: (source: string, destination: string) => Promise<void>;
+  readonly activeRuntimePid: (path: string) => Promise<number | undefined>;
   readonly rename: (source: string, destination: string) => Promise<void>;
   readonly remove: (path: string, recursive?: boolean) => Promise<void>;
   readonly chmod: (path: string, mode: number) => Promise<void>;
@@ -286,9 +296,18 @@ export const liveServiceHost: ServiceHost = {
     const { readdir } = await import("node:fs/promises");
     return readdir(path);
   },
-  copyDirectory: async (source, destination) => {
-    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-    await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+  copyRuntime: copyCliRuntime,
+  activeRuntimePid: async (path) => {
+    let contents: string;
+    try {
+      contents = await readFile(path, "utf8");
+    } catch (cause) {
+      if (filesystemErrorIsAbsence(cause)) return undefined;
+      throw cause;
+    }
+    const pid = parseRuntimePid(contents);
+    if (pid === undefined) throw new Error(`Invalid server runtime state at ${path}.`);
+    return runtimePidIsAlive(pid) ? pid : undefined;
   },
   rename,
   remove: (path, recursive = false) => rm(path, { force: true, recursive }),
@@ -734,7 +753,20 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
     const result = yield* attempt("stopping launchd service", () =>
       host.run("/bin/launchctl", ["bootout", paths.target], COMMAND_TIMEOUT_MS),
     );
-    if (processSucceeded(result) || launchctlBootoutTargetNotFound(result)) return;
+    if (launchctlBootoutTargetNotFound(result)) return;
+    if (processSucceeded(result)) {
+      const stopDeadline = (yield* Clock.currentTimeMillis) + HEALTH_TIMEOUT_MS;
+      let state = yield* supervisorState;
+      while (state.loaded && (yield* Clock.currentTimeMillis) < stopDeadline) {
+        yield* Effect.sleep(START_POLL_INTERVAL_MS);
+        state = yield* supervisorState;
+      }
+      if (!state.loaded) return;
+      return yield* new BootServiceError({
+        operation: "waiting for launchd to unload the previous service",
+        cause: `The job is still loaded after ${HEALTH_TIMEOUT_MS / 1_000} seconds; its runtime has not been replaced.`,
+      });
+    }
     return yield* new BootServiceError({
       operation: "stopping launchd service",
       cause:
@@ -770,13 +802,19 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
         `gui/${userId}`,
         paths.definitionPath,
       ]);
+    } else if (!current.processAlive) {
+      yield* runChecked("starting launchd service", ["kickstart", paths.target]);
     }
-    yield* runChecked("starting launchd service", ["kickstart", "-k", paths.target]);
-    const started = yield* supervisorState;
+    let started = yield* supervisorState;
+    const startDeadline = (yield* Clock.currentTimeMillis) + HEALTH_TIMEOUT_MS;
+    while (!started.processAlive && (yield* Clock.currentTimeMillis) < startDeadline) {
+      yield* Effect.sleep(START_POLL_INTERVAL_MS);
+      started = yield* supervisorState;
+    }
     if (!started.processAlive || started.pid === undefined) {
       return yield* new BootServiceError({
         operation: "waiting for the background server to start",
-        cause: "launchd did not report a running process after kickstart.",
+        cause: `launchd did not report a running process within ${HEALTH_TIMEOUT_MS / 1_000} seconds. Check Login Items & Extensions permissions and ${paths.logPath}.`,
       });
     }
     const startedPid = started.pid;
@@ -870,14 +908,34 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
               )
             : undefined;
           const previousState = yield* supervisorState;
+          const activePid = yield* attempt("checking for an existing foreground server", () =>
+            host.activeRuntimePid(join(canonicalBaseDir, "userdata", "server-runtime.json")),
+          );
+          if (activePid !== undefined && activePid !== previousState.pid) {
+            return yield* new BootServiceError({
+              operation: "installing alongside an existing server",
+              cause: `Stop the foreground T3 server (pid ${activePid}) using ${canonicalBaseDir}, then rerun this command. Its Connect authorization and data are preserved.`,
+            });
+          }
           const previouslyEnabled = yield* enabled;
           yield* attempt("creating private service directories", async () => {
             await host.makeDirectory(activePaths.instanceDir, 0o700);
             await host.makeDirectory(activePaths.runtimesDir, 0o700);
           });
-          const copied = yield* attempt("copying the packaged runtime", () =>
-            host.copyDirectory(packaged.distDir, candidateDir),
-          ).pipe(Effect.exit);
+          const copied = yield* Effect.gen(function* () {
+            yield* attempt("copying the packaged runtime and dependencies", () =>
+              host.copyRuntime(packaged.distDir, candidateDir),
+            );
+            const preflight = yield* attempt("checking the copied CLI runtime", () =>
+              host.run(executablePath, [candidateRuntime, "--help"], COMMAND_TIMEOUT_MS),
+            );
+            if (!processSucceeded(preflight)) {
+              return yield* new BootServiceError({
+                operation: "checking the copied CLI runtime",
+                cause: preflight.stderr || "The copied CLI could not load its dependencies.",
+              });
+            }
+          }).pipe(Effect.exit);
           if (copied._tag === "Failure") {
             yield* attempt("removing partial runtime candidate", () =>
               host.remove(candidateDir, true),
@@ -896,6 +954,7 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
               [
                 "T3CODE_RELAY_URL",
                 "T3CODE_CLERK_PUBLISHABLE_KEY",
+                "T3CODE_CLERK_JWT_TEMPLATE",
                 "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID",
                 "T3CODE_HOSTED_APP_URL",
               ].flatMap((name) => {
@@ -914,7 +973,8 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
               "serve",
               "--base-dir",
               canonicalBaseDir,
-              ...(invocation.host === undefined ? [] : ["--host", invocation.host]),
+              "--host",
+              invocation.host ?? "127.0.0.1",
               ...(invocation.port === undefined ? [] : ["--port", String(invocation.port)]),
               resolve(invocation.cwd),
             ],
@@ -934,19 +994,23 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
           });
           const committed = yield* commit.pipe(Effect.exit);
           if (committed._tag === "Failure") {
-            const stopped = yield* stopLoaded.pipe(Effect.exit);
-            const removedCandidate = yield* attempt("removing failed runtime candidate", () =>
-              host.remove(candidateDir, true),
-            ).pipe(Effect.exit);
-            const restoredDefinition = yield* (
+            const restoreDefinition =
               previousDefinition === undefined
                 ? attempt("removing failed service definition", () =>
                     host.remove(activePaths.definitionPath),
                   )
                 : attempt("restoring the previous service definition", () =>
                     host.writeAtomic(activePaths.definitionPath, previousDefinition, 0o600),
-                  )
+                  );
+            const stopped = yield* stopLoaded.pipe(Effect.exit);
+            if (stopped._tag === "Failure") {
+              if (previousDefinition !== undefined) yield* restoreDefinition;
+              return yield* Effect.failCause(stopped.cause);
+            }
+            const removedCandidate = yield* attempt("removing failed runtime candidate", () =>
+              host.remove(candidateDir, true),
             ).pipe(Effect.exit);
+            const restoredDefinition = yield* restoreDefinition.pipe(Effect.exit);
             const restoredEnablement = yield* (
               previouslyEnabled
                 ? runChecked("restoring launchd enablement", ["enable", activePaths.target])
@@ -955,7 +1019,6 @@ export const make = Effect.fn("cloud.bootService.make")(function* (input: {
             const restarted =
               previousDefinition !== undefined &&
               previousState.loaded &&
-              stopped._tag === "Success" &&
               restoredDefinition._tag === "Success"
                 ? yield* startAndProbe.pipe(Effect.exit)
                 : undefined;

@@ -44,7 +44,6 @@ export function buildCheckpointDiffTargets(target: CheckpointDiffTarget) {
         threadId: target.threadId,
         fromTurnCount: target.fromTurnCount,
         toTurnCount: target.toTurnCount,
-        scope: "snapshot" as const,
         ignoreWhitespace: target.ignoreWhitespace,
       },
     },

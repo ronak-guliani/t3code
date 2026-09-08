@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MessageId, TurnId } from "@t3tools/contracts";
+import type { TimelineEntry } from "../../session-logic";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
@@ -10,10 +11,117 @@ import {
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
   shouldHandleInternalActionClick,
-  resolveWorkGroupExpanded,
   stabilizeReadonlyStringSet,
   type MessagesTimelineRow,
 } from "./MessagesTimeline.logic";
+
+describe("compaction timeline boundaries", () => {
+  const work = (id: string, compact = false): TimelineEntry => ({
+    kind: "work",
+    id,
+    createdAt: "2026-09-05T00:00:10Z",
+    entry: {
+      id,
+      createdAt: "2026-09-05T00:00:10Z",
+      label: compact ? "Compacted context 173K → 5.69K tokens" : "Read file",
+      tone: "info",
+      ...(compact ? { sourceActivityKind: "context-compaction" } : {}),
+    },
+  });
+  const derive = (timelineEntries: TimelineEntry[]) =>
+    deriveMessagesTimelineRows({
+      timelineEntries,
+      completionDividerBeforeEntryId: null,
+      isWorking: false,
+      activeTurnId: null,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+  it("splits work groups around each compaction instead of folding it into a work log", () => {
+    const rows = derive([work("before"), work("compact", true), work("after")]);
+    expect(rows.map((row) => row.kind)).toEqual(["work", "context-compaction", "work"]);
+    expect(rows[1]).toMatchObject({
+      id: "compact",
+      label: "Compacted context 173K → 5.69K tokens",
+    });
+  });
+
+  it("does not create an empty worked-for disclosure for blank assistant placeholders", () => {
+    const entries: TimelineEntry[] = [
+      ["user", "user", "Inspect the code"],
+      ["placeholder", "assistant", ""],
+      ["response", "assistant", "Finished."],
+    ].map(([id, role, text]) => ({
+      kind: "message",
+      id: id!,
+      createdAt: "2026-09-08T10:00:00.000Z",
+      message: {
+        id: MessageId.make(id!),
+        role: role === "user" ? "user" : "assistant",
+        text: text!,
+        createdAt: "2026-09-08T10:00:00.000Z",
+        streaming: false,
+        ...(id === "response" ? { completedAt: "2026-09-08T10:00:10.000Z" } : {}),
+      },
+    }));
+    const rows = derive(entries);
+    expect(rows.some((row) => row.kind === "reasoning")).toBe(false);
+    expect(rows.map((row) => row.id)).toEqual(["user", "response"]);
+  });
+
+  it("keeps automatic compaction visible between completed reasoning sections", () => {
+    const rows = derive([
+      {
+        kind: "message",
+        id: "user",
+        createdAt: "2026-09-05T00:00:00Z",
+        message: {
+          id: MessageId.make("user"),
+          role: "user",
+          text: "Work",
+          createdAt: "2026-09-05T00:00:00Z",
+          streaming: false,
+        },
+      },
+      work("before"),
+      work("compact", true),
+      work("after"),
+      {
+        kind: "message",
+        id: "assistant",
+        createdAt: "2026-09-05T00:00:20Z",
+        message: {
+          id: MessageId.make("assistant"),
+          role: "assistant",
+          text: "Done",
+          createdAt: "2026-09-05T00:00:20Z",
+          completedAt: "2026-09-05T00:00:20Z",
+          streaming: false,
+        },
+      },
+    ]);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "message",
+      "reasoning",
+      "context-compaction",
+      "reasoning",
+      "message",
+    ]);
+    const previous = computeStableMessagesTimelineRows(rows, { byId: new Map(), result: [] });
+    expect(
+      computeStableMessagesTimelineRows(
+        rows.map((row) => ({ ...row })),
+        previous,
+      ),
+    ).toBe(previous);
+    const changed = rows.map((row) =>
+      row.kind === "context-compaction" ? { ...row, label: "Compacted context" } : row,
+    );
+    expect(computeStableMessagesTimelineRows(changed, previous)).not.toBe(previous);
+  });
+});
 
 describe("shouldHandleInternalActionClick", () => {
   it("handles only unmodified primary clicks", () => {
@@ -251,33 +359,6 @@ describe("resolveAssistantMessageCopyState", () => {
       text: "Interim thought",
       visible: false,
     });
-  });
-});
-
-describe("resolveWorkGroupExpanded", () => {
-  it("auto-collapses by default but respects explicit expansion", () => {
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: true,
-        expansionOverride: null,
-      }),
-    ).toBe(false);
-
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: true,
-        expansionOverride: "expanded",
-      }),
-    ).toBe(true);
-  });
-
-  it("keeps an explicit collapse while auto-collapse is inactive", () => {
-    expect(
-      resolveWorkGroupExpanded({
-        shouldAutoCollapse: false,
-        expansionOverride: "collapsed",
-      }),
-    ).toBe(false);
   });
 });
 
@@ -684,6 +765,32 @@ describe("deriveMessagesTimelineRows", () => {
 });
 
 describe("computeStableMessagesTimelineRows", () => {
+  it("refreshes a stable tool row when only its lifecycle or output changes", () => {
+    const entry = {
+      id: "work-1",
+      createdAt: "2026-09-08T00:00:00Z",
+      tone: "tool" as const,
+      label: "Ran command",
+      isComplete: true,
+      toolLifecycleStatus: "completed" as const,
+    };
+    const row = {
+      id: "work-1",
+      kind: "work" as const,
+      createdAt: entry.createdAt,
+      groupedEntries: [entry],
+      shouldAutoCollapse: true,
+    };
+    const initial = computeStableMessagesTimelineRows([row], { byId: new Map(), result: [] });
+    for (const changes of [
+      { toolLifecycleStatus: "failed" as const },
+      { toolData: { stdout: "new output" } },
+    ]) {
+      const changed = { ...row, groupedEntries: [{ ...entry, ...changes }] };
+      expect(computeStableMessagesTimelineRows([changed], initial).result[0]).toBe(changed);
+    }
+  });
+
   it("returns the previous result when row order and content are unchanged", () => {
     const firstUserMessage = {
       id: "user-1" as never,

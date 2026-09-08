@@ -18,6 +18,8 @@ import {
   type ThreadRouteTarget,
 } from "../threadRoutes";
 import { SidebarInset } from "~/components/ui/sidebar";
+import { Skeleton } from "~/components/ui/skeleton";
+import { RootRouteErrorView } from "./__root";
 
 function ChatThreadRouteView() {
   const navigate = useNavigate();
@@ -35,10 +37,16 @@ function ChatThreadRouteView() {
     // is a new object on every render from useParams. We depend on the primitives.
     [threadRef?.environmentId, threadRef?.threadId],
   );
+  const environmentId = threadRef?.environmentId ?? null;
+  const threadId = threadRef?.threadId ?? null;
   const bootstrapComplete = useStore(
-    (store) => selectEnvironmentState(store, threadRef?.environmentId ?? null).bootstrapComplete,
+    (store) => selectEnvironmentState(store, environmentId).bootstrapComplete,
   );
-  const serverThread = useStore(useMemo(() => createThreadSelectorByRef(threadRef), [threadRef]));
+  // threadRef is a fresh object on every useParams evaluation; depend on the
+  // primitives so the selector (and its subscription) stays stable.
+  const serverThread = useStore(
+    useMemo(() => createThreadSelectorByRef(threadRef), [environmentId, threadId]),
+  );
   const threadExists = useStore((store) => selectThreadExistsByRef(store, threadRef));
   const environmentHasServerThreads = useStore(
     (store) => selectEnvironmentState(store, threadRef?.environmentId ?? null).threadIds.length > 0,
@@ -84,8 +92,27 @@ function ChatThreadRouteView() {
     finalizePromotedDraftThreadByRef(threadRef);
   }, [draftThread?.promotedTo, serverThreadStarted, threadRef]);
 
-  if (!threadRef || !routeTarget || !bootstrapComplete || !routeThreadExists) {
+  if (!threadRef || !routeTarget || (bootstrapComplete && !routeThreadExists)) {
     return null;
+  }
+
+  if (!bootstrapComplete) {
+    return (
+      <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-chat-background text-foreground md:h-dvh">
+        <div
+          className="flex min-h-0 flex-1 flex-col gap-3 p-4"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading thread"
+        >
+          <Skeleton className="h-8 w-2/5 rounded-md" />
+          <Skeleton className="h-24 w-full rounded-lg" />
+          <Skeleton className="h-24 w-11/12 rounded-lg" />
+          <Skeleton className="h-16 w-3/5 rounded-lg" />
+          <span className="sr-only">Loading thread</span>
+        </div>
+      </SidebarInset>
+    );
   }
 
   if (agentRun && serverThread) {
@@ -122,4 +149,5 @@ export const Route = createFileRoute("/_chat/$environmentId/$threadId")({
     ],
   },
   component: ChatThreadRouteView,
+  errorComponent: RootRouteErrorView,
 });

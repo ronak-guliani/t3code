@@ -22,6 +22,7 @@ import {
   type PreviewReportStatusInput,
   type PreviewResizeInput,
   FILL_PREVIEW_VIEWPORT,
+  type PreviewViewportSetting,
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
@@ -126,6 +127,8 @@ const buildLoadingSnapshot = (input: {
   readonly tabId: string;
   readonly url: string;
   readonly title: string;
+  readonly viewport: PreviewViewportSetting;
+  readonly profileId?: string | undefined;
   readonly updatedAt: string;
 }): PreviewSessionSnapshot => ({
   threadId: input.threadId,
@@ -133,13 +136,16 @@ const buildLoadingSnapshot = (input: {
   navStatus: { _tag: "Loading", url: input.url, title: input.title },
   canGoBack: false,
   canGoForward: false,
-  viewport: FILL_PREVIEW_VIEWPORT,
+  viewport: input.viewport,
+  ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
   updatedAt: input.updatedAt,
 });
 
 const buildIdleSnapshot = (input: {
   readonly threadId: string;
   readonly tabId: string;
+  readonly viewport: PreviewViewportSetting;
+  readonly profileId?: string | undefined;
   readonly updatedAt: string;
 }): PreviewSessionSnapshot => ({
   threadId: input.threadId,
@@ -147,7 +153,8 @@ const buildIdleSnapshot = (input: {
   navStatus: { _tag: "Idle" },
   canGoBack: false,
   canGoForward: false,
-  viewport: FILL_PREVIEW_VIEWPORT,
+  viewport: input.viewport,
+  ...(input.profileId === undefined ? {} : { profileId: input.profileId }),
   updatedAt: input.updatedAt,
 });
 
@@ -220,15 +227,24 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     function* (input) {
       const tabId = newPreviewTabId();
       const updatedAt = yield* currentIsoTimestamp;
+      const viewport = input.viewport ?? FILL_PREVIEW_VIEWPORT;
       const snapshot = input.url
         ? buildLoadingSnapshot({
             threadId: input.threadId,
             tabId,
             url: yield* normalizeUrl(input.url),
             title: "",
+            viewport,
+            profileId: input.profileId,
             updatedAt,
           })
-        : buildIdleSnapshot({ threadId: input.threadId, tabId, updatedAt });
+        : buildIdleSnapshot({
+            threadId: input.threadId,
+            tabId,
+            viewport,
+            profileId: input.profileId,
+            updatedAt,
+          });
       yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
         Effect.gen(function* () {
           const revision = state.revision + 1;
@@ -272,6 +288,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             canGoBack: session.snapshot.canGoBack,
             canGoForward: session.snapshot.canGoForward,
             viewport: session.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
+            ...(session.snapshot.profileId === undefined
+              ? {}
+              : { profileId: session.snapshot.profileId }),
             updatedAt,
           };
           return {
@@ -305,6 +324,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           canGoBack: input.canGoBack,
           canGoForward: input.canGoForward,
           viewport: session.snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
+          ...(session.snapshot.profileId === undefined
+            ? {}
+            : { profileId: session.snapshot.profileId }),
           updatedAt,
         };
         const emit: PreviewEventDraft =

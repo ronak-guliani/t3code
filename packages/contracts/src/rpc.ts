@@ -2,6 +2,19 @@ import { Schema } from "effect";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
+import {
+  ProviderConsumeResetCreditInput,
+  ProviderConsumeResetCreditResult,
+} from "./providerUsageLimits.ts";
+import { ProviderSetupError } from "./providerSetup.ts";
+import { UsageSummaryInput, UsageSummary, UsageReadError, UsagePricing } from "./usage.ts";
+import { NonNegativeInt } from "./baseSchemas.ts";
+import {
+  ProviderUploadFeedbackInput,
+  ProviderUploadFeedbackResult,
+  ProviderUploadFeedbackError,
+} from "./provider.ts";
+import { ResourceTelemetrySnapshot } from "./resourceTelemetry.ts";
 import { OpenError, OpenInEditorInput, RevealInFileManagerInput } from "./editor.ts";
 import {
   AuthAccessStreamEvent,
@@ -18,7 +31,15 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
-import { AssetAccessError, AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
+import {
+  AssetAccessError,
+  AssetCreateUrlInput,
+  AssetCreateUrlResult,
+  AttachmentCreateUploadUrlInput,
+  AttachmentCreateUploadUrlResult,
+  AttachmentUploadSigningKeyError,
+  AttachmentDeleteInput,
+} from "./assets.ts";
 import {
   GitActionProgressEvent,
   GitCheckoutInput,
@@ -189,6 +210,16 @@ import {
 } from "./review.ts";
 import {
   PullRequestActionInput,
+  PullRequestSummary,
+  PullRequestThreadCommentsInput,
+  PullRequestThreadCommentsResult,
+  PullRequestDiffFileContentsInput,
+  PullRequestDiffFileContentsResult,
+  PullRequestUpdateInput,
+  PullRequestCommentUpdateInput,
+  PullRequestReactionInput,
+  PullRequestLabelCandidateList,
+  PullRequestLabelChangeInput,
   PullRequestActivity,
   PullRequestCommentInput,
   PullRequestDetail,
@@ -229,6 +260,22 @@ import { WorkflowRunError, WorkflowRunResult } from "./agentWorkflows.ts";
 import { WorkflowRunInput } from "./workflowRuntime.ts";
 
 export const WS_METHODS = {
+  providerConsumeResetCredit: "provider.consumeResetCredit",
+  providerUploadFeedback: "provider.uploadFeedback",
+  serverGetUsageSummary: "server.getUsageSummary",
+  serverRefreshUsageRates: "server.refreshUsageRates",
+  attachmentsCreateUploadUrl: "attachments.createUploadUrl",
+  attachmentsDelete: "attachments.delete",
+  pullRequestsSummary: "pullRequests.summary",
+  pullRequestsThreadComments: "pullRequests.threadComments",
+  pullRequestsDiffFileContents: "pullRequests.diffFileContents",
+  pullRequestsUpdate: "pullRequests.update",
+  pullRequestsUpdateComment: "pullRequests.updateComment",
+  pullRequestsSetReaction: "pullRequests.setReaction",
+  pullRequestsSubscribeRefreshes: "pullRequests.subscribeRefreshes",
+  pullRequestsLabelCandidates: "pullRequests.labelCandidates",
+  pullRequestsSetLabels: "pullRequests.setLabels",
+  subscribeResourceTelemetry: "subscribeResourceTelemetry",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -404,6 +451,7 @@ export const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
 
 export const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
   payload: Schema.Struct({
+    cwd: Schema.optional(Schema.String),
     /**
      * When supplied, only refresh this specific provider instance. When
      * omitted, refresh all configured instances — the legacy `refresh()`
@@ -1287,3 +1335,105 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetProcessResourceHistoryRpc,
   WsServerSignalProcessRpc,
 ).middleware(EnvironmentRpcAuthorization);
+
+const ProviderSetupRpcError = Schema.Union([ProviderSetupError, EnvironmentAuthorizationError]);
+
+export const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeResetCredit, {
+  payload: ProviderConsumeResetCreditInput,
+  success: ProviderConsumeResetCreditResult,
+  error: ProviderSetupRpcError,
+});
+
+export const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
+  payload: UsageSummaryInput,
+  success: UsageSummary,
+  error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+export const WsServerRefreshUsageRatesRpc = Rpc.make(WS_METHODS.serverRefreshUsageRates, {
+  payload: Schema.Struct({}),
+  success: UsagePricing,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsPullRequestsSummaryRpc = Rpc.make(WS_METHODS.pullRequestsSummary, {
+  payload: PullRequestRef,
+  success: PullRequestSummary,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsThreadCommentsRpc = Rpc.make(WS_METHODS.pullRequestsThreadComments, {
+  payload: PullRequestThreadCommentsInput,
+  success: PullRequestThreadCommentsResult,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsDiffFileContentsRpc = Rpc.make(WS_METHODS.pullRequestsDiffFileContents, {
+  payload: PullRequestDiffFileContentsInput,
+  success: PullRequestDiffFileContentsResult,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsUpdateRpc = Rpc.make(WS_METHODS.pullRequestsUpdate, {
+  payload: PullRequestUpdateInput,
+  success: Schema.Void,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsUpdateCommentRpc = Rpc.make(WS_METHODS.pullRequestsUpdateComment, {
+  payload: PullRequestCommentUpdateInput,
+  success: Schema.Void,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsSetReactionRpc = Rpc.make(WS_METHODS.pullRequestsSetReaction, {
+  payload: PullRequestReactionInput,
+  success: Schema.Void,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsSubscribeRefreshesRpc = Rpc.make(
+  WS_METHODS.pullRequestsSubscribeRefreshes,
+  {
+    payload: Schema.Struct({}),
+    success: NonNegativeInt,
+    error: EnvironmentAuthorizationError,
+    stream: true,
+  },
+);
+
+export const WsPullRequestsLabelCandidatesRpc = Rpc.make(WS_METHODS.pullRequestsLabelCandidates, {
+  payload: PullRequestRef,
+  success: PullRequestLabelCandidateList,
+  error: PullRequestRpcError,
+});
+
+export const WsPullRequestsSetLabelsRpc = Rpc.make(WS_METHODS.pullRequestsSetLabels, {
+  payload: PullRequestLabelChangeInput,
+  success: Schema.Void,
+  error: PullRequestRpcError,
+});
+
+export const WsAttachmentsCreateUploadUrlRpc = Rpc.make(WS_METHODS.attachmentsCreateUploadUrl, {
+  payload: AttachmentCreateUploadUrlInput,
+  success: AttachmentCreateUploadUrlResult,
+  error: Schema.Union([AttachmentUploadSigningKeyError, EnvironmentAuthorizationError]),
+});
+
+export const WsAttachmentsDeleteRpc = Rpc.make(WS_METHODS.attachmentsDelete, {
+  payload: AttachmentDeleteInput,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
+  payload: ProviderUploadFeedbackInput,
+  success: ProviderUploadFeedbackResult,
+  error: Schema.Union([ProviderUploadFeedbackError, EnvironmentAuthorizationError]),
+});
+
+export const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTelemetry, {
+  payload: Schema.Struct({}),
+  success: ResourceTelemetrySnapshot,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});

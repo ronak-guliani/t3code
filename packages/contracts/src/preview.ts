@@ -10,6 +10,7 @@
  */
 import { Schema } from "effect";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { BrowserProfileId } from "./browserProfile.ts";
 
 const Url = TrimmedNonEmptyString.check(Schema.isMaxLength(2048));
 const Title = Schema.String.check(Schema.isMaxLength(512));
@@ -111,6 +112,17 @@ export const FILL_PREVIEW_VIEWPORT = {
   _tag: "fill",
 } as const satisfies PreviewViewportSetting;
 
+export const PREVIEW_ZOOM_LEVELS = [
+  0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
+] as const;
+export const PreviewZoomFactor = Schema.Literals(PREVIEW_ZOOM_LEVELS);
+export type PreviewZoomFactor = typeof PreviewZoomFactor.Type;
+export const DEFAULT_PREVIEW_ZOOM_FACTOR: PreviewZoomFactor = 1.0;
+
+export const PreviewAppearancePreference = Schema.Literals(["system", "light", "dark"]);
+export type PreviewAppearancePreference = typeof PreviewAppearancePreference.Type;
+export const DEFAULT_PREVIEW_APPEARANCE: PreviewAppearancePreference = "system";
+
 export const PreviewNavStatus = Schema.Union([
   Schema.TaggedStruct("Idle", {}),
   Schema.TaggedStruct("Loading", {
@@ -138,6 +150,12 @@ export const PreviewSessionSnapshot = Schema.Struct({
   canGoForward: Schema.Boolean,
   /** Missing snapshots from older servers are treated as fill-panel mode. */
   viewport: Schema.optional(PreviewViewportSetting),
+  /**
+   * Browser profile the tab's Chromium partition is derived from. Fixed at
+   * open: Electron only honours a `<webview>`'s partition before attach, so
+   * switching would require tearing the guest down and losing page state.
+   */
+  profileId: Schema.optional(BrowserProfileId),
   updatedAt: Schema.String,
 });
 export type PreviewSessionSnapshot = typeof PreviewSessionSnapshot.Type;
@@ -146,6 +164,15 @@ export const PreviewOpenInput = Schema.Struct({
   threadId: ThreadId,
   /** Omit to create an empty (Idle) tab the user can type into. */
   url: Schema.optional(Url),
+  /**
+   * Initial viewport for the new tab. Omitting it keeps the historical
+   * fill-panel behaviour; clients that have a configured default send it here
+   * so the session is born at the right size instead of being resized a frame
+   * later (which the user would see as a visible reflow).
+   */
+  viewport: Schema.optional(PreviewViewportSetting),
+  /** Omit to open under the client's configured default profile. */
+  profileId: Schema.optional(BrowserProfileId),
 });
 export type PreviewOpenInput = typeof PreviewOpenInput.Type;
 

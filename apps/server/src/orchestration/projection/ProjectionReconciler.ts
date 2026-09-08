@@ -169,10 +169,7 @@ const makeProjectionReconciler = Effect.gen(function* () {
       const threadMessages = yield* messages.listByThreadId({ threadId });
       for (const message of threadMessages) {
         for (const attachment of message.attachments ?? []) {
-          if (
-            attachment.type === "image" &&
-            parseThreadSegmentFromAttachmentId(attachment.id) === threadSegment
-          ) {
+          if (parseThreadSegmentFromAttachmentId(attachment.id) === threadSegment) {
             keptRelativePaths.add(attachmentRelativePath(attachment));
           }
         }

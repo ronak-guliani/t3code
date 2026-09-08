@@ -533,6 +533,30 @@ describe("decider thread lifecycle", () => {
     });
   });
 
+  it("ignores stale recovery writes after another thread update", async () => {
+    const readModel = await lifecycleReadModel();
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "thread.meta.update",
+          commandId,
+          threadId,
+          expectedUpdatedAt: "2026-07-29T00:00:00.000Z",
+          pullRequest: {
+            number: 42,
+            title: "Recovered PR",
+            url: "https://github.com/acme/app/pull/42",
+            baseBranch: "main",
+            headBranch: "feature",
+            state: "open",
+          },
+        },
+      }),
+    );
+    expect(result).toEqual([]);
+  });
+
   it("settles and reopens an eligible thread", async () => {
     const readModel = await lifecycleReadModel();
     const settled = await Effect.runPromise(

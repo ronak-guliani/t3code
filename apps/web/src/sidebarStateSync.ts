@@ -5,6 +5,7 @@ import {
   type SidebarStateSnapshot,
 } from "@t3tools/contracts";
 import { isTransportConnectionErrorMessage } from "./rpc/transportError";
+import { reportClientError } from "./lib/clientLogger";
 
 interface SidebarStateClient {
   readonly getState: () => Promise<SidebarStateSnapshot>;
@@ -31,7 +32,7 @@ const pendingRegistrationMutations: Array<{
 }> = [];
 
 function reportSyncFailure(error: unknown): void {
-  console.error("Failed to synchronize sidebar pins.", error);
+  reportClientError("Failed to synchronize sidebar pins.", error);
 }
 
 function isTransportFailure(error: unknown): boolean {

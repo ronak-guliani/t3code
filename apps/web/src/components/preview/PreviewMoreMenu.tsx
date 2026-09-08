@@ -1,6 +1,6 @@
 "use client";
 
-import type { DesktopPreviewColorScheme } from "@t3tools/contracts";
+import type { DesktopPreviewColorScheme, EnvironmentId } from "@t3tools/contracts";
 import { Minus, MoreVertical, Plus as PlusIcon, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -52,6 +52,8 @@ interface Props {
   onToggleNativePictureInPicture: () => void;
   nativePictureInPicture: boolean;
   nativePictureInPictureDisabled: boolean;
+  environmentId?: EnvironmentId;
+  profileId?: string;
 }
 
 /**
@@ -69,6 +71,8 @@ export function PreviewMoreMenu({
   onToggleNativePictureInPicture,
   nativePictureInPicture,
   nativePictureInPictureDisabled,
+  environmentId,
+  profileId,
 }: Props) {
   const [open, setOpen] = useState(false);
 
@@ -189,10 +193,22 @@ export function PreviewMoreMenu({
           </span>
         </MenuItem>
         <MenuSeparator />
-        <MenuItem onClick={() => void bridge.clearCookies().catch(() => undefined)}>
+        <MenuItem
+          onClick={() =>
+            void (
+              environmentId ? bridge.clearCookies(environmentId, profileId) : Promise.resolve()
+            ).catch(() => undefined)
+          }
+        >
           Clear cookies
         </MenuItem>
-        <MenuItem onClick={() => void bridge.clearCache().catch(() => undefined)}>
+        <MenuItem
+          onClick={() =>
+            void (
+              environmentId ? bridge.clearCache(environmentId, profileId) : Promise.resolve()
+            ).catch(() => undefined)
+          }
+        >
           Clear cache
         </MenuItem>
       </MenuPopup>

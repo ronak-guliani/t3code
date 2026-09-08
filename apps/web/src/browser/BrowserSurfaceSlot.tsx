@@ -33,6 +33,10 @@ export function BrowserSurfaceSlot(props: {
   const updateRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
+    presentationRef.current = { cornerRadius, zIndex };
+  }, [cornerRadius, visible, zIndex]);
+
+  useLayoutEffect(() => {
     const element = elementRef.current;
     if (!element || !visible) return;
     let lease: BrowserSurfaceLease | null = null;
@@ -76,20 +80,22 @@ export function BrowserSurfaceSlot(props: {
     window.addEventListener("resize", update);
     window.addEventListener("scroll", update, true);
     const unsubscribe = useBrowserSurfaceStore.subscribe((state, previous) => {
-      if (state.byTabId[tabId]?.owner == null && previous.byTabId[tabId]?.owner != null) update();
+      if (state.byTabId[tabId]?.owner != null || previous.byTabId[tabId]?.owner == null) return;
+      // An earlier listener may already have filled the vacancy.
+      if (useBrowserSurfaceStore.getState().byTabId[tabId]?.owner != null) return;
+      update();
     });
     return () => {
+      unsubscribe();
       observer.disconnect();
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
-      unsubscribe();
       if (updateRef.current === update) updateRef.current = null;
       lease?.release();
     };
   }, [fitSourceContent, tabId, visible]);
 
   useLayoutEffect(() => {
-    presentationRef.current = { cornerRadius, zIndex };
     updateRef.current?.();
   }, [cornerRadius, layoutVersion, visible, zIndex]);
 

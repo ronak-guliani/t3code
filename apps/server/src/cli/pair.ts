@@ -36,6 +36,9 @@ import * as BootService from "../cloud/bootService.ts";
 import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import { DurationFromString } from "./duration.ts";
+import * as OwnedSecretStore from "../auth/ServerSecretStore.ts";
+import { readRemoteAccessConfig, RemoteAccessError } from "../remoteAccess/config.ts";
+import { verifyRemoteAccessEndpoint } from "../remoteAccess/RemoteAccess.ts";
 import {
   type PersistedServerRuntimeState,
   readPersistedServerRuntimeState,
@@ -791,6 +794,10 @@ export const pairCommand = Command.make("pair", {
   ttl: ttlFlag,
   label: labelFlag,
   tailscale: tailscaleFlag,
+  remote: Flag.boolean("remote").pipe(
+    Flag.withDescription("Pair through this host's verified owned HTTPS tunnel."),
+    Flag.withDefault(false),
+  ),
   tailscaleServePort: tailscaleServePortFlag,
 }).pipe(
   Command.withDescription(
@@ -801,6 +808,9 @@ export const pairCommand = Command.make("pair", {
       const cliLogLevel = yield* GlobalFlag.LogLevel;
       const logLevel = Option.getOrElse(cliLogLevel, () => "Warn" as const);
       const target = yield* discoverPairTarget(Option.getOrUndefined(flags.baseDir));
+      if (flags.remote && flags.tailscale) {
+        return yield* Effect.fail(new Error("Choose --remote or --tailscale, not both."));
+      }
       const notes: string[] = [];
       const issuePairingCredential = (resolvedPairingBase: ResolvedPairingBase) =>
         Effect.gen(function* () {
@@ -862,7 +872,25 @@ export const pairCommand = Command.make("pair", {
       const runWithResolvedPairingBase = (resolvedPairingBase: ResolvedPairingBase) =>
         useResolvedPairingBase(resolvedPairingBase, issuePairingCredential(resolvedPairingBase));
 
-      if (flags.tailscale) {
+      if (flags.remote) {
+        const config = yield* makePairServerConfig({ target, logLevel });
+        const owned = yield* Effect.flatMap(
+          OwnedSecretStore.ServerSecretStore,
+          readRemoteAccessConfig,
+        ).pipe(Effect.provide(OwnedSecretStore.layer), Effect.provideService(ServerConfig, config));
+        if (!owned?.enabled) {
+          return yield* new RemoteAccessError({
+            message: "Run `t3 remote setup` or `t3 remote enable` before pairing.",
+          });
+        }
+        yield* runWithResolvedPairingBase({
+          baseUrl: yield* verifyRemoteAccessEndpoint(
+            owned.publicUrl,
+            target.descriptor.environmentId,
+          ),
+          notes: ["Use a new pairing link for each device. Tailscale is not required."],
+        });
+      } else if (flags.tailscale) {
         yield* withTailscaleServePortLock(
           flags.tailscaleServePort,
           resolveTailscalePairingBase({

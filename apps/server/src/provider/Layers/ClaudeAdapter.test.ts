@@ -1642,6 +1642,55 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("preserves provider-reported before and after compaction token counts", () => {
+    const harness = makeHarness();
+    const metadata = [
+      { trigger: "auto", pre_tokens: 173_000, post_tokens: 5_690 },
+      { trigger: "manual", pre_tokens: 100 },
+      { trigger: "auto", pre_tokens: 0, post_tokens: 0 },
+      { trigger: "auto", pre_tokens: -1, post_tokens: 1.5 },
+      { trigger: "auto", pre_tokens: Infinity, post_tokens: NaN },
+      { trigger: "auto", pre_tokens: Number.MAX_SAFE_INTEGER + 1 },
+    ];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.state.changed"),
+        Stream.take(metadata.length),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      for (const [index, compact_metadata] of metadata.entries()) {
+        harness.query.emit({
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata,
+          session_id: "compaction-session",
+          uuid: `compact-${index}`,
+        } as SDKMessage);
+      }
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.equal(events[0]?.payload.beforeTokens, 173_000);
+      assert.equal(events[0]?.payload.afterTokens, 5_690);
+      assert.equal(events[1]?.payload.beforeTokens, 100);
+      assert.equal(events[1]?.payload.afterTokens, undefined);
+      assert.equal(events[2]?.payload.beforeTokens, 0);
+      assert.equal(events[2]?.payload.afterTokens, 0);
+      for (const event of events.slice(3)) {
+        assert.equal(event.payload.beforeTokens, undefined);
+        assert.equal(event.payload.afterTokens, undefined);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits Claude context window on result completion usage snapshots", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

@@ -66,6 +66,7 @@ function createManager(
   onQueryEvent?: (event: ManagedRelayQueryEvent) => void,
 ) {
   const client = ManagedRelay.ManagedRelayClient.of({
+    getAgentActivitySnapshot: () => Effect.succeed({ aggregate: null }),
     relayUrl: "https://relay.example.test",
     listEnvironments: () => Effect.succeed([environment]),
     listDevices: () => Effect.succeed([device]),

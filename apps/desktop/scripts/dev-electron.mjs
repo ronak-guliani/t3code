@@ -1,9 +1,14 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { watch } from "node:fs";
 import { join } from "node:path";
 
 import { desktopDir, resolveElectronPath } from "./electron-launcher.mjs";
 import { waitForResources } from "./wait-for-resources.mjs";
+
+execFileSync(process.execPath, ["scripts/build-browser-secret.mjs"], {
+  cwd: desktopDir,
+  stdio: "inherit",
+});
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL?.trim();
 if (!devServerUrl) {

@@ -6,6 +6,7 @@ import { Atom } from "effect/unstable/reactivity";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { ensureClientSettingsHydrated, getClientSettings } from "~/hooks/useSettings";
+import { reportClientError } from "../lib/clientLogger";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 
 import { acquireBrowserSurfaceActivity } from "./browserSurfaceStore";
@@ -254,7 +255,7 @@ const stopRecordingWhenCaptureEnds = (recording: ActiveRecording, stream: MediaS
   const stopEndedRecording = () => {
     if (activeRecordings.get(recording.tabId) !== recording) return;
     void stopBrowserRecording(recording.tabId).catch((cause: unknown) => {
-      console.error("[preview] Failed to stop ended browser recording", {
+      reportClientError("[preview] Failed to stop ended browser recording", {
         tabId: recording.tabId,
         cause,
       });

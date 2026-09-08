@@ -24,8 +24,9 @@ describe("resolved Expo native configuration", () => {
           APP_VARIANT: variant,
           MOBILE_EAS_OWNER: "",
           MOBILE_EAS_PROJECT_ID: "",
-          MOBILE_REQUIRE_EAS_PROJECT: "",
           EAS_BUILD: "",
+          MOBILE_CONNECT_ENABLED: "true",
+          MOBILE_CLERK_IOS_REDIRECT_URL: "com.t3tools.t3code://callback",
         },
       },
     );
@@ -37,14 +38,29 @@ describe("resolved Expo native configuration", () => {
       updates: { enabled: false, checkAutomatically: "NEVER" },
     });
     expect(config).not.toHaveProperty("updates.url");
-    expect(config).not.toHaveProperty("extra.eas.projectId");
+    expect(config).toHaveProperty("extra.eas.projectId", "01272cd5-225c-47d4-978e-a7eb97c9e457");
+    expect(config).toHaveProperty("ios.appleTeamId", "235XX73T5A");
     expect(config).toHaveProperty("_internal.modResults.ios.entitlements", {
       "com.apple.security.application-groups": [`group.${id}`],
+      "com.apple.developer.applesignin": ["Default"],
     });
+    expect(config).toHaveProperty("_internal.modResults.ios.infoPlist.ClerkExpoVersion");
+    expect(config).toHaveProperty("_internal.modResults.ios.infoPlist.ClerkTheme");
+    expect(config).toHaveProperty(
+      "_internal.modResults.ios.infoPlist.ClerkRedirectUrl",
+      "com.t3tools.t3code://callback",
+    );
+    expect(config).toHaveProperty("extra.agentAwarenessPushEnabled", false);
+    expect(config).toHaveProperty("extra.clerk.publishableKey", expect.stringMatching(/^pk_/));
+    expect(config).toHaveProperty("extra.clerk.jwtTemplate", expect.any(String));
+    expect(config).toHaveProperty("extra.relay.url", expect.stringMatching(/^https:\/\//));
     expect(config).toHaveProperty(
       "_internal.modResults.ios.infoPlist.CFBundleURLTypes",
       expect.arrayContaining([
         expect.objectContaining({ CFBundleURLSchemes: expect.arrayContaining([scheme]) }),
+        expect.objectContaining({
+          CFBundleURLSchemes: expect.arrayContaining(["com.t3tools.t3code"]),
+        }),
       ]),
     );
     expect(config).toHaveProperty(

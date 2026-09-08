@@ -5,7 +5,7 @@ import {
   isWindowsDrivePath,
 } from "@t3tools/shared/path";
 
-const isWindowsPlatform = (platform: string): boolean => {
+export const isWindowsPlatform = (platform: string): boolean => {
   return /^win(dows)?/i.test(platform);
 };
 

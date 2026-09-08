@@ -77,7 +77,8 @@ function isQuestionLikePermissionRequest(
     normalizeTextValue(rawInput?.name) ??
     normalizeTextValue(rawInput?.tool);
   const normalizedToolName = toolName?.toLowerCase();
-  const text = getPermissionText(params);
+  // Prompt bodies and command arguments can discuss questions without requesting user input.
+  const text = params.toolCall.title?.toLowerCase() ?? "";
   return (
     normalizedToolName === "ask" ||
     normalizedToolName === "question" ||

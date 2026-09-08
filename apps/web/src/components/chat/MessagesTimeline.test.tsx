@@ -713,7 +713,7 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("yoo what&#x27;s ");
   }, 20_000);
 
-  it("renders context compaction entries in the normal work log", async () => {
+  it("renders context compaction as an accessible divider outside the work log", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -725,7 +725,8 @@ describe("MessagesTimeline", () => {
             entry: {
               id: "work-1",
               createdAt: "2026-03-17T19:12:28.000Z",
-              label: "Context compacted",
+              label: "Compacted context 173K → 5.69K tokens",
+              sourceActivityKind: "context-compaction",
               tone: "info",
             },
           },
@@ -733,8 +734,10 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("Context compacted");
-    expect(markup).toContain("Work log");
+    expect(markup).toContain("Compacted context 173K → 5.69K tokens");
+    expect(markup).toContain('role="separator"');
+    expect(markup).toContain("lucide-minimize2");
+    expect(markup).not.toContain("Work log");
   });
 
   it("collapses completed tool-call groups to an expandable header", async () => {
@@ -778,7 +781,7 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain("Ran command");
   });
 
-  it("keeps completed tool-call groups open while the response is still active", async () => {
+  it("keeps completed calls visible and still until an assistant response starts", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -813,12 +816,11 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).not.toContain("Tool Calls (2)");
-    expect(markup).not.toContain('aria-expanded="false"');
-    expect(markup).toContain("Read file");
-    expect(markup).toContain("Ran command");
+    expect(markup).toContain("Tool Calls (2)");
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain("Read 1 file");
+    expect(markup).not.toContain("work-activity-shimmer");
     expect(markup).toContain("work-group-section");
-    expect(markup).toContain("text-[length:inherit]");
     expect(markup).not.toContain("truncate text-xs leading-5");
     expect(markup).not.toContain("truncate text-[11px] leading-5");
   });
@@ -966,7 +968,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain("Worked for 1m 55s");
     expect(markup).toContain('aria-expanded="false"');
-    expect(markup).not.toContain("Read files");
+    expect(markup).toContain("Read files");
+    expect(markup).not.toContain('aria-label="Expand Tool Calls (1)"');
     expect(markup).not.toContain(">Response<");
     expect(markup).toContain("Here is the review.");
   });
@@ -1019,11 +1022,11 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).not.toContain("Worked for");
-    expect(markup).toContain("Read files");
+    expect(markup).toContain("Read file");
     expect(markup).toContain("Here is the review.");
   });
 
-  it("keeps incomplete work-log groups expanded while the response is active", async () => {
+  it("shows work history automatically during an active work phase", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1052,6 +1055,7 @@ describe("MessagesTimeline", () => {
               label: "Reading file",
               tone: "tool",
               isComplete: false,
+              toolLifecycleStatus: "inProgress",
             },
           },
         ]}
@@ -1059,12 +1063,13 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain("Work log (2)");
-    expect(markup).not.toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain("Plan updated");
     expect(markup).toContain("Reading file");
+    expect(markup).toContain("work-activity-shimmer");
   });
 
-  it("formats changed file paths from the workspace root", async () => {
+  it("uses just the filename in a collapsed file change", async () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
@@ -1086,7 +1091,7 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("t3code/apps/web/src/session-logic.ts");
+    expect(markup).toContain("Edited session-logic.ts");
     expect(markup).not.toContain("C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts");
   });
 

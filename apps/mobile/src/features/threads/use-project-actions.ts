@@ -13,14 +13,21 @@ import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
-import { threadEnvironment } from "../../state/threads";
-import type { DraftComposerImageAttachment } from "../../lib/composerImages";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
+import type { DraftComposerAttachment } from "../../lib/composerImages";
+import { prepareTurnAttachments, validateDraftFileAttachments } from "../../lib/attachmentUpload";
 import { makeTurnCommandMetadata, type TurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { randomHex } from "../../lib/uuid";
+import { isModelSelectionUnavailable } from "../../lib/modelOptions";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { scheduleUnusedComposerAttachmentCleanup } from "../../state/use-composer-drafts";
 import { setPendingConnectionError } from "../../state/use-remote-environment-registry";
 import { validateProjectThreadCreation } from "./projectThreadCreationValidation";
+import { appAtomRegistry } from "../../state/atom-registry";
+import { serverEnvironment } from "../../state/server";
+import { resolveProviderInteractionMode } from "./legacy-plan-mode";
+import { nestedThreadParentError } from "./mobile-thread-hierarchy";
 
 export function useCreateProjectThread() {
   const startTurn = useAtomCommand(threadEnvironment.startTurn, { reportFailure: false });
@@ -28,6 +35,7 @@ export function useCreateProjectThread() {
   return useCallback(
     async (input: {
       readonly project: EnvironmentProject;
+      readonly parentThreadId?: ThreadId;
       readonly modelSelection: ModelSelection;
       readonly envMode: "local" | "worktree";
       readonly branch: string | null;
@@ -36,7 +44,10 @@ export function useCreateProjectThread() {
       readonly runtimeMode: RuntimeMode;
       readonly interactionMode: ProviderInteractionMode;
       readonly initialMessageText: string;
-      readonly initialAttachments: ReadonlyArray<DraftComposerImageAttachment>;
+      readonly initialAttachments: ReadonlyArray<DraftComposerAttachment>;
+      readonly onAttachmentsUploaded: (
+        attachments: ReadonlyArray<DraftComposerAttachment>,
+      ) => Promise<void>;
       /** Reuse identifiers from a queued pending task instead of minting new ones. */
       readonly turnMetadata?: TurnCommandMetadata;
     }) => {
@@ -56,20 +67,95 @@ export function useCreateProjectThread() {
         return AsyncResult.failure(Cause.fail(validationError));
       }
 
+      const validateLiveFileAttachments = (
+        attachments: ReadonlyArray<DraftComposerAttachment>,
+      ): string | null =>
+        validateDraftFileAttachments({
+          attachments,
+          serverConfig: appAtomRegistry.get(
+            serverEnvironment.configValueAtom(input.project.environmentId),
+          ),
+        });
+      const initialAttachmentError = validateLiveFileAttachments(input.initialAttachments);
+      if (initialAttachmentError !== null) {
+        setPendingConnectionError(initialAttachmentError);
+        return AsyncResult.failure(Cause.fail(new Error(initialAttachmentError)));
+      }
+
+      let prepared: Awaited<ReturnType<typeof prepareTurnAttachments>>;
+      try {
+        // If persisting the references into the draft throws, the owner call
+        // deletes the pending uploads it minted before rethrowing.
+        prepared = await prepareTurnAttachments({
+          environmentId: input.project.environmentId,
+          attachments: input.initialAttachments,
+          supportsImageUploads:
+            appAtomRegistry.get(serverEnvironment.configValueAtom(input.project.environmentId))
+              ?.environment.capabilities.attachmentUploads === true,
+          persistUploadedReferences: async (draftAttachments) => {
+            await input.onAttachmentsUploaded(draftAttachments);
+            return "persisted";
+          },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "An attachment could not upload.";
+        setPendingConnectionError(message);
+        return AsyncResult.failure(Cause.fail(new Error(message)));
+      }
+      if (prepared.status !== "ready") {
+        const message = "The attachments are no longer available.";
+        setPendingConnectionError(message);
+        return AsyncResult.failure(Cause.fail(new Error(message)));
+      }
+
+      const preparedAttachmentError = validateLiveFileAttachments(prepared.draftAttachments);
+      if (preparedAttachmentError !== null) {
+        setPendingConnectionError(preparedAttachmentError);
+        return AsyncResult.failure(Cause.fail(new Error(preparedAttachmentError)));
+      }
+
+      const serverConfig = appAtomRegistry.get(
+        serverEnvironment.configValueAtom(input.project.environmentId),
+      );
+      const providerError = !serverConfig
+        ? "Provider settings are still loading. Try again."
+        : isModelSelectionUnavailable(serverConfig, input.modelSelection)
+          ? "Antigravity model unavailable. Set it up on web or desktop, or choose another model."
+          : null;
+      if (providerError !== null) {
+        setPendingConnectionError(providerError);
+        return AsyncResult.failure(Cause.fail(new Error(providerError)));
+      }
+      const provider = serverConfig?.providers.find(
+        (candidate) => candidate.instanceId === input.modelSelection.instanceId,
+      );
+      const parentError = nestedThreadParentError(
+        input.parentThreadId,
+        input.project.id,
+        appAtomRegistry
+          .get(environmentThreadShells.threadShellsAtom)
+          .filter((thread) => thread.environmentId === input.project.environmentId),
+      );
+      if (parentError !== null) {
+        setPendingConnectionError(parentError);
+        return AsyncResult.failure(Cause.fail(new Error(parentError)));
+      }
+
       const result = await startTurn({
         environmentId: input.project.environmentId,
         input: buildProjectThreadStartTurnInput({
           projectId: input.project.id,
+          parentThreadId: input.parentThreadId,
           projectCwd: input.project.workspaceRoot,
           threadId: metadata.threadId,
           commandId: metadata.commandId,
           messageId: metadata.messageId,
           createdAt: metadata.createdAt,
           text: initialMessageText,
-          attachments: input.initialAttachments,
+          uploadedAttachments: prepared.attachments,
           modelSelection: input.modelSelection,
           runtimeMode: input.runtimeMode,
-          interactionMode: input.interactionMode,
+          interactionMode: resolveProviderInteractionMode(provider, input.interactionMode),
           workspaceMode: input.envMode,
           branch: input.branch,
           worktreePath: input.worktreePath,
@@ -85,6 +171,7 @@ export function useCreateProjectThread() {
         return AsyncResult.failure(result.cause);
       }
       setPendingConnectionError(null);
+      scheduleUnusedComposerAttachmentCleanup(prepared.draftAttachments);
 
       return mapAtomCommandResult(result, () =>
         scopeThreadRef(input.project.environmentId, threadId),

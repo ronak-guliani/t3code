@@ -11,6 +11,7 @@ import {
   WS_RECONNECT_MAX_ATTEMPTS,
 } from "../rpc/wsConnectionState";
 import { stackedThreadToast, toastManager } from "./ui/toast";
+import { reportClientWarning } from "../lib/clientLogger";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
@@ -166,7 +167,7 @@ export function WebSocketConnectionCoordinator() {
       .reconnect()
       .catch((error) => {
         if (!showFailureToast) {
-          console.warn("Automatic WebSocket reconnect failed", { error });
+          reportClientWarning("Automatic WebSocket reconnect failed", { error });
           return;
         }
         toastManager.add(

@@ -814,8 +814,13 @@ function ChatSplitEmptyPane(props: {
   leafId: ChatSplitNodeId;
   sourceThreadRef: ScopedThreadRef | null;
 }) {
+  const sourceThreadEnvironmentId = props.sourceThreadRef?.environmentId;
+  const sourceThreadThreadId = props.sourceThreadRef?.threadId;
   const sourceThread = useStore(
-    useMemo(() => createThreadSelectorByRef(props.sourceThreadRef), [props.sourceThreadRef]),
+    useMemo(
+      () => createThreadSelectorByRef(props.sourceThreadRef),
+      [sourceThreadEnvironmentId, sourceThreadThreadId],
+    ),
   );
   const createDetachedDraftSession = useComposerDraftStore(
     (state) => state.createDetachedDraftSession,

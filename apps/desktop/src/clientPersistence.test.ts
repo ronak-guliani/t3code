@@ -50,6 +50,12 @@ function makeSecretStorage(available: boolean): DesktopSecretStorage {
 
 const clientSettings: ClientSettings = {
   autoOpenPlanSidebar: false,
+  browserDefaultViewport: { _tag: "fill" },
+  browserDefaultZoomFactor: 1,
+  browserDefaultAppearance: "system",
+  browserLinkTarget: "system",
+  browserProfiles: [],
+  browserDefaultProfileId: "default",
   browserAutoShowFloatingPreview: false,
   browserRecordingFrameRate: 60,
   chatFontSize: 14,

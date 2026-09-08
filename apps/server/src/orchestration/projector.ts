@@ -51,7 +51,7 @@ import {
 } from "./Schemas.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
-const MAX_THREAD_MESSAGES = 2_000;
+export const MAX_THREAD_MESSAGES = 2_000;
 const MAX_THREAD_CHECKPOINTS = 500;
 export const MAX_THREAD_ACTIVITIES = 500;
 
@@ -281,6 +281,7 @@ export function projectEvent(
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModelSelection: payload.defaultModelSelection,
+            autoPull: false,
             scripts: payload.scripts,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -314,6 +315,7 @@ export function projectEvent(
                     ? { defaultModelSelection: payload.defaultModelSelection }
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
+                  ...(payload.autoPull !== undefined ? { autoPull: payload.autoPull } : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,

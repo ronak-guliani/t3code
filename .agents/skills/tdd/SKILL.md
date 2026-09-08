@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Test-driven development with red-green-refactor loop. Use when user wants to build features or fix bugs using TDD, mentions "red-green-refactor", wants integration tests, or asks for test-first development.
+description: Test-driven development with a red-green-refactor loop. Use when the user explicitly asks for test-first development, TDD, or red-green-refactor; ordinary requests for integration tests do not trigger it.
 ---
 
 # Test-Driven Development
@@ -46,18 +46,16 @@ RIGHT (vertical):
 
 When exploring the codebase, use the project's domain glossary so that test names and interface vocabulary match the project's language, and respect ADRs in the area you're touching.
 
-Before writing any code:
+Before writing any code, when the intent is not already explicit:
 
-- [ ] Confirm with user what interface changes are needed
-- [ ] Confirm with user which behaviors to test (prioritize)
 - [ ] Identify opportunities for [deep modules](deep-modules.md) (small interface, deep implementation)
 - [ ] Design interfaces for [testability](interface-design.md)
 - [ ] List the behaviors to test (not implementation steps)
-- [ ] Get user approval on the plan
+- [ ] Resolve any remaining consequential choice with the user
 
-Ask: "What should the public interface look like? Which behaviors are most important to test?"
+Ask about the public interface or test priorities only when the request leaves them consequentially unresolved.
 
-**You can't test everything.** Confirm with the user exactly which behaviors matter most. Focus testing effort on critical paths and complex logic, not every possible edge case.
+**You can't test everything.** Use the stated acceptance criteria to prioritize critical paths and complex logic. Ask only when a consequential test priority remains unresolved, not when the requested behavior is already clear.
 
 ### 2. Tracer Bullet
 

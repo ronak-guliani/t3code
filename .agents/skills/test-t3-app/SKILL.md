@@ -1,11 +1,11 @@
 ---
 name: test-t3-app
-description: Launch, retain, and test the T3 Code web app in isolated development environments, including first-try browser authentication with one-time pairing URLs, pairing-token recovery, worktree-safe state directories, cross-turn dev server lifecycle, and direct SQLite inspection or fixture seeding. Use when an agent needs to run T3 locally, iteratively test UI behavior with a human, recover from an expired or consumed pairing token, isolate dev state, or prepare test data in state.sqlite.
+description: Launch, retain, and test the T3 Code web app in isolated development environments, including first-try browser authentication with one-time pairing URLs, pairing-token recovery, worktree-safe state directories, cross-turn dev server lifecycle, and safe SQLite inspection. Use when an agent needs to run T3 locally, iteratively test UI behavior with a human, recover from an expired or consumed pairing token, isolate dev state, or inspect disposable test data.
 ---
 
 # Test T3 App
 
-Use this skill for the web client. For iOS Simulator, Android Emulator, or physical-device testing against an isolated T3 backend, use the sibling [`test-t3-mobile`](../test-t3-mobile/SKILL.md) skill.
+Use this skill for the web client. This checkout does not install a `test-t3-mobile` skill. For mobile testing, use the existing app-specific tooling and an isolated backend, or state clearly that mobile validation is unavailable rather than following a missing workflow.
 
 ## Start an isolated web environment
 
@@ -13,18 +13,18 @@ Use this skill for the web client. For iOS Simulator, Android Emulator, or physi
 2. Choose a base directory that belongs only to the current worktree or test:
    - Use the repository's ignored `.t3` directory for reusable worktree-local state.
    - Use `mktemp -d /tmp/t3code-test.XXXXXX` for disposable state and retain the printed absolute path.
-3. Start the full web stack with `vp run dev`. Add `--share` when the user needs to open it from another tailnet device. In a linked worktree it defaults to that worktree's gitignored `.t3`; pass `--home-dir <base-dir>` only when the test needs a different isolated directory.
+3. Start the full web stack with `pnpm dev --home-dir <absolute-base-dir> --no-browser`. Always pass the isolated directory explicitly; this runner does not automatically select a worktree-local home. The root script runs `scripts/dev-runner.ts`, which has no `--share` flag.
 4. Keep the terminal session alive and read the selected server port, web port, base directory, and pairing URL from its output.
 
 Treat a base directory as disposable only when it was created or deliberately selected for the current test. Never delete or directly seed the shared `~/.t3` directory. Prefer starting with a new temporary base directory over clearing state of uncertain ownership.
 
-The worktree-local default deliberately outranks an ambient `T3CODE_HOME`; do not pass the shared home through to a worktree dev server.
+The explicit `--home-dir` must belong to this test, not the shared home from an ambient `T3CODE_HOME`.
 
 Ports are derived from the worktree path but can shift when occupied. Always read the actual values from the `[dev-runner]` line.
 
-Shared browser dev is single-origin: Vite proxies the backend paths, so never set `VITE_HTTP_URL` or `VITE_WS_URL` for `dev`/`dev:web`.
+Let the dev runner configure `VITE_HTTP_URL` and `VITE_WS_URL` for its selected backend port; do not override them with another environment's addresses.
 
-The dev runner disables browser auto-open by default. Do not pass `--browser` during automated testing: an automatically opened page can consume the one-time bootstrap token before the controlled browser uses it.
+Pass `--no-browser` explicitly during automated testing: an automatically opened page can consume the one-time bootstrap token before the controlled browser uses it.
 
 ### Verify a shared environment before human handoff
 
@@ -54,20 +54,17 @@ Keep pairing URLs out of screenshots, committed files, and durable logs. When th
 
 ## Recover a consumed or expired pairing token
 
-Run `node apps/server/src/bin.ts pair` from the repository root. It discovers the running dev server (worktree `.t3` first, same precedence as the dev runner) and prints a fresh `Pair URL` against the server's current web origin, including a `--share` tailnet origin. Pass `--base-dir <base-dir>` only when the server was started with `--home-dir`, using the identical path.
+Run `node apps/server/src/bin.ts pair --base-dir <absolute-base-dir>` from the repository root, using the identical directory passed to `--home-dir`. It discovers the running server in that directory and prints a fresh pairing URL. If a remote user needs access, use an existing network or reverse-proxy setup; this checkout has no dev-runner `--share` flag.
 
 Tokens from `pair` carry standard client scopes. The startup pairing URL carries admin scopes; if the user needs Settings → Connections management (`access:write`), restart the server and hand over the new startup URL instead.
 
 ## Inspect or seed SQLite state
 
-Read [references/sqlite-fixtures.md](references/sqlite-fixtures.md) before changing the database.
+Read [references/sqlite-fixtures.md](references/sqlite-fixtures.md) before inspecting the database.
 
-- Use `node apps/server/scripts/t3-sqlite-state.ts query` for schema discovery and read-only checks.
-- Stop the dev server before using `node apps/server/scripts/t3-sqlite-state.ts exec`, then restart it with the same base directory.
-- Seed projection tables only for disposable UI fixtures. Use application commands and APIs when testing business behavior or projection correctness.
+- Use the documented `sqlite3` read-only commands for schema discovery when the `sqlite3` executable is available. This checkout has no `apps/server/scripts/t3-sqlite-state.ts` helper.
+- Do not write SQLite fixtures directly from this skill. Use application commands and APIs for behavior tests; if a disposable projection fixture is essential, stop the server and use a separately reviewed, temporary database script after confirming the exact schema.
 - Use the auth CLI, not direct `auth_*` table edits, for pairing and sessions.
-
-The helper refuses to write to the shared `~/.t3` directory by default and creates a database backup before each mutation.
 
 ## Tear down only when the testing loop is finished
 
@@ -84,7 +81,7 @@ If completion is uncertain, keep the environment alive and mention that it is re
 ## Troubleshoot predictably
 
 - If the browser shows an unauthenticated pairing screen, issue a new token instead of retrying the consumed URL.
-- If the pairing URL is no longer visible, create a replacement token with both `--dev-url` and `--base-url`.
+- If the pairing URL is no longer visible, rerun `pair --base-dir <absolute-base-dir>`; do not pass `--dev-url` or `--base-url` to `pair`.
 - If the replacement token is rejected, verify that the CLI and server use the identical absolute base directory and web URL.
 - If the UI shows unexpected data, verify that every command uses the identical explicit base directory before editing anything.
 - If ports move because another instance is running, trust the current dev-runner output rather than assuming ports `13773` and `5733`.

@@ -9,6 +9,7 @@ import type {
 import { create } from "zustand";
 
 import { ensureLocalApi } from "../../localApi";
+import { reportClientError } from "../../lib/clientLogger";
 import { getPrimaryKnownEnvironment } from "../primary";
 
 export interface SavedEnvironmentRecord {
@@ -64,10 +65,10 @@ function persistSavedEnvironmentRegistryState(
         ),
       )
       .catch((error) => {
-        console.error("[SAVED_ENVIRONMENTS] persist failed", error);
+        reportClientError("[SAVED_ENVIRONMENTS] persist failed", error);
       });
   } catch (error) {
-    console.error("[SAVED_ENVIRONMENTS] persist failed", error);
+    reportClientError("[SAVED_ENVIRONMENTS] persist failed", error);
   }
 }
 
@@ -97,7 +98,7 @@ async function hydrateSavedEnvironmentRegistry(): Promise<void> {
       const persistedRecords = await ensureLocalApi().persistence.getSavedEnvironmentRegistry();
       replaceSavedEnvironmentRegistryState(persistedRecords);
     } catch (error) {
-      console.error("[SAVED_ENVIRONMENTS] hydrate failed", error);
+      reportClientError("[SAVED_ENVIRONMENTS] hydrate failed", error);
     } finally {
       savedEnvironmentRegistryHydrated = true;
     }

@@ -7,11 +7,12 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
 } from "@t3tools/contracts";
+import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 
-import type { DraftComposerImageAttachment } from "./composerImages";
+import type { UploadedMobileAttachment } from "./attachmentUpload";
 
 export function deriveThreadTitleFromPrompt(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = assistantCitationsToPlainText(value).trim();
   if (trimmed.length === 0) {
     return "New thread";
   }
@@ -22,13 +23,15 @@ export function deriveThreadTitleFromPrompt(value: string): string {
 
 export interface ProjectThreadStartTurnSpec {
   readonly projectId: ProjectId;
+  readonly parentThreadId?: ThreadId | undefined;
   readonly projectCwd: string;
   readonly threadId: string;
   readonly commandId: string;
   readonly messageId: string;
   readonly createdAt: string;
   readonly text: string;
-  readonly attachments: ReadonlyArray<DraftComposerImageAttachment>;
+  /** Wire attachments from `prepareTurnAttachments`, in composer order. */
+  readonly uploadedAttachments: ReadonlyArray<UploadedMobileAttachment>;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
@@ -55,7 +58,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
       messageId: MessageId.make(spec.messageId),
       role: "user" as const,
       text: spec.text,
-      attachments: spec.attachments,
+      attachments: spec.uploadedAttachments,
     },
     modelSelection: spec.modelSelection,
     titleSeed: title,
@@ -64,6 +67,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     bootstrap: {
       createThread: {
         projectId: spec.projectId,
+        ...(spec.parentThreadId ? { parentThreadId: spec.parentThreadId } : {}),
         title,
         modelSelection: spec.modelSelection,
         runtimeMode: spec.runtimeMode,

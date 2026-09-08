@@ -1,7 +1,7 @@
-import type { EnvironmentId, ProjectListEntriesResult, ThreadId } from "@t3tools/contracts";
-import { SymbolView } from "expo-symbols";
+import type { EnvironmentId, ProjectListEntriesResult } from "@t3tools/contracts";
+import { SymbolView } from "../../components/AppSymbol";
 import { useCallback, useMemo, useState, type ComponentProps } from "react";
-import { Platform, Pressable, useColorScheme, View, type NativeSyntheticEvent } from "react-native";
+import { Platform, Pressable, View, type NativeSyntheticEvent } from "react-native";
 import {
   Screen,
   ScreenStack,
@@ -12,27 +12,26 @@ import {
 
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
-import { useThemeColor } from "../../lib/useThemeColor";
+import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
+import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { FileTreeBrowser } from "./FileTreeBrowser";
 import { preloadWorkspaceFileContents } from "./preload-workspace-file";
 
 export function ThreadFileNavigatorPane(props: {
   readonly cwd: string;
   readonly environmentId: EnvironmentId;
-  readonly threadId: ThreadId | null;
   readonly headerInset: number;
   readonly projectName: string;
   readonly selectedPath: string | null;
   readonly onSelectFile: (path: string) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
-  const colorScheme = useColorScheme();
-  const highlightTheme = colorScheme === "dark" ? "dark" : "light";
-  const iconColor = String(useThemeColor("--color-icon-muted"));
-  const foregroundColor = String(useThemeColor("--color-foreground"));
-  const sheetColor = String(useThemeColor("--color-sheet"));
+  const { themeAppearance: highlightTheme } = useAppearancePreferences();
+  const theme = useUniwindTheme();
+  const foregroundColor = theme["--color-foreground"];
+  const sheetColor = theme["--color-sheet"];
   const headerScrollEdgeEffects = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
   const entriesQuery = useEnvironmentQuery(
     projectEnvironment.listEntries({
@@ -43,18 +42,14 @@ export function ThreadFileNavigatorPane(props: {
   const entriesData = entriesQuery.data as ProjectListEntriesResult | null;
   const handlePreviewFile = useCallback(
     (relativePath: string) => {
-      if (props.threadId === null) {
-        return;
-      }
       preloadWorkspaceFileContents({
         cwd: props.cwd,
         environmentId: props.environmentId,
-        threadId: props.threadId,
         relativePath,
         theme: highlightTheme,
       });
     },
-    [highlightTheme, props.cwd, props.environmentId, props.threadId],
+    [highlightTheme, props.cwd, props.environmentId],
   );
   const nativeHeaderRightBarButtonItems = useMemo(
     () =>
@@ -157,11 +152,21 @@ export function ThreadFileNavigatorPane(props: {
             className="h-8 w-8 items-center justify-center rounded-full active:bg-subtle"
             onPress={entriesQuery.refresh}
           >
-            <SymbolView name="arrow.clockwise" size={14} tintColor={iconColor} type="monochrome" />
+            <SymbolView
+              name="arrow.clockwise"
+              size={14}
+              tintColorClassName={"accent-icon-muted"}
+              type="monochrome"
+            />
           </Pressable>
         </View>
         <View className="flex-row items-center gap-2 border-t border-border px-3 py-2">
-          <SymbolView name="magnifyingglass" size={15} tintColor={iconColor} type="monochrome" />
+          <SymbolView
+            name="magnifyingglass"
+            size={15}
+            tintColorClassName={"accent-icon-muted"}
+            type="monochrome"
+          />
           <TextInput
             accessibilityLabel="Search files"
             autoCapitalize="none"

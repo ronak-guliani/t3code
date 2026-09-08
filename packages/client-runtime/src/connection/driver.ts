@@ -11,6 +11,7 @@ import type {
 } from "./model.ts";
 import * as ConnectionResolver from "./resolver.ts";
 import * as RpcSession from "../rpc/session.ts";
+import { ConnectionCompatibility } from "./compatibility.ts";
 
 export type ConnectionDriverProgress =
   | {
@@ -39,6 +40,7 @@ export class ConnectionDriver extends Context.Service<
 export const make = Effect.gen(function* () {
   const resolver = yield* ConnectionResolver.ConnectionResolver;
   const sessions = yield* RpcSession.RpcSessionFactory;
+  const compatibility = yield* ConnectionCompatibility;
 
   const connect = Effect.fn("ConnectionDriver.connect")(function* (
     entry: ConnectionCatalogEntry,
@@ -55,6 +57,7 @@ export const make = Effect.gen(function* () {
     const session = yield* sessions.connect(prepared);
     yield* reportProgress({ stage: "synchronizing", prepared });
     yield* session.ready;
+    yield* compatibility.validate(yield* session.initialConfig);
     return { prepared, session } satisfies EnvironmentConnectionLease;
   });
 

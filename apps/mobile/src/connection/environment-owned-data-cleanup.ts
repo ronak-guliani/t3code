@@ -2,7 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { EnvironmentOwnedDataCleanupError } from "@t3tools/client-runtime/platform";
 import { Effect, Exit } from "effect";
 
-import { clearThreadOutboxEnvironment } from "../state/thread-outbox";
+import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
 
 export function clearMobileEnvironmentOwnedData(

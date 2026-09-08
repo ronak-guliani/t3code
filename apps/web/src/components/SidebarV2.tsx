@@ -88,6 +88,7 @@ import {
 } from "./ui/sidebar";
 import { SidebarTopActions } from "./SidebarTopActions";
 import { TITLEBAR_ROW_CLASS, TITLEBAR_TRAFFIC_LIGHT_INSET_CLASS } from "../lib/titlebar";
+import { reportClientError } from "../lib/clientLogger";
 import { cn } from "../lib/utils";
 
 const SETTLED_PAGE_SIZE = 25;
@@ -484,7 +485,7 @@ export default function SidebarV2() {
     void action().catch((error: unknown) => {
       const description =
         error instanceof Error ? error.message : "An unexpected error prevented this action.";
-      console.error("Sidebar inbox lifecycle action failed", error);
+      reportClientError("Sidebar inbox lifecycle action failed", error);
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -513,7 +514,7 @@ export default function SidebarV2() {
         if (failures.length === 0) {
           return;
         }
-        console.error("Sidebar inbox bulk lifecycle action failed", failures);
+        reportClientError("Sidebar inbox bulk lifecycle action failed", failures);
         const firstReason: unknown = failures[0]?.reason;
         toastManager.add(
           stackedThreadToast({

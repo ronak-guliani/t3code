@@ -5,6 +5,8 @@ import { Effect, Schema } from "effect";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
+  isProviderSendTurnSupportedImageMimeType,
   ClientOrchestrationCommand,
   DiffState,
   ModelSelection,
@@ -47,6 +49,22 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
 const decodeOrchestrationLatestTurn = Schema.decodeUnknownEffect(OrchestrationLatestTurn);
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
+
+it("recognizes supported image MIME types without accepting whitespace or parameters", () => {
+  for (const mimeType of PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES) {
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), true);
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType.toUpperCase()), true);
+  }
+  for (const mimeType of [
+    "image/heic",
+    "text/plain",
+    " image/png",
+    "image/png\n",
+    "image/png; charset=utf-8",
+  ]) {
+    assert.equal(isProviderSendTurnSupportedImageMimeType(mimeType), false);
+  }
+});
 
 function getOptionValue(
   options: ReadonlyArray<{ id: string; value: unknown }> | undefined,
@@ -780,34 +798,37 @@ it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
 
 it.effect("accepts a cross-thread source id but not derived provenance from clients", () =>
   Effect.gen(function* () {
-    const parsed = yield* decodeClientOrchestrationCommand({
-      type: "thread.turn.start",
-      commandId: "cmd-cross-thread",
-      threadId: "thread-child",
-      message: {
-        messageId: "message-child",
-        role: "user",
-        text: "Investigate the failure.",
-        attachments: [],
-      },
-      origin: {
-        kind: "cross-thread",
-        sourceThreadId: "forged-thread",
-        sourceMessageId: "forged-message",
-        sourceThreadTitle: "Forged title",
-      },
-      crossThreadSourceThreadId: " thread-source ",
-      crossThreadDispatchCapability: "capability",
-      runtimeMode: "approval-required",
-      interactionMode: "default",
-      createdAt: "2026-01-01T00:00:00.000Z",
-    });
-    if (parsed.type !== "thread.turn.start") {
-      assert.fail(`expected thread.turn.start, got ${parsed.type}`);
+    for (const type of ["thread.turn.start", "thread.queued-turn.create"] as const) {
+      const parsed = yield* decodeClientOrchestrationCommand({
+        type,
+        queuedTurnId: "queued-cross-thread",
+        commandId: "cmd-cross-thread",
+        threadId: "thread-child",
+        message: {
+          messageId: "message-child",
+          role: "user",
+          text: "Investigate the failure.",
+          attachments: [],
+        },
+        origin: {
+          kind: "cross-thread",
+          sourceThreadId: "forged-thread",
+          sourceMessageId: "forged-message",
+          sourceThreadTitle: "Forged title",
+        },
+        crossThreadSourceThreadId: " thread-source ",
+        crossThreadDispatchCapability: "capability",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      if (parsed.type !== "thread.turn.start" && parsed.type !== "thread.queued-turn.create") {
+        assert.fail(`expected a turn start or queued turn, got ${parsed.type}`);
+      }
+      assert.strictEqual(parsed.crossThreadSourceThreadId, "thread-source");
+      assert.strictEqual(parsed.crossThreadDispatchCapability, "capability");
+      assert.strictEqual("origin" in parsed, false);
     }
-    assert.strictEqual(parsed.crossThreadSourceThreadId, "thread-source");
-    assert.strictEqual(parsed.crossThreadDispatchCapability, "capability");
-    assert.strictEqual("origin" in parsed, false);
   }),
 );
 

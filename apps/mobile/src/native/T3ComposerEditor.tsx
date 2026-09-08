@@ -2,7 +2,7 @@ import { TextInputWrapper } from "expo-paste-input";
 import { useImperativeHandle, useRef } from "react";
 import { TextInput, type TextInput as RNTextInput } from "react-native";
 
-import { useThemeColor } from "../lib/useThemeColor";
+import { useFontFamily } from "../lib/useFontFamily";
 import { useScaledTextRole } from "../features/settings/appearance/useScaledTextRole";
 import { useNativePaste } from "../lib/useNativePaste";
 import type { ComposerEditorProps } from "./T3ComposerEditor.types";
@@ -15,12 +15,13 @@ export function ComposerEditor({
   style,
   textStyle,
   contentInsetVertical = 0,
+  singleLineCentered: _singleLineCentered,
+  readOnly = false,
   ...props
 }: ComposerEditorProps) {
   const inputRef = useRef<RNTextInput>(null);
   const bodyText = useScaledTextRole("body");
-  const foregroundColor = useThemeColor("--color-foreground");
-  const placeholderColor = useThemeColor("--color-placeholder");
+  const fontFamily = useFontFamily("regular");
   const handlePaste = useNativePaste((uris) => onPasteImages?.(uris));
 
   useImperativeHandle(
@@ -39,16 +40,17 @@ export function ComposerEditor({
       <TextInput
         ref={inputRef}
         {...props}
+        editable={(props.editable ?? true) && !readOnly}
         selection={selection}
         onSelectionChange={(event) => props.onSelectionChange?.(event.nativeEvent.selection)}
         multiline={props.multiline ?? true}
-        placeholderTextColor={placeholderColor}
+        placeholderTextColorClassName={"accent-placeholder"}
+        className="text-foreground"
         style={[
           {
             flex: 1,
             minHeight: 0,
-            color: foregroundColor,
-            fontFamily: "DMSans_400Regular",
+            fontFamily,
             ...bodyText,
             paddingVertical: contentInsetVertical,
           },

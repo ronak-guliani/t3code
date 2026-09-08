@@ -62,6 +62,7 @@ interface OpenCodeSessionContext {
   readonly server: OpenCodeServerConnection;
   readonly directory: string;
   readonly openCodeSessionId: string;
+  readonly descendantSessionIds: Set<string>;
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly pendingQuestions: Map<string, QuestionRequest>;
   readonly messageRoleById: Map<string, "user" | "assistant">;
@@ -193,7 +194,11 @@ function toToolLifecycleItemType(toolName: string): ToolLifecycleItemType {
 
 function mapPermissionToRequestType(
   permission: string,
-): "command_execution_approval" | "file_read_approval" | "file_change_approval" | "unknown" {
+):
+  | "command_execution_approval"
+  | "file_read_approval"
+  | "file_change_approval"
+  | "dynamic_tool_call" {
   switch (permission) {
     case "bash":
       return "command_execution_approval";
@@ -202,7 +207,7 @@ function mapPermissionToRequestType(
     case "edit":
       return "file_change_approval";
     default:
-      return "unknown";
+      return "dynamic_tool_call";
   }
 }
 
@@ -626,6 +631,45 @@ export function makeOpenCodeAdapter(
       }
     });
 
+    const ownsRequestSession = Effect.fn("ownsRequestSession")(function* (
+      context: OpenCodeSessionContext,
+      sessionId: string,
+    ) {
+      const ancestors = new Set<string>();
+      let current: string | undefined = sessionId;
+      while (
+        current &&
+        current !== context.openCodeSessionId &&
+        !context.descendantSessionIds.has(current)
+      ) {
+        if (ancestors.has(current)) {
+          return yield* new OpenCodeRuntimeError({
+            operation: "session.get",
+            detail: `Cyclic OpenCode session ancestry for '${sessionId}'.`,
+          });
+        }
+        ancestors.add(current);
+        const lookupSessionId: string = current;
+        const result = yield* runOpenCodeSdk("session.get", () =>
+          context.client.session.get({ sessionID: lookupSessionId }),
+        );
+        if (!result.data) {
+          return yield* new OpenCodeRuntimeError({
+            operation: "session.get",
+            detail: `OpenCode session '${current}' was missing while resolving request ownership.`,
+          });
+        }
+        current = result.data.parentID;
+      }
+      if (!current) {
+        return false;
+      }
+      for (const ancestor of ancestors) {
+        context.descendantSessionIds.add(ancestor);
+      }
+      return true;
+    });
+
     const handleSubscribedEvent = Effect.fn("handleSubscribedEvent")(function* (
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
@@ -633,7 +677,14 @@ export function makeOpenCodeAdapter(
       const payloadSessionId =
         "properties" in event ? (event.properties as { sessionID?: unknown }).sessionID : undefined;
       if (payloadSessionId !== context.openCodeSessionId) {
-        return;
+        // Descendant requests belong to this thread, but their content and lifecycle do not.
+        if (
+          typeof payloadSessionId !== "string" ||
+          !(event.type.startsWith("permission.") || event.type.startsWith("question.")) ||
+          !(yield* ownsRequestSession(context, payloadSessionId))
+        ) {
+          return;
+        }
       }
 
       const turnId = context.activeTurnId;
@@ -642,7 +693,7 @@ export function makeOpenCodeAdapter(
         event: {
           provider: PROVIDER,
           threadId: context.session.threadId,
-          providerThreadId: context.openCodeSessionId,
+          providerThreadId: payloadSessionId,
           type: event.type,
           ...(turnId ? { turnId } : {}),
           payload: event,
@@ -764,7 +815,18 @@ export function makeOpenCodeAdapter(
         }
 
         case "permission.asked": {
+          if (context.session.runtimeMode === "full-access") {
+            yield* runOpenCodeSdk("permission.reply", () =>
+              context.client.permission.reply({
+                requestID: event.properties.id,
+                reply: "once",
+              }),
+            );
+            break;
+          }
           context.pendingPermissions.set(event.properties.id, event.properties);
+          const requestType = mapPermissionToRequestType(event.properties.permission);
+          const patterns = event.properties.patterns.join("\n");
           yield* emit({
             ...(yield* buildEventBase({
               threadId: context.session.threadId,
@@ -774,11 +836,11 @@ export function makeOpenCodeAdapter(
             })),
             type: "request.opened",
             payload: {
-              requestType: mapPermissionToRequestType(event.properties.permission),
+              requestType,
               detail:
-                event.properties.patterns.length > 0
-                  ? event.properties.patterns.join("\n")
-                  : event.properties.permission,
+                requestType === "dynamic_tool_call" && patterns.length > 0
+                  ? `${event.properties.permission}: ${patterns}`
+                  : patterns || event.properties.permission,
               args: event.properties.metadata,
             },
           });
@@ -786,6 +848,12 @@ export function makeOpenCodeAdapter(
         }
 
         case "permission.replied": {
+          if (
+            payloadSessionId !== context.openCodeSessionId &&
+            !context.pendingPermissions.has(event.properties.requestID)
+          ) {
+            break;
+          }
           context.pendingPermissions.delete(event.properties.requestID);
           yield* emit({
             ...(yield* buildEventBase({
@@ -1127,6 +1195,7 @@ export function makeOpenCodeAdapter(
           server: started.server,
           directory,
           openCodeSessionId: started.openCodeSession.id,
+          descendantSessionIds: new Set(),
           pendingPermissions: new Map(),
           pendingQuestions: new Map(),
           partById: new Map(),

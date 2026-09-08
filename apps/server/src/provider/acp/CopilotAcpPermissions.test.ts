@@ -177,6 +177,47 @@ describe("CopilotAcpPermissions", () => {
     ).toEqual({ _tag: "ask" });
   });
 
+  it.each(["question", "ask user", "exit plan", "exit planning"])(
+    "does not classify MCP message contents mentioning '%s' as user input",
+    (text) => {
+      expect(
+        selectCopilotPermissionForRuntimeMode({
+          runtimeMode: "full-access",
+          params: request({
+            kind: "other",
+            title: "send_to_thread",
+            rawInput: {
+              thread: "child-thread",
+              prompt: `DEADLOCK ${text.toUpperCase()}: trace command queue ordering.`,
+            },
+            content: [{ type: "content", content: { type: "text", text } }],
+          }),
+          permissionRequest: mcpToolPermission(),
+        }),
+      ).toEqual({ _tag: "select", optionId: "allow-always-id" });
+    },
+  );
+
+  it("does not classify shell arguments as a user question", () => {
+    expect(
+      selectCopilotPermissionForRuntimeMode({
+        runtimeMode: "full-access",
+        params: request({ rawInput: { command: "rg question src" } }),
+        permissionRequest: permission(),
+      }),
+    ).toEqual({ _tag: "select", optionId: "allow-always-id" });
+  });
+
+  it.each(["ask", "question"])("still asks for explicit %s tools", (toolName) => {
+    expect(
+      selectCopilotPermissionForRuntimeMode({
+        runtimeMode: "full-access",
+        params: request({ kind: "other", title: "Tool call", rawInput: { toolName } }),
+        permissionRequest: mcpToolPermission(),
+      }),
+    ).toEqual({ _tag: "ask" });
+  });
+
   it("auto-approves edit/file-change requests only in auto-accept-edits", () => {
     expect(
       selectCopilotPermissionForRuntimeMode({

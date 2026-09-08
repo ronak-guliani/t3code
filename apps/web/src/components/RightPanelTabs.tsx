@@ -16,8 +16,18 @@ import { type MouseEvent, type ReactNode, useState } from "react";
 
 import type { RightPanelSurface } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
+import { useBrowserDefaults } from "~/browser/browserDefaults";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
-import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "./ui/menu";
+import {
+  Menu,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuSub,
+  MenuSubPopup,
+  MenuSubTrigger,
+  MenuTrigger,
+} from "./ui/menu";
 
 type Props = {
   readonly mode: PreviewPanelMode;
@@ -32,7 +42,7 @@ type Props = {
   readonly onCloseAll: () => void;
   readonly onClosePanel: () => void;
   readonly onCopyPath: (path: string) => void;
-  readonly onAddBrowser: () => void;
+  readonly onAddBrowserInProfile: (profileId: string) => void;
   readonly onAddTerminal: () => void;
   readonly onAddFiles: () => void;
   readonly onAddDiff: () => void;
@@ -131,7 +141,7 @@ export function RightPanelTabs({
   onCloseAll,
   onClosePanel,
   onCopyPath,
-  onAddBrowser,
+  onAddBrowserInProfile,
   onAddTerminal,
   onAddFiles,
   onAddDiff,
@@ -140,6 +150,7 @@ export function RightPanelTabs({
   onToggleMaximize,
   children,
 }: Props) {
+  const browserProfiles = useBrowserDefaults().profiles;
   const activeSurface = surfaces.find((surface) => surface.id === activeSurfaceId);
   const closeOnMiddleClick = (event: MouseEvent, surface: RightPanelSurface) => {
     if (event.button !== 1) return;
@@ -244,7 +255,16 @@ export function RightPanelTabs({
               }
             />
             <MenuPopup>
-              <MenuItem onClick={onAddBrowser}>Browser</MenuItem>
+              <MenuSub>
+                <MenuSubTrigger>Browser</MenuSubTrigger>
+                <MenuSubPopup className="min-w-40 max-w-56">
+                  {browserProfiles.map((profile) => (
+                    <MenuItem key={profile.id} onClick={() => onAddBrowserInProfile(profile.id)}>
+                      <span className="min-w-0 truncate">{profile.name}</span>
+                    </MenuItem>
+                  ))}
+                </MenuSubPopup>
+              </MenuSub>
               <MenuItem onClick={onAddTerminal}>Terminal</MenuItem>
               <MenuItem onClick={onAddFiles}>Files</MenuItem>
               <MenuItem onClick={onAddDiff}>Diff</MenuItem>

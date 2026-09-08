@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import {
   CommandId,
+  AuthWebSocketTicketResult,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
@@ -31,6 +32,7 @@ import {
   TurnId,
   WS_METHODS,
   WsRpcGroup,
+  WsClientRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
 import { FIX_REVIEW_ISSUES_WORKFLOW_ID } from "@t3tools/shared/workflows/fixReviewIssues";
@@ -72,8 +74,10 @@ import { vi } from "vitest";
 
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
-import { CloudHttpRuntimeLayerLive, makeRoutesLayer } from "./server.ts";
+import { CloudHttpRuntimeLayerLive, RemoteAccessLayerLive, makeRoutesLayer } from "./server.ts";
+import { CheckoutCoordinatorLive } from "./git/CheckoutCoordinator.ts";
 import { resolveAttachmentRelativePath } from "./attachmentPaths.ts";
+import { attachmentRelativePath } from "./attachmentStore.ts";
 import { getLiveOrchestrationShellSnapshot } from "./cli/client.ts";
 import {
   CheckpointDiffQuery,
@@ -83,6 +87,7 @@ import { DiffStateQuery, type DiffStateQueryShape } from "./diffState/Services/D
 import { GitCore, type GitCoreShape } from "./git/Services/GitCore.ts";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { GitStatusBroadcasterLive } from "./git/Layers/GitStatusBroadcaster.ts";
+import { ProjectAutoPull } from "./git/ProjectAutoPull.ts";
 import {
   GitStatusBroadcaster,
   type GitStatusBroadcasterShape,
@@ -463,12 +468,22 @@ const buildAppUnderTest = (options?: {
       ? Layer.mock(GitStatusBroadcaster)({
           ...options.layers.gitStatusBroadcaster,
         })
-      : GitStatusBroadcasterLive.pipe(Layer.provide(gitManagerLayer));
+      : GitStatusBroadcasterLive.pipe(
+          Layer.provide(gitManagerLayer),
+          Layer.provide(
+            Layer.succeed(ProjectAutoPull, {
+              attempt: () => Effect.void,
+              start: Effect.void,
+              changes: Stream.empty,
+            }),
+          ),
+        );
 
     const servedRoutesLayer = HttpRouter.serve(makeRoutesLayer, {
       disableListenLog: true,
       disableLogger: true,
     }).pipe(
+      Layer.provide(RemoteAccessLayerLive),
       Layer.provide(
         Layer.mock(Keybindings)({
           loadConfigState: Effect.succeed({
@@ -747,7 +762,7 @@ const buildAppUnderTest = (options?: {
         )
       : appLayer;
 
-    yield* Layer.build(appLayerWithProvider);
+    yield* Layer.build(appLayerWithProvider.pipe(Layer.provideMerge(CheckoutCoordinatorLive)));
     return config;
   });
 
@@ -1060,8 +1075,112 @@ const readNodeWebSocketJson = (socket: NodeWsSocket, onListening?: () => void) =
   );
 
 const decodeMobileServerMessage = Schema.decodeUnknownSync(MobileServerMessage);
+const decodeWebSocketTicket = Schema.decodeUnknownSync(
+  Schema.toCodecJson(AuthWebSocketTicketResult),
+);
+const makeMobileSourceRpcClient = RpcClient.make(WsClientRpcGroup);
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect(
+    "pairs the current mobile protocol, persists inline images, and reconnects with a new ticket",
+    () =>
+      Effect.gen(function* () {
+        const dispatched: OrchestrationCommand[] = [];
+        const config = yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: dispatched.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+          },
+        });
+        const bearerToken = yield* getAuthenticatedBearerSessionToken();
+        const ticketUrl = yield* getHttpServerUrl("/api/auth/websocket-ticket");
+        const socketUrl = yield* getWsServerUrl("/ws", { authenticated: false });
+        const nextSocketUrl = Effect.gen(function* () {
+          const response = yield* Effect.promise(() =>
+            fetch(ticketUrl, {
+              method: "POST",
+              headers: { authorization: `Bearer ${bearerToken}` },
+            }),
+          );
+          assert.equal(response.status, 200);
+          const ticket = decodeWebSocketTicket(yield* Effect.promise(() => response.json()));
+          return `${socketUrl}?wsTicket=${encodeURIComponent(ticket.ticket)}`;
+        });
+        const firstUrl = yield* nextSocketUrl;
+        const image = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a9kAAAAASUVORK5CYII=",
+          "base64",
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* makeMobileSourceRpcClient;
+            const server = yield* client[WS_METHODS.serverGetConfig]({});
+            assert.notEqual(server.environment.capabilities.attachmentUploads, true);
+            const response = yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+              type: "thread.turn.start",
+              commandId: CommandId.make("mobile-source-send"),
+              threadId: defaultThreadId,
+              message: {
+                messageId: MessageId.make("mobile-source-message"),
+                role: "user",
+                text: "Inspect this pixel",
+                attachments: [
+                  {
+                    type: "image",
+                    name: "pixel.png",
+                    mimeType: "image/png",
+                    sizeBytes: image.length,
+                    dataUrl: `data:image/png;base64,${image.toString("base64")}`,
+                  },
+                ],
+              },
+              modelSelection: defaultModelSelection,
+              runtimeMode: "auto-accept-edits",
+              interactionMode: "default",
+              createdAt: new Date().toISOString(),
+            });
+            assert.isAtLeast(response.sequence, 1);
+          }).pipe(Effect.provide(wsRpcProtocolLayer(firstUrl))),
+        );
+
+        const turn = dispatched.find((command) => command.type === "thread.turn.start");
+        assert.isDefined(turn);
+        if (turn?.type !== "thread.turn.start") return yield* Effect.die("No turn was dispatched.");
+        const attachment = turn.message.attachments[0];
+        assert.isDefined(attachment);
+        if (attachment === undefined)
+          return yield* Effect.die("No image attachment was persisted.");
+        const relativePath = attachmentRelativePath(attachment);
+        const attachmentPath = resolveAttachmentRelativePath({
+          attachmentsDir: config.attachmentsDir,
+          relativePath,
+        });
+        assert.isNotNull(attachmentPath);
+        if (attachmentPath === null) return yield* Effect.die("Invalid persisted attachment path.");
+        const fileSystem = yield* FileSystem.FileSystem;
+        assert.deepEqual(Buffer.from(yield* fileSystem.readFile(attachmentPath)), image);
+
+        const secondUrl = yield* nextSocketUrl;
+        assert.notEqual(secondUrl, firstUrl);
+        const reconnected = yield* Effect.scoped(
+          makeMobileSourceRpcClient.pipe(
+            Effect.flatMap((client) => client[WS_METHODS.serverGetConfig]({})),
+            Effect.provide(wsRpcProtocolLayer(secondUrl)),
+          ),
+        );
+        assert.equal(
+          reconnected.environment.environmentId,
+          testEnvironmentDescriptor.environmentId,
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("serves static index content for GET / when staticDir is configured", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1164,6 +1283,131 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.deepEqual(body, testEnvironmentDescriptor);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
+
+  it.effect(
+    "protects Remote Access routes and reports disabled setup without exposing credentials",
+    () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest();
+        const url = yield* getHttpServerUrl("/api/remote-access");
+        for (const method of ["GET", "POST"]) {
+          const anonymous = yield* Effect.promise(() => fetch(url, { method }));
+          assert.equal(anonymous.status, 401);
+        }
+        const token = yield* getAuthenticatedBearerSessionToken();
+        const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+        const status = yield* Effect.promise(() => fetch(url, { headers }));
+        assert.equal(status.status, 200);
+        assert.equal(status.headers.get("cache-control"), "no-store");
+        const body = yield* Effect.promise(() => status.text());
+        assert.notInclude(body, "connectorToken");
+        assert.include(body, '"enabled":false');
+        const pairingTokenUrl = yield* getHttpServerUrl("/api/auth/pairing-token");
+        const createClientCredential = Effect.promise(async () => {
+          const response = await fetch(pairingTokenUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ label: "Unprivileged remote client" }),
+          });
+          assert.equal(response.status, 200);
+          const value: unknown = await response.json();
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            !("credential" in value) ||
+            typeof value.credential !== "string"
+          ) {
+            throw new Error("Expected a pairing credential.");
+          }
+          return value.credential;
+        });
+        const pairingCredential = yield* createClientCredential;
+        const clientToken = yield* getAuthenticatedBearerSessionToken(pairingCredential);
+        for (const path of [url, `${url}/pair`]) {
+          const denied = yield* Effect.promise(() =>
+            fetch(path, {
+              method: "POST",
+              headers: { ...headers, authorization: `Bearer ${clientToken}` },
+              body: JSON.stringify({ action: "enable" }),
+            }),
+          );
+          assert.equal(denied.status, 403);
+        }
+        const crossOrigin = yield* Effect.promise(() =>
+          fetch(url, {
+            method: "POST",
+            headers: { ...headers, origin: "https://untrusted.example.com" },
+            body: JSON.stringify({ action: "enable" }),
+          }),
+        );
+        assert.equal(crossOrigin.status, 403);
+        const invalid = yield* Effect.promise(() =>
+          fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              action: "setup",
+              publicUrl: "http://localhost",
+              connectorToken: "secret",
+            }),
+          }),
+        );
+        assert.equal(invalid.status, 400);
+        const pairing = yield* Effect.promise(() =>
+          fetch(`${url}/pair`, { method: "POST", headers }),
+        );
+        assert.equal(pairing.status, 400);
+        const bootstrapUrl = yield* getHttpServerUrl("/api/auth/bootstrap");
+        const secureCredential = yield* createClientCredential;
+        const secureSession = yield* Effect.promise(() =>
+          fetch(bootstrapUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-forwarded-proto": "https" },
+            body: JSON.stringify({ credential: secureCredential }),
+          }),
+        );
+        assert.equal(secureSession.status, 200);
+        assert.include(secureSession.headers.get("set-cookie") ?? "", "Secure");
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  for (const scope of ["orchestration:read", "relay:read", "relay:write", "access:write"]) {
+    it.effect(`enforces Remote Access operation scopes for an owner with ${scope}`, () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest();
+        const token = yield* exchangeAccessToken([scope]);
+        const headers = {
+          authorization: ["Bearer", token].join(" "),
+          "content-type": "application/json",
+        };
+        const url = yield* getHttpServerUrl("/api/remote-access");
+        const operations = [
+          { method: "GET", url, requiredScope: "relay:read", allowedStatus: 200 },
+          { method: "POST", url, requiredScope: "relay:write", allowedStatus: 400 },
+          { method: "POST", url: `${url}/pair`, requiredScope: "access:write", allowedStatus: 400 },
+        ];
+        for (const operation of operations) {
+          const response = yield* Effect.promise(() =>
+            fetch(operation.url, {
+              method: operation.method,
+              headers,
+              ...(operation.method === "POST"
+                ? { body: JSON.stringify({ action: "enable" }) }
+                : {}),
+            }),
+          );
+          // Authorized mutations reach the unconfigured service; unauthorized ones never do.
+          assert.equal(
+            response.status,
+            scope === operation.requiredScope ? operation.allowedStatus : 403,
+          );
+          if (scope !== operation.requiredScope) {
+            assert.include(yield* Effect.promise(() => response.text()), operation.requiredScope);
+          }
+        }
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
 
   it.effect("mounts the authenticated pull request diff endpoint", () =>
     Effect.gen(function* () {

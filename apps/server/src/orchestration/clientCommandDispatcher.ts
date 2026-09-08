@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
+import { CheckoutCoordinator } from "../git/CheckoutCoordinator.ts";
 import type { GitStatusBroadcasterShape } from "../git/Services/GitStatusBroadcaster.ts";
 import type { ProjectSetupScriptRunnerShape } from "../project/Services/ProjectSetupScriptRunner.ts";
 import type { ServerRuntimeStartupShape } from "../serverRuntimeStartup.ts";
@@ -76,7 +77,11 @@ export const makeClientCommandDispatcher = ({
 
   const dispatchBootstrapTurnStart = (
     command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
-  ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+  ): Effect.Effect<
+    { readonly sequence: number },
+    OrchestrationDispatchCommandError,
+    CheckoutCoordinator
+  > =>
     Effect.gen(function* () {
       const bootstrap = command.bootstrap;
       const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
@@ -235,12 +240,16 @@ export const makeClientCommandDispatcher = ({
         }
 
         if (bootstrap?.prepareWorktree) {
-          const worktree = yield* git.createWorktree({
-            cwd: bootstrap.prepareWorktree.projectCwd,
-            branch: bootstrap.prepareWorktree.baseBranch,
-            newBranch: bootstrap.prepareWorktree.branch,
-            path: null,
-          });
+          const checkoutCoordinator = yield* CheckoutCoordinator;
+          const worktree = yield* checkoutCoordinator.withCheckout(
+            bootstrap.prepareWorktree.projectCwd,
+            git.createWorktree({
+              cwd: bootstrap.prepareWorktree.projectCwd,
+              branch: bootstrap.prepareWorktree.baseBranch,
+              newBranch: bootstrap.prepareWorktree.branch,
+              path: null,
+            }),
+          );
           targetWorktreePath = worktree.worktree.path;
           yield* orchestrationEngine.dispatch({
             type: "thread.meta.update",
@@ -270,23 +279,26 @@ export const makeClientCommandDispatcher = ({
 
   return (
     normalizedCommand: OrchestrationCommand,
-  ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+  ): Effect.Effect<
+    { readonly sequence: number },
+    OrchestrationDispatchCommandError,
+    CheckoutCoordinator
+  > => {
     const dispatchEffect =
       normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
         ? dispatchBootstrapTurnStart(normalizedCommand)
         : dispatchThroughStartupGate(normalizedCommand, orchestrationEngine, startup);
 
     return normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-      ? startup
-          .enqueueCommand(dispatchEffect)
-          .pipe(
-            Effect.mapError((cause) =>
-              toOrchestrationDispatchCommandError(
-                cause,
-                "Failed to dispatch orchestration command",
-              ),
-            ),
-          )
+      ? Effect.flatMap(CheckoutCoordinator, (checkoutCoordinator) =>
+          startup.enqueueCommand(
+            dispatchEffect.pipe(Effect.provideService(CheckoutCoordinator, checkoutCoordinator)),
+          ),
+        ).pipe(
+          Effect.mapError((cause) =>
+            toOrchestrationDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+          ),
+        )
       : dispatchEffect;
   };
 };

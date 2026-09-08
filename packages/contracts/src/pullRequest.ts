@@ -1,3 +1,4 @@
+import { SourceControlProviderKind } from "./sourceControl.ts";
 import * as Schema from "effect/Schema";
 import * as HttpServerRespondable from "effect/unstable/http/HttpServerRespondable";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -711,3 +712,121 @@ export class PullRequestOperationError extends Schema.TaggedErrorClass<PullReque
     return `Pull request operation ${this.operation} failed: ${this.detail}`;
   }
 }
+
+export const PullRequestSummary = Schema.Struct({
+  provider: SourceControlProviderKind,
+  projectId: ProjectId,
+  repository: TrimmedNonEmptyString,
+  number: PositiveInt,
+  title: TrimmedNonEmptyString,
+  url: TrimmedNonEmptyString,
+  state: PullRequestState,
+  /** Present when the host says the open pull request is still a draft. */
+  isDraft: Schema.optional(Schema.Boolean),
+  headBranch: TrimmedNonEmptyString,
+  baseBranch: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+
+export type PullRequestSummary = typeof PullRequestSummary.Type;
+
+export const PullRequestDiffFileContentsInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  /** One commit's own comparison; absent means the whole change request. */
+  commit: Schema.optional(TrimmedNonEmptyString),
+  changeType: Schema.Literals(["change", "rename-pure", "rename-changed", "new", "deleted"]),
+  oldPath: TrimmedNonEmptyString,
+  newPath: TrimmedNonEmptyString,
+});
+
+export type PullRequestDiffFileContentsInput = typeof PullRequestDiffFileContentsInput.Type;
+
+export const PullRequestDiffFileContentsResult = Schema.Struct({
+  oldContents: Schema.String,
+  newContents: Schema.String,
+});
+
+export type PullRequestDiffFileContentsResult = typeof PullRequestDiffFileContentsResult.Type;
+
+export const PullRequestUpdateInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  title: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(1024))),
+  body: Schema.optional(Schema.String.check(Schema.isMaxLength(65_536))),
+});
+
+export type PullRequestUpdateInput = typeof PullRequestUpdateInput.Type;
+
+export const PullRequestThreadCommentsInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  threadId: TrimmedNonEmptyString,
+  cursor: TrimmedNonEmptyString,
+});
+
+export type PullRequestThreadCommentsInput = typeof PullRequestThreadCommentsInput.Type;
+
+export const PullRequestThreadCommentsResult = Schema.Struct({
+  comments: Schema.Array(PullRequestThreadComment),
+  nextCursor: Schema.NullOr(TrimmedNonEmptyString),
+});
+
+export type PullRequestThreadCommentsResult = typeof PullRequestThreadCommentsResult.Type;
+
+export const PullRequestCommentUpdateInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  commentId: TrimmedNonEmptyString,
+  kind: Schema.Literals(["issue-comment", "review-comment"]),
+  body: CommentBody,
+});
+
+export type PullRequestCommentUpdateInput = typeof PullRequestCommentUpdateInput.Type;
+
+export const PullRequestReactionContent = Schema.Literals([
+  "thumbs-up",
+  "thumbs-down",
+  "laugh",
+  "hooray",
+  "confused",
+  "heart",
+  "rocket",
+  "eyes",
+]);
+
+export type PullRequestReactionContent = typeof PullRequestReactionContent.Type;
+
+export const PullRequestReactionInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  /**
+   * Which remark to react to, as it arrived in the conversation. Absent reacts to the change
+   * request itself, which is where its description's reactions live — the id a host uses for
+   * that is its own to work out.
+   */
+  subjectId: Schema.optional(TrimmedNonEmptyString),
+  content: PullRequestReactionContent,
+  reacted: Schema.Boolean,
+});
+
+export type PullRequestReactionInput = typeof PullRequestReactionInput.Type;
+
+export const PullRequestLabelCandidate = Schema.Struct({
+  ...PullRequestLabel.fields,
+  description: Schema.NullOr(Schema.String),
+  isApplied: Schema.Boolean,
+});
+
+export type PullRequestLabelCandidate = typeof PullRequestLabelCandidate.Type;
+
+export const PullRequestLabelCandidateList = Schema.Struct({
+  candidates: Schema.Array(PullRequestLabelCandidate),
+  /** The repository defines more labels than the read asked for; the list is not all of them. */
+  truncated: Schema.Boolean,
+});
+
+export type PullRequestLabelCandidateList = typeof PullRequestLabelCandidateList.Type;
+
+export const PullRequestLabelChangeInput = Schema.Struct({
+  ...PullRequestRef.fields,
+  labels: Schema.Array(TrimmedNonEmptyString).check(Schema.isMinLength(1), Schema.isMaxLength(25)),
+  applied: Schema.Boolean,
+});
+
+export type PullRequestLabelChangeInput = typeof PullRequestLabelChangeInput.Type;

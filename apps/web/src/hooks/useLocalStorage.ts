@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import * as Record from "effect/Record";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { reportClientError } from "../lib/clientLogger";
 
 const isomorphicLocalStorage: Storage =
   typeof window !== "undefined"
@@ -65,7 +66,7 @@ export function useLocalStorage<T, E>(
       const item = getLocalStorageItem(key, schema);
       return item ?? initialValue;
     } catch (error) {
-      console.error("[LOCALSTORAGE] Error:", error);
+      reportClientError("[LOCALSTORAGE] Error:", error);
       return initialValue;
     }
   });
@@ -85,7 +86,7 @@ export function useLocalStorage<T, E>(
         setStoredValue(valueToStore);
         queueMicrotask(() => dispatchLocalStorageChange(key));
       } catch (error) {
-        console.error("[LOCALSTORAGE] Error:", error);
+        reportClientError("[LOCALSTORAGE] Error:", error);
       }
     },
     [key, schema, storedValue],
@@ -101,7 +102,7 @@ export function useLocalStorage<T, E>(
         const newValue = getLocalStorageItem(key, schema);
         setStoredValue(newValue ?? initialValue);
       } catch (error) {
-        console.error("[LOCALSTORAGE] Error:", error);
+        reportClientError("[LOCALSTORAGE] Error:", error);
       }
     }
   }, [key, initialValue, schema]);
@@ -113,7 +114,7 @@ export function useLocalStorage<T, E>(
         const newValue = getLocalStorageItem(key, schema);
         setStoredValue(newValue ?? initialValue);
       } catch (error) {
-        console.error("[LOCALSTORAGE] Error:", error);
+        reportClientError("[LOCALSTORAGE] Error:", error);
       }
     };
 

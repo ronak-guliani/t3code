@@ -24,7 +24,7 @@ import {
   AuthWebSocketTicketResult,
   ServerAuthSessionMethod,
 } from "./auth.ts";
-import { AuthSessionId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { AuthSessionId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   ClientOrchestrationCommand,
@@ -114,6 +114,16 @@ export class EnvironmentAuthInvalidError extends Schema.TaggedErrorClass<Environ
     code: Schema.Literal("auth_invalid"),
     reason: EnvironmentAuthInvalidReason,
     traceId: TrimmedNonEmptyString,
+    dpopFailureReason: Schema.optionalKey(
+      Schema.Literals([
+        "time_window",
+        "key_mismatch",
+        "request_mismatch",
+        "token_mismatch",
+        "replay",
+        "invalid_proof",
+      ]),
+    ),
   },
   { httpApiStatus: 401 },
 ) {
@@ -483,6 +493,13 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
   .add(
     HttpApiEndpoint.get("threadSnapshot", "/api/orchestration/threads/:threadId/snapshot", {
       headers: OptionalBearerHeaders,
+      params: Schema.Struct({ threadId: ThreadId }),
+      payload: {
+        turnLimit: Schema.optional(
+          Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+        ),
+        beforeCursor: Schema.optional(TrimmedNonEmptyString),
+      },
       success: OrchestrationThreadDetailSnapshot,
       error: EnvironmentOrchestrationSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
@@ -579,3 +596,25 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentConnectHttpApi) {}
+
+export const EnvironmentResourceNotFoundReason = Schema.Literals(["thread_not_found"]);
+
+export type EnvironmentResourceNotFoundReason = typeof EnvironmentResourceNotFoundReason.Type;
+
+export class EnvironmentResourceNotFoundError extends Schema.TaggedErrorClass<EnvironmentResourceNotFoundError>()(
+  "EnvironmentResourceNotFoundError",
+  {
+    code: Schema.Literal("not_found"),
+    reason: EnvironmentResourceNotFoundReason,
+    traceId: TrimmedNonEmptyString,
+  },
+  { httpApiStatus: 404 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(EnvironmentResourceNotFoundError)(this, { status: 404 });
+  }
+
+  override get message(): string {
+    return `The environment could not find what this request named (${this.reason}).`;
+  }
+}

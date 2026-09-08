@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
+import { browserDefaultTabState, useBrowserDefaults } from "./browserDefaults";
 import { cn } from "~/lib/utils";
 
 import { useActiveBrowserRecordingTabIds } from "./browserRecording";
@@ -50,6 +51,7 @@ export function HostedBrowserWebview(props: {
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly pictureInPicture?: boolean;
+  readonly profileId?: string | undefined;
   readonly zoomFactor: number;
 }) {
   const {
@@ -59,9 +61,11 @@ export function HostedBrowserWebview(props: {
     initialUrl,
     viewport,
     pictureInPicture = false,
+    profileId,
     zoomFactor,
   } = props;
-  const config = usePreviewWebviewConfig(threadRef.environmentId);
+  const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
+  const browserDefaults = useBrowserDefaults();
   const [initialSrc] = useState(() => initialUrl ?? "about:blank");
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -89,13 +93,13 @@ export function HostedBrowserWebview(props: {
 
   useEffect(() => {
     crashRecoveryRef.current = INITIAL_WEBVIEW_CRASH_RECOVERY_STATE;
-    const lease = acquireDesktopTab(runtimeTabId);
+    const lease = acquireDesktopTab(runtimeTabId, browserDefaultTabState(browserDefaults));
     tabLeaseRef.current = lease;
     return () => {
       if (tabLeaseRef.current === lease) tabLeaseRef.current = null;
       lease.release();
     };
-  }, [runtimeTabId]);
+  }, [browserDefaults, runtimeTabId]);
 
   // Remounting the guest is the only way to recover a dead render process, so
   // recovery bumps a generation key. The reload target tracks the tab's latest

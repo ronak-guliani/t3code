@@ -440,6 +440,38 @@ function startLifecycleRuntime() {
 }
 
 lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
+  it.effect("maps completed context compaction items to a compaction event", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* runtime.emit({
+        id: asEventId("evt-context-compaction"),
+        kind: "notification",
+        provider: ProviderDriverKind.make("codex"),
+        createdAt: new Date().toISOString(),
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("compact-1"),
+        payload: {
+          completedAtMs: Date.now(),
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: { type: "contextCompaction", id: "compact-1" },
+        },
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.equal(events[0]?.type, "item.completed");
+      assert.equal(events[1]?.type, "thread.state.changed");
+      assert.deepEqual(events[1]?.payload, { state: "compacted" });
+      assert.notEqual(events[0]?.eventId, events[1]?.eventId);
+    }),
+  );
+
   it.effect("maps completed agent message items to canonical item.completed events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

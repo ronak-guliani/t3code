@@ -10,6 +10,7 @@ import type { NativeSyntheticEvent, ViewProps } from "react-native";
 import { requireNativeView } from "expo";
 
 import { NativeViewResolutionError } from "../../native/nativeViewResolutionError";
+import { reportClientError } from "../../lib/clientLogger";
 
 const NATIVE_REVIEW_DIFF_MODULE_NAME = "T3ReviewDiffSurface";
 const NATIVE_REVIEW_DIFF_PAYLOAD_RETRY_FRAMES = 60;
@@ -149,6 +150,10 @@ export interface NativeReviewDiffViewHandle {
   readonly scrollToTop: (animated?: boolean) => Promise<void>;
 }
 
+export function isNativeReviewDiffDrawEvent(payload: Readonly<Record<string, unknown>>): boolean {
+  return payload.message === "draw-metrics" || payload.message === "visible-range";
+}
+
 interface NativeReviewDiffViewRef {
   readonly setRowsJson: (rowsJson: string) => Promise<void>;
   readonly setTokensJson: (tokensJson: string) => Promise<void>;
@@ -170,9 +175,11 @@ let nativeReviewDiffViewResolutionFailed = false;
 type NativeReviewDiffPayloadMethod = "setRowsJson" | "setTokensJson" | "setTokensPatchJson";
 
 export function isPendingNativeViewRegistration(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
   return (
-    error instanceof Error &&
-    error.message.includes(`Unable to find the '${NATIVE_REVIEW_DIFF_MODULE_NAME}' view`)
+    error.message.includes(`Unable to find the '${NATIVE_REVIEW_DIFF_MODULE_NAME}' view`) ||
+    (error.message.includes("Unable to find the class") &&
+      error.message.includes("T3ReviewDiffView view with tag"))
   );
 }
 
@@ -215,7 +222,7 @@ function useNativeReviewDiffPayload(
           frame = requestAnimationFrame(dispatch);
           return;
         }
-        console.error(`[native-review-diff] ${method} failed`, error);
+        reportClientError(`[native-review-diff] ${method} failed`, error);
       });
     };
 
@@ -284,7 +291,7 @@ export function resolveNativeReviewDiffView(): ComponentType<NativeReviewDiffVie
     );
   } catch (cause) {
     nativeReviewDiffViewResolutionFailed = true;
-    console.error(
+    reportClientError(
       new NativeViewResolutionError({
         nativeModuleName: NATIVE_REVIEW_DIFF_MODULE_NAME,
         cause,

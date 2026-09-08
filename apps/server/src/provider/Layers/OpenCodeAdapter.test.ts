@@ -6,6 +6,7 @@ import { Context, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream } fr
 import { beforeEach } from "vitest";
 
 import {
+  ApprovalRequestId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -55,6 +56,10 @@ const runtimeMock = {
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
     subscribedEvents: [] as unknown[],
+    sessionParents: new Map<string, string | undefined>(),
+    sessionGetCalls: [] as string[],
+    permissionReplies: [] as Array<{ requestID: string; reply: string }>,
+    questionReplies: [] as Array<{ requestID: string; answers: string[][] }>,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -68,6 +73,10 @@ const runtimeMock = {
     this.state.closeError = null;
     this.state.messages = [];
     this.state.subscribedEvents = [];
+    this.state.sessionParents.clear();
+    this.state.sessionGetCalls = [];
+    this.state.permissionReplies = [];
+    this.state.questionReplies = [];
   },
 };
 
@@ -114,6 +123,15 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
       session: {
+        get: async ({ sessionID }: { sessionID: string }) => {
+          runtimeMock.state.sessionGetCalls.push(sessionID);
+          if (!runtimeMock.state.sessionParents.has(sessionID)) {
+            throw new Error(`Unknown session: ${sessionID}`);
+          }
+          return {
+            data: { id: sessionID, parentID: runtimeMock.state.sessionParents.get(sessionID) },
+          };
+        },
         create: async () => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
           runtimeMock.state.authHeaders.push(
@@ -158,6 +176,16 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             }
           })(),
         }),
+      },
+      permission: {
+        reply: async (input: { requestID: string; reply: string }) => {
+          runtimeMock.state.permissionReplies.push(input);
+        },
+      },
+      question: {
+        reply: async (input: { requestID: string; answers: string[][] }) => {
+          runtimeMock.state.questionReplies.push(input);
+        },
       },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
@@ -222,6 +250,181 @@ const sleep = (ms: number) =>
   Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  for (const runtimeMode of ["full-access", "approval-required", "auto-accept-edits"] as const) {
+    it.effect(`routes descendant directory approvals in ${runtimeMode}`, () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId(`child-approval-${runtimeMode}`);
+        const root = "http://127.0.0.1:9999/session";
+        runtimeMock.state.sessionParents.set("child", root);
+        runtimeMock.state.sessionParents.set("grandchild", "child");
+        runtimeMock.state.sessionParents.set("unrelated", undefined);
+        const permission = (sessionID: string, id: string) => ({
+          type: "permission.asked",
+          properties: {
+            sessionID,
+            id,
+            permission: "external_directory",
+            patterns: ["/repo-worktree/*"],
+            always: ["/repo-worktree/*"],
+            metadata: {},
+          },
+        });
+        runtimeMock.state.subscribedEvents = [
+          permission("unrelated", "foreign"),
+          permission("grandchild", "directory"),
+          permission("grandchild", "next-directory"),
+          { type: "session.status", properties: { sessionID: "child", status: { type: "idle" } } },
+          {
+            type: "session.error",
+            properties: { sessionID: "child", error: { name: "child-error" } },
+          },
+          { type: "question.asked", properties: { sessionID: root, id: "barrier", questions: [] } },
+        ];
+        const eventsFiber = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.threadId === threadId),
+          Stream.takeUntil(
+            (event) => event.type === "user-input.requested" && event.requestId === "barrier",
+          ),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode,
+        });
+        const events = Array.from(yield* Fiber.join(eventsFiber));
+        assert.deepEqual(runtimeMock.state.sessionGetCalls, ["unrelated", "grandchild", "child"]);
+        const requests = events.filter((event) => event.type === "request.opened");
+        assert.equal(
+          events.some((event) => event.type === "turn.completed" || event.type === "runtime.error"),
+          false,
+        );
+        assert.equal(
+          events.every((event) => event.threadId === threadId),
+          true,
+        );
+        if (runtimeMode === "full-access") {
+          assert.equal(requests.length, 0);
+          assert.deepEqual(runtimeMock.state.permissionReplies, [
+            { requestID: "directory", reply: "once" },
+            { requestID: "next-directory", reply: "once" },
+          ]);
+        } else {
+          assert.deepEqual(
+            requests.map((event) => event.requestId),
+            ["directory", "next-directory"],
+          );
+          assert.deepEqual(
+            requests.map((event) => event.payload.requestType),
+            ["dynamic_tool_call", "dynamic_tool_call"],
+          );
+          assert.equal(requests[0]?.payload.detail, "external_directory: /repo-worktree/*");
+          yield* adapter.respondToRequest(threadId, ApprovalRequestId.make("directory"), "accept");
+          assert.deepEqual(runtimeMock.state.permissionReplies, [
+            { requestID: "directory", reply: "once" },
+          ]);
+        }
+        yield* adapter.stopSession(threadId);
+      }),
+    );
+  }
+
+  it.effect("surfaces descendant questions in full-access and routes answers to OpenCode", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("child-question");
+      const root = "http://127.0.0.1:9999/session";
+      runtimeMock.state.sessionParents.set("child", root);
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "question.asked",
+          properties: {
+            sessionID: "child",
+            id: "child-input",
+            questions: [
+              {
+                question: "Which target?",
+                header: "Target",
+                options: [{ label: "Local", description: "Local target" }],
+              },
+            ],
+          },
+        },
+        { type: "question.asked", properties: { sessionID: root, id: "barrier", questions: [] } },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil(
+          (event) => event.type === "user-input.requested" && event.requestId === "barrier",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const request = events.find(
+        (event) => event.type === "user-input.requested" && event.requestId === "child-input",
+      );
+      assert.ok(request?.type === "user-input.requested");
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make("child-input"), {
+        [request.payload.questions[0]!.id]: "Local",
+      });
+      assert.deepEqual(runtimeMock.state.questionReplies, [
+        { requestID: "child-input", answers: [["Local"]] },
+      ]);
+      assert.deepEqual(runtimeMock.state.permissionReplies, []);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("does not approve requests when descendant ownership cannot be established", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("child-ownership-failure");
+      runtimeMock.state.subscribedEvents = [
+        {
+          type: "permission.asked",
+          properties: {
+            sessionID: "missing-session",
+            id: "unverified-request",
+            permission: "external_directory",
+            patterns: ["/repo-worktree/*"],
+            always: [],
+            metadata: {},
+          },
+        },
+      ];
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(runtimeMock.state.permissionReplies, []);
+      assert.equal(
+        events.some((event) => event.type === "request.opened"),
+        false,
+      );
+      assert.equal(
+        events.some((event) => event.type === "runtime.error"),
+        true,
+      );
+      assert.equal(yield* adapter.hasSession(threadId), false);
+    }),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

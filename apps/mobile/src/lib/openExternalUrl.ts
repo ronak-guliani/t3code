@@ -1,7 +1,14 @@
 import * as Schema from "effect/Schema";
 import { Linking } from "react-native";
 
-const ExternalUrlTarget = Schema.Literals(["file-preview", "markdown-link", "pull-request"]);
+import { reportClientError } from "./clientLogger";
+
+const ExternalUrlTarget = Schema.Literals([
+  "file-preview",
+  "markdown-link",
+  "pull-request",
+  "provider-auth",
+]);
 
 export type ExternalUrlTarget = typeof ExternalUrlTarget.Type;
 
@@ -39,7 +46,7 @@ export async function tryOpenExternalUrl(url: string, target: ExternalUrlTarget)
     return true;
   } catch (cause) {
     const error = new ExternalUrlOpenError({ target, ...externalUrlMetadata(url), cause });
-    console.error(error.message, {
+    reportClientError(error.message, {
       _tag: error._tag,
       target: error.target,
       scheme: error.scheme,

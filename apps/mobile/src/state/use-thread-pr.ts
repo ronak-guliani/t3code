@@ -1,58 +1,146 @@
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { GitPullRequestAssociation, VcsStatusResult } from "@t3tools/contracts";
-import { resolveChangeRequestPresentation } from "@t3tools/shared/sourceControl";
+import { useAtomValue } from "@effect/atom-react";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import {
+  createLinkedPullRequestSummaryAtomFamily,
+  pullRequestDetailToVcsStatus,
+} from "@t3tools/client-runtime/state/pull-requests";
+import { Atom } from "effect/unstable/reactivity";
+import { useCallback, useEffect, useMemo } from "react";
 
-export type ThreadPr = GitPullRequestAssociation;
+import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "./atom-registry";
+import { useEnvironmentQuery } from "./query";
+import { presentThreadPr, type ThreadPrPresentation } from "./thread-pr-presentation";
+import { vcsEnvironment } from "./vcs";
+import { serverEnvironment } from "./server";
 
-export interface ThreadPrPresentation {
-  readonly number: number;
-  readonly state: ThreadPr["state"];
-  readonly url: string;
-  /** Compact chip label, e.g. "PR open" / "MR merged". */
-  readonly label: string;
-  readonly textClassName: string;
+const linkedPullRequestDetailAtom = createLinkedPullRequestSummaryAtomFamily(connectionAtomRuntime);
+const MAX_THREAD_PR_SNAPSHOTS = 500;
+
+interface ThreadPrSnapshot {
+  readonly identity: string;
+  readonly presentation: ThreadPrPresentation;
 }
 
-const PR_STATE_TEXT_CLASS: Record<NonNullable<ThreadPr["state"]>, string> = {
-  open: "text-emerald-600 dark:text-emerald-400",
-  merged: "text-violet-600 dark:text-violet-400",
-  closed: "text-zinc-500 dark:text-zinc-400",
-};
+// One bounded cache survives row virtualization without retaining one live
+// atom for every thread, branch, directory, or linked pull request ever seen.
+const threadPrSnapshotsAtom = Atom.make<ReadonlyMap<string, ThreadPrSnapshot>>(new Map()).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:thread-pr-snapshots"),
+);
 
-export function presentThreadPr(
-  pr: ThreadPr,
-  provider: VcsStatusResult["sourceControlProvider"] | null | undefined,
-): ThreadPrPresentation {
-  const shortName = resolveChangeRequestPresentation(provider).shortName;
-  if (pr.state === null) {
-    return {
-      number: pr.number,
-      state: null,
-      url: pr.url,
-      label: shortName,
-      textClassName: "text-sky-600 dark:text-sky-400",
-    };
-  }
-  return {
-    number: pr.number,
-    state: pr.state,
-    url: pr.url,
-    label: `${shortName} ${pr.state}`,
-    textClassName: PR_STATE_TEXT_CLASS[pr.state],
-  };
-}
+export {
+  presentThreadPr,
+  type ThreadPr,
+  type ThreadPrPresentation,
+} from "./thread-pr-presentation";
 
 /**
- * Durable PR association for a thread. Never inferred from live checkout/branch
- * equality — only explicit association metadata is shown.
+ * Live PR status for a thread's branch. Subscriptions are deduplicated per
+ * (environmentId, cwd) by the atom family, so many rows on the same worktree
+ * or project root share one stream — and virtualization means only visible
+ * rows subscribe at all.
  */
 export function useThreadPr(
   thread: EnvironmentThreadShell,
-  _projectCwd: string | null,
+  projectCwd: string | null,
 ): ThreadPrPresentation | null {
-  const pullRequest = thread.pullRequest ?? null;
-  if (!pullRequest) {
-    return null;
-  }
-  return presentThreadPr(pullRequest, null);
+  const cwd = thread.worktreePath ?? projectCwd;
+  const config = useAtomValue(serverEnvironment.configValueAtom(thread.environmentId));
+  const supportsPullRequests = config?.environment.capabilities.pullRequests === true;
+  const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const snapshotIdentity = JSON.stringify(
+    thread.pullRequest ?? thread.linkedPullRequest ?? { branch: thread.branch, cwd },
+  );
+  // Select this row's entry so writes for other rows do not re-render it.
+  const snapshotEntry = useAtomValue(
+    threadPrSnapshotsAtom,
+    useCallback(
+      (current: ReadonlyMap<string, ThreadPrSnapshot>) => current.get(threadKey),
+      [threadKey],
+    ),
+  );
+  const snapshot = snapshotEntry?.identity === snapshotIdentity ? snapshotEntry.presentation : null;
+  const gitStatus = useEnvironmentQuery(
+    supportsPullRequests &&
+      thread.pullRequest == null &&
+      thread.linkedPullRequest == null &&
+      thread.branch !== null &&
+      cwd !== null
+      ? vcsEnvironment.status({
+          environmentId: thread.environmentId,
+          input: { cwd },
+        })
+      : null,
+  );
+  const linkedPullRequest = useEnvironmentQuery(
+    !supportsPullRequests || thread.linkedPullRequest == null
+      ? null
+      : linkedPullRequestDetailAtom({
+          environmentId: thread.environmentId,
+          input: {
+            projectId: thread.linkedPullRequest.projectId,
+            repository: thread.linkedPullRequest.repository,
+            number: thread.linkedPullRequest.number,
+          },
+        }),
+  );
+
+  const live = useMemo<ThreadPrPresentation | null | undefined>(() => {
+    if (thread.pullRequest != null) {
+      return presentThreadPr({ ...thread.pullRequest, isDraft: false }, null);
+    }
+    if (!supportsPullRequests) return null;
+    if (thread.linkedPullRequest != null) {
+      const detail = linkedPullRequest.data;
+      return detail === null
+        ? undefined
+        : presentThreadPr(pullRequestDetailToVcsStatus(detail), {
+            kind: detail.provider,
+            name: detail.provider,
+            baseUrl: "",
+          });
+    }
+
+    const status = gitStatus.data;
+    if (thread.branch === null) return null;
+    if (status === null) return undefined;
+    if (status.refName !== thread.branch || !status.pr) return null;
+    return presentThreadPr(status.pr, status.sourceControlProvider);
+  }, [
+    gitStatus.data,
+    linkedPullRequest.data,
+    thread.branch,
+    thread.linkedPullRequest,
+    thread.pullRequest,
+    supportsPullRequests,
+  ]);
+
+  useEffect(() => {
+    if (live === undefined) return;
+    appAtomRegistry.modify(threadPrSnapshotsAtom, (current) => {
+      const existing = current.get(threadKey);
+      if (live === null) {
+        if (existing === undefined) return [false, current];
+        const next = new Map(current);
+        next.delete(threadKey);
+        return [true, next];
+      }
+      if (existing?.identity === snapshotIdentity && existing.presentation === live) {
+        return [false, current];
+      }
+      const next = new Map(current);
+      next.delete(threadKey);
+      next.set(threadKey, { identity: snapshotIdentity, presentation: live });
+      while (next.size > MAX_THREAD_PR_SNAPSHOTS) {
+        const oldestKey = next.keys().next().value;
+        if (oldestKey === undefined) break;
+        next.delete(oldestKey);
+      }
+      return [true, next];
+    });
+  }, [live, snapshotIdentity, threadKey]);
+
+  return live === undefined ? snapshot : live;
 }

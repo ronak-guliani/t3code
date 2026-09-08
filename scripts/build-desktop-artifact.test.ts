@@ -1,3 +1,4 @@
+import * as Crypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { ConfigProvider, Effect, FileSystem, Option, Path } from "effect";
@@ -13,6 +14,7 @@ import {
   resolveDesktopBuildIconAssets,
   resolveDesktopProductName,
   resolveDesktopStageCacheKey,
+  resolveDesktopStageWorkspaceConfig,
   resolveDesktopUpdateChannel,
   resolveElectronFuses,
   resolveMockUpdateServerPort,
@@ -156,6 +158,39 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
   });
 
+  it("ships the Linux cookie helper outside the application archive", async () => {
+    const config = await Effect.runPromise(
+      createBuildConfig("linux", "AppImage", "0.0.17", "dev", false, false, undefined, undefined),
+    );
+    assert.deepStrictEqual(config.extraResources, [
+      { from: "apps/desktop/resources/browser-secret", to: "browser-secret" },
+    ]);
+  });
+
+  it("installs optional native bindings for the target as well as the build host", () => {
+    assert.deepStrictEqual(resolveDesktopStageWorkspaceConfig("mac", "arm64"), {
+      packages: [],
+      optional: true,
+      supportedArchitectures: {
+        os: ["current", "darwin"],
+        cpu: ["current", "arm64"],
+        libc: ["glibc", "musl"],
+      },
+    });
+    assert.deepStrictEqual(
+      resolveDesktopStageWorkspaceConfig("mac", "universal").supportedArchitectures.cpu,
+      ["current", "arm64", "x64"],
+    );
+    assert.deepStrictEqual(
+      resolveDesktopStageWorkspaceConfig("win", "x64").supportedArchitectures.os,
+      ["current", "win32"],
+    );
+    assert.deepStrictEqual(
+      resolveDesktopStageWorkspaceConfig("linux", "arm64").supportedArchitectures.os,
+      ["current", "linux"],
+    );
+  });
+
   it("keys staged dependencies by dependency and toolchain inputs, not app code", () => {
     const base = {
       platform: "mac" as const,
@@ -169,6 +204,11 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     };
 
     assert.equal(resolveDesktopStageCacheKey(base), resolveDesktopStageCacheKey({ ...base }));
+    const legacyKey = Crypto.createHash("sha256")
+      .update(JSON.stringify(base))
+      .digest("hex")
+      .slice(0, 20);
+    assert.notEqual(resolveDesktopStageCacheKey(base), legacyKey);
     assert.notEqual(
       resolveDesktopStageCacheKey(base),
       resolveDesktopStageCacheKey({ ...base, lockfile: "lockfile-v2" }),

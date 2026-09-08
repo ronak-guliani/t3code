@@ -1,14 +1,21 @@
 ---
 name: resolving-merge-conflicts
-description: "Use when you need to resolve an in-progress git merge/rebase conflict."
+description: Use when you need to resolve an in-progress git merge or rebase conflict.
 ---
 
-1. **See the current state** of the merge/rebase. Check git history, and the conflicting files.
+1. Inspect the current merge or rebase state with `git status`, `git diff --name-only --diff-filter=U`, and the recent history. Record unrelated staged, unstaged, and untracked work before editing.
 
-2. **Find the primary sources** for each conflict. Understand deeply why each change was made, and what the original intent was. Read the commit messages, check the PRs, check original issues/tickets.
+2. Find the primary source and intent for each conflict. Read the relevant commit messages, issues, or pull requests. If the intended result is unclear or the conflict is unrelated to the user's request, stop and ask instead of guessing.
 
-3. **Resolve each hunk.** Preserve both intents where possible. Where incompatible, pick the one matching the merge's stated goal and note the trade-off. Do **not** invent new behaviour. Always resolve; never `--abort`.
+3. Resolve only conflicts whose intent is known. Preserve unrelated work. Do not automatically resolve every conflict, and do not automatically run `git merge --abort` or `git rebase --abort`. Aborting is a user-directed choice because it can discard the operation's in-progress state.
 
-4. Discover the project's **automated checks** and run them, typically typecheck, then tests, then format. Fix anything the merge broke.
+4. After each resolution, inspect the file and run the smallest relevant checks. Stage only resolved conflict paths and any task-owned files needed for the operation:
 
-5. **Finish the merge/rebase.** Stage everything and commit. If rebasing, continue the rebase process until all commits are rebased.
+   ```sh
+   git add -- <resolved-conflict-paths>
+   git status --short
+   ```
+
+   Never use `git add -A` or `git add .` when unrelated work is present.
+
+5. Continue the merge or rebase only after `git diff --check` passes and `git diff --name-only --diff-filter=U` is empty. Finish with the repository's normal commit or rebase continuation only when the user asked for that operation. If a conflict remains ambiguous, leave it unresolved and report the exact path and question.
