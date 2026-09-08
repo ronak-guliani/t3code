@@ -71,7 +71,8 @@ function markdownValuesEqual(left: unknown, right: unknown): boolean {
     keys.length === Object.keys(rightRecord).length &&
     keys.every(
       (key) =>
-        Object.hasOwn(rightRecord, key) && markdownValuesEqual(leftRecord[key], rightRecord[key]),
+        Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+        markdownValuesEqual(leftRecord[key], rightRecord[key]),
     )
   );
 }
