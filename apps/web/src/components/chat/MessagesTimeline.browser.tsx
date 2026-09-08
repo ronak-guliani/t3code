@@ -250,9 +250,20 @@ describe("MessagesTimeline", () => {
       />,
     );
     await expect.element(page.getByText("Reading live.ts", { exact: true })).toBeVisible();
-    await expect.element(page.getByText(/4 actions.*\+1 active/)).toBeVisible();
+    await expect.element(page.getByText("+1", { exact: true })).toBeVisible();
+    await expect.element(page.getByText(/4 actions/)).not.toBeInTheDocument();
+    const trigger = page.getByRole("button", { name: "Expand Tool Calls (4)" });
+    const button = trigger.element();
+    const group = button.closest(".work-group-section")!;
+    expect(getComputedStyle(group).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(getComputedStyle(group).borderTopWidth).toBe("0px");
+    expect(getComputedStyle(button).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(button.getBoundingClientRect().height).toBeLessThanOrEqual(44);
     expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(1);
     await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
+    await expect.element(page.getByText(/4 actions.*2 active/)).toBeVisible();
+    const panel = document.getElementById(button.getAttribute("aria-controls")!)!;
+    expect(getComputedStyle(panel).transitionDuration).toBe("0.15s");
     await page.getByRole("button", { name: "Read 2 files" }).click();
     await page.getByRole("button", { name: "Expand details: Read a.ts" }).click();
     await expect.element(page.getByText("/workspace/src/a.ts", { exact: true })).toBeVisible();
@@ -269,6 +280,10 @@ describe("MessagesTimeline", () => {
       .element(page.getByRole("button", { name: "Collapse Tool Calls (4)" }))
       .toBeVisible();
     expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(0);
+    await page.getByRole("button", { name: "Collapse Tool Calls (4)" }).click();
+    await expect.element(page.getByText(/4 actions/)).not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
+    await expect.element(page.getByText(/4 actions/)).toBeVisible();
     await screen.unmount();
   });
 

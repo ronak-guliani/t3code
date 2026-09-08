@@ -51,6 +51,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -1048,99 +1049,115 @@ const WorkGroupSection = memo(function WorkGroupSection({
       ),
     [groupedEntries, activeTurnInProgress, activeTurnId, shouldAutoCollapse],
   );
-  const groups = useMemo(
-    () => (isExpanded ? groupConsecutiveWorkEntries(groupedEntries, (entry) => entry) : []),
-    [groupedEntries, isExpanded],
-  );
   const groupLabel = onlyToolEntries ? "Tool Calls" : "Work log";
-  const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
   const toggleLabel = isExpanded ? "Collapse" : "Expand";
   const attention = activity.state === "failed" || activity.state === "approval";
 
   return (
-    <div
-      className={cn(
-        "work-group-section overflow-hidden rounded-xl border bg-card/25",
-        attention ? "border-amber-500/35" : "border-border/45",
-      )}
+    <Collapsible
+      className="work-group-section"
+      open={isExpanded}
+      onOpenChange={(expanded) => {
+        workGroupExpansion.set(groupKey, expanded);
+        setExpansionOverride(expanded ? "expanded" : "collapsed");
+      }}
     >
-      <button
-        type="button"
-        className="flex min-h-12 w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
-        onClick={() => {
-          workGroupExpansion.set(groupKey, !isExpanded);
-          setExpansionOverride(isExpanded ? "collapsed" : "expanded");
-        }}
-        aria-expanded={isExpanded}
+      <CollapsibleTrigger
+        className={cn(
+          "flex min-h-8 w-fit max-w-full items-center gap-1.5 rounded-sm px-0.5 py-1 text-left text-sm leading-relaxed transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring pointer-coarse:min-h-11",
+          attention ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+        )}
         aria-controls={detailsId}
         aria-label={`${toggleLabel} ${groupLabel} (${groupedEntries.length})`}
       >
-        <span
-          className={cn(
-            "flex size-6 shrink-0 items-center justify-center rounded-full",
-            attention
-              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
-              : "bg-muted/60 text-muted-foreground",
-          )}
-          aria-hidden="true"
-        >
+        <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden="true">
           {attention ? (
             <CircleAlertIcon className="size-3.5" />
-          ) : activity.shimmer ? (
-            <span className="size-2 rounded-full bg-sky-500 motion-safe:animate-pulse" />
+          ) : activity.lead ? (
+            createElement(workEntryIcon(activity.lead), { className: "size-3.5" })
           ) : activity.state === "stopped" ? (
             <Minimize2Icon className="size-3.5" />
           ) : (
             <CheckIcon className="size-3.5" />
           )}
         </span>
-        <span className="min-w-0 flex-1">
-          <span
-            className={cn(
-              "block truncate text-foreground/85",
-              activity.shimmer && "work-activity-shimmer",
-            )}
-            title={activity.label}
-          >
-            {activity.label}
-          </span>
-          <span className="mt-0.5 block text-[0.85em] text-muted-foreground">
-            {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
-            {activity.activeCount > 1 ? ` · +${activity.activeCount - 1} active` : ""}
-            {activity.shimmer && groupedEntries[0] ? (
-              <>
-                {" "}
-                · <WorkingTimer createdAt={groupedEntries[0].createdAt} />
-              </>
-            ) : null}
-          </span>
+        <span
+          className={cn("min-w-0 truncate", activity.shimmer && "work-activity-shimmer")}
+          title={activity.label}
+        >
+          {activity.label}
         </span>
-        <CollapseIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      </button>
-      {isExpanded ? (
-        <div id={detailsId} className="border-t border-border/40 px-2 py-1.5">
-          {(showAll ? groups : groups.slice(-6)).map((group) => (
-            <WorkHistoryGroup
-              key={group.entries[0]!.stableId ?? group.entries[0]!.id}
-              entries={group.entries}
-              label={group.label}
-              workspaceRoot={workspaceRoot}
-            />
-          ))}
-          {!showAll && groups.length > 6 ? (
-            <button
-              type="button"
-              className="mt-1 w-full rounded-lg py-2 text-[0.9em] text-muted-foreground hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring"
-              onClick={() => setShowAll(true)}
-            >
-              Show all {groupedEntries.length} actions
-            </button>
-          ) : null}
+        {activity.activeCount > 1 ? (
+          <span
+            className="shrink-0 text-xs text-muted-foreground"
+            title={`${activity.activeCount - 1} more active`}
+          >
+            +{activity.activeCount - 1}
+          </span>
+        ) : null}
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none",
+            isExpanded && "rotate-90",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        id={detailsId}
+        className="duration-150 ease-out motion-reduce:transition-none"
+      >
+        <div className="pb-1 pl-2 pt-0.5">
+          <p className="px-2 py-1 text-[0.85em] text-muted-foreground">
+            {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
+            {activity.activeCount > 1 ? ` · ${activity.activeCount} active` : ""}
+          </p>
+          <WorkGroupHistory
+            entries={groupedEntries}
+            workspaceRoot={workspaceRoot}
+            showAll={showAll}
+            onShowAll={() => setShowAll(true)}
+          />
         </div>
-      ) : null}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 });
+
+function WorkGroupHistory({
+  entries,
+  workspaceRoot,
+  showAll,
+  onShowAll,
+}: {
+  entries: TimelineWorkEntry[];
+  workspaceRoot: string | undefined;
+  showAll: boolean;
+  onShowAll: () => void;
+}) {
+  const groups = useMemo(() => groupConsecutiveWorkEntries(entries, (entry) => entry), [entries]);
+  return (
+    <>
+      {(showAll ? groups : groups.slice(-6)).map((group) => (
+        <WorkHistoryGroup
+          key={group.entries[0]!.stableId ?? group.entries[0]!.id}
+          entries={group.entries}
+          label={group.label}
+          workspaceRoot={workspaceRoot}
+        />
+      ))}
+      {!showAll && groups.length > 6 ? (
+        <button
+          type="button"
+          className="mt-1 rounded-sm px-2 py-2 text-[0.9em] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={onShowAll}
+        >
+          Show all {entries.length} actions
+        </button>
+      ) : null}
+    </>
+  );
+}
 
 function WorkHistoryGroup({
   entries,
@@ -1162,25 +1179,21 @@ function WorkHistoryGroup({
       />
     );
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-muted-foreground hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring"
-      >
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <CollapsibleTrigger className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-muted-foreground hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring">
         {createElement(workEntryIcon(entries[0]!), {
           className: "size-3.5 shrink-0",
           "aria-hidden": true,
         })}
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {expanded ? (
-          <ChevronDownIcon className="size-3" />
-        ) : (
-          <ChevronRightIcon className="size-3" />
-        )}
-      </button>
-      {expanded ? (
+        <ChevronRightIcon
+          className={cn(
+            "size-3 transition-transform duration-150 motion-reduce:transition-none",
+            expanded && "rotate-90",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
         <div className="ml-3 border-l border-border/60 pl-2">
           {entries.map((entry) => (
             <SimpleWorkEntryRow
@@ -1192,8 +1205,8 @@ function WorkHistoryGroup({
             />
           ))}
         </div>
-      ) : null}
-    </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 

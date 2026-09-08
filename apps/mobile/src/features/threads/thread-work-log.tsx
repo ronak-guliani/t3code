@@ -72,9 +72,11 @@ const SHIMMER_SWEEP_MS = 1_350;
 const SHIMMER_PAUSE_MS = 1_450;
 const SHIMMER_ICON_AND_GAP_WIDTH = 30;
 export const THREAD_DISCLOSURE_TRANSITION_MS = 180;
-const WORK_LOG_LAYOUT_TRANSITION = LinearTransition.duration(THREAD_DISCLOSURE_TRANSITION_MS);
-const WORK_LOG_DETAIL_ENTER_TRANSITION = FadeIn.duration(140);
-const WORK_LOG_DETAIL_EXIT_TRANSITION = FadeOut.duration(120);
+const WORK_LOG_LAYOUT_TRANSITION = LinearTransition.duration(
+  THREAD_DISCLOSURE_TRANSITION_MS,
+).reduceMotion(ReduceMotion.System);
+const WORK_LOG_DETAIL_ENTER_TRANSITION = FadeIn.duration(140).reduceMotion(ReduceMotion.System);
+const WORK_LOG_DETAIL_EXIT_TRANSITION = FadeOut.duration(120).reduceMotion(ReduceMotion.System);
 type WorkContentIcon = AppSymbolName | "browser" | "t3-code";
 
 function WorkLogIcon(props: {
@@ -360,7 +362,7 @@ const WORK_LOG_BOTTOM_MARGIN = 3.5; // mb-1 with the mobile 14px rem
 const WORK_GROUP_MAX_HEIGHT = 256;
 const WORK_GROUP_EDGE_FADE_HEIGHT = 12;
 
-export const WORK_GROUP_TOGGLE_HEIGHT = 52;
+export const WORK_GROUP_TOGGLE_HEIGHT = THREAD_WORK_ROW_MIN_HEIGHT;
 
 function workLogRowsHeight(
   activities: ReadonlyArray<ThreadFeedActivity>,
@@ -460,7 +462,13 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
   }
 
   return (
-    <View className="-mx-1 mb-1 px-1 py-0">
+    <Animated.View
+      className="-mx-1 mb-1 px-1 py-0"
+      entering={
+        props.activities[0]?.groupedToolDetail ? WORK_LOG_DETAIL_ENTER_TRANSITION : undefined
+      }
+      exiting={props.activities[0]?.groupedToolDetail ? WORK_LOG_DETAIL_EXIT_TRANSITION : undefined}
+    >
       {props.activities[0]?.groupedToolDetail ? (
         <ThreadWorkGroupList
           activities={activities}
@@ -474,7 +482,7 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
       ) : (
         <View className="gap-px">{props.activities.map(renderRow)}</View>
       )}
-    </View>
+    </Animated.View>
   );
 }
 
@@ -984,13 +992,15 @@ export function ThreadWorkGroupToggle(props: {
         accessibilityState={{ expanded: props.expanded }}
         accessibilityLabel={accessibilityLabel}
         accessibilityHint={`Double tap to ${props.expanded ? "hide" : "show"} ${props.hiddenCount} tool ${props.hiddenCount === 1 ? "call" : "calls"}.`}
-        hitSlop={4}
+        hitSlop={8}
         onPress={() => {
           void Haptics.selectionAsync();
           props.onToggle();
         }}
-        className="rounded-xl border border-adaptive-neutral-300-a60-white-a12 px-2 py-1 active:bg-subtle"
-        style={{ minHeight: WORK_GROUP_TOGGLE_HEIGHT }}
+        className="px-0.5 py-0 active:opacity-70"
+        style={{
+          minHeight: Math.max(WORK_GROUP_TOGGLE_HEIGHT, props.rowSizing.estimatedRowHeight),
+        }}
       >
         <View className="min-h-8 flex-row items-center gap-1.5">
           {props.shimmer ? (
@@ -1027,6 +1037,11 @@ export function ThreadWorkGroupToggle(props: {
               </Text>
             </>
           )}
+          {props.activeCount > 1 ? (
+            <Text className="shrink-0 text-3xs text-foreground-muted">
+              +{props.activeCount - 1}
+            </Text>
+          ) : null}
           <ThreadDisclosureChevron
             expanded={props.expanded}
             collapsedDirection="down"
@@ -1034,10 +1049,6 @@ export function ThreadWorkGroupToggle(props: {
             tintColor={props.iconSubtleColor}
           />
         </View>
-        <Text className="ml-7 text-3xs text-foreground-muted">
-          {props.hiddenCount} {props.hiddenCount === 1 ? "action" : "actions"}
-          {props.activeCount > 1 ? ` · +${props.activeCount - 1} active` : ""}
-        </Text>
       </Pressable>
     </View>
   );
