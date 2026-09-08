@@ -20,6 +20,9 @@ import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 
 export type CompactThreadStatus = NestedThreadStatus | "queued" | "draft" | "plan-ready";
 
+const NESTED_INDENT = 12;
+const MAX_NESTED_INDENT_DEPTH = 3;
+
 const STATUS: Record<CompactThreadStatus, { label: string; color: string; action?: string }> = {
   ready: { label: "", color: "bg-transparent" },
   working: { label: "Working", color: "bg-adaptive-sky-600-400" },
@@ -112,6 +115,7 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
   readonly muted?: boolean;
   readonly pinned?: boolean;
   readonly sidebar?: boolean;
+  readonly depth?: number | undefined;
   readonly showDivider?: boolean;
   readonly related?: {
     readonly thread: MobileThreadShell;
@@ -209,7 +213,10 @@ export const CompactThreadRow = memo(function CompactThreadRow(props: {
             : props.sidebar
               ? theme["--color-drawer"]
               : theme["--color-screen"],
-          paddingHorizontal: props.sidebar ? 12 : 18,
+          paddingStart:
+            (props.sidebar ? 12 : 18) +
+            Math.min(Math.max(props.depth ?? 0, 0), MAX_NESTED_INDENT_DEPTH) * NESTED_INDENT,
+          paddingEnd: props.sidebar ? 12 : 18,
         },
       ]}
     >

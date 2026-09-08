@@ -261,3 +261,4 @@
 - Keep subchat draft ownership separate from both the parent conversation and the project draft, including attachment cleanup and rejected-outbox recovery. Mobile `worktree` mode prepares a new checkout; inherit an existing parent checkout with `local` plus its branch and worktree path.
 - Independent iPad sidebar stacks own header chrome only; carry app navigation across that boundary for chat and queued-draft actions.
 - Rejected subchats must recover to a reachable project draft when their parent disappears; recheck the recovery destination before removing the outbox entry.
+- Count related descendants before read filtering, decrement each parent's pending-child count when rolling branches up, and use normalized parent keys for visibility walks so cycles cannot hang the inbox.
