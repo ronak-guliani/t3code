@@ -31,8 +31,11 @@ export interface GitHubReference {
   readonly number: number;
 }
 
-export function buildGitHubIssueReferenceUrl(reference: GitHubShorthandReference): string {
-  return `https://github.com/${reference.repository}/issues/${reference.number}`;
+export function buildGitHubIssueReferenceUrl(
+  reference: GitHubShorthandReference & { readonly host?: string },
+): string {
+  const host = reference.host?.trim() ? reference.host.trim().toLowerCase() : "github.com";
+  return `https://${host}/${reference.repository}/issues/${reference.number}`;
 }
 
 function normalizeOrigin(value: string): string | null {
@@ -63,14 +66,26 @@ export function parseCanonicalThreadPath(
   const threadId = decodePathSegment(segments[1] ?? "");
   if (!environmentId || !threadId || !THREAD_ID_PATTERN.test(threadId)) return null;
 
-  const normalizedEnvironmentId = EnvironmentId.make(environmentId);
+  let normalizedEnvironmentId: EnvironmentId;
+  try {
+    normalizedEnvironmentId = EnvironmentId.make(environmentId);
+  } catch {
+    return null;
+  }
   if (trustedEnvironmentIds && !trustedEnvironmentIds.has(normalizedEnvironmentId)) {
+    return null;
+  }
+
+  let normalizedThreadId: ThreadId;
+  try {
+    normalizedThreadId = ThreadId.make(threadId.toLowerCase());
+  } catch {
     return null;
   }
 
   return {
     environmentId: normalizedEnvironmentId,
-    threadId: ThreadId.make(threadId.toLowerCase()),
+    threadId: normalizedThreadId,
   };
 }
 

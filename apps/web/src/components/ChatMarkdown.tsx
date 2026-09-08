@@ -849,18 +849,20 @@ function githubRepositoryForProject(
         } | null;
       }
     | undefined,
-): string | null {
+): { readonly repository: string; readonly host: string } | null {
   const identity = project?.repositoryIdentity;
   if (identity?.provider !== "github") return null;
+  const segments = identity.canonicalKey.split("/").filter(Boolean);
+  const hostSegment = segments[0]?.toLowerCase();
+  const host = hostSegment && hostSegment.includes(".") ? hostSegment : "github.com";
   if (identity.owner && identity.name) {
-    return `${identity.owner}/${identity.name}`.toLowerCase();
+    return { repository: `${identity.owner}/${identity.name}`.toLowerCase(), host };
   }
 
-  const segments = identity.canonicalKey.split("/").filter(Boolean);
-  if (segments.length !== 3 || segments[0]?.toLowerCase() !== "github.com") {
+  if (segments.length !== 3) {
     return null;
   }
-  return `${segments[1]}/${segments[2]}`.toLowerCase();
+  return { repository: `${segments[1]}/${segments[2]}`.toLowerCase(), host };
 }
 
 function buildFileLinkLabel(meta: MarkdownFileLinkMeta, parentSuffix?: string): string {
@@ -1162,12 +1164,23 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
     const navigation = currentThread?.pullRequest?.url
       ? githubPullRequestNavigation(currentThread.pullRequest.url)
       : null;
-    const repository = githubRepositoryForProject(currentProject);
+    const projectRepository = githubRepositoryForProject(currentProject);
+    const repository = projectRepository?.repository ?? null;
     const authoritativeRepository = navigation?.repository.toLowerCase() ?? repository;
+    const authoritativeHost =
+      navigation?.host.toLowerCase() ?? projectRepository?.host ?? "github.com";
 
     for (const reference of parseGitHubReferences(normalizedText)) {
       const referenceRepository = reference.repository ?? authoritativeRepository;
       if (!referenceRepository) continue;
+
+      const referenceHost = reference.repository
+        ? reference.repository === navigation?.repository.toLowerCase()
+          ? (navigation?.host.toLowerCase() ?? authoritativeHost)
+          : reference.repository === projectRepository?.repository
+            ? (projectRepository?.host ?? authoritativeHost)
+            : "github.com"
+        : authoritativeHost;
 
       const key = reference.repository
         ? `${reference.repository}#${reference.number}`
@@ -1183,6 +1196,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
           : buildGitHubIssueReferenceUrl({
               repository: referenceRepository,
               number: reference.number,
+              host: referenceHost,
             }),
       );
     }

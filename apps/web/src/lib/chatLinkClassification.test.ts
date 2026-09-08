@@ -76,6 +76,23 @@ describe("resolveExplicitThreadLink", () => {
       parseCanonicalThreadPath("/environment-a/bc880b45-fd48-42db-98fa-f211bae7cc0a/extra"),
     ).toBe(null);
   });
+
+  it("returns null instead of throwing for whitespace-only environment segments", () => {
+    const threadId = "bc880b45-fd48-42db-98fa-f211bae7cc0a";
+    expect(parseCanonicalThreadPath(`/%20/${threadId}`)).toBe(null);
+    expect(() =>
+      resolveExplicitThreadLink(`/%20/${threadId}`, {
+        baseOrigin: "https://app.example.test",
+        trustedOrigins: [{ origin: "https://app.example.test" }],
+      }),
+    ).not.toThrow();
+    expect(
+      resolveExplicitThreadLink(`/%20/${threadId}`, {
+        baseOrigin: "https://app.example.test",
+        trustedOrigins: [{ origin: "https://app.example.test" }],
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("parseGitHubShorthandReferences", () => {
@@ -101,5 +118,15 @@ describe("parseGitHubReferences", () => {
         number: 42,
       }),
     ).toBe("https://github.com/owner/repo/issues/42");
+  });
+
+  it("preserves the enterprise host for issue destinations", () => {
+    expect(
+      buildGitHubIssueReferenceUrl({
+        repository: "owner/repo",
+        number: 42,
+        host: "github.example.com",
+      }),
+    ).toBe("https://github.example.com/owner/repo/issues/42");
   });
 });
