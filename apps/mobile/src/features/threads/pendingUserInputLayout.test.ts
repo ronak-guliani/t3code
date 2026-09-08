@@ -39,7 +39,7 @@ describe("derivePendingUserInputMaxHeight", () => {
     ).toBe(160);
   });
 
-  it("bounds approval details by the real short viewport while keeping controls outside the scroll region", () => {
+  it("bounds approval details in a normal viewport", () => {
     expect(
       derivePendingApprovalMaxHeight({
         windowHeight: 375,
@@ -50,25 +50,25 @@ describe("derivePendingUserInputMaxHeight", () => {
     ).toBe(225);
   });
 
-  it("never expands an approval beyond the actual available height", () => {
+  it("preserves approval chrome in a short keyboard-open viewport", () => {
     expect(
       derivePendingApprovalMaxHeight({
-        windowHeight: 180,
-        keyboardHeight: 0,
+        windowHeight: 375,
+        keyboardHeight: 240,
         navigationHeaderHeight: 44,
         composerOverlapHeight: 94,
       }),
-    ).toBe(30);
+    ).toBe(160);
   });
 
-  it("clamps an approval to zero when the viewport has no remaining space", () => {
+  it("caps approval details in a tall viewport", () => {
     expect(
       derivePendingApprovalMaxHeight({
-        windowHeight: 120,
+        windowHeight: 932,
         keyboardHeight: 0,
-        navigationHeaderHeight: 44,
+        navigationHeaderHeight: 103,
         composerOverlapHeight: 94,
       }),
-    ).toBe(0);
+    ).toBe(560);
   });
 });

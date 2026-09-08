@@ -25,6 +25,7 @@ import {
   reduceMarkdownImageLoadState,
   shouldAutomaticallyRetryMarkdownImage,
 } from "./markdownImageLoadState";
+import { deriveMarkdownImagePlaceholderAccessibility } from "./threadMarkdownImageAccessibility";
 
 export function ThreadMarkdownImageView(props: {
   readonly uri: string | null;
@@ -101,6 +102,12 @@ export function ThreadMarkdownImageView(props: {
     props.unavailable ||
     (props.uri !== null && imageLoadState.uri === props.uri && imageLoadState.failed);
   const canRetry = failed && props.uri !== null && !props.unavailable;
+  const placeholderAccessibility = deriveMarkdownImagePlaceholderAccessibility({
+    alt: props.alt,
+    failed,
+    canRetry,
+    hasMediaActions: mediaActions.actions.length > 0,
+  });
   const placeholderWidth: ViewStyle["width"] =
     availableWidth > 0 ? Math.min(availableWidth, MARKDOWN_IMAGE_MAX_WIDTH) : "100%";
   const frameStyle: ViewStyle = displaySize ?? { width: placeholderWidth, aspectRatio: 16 / 9 };
@@ -113,19 +120,9 @@ export function ThreadMarkdownImageView(props: {
       {props.uri === null || failed ? (
         <MediaActionsMenu media={mediaActions}>
           <Pressable
-            accessibilityRole={canRetry ? "button" : "image"}
-            accessibilityLabel={
-              canRetry
-                ? `${props.alt ?? "Image"} unavailable. Retry`
-                : (props.alt ?? "Markdown image")
-            }
-            accessibilityHint={
-              canRetry
-                ? "Double tap to retry loading this image"
-                : mediaActions.actions.length > 0
-                  ? "Touch and hold for media actions"
-                  : undefined
-            }
+            accessibilityRole={placeholderAccessibility.role}
+            accessibilityLabel={placeholderAccessibility.label}
+            accessibilityHint={placeholderAccessibility.hint}
             onPress={canRetry ? retryImage : undefined}
             className="items-center justify-center rounded-[10px] bg-md-code-bg"
             style={frameStyle}
