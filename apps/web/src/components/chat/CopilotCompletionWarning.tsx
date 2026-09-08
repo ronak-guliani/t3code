@@ -45,7 +45,7 @@ export const CopilotCompletionWarning = memo(function CopilotCompletionWarning({
         <p className="inline font-medium text-foreground/90">
           Copilot activity continued after completion
         </p>{" "}
-        <p className="inline text-muted-foreground/80">
+        <p className="inline text-foreground/70">
           Background work may still be running. Review the session before sending or interrupting;
           later edits may be missing from the completion checkpoint.
         </p>
