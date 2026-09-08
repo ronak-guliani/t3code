@@ -86,6 +86,9 @@ import {
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  worktreeCleanupInventoryRouteLayer,
+  worktreeCleanupKeepRouteLayer,
+  worktreeCleanupRetryRouteLayer,
 } from "./orchestration/http.ts";
 import { NetService } from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
@@ -435,6 +438,9 @@ export const makeRoutesLayer = Layer.mergeAll(
   orchestrationShellSnapshotRouteLayer,
   orchestrationSnapshotRouteLayer,
   orchestrationThreadSnapshotRouteLayer,
+  worktreeCleanupInventoryRouteLayer,
+  worktreeCleanupKeepRouteLayer,
+  worktreeCleanupRetryRouteLayer,
   pullRequestHttpApiRoutesLayer,
   ConnectHttpApiRoutesLayerLive,
   remoteAccessRoutes,

@@ -463,7 +463,7 @@ describe("OrchestrationEngine", () => {
     }
   });
 
-  it("rejects assigning a worktree while its cleanup job is pending", async () => {
+  it("does not block assigning a worktree for an unreserved cleanup intent", async () => {
     const system = await createOrchestrationSystem();
     const createdAt = now();
     const projectId = asProjectId("project-pending-worktree");
@@ -527,14 +527,119 @@ describe("OrchestrationEngine", () => {
         createdAt,
       } as const;
 
-      await expect(system.run(system.engine.dispatch(retryableCommand))).rejects.toThrow(
-        "pending cleanup",
-      );
-
-      await system.run(system.worktreeCleanupJobs.cancelByThreadId(deletedThreadId));
       await expect(system.run(system.engine.dispatch(retryableCommand))).resolves.toEqual({
         sequence: 4,
       });
+    } finally {
+      await system.dispose();
+    }
+  });
+
+  it("blocks unarchive while cleanup holds the removal reservation", async () => {
+    const system = await createOrchestrationSystem();
+    const createdAt = now();
+    const projectId = asProjectId("project-reserved-unarchive");
+    const threadId = ThreadId.make("thread-reserved-unarchive");
+    const worktreePath = "/tmp/reserved-unarchive";
+
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-reserved-unarchive"),
+          projectId,
+          title: "Reserved unarchive",
+          workspaceRoot: "/tmp/project-reserved-unarchive",
+          defaultModelSelection: null,
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-reserved-unarchive"),
+          threadId,
+          projectId,
+          title: "Reserved unarchive",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          runtimeMode: "full-access",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: "feature/reserved-unarchive",
+          worktreePath,
+          createdAt,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make("cmd-archive-reserved-unarchive"),
+          threadId,
+        }),
+      );
+
+      await system.run(
+        system.worktreeCleanupJobs.enqueue({
+          threadId,
+          cwd: "/tmp/project-reserved-unarchive",
+          worktreePath,
+          canonicalWorktreePath: worktreePath,
+          requestedAt: createdAt,
+          source: "archive",
+          allowTerminalReset: false,
+        }),
+      );
+      const reservation = await system.run(
+        system.worktreeCleanupJobs.tryReserveForRemoval({
+          threadId,
+          canonicalWorktreePath: worktreePath,
+          reservedAt: createdAt,
+        }),
+      );
+      expect(Option.isSome(reservation)).toBe(true);
+      expect(
+        (await system.run(system.worktreeCleanupJobs.getByThreadId(threadId))).pipe(
+          Option.getOrThrow,
+        ).status,
+      ).toBe("removing");
+      expect(await system.run(system.worktreeCleanupJobs.hasReservationByPath(worktreePath))).toBe(
+        true,
+      );
+
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make("cmd-unarchive-reserved-unarchive"),
+            threadId,
+          }),
+        ),
+      ).rejects.toThrow("cleanup");
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-resume-reserved-unarchive"),
+            threadId,
+            message: {
+              messageId: MessageId.make("message-resume-reserved-unarchive"),
+              role: "user",
+              text: "resume",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt,
+          }),
+        ),
+      ).rejects.toThrow("cleanup");
+      expect(
+        (await system.run(system.worktreeCleanupJobs.getByThreadId(threadId))).pipe(
+          Option.getOrThrow,
+        ).status,
+      ).toBe("removing");
     } finally {
       await system.dispose();
     }

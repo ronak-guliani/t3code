@@ -28,6 +28,7 @@ import {
   type ExecuteGitProgress,
   type GitCommitOptions,
   type GitCoreShape,
+  type GitRegisteredWorktree,
   type GitStatusDetails,
   type ExecuteGitInput,
   type ExecuteGitResult,
@@ -1372,6 +1373,20 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     },
   );
 
+  const isWorktreeCleanForRemoval: GitCoreShape["isWorktreeCleanForRemoval"] = Effect.fn(
+    "isWorktreeCleanForRemoval",
+  )(function* (cwd) {
+    const result = yield* executeGit(
+      "GitCore.isWorktreeCleanForRemoval",
+      cwd,
+      ["status", "--porcelain=2", "--untracked-files=all", "--ignore-submodules=none"],
+      {
+        timeoutMs: 10_000,
+      },
+    );
+    return !result.stdoutTruncated && result.stdout.length === 0;
+  });
+
   const statusDetails: GitCoreShape["statusDetails"] = Effect.fn("statusDetails")(function* (cwd) {
     yield* refreshStatusUpstreamIfStale(cwd).pipe(
       Effect.catchIf(isMissingGitCwdError, () => Effect.void),
@@ -2367,6 +2382,67 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     };
   });
 
+  const listRegisteredWorktrees: GitCoreShape["listRegisteredWorktrees"] = Effect.fn(
+    "listRegisteredWorktrees",
+  )(function* (cwd) {
+    const result = yield* executeGit(
+      "GitCore.listRegisteredWorktrees",
+      cwd,
+      ["worktree", "list", "--porcelain"],
+      {
+        timeoutMs: 10_000,
+        allowNonZeroExit: true,
+      },
+    ).pipe(
+      Effect.catchIf(isMissingGitCwdError, () =>
+        Effect.succeed({
+          code: 128,
+          stdout: "",
+          stderr: "fatal: not a git repository",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        }),
+      ),
+    );
+
+    if (result.code !== 0) {
+      if (result.stderr.toLowerCase().includes("not a git repository")) {
+        return { isRepo: false, worktrees: [] };
+      }
+      return yield* createGitCommandError(
+        "GitCore.listRegisteredWorktrees",
+        cwd,
+        ["worktree", "list", "--porcelain"],
+        result.stderr.trim() || "git worktree list failed",
+      );
+    }
+
+    const worktrees: GitRegisteredWorktree[] = [];
+    let currentPath: string | null = null;
+    let currentBranch: string | null = null;
+    const flush = () => {
+      if (currentPath !== null) {
+        worktrees.push({ path: currentPath, branch: currentBranch });
+      }
+      currentPath = null;
+      currentBranch = null;
+    };
+
+    for (const line of result.stdout.split("\n")) {
+      if (line.startsWith("worktree ")) {
+        flush();
+        currentPath = line.slice("worktree ".length);
+      } else if (line.startsWith("branch refs/heads/") && currentPath !== null) {
+        currentBranch = line.slice("branch refs/heads/".length);
+      } else if (line === "") {
+        flush();
+      }
+    }
+    flush();
+
+    return { isRepo: true, worktrees };
+  });
+
   const createWorktree: GitCoreShape["createWorktree"] = Effect.fn("createWorktree")(
     function* (input) {
       const targetBranch = input.newBranch ?? input.branch;
@@ -2609,6 +2685,8 @@ export const makeGitCore = Effect.fn("makeGitCore")(function* (options?: {
     status,
     statusDetails,
     statusDetailsLocal,
+    isWorktreeCleanForRemoval,
+    listRegisteredWorktrees,
     prepareCommitContext,
     commit,
     pushCurrentBranch,
