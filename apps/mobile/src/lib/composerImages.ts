@@ -3,7 +3,6 @@ import {
   fileAttachmentTooLargeMessage,
 } from "@t3tools/client-runtime/state/attachments";
 import {
-  isProviderSendTurnSupportedImageMimeType,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -24,9 +23,9 @@ import { reportClientWarning } from "./clientLogger";
 export interface DraftComposerImageAttachment extends Omit<UploadChatImageAttachment, "dataUrl"> {
   readonly id: string;
   readonly previewUri: string;
-  /** Owned image bytes from a file-backed draft. Current writers still use inline bytes. */
+  /** Owned image bytes from current photo selection and file-backed drafts. */
   readonly fileUri?: string;
-  /** Inline bytes from current writers and older drafts. */
+  /** Inline bytes from clipboard paste and older drafts. */
   readonly dataUrl?: string;
   readonly uploadedAttachmentId?: string;
   readonly uploadEnvironmentId?: EnvironmentId;
@@ -57,6 +56,62 @@ export function isFileBackedComposerAttachment(
 
 const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
 const ATTACHMENT_COPY_CHUNK_BYTES = 64 * 1024;
+const IMAGE_HEADER_BYTES = 12;
+
+function imageMimeTypeFromHeader(bytes: Uint8Array): string | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (
+    bytes[0] === 0x47 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
+  ) {
+    return "image/gif";
+  }
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
+function imageNameForMimeType(name: string, mimeType: string): string {
+  const extension =
+    mimeType === "image/jpeg"
+      ? "jpg"
+      : mimeType === "image/png"
+        ? "png"
+        : mimeType === "image/gif"
+          ? "gif"
+          : "webp";
+  return new RegExp(`\\.${extension === "jpg" ? "jpe?g" : extension}$`, "i").test(name)
+    ? name
+    : `${name.replace(/\.[^.]+$/, "")}.${extension}`;
+}
 
 export async function persistComposerAttachmentFile(
   uri: string,
@@ -196,6 +251,61 @@ async function createComposerFileAttachment(input: {
   }
 }
 
+async function createComposerImageAttachment(input: {
+  readonly uri: string;
+  readonly name: string;
+}): Promise<DraftComposerImageAttachment> {
+  let fileUri: string;
+  try {
+    fileUri = await persistComposerAttachmentFile(
+      input.uri,
+      input.name,
+      PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message ===
+        fileAttachmentTooLargeMessage(input.name, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES)
+    ) {
+      throw error;
+    }
+    throw new Error(`Failed to read '${input.name}'.`, { cause: error });
+  }
+  try {
+    const { File, FileMode } = await import("expo-file-system");
+    const file = new File(fileUri);
+    const reader = file.open(FileMode.ReadOnly);
+    let mimeType: string | null;
+    try {
+      mimeType = imageMimeTypeFromHeader(reader.readBytes(IMAGE_HEADER_BYTES));
+    } finally {
+      reader.close();
+    }
+    if (mimeType === null) {
+      throw new Error(
+        `'${input.name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`,
+      );
+    }
+    const sizeBytes = file.size ?? 0;
+    if (sizeBytes <= 0) {
+      throw new Error(`'${input.name}' is empty or could not be read.`);
+    }
+    return {
+      id: uuidv4(),
+      type: "image",
+      name: imageNameForMimeType(input.name, mimeType),
+      mimeType,
+      sizeBytes,
+      fileUri,
+      previewUri: fileUri,
+    };
+  } catch (error) {
+    await removePersistedComposerAttachmentFile(fileUri);
+    throw error;
+  }
+}
+
 export async function pickComposerFiles(input: {
   readonly existingCount: number;
   readonly maxBytes?: number;
@@ -327,8 +437,8 @@ export async function pickComposerMedia(input: {
       mediaTypes: input.maxVideoBytes === undefined ? ["images"] : ["images", "videos"],
       allowsMultipleSelection: true,
       selectionLimit: remainingSlots,
-      base64: true,
-      quality: 1,
+      preferredAssetRepresentationMode:
+        imagePicker.UIImagePickerPreferredAssetRepresentationMode.Automatic,
       shouldDownloadFromNetwork: true,
     });
   } catch (error) {
@@ -384,57 +494,12 @@ export async function pickComposerMedia(input: {
       continue;
     }
 
-    let base64 = asset.base64;
-    if (!base64) {
-      error = `Failed to read '${asset.fileName ?? "image"}'.`;
-      continue;
+    const name = asset.fileName?.trim() || "image";
+    try {
+      attachments.push(await createComposerImageAttachment({ uri: asset.uri, name }));
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : `Could not read '${name}'.`;
     }
-
-    let name = asset.fileName?.trim() || "image";
-    // The iOS picker returns JPEG base64 even when its metadata describes HEIC,
-    // PNG, or GIF. Keep supported originals so transparency and animation survive;
-    // use the native JPEG conversion for formats providers cannot accept.
-    if (base64.startsWith("/9j/")) {
-      if (
-        mimeType &&
-        mimeType !== "image/jpeg" &&
-        isProviderSendTurnSupportedImageMimeType(mimeType)
-      ) {
-        try {
-          const { File } = await import("expo-file-system");
-          base64 = await new File(asset.uri).base64();
-        } catch {
-          error = `Failed to read '${name}'.`;
-          continue;
-        }
-      } else {
-        mimeType = "image/jpeg";
-        if (!/\.jpe?g$/i.test(name)) {
-          name = `${name.replace(/\.[^.]+$/, "")}.jpg`;
-        }
-      }
-    }
-    if (!mimeType || !isProviderSendTurnSupportedImageMimeType(mimeType)) {
-      error = `'${name}' is not a supported image type. Attach GIF, JPEG, PNG, or WebP images.`;
-      continue;
-    }
-
-    const sizeBytes = estimateBase64ByteSize(base64);
-    if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-      error = `'${asset.fileName ?? "image"}' exceeds the 10 MB attachment limit.`;
-      continue;
-    }
-
-    const dataUrl = `data:${mimeType};base64,${base64}`;
-    attachments.push({
-      id: uuidv4(),
-      type: "image",
-      name,
-      mimeType,
-      sizeBytes,
-      dataUrl,
-      previewUri: mimeType === asset.mimeType?.toLowerCase() ? asset.uri : dataUrl,
-    });
   }
 
   return {
