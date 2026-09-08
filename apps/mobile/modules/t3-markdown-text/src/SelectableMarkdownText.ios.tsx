@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { View } from "react-native";
 import { parseMarkdownWithOptions } from "react-native-nitro-markdown/headless";
 
@@ -7,6 +7,8 @@ import {
   nativeMarkdownDocumentChunks,
   nativeMarkdownDocumentRuns,
   nativeMarkdownWithPreservedSoftBreaks,
+  type NativeMarkdownDocumentChunk,
+  type NativeMarkdownTextRun,
 } from "./nativeMarkdownText";
 import { MarkdownImageRendererContext, NativeMarkdownBlock } from "./NativeMarkdownBlock.ios";
 import {
@@ -20,6 +22,12 @@ import type {
 } from "./SelectableMarkdownText.types";
 
 const EMPTY_SKILLS: ReadonlyArray<SelectableMarkdownSkill> = [];
+
+type PreparedMarkdownChunk =
+  | (Extract<NativeMarkdownDocumentChunk, { kind: "selectable" }> & {
+      readonly runs: ReadonlyArray<NativeMarkdownTextRun>;
+    })
+  | Extract<NativeMarkdownDocumentChunk, { kind: "rich" }>;
 
 export type {
   MarkdownCodeHighlighter,
@@ -48,6 +56,11 @@ export function SelectableMarkdownText({
   marginTop = 0,
   marginBottom = 0,
 }: SelectableMarkdownTextProps) {
+  const previousChunksRef = useRef<{
+    readonly skills: ReadonlyArray<SelectableMarkdownSkill>;
+    readonly chunks: ReadonlyArray<PreparedMarkdownChunk>;
+  } | null>(null);
+
   const chunks = useMemo(() => {
     const parsedDocument = parseMarkdownWithOptions(markdown, {
       gfm: true,
@@ -57,15 +70,26 @@ export function SelectableMarkdownText({
     const document = preserveSoftBreaks
       ? nativeMarkdownWithPreservedSoftBreaks(parsedDocument)
       : parsedDocument;
-    return nativeMarkdownDocumentChunks(document).map((chunk) =>
-      chunk.kind === "selectable"
+    const previous = previousChunksRef.current;
+    const documentChunks = nativeMarkdownDocumentChunks(document, previous?.chunks);
+    const nextChunks: ReadonlyArray<PreparedMarkdownChunk> = documentChunks.map((chunk, index) => {
+      const previousChunk = previous?.chunks[index];
+      if (previous?.skills === skills && previousChunk === chunk) {
+        return previousChunk;
+      }
+      return chunk.kind === "selectable"
         ? {
             ...chunk,
             runs: nativeMarkdownDocumentRuns(chunk.node, skills),
           }
-        : chunk,
-    );
+        : chunk;
+    });
+    return nextChunks;
   }, [markdown, preserveSoftBreaks, skills]);
+
+  useEffect(() => {
+    previousChunksRef.current = { skills, chunks };
+  }, [chunks, skills]);
 
   const fileContextMenuHandlers = useMemo<MarkdownFileContextMenuHandlers | null>(
     () =>
