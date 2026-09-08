@@ -73,16 +73,21 @@ function useHighlightedCode(
   theme: "light" | "dark",
   highlightCode: MarkdownCodeHighlighter,
 ): HighlightedCode | null {
-  const [highlighted, setHighlighted] = useState<HighlightedCode | null>(null);
+  const [highlighted, setHighlighted] = useState<{
+    readonly code: string;
+    readonly language: string | undefined;
+    readonly theme: "light" | "dark";
+    readonly highlightCode: MarkdownCodeHighlighter;
+    readonly tokens: HighlightedCode;
+  } | null>(null);
 
   useEffect(() => {
     let active = true;
-    setHighlighted(null);
     const lease = codeHighlightLifecycle.acquire({ code, language, theme, highlightCode });
     void lease.promise
       .then((tokens) => {
         if (active) {
-          setHighlighted(tokens);
+          setHighlighted({ code, language, theme, highlightCode, tokens });
         }
       })
       .catch((error: unknown) => {
@@ -96,7 +101,12 @@ function useHighlightedCode(
     };
   }, [code, highlightCode, language, theme]);
 
-  return highlighted;
+  return highlighted?.code === code &&
+    highlighted.language === language &&
+    highlighted.theme === theme &&
+    highlighted.highlightCode === highlightCode
+    ? highlighted.tokens
+    : null;
 }
 
 function HighlightedCodeText(props: {

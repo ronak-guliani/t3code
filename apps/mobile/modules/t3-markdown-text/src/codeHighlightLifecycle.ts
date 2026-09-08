@@ -110,7 +110,11 @@ export function createCodeHighlightLifecycle(cacheLimit = 64) {
     }
 
     const key = requestKey(request);
-    let entry = pending.get(key)?.find((candidate) => sameRequest(candidate, request));
+    let entry = pending
+      .get(key)
+      ?.find(
+        (candidate) => !candidate.controller.signal.aborted && sameRequest(candidate, request),
+      );
     if (!entry) {
       const controller = new AbortController();
       let created: PendingEntry;

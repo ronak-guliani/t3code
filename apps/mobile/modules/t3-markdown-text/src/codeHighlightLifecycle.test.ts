@@ -60,6 +60,27 @@ describe("code highlight lifecycle", () => {
     retry.release();
   });
 
+  it("restarts work when a remount follows an abort before the old request settles", async () => {
+    const signals: AbortSignal[] = [];
+    const highlightCode = vi.fn(
+      (input: Parameters<MarkdownCodeHighlighter>[0]) =>
+        new Promise<typeof tokens>(() => {
+          signals.push(input.signal!);
+        }),
+    );
+    const lifecycle = createCodeHighlightLifecycle();
+
+    const obsolete = lifecycle.acquire(request(highlightCode));
+    obsolete.release();
+    await Promise.resolve();
+    const remounted = lifecycle.acquire(request(highlightCode));
+
+    expect(signals).toHaveLength(2);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+    remounted.release();
+  });
+
   it("reuses settled results without restarting highlighting", async () => {
     const highlightCode = vi.fn(async () => tokens);
     const lifecycle = createCodeHighlightLifecycle();
@@ -91,5 +112,30 @@ describe("code highlight lifecycle", () => {
 
     expect(firstHighlighter).toHaveBeenCalledTimes(3);
     expect(secondHighlighter).toHaveBeenCalledTimes(1);
+  });
+
+  it("evicts only the least-recently-used settled result", async () => {
+    const highlightCode = vi.fn(async (_input: Parameters<MarkdownCodeHighlighter>[0]) => tokens);
+    const lifecycle = createCodeHighlightLifecycle(2);
+    const settle = async (code: string): Promise<void> => {
+      const lease = lifecycle.acquire(request(highlightCode, code));
+      await lease.promise;
+      lease.release();
+    };
+
+    await settle("first");
+    await settle("second");
+    await settle("first");
+    await settle("third");
+    await settle("first");
+    await settle("second");
+
+    expect(highlightCode).toHaveBeenCalledTimes(4);
+    expect(highlightCode.mock.calls.map(([input]) => input.code)).toEqual([
+      "first",
+      "second",
+      "third",
+      "second",
+    ]);
   });
 });
