@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Platform, useWindowDimensions } from "react-native";
 
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
-import { useProjects, useThreadShells } from "../../state/entities";
+import { useEnvironmentShellStatuses, useProjects, useThreadShells } from "../../state/entities";
 import { usePendingNewTasks } from "../../state/use-pending-new-tasks";
 import { useWorkspaceState } from "../../state/workspace";
 import { useSavedRemoteConnections } from "../../state/use-remote-environment-registry";
@@ -31,7 +31,8 @@ export function HomeRouteScreen() {
   const { layout } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();
   const threads = useThreadShells();
-  useSeedRootThreadCompletionReadAt(threads);
+  const shellStatuses = useEnvironmentShellStatuses();
+  useSeedRootThreadCompletionReadAt(threads, shellStatuses);
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const navigation = useNavigation();

@@ -3,11 +3,15 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useRef } from "react";
 import { AppState } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
+import type { EnvironmentId } from "@t3tools/contracts";
 import {
   hasUnseenChildNotification,
   hierarchyThreadKey,
 } from "@t3tools/client-runtime/state/thread-hierarchy";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentThreadShell,
+  EnvironmentShellStatus,
+} from "@t3tools/client-runtime/state/shell";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION } from "../../state/thread-completion-read-migration";
 import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
@@ -36,12 +40,21 @@ export function useThreadCompletionReadAt(): Readonly<Record<string, string>> {
   return AsyncResult.isSuccess(result) ? (result.value.threadCompletionReadAt ?? {}) : {};
 }
 
-export function useSeedRootThreadCompletionReadAt(threads: readonly MobileThreadShell[]) {
+export function useSeedRootThreadCompletionReadAt(
+  threads: readonly MobileThreadShell[],
+  shellStatuses: ReadonlyMap<EnvironmentId, EnvironmentShellStatus>,
+) {
   const result = useAtomValue(mobilePreferencesAtom);
   const save = useAtomSet(updateMobilePreferencesAtom);
   const migrationClaimed = useRef(false);
   useEffect(() => {
-    if (migrationClaimed.current || !AsyncResult.isSuccess(result) || threads.length === 0) {
+    if (
+      migrationClaimed.current ||
+      !AsyncResult.isSuccess(result) ||
+      threads.length === 0 ||
+      shellStatuses.size === 0 ||
+      [...shellStatuses.values()].some((status) => status !== "live")
+    ) {
       return;
     }
     const current = appAtomRegistry.get(mobilePreferencesAtom);
@@ -60,7 +73,7 @@ export function useSeedRootThreadCompletionReadAt(threads: readonly MobileThread
       threadCompletionReadAt: seeded ?? existing ?? {},
       threadCompletionReadAtMigrationVersion: ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION,
     });
-  }, [result, save, threads]);
+  }, [result, save, shellStatuses, threads]);
 }
 
 export function useMarkRootThreadCompletionRead(thread: MobileThreadShell | null) {

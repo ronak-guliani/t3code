@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -22,6 +23,9 @@ const harness = vi.hoisted(() => ({
     threadCompletionReadAt: {} as Record<string, string>,
     threadCompletionReadAtMigrationVersion: undefined as number | undefined,
   },
+  shellStatuses: new Map<EnvironmentId, EnvironmentShellStatus>([
+    ["local" as EnvironmentId, "live"],
+  ]),
   effects: [] as Array<() => void | (() => void)>,
   foreground: undefined as (() => void) | undefined,
   save: vi.fn(),
@@ -100,7 +104,7 @@ function Root() {
   return null;
 }
 function Seed(props: { readonly threads: readonly MobileThreadShell[] }) {
-  useSeedRootThreadCompletionReadAt(props.threads);
+  useSeedRootThreadCompletionReadAt(props.threads, harness.shellStatuses);
   return null;
 }
 function mount() {
@@ -116,6 +120,7 @@ beforeEach(() => {
     threadCompletionReadAt: {},
     threadCompletionReadAtMigrationVersion: undefined,
   };
+  harness.shellStatuses = new Map([["local" as EnvironmentId, "live"]]);
   harness.effects.length = 0;
   harness.foreground = undefined;
   harness.save.mockReset().mockImplementation((patch: typeof harness.preferences) => {
@@ -197,6 +202,26 @@ describe("related group notification acknowledgement", () => {
 
       markRootThreadCompletionRead(completedRootThread, harness.preferences, harness.save);
       expect(resolveThreadListV2Status(completedRootThread, LATER)).toBe("ready");
+    });
+
+    it("waits for every environment to become live before seeding", () => {
+      harness.shellStatuses = new Map([
+        ["local" as EnvironmentId, "live"],
+        ["remote" as EnvironmentId, "synchronizing"],
+      ]);
+      renderToStaticMarkup(<Seed threads={[runningRootThread]} />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences.threadCompletionReadAtMigrationVersion).toBeUndefined();
+
+      harness.shellStatuses = new Map([
+        ["local" as EnvironmentId, "live"],
+        ["remote" as EnvironmentId, "live"],
+      ]);
+      renderToStaticMarkup(<Seed threads={[runningRootThread]} />);
+      harness.effects.splice(0).forEach((effect) => effect());
+      expect(harness.preferences.threadCompletionReadAtMigrationVersion).toBe(
+        ROOT_THREAD_COMPLETION_READ_MIGRATION_VERSION,
+      );
     });
 
     it("seeds roots completed before migration exactly once", () => {
