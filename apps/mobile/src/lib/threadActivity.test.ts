@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
+import { groupConsecutiveWorkEntries } from "@t3tools/client-runtime/work-log/presentation";
 
 import {
   EventId,
@@ -2551,6 +2552,73 @@ describe("buildThreadFeed", () => {
       thread.latestTurn!.startedAt,
     );
     expect(rows.some((entry) => entry.type === "work-toggle" && entry.shimmer)).toBe(shimmer);
+  });
+
+  it("preserves inferred lifecycle in expanded tool details", () => {
+    const turnId = TurnId.make("turn-inferred-lifecycle");
+    const startedAt = "2026-04-01T00:00:00.000Z";
+    const thread = makeThread({
+      id: ThreadId.make("thread-inferred-lifecycle"),
+      projectId: ProjectId.make("project-1"),
+      title: "Inferred lifecycle",
+      activities: [
+        makeActivity({
+          id: EventId.make("completed-read"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read file",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId,
+          payload: { status: "completed", detail: "/src/done.ts" },
+        }),
+        makeActivity({
+          id: EventId.make("statusless-read"),
+          kind: "tool.updated",
+          tone: "tool",
+          summary: "Read file",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: { detail: "/src/active.ts" },
+        }),
+      ],
+    });
+    const feed = buildThreadFeed(thread);
+    const expandedGroups = new Set(["work-group:completed-read"]);
+    const rows = deriveThreadFeedPresentation(
+      feed,
+      { turnId, state: "running", startedAt, completedAt: null },
+      new Set(),
+      expandedGroups,
+      startedAt,
+    );
+    expect(rows.find((row) => row.type === "work-toggle" && row.shimmer)).toMatchObject({
+      type: "work-toggle",
+      activeCount: 1,
+      shimmer: true,
+    });
+    const details = rows.flatMap((row) => (row.type === "activity-group" ? row.activities : []));
+    expect(details).toMatchObject([
+      { id: "completed-read", live: false, workEntry: { toolLifecycleStatus: "completed" } },
+      {
+        id: "statusless-read",
+        live: true,
+        status: "neutral",
+        lifecycleStatus: "inProgress",
+        workEntry: { toolLifecycleStatus: "inProgress" },
+      },
+    ]);
+    expect(groupConsecutiveWorkEntries(details, (activity) => activity.workEntry)).toHaveLength(2);
+    const stoppedRows = deriveThreadFeedPresentation(
+      feed,
+      { turnId, state: "completed", startedAt, completedAt: "2026-04-01T00:00:03.000Z" },
+      new Set([turnId]),
+      expandedGroups,
+    );
+    const stoppedDetails = stoppedRows.flatMap((row) =>
+      row.type === "activity-group" ? row.activities : [],
+    );
+    expect(stoppedDetails[1]?.live).toBe(false);
+    expect(stoppedDetails[1]?.workEntry.toolLifecycleStatus).toBeUndefined();
   });
 
   it("does not revive cached in-progress tools after work stops", () => {

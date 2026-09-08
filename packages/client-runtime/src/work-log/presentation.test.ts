@@ -17,9 +17,19 @@ import {
   toolGroupSummaryKind,
   type WorkLogPresentationEntry,
   workEntryViewedImagePath,
+  workGroupAccessibleLabel,
 } from "./presentation.js";
 
 describe("live activity strips", () => {
+  it.each([
+    [0, "Reading file.ts"],
+    [1, "Reading file.ts"],
+    [2, "Reading file.ts, 1 more active"],
+    [4, "Reading file.ts, 3 more active"],
+  ])("announces parallel work for %i active calls", (activeCount, expected) => {
+    expect(workGroupAccessibleLabel("Reading file.ts", activeCount)).toBe(expected);
+  });
+
   const read = (name: string, status = "completed"): WorkLogPresentationEntry => ({
     label: "Read file",
     tone: "tool",

@@ -45,6 +45,7 @@ import {
   resolveWorkEntryToolPresentation,
   compactWorkEntryLabel,
   groupConsecutiveWorkEntries,
+  workGroupAccessibleLabel,
   type ToolGroupSummaryKind,
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
@@ -55,7 +56,6 @@ import Animated, {
   Easing,
   FadeIn,
   FadeOut,
-  LinearTransition,
   ReduceMotion,
   useAnimatedStyle,
   useSharedValue,
@@ -72,9 +72,6 @@ const SHIMMER_SWEEP_MS = 1_350;
 const SHIMMER_PAUSE_MS = 1_450;
 const SHIMMER_ICON_AND_GAP_WIDTH = 30;
 export const THREAD_DISCLOSURE_TRANSITION_MS = 180;
-const WORK_LOG_LAYOUT_TRANSITION = LinearTransition.duration(
-  THREAD_DISCLOSURE_TRANSITION_MS,
-).reduceMotion(ReduceMotion.System);
 const WORK_LOG_DETAIL_ENTER_TRANSITION = FadeIn.duration(140).reduceMotion(ReduceMotion.System);
 const WORK_LOG_DETAIL_EXIT_TRANSITION = FadeOut.duration(120).reduceMotion(ReduceMotion.System);
 type WorkContentIcon = AppSymbolName | "browser" | "t3-code";
@@ -261,7 +258,7 @@ export function ShimmeringWorkContent(props: {
         icon={props.icon}
         iconSubtleColor={props.iconSubtleColor}
         label={props.label}
-        showIcon={false}
+        showIcon={props.showIcon}
         themeAppearance={props.themeAppearance}
         toolIcon={props.toolIcon}
         onTextLayout={(event) => setTextWidth(event.nativeEvent.lines[0]?.width ?? 0)}
@@ -768,7 +765,6 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
 
   return (
     <Animated.View
-      layout={WORK_LOG_LAYOUT_TRANSITION}
       className="overflow-hidden"
       {...(isFreshRow(row.createdAt) ? { entering: FadeIn.duration(200) } : {})}
     >
@@ -883,7 +879,6 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         <Animated.View
           entering={WORK_LOG_DETAIL_ENTER_TRANSITION}
           exiting={WORK_LOG_DETAIL_EXIT_TRANSITION}
-          layout={WORK_LOG_LAYOUT_TRANSITION}
           className="ml-7 border-l border-adaptive-neutral-300-a60-white-a12 pb-1 pl-3 pt-0.5"
         >
           {viewedImagePath ? (
@@ -978,7 +973,7 @@ export function ThreadWorkGroupToggle(props: {
   readonly shimmer: boolean;
   readonly onToggle: () => void;
 }) {
-  const accessibilityLabel = props.summary;
+  const accessibilityLabel = workGroupAccessibleLabel(props.summary, props.activeCount);
   const icon =
     props.summaryToolIcon ??
     (props.toolSurface

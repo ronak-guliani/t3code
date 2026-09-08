@@ -34,4 +34,35 @@ describe("ThreadFeed native positioning", () => {
     expect(attributes).toContain("maintainVisibleContentPosition");
     expect(attributes).toContain("maintainScrollAtEnd");
   });
+
+  it("keeps work-log row and detail geometry synchronous and base shimmer icons visible", () => {
+    const source = ts.createSourceFile(
+      "thread-work-log.tsx",
+      readFileSync(new URL("./thread-work-log.tsx", import.meta.url), "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const layoutProps: ts.JsxAttribute[] = [];
+    const shimmerIcons: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isJsxAttribute(node) && node.name.getText(source) === "layout") {
+        layoutProps.push(node);
+      }
+      if (
+        ts.isJsxSelfClosingElement(node) &&
+        node.tagName.getText(source) === "ShimmerWorkContent"
+      ) {
+        const icon = node.attributes.properties.find(
+          (attribute): attribute is ts.JsxAttribute =>
+            ts.isJsxAttribute(attribute) && attribute.name.getText(source) === "showIcon",
+        );
+        shimmerIcons.push(icon?.initializer?.getText(source) ?? "");
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(layoutProps).toHaveLength(0);
+    expect(shimmerIcons).toEqual(["{props.showIcon}", "{props.showIcon}"]);
+  });
 });

@@ -252,7 +252,10 @@ describe("MessagesTimeline", () => {
     await expect.element(page.getByText("Reading live.ts", { exact: true })).toBeVisible();
     await expect.element(page.getByText("+1", { exact: true })).toBeVisible();
     await expect.element(page.getByText(/4 actions/)).not.toBeInTheDocument();
-    const trigger = page.getByRole("button", { name: "Expand Tool Calls (4)" });
+    const trigger = page.getByRole("button", {
+      name: "Expand Tool Calls (4), 1 more active",
+      exact: true,
+    });
     const button = trigger.element();
     const group = button.closest(".work-group-section")!;
     expect(getComputedStyle(group).backgroundColor).toBe("rgba(0, 0, 0, 0)");
@@ -260,7 +263,12 @@ describe("MessagesTimeline", () => {
     expect(getComputedStyle(button).backgroundColor).toBe("rgba(0, 0, 0, 0)");
     expect(button.getBoundingClientRect().height).toBeLessThanOrEqual(44);
     expect(document.querySelectorAll(".work-activity-shimmer")).toHaveLength(1);
-    await page.getByRole("button", { name: "Expand Tool Calls (4)" }).click();
+    await trigger.click();
+    await expect
+      .element(
+        page.getByRole("button", { name: "Collapse Tool Calls (4), 1 more active", exact: true }),
+      )
+      .toBeVisible();
     await expect.element(page.getByText(/4 actions.*2 active/)).toBeVisible();
     const panel = document.getElementById(button.getAttribute("aria-controls")!)!;
     expect(getComputedStyle(panel).transitionDuration).toBe("0.15s");

@@ -97,6 +97,7 @@ import {
   groupConsecutiveWorkEntries,
   toolGroupAction,
   workEntryNeedsAttention,
+  workGroupAccessibleLabel,
 } from "@t3tools/client-runtime/work-log/presentation";
 
 import {
@@ -1068,7 +1069,10 @@ const WorkGroupSection = memo(function WorkGroupSection({
           attention ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
         )}
         aria-controls={detailsId}
-        aria-label={`${toggleLabel} ${groupLabel} (${groupedEntries.length})`}
+        aria-label={workGroupAccessibleLabel(
+          `${toggleLabel} ${groupLabel} (${groupedEntries.length})`,
+          activity.activeCount,
+        )}
       >
         <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden="true">
           {attention ? (

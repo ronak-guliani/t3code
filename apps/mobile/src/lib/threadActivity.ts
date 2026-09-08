@@ -1844,14 +1844,20 @@ function appendToolGroupRows(
     id: `work-details:${groupId}`,
     createdAt: activities[0]!.createdAt,
     turnId: activities[0]!.turnId,
-    activities: activities.map((activity) => ({
-      ...activity,
-      groupedToolDetail: true,
-      live:
-        isWorking &&
-        activity.lifecycleStatus === "inProgress" &&
-        activity.turnId === unsettledTurnId,
-    })),
+    activities: activities.map((activity) => {
+      const workEntry = presentationEntryForActivity(activity, activity === latestActiveActivity);
+      return {
+        ...activity,
+        workEntry,
+        status: workEntryStatus(workEntry),
+        lifecycleStatus: workEntry.toolLifecycleStatus,
+        groupedToolDetail: true,
+        live:
+          isWorking &&
+          workEntry.toolLifecycleStatus === "inProgress" &&
+          activity.turnId === unsettledTurnId,
+      };
+    }),
   });
 }
 

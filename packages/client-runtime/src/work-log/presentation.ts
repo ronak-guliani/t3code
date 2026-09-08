@@ -106,6 +106,10 @@ export function workEntryNeedsAttention(entry: WorkLogPresentationEntry): boolea
   );
 }
 
+export function workGroupAccessibleLabel(label: string, activeCount: number): string {
+  return activeCount > 1 ? `${label}, ${activeCount - 1} more active` : label;
+}
+
 export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
   entries: readonly T[],
   isWorking: boolean,
