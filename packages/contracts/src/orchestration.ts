@@ -953,6 +953,7 @@ const ThreadQueuedTurnCreateCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   origin: Schema.optional(MessageOrigin),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
   createdAt: IsoDateTime,
 });
 
@@ -967,6 +968,8 @@ const ClientThreadQueuedTurnCreateCommand = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  crossThreadSourceThreadId: Schema.optional(ThreadId),
+  crossThreadDispatchCapability: Schema.optional(Schema.String),
   createdAt: IsoDateTime,
 });
 

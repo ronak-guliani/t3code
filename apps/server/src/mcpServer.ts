@@ -1584,7 +1584,8 @@ async function sendToThreadTool(
   const result = await runCommand(options.cwd, options.cliCommand, [
     ...(options.cliArgsPrefix ?? []),
     "chat",
-    "send",
+    "queue",
+    "add",
     thread,
     prompt,
     "--cross-thread-source",
@@ -1925,7 +1926,7 @@ const ALL_TOOLS: ReadonlyArray<McpTool> = [
   {
     name: "send_to_thread",
     description:
-      "Send a prompt to an existing T3 thread from the authenticated current thread. T3 records the initiating source message as provenance; do not use terminal-based `t3 chat send` for cross-thread messaging.",
+      "Durably queue a prompt for an existing T3 thread from the authenticated current thread. Returns a queuedTurnId immediately; delivery starts in queue order once the destination has no active turn or pending approval/input. Does not interrupt the destination or wait for completion. T3 records the initiating source message as provenance when queued; do not use terminal-based `t3 chat send` for cross-thread messaging.",
     inputSchema: {
       type: "object",
       properties: {

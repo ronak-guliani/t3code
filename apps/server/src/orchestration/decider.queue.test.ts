@@ -130,129 +130,219 @@ describe("decider queued turns", () => {
     });
   });
 
-  it("derives cross-thread provenance from the active parent turn", async () => {
-    const now = "2026-03-01T00:00:00.000Z";
-    const sourceThreadId = asThreadId("thread-source");
-    const nestedThreadId = asThreadId("thread-nested");
-    const sourceMessageId = asMessageId("message-source");
-    const source = await makeThreadReadModel({ now, threadId: sourceThreadId });
-    const withSourceMessage = await Effect.runPromise(
-      projectEvent(source, {
-        sequence: 2,
-        eventId: asEventId("evt-source-message"),
-        aggregateKind: "thread",
-        aggregateId: sourceThreadId,
-        type: "thread.message-sent",
-        occurredAt: now,
-        commandId: CommandId.make("cmd-source-message"),
-        causationEventId: null,
-        correlationId: CommandId.make("cmd-source-message"),
-        metadata: {},
-        payload: {
-          threadId: sourceThreadId,
-          messageId: sourceMessageId,
-          role: "user",
-          text: "Investigate the regression.",
-          turnId: null,
-          streaming: false,
-          createdAt: now,
-          updatedAt: now,
-        },
-      }),
-    );
-    const withActiveSource = await Effect.runPromise(
-      projectEvent(withSourceMessage, {
-        sequence: 3,
-        eventId: asEventId("evt-source-session"),
-        aggregateKind: "thread",
-        aggregateId: sourceThreadId,
-        type: "thread.session-set",
-        occurredAt: now,
-        commandId: CommandId.make("cmd-source-session"),
-        causationEventId: null,
-        correlationId: CommandId.make("cmd-source-session"),
-        metadata: {},
-        payload: {
-          threadId: sourceThreadId,
-          session: {
+  it.each(["thread.turn.start", "thread.queued-turn.create"] as const)(
+    "derives cross-thread provenance at acceptance for %s",
+    async (type) => {
+      const now = "2026-03-01T00:00:00.000Z";
+      const sourceThreadId = asThreadId("thread-source");
+      const nestedThreadId = asThreadId("thread-nested");
+      const sourceMessageId = asMessageId("message-source");
+      const source = await makeThreadReadModel({ now, threadId: sourceThreadId });
+      const withSourceMessage = await Effect.runPromise(
+        projectEvent(source, {
+          sequence: 2,
+          eventId: asEventId("evt-source-message"),
+          aggregateKind: "thread",
+          aggregateId: sourceThreadId,
+          type: "thread.message-sent",
+          occurredAt: now,
+          commandId: CommandId.make("cmd-source-message"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-source-message"),
+          metadata: {},
+          payload: {
             threadId: sourceThreadId,
-            status: "running",
-            providerName: "copilot",
-            runtimeMode: "approval-required",
-            activeTurnId: asTurnId("turn-source"),
-            activeMessageId: sourceMessageId,
-            lastError: null,
+            messageId: sourceMessageId,
+            role: "user",
+            text: "Investigate the regression.",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
             updatedAt: now,
           },
-        },
-      }),
-    );
-    const readModel = await Effect.runPromise(
-      projectEvent(withActiveSource, {
-        sequence: 4,
-        eventId: asEventId("evt-nested-create"),
-        aggregateKind: "thread",
-        aggregateId: nestedThreadId,
-        type: "thread.created",
-        occurredAt: now,
-        commandId: CommandId.make("cmd-nested-create"),
-        causationEventId: null,
-        correlationId: CommandId.make("cmd-nested-create"),
-        metadata: {},
-        payload: {
-          threadId: nestedThreadId,
-          projectId: asProjectId("project-1"),
-          parentThreadId: sourceThreadId,
-          title: "Nested investigation",
-          modelSelection: {
-            instanceId: ProviderInstanceId.make("copilot"),
-            model: "gpt-5.6",
+        }),
+      );
+      const withActiveSource = await Effect.runPromise(
+        projectEvent(withSourceMessage, {
+          sequence: 3,
+          eventId: asEventId("evt-source-session"),
+          aggregateKind: "thread",
+          aggregateId: sourceThreadId,
+          type: "thread.session-set",
+          occurredAt: now,
+          commandId: CommandId.make("cmd-source-session"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-source-session"),
+          metadata: {},
+          payload: {
+            threadId: sourceThreadId,
+            session: {
+              threadId: sourceThreadId,
+              status: "running",
+              providerName: "copilot",
+              runtimeMode: "approval-required",
+              activeTurnId: asTurnId("turn-source"),
+              activeMessageId: sourceMessageId,
+              lastError: null,
+              updatedAt: now,
+            },
           },
-          runtimeMode: "approval-required",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          pendingRuntimeMode: null,
-          branch: null,
-          worktreePath: null,
-          createdAt: now,
-          updatedAt: now,
-        },
-      }),
-    );
-
-    const result = await Effect.runPromise(
-      decideOrchestrationCommand({
-        command: {
-          type: "thread.turn.start",
-          commandId: CommandId.make("cmd-nested-turn"),
-          threadId: nestedThreadId,
-          message: {
-            messageId: asMessageId("message-nested"),
-            role: "user",
-            text: "Find the root cause.",
-            attachments: [],
+        }),
+      );
+      const readModel = await Effect.runPromise(
+        projectEvent(withActiveSource, {
+          sequence: 4,
+          eventId: asEventId("evt-nested-create"),
+          aggregateKind: "thread",
+          aggregateId: nestedThreadId,
+          type: "thread.created",
+          occurredAt: now,
+          commandId: CommandId.make("cmd-nested-create"),
+          causationEventId: null,
+          correlationId: CommandId.make("cmd-nested-create"),
+          metadata: {},
+          payload: {
+            threadId: nestedThreadId,
+            projectId: asProjectId("project-1"),
+            parentThreadId: sourceThreadId,
+            title: "Nested investigation",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("copilot"),
+              model: "gpt-5.6",
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            pendingRuntimeMode: null,
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
           },
-          crossThreadSourceThreadId: sourceThreadId,
-          runtimeMode: "approval-required",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          createdAt: now,
-        },
-        readModel,
-      }),
-    );
+        }),
+      );
 
-    const event = Array.isArray(result) ? result[0] : result;
-    expect(event).toMatchObject({
-      type: "thread.message-sent",
-      payload: {
-        origin: {
-          kind: "cross-thread",
-          sourceThreadId,
-          sourceMessageId,
-          sourceThreadTitle: "Queue",
+      const busyReadModel = {
+        ...readModel,
+        threads: readModel.threads.map((thread) =>
+          thread.id === nestedThreadId && type === "thread.queued-turn.create"
+            ? {
+                ...thread,
+                session: {
+                  threadId: nestedThreadId,
+                  status: "running" as const,
+                  providerName: "copilot",
+                  runtimeMode: "approval-required" as const,
+                  activeTurnId: asTurnId("turn-destination"),
+                  lastError: null,
+                  updatedAt: now,
+                },
+              }
+            : thread,
+        ),
+      };
+      const command = {
+        type,
+        queuedTurnId: asQueuedTurnId("queued-cross-thread"),
+        commandId: CommandId.make("cmd-nested-turn"),
+        threadId: nestedThreadId,
+        message: {
+          messageId: asMessageId("message-nested"),
+          role: "user" as const,
+          text: "Find the root cause.",
+          attachments: [],
         },
-      },
-    });
-  });
+        crossThreadSourceThreadId: sourceThreadId,
+        runtimeMode: "approval-required" as const,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        createdAt: now,
+      };
+      const result = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command,
+          readModel: busyReadModel,
+        }),
+      );
+
+      const event = Array.isArray(result) ? result[0] : result;
+      const origin = {
+        kind: "cross-thread",
+        sourceThreadId,
+        sourceMessageId,
+        sourceThreadTitle: "Queue",
+      };
+      if (type === "thread.turn.start") {
+        expect(event).toMatchObject({ type: "thread.message-sent", payload: { origin } });
+        return;
+      }
+      expect(event).toMatchObject({
+        type: "thread.queued-turn-created",
+        payload: { queuedTurn: { origin } },
+      });
+      const queuedReadModel = await Effect.runPromise(projectEvent(busyReadModel, event));
+      await expect(
+        Effect.runPromise(
+          decideOrchestrationCommand({
+            command: {
+              type: "thread.queued-turn.dispatch",
+              commandId: CommandId.make("cmd-dispatch-busy"),
+              threadId: nestedThreadId,
+              queuedTurnId: command.queuedTurnId,
+              dispatchedAt: now,
+            },
+            readModel: queuedReadModel,
+          }),
+        ),
+      ).rejects.toThrow();
+      const idleReadModel = {
+        ...queuedReadModel,
+        threads: queuedReadModel.threads.map((thread) => ({
+          ...thread,
+          session: null,
+        })),
+      };
+      const dispatched = await Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "thread.queued-turn.dispatch",
+            commandId: CommandId.make("cmd-dispatch-idle"),
+            threadId: nestedThreadId,
+            queuedTurnId: command.queuedTurnId,
+            dispatchedAt: "2026-03-01T00:01:00.000Z",
+          },
+          readModel: idleReadModel,
+        }),
+      );
+      expect(Array.isArray(dispatched) ? dispatched : [dispatched]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "thread.message-sent",
+            payload: expect.objectContaining({ origin }),
+          }),
+          expect.objectContaining({ type: "thread.turn-start-requested" }),
+          expect.objectContaining({ type: "thread.queued-turn-dispatched" }),
+        ]),
+      );
+      for (const invalidSource of [
+        { session: null },
+        { projectId: asProjectId("different-project") },
+        { messages: [] },
+      ]) {
+        await expect(
+          Effect.runPromise(
+            decideOrchestrationCommand({
+              command,
+              readModel: {
+                ...busyReadModel,
+                threads: busyReadModel.threads.map((thread) =>
+                  thread.id === sourceThreadId ? { ...thread, ...invalidSource } : thread,
+                ),
+              },
+            }),
+          ),
+        ).rejects.toThrow(/Cross-thread source/);
+      }
+    },
+  );
 
   it("creates queued turns without starting a provider turn", async () => {
     const now = "2026-03-01T00:00:00.000Z";
