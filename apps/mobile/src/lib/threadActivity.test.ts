@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { codexFeedbackMessage } from "@t3tools/client-runtime/state/threads";
+import { groupConsecutiveWorkEntries } from "@t3tools/client-runtime/work-log/presentation";
 
 import {
   EventId,
@@ -1533,10 +1534,12 @@ describe("buildThreadFeed", () => {
     ).toMatchObject([
       {
         type: "work-toggle",
-        summary: "Clicking in the preview browser",
+        summary: "Clicked in the preview browser",
         summaryToolIcon: "browser",
         live: true,
+        shimmer: false,
       },
+      { type: "thinking" },
     ]);
   });
 
@@ -1544,7 +1547,7 @@ describe("buildThreadFeed", () => {
     {
       status: "completed",
       displayName: "Clicked in the preview browser",
-      liveDisplayName: "Clicking in the preview browser",
+      liveDisplayName: "Clicked in the preview browser",
       detail: "Clicked Continue",
       hasFailure: false,
     },
@@ -1656,8 +1659,7 @@ describe("buildThreadFeed", () => {
           summaryToolIcon: "browser",
           hasFailure,
           live: true,
-          // A successful trailing call keeps shining; a failure hands off to "Thinking".
-          shimmer: !hasFailure,
+          shimmer: false,
         },
         {
           type: "activity-group",
@@ -1671,7 +1673,7 @@ describe("buildThreadFeed", () => {
             },
           ],
         },
-        ...(hasFailure ? [{ type: "thinking", turnId }] : []),
+        { type: "thinking", turnId },
       ]);
       const terminalGroup = terminalRows[1];
       if (terminalGroup?.type !== "activity-group") return;
@@ -1743,6 +1745,87 @@ describe("buildThreadFeed", () => {
       ).toMatchObject([{ type: "work-toggle", summary, summaryKind, live: false }]);
     },
   );
+
+  it("reuses completed-turn summaries across live updates and invalidates changed groups", () => {
+    const turnId = TurnId.make("historical-turn");
+    const activeTurnId = TurnId.make("active-turn");
+    const createdAt = "2026-04-01T00:00:00.000Z";
+    let historicalLabelReads = 0;
+    const makeGroup = (id: string): Extract<ThreadFeedEntry, { type: "activity-group" }> => ({
+      type: "activity-group",
+      id,
+      turnId,
+      createdAt,
+      activities: Array.from({ length: 2_500 }, (_, index) => ({
+        id: `${id}-${index}`,
+        turnId,
+        createdAt,
+        summary: "Read file",
+        detail: null,
+        canExpand: false,
+        getFullDetail: () => null,
+        getCopyText: () => "",
+        icon: "eye",
+        toolLike: true,
+        status: "success",
+        lifecycleStatus: "completed",
+        workEntry: {
+          id: `${id}-${index}`,
+          turnId,
+          createdAt,
+          tone: "tool",
+          toolLifecycleStatus: "completed",
+          detail: `/src/${id}-${index}.ts`,
+          get label() {
+            historicalLabelReads += 1;
+            return "Read file";
+          },
+        },
+      })),
+    });
+    const first = makeGroup("first");
+    const second = makeGroup("second");
+    const liveTurn = {
+      turnId: activeTurnId,
+      state: "running" as const,
+      startedAt: createdAt,
+      completedAt: null,
+    };
+    const initial = deriveThreadFeedPresentation([first, second], liveTurn, new Set());
+    expect(initial[0]).toMatchObject({
+      type: "turn-fold",
+      label: "Read 5000 files · Worked for 1ms",
+    });
+    expect(historicalLabelReads).toBeGreaterThan(0);
+    historicalLabelReads = 0;
+    for (let index = 0; index < 10; index += 1) {
+      const activeGroup = {
+        ...second,
+        id: `active-${index}`,
+        turnId: activeTurnId,
+        activities: [],
+      };
+      const updated = deriveThreadFeedPresentation(
+        [first, second, activeGroup],
+        liveTurn,
+        new Set(),
+        new Set(),
+        createdAt,
+      );
+      expect(updated[0]).toBe(initial[0]);
+    }
+    expect(historicalLabelReads).toBe(0);
+    const changedSecond = {
+      ...second,
+      activities: second.activities.slice(1),
+    };
+    const changed = deriveThreadFeedPresentation([first, changedSecond], liveTurn, new Set());
+    expect(changed[0]).toMatchObject({
+      type: "turn-fold",
+      label: "Read 4999 files · Worked for 1ms",
+    });
+    expect(historicalLabelReads).toBeGreaterThan(0);
+  });
 
   it("defers large tool output expansion until a work row is opened or copied", () => {
     let serializedToolOutputs = 0;
@@ -1867,7 +1950,7 @@ describe("buildThreadFeed", () => {
     ]);
     expect(collapsed[1]).toMatchObject({
       type: "turn-fold",
-      label: "Worked for 17s",
+      label: "Read files · Worked for 17s",
       expanded: false,
     });
 
@@ -1886,7 +1969,7 @@ describe("buildThreadFeed", () => {
     );
     expect(interrupted[1]).toMatchObject({
       type: "turn-fold",
-      label: "You stopped after 19s",
+      label: "Read files · You stopped after 19s",
       expanded: false,
     });
     const retimed = deriveThreadFeedPresentation(
@@ -1900,8 +1983,15 @@ describe("buildThreadFeed", () => {
       null,
       new Set(),
     );
-    expect(retimed[1]).toMatchObject({ type: "turn-fold", label: "Worked for 23s" });
-    expect(collapsed[1]).toMatchObject({ type: "turn-fold", label: "Worked for 17s" });
+    expect(retimed[1]).toMatchObject({ type: "turn-fold", label: "Read files · Worked for 23s" });
+    expect(collapsed[1]).toMatchObject({ type: "turn-fold", label: "Read files · Worked for 17s" });
+    const manuallyExpanded = deriveThreadFeedPresentation(
+      feed,
+      thread.latestTurn,
+      new Set(),
+      new Set(["work-group:tool-completed"]),
+    );
+    expect(manuallyExpanded.some((entry) => entry.type === "activity-group")).toBe(true);
   });
 
   it("folds assistant messages between the first and terminal messages", () => {
@@ -2033,7 +2123,7 @@ describe("buildThreadFeed", () => {
     const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
     expect(collapsed.find((entry) => entry.type === "turn-fold")).toMatchObject({
       turnId: firstTurnId,
-      label: "Worked for 12s",
+      label: "Ran command · Worked for 12s",
     });
   });
 
@@ -2087,7 +2177,7 @@ describe("buildThreadFeed", () => {
     expect(deriveThreadFeedPresentation(feed, thread.latestTurn, new Set())).toMatchObject([
       {
         type: "work-toggle",
-        summary: "Ran 2 commands",
+        summary: "Failed command",
         hiddenCount: 2,
         hasFailure: true,
       },
@@ -2220,7 +2310,7 @@ describe("buildThreadFeed", () => {
       (
         [
           { lifecycleStatus: "inProgress", summary: "Running pnpm", shimmer: true },
-          { lifecycleStatus: "completed", summary: "Running pnpm", shimmer: true },
+          { lifecycleStatus: "completed", summary: "Ran pnpm", shimmer: false },
           { lifecycleStatus: "failed", summary: "Failed pnpm", shimmer: false },
           { lifecycleStatus: "declined", summary: "Declined pnpm", shimmer: false },
           { lifecycleStatus: "stopped", summary: "Stopped pnpm", shimmer: false },
@@ -2331,7 +2421,7 @@ describe("buildThreadFeed", () => {
         {
           live: false,
           shimmer: false,
-          summary: lifecycleStatus === "inProgress" ? "printf done" : command,
+          summary: lifecycleStatus === "inProgress" ? "Ran printf" : summary,
         },
       ]);
 
@@ -2545,6 +2635,73 @@ describe("buildThreadFeed", () => {
     expect(rows.some((entry) => entry.type === "work-toggle" && entry.shimmer)).toBe(shimmer);
   });
 
+  it("preserves inferred lifecycle in expanded tool details", () => {
+    const turnId = TurnId.make("turn-inferred-lifecycle");
+    const startedAt = "2026-04-01T00:00:00.000Z";
+    const thread = makeThread({
+      id: ThreadId.make("thread-inferred-lifecycle"),
+      projectId: ProjectId.make("project-1"),
+      title: "Inferred lifecycle",
+      activities: [
+        makeActivity({
+          id: EventId.make("completed-read"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Read file",
+          createdAt: "2026-04-01T00:00:01.000Z",
+          turnId,
+          payload: { status: "completed", detail: "/src/done.ts" },
+        }),
+        makeActivity({
+          id: EventId.make("statusless-read"),
+          kind: "tool.updated",
+          tone: "tool",
+          summary: "Read file",
+          createdAt: "2026-04-01T00:00:02.000Z",
+          turnId,
+          payload: { detail: "/src/active.ts" },
+        }),
+      ],
+    });
+    const feed = buildThreadFeed(thread);
+    const expandedGroups = new Set(["work-group:completed-read"]);
+    const rows = deriveThreadFeedPresentation(
+      feed,
+      { turnId, state: "running", startedAt, completedAt: null },
+      new Set(),
+      expandedGroups,
+      startedAt,
+    );
+    expect(rows.find((row) => row.type === "work-toggle" && row.shimmer)).toMatchObject({
+      type: "work-toggle",
+      activeCount: 1,
+      shimmer: true,
+    });
+    const details = rows.flatMap((row) => (row.type === "activity-group" ? row.activities : []));
+    expect(details).toMatchObject([
+      { id: "completed-read", live: false, workEntry: { toolLifecycleStatus: "completed" } },
+      {
+        id: "statusless-read",
+        live: true,
+        status: "neutral",
+        lifecycleStatus: "inProgress",
+        workEntry: { toolLifecycleStatus: "inProgress" },
+      },
+    ]);
+    expect(groupConsecutiveWorkEntries(details, (activity) => activity.workEntry)).toHaveLength(2);
+    const stoppedRows = deriveThreadFeedPresentation(
+      feed,
+      { turnId, state: "completed", startedAt, completedAt: "2026-04-01T00:00:03.000Z" },
+      new Set([turnId]),
+      expandedGroups,
+    );
+    const stoppedDetails = stoppedRows.flatMap((row) =>
+      row.type === "activity-group" ? row.activities : [],
+    );
+    expect(stoppedDetails[1]?.live).toBe(false);
+    expect(stoppedDetails[1]?.workEntry.toolLifecycleStatus).toBeUndefined();
+  });
+
   it("does not revive cached in-progress tools after work stops", () => {
     const turnId = TurnId.make("turn-stale-tool");
     const feed: ThreadFeedEntry[] = [
@@ -2662,7 +2819,7 @@ describe("buildThreadFeed", () => {
     expect(runningRows.find((entry) => entry.type === "activity-group")).toMatchObject({
       id: `work-details:${groupId}`,
       activities: [
-        { id: "call-a-1", lifecycleStatus: "inProgress", groupedToolDetail: true, live: false },
+        { id: "call-a-1", lifecycleStatus: "inProgress", groupedToolDetail: true, live: true },
         { id: "call-b-2", lifecycleStatus: "inProgress", groupedToolDetail: true, live: true },
       ],
     });

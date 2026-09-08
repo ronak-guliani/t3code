@@ -15,9 +15,12 @@ import type {
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import {
   commandDetailRepeatsCommand,
+  compactWorkEntryLabel,
   extractCommandOutputText,
   isWorktreeSetupActivity,
-  liveActivityToolStatus,
+  deriveWorkGroupActivity,
+  extractWorkLogToolLifecycleStatus,
+  mergeWorkLogToolData,
   normalizeCompactToolLabel,
   omitSupersededLifecycleMarkers,
   resolveWorkEntryToolPresentation,
@@ -25,9 +28,9 @@ import {
   toolGroupAction,
   toolGroupSummaryKind,
   type ToolGroupSummaryKind,
+  type WorkLogToolLifecycleStatus,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
-import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
 
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
@@ -85,12 +88,12 @@ export interface ThreadFeedActivity {
   readonly lifecycleStatus?: WorkLogToolLifecycleStatus;
   readonly workEntry: WorkLogEntry;
   readonly groupedToolDetail?: boolean;
+  readonly groupSummary?: boolean;
   readonly live?: boolean;
 }
 
-type WorkLogToolLifecycleStatus = "inProgress" | "completed" | "failed" | "declined" | "stopped";
-
 export interface WorkLogEntry {
+  requestId?: string;
   id: string;
   createdAt: string;
   turnId: TurnId | null;
@@ -152,6 +155,7 @@ export type ThreadFeedEntry =
       readonly turnId: TurnId | null;
       readonly groupId: string;
       readonly hiddenCount: number;
+      readonly activeCount: number;
       readonly expanded: boolean;
       readonly summary: string;
       readonly summaryKind: ToolGroupSummaryKind;
@@ -206,6 +210,10 @@ const presentedActivityGroupsCache = new WeakMap<
 const turnFoldRowsCache = new WeakMap<
   ThreadFeedEntry,
   Extract<ThreadFeedEntry, { readonly type: "turn-fold" }>
+>();
+const turnWorkSummaryCache = new WeakMap<
+  ThreadFeedActivityGroup,
+  { readonly groups: readonly ThreadFeedActivityGroup[]; readonly label: string }
 >();
 let cachedThinkingRow: Extract<ThreadFeedEntry, { readonly type: "thinking" }> | null = null;
 
@@ -505,6 +513,8 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
           ? "info"
           : activity.tone,
     sourceActivityKind: activity.kind,
+    ...(payload?.data !== undefined ? { toolData: payload.data } : {}),
+    ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
   };
   const toolCallId =
     asTrimmedString(payload?.toolCallId) ?? asTrimmedString(asRecord(payload?.data)?.toolCallId);
@@ -705,7 +715,7 @@ function mergeDerivedWorkLogEntries(
   const collapseKey = next.collapseKey ?? previous.collapseKey;
   const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
   const toolCallId = next.toolCallId ?? previous.toolCallId;
-  const toolData = next.toolData ?? previous.toolData;
+  const toolData = mergeWorkLogToolData(previous.toolData, next.toolData);
   return {
     ...previous,
     ...next,
@@ -960,10 +970,10 @@ function workEntryHeading(workEntry: WorkLogEntry): string {
 }
 
 function singleToolCallLabel(activity: ThreadFeedActivity): string {
-  const presentation = resolveWorkEntryToolPresentation(activity.workEntry, "completed");
-  if (presentation) return presentation.displayName;
-  const command = activity.workEntry.command?.trim();
-  return command || activity.summary;
+  return compactWorkEntryLabel({
+    ...activity.workEntry,
+    toolLifecycleStatus: activity.lifecycleStatus ?? "completed",
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1168,27 +1178,6 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
 
 function extractToolTitle(payload: Record<string, unknown> | null): string | null {
   return asTrimmedString(payload?.title);
-}
-
-function extractWorkLogToolLifecycleStatus(
-  payload: Record<string, unknown> | null,
-): WorkLogToolLifecycleStatus | undefined {
-  const status = payload?.status;
-  // The parent turn ended, so batch tracking is inactive. The detail explains
-  // that child status is unavailable; do not retain the earlier running marker.
-  if (status === "idle" && payload?.taskType === "subagent_batch") return "stopped";
-  if (status === "pending" || status === "running" || status === "waiting") return "inProgress";
-  if (status === "cancelled" || status === "interrupted") return "stopped";
-  if (
-    status === "inProgress" ||
-    status === "completed" ||
-    status === "failed" ||
-    status === "declined" ||
-    status === "stopped"
-  ) {
-    return status;
-  }
-  return undefined;
 }
 
 function stripTrailingExitCode(value: string): {
@@ -1565,6 +1554,15 @@ export function deriveThreadFeedPresentation(
     }
   }
 
+  const workByTurn = new Map<TurnId, ThreadFeedActivityGroup[]>();
+  if (foldsByAnchorId.size > 0) {
+    for (const item of sourceFeed) {
+      if (item.type !== "activity-group" || item.turnId === null) continue;
+      const previous = workByTurn.get(item.turnId);
+      if (previous) previous.push(item);
+      else workByTurn.set(item.turnId, [item]);
+    }
+  }
   const result: ThreadFeedEntry[] = [];
   for (const entry of sourceFeed) {
     const isActiveTailGroup =
@@ -1577,12 +1575,17 @@ export function deriveThreadFeedPresentation(
     const fold = foldsByAnchorId.get(entry.id);
     if (fold) {
       const expanded = expandedTurnIds.has(fold.turnId);
+      const turnWork = workByTurn.get(fold.turnId) ?? [];
+      const label =
+        !expanded && turnWork.length > 0
+          ? `${completedTurnWorkLabel(turnWork)} · ${fold.label}`
+          : fold.label;
       let row = turnFoldRowsCache.get(entry);
       if (
         !row ||
         row.turnId !== fold.turnId ||
         row.createdAt !== fold.createdAt ||
-        row.label !== fold.label ||
+        row.label !== label ||
         row.expanded !== expanded
       ) {
         row = {
@@ -1590,14 +1593,25 @@ export function deriveThreadFeedPresentation(
           id: `turn-fold:${fold.turnId}`,
           createdAt: fold.createdAt,
           turnId: fold.turnId,
-          label: fold.label,
+          label,
           expanded,
         };
         turnFoldRowsCache.set(entry, row);
       }
       result.push(row);
     }
-    if (!collapsedEntryIds.has(entry.id)) {
+    const hasExpandedWork =
+      collapsedEntryIds.has(entry.id) &&
+      expandedWorkGroupIds.size > 0 &&
+      entry.type === "activity-group" &&
+      entry.activities.some((activity) => {
+        const work = activity.workEntry;
+        const identity = work.toolCallId
+          ? `tool:${work.turnId ?? "no-turn"}:${work.toolCallId}`
+          : activity.id;
+        return expandedWorkGroupIds.has(`work-group:${identity}`);
+      });
+    if (!collapsedEntryIds.has(entry.id) || hasExpandedWork) {
       appendPresentedFeedEntry(
         result,
         entry,
@@ -1723,6 +1737,38 @@ function appendActivityGroupRows(
   flushGroupableRun(true);
 }
 
+function completedTurnWorkLabel(groups: readonly ThreadFeedActivityGroup[]): string {
+  const first = groups[0]!;
+  const cached = turnWorkSummaryCache.get(first);
+  if (
+    cached &&
+    cached.groups.length === groups.length &&
+    cached.groups.every((group, index) => group === groups[index])
+  ) {
+    return cached.label;
+  }
+  const entries = groups.flatMap((group) =>
+    group.activities.map((activity) => presentationEntryForActivity(activity)),
+  );
+  const label = deriveWorkGroupActivity(entries, false).label;
+  turnWorkSummaryCache.set(first, { groups, label });
+  return label;
+}
+
+function presentationEntryForActivity(activity: ThreadFeedActivity, active = false): WorkLogEntry {
+  const toolLifecycleStatus =
+    activity.status === "failure" &&
+    activity.lifecycleStatus !== "declined" &&
+    activity.lifecycleStatus !== "stopped"
+      ? "failed"
+      : (activity.lifecycleStatus ?? (active ? "inProgress" : undefined));
+  if (activity.workEntry.toolLifecycleStatus === toolLifecycleStatus) return activity.workEntry;
+  return {
+    ...activity.workEntry,
+    toolLifecycleStatus,
+  };
+}
+
 function appendToolGroupRows(
   result: ThreadFeedEntry[],
   sourceGroup: Extract<ThreadFeedEntry, { readonly type: "activity-group" }>,
@@ -1738,7 +1784,7 @@ function appendToolGroupRows(
     : activities[0]!.id;
   const groupId = `work-group:${identity}`;
   const expanded = expandedWorkGroupIds.has(groupId);
-  const latestActiveActivity = activities.findLast(
+  const latestActiveActivity = activities.find(
     (activity) =>
       isWorking &&
       activity.turnId === unsettledTurnId &&
@@ -1750,19 +1796,26 @@ function appendToolGroupRows(
   const active = latestActiveActivity !== undefined;
   const live = activeTail || active;
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
-  // Like web, the trailing run keeps shining after its latest call succeeds;
-  // only a failed, declined, or stopped call hands the live slot to "Thinking".
-  const shimmer = active || (activeTail && latestActivity.status === "success");
+  const groupActivity = deriveWorkGroupActivity(
+    activities.map((activity) =>
+      presentationEntryForActivity(activity, activity === latestActiveActivity),
+    ),
+    isWorking && sourceGroup.turnId === unsettledTurnId,
+  );
+  const shimmer = groupActivity.shimmer;
   const singleActivity = activities.length === 1 ? latestActivity : null;
-  const summary = live
-    ? liveToolActivitySummary(latestActivity, live)
-    : singleActivity !== null &&
-        singleActivity.toolLike &&
-        toolGroupAction(singleActivity.workEntry) !== "edit"
-      ? singleToolCallLabel(singleActivity)
-      : singleActivity !== null && !singleActivity.toolLike
-        ? singleActivity.workEntry.label
-        : summarizeToolGroup(activities.map((activity) => activity.workEntry));
+  const summary =
+    groupActivity.state !== "complete"
+      ? groupActivity.label
+      : singleActivity !== null &&
+          singleActivity.toolLike &&
+          toolGroupAction(singleActivity.workEntry) !== "edit"
+        ? singleToolCallLabel(singleActivity)
+        : singleActivity !== null && !singleActivity.toolLike
+          ? singleActivity.workEntry.label
+          : singleActivity !== null
+            ? summarizeToolGroup([singleActivity.workEntry])
+            : groupActivity.label;
   const primarySourceActivity = activities.find(
     (activity) => activity.workEntry.toolSource !== undefined,
   );
@@ -1798,6 +1851,7 @@ function appendToolGroupRows(
     turnId: sourceGroup.turnId,
     groupId,
     hiddenCount: activities.length,
+    activeCount: groupActivity.activeCount,
     expanded,
     summary,
     summaryKind: toolGroupSummaryKind(
@@ -1806,7 +1860,7 @@ function appendToolGroupRows(
     ...(groupToolSurface ? { toolSurface: groupToolSurface } : {}),
     ...(groupToolIcon ? { toolIcon: groupToolIcon } : {}),
     ...(summaryToolIcon ? { summaryToolIcon } : {}),
-    hasFailure: activities.findLast((activity) => activity.toolLike)?.status === "failure",
+    hasFailure: groupActivity.state === "failed" || groupActivity.state === "approval",
     live,
     shimmer,
   });
@@ -1818,41 +1872,21 @@ function appendToolGroupRows(
     id: `work-details:${groupId}`,
     createdAt: activities[0]!.createdAt,
     turnId: activities[0]!.turnId,
-    activities: activities.map((activity) => ({
-      ...activity,
-      groupedToolDetail: true,
-      live:
-        isWorking &&
-        activity.id === latestActivity.id &&
-        activity.lifecycleStatus === "inProgress" &&
-        activity.turnId === unsettledTurnId,
-    })),
+    activities: activities.map((activity) => {
+      const workEntry = presentationEntryForActivity(activity, activity === latestActiveActivity);
+      return {
+        ...activity,
+        workEntry,
+        status: workEntryStatus(workEntry),
+        lifecycleStatus: workEntry.toolLifecycleStatus,
+        groupedToolDetail: true,
+        live:
+          isWorking &&
+          workEntry.toolLifecycleStatus === "inProgress" &&
+          activity.turnId === unsettledTurnId,
+      };
+    }),
   });
-}
-
-function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boolean): string {
-  const status = liveActivityToolStatus(activity.lifecycleStatus, presentTense);
-  const presentation = resolveWorkEntryToolPresentation({
-    ...activity.workEntry,
-    toolLifecycleStatus: status,
-  });
-  if (presentation) return presentation.displayName;
-  const command = activity.workEntry.command?.trim();
-  if (command) {
-    const program = commandProgramName(command);
-    const verb =
-      status === "inProgress"
-        ? "Running"
-        : status === "failed"
-          ? "Failed"
-          : status === "declined"
-            ? "Declined"
-            : status === "stopped"
-              ? "Stopped"
-              : "Ran";
-    return `${verb} ${program ?? "command"}`;
-  }
-  return activity.detail ?? activity.summary;
 }
 
 /**

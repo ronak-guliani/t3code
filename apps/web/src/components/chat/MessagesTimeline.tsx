@@ -13,6 +13,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -50,6 +51,7 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -58,17 +60,14 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import {
   collectReviewOutputMessageIds,
   computeStableMessagesTimelineRows,
-  MAX_VISIBLE_WORK_LOG_ENTRIES,
   deriveMessagesTimelineRows,
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
   resolveExternalActionUrl,
-  resolveWorkGroupExpanded,
   shouldHandleInternalActionClick,
   stabilizeReadonlyStringSet,
   type StableMessagesTimelineRowsState,
   type MessagesTimelineRow,
-  type WorkGroupExpansionOverride,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -90,6 +89,15 @@ import {
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { formatTimestamp } from "../../timestampFormat";
+import {
+  compactWorkEntryLabel,
+  deriveWorkGroupActivity,
+  extractCommandOutputText,
+  groupConsecutiveWorkEntries,
+  toolGroupAction,
+  workEntryNeedsAttention,
+  workGroupAccessibleLabel,
+} from "@t3tools/client-runtime/work-log/presentation";
 
 import {
   buildInlineTerminalContextText,
@@ -129,6 +137,7 @@ interface TimelineRowSharedState {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string, scope?: TurnDiffScope) => void;
   reviewOutputMessageIds: ReadonlySet<string>;
   responseMetaByTurnId: ReadonlyMap<TurnId, AssistantResponseMeta>;
+  workGroupExpansion: Map<string, boolean>;
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
@@ -253,6 +262,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onLoadOlder,
 }: MessagesTimelineProps) {
   const handleForkAssistantMessage = onForkAssistantMessage ?? NOOP_FORK_ASSISTANT_MESSAGE;
+  const workGroupExpansion = useMemo(() => new Map<string, boolean>(), [routeThreadKey]);
   const rawRows = useMemo(
     () =>
       providedRows ??
@@ -360,6 +370,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       reviewOutputMessageIds,
       responseMetaByTurnId,
+      workGroupExpansion,
     }),
     [
       activeTurnInProgress,
@@ -384,6 +395,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       reviewOutputMessageIds,
       responseMetaByTurnId,
+      workGroupExpansion,
     ],
   );
 
@@ -1015,70 +1027,216 @@ const WorkGroupSection = memo(function WorkGroupSection({
   groupedEntries: Extract<MessagesTimelineRow, { kind: "work" }>["groupedEntries"];
   shouldAutoCollapse: boolean;
 }) {
-  const { workspaceRoot } = use(TimelineRowCtx);
+  const { workspaceRoot, activeTurnInProgress, activeTurnId, workGroupExpansion } =
+    use(TimelineRowCtx);
   const onlyToolEntries =
     groupedEntries.length > 0 && groupedEntries.every((entry) => entry.tone === "tool");
-  const [expansionOverride, setExpansionOverride] = useState<WorkGroupExpansionOverride>(null);
-  const isExpanded = resolveWorkGroupExpanded({
-    shouldAutoCollapse,
-    expansionOverride,
-  });
-  const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const visibleEntries =
-    shouldAutoCollapse && !isExpanded
-      ? []
-      : hasOverflow && !isExpanded
-        ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-        : groupedEntries;
-  const showHeader = shouldAutoCollapse || hasOverflow || !onlyToolEntries;
+  const groupKey = groupedEntries[0]?.stableId ?? groupedEntries[0]?.id ?? "";
+  const [isExpanded, setIsExpanded] = useState(() => workGroupExpansion.get(groupKey) ?? false);
+  const detailsId = useId();
+  const [visibleGroupCount, setVisibleGroupCount] = useState(6);
+  const activity = useMemo(
+    () =>
+      deriveWorkGroupActivity(
+        groupedEntries,
+        activeTurnInProgress &&
+          groupedEntries.some((entry) =>
+            entry.turnId ? entry.turnId === activeTurnId : !shouldAutoCollapse,
+          ),
+      ),
+    [groupedEntries, activeTurnInProgress, activeTurnId, shouldAutoCollapse],
+  );
   const groupLabel = onlyToolEntries ? "Tool Calls" : "Work log";
-  const showCollapseToggle = shouldAutoCollapse || hasOverflow;
-  const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
   const toggleLabel = isExpanded ? "Collapse" : "Expand";
+  const attention = activity.state === "failed" || activity.state === "approval";
 
   return (
-    <div className="work-group-section rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
-      {showHeader &&
-        (showCollapseToggle ? (
-          <button
-            type="button"
-            className="mb-1.5 flex w-full items-center justify-between gap-2 px-0.5 text-left text-[0.75em] tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-            onClick={() => setExpansionOverride(isExpanded ? "collapsed" : "expanded")}
-            aria-expanded={isExpanded}
-            aria-label={`${toggleLabel} ${groupLabel} (${groupedEntries.length})`}
+    <Collapsible
+      className="work-group-section"
+      open={isExpanded}
+      onOpenChange={(expanded) => {
+        workGroupExpansion.set(groupKey, expanded);
+        setIsExpanded(expanded);
+      }}
+    >
+      <CollapsibleTrigger
+        className={cn(
+          "flex min-h-8 w-fit max-w-full items-center gap-1.5 rounded-sm px-0.5 py-1 text-left text-sm leading-relaxed transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring pointer-coarse:min-h-11",
+          attention ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+        )}
+        aria-controls={detailsId}
+        aria-label={workGroupAccessibleLabel(
+          `${toggleLabel} ${groupLabel} (${groupedEntries.length})`,
+          activity.activeCount,
+        )}
+      >
+        <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden="true">
+          {attention ? (
+            <CircleAlertIcon className="size-3.5" />
+          ) : activity.lead ? (
+            createElement(workEntryIcon(activity.lead), { className: "size-3.5" })
+          ) : activity.state === "stopped" ? (
+            <Minimize2Icon className="size-3.5" />
+          ) : (
+            <CheckIcon className="size-3.5" />
+          )}
+        </span>
+        <span
+          className={cn("min-w-0 truncate", activity.shimmer && "work-activity-shimmer")}
+          title={activity.label}
+        >
+          {activity.label}
+        </span>
+        {activity.activeCount > 1 ? (
+          <span
+            className="shrink-0 text-xs text-muted-foreground"
+            title={`${activity.activeCount - 1} more active`}
           >
-            <span>
-              {groupLabel} ({groupedEntries.length})
-            </span>
-            <CollapseIcon className="size-3 shrink-0" />
-          </button>
-        ) : (
-          <div className="mb-1.5 flex items-center px-0.5">
-            <p className="text-[0.75em] tracking-[0.12em] text-muted-foreground/55">
-              {groupLabel} ({groupedEntries.length})
-            </p>
-          </div>
-        ))}
-      <div className="space-y-0.5">
-        {visibleEntries.map((workEntry) => (
-          <SimpleWorkEntryRow
-            key={`work-row:${workEntry.id}`}
-            canExpandCommand={onlyToolEntries}
-            workEntry={workEntry}
+            +{activity.activeCount - 1}
+          </span>
+        ) : null}
+        <ChevronRightIcon
+          aria-hidden="true"
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none",
+            isExpanded && "rotate-90",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent
+        id={detailsId}
+        className="duration-150 ease-out motion-reduce:transition-none"
+      >
+        <div className="pb-1 pl-2 pt-0.5">
+          <p className="px-2 py-1 text-[0.85em] text-muted-foreground">
+            {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
+            {activity.activeCount > 1 ? ` · ${activity.activeCount} active` : ""}
+          </p>
+          <WorkGroupHistory
+            entries={groupedEntries}
             workspaceRoot={workspaceRoot}
+            visibleGroupCount={visibleGroupCount}
+            onShowMore={() => setVisibleGroupCount((count) => count + 6)}
           />
-        ))}
-      </div>
-    </div>
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 });
+
+function WorkGroupHistory({
+  entries,
+  workspaceRoot,
+  visibleGroupCount,
+  onShowMore,
+}: {
+  entries: TimelineWorkEntry[];
+  workspaceRoot: string | undefined;
+  visibleGroupCount: number;
+  onShowMore: () => void;
+}) {
+  const groups = useMemo(() => groupConsecutiveWorkEntries(entries, (entry) => entry), [entries]);
+  const nextGroupCount = Math.min(6, groups.length - visibleGroupCount);
+  return (
+    <>
+      {groups.slice(-visibleGroupCount).map((group) => (
+        <WorkHistoryGroup
+          key={group.entries[0]!.stableId ?? group.entries[0]!.id}
+          entries={group.entries}
+          label={group.label}
+          workspaceRoot={workspaceRoot}
+        />
+      ))}
+      {groups.length > visibleGroupCount ? (
+        <button
+          type="button"
+          className="mt-1 rounded-sm px-2 py-2 text-[0.9em] text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={onShowMore}
+        >
+          Show {nextGroupCount} earlier {nextGroupCount === 1 ? "group" : "groups"}
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+function WorkHistoryGroup({
+  entries,
+  label,
+  workspaceRoot,
+}: {
+  entries: TimelineWorkEntry[];
+  label: string;
+  workspaceRoot: string | undefined;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(50);
+  if (entries.length === 1)
+    return (
+      <SimpleWorkEntryRow
+        canExpandCommand
+        workEntry={entries[0]!}
+        workspaceRoot={workspaceRoot}
+        compact
+      />
+    );
+  return (
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <CollapsibleTrigger className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-muted-foreground hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring">
+        {createElement(workEntryIcon(entries[0]!), {
+          className: "size-3.5 shrink-0",
+          "aria-hidden": true,
+        })}
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <ChevronRightIcon
+          className={cn(
+            "size-3 transition-transform duration-150 motion-reduce:transition-none",
+            expanded && "rotate-90",
+          )}
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+        <div className="ml-3 border-l border-border/60 pl-2">
+          {entries.slice(0, visibleCount).map((entry) => (
+            <SimpleWorkEntryRow
+              key={entry.stableId ?? entry.id}
+              canExpandCommand
+              compact
+              workEntry={entry}
+              workspaceRoot={workspaceRoot}
+            />
+          ))}
+          {entries.length > visibleCount ? (
+            <button
+              type="button"
+              className="rounded-sm px-2 py-2 text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              onClick={() => setVisibleCount((count) => count + 50)}
+            >
+              Show {Math.min(50, entries.length - visibleCount)} more actions (
+              {entries.length - visibleCount} remaining)
+            </button>
+          ) : null}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
 
 const ReasoningSection = memo(function ReasoningSection({
   row,
 }: {
   row: Extract<MessagesTimelineRow, { kind: "reasoning" }>;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const { workGroupExpansion } = use(TimelineRowCtx);
+  const [isExpanded, setIsExpanded] = useState(() =>
+    row.rows.some(
+      (entry) =>
+        entry.kind === "work" &&
+        workGroupExpansion.get(
+          entry.groupedEntries[0]?.stableId ?? entry.groupedEntries[0]?.id ?? "",
+        ),
+    ),
+  );
   const CollapseIcon = isExpanded ? ChevronDownIcon : ChevronRightIcon;
   const label = row.workedFor ? `Worked for ${row.workedFor}` : "Worked";
 
@@ -1096,11 +1254,13 @@ const ReasoningSection = memo(function ReasoningSection({
         </button>
         <span className="h-px flex-1 bg-border" />
       </div>
-      {isExpanded && (
+      {(isExpanded || row.rows.some((entry) => entry.kind === "work")) && (
         <div className="mt-3">
-          {row.rows.map((nestedRow) => (
-            <TimelineRowContent key={`reasoning-row:${nestedRow.id}`} row={nestedRow} />
-          ))}
+          {row.rows
+            .filter((entry) => isExpanded || entry.kind === "work")
+            .map((nestedRow) => (
+              <TimelineRowContent key={`reasoning-row:${nestedRow.id}`} row={nestedRow} />
+            ))}
         </div>
       )}
     </div>
@@ -1562,6 +1722,8 @@ function workEntryFullCommand(
 }
 
 function workEntryIcon(workEntry: TimelineWorkEntry): LucideIcon {
+  if (workEntryNeedsAttention(workEntry)) return CircleAlertIcon;
+  if (toolGroupAction(workEntry) === "read") return EyeIcon;
   if (workEntry.requestKind === "command") return TerminalIcon;
   if (workEntry.requestKind === "file-read") return EyeIcon;
   if (workEntry.requestKind === "file-change") return SquarePenIcon;
@@ -1602,6 +1764,7 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 }
 
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+  compact?: boolean;
   canExpandCommand?: boolean;
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -1638,6 +1801,58 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       : workEntry.action?.kind === "external"
         ? resolveExternalActionUrl(workEntry.action.url)
         : null;
+
+  if (props.compact && !workEntry.action) {
+    const output = isCommandExpanded ? extractCommandOutputText(workEntry.toolData) : null;
+    const detail = [
+      fullCommand,
+      output ?? workEntry.detail,
+      ...(workEntry.changedFiles ?? []),
+      isCommandExpanded && workEntry.toolData != null && !output
+        ? JSON.stringify(workEntry.toolData, null, 2)
+        : undefined,
+    ]
+      .filter((value, index, values) => value && values.indexOf(value) === index)
+      .join("\n\n");
+    const hasDetail = Boolean(detail) || workEntry.toolData != null;
+    const label = compactWorkEntryLabel(workEntry);
+    const failed = workEntryNeedsAttention(workEntry);
+    return (
+      <div className="rounded-lg">
+        <button
+          type="button"
+          disabled={!hasDetail}
+          onClick={() => setIsCommandExpanded((value) => !value)}
+          aria-expanded={hasDetail ? isCommandExpanded : undefined}
+          aria-label={
+            hasDetail ? `${isCommandExpanded ? "Collapse" : "Expand"} details: ${label}` : label
+          }
+          className={cn(
+            "flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-muted/40 disabled:cursor-default focus-visible:outline-2 focus-visible:outline-ring",
+            failed ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground",
+          )}
+        >
+          {entryIcon}
+          <span className="min-w-0 flex-1 truncate" title={label}>
+            {label}
+          </span>
+          {failed ? <span className="text-[0.85em]">Failed</span> : null}
+          {hasDetail ? <CommandToggleIcon className="size-3 shrink-0" /> : null}
+        </button>
+        {isCommandExpanded && detail ? (
+          <div className="ml-3 border-l border-border/60 pl-3 pb-2">
+            <pre
+              data-tool-command-details
+              className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-background/60 p-2 font-mono text-[0.9em] text-muted-foreground"
+            >
+              {detail}
+            </pre>
+            <MessageCopyButton text={detail} size="icon-xs" variant="ghost" />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg px-1 py-1">

@@ -70,8 +70,6 @@ export interface StableMessagesTimelineRowsState {
   result: MessagesTimelineRow[];
 }
 
-export type WorkGroupExpansionOverride = "expanded" | "collapsed" | null;
-
 export function resolveExternalActionUrl(actionUrl: string): string | null {
   try {
     const target = new URL(actionUrl);
@@ -92,18 +90,6 @@ export function shouldHandleInternalActionClick(input: {
   readonly altKey: boolean;
 }): boolean {
   return input.button === 0 && !input.metaKey && !input.ctrlKey && !input.shiftKey && !input.altKey;
-}
-
-export function resolveWorkGroupExpanded({
-  shouldAutoCollapse,
-  expansionOverride,
-}: {
-  shouldAutoCollapse: boolean;
-  expansionOverride: WorkGroupExpansionOverride;
-}): boolean {
-  if (expansionOverride === "expanded") return true;
-  if (expansionOverride === "collapsed") return false;
-  return !shouldAutoCollapse;
 }
 
 /**
@@ -592,6 +578,11 @@ function areWorkLogEntriesUnchanged(a: WorkLogEntry, b: WorkLogEntry): boolean {
   if (a === b) return true;
   return (
     a.id === b.id &&
+    a.stableId === b.stableId &&
+    a.turnId === b.turnId &&
+    a.requestId === b.requestId &&
+    a.toolLifecycleStatus === b.toolLifecycleStatus &&
+    a.toolData === b.toolData &&
     a.sourceActivityKind === b.sourceActivityKind &&
     a.createdAt === b.createdAt &&
     a.label === b.label &&

@@ -967,6 +967,28 @@ label:has(> select#reasoning-effort) select {
 }
 
 /* Thin scrollbar for model picker */
+.work-activity-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: project-title-shimmer 2.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-activity-shimmer {
+    animation: none;
+    background: none;
+    color: var(--foreground);
+  }
+}
+
 .model-picker-list::-webkit-scrollbar {
   width: 4px;
 }
