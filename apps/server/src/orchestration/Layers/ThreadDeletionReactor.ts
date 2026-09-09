@@ -14,9 +14,7 @@ import {
 } from "../../persistence/Services/WorktreeCleanupJobs.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
-import {
-  isRemovableArchiveWorktreePath,
-} from "../archiveWorktreeCleanup.ts";
+import { isRemovableArchiveWorktreePath } from "../archiveWorktreeCleanup.ts";
 import { OrchestrationEngineService, readCommandModel } from "../Services/OrchestrationEngine.ts";
 import {
   ThreadDeletionReactor,
