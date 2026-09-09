@@ -77,6 +77,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         threadPinning: true,
         threadPinReorder: true,
         threadTitleRegeneration: true,
+        agentWorkflows: true,
         agentActivityPublishing: false,
       });
 

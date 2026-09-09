@@ -16,6 +16,10 @@ export const deferredRouteLoaders = {
     import("./features/review/ReviewCommentComposerSheet").then(
       (module) => module.ReviewCommentComposerSheet,
     ),
+  pullRequestReview: () =>
+    import("./features/review/PullRequestReviewSheet").then(
+      (module) => module.PullRequestReviewSheet,
+    ),
   threadFiles: () =>
     import("./features/files/ThreadFilesRouteScreen").then(
       (module) => module.ThreadFilesTreeScreen,
