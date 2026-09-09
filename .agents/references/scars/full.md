@@ -40,6 +40,9 @@
 
 ## Desktop packaging and React state
 
+- Work-log display paths must use verbatim provider candidates, not Git-normalized changed paths: absolute patch paths are rejected without a cwd. Prefer raw input/ACP locations over shortened previews, and never treat JSON output as a filename.
+- Keep visited work-log bodies local to their virtual timeline row, lazy before first expansion, and hidden after collapse. Preserve mounted details through closing/reversal so output parsing and DOM reconstruction do not interrupt the animation.
+- Command labels must come from input metadata, never a tool's output/detail fallback. Repeated completed work may be folded for display, but preserve every call and keep distinct commands, paths, turns, active calls, and failures separate.
 - Packaged desktop startup builds cloud runtime services eagerly; `CloudRuntimeLayerLive` must provide its own auth control plane, server environment, orchestration, repository identity, and persistence dependencies, and startup logs should include a clear cloud-runtime-ready marker.
 - Worktree dependency copies can dereference macOS Electron framework symlinks; desktop packaging must validate an installed `Electron.app` before reusing it as `electronDist` and fall back to electron-builder's archive when invalid.
 - macOS native sidebar vibrancy can leave stale/ghosted row pixels when translucent sidebar rows animate opacity/transform/color over the visual-effect backing; keep vibrancy stable across focus changes and isolate native-vibrancy thread rows with paint containment, compositor promotion, and disabled row transitions.
@@ -83,6 +86,10 @@
 - Queue readiness must find the latest user message rather than inspect only the final timeline message; a later system message can otherwise hide an unacknowledged turn start and dispatch the next queued item concurrently.
 
 ## Delegation and handoff transactions
+
+- Child notification dedupe must also suppress causally derived queue/meta events in the same transaction; otherwise a retried notification can recreate a dismissed nudge. Keep queued child updates separate from parent execution status until dispatch.
+- Provider notifications retain source timestamps. When appending a new nudge batch, order it after the existing queue tail; never let delayed completion timestamps move it ahead of user-authored queued messages.
+- `thread.turn.diff.complete` also carries speculative mid-turn diffs; exclude those from assignment completion. Render child report summaries literally, without parsing user-prompt terminal or preview metadata.
 
 - PR base distance is telemetry, not remediation; wake owners for merge conflicts or concrete failures, never routine commit drift.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
@@ -213,12 +220,14 @@
 - The web transport parks a stream that fails for a non-transport reason until the next reconnect, so a thread-detail subscription opened before the thread's projection row exists (`subscribeThread` answers "thread was not found") stays dead and is reused from the warm cache: the chat renders its optimistic message and "Working" forever until a reload. Gate `retainThreadDetailSubscription` on the thread being published in the shell projection and re-attach when it appears, and never dispose a retained subscription while reconciling a shell snapshot that may lag a freshly created thread.
 - Never suppress typechecking on `apps/server/src/ws.ts`. Parked web stream subscriptions must retry with bounded backoff and jitter so a handler defect cannot freeze the UI until reconnect.
 - Unread completion state is global across environment snapshots: never prune durable visit stamps from a partial snapshot, seed missing startup stamps through `latestTurn.completedAt`, and repair persisted stamps equal to the legacy metadata seed when that seed predates completion. V1 rows must preserve their parent-projected visit-aware status unless a local pending turn needs an immediate Working overlay.
+- Virtualized row items must own every primitive that changes their rendering. Derive receipt-aware status before list rendering and compare it in item equality; do not hide row state in render closures, whole-map props, or `extraData`, because mounted rows can remain stale after persistence updates.
 - Workspace handoff intentionally ends turn A and queues a continuation before turn B starts. Project non-failed queue presence onto the shell as `hasPendingQueuedTurn` (do not read detail-only `queuedTurnsByThreadId` for sidebar/notify). Treat that flag as still-working in status, archive guards, settle/snooze, and completion notifications so the idle gap does not flash "Done" / "Chat completed"; do not seed `notifiedTurnKeys` while the queue is pending.
 - Completion notifications must prefer a matching `insights.turn.completed` provider state over checkpoint-derived shell/detail state; `missing` checkpoint status and normal shutdown ordering can transiently or permanently misclassify a successful turn as interrupted. Briefly confirm fallback interruptions before notifying.
 
 ## Projection performance and service composition
 
 - Shell-summary projection refreshes scan full thread history; only run them for events that can change summary fields, and execute independent repository reads concurrently.
+- Shell-summary refreshes must use targeted aggregate/lifecycle queries (MAX/COUNT/kind-filtered scans), not full-history list + in-JS derive: `NodeSqliteClient` is a single connection behind `Semaphore(1)`, so `Effect` fan-out cannot overlap SELECTs and fewer decoded rows is the only de-serialization lever.
 - Live activity windows are ordered and capped; fast-path new tail appends, but retain the dedupe/sort fallback for duplicate IDs, out-of-order events, and unsorted restored state.
 - Restart hydration must apply the live projector's per-thread activity cap in SQL before decoding payload JSON; full projection histories can exceed the V8 heap even when each live thread is bounded in memory.
 - Projection bootstrap must prune cursor rows for retired projector names; a renamed projector can otherwise pin a global minimum cursor and replay gigabytes of event history on every startup.

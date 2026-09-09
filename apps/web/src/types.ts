@@ -22,6 +22,7 @@ import type {
   ReviewResult,
   ReviewSnapshot,
   RuntimeMode,
+  ThreadNudging,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -104,6 +105,7 @@ export interface Project {
 }
 
 export interface Thread {
+  nudging?: ThreadNudging | undefined;
   id: ThreadId;
   environmentId: EnvironmentId;
   codexThreadId: string | null;
@@ -144,6 +146,7 @@ export interface Thread {
 }
 
 export interface ThreadShell {
+  nudging?: ThreadNudging | undefined;
   id: ThreadId;
   environmentId: EnvironmentId;
   codexThreadId: string | null;

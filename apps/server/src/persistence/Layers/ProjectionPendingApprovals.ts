@@ -1,9 +1,11 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { Effect, Layer } from "effect";
+import { NonNegativeInt } from "@t3tools/contracts";
+import { Effect, Layer, Schema } from "effect";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
+  CountProjectionPendingApprovalsInput,
   GetProjectionPendingApprovalInput,
   DeleteProjectionPendingApprovalInput,
   ListProjectionPendingApprovalsInput,
@@ -85,6 +87,19 @@ const makeProjectionPendingApprovalRepository = Effect.gen(function* () {
       `,
   });
 
+  const countPendingProjectionApprovalRows = SqlSchema.findOne({
+    Request: CountProjectionPendingApprovalsInput,
+    Result: Schema.Struct({ pendingCount: NonNegativeInt }),
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          COUNT(*) AS "pendingCount"
+        FROM projection_pending_approvals
+        WHERE thread_id = ${threadId}
+          AND status = 'pending'
+      `,
+  });
+
   const deleteProjectionPendingApprovalRow = SqlSchema.void({
     Request: DeleteProjectionPendingApprovalInput,
     execute: ({ requestId }) =>
@@ -122,11 +137,21 @@ const makeProjectionPendingApprovalRepository = Effect.gen(function* () {
       ),
     );
 
+  const countPendingByThreadId: ProjectionPendingApprovalRepositoryShape["countPendingByThreadId"] =
+    (input) =>
+      countPendingProjectionApprovalRows(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionPendingApprovalRepository.countPendingByThreadId:query"),
+        ),
+        Effect.map((row) => row.pendingCount),
+      );
+
   return {
     upsert,
     listByThreadId,
     getByRequestId,
     deleteByRequestId,
+    countPendingByThreadId,
   } satisfies ProjectionPendingApprovalRepositoryShape;
 });
 

@@ -24,6 +24,7 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import { QueuedTurnReactor, type QueuedTurnReactorShape } from "../Services/QueuedTurnReactor.ts";
 import { isThreadReadyForQueuedDispatch } from "../commandInvariants.ts";
+import { isAutomaticChildNudgeBlocked } from "../childNudging.ts";
 
 const MONITOR_REVALIDATION_RETRY_INTERVAL = Duration.seconds(20);
 const MAX_MONITOR_REVALIDATION_ATTEMPTS = 3;
@@ -69,10 +70,13 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
         return;
       }
 
-      let nextQueuedTurn = queuedTurns[0];
-      if (queuedTurns.some((turn) => turn.origin?.kind === "pull-request-monitor")) {
+      const eligibleTurns = queuedTurns.filter(
+        (turn) => turn.origin?.kind !== "child-nudge" || !isAutomaticChildNudgeBlocked(thread),
+      );
+      let nextQueuedTurn = eligibleTurns[0];
+      if (eligibleTurns.some((turn) => turn.origin?.kind === "pull-request-monitor")) {
         const settings = yield* serverSettings.getSettings;
-        nextQueuedTurn = queuedTurns.find(
+        nextQueuedTurn = eligibleTurns.find(
           (turn) =>
             turn.failedAt !== null ||
             turn.origin?.kind !== "pull-request-monitor" ||
@@ -244,7 +248,12 @@ const makeQueuedTurnReactor = Effect.gen(function* () {
               const latestThread = Option.getOrUndefined(
                 yield* readThreadDetail(orchestrationEngine, threadId),
               );
-              if (!latestThread || !isThreadReadyForQueuedDispatch(latestThread)) {
+              if (
+                !latestThread ||
+                !isThreadReadyForQueuedDispatch(latestThread) ||
+                (nextQueuedTurn.origin?.kind === "child-nudge" &&
+                  isAutomaticChildNudgeBlocked(latestThread))
+              ) {
                 return;
               }
               yield* failQueuedTurn({

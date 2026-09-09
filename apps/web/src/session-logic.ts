@@ -5,6 +5,7 @@ import {
   mergeWorkLogToolData,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { extractNormalizedChangedFilePathsFromToolPayload } from "@t3tools/shared/toolChangedFiles";
+import { extractToolCommandInput } from "@t3tools/shared/toolActivity";
 import {
   ApprovalRequestId,
   type ChildThreadLifecycle,
@@ -262,9 +263,17 @@ type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeT
  * Prefer the shell-projected `hasPendingQueuedTurn` flag for sidebar/notify paths.
  */
 export function hasActionableQueuedTurn(
-  queuedTurns: readonly { readonly failedAt: string | null }[] | null | undefined,
+  queuedTurns:
+    | readonly {
+        readonly failedAt: string | null;
+        readonly origin?: { readonly kind: string } | undefined;
+      }[]
+    | null
+    | undefined,
 ): boolean {
-  return (queuedTurns ?? []).some((queuedTurn) => queuedTurn.failedAt === null);
+  return (queuedTurns ?? []).some(
+    (queuedTurn) => queuedTurn.failedAt === null && queuedTurn.origin?.kind !== "child-nudge",
+  );
 }
 
 export function isThreadActivelyWorking(
@@ -750,6 +759,7 @@ const CHILD_LIFECYCLE_ACTION_LABELS: Record<ChildThreadLifecycle, string> = {
   failed: "Review failure",
   completed: "View result",
   "pr-created": "Open pull request",
+  reported: "Open child thread",
 };
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
@@ -1191,34 +1201,11 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   command: string | null;
   rawCommand: string | null;
 } {
-  const data = asRecord(payload?.data);
-  const item = asRecord(data?.item);
-  const itemResult = asRecord(item?.result);
-  const itemInput = asRecord(item?.input);
-  const itemType = asTrimmedString(payload?.itemType);
-  const detail = asTrimmedString(payload?.detail);
-  const candidates: unknown[] = [
-    item?.command,
-    itemInput?.command,
-    itemResult?.command,
-    data?.command,
-    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
-  ];
-
-  for (const candidate of candidates) {
-    const command = normalizeCommandValue(candidate);
-    if (!command) {
-      continue;
-    }
-    return {
-      command,
-      rawCommand: toRawToolCommand(candidate, command),
-    };
-  }
-
+  const candidate = extractToolCommandInput(asRecord(payload?.data) ?? undefined);
+  const command = normalizeCommandValue(candidate);
   return {
-    command: null,
-    rawCommand: null,
+    command,
+    rawCommand: toRawToolCommand(candidate, command),
   };
 }
 

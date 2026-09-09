@@ -11,6 +11,10 @@ import {
   compareNestedThreads,
   selectMatchingThreadTree,
 } from "../threads/mobile-thread-hierarchy";
+import {
+  resolveThreadListRowStatus,
+  type ThreadListRowStatus,
+} from "../threads/thread-list-row-status";
 
 /** Threads shown per project before the "Show more" affordance appears. */
 export const HOME_INITIAL_VISIBLE_THREADS = 6;
@@ -41,6 +45,7 @@ export interface HomeThreadListItem {
   readonly key: string;
   readonly thread: MobileThreadShell;
   readonly hierarchy?: MobileThreadTreeRow;
+  readonly status: Exclude<ThreadListRowStatus, "queued" | "draft">;
   readonly isLast: boolean;
 }
 
@@ -124,6 +129,7 @@ export function homeListItemsAreEqual(previous: HomeListItem, item: HomeListItem
         previous.hierarchy?.archiveBlocked === item.hierarchy?.archiveBlocked &&
         previous.hierarchy?.latestRelatedNotificationAt ===
           item.hierarchy?.latestRelatedNotificationAt &&
+        previous.status === item.status &&
         previous.isLast === item.isLast
       );
     case "show-more":
@@ -145,6 +151,7 @@ export function buildHomeListLayout(input: {
   readonly showAllThreads?: boolean;
   readonly dismissedAgentRunKeys?: readonly string[];
   readonly threadChildReadAt?: NestedThreadReadMarkers;
+  readonly threadCompletionReadAt?: Readonly<Record<string, string>>;
   readonly selectedThreadKey?: string | null;
 }): HomeListLayout {
   const items: HomeListItem[] = [];
@@ -258,6 +265,7 @@ export function buildHomeListLayout(input: {
         key: `thread:${thread.environmentId}:${thread.id}`,
         thread,
         hierarchy,
+        status: resolveThreadListRowStatus(thread, input.threadCompletionReadAt),
         isLast: threadIndex === visibleThreads.length - 1 && !hasShowMoreRow,
       });
     }

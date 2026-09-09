@@ -30,6 +30,7 @@ import {
   TrimmedNonEmptyString,
   ReviewResult,
   ReviewSnapshot,
+  ThreadNudging,
 } from "@t3tools/contracts";
 import { Context, Effect, Layer, Option, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -112,6 +113,7 @@ const ProjectionQueuedTurnDbRowSchema = ProjectionQueuedTurn.mapFields(
 );
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
+    nudging: Schema.fromJsonString(ThreadNudging),
     modelSelection: Schema.fromJsonString(ModelSelection),
     pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
     reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
@@ -120,6 +122,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
 );
 const ProjectionThreadWithProjectTitleDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
+    nudging: Schema.fromJsonString(ThreadNudging),
     modelSelection: Schema.fromJsonString(ModelSelection),
     pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
     reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
@@ -511,6 +514,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     pinned_at AS "pinnedAt",
     pin_order_key AS "pinOrderKey",
     title_regeneration_request_id AS "titleRegenerationRequestId",
+    nudging_json AS "nudging",
     title_regeneration_started_at AS "titleRegenerationStartedAt",
     latest_user_message_at AS "latestUserMessageAt",
     latest_child_notification_at AS "latestChildNotificationAt",
@@ -713,6 +717,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT DISTINCT thread_id AS "threadId"
         FROM projection_queued_turns
         WHERE failed_at IS NULL
+          AND COALESCE(json_extract(origin_json, '$.kind'), '') != 'child-nudge'
         ORDER BY thread_id ASC
       `,
   });
@@ -728,6 +733,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_queued_turns
         WHERE thread_id = ${threadId}
           AND failed_at IS NULL
+          AND COALESCE(json_extract(origin_json, '$.kind'), '') != 'child-nudge'
         LIMIT 1
       `,
   });
@@ -1151,6 +1157,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threads.pinned_at AS "pinnedAt",
           threads.pin_order_key AS "pinOrderKey",
           threads.title_regeneration_request_id AS "titleRegenerationRequestId",
+          threads.nudging_json AS "nudging",
           threads.title_regeneration_started_at AS "titleRegenerationStartedAt",
           threads.latest_user_message_at AS "latestUserMessageAt",
           threads.latest_child_notification_at AS "latestChildNotificationAt",
@@ -1935,6 +1942,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   pinnedAt: row.pinnedAt,
                   pinOrderKey: row.pinOrderKey,
                   titleRegeneration: mapTitleRegeneration(row),
+                  nudging: row.nudging,
                   deletedAt: row.deletedAt,
                   messages: messagesByThread.get(row.threadId) ?? [],
                   proposedPlans: proposedPlansByThread.get(row.threadId) ?? [],
@@ -2400,6 +2408,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                     pinnedAt: row.pinnedAt,
                     pinOrderKey: row.pinOrderKey,
                     titleRegeneration: mapTitleRegeneration(row),
+                    nudging: row.nudging,
                     session,
                     latestUserMessageAt: row.latestUserMessageAt,
                     ...(row.latestChildNotificationAt !== null
@@ -2678,6 +2687,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             pinnedAt: threadRow.value.pinnedAt,
             pinOrderKey: threadRow.value.pinOrderKey,
             titleRegeneration: mapTitleRegeneration(threadRow.value),
+            nudging: threadRow.value.nudging,
             session,
             latestUserMessageAt: threadRow.value.latestUserMessageAt,
             ...(threadRow.value.latestChildNotificationAt !== null
@@ -2865,6 +2875,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         pinnedAt: threadRow.value.pinnedAt,
         pinOrderKey: threadRow.value.pinOrderKey,
         titleRegeneration: mapTitleRegeneration(threadRow.value),
+        nudging: threadRow.value.nudging,
         deletedAt: null,
         messages: messageRows.map((row) => {
           const message = {

@@ -50,7 +50,8 @@ import {
   ZapIcon,
 } from "lucide-react";
 import { Button } from "../ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible";
+import { Collapsible, CollapsibleTrigger } from "../ui/collapsible";
+import { WorkLogPanel } from "./WorkLogPanel";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
@@ -90,6 +91,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { formatTimestamp } from "../../timestampFormat";
 import {
   compactWorkEntryLabel,
+  groupRepeatedWorkEntries,
+  hasWorkLogToolData,
   deriveWorkGroupActivity,
   extractCommandOutputText,
   workGroupReceiptLabel,
@@ -525,15 +528,25 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         row.message.role === "user" &&
         (() => {
           const userImages = row.message.attachments ?? [];
-          const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+          const childNudge = row.message.origin?.kind === "child-nudge" ? row.message.origin : null;
+          const displayedUserMessage = childNudge
+            ? {
+                contexts: [],
+                visibleText: childNudge.updates
+                  .map((update) => `${update.childTitle}: ${update.summary}`)
+                  .join("\n\n"),
+              }
+            : deriveDisplayedUserMessageState(row.message.text);
           const terminalContexts = displayedUserMessage.contexts;
           const previewAnnotations: ParsedPreviewAnnotation[] = [];
           let visibleText = displayedUserMessage.visibleText;
-          while (true) {
-            const extracted = extractTrailingPreviewAnnotation(visibleText);
-            if (!extracted.annotation) break;
-            previewAnnotations.unshift(extracted.annotation);
-            visibleText = extracted.promptText;
+          if (!childNudge) {
+            while (true) {
+              const extracted = extractTrailingPreviewAnnotation(visibleText);
+              if (!extracted.annotation) break;
+              previewAnnotations.unshift(extracted.annotation);
+              visibleText = extracted.promptText;
+            }
           }
           const previewImages = userImages.filter((image) =>
             image.name.startsWith("preview-annotation-"),
@@ -546,6 +559,24 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
+              ) : row.message.origin?.kind === "child-nudge" ? (
+                <div
+                  className="mb-1 flex flex-wrap justify-end gap-1"
+                  aria-label="Child assignment updates"
+                >
+                  <span className="text-xs text-muted-foreground">Child updates</span>
+                  {row.message.origin.updates.map((update) => (
+                    <CrossThreadProvenance
+                      key={update.id}
+                      origin={{
+                        kind: "cross-thread",
+                        sourceThreadId: update.childThreadId,
+                        sourceThreadTitle: update.childTitle,
+                        sourceMessageId: update.sourceMessageId ?? update.assignmentId,
+                      }}
+                    />
+                  ))}
+                </div>
               ) : row.message.origin?.kind === "pull-request-monitor" ? (
                 <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}
@@ -1107,13 +1138,10 @@ const WorkGroupSection = memo(function WorkGroupSection({
         ) : null}
         <ChevronRightIcon
           aria-hidden="true"
-          className={cn(
-            "size-3 shrink-0 transition-transform duration-150 ease-out motion-reduce:transition-none",
-            isExpanded && "rotate-90",
-          )}
+          className={cn("size-3 shrink-0 chat-work-chevron", isExpanded && "rotate-90")}
         />
       </CollapsibleTrigger>
-      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+      <WorkLogPanel open={isExpanded}>
         <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
           <p className="sr-only">
             {groupedEntries.length} {groupedEntries.length === 1 ? "action" : "actions"}
@@ -1121,7 +1149,7 @@ const WorkGroupSection = memo(function WorkGroupSection({
           </p>
           <WorkGroupHistory entries={groupedEntries} workspaceRoot={workspaceRoot} />
         </div>
-      </CollapsibleContent>
+      </WorkLogPanel>
     </Collapsible>
   );
 });
@@ -1136,12 +1164,11 @@ function WorkGroupHistory({
   const [visibleCount, setVisibleCount] = useState(50);
   return (
     <>
-      {entries.slice(-visibleCount).map((entry) => (
-        <SimpleWorkEntryRow
-          key={entry.stableId ?? entry.id}
-          canExpandCommand
-          compact
-          workEntry={entry}
+      {groupRepeatedWorkEntries(entries.slice(-visibleCount), repeatableWorkEntry).map((group) => (
+        <RepeatedWorkRow
+          key={group.entries[0]!.stableId ?? group.entries[0]!.id}
+          entries={group.entries}
+          label={group.label}
           workspaceRoot={workspaceRoot}
         />
       ))}
@@ -1151,11 +1178,69 @@ function WorkGroupHistory({
           className="chat-work-trigger mt-1 text-muted-foreground"
           onClick={() => setVisibleCount((count) => count + 50)}
         >
-          Show {Math.min(50, entries.length - visibleCount)} earlier actions (
-          {entries.length - visibleCount} remaining)
+          Show {Math.min(50, entries.length - visibleCount)} earlier actions
+          {entries.length - visibleCount > 50
+            ? ` (${entries.length - visibleCount} remaining)`
+            : ""}
         </button>
       ) : null}
     </>
+  );
+}
+
+function repeatableWorkEntry(entry: TimelineWorkEntry) {
+  return entry.agentRun || entry.action ? null : entry;
+}
+
+function RepeatedWorkRow({
+  entries,
+  label,
+  workspaceRoot,
+}: {
+  entries: TimelineWorkEntry[];
+  label: string;
+  workspaceRoot: string | undefined;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const first = entries[0]!;
+  if (entries.length === 1) {
+    return (
+      <SimpleWorkEntryRow
+        compact
+        canExpandCommand
+        workEntry={first}
+        workspaceRoot={workspaceRoot}
+      />
+    );
+  }
+  return (
+    <Collapsible open={expanded} onOpenChange={setExpanded}>
+      <CollapsibleTrigger
+        className="chat-work-trigger text-muted-foreground"
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${entries.length} calls: ${label}`}
+      >
+        {createElement(workEntryIcon(first), { className: "size-3", "aria-hidden": true })}
+        <span className="chat-work-label">{label}</span>
+        <span className="shrink-0">×{entries.length}</span>
+        <ChevronRightIcon
+          className={cn("size-3 shrink-0 chat-work-chevron", expanded && "rotate-90")}
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <WorkLogPanel open={expanded}>
+        <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+          {entries.map((entry) => (
+            <SimpleWorkEntryRow
+              key={entry.stableId ?? entry.id}
+              compact
+              canExpandCommand
+              workEntry={entry}
+              workspaceRoot={workspaceRoot}
+            />
+          ))}
+        </div>
+      </WorkLogPanel>
+    </Collapsible>
   );
 }
 
@@ -1201,42 +1286,41 @@ const ReasoningSection = memo(function ReasoningSection({
           {label}
           {summary ? ` · ${summary}` : ""}
         </span>
-        <ChevronRightIcon
-          className={cn(
-            "transition-transform duration-150 motion-reduce:transition-none",
-            isExpanded && "rotate-90",
-          )}
-        />
+        <ChevronRightIcon className={cn("chat-work-chevron", isExpanded && "rotate-90")} />
       </CollapsibleTrigger>
-      <CollapsibleContent className="duration-150 ease-out motion-reduce:transition-none">
+      <WorkLogPanel open={isExpanded}>
         <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
-          {history
-            .slice(-visibleCount)
-            .map((nestedRow) =>
-              nestedRow.kind === "work-entry" ? (
-                <SimpleWorkEntryRow
-                  key={nestedRow.id}
-                  workEntry={nestedRow.entry}
-                  canExpandCommand
-                  compact
-                  workspaceRoot={workspaceRoot}
-                />
-              ) : (
-                <TimelineRowContent key={nestedRow.id} row={nestedRow} />
-              ),
-            )}
+          {groupRepeatedWorkEntries(history.slice(-visibleCount), (item) =>
+            item.kind === "work-entry" ? repeatableWorkEntry(item.entry) : null,
+          ).map((group) => {
+            const first = group.entries[0]!;
+            return first.kind === "work-entry" ? (
+              <RepeatedWorkRow
+                key={first.id}
+                entries={group.entries.flatMap((item) =>
+                  item.kind === "work-entry" ? [item.entry] : [],
+                )}
+                label={group.label}
+                workspaceRoot={workspaceRoot}
+              />
+            ) : (
+              <TimelineRowContent key={first.id} row={first} />
+            );
+          })}
           {history.length > visibleCount && (
             <button
               type="button"
               className="chat-work-trigger"
               onClick={() => setVisibleCount((count) => count + 50)}
             >
-              Show {Math.min(50, history.length - visibleCount)} earlier entries (
-              {history.length - visibleCount} remaining)
+              Show {Math.min(50, history.length - visibleCount)} earlier entries
+              {history.length - visibleCount > 50
+                ? ` (${history.length - visibleCount} remaining)`
+                : ""}
             </button>
           )}
         </div>
-      </CollapsibleContent>
+      </WorkLogPanel>
     </Collapsible>
   );
 });
@@ -1737,6 +1821,38 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
   return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
+const WorkEntryDetails = memo(function WorkEntryDetails({
+  workEntry,
+}: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const output = extractCommandOutputText(workEntry.toolData);
+  const command = workEntryFullCommand(workEntry);
+  const fallback =
+    !output && hasWorkLogToolData(workEntry.toolData)
+      ? JSON.stringify(workEntry.toolData, null, 2)
+      : undefined;
+  const detail = [
+    command,
+    output ?? workEntry.detail,
+    ...(output ? [] : (workEntry.changedFiles ?? [])),
+    fallback === "{}" || fallback === "[]" ? undefined : fallback,
+  ]
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join("\n\n");
+  if (!detail) return null;
+  return (
+    <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
+      <pre
+        data-tool-command-details
+        className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
+      >
+        {detail}
+      </pre>
+    </div>
+  );
+});
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   compact?: boolean;
   canExpandCommand?: boolean;
@@ -1777,26 +1893,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         : null;
 
   if (props.compact && !workEntry.action) {
-    const output = isCommandExpanded ? extractCommandOutputText(workEntry.toolData) : null;
-    const detail = [
-      fullCommand,
-      output ?? workEntry.detail,
-      ...(output ? [] : (workEntry.changedFiles ?? [])),
-      isCommandExpanded && workEntry.toolData != null && !output
-        ? JSON.stringify(workEntry.toolData, null, 2)
-        : undefined,
-    ]
-      .filter((value, index, values) => value && values.indexOf(value) === index)
-      .join("\n\n");
-    const hasDetail = Boolean(detail) || workEntry.toolData != null;
+    const hasDetail =
+      Boolean(fullCommand || workEntry.detail || hasChangedFiles) ||
+      hasWorkLogToolData(workEntry.toolData);
     const label = compactWorkEntryLabel(workEntry);
     const failed = workEntryNeedsAttention(workEntry);
     return (
-      <div>
-        <button
-          type="button"
+      <Collapsible open={isCommandExpanded} onOpenChange={setIsCommandExpanded}>
+        <CollapsibleTrigger
           disabled={!hasDetail}
-          onClick={() => setIsCommandExpanded((value) => !value)}
           aria-expanded={hasDetail ? isCommandExpanded : undefined}
           aria-label={
             hasDetail ? `${isCommandExpanded ? "Collapse" : "Expand"} details: ${label}` : label
@@ -1811,20 +1916,17 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           <span className="chat-work-label" title={label}>
             {label}
           </span>
-          {hasDetail ? <CommandToggleIcon className="size-3 shrink-0" /> : null}
-        </button>
-        {isCommandExpanded && detail ? (
-          <div className="ml-[0.5em] border-l border-border/50 pl-[1em] py-1">
-            <pre
-              data-tool-command-details
-              className="max-h-64 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-[length:inherit] text-muted-foreground"
-            >
-              {detail}
-            </pre>
-            <MessageCopyButton text={detail} size="icon-xs" variant="ghost" />
-          </div>
-        ) : null}
-      </div>
+          {hasDetail ? (
+            <ChevronRightIcon
+              className={cn("size-3 shrink-0 chat-work-chevron", isCommandExpanded && "rotate-90")}
+              aria-hidden="true"
+            />
+          ) : null}
+        </CollapsibleTrigger>
+        <WorkLogPanel open={isCommandExpanded}>
+          <WorkEntryDetails workEntry={workEntry} />
+        </WorkLogPanel>
+      </Collapsible>
     );
   }
 

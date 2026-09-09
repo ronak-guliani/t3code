@@ -76,6 +76,20 @@ The child cannot see the parent conversation; include every required decision an
 
 ## Monitoring
 
+New MCP-created children have one delegated assignment. T3 automatically reports the returned
+result or failure and queues a parent follow-up; no completion-message tool call is needed.
+Set `followUp: "notify-only"` when spawning to retain notifications without automatic follow-up.
+Existing children and ordinary `send_to_thread` messages do not create new assignments.
+
+For an early decision or important finding, a child can call `report_to_parent` with
+`kind: "decision-needed"` or `"important-update"`, a concise `summary`, and a stable `reportId`.
+Reuse that ID on retries. `kind: "progress"` records an update without waking the parent.
+Do not send acknowledgment-only replies or duplicate T3's automatic result report.
+
+Follow-ups wait for the parent's current turn and approvals/input. Stop pauses automatic child
+follow-up durably; use Resume child follow-up in the queue to enable it again. Results are reports,
+not proof of task success or completion of untracked background work: inspect the child evidence.
+
 Use point-in-time commands by child `threadId`:
 
 ```sh
