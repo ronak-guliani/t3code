@@ -7,6 +7,7 @@ import {
   compactWorkEntryLabel,
   deriveWorkGroupActivity,
   workGroupReceiptLabel,
+  extractWorkLogToolCallId,
   extractWorkLogToolLifecycleStatus,
   groupConsecutiveWorkEntries,
   mergeWorkLogToolData,
@@ -343,6 +344,21 @@ describe("live activity strips", () => {
     );
     expect(extractWorkLogToolLifecycleStatus({ status: "running" })).toBe("inProgress");
     expect(extractWorkLogToolLifecycleStatus({ status: "unknown" })).toBeUndefined();
+  });
+
+  it("extracts canonical tool identity before provider-specific fallbacks", () => {
+    expect(
+      extractWorkLogToolCallId({
+        itemId: "canonical",
+        toolCallId: "top-level",
+        data: { toolCallId: "nested" },
+      }),
+    ).toBe("canonical");
+    expect(
+      extractWorkLogToolCallId({ toolCallId: "top-level", data: { toolCallId: "nested" } }),
+    ).toBe("top-level");
+    expect(extractWorkLogToolCallId({ data: { toolCallId: "nested" } })).toBe("nested");
+    expect(extractWorkLogToolCallId({ itemId: " " })).toBeUndefined();
   });
 
   it.each([

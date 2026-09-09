@@ -60,6 +60,18 @@ export function extractWorkLogToolLifecycleStatus(
   return undefined;
 }
 
+export function extractWorkLogToolCallId(
+  payload: Record<string, unknown> | null,
+): string | undefined {
+  const data = asRecord(payload?.data);
+  return (
+    nonEmptyString(payload?.itemId) ??
+    nonEmptyString(payload?.toolCallId) ??
+    nonEmptyString(data?.toolCallId) ??
+    undefined
+  );
+}
+
 /** Compact labels never substitute command output for the action being performed. */
 export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
   const presentation = resolveWorkEntryToolPresentation(entry);
@@ -237,9 +249,9 @@ export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
           ? compactWorkEntryLabel(active[0])
           : stopped
             ? compactWorkEntryLabel({ ...stopped, toolLifecycleStatus: "stopped" })
-            : (entries.length === 1
-                ? compactWorkEntryLabel(entries[0]!)
-                : summarizeToolGroup(entries)) || "Work log",
+            : (currentEntries.length === 1
+                ? compactWorkEntryLabel(currentEntries[0]!)
+                : summarizeReconciledToolGroup(currentEntries)) || "Work log",
   } as const;
 }
 
@@ -735,11 +747,10 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
   }
 }
 
-export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
-  const summaryEntries = omitSupersededLifecycleMarkers(entries, (entry) => entry);
+function summarizeReconciledToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
   const sources = new Map<string, ToolActivitySource>();
   const groupedEntries = new Map<ToolGroupAction, WorkLogPresentationEntry[]>();
-  for (const entry of summaryEntries) {
+  for (const entry of entries) {
     if (entry.toolSource) {
       sources.set(entry.toolSource.key, entry.toolSource);
       continue;
@@ -772,6 +783,10 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   if (sentenceLabels.length < 2) return sentenceLabels[0] ?? "";
   if (sentenceLabels.length === 2) return sentenceLabels.join(" and ");
   return `${sentenceLabels.slice(0, -1).join(", ")}, and ${sentenceLabels.at(-1)}`;
+}
+
+export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
+  return summarizeReconciledToolGroup(omitSupersededLifecycleMarkers(entries, (entry) => entry));
 }
 
 export function omitSupersededLifecycleMarkers<T>(

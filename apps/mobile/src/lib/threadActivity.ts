@@ -17,6 +17,7 @@ import {
   commandDetailRepeatsCommand,
   compactWorkEntryLabel,
   extractCommandOutputText,
+  extractWorkLogToolCallId,
   workGroupReceiptLabel,
   isWorktreeSetupActivity,
   deriveWorkGroupActivity,
@@ -517,10 +518,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
     ...(payload?.data !== undefined ? { toolData: payload.data } : {}),
     ...(typeof payload?.requestId === "string" ? { requestId: payload.requestId } : {}),
   };
-  const toolCallId =
-    asTrimmedString(payload?.itemId) ??
-    asTrimmedString(payload?.toolCallId) ??
-    asTrimmedString(asRecord(payload?.data)?.toolCallId);
+  const toolCallId = extractWorkLogToolCallId(payload);
   if (toolCallId) {
     entry.toolCallId = toolCallId;
   }
