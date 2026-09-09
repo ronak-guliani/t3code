@@ -13,10 +13,8 @@ import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionReconciliationJobRepository } from "../../persistence/Services/ProjectionReconciliationJobs.ts";
 import { ProjectionThreadActivityRepository } from "../../persistence/Services/ProjectionThreadActivities.ts";
-import type { ProjectionThreadActivity } from "../../persistence/Services/ProjectionThreadActivities.ts";
 import { ProjectionThreadMessageRepository } from "../../persistence/Services/ProjectionThreadMessages.ts";
 import { ProjectionThreadProposedPlanRepository } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
-import type { ProjectionThreadProposedPlan } from "../../persistence/Services/ProjectionThreadProposedPlans.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 
 function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
@@ -35,7 +33,14 @@ function staleUserInputFailure(detail: string | null): boolean {
   );
 }
 
-function derivePendingUserInputCount(activities: ReadonlyArray<ProjectionThreadActivity>): number {
+function derivePendingUserInputCount(
+  activities: ReadonlyArray<{
+    readonly activityId: string;
+    readonly kind: string;
+    readonly payload: unknown;
+    readonly createdAt: string;
+  }>,
+): number {
   const openRequestIds = new Set<string>();
   const ordered = [...activities].toSorted(
     (left, right) =>
@@ -71,7 +76,12 @@ function derivePendingUserInputCount(activities: ReadonlyArray<ProjectionThreadA
 
 function deriveHasActionableProposedPlan(input: {
   readonly latestTurnId: string | null;
-  readonly proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>;
+  readonly proposedPlans: ReadonlyArray<{
+    readonly planId: string;
+    readonly turnId: string | null;
+    readonly implementedAt: string | null;
+    readonly updatedAt: string;
+  }>;
 }): boolean {
   const sorted = [...input.proposedPlans].toSorted(
     (left, right) =>
@@ -113,28 +123,26 @@ const makeProjectionReconciler = Effect.gen(function* () {
     if (Option.isNone(existing)) {
       return;
     }
-    const [threadMessages, threadPlans, threadActivities, threadApprovals] = yield* Effect.all(
-      [
-        messages.listByThreadId({ threadId }),
-        proposedPlans.listByThreadId({ threadId }),
-        activities.listByThreadId({ threadId }),
-        pendingApprovals.listByThreadId({ threadId }),
-      ],
-      { concurrency: "unbounded" },
-    );
-    const latestUserMessageAt =
-      threadMessages
-        .filter((message) => message.role === "user")
-        .map((message) => message.createdAt)
-        .toSorted()
-        .at(-1) ?? null;
+    // Targeted summary reads: index-backed aggregates and narrow lifecycle
+    // scans. This refresh must never fetch full message text, attachments,
+    // plan markdown, or unrelated activity payloads: on the single-connection
+    // SQLite client, fewer decoded rows beats fanning out full-history scans.
+    const [latestUserMessageAt, pendingApprovalCount, userInputActivities, threadPlans] =
+      yield* Effect.all(
+        [
+          messages.getLatestUserMessageAt({ threadId }),
+          pendingApprovals.countPendingByThreadId({ threadId }),
+          activities.listUserInputLifecycleByThreadId({ threadId }),
+          proposedPlans.listSummariesByThreadId({ threadId }),
+        ],
+        { concurrency: "unbounded" },
+      );
 
     yield* threads.upsert({
       ...existing.value,
       latestUserMessageAt,
-      pendingApprovalCount: threadApprovals.filter((approval) => approval.status === "pending")
-        .length,
-      pendingUserInputCount: derivePendingUserInputCount(threadActivities),
+      pendingApprovalCount,
+      pendingUserInputCount: derivePendingUserInputCount(userInputActivities),
       hasActionableProposedPlan: deriveHasActionableProposedPlan({
         latestTurnId: existing.value.latestTurnId,
         proposedPlans: threadPlans,
