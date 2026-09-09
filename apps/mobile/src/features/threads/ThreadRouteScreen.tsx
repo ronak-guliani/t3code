@@ -397,6 +397,35 @@ function ThreadRouteContent(
     }
     onReconnectEnvironment(environmentId);
   }, [environmentId, onReconnectEnvironment]);
+  const reviewWorkflowEnabled =
+    routeEnvironmentRuntime?.serverConfig?.settings.agentWorkflows.reviewChanges.enabled ?? false;
+  const reviewWorkflowSupported =
+    routeEnvironmentRuntime?.serverConfig?.environment.capabilities.agentWorkflows === true;
+  const reviewWorkflowAvailable =
+    reviewWorkflowSupported &&
+    reviewWorkflowEnabled &&
+    routeConnectionState === "connected" &&
+    selectedThreadCwd !== null &&
+    gitStatus.data?.isRepo !== false;
+  const handleOpenPullRequestReview = useCallback(() => {
+    if (!selectedThread || !reviewWorkflowAvailable) return;
+    navigation.navigate("PullRequestReview", {
+      environmentId: String(selectedThread.environmentId),
+      threadId: String(selectedThread.id),
+    });
+  }, [navigation, reviewWorkflowAvailable, selectedThread]);
+  const reviewHeaderItem = useMemo(
+    () =>
+      withNativeGlassHeaderItem({
+        accessibilityLabel: "Review pull request",
+        disabled: !reviewWorkflowAvailable,
+        icon: { name: "arrow.triangle.pull", type: "sfSymbol" as const },
+        identifier: "thread-right-review-pull-request",
+        onPress: handleOpenPullRequestReview,
+        type: "button" as const,
+      }),
+    [handleOpenPullRequestReview, reviewWorkflowAvailable],
+  );
 
   /* ─── Git action progress (for overlay banner) ──────────────────── */
   const gitActionProgressTarget = useMemo(
@@ -801,6 +830,14 @@ function ThreadRouteContent(
         onPress: props.onReturnToThread,
       });
     }
+    if (reviewWorkflowSupported && reviewWorkflowEnabled) {
+      actions.push({
+        accessibilityLabel: "Review pull request",
+        disabled: !reviewWorkflowAvailable,
+        icon: "arrow.triangle.pull",
+        onPress: handleOpenPullRequestReview,
+      });
+    }
     if (selectedThreadCwd !== null) {
       actions.push({
         accessibilityLabel: "Open files",
@@ -834,10 +871,14 @@ function ThreadRouteContent(
     selectedThread?.parentThreadId,
     fileInspector.supported,
     handleOpenFilesInspector,
+    handleOpenPullRequestReview,
     handleOpenTerminal,
     handleOpenGitInspector,
     handleToggleInspector,
     props.onReturnToThread,
+    reviewWorkflowAvailable,
+    reviewWorkflowEnabled,
+    reviewWorkflowSupported,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
   ]);
@@ -967,6 +1008,7 @@ function ThreadRouteContent(
             Platform.OS === "ios"
               ? () => [
                   ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
+                  ...(reviewWorkflowSupported && reviewWorkflowEnabled ? [reviewHeaderItem] : []),
                   nestingHeaderItem,
                 ]
               : undefined,

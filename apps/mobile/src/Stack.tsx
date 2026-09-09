@@ -91,6 +91,10 @@ const DeferredReviewCommentComposerSheet = createDeferredRouteScreen(
   deferredRouteLoaders.reviewComment,
   "ThreadReviewComment",
 );
+const DeferredPullRequestReviewSheet = createDeferredRouteScreen(
+  deferredRouteLoaders.pullRequestReview,
+  "PullRequestReview",
+);
 const DeferredThreadFilesTreeScreen = createDeferredRouteScreen(
   deferredRouteLoaders.threadFiles,
   "ThreadFiles",
@@ -523,6 +527,19 @@ export const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
         sheetGrabberVisible: Platform.OS !== "android",
       },
+    }),
+    PullRequestReview: createNativeStackScreen({
+      screen: DeferredPullRequestReviewSheet,
+      linking: `${THREAD_LINKING_PREFIX}/review-pull-request`,
+      options:
+        Platform.OS === "android"
+          ? { presentation: "card" as const, headerShown: false }
+          : {
+              ...FORM_SHEET_PRESENTATION_OPTIONS,
+              sheetAllowedDetents: [0.55, 0.92],
+              sheetGrabberVisible: true,
+              title: "Review pull request",
+            },
     }),
     ThreadFiles: createNativeStackScreen({
       screen: DeferredThreadFilesTreeScreen,
