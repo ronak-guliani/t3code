@@ -67,6 +67,29 @@ describe("toWorkspaceRelativePath", () => {
     );
   });
 
+  it("rejects mixed absolute path flavors", () => {
+    expect(toWorkspaceRelativePath("/repo/project/a.ts", "\\\\repo\\project")).toBeNull();
+    expect(toWorkspaceRelativePath("C:\\repo\\project\\a.ts", "/repo/project")).toBeNull();
+  });
+
+  it("does not resolve dot segments above a Windows drive anchor", () => {
+    expect(toWorkspaceRelativePath("C:\\..\\project\\a.ts", "C:\\project")).toBe("a.ts");
+    expect(toWorkspaceRelativePath("D:\\..\\project\\a.ts", "C:\\project")).toBeNull();
+  });
+
+  it("supports a Windows drive-root workspace", () => {
+    expect(toWorkspaceRelativePath("C:\\src\\a.ts", "C:\\")).toBe("src/a.ts");
+  });
+
+  it("does not resolve dot segments above a UNC share anchor", () => {
+    expect(
+      toWorkspaceRelativePath("\\\\server\\other\\..\\project\\src\\a.ts", "\\\\server\\project"),
+    ).toBeNull();
+    expect(
+      toWorkspaceRelativePath("\\\\server\\project\\..\\src\\a.ts", "\\\\server\\src"),
+    ).toBeNull();
+  });
+
   it("preserves the POSIX filesystem root", () => {
     expect(toWorkspaceRelativePath("/src/index.ts", "/")).toBe("src/index.ts");
   });

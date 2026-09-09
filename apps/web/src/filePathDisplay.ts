@@ -14,7 +14,9 @@ function trimTrailingPathSeparators(path: string): string {
 
 function trimWorkspaceRootSeparators(path: string): string {
   const normalized = normalizePathSeparators(path);
-  return normalized === "/" ? normalized : trimTrailingPathSeparators(normalized);
+  return normalized === "/" || /^[A-Za-z]:\/$/.test(normalized)
+    ? normalized
+    : trimTrailingPathSeparators(normalized);
 }
 
 function basenameOfPath(path: string): string {
@@ -26,12 +28,20 @@ function stripRelativePrefixes(path: string): string {
   return path.replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
-function splitNormalizedSegments(path: string): string[] {
+type AbsolutePathFlavor = "posix" | "drive" | "unc";
+
+function absolutePathFlavor(path: string): AbsolutePathFlavor | null {
+  if (/^[A-Za-z]:\//.test(path)) return "drive";
+  if (path.startsWith("//")) return "unc";
+  return path.startsWith("/") ? "posix" : null;
+}
+
+function splitNormalizedSegments(path: string, anchorDepth: number): string[] {
   const segments: string[] = [];
   for (const segment of path.split("/")) {
     if (segment.length === 0 || segment === ".") continue;
     if (segment === "..") {
-      segments.pop();
+      if (segments.length > anchorDepth) segments.pop();
       continue;
     }
     segments.push(segment);
@@ -39,8 +49,10 @@ function splitNormalizedSegments(path: string): string[] {
   return segments;
 }
 
-function isWindowsStylePath(path: string): boolean {
-  return /^[A-Za-z]:\//.test(path) || path.startsWith("//");
+function pathAnchorDepth(flavor: AbsolutePathFlavor): number {
+  if (flavor === "drive") return 1;
+  if (flavor === "unc") return 2;
+  return 0;
 }
 
 /**
@@ -59,9 +71,13 @@ export function toWorkspaceRelativePath(
   const normalizedPath = canonicalizeWindowsDrivePath(normalizePathSeparators(filePath));
   const normalizedRoot = canonicalizeWindowsDrivePath(trimWorkspaceRootSeparators(workspaceRoot));
   if (!normalizedPath || !normalizedRoot) return null;
-  const foldCase = isWindowsStylePath(normalizedPath) || isWindowsStylePath(normalizedRoot);
-  const pathSegments = splitNormalizedSegments(normalizedPath);
-  const rootSegments = splitNormalizedSegments(normalizedRoot);
+  const pathFlavor = absolutePathFlavor(normalizedPath);
+  const rootFlavor = absolutePathFlavor(normalizedRoot);
+  if (!pathFlavor || pathFlavor !== rootFlavor) return null;
+  const foldCase = pathFlavor !== "posix";
+  const anchorDepth = pathAnchorDepth(pathFlavor);
+  const pathSegments = splitNormalizedSegments(normalizedPath, anchorDepth);
+  const rootSegments = splitNormalizedSegments(normalizedRoot, anchorDepth);
   if (pathSegments.length <= rootSegments.length) return null;
   for (let index = 0; index < rootSegments.length; index += 1) {
     const candidate = pathSegments[index];
