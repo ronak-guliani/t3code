@@ -16,10 +16,12 @@ import {
   ModelSelection,
   ReviewResult,
   ReviewSnapshot,
+  ThreadNudging,
 } from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
+    nudging: Schema.fromJsonString(ThreadNudging),
     modelSelection: Schema.fromJsonString(ModelSelection),
     pullRequest: Schema.fromJsonString(Schema.NullOr(GitPullRequestAssociation)),
     reviewSnapshot: Schema.fromJsonString(Schema.NullOr(ReviewSnapshot)),
@@ -36,6 +38,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: (row) =>
       sql`
         INSERT INTO projection_threads (
+          nudging_json,
           thread_id,
           project_id,
           parent_thread_id,
@@ -69,6 +72,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           deleted_at
         )
         VALUES (
+          ${JSON.stringify(row.nudging ?? {})},
           ${row.threadId},
           ${row.projectId},
           ${row.parentThreadId ?? null},
@@ -103,6 +107,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         )
         ON CONFLICT (thread_id)
         DO UPDATE SET
+          nudging_json = excluded.nudging_json,
           project_id = excluded.project_id,
           parent_thread_id = excluded.parent_thread_id,
           title = excluded.title,
@@ -142,6 +147,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
+          nudging_json AS "nudging",
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",
@@ -184,6 +190,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: ({ projectId }) =>
       sql`
         SELECT
+          nudging_json AS "nudging",
           thread_id AS "threadId",
           project_id AS "projectId",
           parent_thread_id AS "parentThreadId",

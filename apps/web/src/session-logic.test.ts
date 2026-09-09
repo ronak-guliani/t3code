@@ -1917,6 +1917,11 @@ describe("hasToolActivityForTurn", () => {
 });
 
 describe("hasActionableQueuedTurn", () => {
+  it("does not turn an unread child update into parent execution status", () => {
+    expect(hasActionableQueuedTurn([{ failedAt: null, origin: { kind: "child-nudge" } }])).toBe(
+      false,
+    );
+  });
   it("is true only for non-failed queued turns", () => {
     expect(hasActionableQueuedTurn(undefined)).toBe(false);
     expect(hasActionableQueuedTurn([])).toBe(false);

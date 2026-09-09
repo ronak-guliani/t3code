@@ -18,6 +18,7 @@ import {
   ReviewResult,
   ReviewSnapshot,
   ThreadId,
+  ThreadNudging,
   TurnId,
 } from "@t3tools/contracts";
 import { Effect, Option, Schema, Context } from "effect";
@@ -25,6 +26,7 @@ import { Effect, Option, Schema, Context } from "effect";
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThread = Schema.Struct({
+  nudging: Schema.optional(ThreadNudging),
   threadId: ThreadId,
   projectId: ProjectId,
   parentThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),

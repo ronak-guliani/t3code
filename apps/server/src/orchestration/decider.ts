@@ -31,6 +31,7 @@ import { projectEvent } from "./projector.ts";
 import { collectActiveThreadSubtree } from "./threadHierarchy.ts";
 import { assistantTurnCount } from "./Utils.ts";
 import { findCanonicalActiveWorktreeOwner } from "./worktreeOwnership.ts";
+import { isAutomaticChildNudgeBlocked, queueChildNudge } from "./childNudging.ts";
 
 const FORK_TITLE_PREFIX = "Forked: ";
 /**
@@ -96,6 +97,7 @@ type AppendChildLifecycleNotificationInput = {
   readonly sourceEvent: PlannedOrchestrationEvent;
   readonly sourceKey: string;
   readonly createdAt: string;
+  readonly report?: import("@t3tools/contracts").ChildNudgeUpdate;
 } & (
   | {
       readonly lifecycle: Exclude<ChildThreadLifecycle, "pr-created">;
@@ -123,6 +125,25 @@ function appendChildLifecycleNotification(
   }
 
   const dedupeKey = childLifecycleDedupeKey(input.childThread.id, input.lifecycle, input.sourceKey);
+  const delegation = input.childThread.nudging?.delegation;
+  const terminalFailure =
+    delegation?.completedAt === null &&
+    (input.lifecycle === "failed" || input.lifecycle === "blocked");
+  const report =
+    input.report ??
+    (terminalFailure
+      ? {
+          id: `assignment:${input.childThread.id}:${delegation.assignmentId}`,
+          assignmentId: delegation.assignmentId,
+          childThreadId: input.childThread.id,
+          childTitle: input.childThread.title,
+          kind: input.lifecycle,
+          summary:
+            input.lifecycle === "failed"
+              ? "The delegated execution failed. Inspect the child for details."
+              : "The delegated execution stopped. Inspect the child before continuing.",
+        }
+      : undefined);
 
   const eventBase = withEventBase({
     aggregateKind: "thread",
@@ -130,29 +151,62 @@ function appendChildLifecycleNotification(
     occurredAt: input.createdAt,
     commandId: input.sourceEvent.commandId!,
   });
+  const notification = {
+    ...eventBase,
+    causationEventId: input.sourceEvent.eventId,
+    type: "thread.child-lifecycle-notified",
+    payload: {
+      parentThreadId,
+      childThreadId: input.childThread.id,
+      childTitle: input.childThread.title,
+      lifecycle: input.lifecycle,
+      dedupeKey,
+      ...(input.lifecycle !== "pr-created"
+        ? {}
+        : {
+            externalAction: {
+              url: input.externalActionUrl,
+            },
+          }),
+      createdAt: input.createdAt,
+      ...(report ? { report } : {}),
+    },
+  };
   return [
     ...input.sourceEvents,
-    {
-      ...eventBase,
-      causationEventId: input.sourceEvent.eventId,
-      type: "thread.child-lifecycle-notified",
-      payload: {
-        parentThreadId,
-        childThreadId: input.childThread.id,
-        childTitle: input.childThread.title,
-        lifecycle: input.lifecycle,
-        dedupeKey,
-        ...(input.lifecycle !== "pr-created"
-          ? {}
-          : {
-              externalAction: {
-                url: input.externalActionUrl,
-              },
-            }),
-        createdAt: input.createdAt,
-      },
-    },
+    notification,
+    ...(terminalFailure
+      ? [
+          nudgingMetaEvent(input.childThread, notification, {
+            ...input.childThread.nudging,
+            delegation: { ...delegation, completedAt: input.createdAt },
+          }),
+        ]
+      : []),
+    ...(report &&
+    report.kind !== "progress" &&
+    input.childThread.nudging?.delegation?.followUp === "automatic"
+      ? [queueChildNudge(parentThread, report, notification)]
+      : []),
   ];
+}
+
+function nudgingMetaEvent(
+  thread: OrchestrationThread,
+  sourceEvent: PlannedOrchestrationEvent,
+  nudging: import("@t3tools/contracts").ThreadNudging,
+): PlannedOrchestrationEvent {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: thread.id,
+      occurredAt: sourceEvent.occurredAt,
+      commandId: sourceEvent.commandId,
+    }),
+    causationEventId: sourceEvent.eventId,
+    type: "thread.meta-updated",
+    payload: { threadId: thread.id, nudging, updatedAt: sourceEvent.occurredAt },
+  };
 }
 
 const hasCanonicalActiveWorktreeOwner = Effect.fn("hasCanonicalActiveWorktreeOwner")(function* (
@@ -488,6 +542,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
+      if (
+        command.delegation &&
+        (!command.parentThreadId || command.delegation.completedAt !== null)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A new delegation requires a parent and an unfinished assignment.",
+        });
+      }
       yield* requireProject({
         readModel,
         command,
@@ -529,6 +592,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           parentThreadId: command.parentThreadId ?? null,
+          ...(command.delegation ? { nudging: { delegation: command.delegation } } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -905,6 +969,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
+          ...(command.childFollowUpPaused !== undefined
+            ? { nudging: { ...thread.nudging, paused: command.childFollowUpPaused } }
+            : {}),
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.regenerateTitle === true
             ? {
@@ -1453,12 +1520,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.queued-turn.update": {
-      yield* requireQueuedTurn({
+      const { queuedTurn } = yield* requireQueuedTurn({
         readModel,
         command,
         threadId: command.threadId,
         queuedTurnId: command.queuedTurnId,
       });
+      if (queuedTurn.origin?.kind === "child-nudge" && command.text !== queuedTurn.message.text) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Generated child updates cannot be edited; dismiss or retry them.",
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1512,6 +1585,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const isNudge = queuedTurn.origin?.kind === "child-nudge";
+      if (
+        isNudge &&
+        (isAutomaticChildNudgeBlocked(targetThread) || threadHasPendingInteraction(targetThread))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Automatic child follow-up is paused or awaiting interaction.",
+        });
+      }
       if (queuedTurn.failedAt !== null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -1535,7 +1618,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      if (targetThread.runtimeMode !== queuedTurn.runtimeMode) {
+      if (!isNudge && targetThread.runtimeMode !== queuedTurn.runtimeMode) {
         events.push({
           ...withEventBase({
             aggregateKind: "thread",
@@ -1551,7 +1634,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      if (targetThread.interactionMode !== queuedTurn.interactionMode) {
+      if (!isNudge && targetThread.interactionMode !== queuedTurn.interactionMode) {
         events.push({
           ...withEventBase({
             aggregateKind: "thread",
@@ -1578,8 +1661,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ...(queuedTurn.origin !== undefined ? { origin: queuedTurn.origin } : {}),
         modelSelection: queuedTurn.modelSelection,
         titleSeed: queuedTurn.titleSeed,
-        runtimeMode: queuedTurn.runtimeMode,
-        interactionMode: queuedTurn.interactionMode,
+        runtimeMode: isNudge ? targetThread.runtimeMode : queuedTurn.runtimeMode,
+        interactionMode: isNudge ? targetThread.interactionMode : queuedTurn.interactionMode,
         sourceProposedPlan: queuedTurn.sourceProposedPlan,
         at: command.dispatchedAt,
       });
@@ -1644,7 +1727,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.turnId ??
         targetThread.session?.activeTurnId ??
         (targetThread.latestTurn?.state === "running" ? targetThread.latestTurn.turnId : undefined);
-      return {
+      const interrupted = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1658,6 +1741,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      return [
+        interrupted,
+        nudgingMetaEvent(targetThread, interrupted, { ...targetThread.nudging, paused: true }),
+      ];
     }
 
     case "thread.approval.respond": {
@@ -1735,12 +1822,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.stop": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const stopped = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1753,6 +1840,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
+      return [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
     }
 
     case "thread.session.set": {
@@ -1811,6 +1899,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
                 : null;
       if (lifecycle === null) {
         return sourceEvents.length === 1 ? sessionSetEvent : sourceEvents;
+      }
+      // Delegated results are reported after checkpoint finalization, not session-idle publication.
+      if (thread.nudging?.delegation && lifecycle === "completed") {
+        return sourceEvents;
       }
       return appendChildLifecycleNotification({
         readModel,
@@ -1920,7 +2012,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.diff.complete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1946,9 +2038,134 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           completedAt: command.completedAt,
         },
       };
-      return turnDiffCompletedEvent;
+      const delegation = thread.nudging?.delegation;
+      if (
+        !delegation ||
+        delegation.completedAt !== null ||
+        thread.latestTurn?.turnId !== command.turnId ||
+        (thread.queuedTurns?.length ?? 0) > 0 ||
+        threadHasPendingInteraction(thread) ||
+        (thread.session?.activeTurnId != null && thread.session.activeTurnId !== command.turnId) ||
+        readModel.threads.some(
+          (child) =>
+            child.parentThreadId === thread.id &&
+            child.deletedAt === null &&
+            child.archivedAt === null &&
+            child.nudging?.delegation?.followUp === "automatic" &&
+            child.nudging?.delegation?.completedAt === null,
+        )
+      ) {
+        return turnDiffCompletedEvent;
+      }
+      const completion = thread.activities.findLast(
+        (activity) =>
+          activity.kind === "insights.turn.completed" && activity.turnId === command.turnId,
+      );
+      const state = completion?.payload?.state;
+      const resultMessage = thread.messages.findLast(
+        (message) =>
+          message.role === "assistant" && message.turnId === command.turnId && !message.streaming,
+      );
+      const kind =
+        state === "failed" ? "failed" : state === "completed" ? "result-available" : "blocked";
+      const summary =
+        kind === "result-available"
+          ? `Child returned a result; task success and background completion are not verified.${resultMessage ? `\n${resultMessage.text.slice(0, 3000)}` : " No final result message was recorded."}`
+          : kind === "failed"
+            ? "The delegated execution failed. Inspect the child for details."
+            : "Delegated completion is unconfirmed or interrupted. Inspect the child before continuing.";
+      const report = {
+        id: `assignment:${thread.id}:${delegation.assignmentId}`,
+        assignmentId: delegation.assignmentId,
+        childThreadId: thread.id,
+        childTitle: thread.title,
+        kind,
+        summary,
+        ...(resultMessage ? { sourceMessageId: resultMessage.id } : {}),
+      };
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: thread,
+        sourceEvents: [
+          turnDiffCompletedEvent,
+          nudgingMetaEvent(thread, turnDiffCompletedEvent, {
+            ...thread.nudging,
+            delegation: { ...delegation, completedAt: command.completedAt },
+          }),
+        ],
+        sourceEvent: turnDiffCompletedEvent,
+        lifecycle: "reported",
+        sourceKey: report.id,
+        createdAt: command.createdAt,
+        report,
+      });
     }
 
+    case "thread.child.report": {
+      const child = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const delegation = child.nudging?.delegation;
+      if (
+        !child.parentThreadId ||
+        !delegation ||
+        child.deletedAt !== null ||
+        delegation.completedAt !== null
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Reporting requires an active delegated assignment.",
+        });
+      }
+      const parent = yield* requireThread({ readModel, command, threadId: child.parentThreadId });
+      if (parent.deletedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The parent thread has been deleted.",
+        });
+      }
+      const source = {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: child.id,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.activity-appended",
+        payload: {
+          threadId: child.id,
+          activity: {
+            id: command.commandId,
+            kind: "delegation.reported",
+            tone: "info",
+            summary: command.summary,
+            payload: { reportId: command.reportId },
+            turnId: child.session?.activeTurnId ?? null,
+            createdAt: command.createdAt,
+          },
+        },
+      };
+      const report = {
+        id: `report:${child.id}:${delegation.assignmentId}:${command.reportId}`,
+        assignmentId: delegation.assignmentId,
+        childThreadId: child.id,
+        childTitle: child.title,
+        kind: command.kind,
+        summary: command.summary,
+      };
+      return appendChildLifecycleNotification({
+        readModel,
+        childThread: child,
+        sourceEvents: [source],
+        sourceEvent: source,
+        lifecycle: "reported",
+        sourceKey: report.id,
+        createdAt: command.createdAt,
+        report,
+      });
+    }
     case "thread.revert.complete": {
       yield* requireThread({
         readModel,

@@ -214,6 +214,40 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Source chat unavailable");
   });
 
+  it("shows attributed child summaries without exposing generated wake instructions", () => {
+    const entry = buildUserTimelineEntry("Internal wake instructions");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            ...entry,
+            message: {
+              ...entry.message,
+              origin: {
+                kind: "child-nudge",
+                updates: [
+                  {
+                    id: "result",
+                    childThreadId: ThreadId.make("child"),
+                    childTitle: "Migration helper",
+                    assignmentId: MessageId.make("assignment"),
+                    kind: "result-available",
+                    summary: "Migration is ready for review.",
+                  },
+                ],
+              },
+            },
+          },
+        ]}
+      />,
+    );
+    expect(markup).toContain("Child updates");
+    expect(markup).toContain("Migration helper");
+    expect(markup).toContain("Migration is ready for review.");
+    expect(markup).not.toContain("Internal wake instructions");
+  });
+
   it("renders pull request monitor provenance above a user message bubble", () => {
     const entry = buildUserTimelineEntry("Review new PR feedback.");
     const markup = renderToStaticMarkup(

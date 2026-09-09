@@ -93,6 +93,7 @@ const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["create_nested_thread", "create_nested_thread"],
   ["create_nested_threads", "create_nested_threads"],
   ["send_to_thread", "send_to_thread"],
+  ["report_to_parent", "report_to_parent"],
   ["associate_pull_request", "associate_pull_request"],
 ] as const);
 
@@ -1142,6 +1143,7 @@ function nestedThreadCommandArgs(
     readonly reasoning: string | undefined;
     readonly workspace: IsolatedWorkspaceSpec | undefined;
     readonly dryRun: boolean;
+    readonly followUp: "automatic" | "notify-only";
   },
 ): ReadonlyArray<string> {
   return [
@@ -1154,6 +1156,8 @@ function nestedThreadCommandArgs(
     input.project,
     "--parent",
     options.threadId,
+    "--follow-up",
+    input.followUp,
     ...(!input.dryRun
       ? [
           "--cross-thread-source",
@@ -1195,6 +1199,10 @@ async function createNestedThreadToolImpl(
     throw new NestedThreadValidationError("create_nested_thread dryRun must be a boolean");
   }
   const dryRun = args.dryRun === true;
+  const followUp = args.followUp === undefined ? "automatic" : args.followUp;
+  if (followUp !== "automatic" && followUp !== "notify-only") {
+    throw new NestedThreadValidationError("followUp must be automatic or notify-only");
+  }
   if (!project)
     throw new NestedThreadValidationError("create_nested_thread requires a non-empty project");
   if (!title)
@@ -1243,6 +1251,7 @@ async function createNestedThreadToolImpl(
       reasoning,
       workspace,
       dryRun: true,
+      followUp,
     }),
     true,
   );
@@ -1262,6 +1271,7 @@ async function createNestedThreadToolImpl(
         reasoning,
         workspace,
         dryRun: false,
+        followUp,
       }),
       false,
     );
@@ -1328,6 +1338,7 @@ async function createNestedThreadToolImpl(
       reasoning,
       workspace,
       dryRun: false,
+      followUp,
     }),
     false,
   );
@@ -1597,6 +1608,42 @@ async function sendToThreadTool(
   return result.stdout.trim();
 }
 
+async function reportToParentTool(
+  options: McpServeOptions,
+  args: Record<string, unknown>,
+): Promise<string> {
+  if (!options.threadId) throw new Error("report_to_parent requires a T3 provider session");
+  const reportId = asString(args.reportId)?.trim();
+  const summary = asString(args.summary)?.trim();
+  const kind = args.kind;
+  if (
+    !reportId ||
+    reportId.length > 200 ||
+    !summary ||
+    summary.length > 4000 ||
+    (kind !== "progress" && kind !== "decision-needed" && kind !== "important-update")
+  ) {
+    throw new Error(
+      "report_to_parent requires reportId (1-200 characters), summary (1-4000 characters), and a valid kind",
+    );
+  }
+  const result = await runCommand(options.cwd, options.cliCommand, [
+    ...(options.cliArgsPrefix ?? []),
+    "chat",
+    "report",
+    options.threadId,
+    summary,
+    "--kind",
+    kind,
+    "--report-id",
+    reportId,
+    "--cross-thread-capability",
+    issueCrossThreadDispatchCapability(ThreadId.make(options.threadId)),
+    ...(options.cliBaseDir ? ["--base-dir", options.cliBaseDir] : []),
+  ]);
+  return result.stdout.trim();
+}
+
 async function associatePullRequestTool(
   options: McpServeOptions,
   args: Record<string, unknown>,
@@ -1735,6 +1782,12 @@ const NESTED_THREAD_PROMPT_TEMPLATE_INPUT_SCHEMA = {
 } as const;
 
 const NESTED_THREAD_INPUT_PROPERTIES = {
+  followUp: {
+    type: "string",
+    enum: ["automatic", "notify-only"],
+    description:
+      "Automatic (default) queues parent follow-up for results, failures, and actionable reports. Notify-only records updates without waking the parent.",
+  },
   project: { type: "string", description: "Project id, title, or workspace root." },
   title: { type: "string" },
   prompt: { type: "string" },
@@ -1755,6 +1808,20 @@ const NESTED_THREAD_INPUT_PROPERTIES = {
 const NESTED_THREAD_REQUIRED_INPUTS = ["project", "title", "prompt", "model"] as const;
 
 const ALL_TOOLS: ReadonlyArray<McpTool> = [
+  {
+    name: "report_to_parent",
+    description:
+      "Report progress or an early decision/blocker to the authenticated child's parent. Progress never wakes the parent; actionable reports follow the parent's policy and never interrupt it. Reuse reportId when retrying the same report. Results and failures are reported automatically; do not send duplicate completion messages.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        reportId: { type: "string", minLength: 1, maxLength: 200 },
+        kind: { type: "string", enum: ["progress", "decision-needed", "important-update"] },
+        summary: { type: "string", minLength: 1, maxLength: 4000 },
+      },
+      required: ["reportId", "kind", "summary"],
+    },
+  },
   {
     name: "read_file",
     description: "Read a UTF-8 text file inside the configured workspace root.",
@@ -1999,6 +2066,8 @@ async function callTool(options: McpServeOptions, name: string, args: Record<str
       return await createNestedThreadsTool(options, args);
     case "send_to_thread":
       return await sendToThreadTool(options, args);
+    case "report_to_parent":
+      return await reportToParentTool(options, args);
     case "associate_pull_request":
       return await associatePullRequestTool(options, args);
     default:
@@ -2130,5 +2199,6 @@ export const __testing = {
   createNestedThreadTool,
   createNestedThreadsTool,
   sendToThreadTool,
+  reportToParentTool,
   switchWorkspaceTool,
 };

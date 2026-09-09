@@ -38,6 +38,10 @@ import {
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { makeSqlitePersistenceLive } from "../../persistence/Layers/Sqlite.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
@@ -46,12 +50,13 @@ const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(val
 
 async function createOrchestrationSystem(
   beforeProject: (event: OrchestrationEvent) => Effect.Effect<void> = () => Effect.void,
+  dbPath?: string,
 ) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
   const orchestrationLayer = OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
     Layer.provide(
       Layer.effect(
         OrchestrationProjectionPipeline,
@@ -68,18 +73,20 @@ async function createOrchestrationSystem(
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolverLive),
-    Layer.provide(SqlitePersistenceMemory),
+    Layer.provide(dbPath ? makeSqlitePersistenceLive(dbPath) : SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
   );
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+  const snapshots = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   const coordinator = await runtime.runPromise(Effect.service(CheckoutCoordinator));
   const worktreeCleanupJobs = await runtime.runPromise(
     Effect.service(WorktreeCleanupJobRepository),
   );
   return {
     engine,
+    snapshots,
     coordinator,
     worktreeCleanupJobs,
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
@@ -103,6 +110,168 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("atomically records child updates, recovers paused batches, and never recreates dismissed reports", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "t3-nudging-restart-"));
+    const dbPath = join(directory, "state.sqlite");
+    let rejectQueue = false;
+    let system = await createOrchestrationSystem(
+      (event) =>
+        event.type === "thread.queued-turn-created" && rejectQueue
+          ? Effect.die("injected queue projection failure")
+          : Effect.void,
+      dbPath,
+    );
+    const projectId = ProjectId.make("nudging-project");
+    const parentId = ThreadId.make("nudging-parent");
+    const childId = ThreadId.make("nudging-child");
+    const at = now();
+    const report = {
+      type: "thread.child.report" as const,
+      commandId: CommandId.make("report-original"),
+      threadId: childId,
+      reportId: "decision-1",
+      kind: "decision-needed" as const,
+      summary: "Choose the migration approach.",
+      createdAt: at,
+    };
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("nudging-project"),
+          projectId,
+          title: "Nudging",
+          workspaceRoot: directory,
+          createdAt: at,
+        }),
+      );
+      for (const id of [parentId, childId]) {
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${id}`),
+            threadId: id,
+            projectId,
+            title: id,
+            modelSelection: { instanceId: ProviderInstanceId.make("copilot"), model: "test-model" },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: at,
+            ...(id === childId
+              ? {
+                  parentThreadId: parentId,
+                  delegation: {
+                    assignmentId: MessageId.make("assignment"),
+                    followUp: "automatic" as const,
+                    completedAt: null,
+                  },
+                }
+              : {}),
+          }),
+        );
+      }
+      rejectQueue = true;
+      await expect(system.run(system.engine.dispatch(report))).rejects.toThrow();
+      let state = await system.run(system.engine.getReadModel());
+      expect(state.threads.find((entry) => entry.id === parentId)?.activities).toEqual([]);
+      expect(state.threads.find((entry) => entry.id === parentId)?.queuedTurns).toEqual([]);
+      rejectQueue = false;
+      await system.run(
+        system.engine.dispatch({ ...report, commandId: CommandId.make("report-retry") }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make("stop-parent"),
+          threadId: parentId,
+          createdAt: at,
+        }),
+      );
+      await system.dispose();
+      system = await createOrchestrationSystem(undefined, dbPath);
+      state = await system.run(system.engine.getReadModel());
+      const parent = state.threads.find((entry) => entry.id === parentId)!;
+      expect(parent.nudging?.paused).toBe(true);
+      expect(parent.queuedTurns).toHaveLength(1);
+      expect(
+        (await system.run(system.snapshots.getShellSnapshot())).threads.find(
+          (entry) => entry.id === parentId,
+        )?.hasPendingQueuedTurn,
+      ).toBe(false);
+      expect(
+        state.threads.find((entry) => entry.id === childId)?.nudging?.delegation?.assignmentId,
+      ).toBe("assignment");
+      await system.run(
+        system.engine.dispatch({ ...report, commandId: CommandId.make("report-after-restart") }),
+      );
+      expect(
+        (await system.run(system.engine.getReadModel())).threads.find(
+          (entry) => entry.id === parentId,
+        )?.queuedTurns,
+      ).toEqual(parent.queuedTurns);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queued-turn.delete",
+          commandId: CommandId.make("dismiss"),
+          threadId: parentId,
+          queuedTurnId: parent.queuedTurns![0]!.id,
+          deletedAt: at,
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({ ...report, commandId: CommandId.make("report-after-dismiss") }),
+      );
+      const persisted = await system.run(system.snapshots.getSnapshot());
+      expect(persisted.threads.find((entry) => entry.id === parentId)?.queuedTurns).toEqual([]);
+      expect(
+        persisted.threads
+          .find((entry) => entry.id === parentId)
+          ?.activities.filter((activity) => activity.kind === "child.lifecycle.reported"),
+      ).toHaveLength(1);
+      await system.run(
+        system.engine.dispatch({
+          ...report,
+          reportId: "decision-2",
+          commandId: CommandId.make("second-report"),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("resume-parent"),
+          threadId: parentId,
+          childFollowUpPaused: false,
+        }),
+      );
+      const queued = (await system.run(system.engine.getReadModel())).threads.find(
+        (entry) => entry.id === parentId,
+      )!.queuedTurns![0]!;
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.queued-turn.dispatch",
+          commandId: CommandId.make("dispatch-nudge"),
+          threadId: parentId,
+          queuedTurnId: queued.id,
+          dispatchedAt: now(),
+        }),
+      );
+      await system.dispose();
+      system = await createOrchestrationSystem(undefined, dbPath);
+      const recovered = (await system.run(system.engine.getReadModel())).threads.find(
+        (entry) => entry.id === parentId,
+      )!;
+      expect(recovered.queuedTurns).toEqual([]);
+      expect(
+        recovered.messages.filter((message) => message.origin?.kind === "child-nudge"),
+      ).toHaveLength(1);
+    } finally {
+      await system.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts stale conditional metadata as a durable no-op through real dispatch", async () => {
     const projected: OrchestrationEvent[] = [];
     const system = await createOrchestrationSystem((event) =>

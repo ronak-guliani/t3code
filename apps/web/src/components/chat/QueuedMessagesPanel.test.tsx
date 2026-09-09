@@ -1,4 +1,4 @@
-import type { OrchestrationQueuedTurn } from "@t3tools/contracts";
+import { MessageId, ThreadId, type OrchestrationQueuedTurn } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
@@ -68,6 +68,43 @@ function renderEditing(queuedTurn: OrchestrationQueuedTurn) {
 }
 
 describe("QueuedMessagesPanel", () => {
+  it("shows paused child updates with resume and dismiss, without editing generated prompts", () => {
+    const html = renderToStaticMarkup(
+      <QueuedMessagesPanel
+        queuedTurns={[
+          queuedTurn("nudge", "Generated prompt", {
+            kind: "child-nudge",
+            updates: [
+              {
+                id: "update",
+                childThreadId: ThreadId.make("child"),
+                childTitle: "Migration helper",
+                assignmentId: MessageId.make("assignment"),
+                kind: "decision-needed",
+                summary: "Choose a path",
+              },
+            ],
+          }),
+        ]}
+        childFollowUpPaused
+        onSetChildFollowUpPaused={() => {}}
+        editingQueuedTurnId={null}
+        editingText=""
+        onStartEditingQueuedTurn={() => {}}
+        onCancelEditingQueuedTurn={() => {}}
+        onSaveEditingQueuedTurn={() => {}}
+        onDeleteQueuedTurn={() => {}}
+      />,
+    );
+    expect(html).toContain("Child follow-up paused");
+    expect(html).toContain("Resume child follow-up");
+    expect(html).toContain("Dismiss child updates");
+    expect(html).toContain("Migration helper");
+    expect(html).not.toContain("Edit queued message");
+    expect(html).not.toContain("Up next");
+    expect(html).not.toContain("Generated prompt");
+  });
+
   it("hides a healthy workspace handoff continuation", () => {
     const html = render([queuedTurn("q-1", "Continue the task", handoffOrigin)]);
 

@@ -525,7 +525,13 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         row.message.role === "user" &&
         (() => {
           const userImages = row.message.attachments ?? [];
-          const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
+          const displayedUserMessage = deriveDisplayedUserMessageState(
+            row.message.origin?.kind === "child-nudge"
+              ? row.message.origin.updates
+                  .map((update) => `${update.childTitle}: ${update.summary}`)
+                  .join("\n\n")
+              : row.message.text,
+          );
           const terminalContexts = displayedUserMessage.contexts;
           const previewAnnotations: ParsedPreviewAnnotation[] = [];
           let visibleText = displayedUserMessage.visibleText;
@@ -546,6 +552,24 @@ function TimelineRowContent(props: { row: TimelineRow }) {
             <div className="flex flex-col items-end">
               {row.message.origin?.kind === "cross-thread" ? (
                 <CrossThreadProvenance origin={row.message.origin} />
+              ) : row.message.origin?.kind === "child-nudge" ? (
+                <div
+                  className="mb-1 flex flex-wrap justify-end gap-1"
+                  aria-label="Child assignment updates"
+                >
+                  <span className="text-xs text-muted-foreground">Child updates</span>
+                  {row.message.origin.updates.map((update) => (
+                    <CrossThreadProvenance
+                      key={update.id}
+                      origin={{
+                        kind: "cross-thread",
+                        sourceThreadId: update.childThreadId,
+                        sourceThreadTitle: update.childTitle,
+                        sourceMessageId: update.sourceMessageId ?? update.assignmentId,
+                      }}
+                    />
+                  ))}
+                </div>
               ) : row.message.origin?.kind === "pull-request-monitor" ? (
                 <PullRequestMonitorProvenance origin={row.message.origin} />
               ) : null}

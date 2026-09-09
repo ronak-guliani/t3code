@@ -871,6 +871,8 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
               workspaceRoot,
               "--parent",
               created.threadId,
+              "--follow-up",
+              "automatic",
               "--dry-run",
               "dry-run-prompt",
               "--base-dir",
@@ -887,6 +889,26 @@ it.layer(NodeServices.layer)("cli log-level parsing", (it) => {
             errorCode: null,
             message: "Nested-thread inputs are valid; no thread or workspace was created.",
           });
+
+          const orphanedFollowUp = yield* captureExitAndStdout(
+            runCli([
+              "chat",
+              "new",
+              "--project",
+              workspaceRoot,
+              "--follow-up",
+              "automatic",
+              "--dry-run",
+              "invalid-follow-up",
+              "--base-dir",
+              baseDir,
+            ]),
+          );
+          assert.equal(orphanedFollowUp.exit._tag, "Failure");
+          assert.equal(
+            JSON.parse(orphanedFollowUp.output).message,
+            "--follow-up requires --parent",
+          );
 
           const allChatsOutput = yield* captureStdout(
             runCli(["chat", "list", "--base-dir", baseDir]),

@@ -242,6 +242,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        if (command.type === "thread.queued-turn.dispatch") {
+          const queued = readModel.threads
+            .find((thread) => thread.id === command.threadId)
+            ?.queuedTurns?.find((turn) => turn.id === command.queuedTurnId);
+          if (queued?.origin?.kind === "child-nudge") {
+            const pending = yield* sql<{ readonly pending: number }>`
+              SELECT pending_approval_count + pending_user_input_count AS pending
+              FROM projection_threads WHERE thread_id = ${command.threadId}
+            `;
+            if (pending[0]?.pending) {
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "Child follow-up is awaiting approval or input.",
+              });
+            }
+          }
+        }
+
         const eventBase = yield* decideOrchestrationCommand({
           command,
           readModel,
@@ -271,8 +289,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               const committedEvents: OrchestrationEvent[] = [];
               const projectionReceipts: ProjectionReceipt[] = [];
               let nextReadModel = readModel;
+              const skippedEventIds = new Set<string>();
 
               for (const nextEvent of eventBases) {
+                if (
+                  nextEvent.causationEventId !== null &&
+                  skippedEventIds.has(nextEvent.causationEventId)
+                ) {
+                  skippedEventIds.add(nextEvent.eventId);
+                  continue;
+                }
                 if (nextEvent.type === "thread.child-lifecycle-notified") {
                   const claimed = yield* sql<{ readonly dedupe_key: string }>`
                     INSERT INTO child_lifecycle_notification_dedup (
@@ -289,6 +315,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     RETURNING dedupe_key
                   `;
                   if (claimed.length === 0) {
+                    skippedEventIds.add(nextEvent.eventId);
                     continue;
                   }
                 }
