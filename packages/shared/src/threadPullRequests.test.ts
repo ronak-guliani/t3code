@@ -3,6 +3,7 @@ import {
   sameThreadPullRequest,
   sameThreadPullRequestAssociation,
   threadPullRequestKey,
+  threadPullRequestSearchTerms,
 } from "./threadPullRequests.js";
 
 const pullRequest = {
@@ -19,6 +20,47 @@ describe("thread pull request identity", () => {
         url: "https://github.com/acme/app/pulls/42",
       }),
     ).toBe(true);
+  });
+
+  describe("threadPullRequestSearchTerms", () => {
+    const association = {
+      ...pullRequest,
+      title: "Find linked PR threads",
+      baseBranch: "main",
+      headBranch: "feat/search",
+      state: "open" as const,
+    };
+
+    it("includes number, repository-qualified number, URL, and title", () => {
+      expect(
+        threadPullRequestSearchTerms({
+          pullRequests: [{ pullRequest: association, source: "manual", linkedAt: "2026-09-08" }],
+        }),
+      ).toEqual([
+        "#42",
+        "acme/app#42",
+        "https://github.com/acme/app/pull/42",
+        "Find linked PR threads",
+      ]);
+    });
+
+    it("falls back to the legacy association only when no links exist", () => {
+      expect(threadPullRequestSearchTerms({ pullRequests: [], pullRequest: association })).toContain(
+        "#42",
+      );
+      expect(
+        threadPullRequestSearchTerms({
+          pullRequests: [
+            {
+              pullRequest: { ...association, number: 43 },
+              source: "manual",
+              linkedAt: "2026-09-08",
+            },
+          ],
+          pullRequest: association,
+        }),
+      ).not.toContain("#42");
+    });
   });
 
   it("uses the final pull-request marker in repository paths", () => {

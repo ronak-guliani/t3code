@@ -1,3 +1,4 @@
+import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import {
   type KeybindingCommand,
   type FilesystemBrowseEntry,
@@ -179,7 +180,15 @@ export function buildProjectActionItems(input: {
 
 export type BuildThreadActionItemsThread = Pick<
   SidebarThreadSummary,
-  "archivedAt" | "branch" | "createdAt" | "environmentId" | "id" | "projectId" | "title"
+  | "archivedAt"
+  | "branch"
+  | "createdAt"
+  | "environmentId"
+  | "id"
+  | "projectId"
+  | "pullRequest"
+  | "pullRequests"
+  | "title"
 > & {
   updatedAt?: string | undefined;
   latestUserMessageAt?: string | null;
@@ -222,6 +231,7 @@ export function buildThreadActionItems<TThread extends BuildThreadActionItemsThr
     const trailingContent = input.renderTrailingContent?.(thread);
     const searchTerms = [
       thread.title,
+      ...threadPullRequestSearchTerms(thread),
       projectTitle ?? ``,
       thread.branch ?? ``,
       thread.environmentId,

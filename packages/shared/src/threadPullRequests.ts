@@ -91,3 +91,30 @@ export function upsertLegacyThreadPullRequestLink(
     ? [...existingLinks, nextLink]
     : existingLinks.map((link, index) => (index === existingIndex ? nextLink : link));
 }
+
+/** Search terms for linked PRs, including the legacy single-PR projection. */
+export function threadPullRequestSearchTerms(thread: {
+  readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink> | undefined;
+  readonly pullRequest?: GitPullRequestAssociation | null | undefined;
+}): string[] {
+  if (thread.pullRequests !== undefined && thread.pullRequests.length > 0) {
+    return thread.pullRequests.flatMap(({ pullRequest }) => {
+      const identity = threadPullRequestIdentity(pullRequest);
+      return [
+        `#${pullRequest.number}`,
+        `${identity.repository}#${pullRequest.number}`,
+        pullRequest.url,
+        pullRequest.title,
+      ];
+    });
+  }
+  const legacy = thread.pullRequest;
+  if (legacy === null || legacy === undefined) return [];
+  const identity = threadPullRequestIdentity(legacy);
+  return [
+    `#${legacy.number}`,
+    `${identity.repository}#${legacy.number}`,
+    legacy.url,
+    legacy.title,
+  ];
+}

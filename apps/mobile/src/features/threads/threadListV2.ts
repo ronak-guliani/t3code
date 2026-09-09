@@ -1,3 +1,4 @@
+import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import {
   effectiveSnoozed,
   hasQueuedTurnStart,
@@ -413,6 +414,9 @@ export function buildThreadListV2Items(input: {
       .filter(
         (thread) =>
           thread.title.toLocaleLowerCase().includes(query) ||
+          threadPullRequestSearchTerms(thread).some((term) =>
+            term.toLocaleLowerCase().includes(query),
+          ) ||
           input.matchedThreadKeys?.has(
             threadSearchMatchKey({ environmentId: thread.environmentId, threadId: thread.id }),
           ),
