@@ -57,6 +57,16 @@ describe("toWorkspaceRelativePath", () => {
     expect(toWorkspaceRelativePath("/Users/other/project/outside.ts", "/repo/project")).toBeNull();
   });
 
+  it("is case-sensitive on POSIX so mismatches fall back to the editor", () => {
+    expect(toWorkspaceRelativePath("/repo/Project/a.ts", "/repo/project")).toBeNull();
+  });
+
+  it("is case-insensitive for Windows drive paths", () => {
+    expect(toWorkspaceRelativePath("C:\\Repo\\Project\\src\\a.ts", "c:\\repo\\project")).toBe(
+      "src/a.ts",
+    );
+  });
+
   it("returns null without a workspace root", () => {
     expect(toWorkspaceRelativePath("/repo/project/src/index.ts", undefined)).toBeNull();
   });

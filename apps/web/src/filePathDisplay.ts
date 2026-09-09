@@ -34,10 +34,17 @@ function splitNormalizedSegments(path: string): string[] {
   return segments;
 }
 
+function isWindowsStylePath(path: string): boolean {
+  return /^[A-Za-z]:\//.test(path) || path.startsWith("//");
+}
+
 /**
  * Workspace-relative path for the integrated file viewer, or null when the
  * file lives outside the workspace root. Resolves `.`/`..` so paths like
- * `/repo/project/./report.html` still map to `report.html`.
+ * `/repo/project/./report.html` still map to `report.html`. Containment is
+ * case-sensitive on POSIX (a case mismatch falls back to the external editor
+ * instead of opening the wrong file) and case-insensitive for Windows
+ * drive/UNC paths only.
  */
 export function toWorkspaceRelativePath(
   filePath: string,
@@ -49,26 +56,19 @@ export function toWorkspaceRelativePath(
     normalizePathSeparators(trimTrailingPathSeparators(workspaceRoot)),
   );
   if (!normalizedPath || !normalizedRoot) return null;
+  const foldCase = isWindowsStylePath(normalizedPath) || isWindowsStylePath(normalizedRoot);
   const pathSegments = splitNormalizedSegments(normalizedPath);
   const rootSegments = splitNormalizedSegments(normalizedRoot);
   if (pathSegments.length <= rootSegments.length) return null;
   for (let index = 0; index < rootSegments.length; index += 1) {
-    if (pathSegments[index]?.toLowerCase() !== rootSegments[index]?.toLowerCase()) return null;
-  }
-  // Preserve the file's original casing in the returned relative path.
-  // Re-resolve `.`/`..` in the suffix without lowercasing it.
-  const resolved: string[] = [];
-  for (const segment of normalizedPath.split("/")) {
-    if (segment.length === 0 || segment === ".") continue;
-    if (segment === "..") {
-      resolved.pop();
-      continue;
+    const candidate = pathSegments[index];
+    const root = rootSegments[index];
+    if (candidate === undefined || root === undefined) return null;
+    if (foldCase ? candidate.toLowerCase() !== root.toLowerCase() : candidate !== root) {
+      return null;
     }
-    resolved.push(segment);
   }
-  const relative = resolved.slice(rootSegments.length);
-  if (relative.length === 0) return null;
-  return relative.join("/");
+  return pathSegments.slice(rootSegments.length).join("/");
 }
 
 export function formatWorkspaceRelativePath(
