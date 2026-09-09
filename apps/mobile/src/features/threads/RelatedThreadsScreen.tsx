@@ -215,6 +215,7 @@ export function RelatedThreadsScreen(
       pinReorderSupported,
       pinIndex,
       pinnedKeys.length,
+      completionReadAt,
       onSelectThread,
       onSwipeableClose,
       onSwipeableWillOpen,
