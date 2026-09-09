@@ -57,6 +57,22 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       } satisfies OrchestrationCommand;
     }
 
+    if (command.type === "thread.child.report") {
+      if (
+        command.crossThreadDispatchCapability === undefined ||
+        !consumeCrossThreadDispatchCapability(
+          command.crossThreadDispatchCapability,
+          command.threadId,
+        )
+      ) {
+        return yield* new OrchestrationDispatchCommandError({
+          message: "Invalid child report capability.",
+        });
+      }
+      const { crossThreadDispatchCapability: _, ...trustedCommand } = command;
+      return trustedCommand satisfies OrchestrationCommand;
+    }
+
     if (command.type === "project.meta.update" && command.workspaceRoot !== undefined) {
       return {
         ...command,

@@ -285,6 +285,48 @@ async function runReactor(
 }
 
 describe("QueuedTurnReactor", () => {
+  it("recovers a nudge after restart, but skips it while paused without blocking user work", async () => {
+    const ready = queuedReadModel({
+      origin: {
+        kind: "child-nudge",
+        updates: [
+          {
+            id: "child-result",
+            childThreadId: ThreadId.make("child"),
+            childTitle: "Child",
+            assignmentId: MessageId.make("assignment"),
+            kind: "result-available",
+            summary: "Inspect the result",
+          },
+        ],
+      },
+    });
+    expect(await runReactor(ready, monitorSnapshot("head"))).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId },
+    ]);
+    const paused = {
+      ...ready,
+      threads: ready.threads.map((thread) => ({
+        ...thread,
+        nudging: { paused: true },
+      })),
+    };
+    expect(await runReactor(paused, monitorSnapshot("head"))).toEqual([]);
+    const explicit = {
+      ...paused,
+      threads: paused.threads.map((thread) => ({
+        ...thread,
+        queuedTurns: [
+          ...thread.queuedTurns!,
+          { ...thread.queuedTurns![0]!, id: QueuedTurnId.make("explicit"), origin: undefined },
+        ],
+      })),
+    };
+    expect(await runReactor(explicit, monitorSnapshot("head"))).toMatchObject([
+      { type: "thread.queued-turn.dispatch", queuedTurnId: "explicit" },
+    ]);
+  });
+
   it("waits for the destination turn to finish before dispatching a persisted cross-thread message", async () => {
     const ready = queuedReadModel({
       origin: {

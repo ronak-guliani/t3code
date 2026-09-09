@@ -263,9 +263,17 @@ type SessionActivityState = Pick<ThreadSession, "orchestrationStatus" | "activeT
  * Prefer the shell-projected `hasPendingQueuedTurn` flag for sidebar/notify paths.
  */
 export function hasActionableQueuedTurn(
-  queuedTurns: readonly { readonly failedAt: string | null }[] | null | undefined,
+  queuedTurns:
+    | readonly {
+        readonly failedAt: string | null;
+        readonly origin?: { readonly kind: string } | undefined;
+      }[]
+    | null
+    | undefined,
 ): boolean {
-  return (queuedTurns ?? []).some((queuedTurn) => queuedTurn.failedAt === null);
+  return (queuedTurns ?? []).some(
+    (queuedTurn) => queuedTurn.failedAt === null && queuedTurn.origin?.kind !== "child-nudge",
+  );
 }
 
 export function isThreadActivelyWorking(
@@ -751,6 +759,7 @@ const CHILD_LIFECYCLE_ACTION_LABELS: Record<ChildThreadLifecycle, string> = {
   failed: "Review failure",
   completed: "View result",
   "pr-created": "Open pull request",
+  reported: "Open child thread",
 };
 
 function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {

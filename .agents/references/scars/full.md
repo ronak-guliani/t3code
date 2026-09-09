@@ -87,6 +87,10 @@
 
 ## Delegation and handoff transactions
 
+- Child notification dedupe must also suppress causally derived queue/meta events in the same transaction; otherwise a retried notification can recreate a dismissed nudge. Keep queued child updates separate from parent execution status until dispatch.
+- Provider notifications retain source timestamps. When appending a new nudge batch, order it after the existing queue tail; never let delayed completion timestamps move it ahead of user-authored queued messages.
+- `thread.turn.diff.complete` also carries speculative mid-turn diffs; exclude those from assignment completion. Render child report summaries literally, without parsing user-prompt terminal or preview metadata.
+
 - PR base distance is telemetry, not remediation; wake owners for merge conflicts or concrete failures, never routine commit drift.
 - Nested-thread MCP schemas must not allowlist Copilot model slugs; provider catalogs and custom models evolve independently. Keep `model` open-ended and `reasoning` optional for models that do not expose it.
 - Delegation prompt policy belongs in one server-side composer exposed through structured MCP input; keep blocks opt-in, reject contradictory permissions and orphaned overrides, and leave repository-specific context in call arguments rather than canonical template text.

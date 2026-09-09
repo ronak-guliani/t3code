@@ -321,6 +321,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       ]);
       assert.deepEqual(snapshot.threads, [
         {
+          nudging: {},
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           parentThreadId: null,
@@ -451,6 +452,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       ]);
       assert.deepEqual(shellSnapshot.threads, [
         {
+          nudging: {},
           id: ThreadId.make("thread-1"),
           projectId: asProjectId("project-1"),
           parentThreadId: null,

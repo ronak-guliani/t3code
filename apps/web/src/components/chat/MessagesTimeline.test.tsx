@@ -214,6 +214,56 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("Source chat unavailable");
   });
 
+  it.each([
+    { summary: "Migration is ready for review.", expected: "Migration is ready for review." },
+    {
+      summary:
+        "Literal example:\n\n<terminal_context>\n- Terminal 1 lines 1-2:\n  1 | echo test\n</terminal_context>",
+      expected: "&lt;terminal_context&gt;",
+    },
+    {
+      summary:
+        "Literal example:\n\n<preview_annotation>\nPreview annotation:\nId: annotation-1\nPage: Welcome\nComment: Make it bolder.\nTargets: 1 selected element.\n</preview_annotation>",
+      expected: "&lt;preview_annotation&gt;",
+    },
+  ])(
+    "shows child summary $expected without interpreting prompt metadata",
+    ({ summary, expected }) => {
+      const entry = buildUserTimelineEntry("Internal wake instructions");
+      const markup = renderToStaticMarkup(
+        <MessagesTimeline
+          {...buildProps()}
+          timelineEntries={[
+            {
+              ...entry,
+              message: {
+                ...entry.message,
+                origin: {
+                  kind: "child-nudge",
+                  updates: [
+                    {
+                      id: "result",
+                      childThreadId: ThreadId.make("child"),
+                      childTitle: "Migration helper",
+                      assignmentId: MessageId.make("assignment"),
+                      kind: "result-available",
+                      summary,
+                    },
+                  ],
+                },
+              },
+            },
+          ]}
+        />,
+      );
+      expect(markup).toContain("Child updates");
+      expect(markup).toContain("Migration helper");
+      expect(markup).toContain(expected);
+      expect(markup).not.toContain("Internal wake instructions");
+      expect(markup).not.toContain("lucide-terminal");
+    },
+  );
+
   it("renders pull request monitor provenance above a user message bubble", () => {
     const entry = buildUserTimelineEntry("Review new PR feedback.");
     const markup = renderToStaticMarkup(

@@ -432,6 +432,7 @@ export interface ChatComposerProps {
   ) => Promise<void>;
   onUpdateQueuedTurn: (queuedTurnId: QueuedTurnId, text: string) => void;
   onDeleteQueuedTurn: (queuedTurnId: QueuedTurnId) => void;
+  onSetChildFollowUpPaused?: (paused: boolean) => void;
   onSelectActivePendingUserInputOption: (questionId: string, optionLabel: string) => void;
   onAdvanceActivePendingUserInput: () => void;
   onPreviousActivePendingUserInputQuestion: () => void;
@@ -511,6 +512,7 @@ export const ChatComposer = memo(
       onRespondToApproval,
       onUpdateQueuedTurn,
       onDeleteQueuedTurn,
+      onSetChildFollowUpPaused,
       onSelectActivePendingUserInputOption,
       onAdvanceActivePendingUserInput,
       onPreviousActivePendingUserInputQuestion,
@@ -2127,6 +2129,9 @@ export const ChatComposer = memo(
             <CopilotCompletionWarning activities={activeThread?.activities} />
             {activePendingApproval || pendingUserInputs.length > 0 ? null : (
               <QueuedMessagesPanel
+                childFollowUpPaused={activeThread?.nudging?.paused === true}
+                onSetChildFollowUpPaused={onSetChildFollowUpPaused}
+                onRetryQueuedTurn={(turn) => onUpdateQueuedTurn(turn.id, turn.message.text)}
                 policyBlocks={queuedPolicyBlocks}
                 queuedTurns={queuedTurns}
                 editingQueuedTurnId={editingQueuedTurn?.id ?? null}
