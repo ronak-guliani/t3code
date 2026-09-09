@@ -11,6 +11,7 @@ const {
   createAssetUrlMock,
   openFileInPreviewMock,
   openBrowserMock,
+  openFileMock,
   openInPreferredEditorMock,
   openPreviewMock,
   navigateMock,
@@ -19,6 +20,7 @@ const {
   createAssetUrlMock: vi.fn(async () => ({ relativeUrl: "/assets/signed" })),
   openFileInPreviewMock: vi.fn(async () => ({ _tag: "Success", value: undefined })),
   openBrowserMock: vi.fn(),
+  openFileMock: vi.fn(),
   openInPreferredEditorMock: vi.fn(async () => "vscode"),
   openPreviewMock: vi.fn(),
   navigateMock: vi.fn(async () => undefined),
@@ -80,7 +82,7 @@ vi.mock("../state/preview", () => ({
 
 vi.mock("../rightPanelStore", () => ({
   useRightPanelStore: {
-    getState: () => ({ openBrowser: openBrowserMock }),
+    getState: () => ({ openBrowser: openBrowserMock, openFile: openFileMock }),
   },
 }));
 
@@ -193,6 +195,7 @@ describe("ChatMarkdown", () => {
     useStore.setState(initialStoreState, true);
     openInPreferredEditorMock.mockClear();
     openFileInPreviewMock.mockClear();
+    openFileMock.mockClear();
     openPreviewMock.mockClear();
     navigateMock.mockClear();
     createAssetUrlMock.mockClear();
@@ -658,6 +661,69 @@ describe("ChatMarkdown", () => {
         });
       });
       expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens workspace files in the integrated file browser", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="[index.ts](./src/index.ts#L12)"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "index.ts · L12" }).click();
+      await vi.waitFor(() => {
+        expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 12);
+      });
+      expect(openFileInPreviewMock).not.toHaveBeenCalled();
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens inline code file mentions in the integrated file browser", async () => {
+    const screen = await render(
+      <ChatMarkdown
+        text="See `src/index.ts:40` for details"
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "index.ts · L40" }).click();
+      await vi.waitFor(() => {
+        expect(openFileMock).toHaveBeenCalledWith(threadRef, "src/index.ts", 40);
+      });
+      expect(openInPreferredEditorMock).not.toHaveBeenCalled();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("falls back to the external editor for files outside the workspace", async () => {
+    const filePath = "/Users/other/project/outside.ts";
+    const screen = await render(
+      <ChatMarkdown
+        text={`[outside.ts](file://${filePath})`}
+        cwd="/repo/project"
+        threadRef={threadRef}
+      />,
+    );
+
+    try {
+      await page.getByRole("link", { name: "outside.ts" }).click();
+      await vi.waitFor(() => {
+        expect(openInPreferredEditorMock).toHaveBeenCalledWith(expect.anything(), filePath);
+      });
+      expect(openFileMock).not.toHaveBeenCalled();
+      expect(openFileInPreviewMock).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
     }

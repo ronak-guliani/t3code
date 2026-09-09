@@ -58,8 +58,10 @@ import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPre
 import { useOpenLink } from "~/browser/useOpenLink";
 import { readEnvironmentApi } from "~/environmentApi";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { toWorkspaceRelativePath } from "../filePathDisplay";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -604,6 +606,8 @@ interface MarkdownFileLinkProps {
   label: string;
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef;
+  cwd?: string | undefined;
+  line?: number | undefined;
   className?: string | undefined;
 }
 
@@ -910,6 +914,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   label,
   theme,
   threadRef,
+  cwd,
+  line,
   className,
 }: MarkdownFileLinkProps) {
   const environmentApi = threadRef ? readEnvironmentApi(threadRef.environmentId) : undefined;
@@ -940,6 +946,13 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       });
       return;
     }
+    if (threadRef) {
+      const workspaceRelativePath = toWorkspaceRelativePath(filePath, cwd);
+      if (workspaceRelativePath) {
+        useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
+        return;
+      }
+    }
     const localApi = readLocalApi();
     if (!localApi) {
       toastManager.add({
@@ -958,7 +971,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }),
       );
     });
-  }, [environmentApi, filePath, openPreview, targetPath, threadRef]);
+  }, [cwd, environmentApi, filePath, line, openPreview, targetPath, threadRef]);
 
   const handleCopy = useCallback((value: string, title: string) => {
     if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -1073,6 +1086,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.theme === next.theme &&
     previous.threadRef?.environmentId === next.threadRef?.environmentId &&
     previous.threadRef?.threadId === next.threadRef?.threadId &&
+    previous.cwd === next.cwd &&
+    previous.line === next.line &&
     previous.className === next.className
   );
 }
@@ -1288,11 +1303,13 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
           )}
           theme={resolvedTheme}
           {...(threadRef ? { threadRef } : {})}
+          {...(cwd ? { cwd } : {})}
+          {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
           className={props.className}
         />
       );
     },
-    [fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme, threadRef],
+    [cwd, fileLinkParentSuffixByPath, markdownFileLinkMetaByHref, resolvedTheme, threadRef],
   );
   const markdownPre = useCallback(
     ({ node: _node, children, ...props }: MarkdownFunctionComponentProps<"pre">) => {
@@ -1338,6 +1355,9 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
               filePath={fileLinkMeta.filePath}
               label={label}
               theme={resolvedTheme}
+              {...(threadRef ? { threadRef } : {})}
+              {...(cwd ? { cwd } : {})}
+              {...(fileLinkMeta.line !== undefined ? { line: fileLinkMeta.line } : {})}
             />
           );
         }
@@ -1348,7 +1368,7 @@ function ChatMarkdown({ text, cwd, isStreaming = false, threadRef }: ChatMarkdow
         </code>
       );
     },
-    [cwd, resolvedTheme],
+    [cwd, resolvedTheme, threadRef],
   );
   const markdownComponents = useMemo<Components>(
     () => ({

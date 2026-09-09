@@ -21,6 +21,56 @@ function stripRelativePrefixes(path: string): string {
   return path.replace(/^\.\/+/, "").replace(/^\/+/, "");
 }
 
+function splitNormalizedSegments(path: string): string[] {
+  const segments: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment.length === 0 || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments;
+}
+
+/**
+ * Workspace-relative path for the integrated file viewer, or null when the
+ * file lives outside the workspace root. Resolves `.`/`..` so paths like
+ * `/repo/project/./report.html` still map to `report.html`.
+ */
+export function toWorkspaceRelativePath(
+  filePath: string,
+  workspaceRoot: string | undefined,
+): string | null {
+  if (!workspaceRoot) return null;
+  const normalizedPath = canonicalizeWindowsDrivePath(normalizePathSeparators(filePath));
+  const normalizedRoot = canonicalizeWindowsDrivePath(
+    normalizePathSeparators(trimTrailingPathSeparators(workspaceRoot)),
+  );
+  if (!normalizedPath || !normalizedRoot) return null;
+  const pathSegments = splitNormalizedSegments(normalizedPath);
+  const rootSegments = splitNormalizedSegments(normalizedRoot);
+  if (pathSegments.length <= rootSegments.length) return null;
+  for (let index = 0; index < rootSegments.length; index += 1) {
+    if (pathSegments[index]?.toLowerCase() !== rootSegments[index]?.toLowerCase()) return null;
+  }
+  // Preserve the file's original casing in the returned relative path.
+  // Re-resolve `.`/`..` in the suffix without lowercasing it.
+  const resolved: string[] = [];
+  for (const segment of normalizedPath.split("/")) {
+    if (segment.length === 0 || segment === ".") continue;
+    if (segment === "..") {
+      resolved.pop();
+      continue;
+    }
+    resolved.push(segment);
+  }
+  const relative = resolved.slice(rootSegments.length);
+  if (relative.length === 0) return null;
+  return relative.join("/");
+}
+
 export function formatWorkspaceRelativePath(
   pathWithPosition: string,
   workspaceRoot: string | undefined,
