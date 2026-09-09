@@ -525,21 +525,25 @@ function TimelineRowContent(props: { row: TimelineRow }) {
         row.message.role === "user" &&
         (() => {
           const userImages = row.message.attachments ?? [];
-          const displayedUserMessage = deriveDisplayedUserMessageState(
-            row.message.origin?.kind === "child-nudge"
-              ? row.message.origin.updates
+          const childNudge = row.message.origin?.kind === "child-nudge" ? row.message.origin : null;
+          const displayedUserMessage = childNudge
+            ? {
+                contexts: [],
+                visibleText: childNudge.updates
                   .map((update) => `${update.childTitle}: ${update.summary}`)
-                  .join("\n\n")
-              : row.message.text,
-          );
+                  .join("\n\n"),
+              }
+            : deriveDisplayedUserMessageState(row.message.text);
           const terminalContexts = displayedUserMessage.contexts;
           const previewAnnotations: ParsedPreviewAnnotation[] = [];
           let visibleText = displayedUserMessage.visibleText;
-          while (true) {
-            const extracted = extractTrailingPreviewAnnotation(visibleText);
-            if (!extracted.annotation) break;
-            previewAnnotations.unshift(extracted.annotation);
-            visibleText = extracted.promptText;
+          if (!childNudge) {
+            while (true) {
+              const extracted = extractTrailingPreviewAnnotation(visibleText);
+              if (!extracted.annotation) break;
+              previewAnnotations.unshift(extracted.annotation);
+              visibleText = extracted.promptText;
+            }
           }
           const previewImages = userImages.filter((image) =>
             image.name.startsWith("preview-annotation-"),

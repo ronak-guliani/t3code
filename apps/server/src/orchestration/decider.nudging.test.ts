@@ -110,7 +110,7 @@ function withParent(
   };
 }
 
-function finish(id: string): OrchestrationCommand {
+function finish(id: string): Extract<OrchestrationCommand, { type: "thread.turn.diff.complete" }> {
   return {
     type: "thread.turn.diff.complete",
     commandId: CommandId.make(`finish-${id}`),
@@ -340,6 +340,34 @@ describe("child nudging", () => {
     expect(result.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
       kind: "child-nudge",
       updates: [{ kind: "blocked", summary: expect.stringContaining("unconfirmed") }],
+    });
+  });
+
+  it("keeps speculative checkpoints pending until authoritative completion", async () => {
+    const child = thread("child", true);
+    const completion = child.activities[0]!;
+    child.activities = [];
+    child.latestTurn = { ...child.latestTurn!, state: "running", completedAt: null };
+    const speculative = await apply(model(child), {
+      ...finish("child"),
+      commandId: CommandId.make("speculative"),
+      status: "speculative",
+    });
+    expect(speculative.events.map((event) => event.type)).toEqual(["thread.turn-diff-completed"]);
+    expect(speculative.readModel.threads[1]!.nudging?.delegation?.completedAt).toBeNull();
+    expect(speculative.readModel.threads[0]!.queuedTurns).toHaveLength(0);
+    const completed = await apply(speculative.readModel, {
+      type: "thread.activity.append",
+      commandId: CommandId.make("completion-evidence"),
+      threadId: child.id,
+      activity: completion,
+      createdAt: finished,
+    });
+    const result = await apply(completed.readModel, finish("child"));
+    expect(result.readModel.threads[1]!.nudging?.delegation?.completedAt).toBe(finished);
+    expect(result.readModel.threads[0]!.queuedTurns![0]!.origin).toMatchObject({
+      kind: "child-nudge",
+      updates: [{ kind: "result-available" }],
     });
   });
 

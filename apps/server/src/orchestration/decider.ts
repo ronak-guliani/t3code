@@ -2040,6 +2040,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
       const delegation = thread.nudging?.delegation;
       if (
+        command.status === "speculative" ||
         !delegation ||
         delegation.completedAt !== null ||
         thread.latestTurn?.turnId !== command.turnId ||
