@@ -13,10 +13,7 @@ function trimTrailingPathSeparators(path: string): string {
 }
 
 function trimWorkspaceRootSeparators(path: string): string {
-  const normalized = normalizePathSeparators(path);
-  return normalized === "/" || /^[A-Za-z]:\/$/.test(normalized)
-    ? normalized
-    : trimTrailingPathSeparators(normalized);
+  return path === "/" || /^[A-Za-z]:\/$/.test(path) ? path : trimTrailingPathSeparators(path);
 }
 
 function basenameOfPath(path: string): string {
@@ -31,8 +28,8 @@ function stripRelativePrefixes(path: string): string {
 type AbsolutePathFlavor = "posix" | "drive" | "unc";
 
 function absolutePathFlavor(path: string): AbsolutePathFlavor | null {
-  if (/^[A-Za-z]:\//.test(path)) return "drive";
-  if (path.startsWith("//")) return "unc";
+  if (/^\/?[A-Za-z]:[\\/]/.test(path)) return "drive";
+  if (path.startsWith("\\\\") || path.startsWith("//")) return "unc";
   return path.startsWith("/") ? "posix" : null;
 }
 
@@ -68,12 +65,17 @@ export function toWorkspaceRelativePath(
   workspaceRoot: string | undefined,
 ): string | null {
   if (!workspaceRoot) return null;
-  const normalizedPath = canonicalizeWindowsDrivePath(normalizePathSeparators(filePath));
-  const normalizedRoot = canonicalizeWindowsDrivePath(trimWorkspaceRootSeparators(workspaceRoot));
-  if (!normalizedPath || !normalizedRoot) return null;
-  const pathFlavor = absolutePathFlavor(normalizedPath);
-  const rootFlavor = absolutePathFlavor(normalizedRoot);
+  const pathFlavor = absolutePathFlavor(filePath);
+  const rootFlavor = absolutePathFlavor(workspaceRoot);
   if (!pathFlavor || pathFlavor !== rootFlavor) return null;
+  if (pathFlavor === "posix" && (filePath.includes("\\") || workspaceRoot.includes("\\"))) {
+    return null;
+  }
+  const normalize = pathFlavor === "posix" ? (path: string) => path : normalizePathSeparators;
+  const normalizedPath = canonicalizeWindowsDrivePath(normalize(filePath));
+  const normalizedRoot = canonicalizeWindowsDrivePath(
+    trimWorkspaceRootSeparators(normalize(workspaceRoot)),
+  );
   const foldCase = pathFlavor !== "posix";
   const anchorDepth = pathAnchorDepth(pathFlavor);
   const pathSegments = splitNormalizedSegments(normalizedPath, anchorDepth);

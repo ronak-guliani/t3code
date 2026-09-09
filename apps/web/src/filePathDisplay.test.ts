@@ -61,6 +61,11 @@ describe("toWorkspaceRelativePath", () => {
     expect(toWorkspaceRelativePath("/repo/Project/a.ts", "/repo/project")).toBeNull();
   });
 
+  it("does not reinterpret backslashes in POSIX paths as separators", () => {
+    expect(toWorkspaceRelativePath("/repo/project\\outside.ts", "/repo/project")).toBeNull();
+    expect(toWorkspaceRelativePath("/repo/project/a.ts", "/repo\\project")).toBeNull();
+  });
+
   it("is case-insensitive for Windows drive paths", () => {
     expect(toWorkspaceRelativePath("C:\\Repo\\Project\\src\\a.ts", "c:\\repo\\project")).toBe(
       "src/a.ts",
