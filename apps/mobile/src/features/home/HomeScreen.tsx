@@ -426,6 +426,7 @@ export function HomeScreen(props: HomeScreenProps) {
             showAllThreads: hasSearchQuery,
             dismissedAgentRunKeys,
             threadChildReadAt,
+            threadCompletionReadAt,
           }),
     [
       threadListV2Enabled,
@@ -434,6 +435,7 @@ export function HomeScreen(props: HomeScreenProps) {
       hasSearchQuery,
       dismissedAgentRunKeys,
       threadChildReadAt,
+      threadCompletionReadAt,
     ],
   );
 
@@ -648,6 +650,7 @@ export function HomeScreen(props: HomeScreenProps) {
       threads: props.threads,
       dismissedAgentRunKeys,
       threadChildReadAt,
+      threadCompletionReadAt,
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
@@ -767,7 +770,7 @@ export function HomeScreen(props: HomeScreenProps) {
       const thread = item.item.thread;
       return (
         <ThreadListV2Row
-          completionReadAt={threadCompletionReadAt}
+          status={item.item.status}
           thread={thread}
           projectCwd={projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId))}
           hierarchy={item.item.hierarchy}
@@ -835,7 +838,6 @@ export function HomeScreen(props: HomeScreenProps) {
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       threadListV2Items,
-      threadCompletionReadAt,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
       toggleSettledShelf,
@@ -856,27 +858,18 @@ export function HomeScreen(props: HomeScreenProps) {
       serverConfigs,
       searchQuery: props.searchQuery,
       snoozePresetMinute: nowMinute,
-      threadCompletionReadAt,
       threadSearchMatchByKey,
     }),
-    [
-      projectCwdByKey,
-      props.searchQuery,
-      serverConfigs,
-      nowMinute,
-      threadCompletionReadAt,
-      threadSearchMatchByKey,
-    ],
+    [projectCwdByKey, props.searchQuery, serverConfigs, nowMinute, threadSearchMatchByKey],
   );
 
   const extraData = useMemo(
     () => ({
       projectCwdByKey,
       searchQuery: props.searchQuery,
-      threadCompletionReadAt,
       threadSearchMatchByKey,
     }),
-    [projectCwdByKey, props.searchQuery, threadCompletionReadAt, threadSearchMatchByKey],
+    [projectCwdByKey, props.searchQuery, threadSearchMatchByKey],
   );
 
   const renderItem = useCallback(
@@ -915,7 +908,7 @@ export function HomeScreen(props: HomeScreenProps) {
           const thread = item.thread;
           return (
             <ThreadListRow
-              completionReadAt={threadCompletionReadAt}
+              status={item.status}
               hierarchy={item.hierarchy}
               variant="compact"
               thread={thread}
@@ -964,7 +957,6 @@ export function HomeScreen(props: HomeScreenProps) {
       props.onSelectPendingTask,
       props.onSelectThread,
       props.searchQuery,
-      threadCompletionReadAt,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
       updateGroupDisplay,

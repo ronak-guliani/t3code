@@ -25,6 +25,7 @@ import {
   useThreadCompletionReadAt,
   useMarkThreadGroupNotificationsRead,
 } from "./thread-hierarchy-controls";
+import { resolveThreadListRowStatus } from "./thread-list-row-status";
 
 export function RelatedThreadsScreen(
   props: StaticScreenProps<{
@@ -135,7 +136,7 @@ export function RelatedThreadsScreen(
           index === 0 ? rootState : { variant: "card" as const, snoozed: false, pinned: false };
         return (
           <ThreadListV2Row
-            completionReadAt={completionReadAt}
+            status={resolveThreadListRowStatus(item.thread, completionReadAt)}
             thread={item.thread}
             projectCwd={projectCwdByKey.get(
               scopedProjectKey(item.thread.environmentId, item.thread.projectId),
@@ -175,7 +176,7 @@ export function RelatedThreadsScreen(
       }
       return (
         <ThreadListRow
-          completionReadAt={completionReadAt}
+          status={resolveThreadListRowStatus(item.thread, completionReadAt)}
           variant="compact"
           thread={item.thread}
           projectCwd={projectCwdByKey.get(
