@@ -1,6 +1,7 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
 import {
+  extractWorkLogToolCallId,
   extractWorkLogToolLifecycleStatus,
   mergeWorkLogToolData,
 } from "@t3tools/client-runtime/work-log/presentation";
@@ -786,7 +787,7 @@ function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWo
       ? stripTrailingExitCode(payload.detail).output
       : null
     : extractToolDetail(payload, title ?? activity.summary);
-  const toolCallId = isTaskActivity ? null : extractToolCallId(payload);
+  const toolCallId = isTaskActivity ? undefined : extractWorkLogToolCallId(payload);
   const entry: DerivedWorkLogEntry = {
     id: activity.id,
     sourceActivityKind: activity.kind,
@@ -1202,11 +1203,6 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
 
 function extractToolTitle(payload: Record<string, unknown> | null): string | null {
   return asTrimmedString(payload?.title);
-}
-
-function extractToolCallId(payload: Record<string, unknown> | null): string | null {
-  const data = asRecord(payload?.data);
-  return asTrimmedString(data?.toolCallId);
 }
 
 function normalizeInlinePreview(value: string): string {

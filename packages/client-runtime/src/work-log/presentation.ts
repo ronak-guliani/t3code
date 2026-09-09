@@ -60,6 +60,18 @@ export function extractWorkLogToolLifecycleStatus(
   return undefined;
 }
 
+export function extractWorkLogToolCallId(
+  payload: Record<string, unknown> | null,
+): string | undefined {
+  const data = asRecord(payload?.data);
+  return (
+    nonEmptyString(payload?.itemId) ??
+    nonEmptyString(payload?.toolCallId) ??
+    nonEmptyString(data?.toolCallId) ??
+    undefined
+  );
+}
+
 /** Compact labels never substitute command output for the action being performed. */
 export function compactWorkEntryLabel(entry: WorkLogPresentationEntry): string {
   const presentation = resolveWorkEntryToolPresentation(entry);
@@ -194,8 +206,9 @@ export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
   entries: readonly T[],
   isWorking: boolean,
 ) {
+  const currentEntries = omitSupersededLifecycleMarkers(entries, (entry) => entry);
   const resolvedRequests = new Set(
-    entries
+    currentEntries
       .filter(
         (entry) =>
           (entry.sourceActivityKind === "approval.resolved" ||
@@ -204,20 +217,20 @@ export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
       )
       .map((entry) => entry.requestId),
   );
-  const approval = entries.find(
+  const approval = currentEntries.find(
     (entry) =>
       (entry.sourceActivityKind === "approval.requested" ||
         entry.sourceActivityKind === "user-input.requested") &&
       (!entry.requestId || !resolvedRequests.has(entry.requestId)),
   );
-  const failed = entries.findLast(workEntryNeedsAttention);
-  const stopped = entries.findLast(
+  const failed = currentEntries.findLast(workEntryNeedsAttention);
+  const stopped = currentEntries.findLast(
     (entry) =>
       entry.toolLifecycleStatus === "stopped" ||
       (!isWorking && entry.toolLifecycleStatus === "inProgress"),
   );
   const active = isWorking
-    ? entries.filter((entry) => entry.toolLifecycleStatus === "inProgress")
+    ? currentEntries.filter((entry) => entry.toolLifecycleStatus === "inProgress")
     : [];
   // Keep the oldest still-running call in the lead slot; parallel starts don't rotate it.
   const lead = approval ?? failed ?? active[0];
@@ -248,9 +261,9 @@ export function deriveWorkGroupActivity<T extends WorkLogPresentationEntry>(
           ? compactWorkEntryLabel(active[0])
           : stopped
             ? compactWorkEntryLabel({ ...stopped, toolLifecycleStatus: "stopped" })
-            : (entries.length === 1
-                ? compactWorkEntryLabel(entries[0]!)
-                : summarizeToolGroup(entries)) || "Work log",
+            : (currentEntries.length === 1
+                ? compactWorkEntryLabel(currentEntries[0]!)
+                : summarizeReconciledToolGroup(currentEntries)) || "Work log",
   } as const;
 }
 
@@ -778,11 +791,10 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
   }
 }
 
-export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
-  const summaryEntries = omitSupersededLifecycleMarkers(entries, (entry) => entry);
+function summarizeReconciledToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
   const sources = new Map<string, ToolActivitySource>();
   const groupedEntries = new Map<ToolGroupAction, WorkLogPresentationEntry[]>();
-  for (const entry of summaryEntries) {
+  for (const entry of entries) {
     if (entry.toolSource) {
       sources.set(entry.toolSource.key, entry.toolSource);
       continue;
@@ -817,6 +829,10 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   return `${sentenceLabels.slice(0, -1).join(", ")}, and ${sentenceLabels.at(-1)}`;
 }
 
+export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): string {
+  return summarizeReconciledToolGroup(omitSupersededLifecycleMarkers(entries, (entry) => entry));
+}
+
 export function omitSupersededLifecycleMarkers<T>(
   entries: readonly T[],
   workEntryFor: (entry: T) => WorkLogPresentationEntry,
@@ -827,18 +843,29 @@ export function omitSupersededLifecycleMarkers<T>(
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
     const workEntry = workEntryFor(entry);
+    const activityKind = workEntry.sourceActivityKind;
+    if (
+      activityKind !== "tool.started" &&
+      activityKind !== "tool.updated" &&
+      activityKind !== "tool.completed"
+    ) {
+      reversedEntries.push(entry);
+      continue;
+    }
     const normalizedLabel = normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label);
-    const identity = [
+    const semanticIdentity = [
       workEntry.turnId ?? "no-turn",
       workEntry.itemType ?? "",
       normalizedLabel,
     ].join("\u001f");
-    const activityKind = workEntry.sourceActivityKind;
-    const isStatuslessIdlessMarker =
-      workEntry.toolCallId === undefined &&
-      workEntry.toolLifecycleStatus === undefined &&
+    const identity = workEntry.toolCallId
+      ? [workEntry.turnId ?? "no-turn", "call", workEntry.toolCallId].join("\u001f")
+      : semanticIdentity;
+    const isNonterminalMarker =
+      (workEntry.toolLifecycleStatus === undefined ||
+        workEntry.toolLifecycleStatus === "inProgress") &&
       (activityKind === "tool.started" || activityKind === "tool.updated");
-    if (isStatuslessIdlessMarker && laterTerminalIdentities.has(identity)) continue;
+    if (isNonterminalMarker && laterTerminalIdentities.has(identity)) continue;
 
     reversedEntries.push(entry);
     if (
@@ -847,6 +874,7 @@ export function omitSupersededLifecycleMarkers<T>(
         workEntry.toolLifecycleStatus !== "inProgress")
     ) {
       laterTerminalIdentities.add(identity);
+      if (workEntry.toolCallId) laterTerminalIdentities.add(semanticIdentity);
     }
   }
 

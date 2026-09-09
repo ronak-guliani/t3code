@@ -199,6 +199,7 @@
 
 ## Client state and completion
 
+- Reconcile superseded tool lifecycle markers before choosing a live work-log header, and promote projected `payload.itemId` into client tool identity; an earlier `inProgress` marker must not keep shimmering after its terminal event or conflate parallel same-label calls.
 - Activity strips must use tool lifecycle plus the owning turn, not the newest successful row, to decide liveness. Preserve lifecycle/output fields in timeline equality checks, and keep attention receipts and explicit disclosures visible across completion folding.
 - Carry inferred activity lifecycle into expanded detail entries before grouping; a live header must not hide its running call among completed history. Shimmer overlays enhance a persistent base icon, never replace it when reduced motion or focus disables the overlay.
 - Bound disclosure batches inside history groups, not just the number of group headers. Cache completed-turn labels against every contributing immutable group, and keep detail-expansion state out of history grouping dependencies.

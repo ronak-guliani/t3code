@@ -7,6 +7,7 @@ import {
   compactWorkEntryLabel,
   deriveWorkGroupActivity,
   workGroupReceiptLabel,
+  extractWorkLogToolCallId,
   extractWorkLogToolLifecycleStatus,
   groupConsecutiveWorkEntries,
   groupRepeatedWorkEntries,
@@ -63,6 +64,65 @@ describe("live activity strips", () => {
       state: "complete",
       label: "Read done.ts",
       shimmer: false,
+    });
+  });
+
+  it("shimmers current work instead of a superseded skill marker", () => {
+    const loadingSkill: WorkLogPresentationEntry = {
+      label: "other",
+      toolTitle: "other",
+      tone: "tool",
+      sourceActivityKind: "tool.updated",
+      toolLifecycleStatus: "inProgress",
+      toolData: { toolName: "skill" },
+    };
+    const loadedSkill: WorkLogPresentationEntry = {
+      label: "other",
+      toolTitle: "other",
+      tone: "tool",
+      sourceActivityKind: "tool.completed",
+      toolLifecycleStatus: "completed",
+      detail: 'Skill "blast-radius" loaded successfully.',
+      toolData: { toolName: "skill" },
+    };
+    const currentWork: WorkLogPresentationEntry = {
+      label: "Analyze missing iOS updates",
+      tone: "thinking",
+      sourceActivityKind: "task.progress",
+      toolLifecycleStatus: "inProgress",
+    };
+
+    expect(deriveWorkGroupActivity([loadingSkill, loadedSkill, currentWork], true)).toMatchObject({
+      state: "active",
+      lead: currentWork,
+      label: "Analyze missing iOS updates",
+      activeCount: 1,
+      shimmer: true,
+    });
+  });
+
+  it("keeps a later matching tool call active after an earlier call completes", () => {
+    const firstCall = {
+      ...read("same.ts", "inProgress"),
+      sourceActivityKind: "tool.updated",
+      toolCallId: "read-1",
+    };
+    const firstComplete = {
+      ...read("same.ts"),
+      sourceActivityKind: "tool.completed",
+      toolCallId: "read-1",
+    };
+    const secondCall = {
+      ...read("same.ts", "inProgress"),
+      sourceActivityKind: "tool.updated",
+      toolCallId: "read-2",
+    };
+
+    expect(deriveWorkGroupActivity([firstCall, firstComplete, secondCall], true)).toMatchObject({
+      lead: secondCall,
+      label: "Reading same.ts",
+      activeCount: 1,
+      shimmer: true,
     });
   });
 
@@ -382,6 +442,21 @@ describe("live activity strips", () => {
     );
     expect(extractWorkLogToolLifecycleStatus({ status: "running" })).toBe("inProgress");
     expect(extractWorkLogToolLifecycleStatus({ status: "unknown" })).toBeUndefined();
+  });
+
+  it("extracts canonical tool identity before provider-specific fallbacks", () => {
+    expect(
+      extractWorkLogToolCallId({
+        itemId: "canonical",
+        toolCallId: "top-level",
+        data: { toolCallId: "nested" },
+      }),
+    ).toBe("canonical");
+    expect(
+      extractWorkLogToolCallId({ toolCallId: "top-level", data: { toolCallId: "nested" } }),
+    ).toBe("top-level");
+    expect(extractWorkLogToolCallId({ data: { toolCallId: "nested" } })).toBe("nested");
+    expect(extractWorkLogToolCallId({ itemId: " " })).toBeUndefined();
   });
 
   it.each([
