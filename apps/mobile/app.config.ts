@@ -147,6 +147,9 @@ export function makeMobileConfig(env: BuildEnvironment): ExpoConfig {
       bundleIdentifier: variant.iosBundleIdentifier,
       appleTeamId,
       buildNumber: "1",
+      entitlements: {
+        "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+      },
       infoPlist: {
         ...(iosAuthRedirect
           ? {
