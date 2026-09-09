@@ -12,6 +12,11 @@ function trimTrailingPathSeparators(path: string): string {
   return path.replace(/[\\/]+$/, "");
 }
 
+function trimWorkspaceRootSeparators(path: string): string {
+  const normalized = normalizePathSeparators(path);
+  return normalized === "/" ? normalized : trimTrailingPathSeparators(normalized);
+}
+
 function basenameOfPath(path: string): string {
   const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return separatorIndex >= 0 ? path.slice(separatorIndex + 1) : path;
@@ -52,9 +57,7 @@ export function toWorkspaceRelativePath(
 ): string | null {
   if (!workspaceRoot) return null;
   const normalizedPath = canonicalizeWindowsDrivePath(normalizePathSeparators(filePath));
-  const normalizedRoot = canonicalizeWindowsDrivePath(
-    normalizePathSeparators(trimTrailingPathSeparators(workspaceRoot)),
-  );
+  const normalizedRoot = canonicalizeWindowsDrivePath(trimWorkspaceRootSeparators(workspaceRoot));
   if (!normalizedPath || !normalizedRoot) return null;
   const foldCase = isWindowsStylePath(normalizedPath) || isWindowsStylePath(normalizedRoot);
   const pathSegments = splitNormalizedSegments(normalizedPath);

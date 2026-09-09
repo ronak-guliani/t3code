@@ -67,6 +67,10 @@ describe("toWorkspaceRelativePath", () => {
     );
   });
 
+  it("preserves the POSIX filesystem root", () => {
+    expect(toWorkspaceRelativePath("/src/index.ts", "/")).toBe("src/index.ts");
+  });
+
   it("returns null without a workspace root", () => {
     expect(toWorkspaceRelativePath("/repo/project/src/index.ts", undefined)).toBeNull();
   });
