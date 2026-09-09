@@ -23,6 +23,7 @@ import {
   projectScriptRuntimeEnv,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
+import { isReviewChangesWorkflowEnabled } from "@t3tools/shared/workflows/reviewChanges";
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
@@ -397,8 +398,9 @@ function ThreadRouteContent(
     }
     onReconnectEnvironment(environmentId);
   }, [environmentId, onReconnectEnvironment]);
-  const reviewWorkflowEnabled =
-    routeEnvironmentRuntime?.serverConfig?.settings.agentWorkflows.reviewChanges.enabled ?? false;
+  const reviewWorkflowEnabled = routeEnvironmentRuntime?.serverConfig
+    ? isReviewChangesWorkflowEnabled(routeEnvironmentRuntime.serverConfig.settings.agentWorkflows)
+    : false;
   const reviewWorkflowSupported =
     routeEnvironmentRuntime?.serverConfig?.environment.capabilities.agentWorkflows === true;
   const reviewWorkflowAvailable =

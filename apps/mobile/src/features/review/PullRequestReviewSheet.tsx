@@ -1,5 +1,6 @@
 import { useNavigation, type StaticScreenProps, StackActions } from "@react-navigation/native";
 import type { GitResolvedPullRequest } from "@t3tools/contracts";
+import { isReviewChangesWorkflowEnabled } from "@t3tools/shared/workflows/reviewChanges";
 import * as Cause from "effect/Cause";
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
@@ -105,6 +106,9 @@ export function PullRequestReviewSheet(_props: PullRequestReviewSheetProps) {
 
   const settings = selectedEnvironmentRuntime?.serverConfig?.settings;
   const reviewSettings = settings?.agentWorkflows.reviewChanges;
+  const reviewWorkflowEnabled = settings
+    ? isReviewChangesWorkflowEnabled(settings.agentWorkflows)
+    : false;
   const modelSelection =
     reviewSettings?.modelSelection ??
     selectedThreadProject?.defaultModelSelection ??
@@ -116,7 +120,7 @@ export function PullRequestReviewSheet(_props: PullRequestReviewSheetProps) {
     supported:
       selectedEnvironmentRuntime?.serverConfig?.environment.capabilities.agentWorkflows === true,
     connected,
-    enabled: reviewSettings?.enabled ?? false,
+    enabled: reviewWorkflowEnabled,
     isRepo,
     cwd: selectedThreadCwd,
     modelSelection,
@@ -190,8 +194,8 @@ export function PullRequestReviewSheet(_props: PullRequestReviewSheetProps) {
       }
 
       launchPending.current = false;
-      retryLaunch.current = null;
       if (result.value.status === "skipped") {
+        retryLaunch.current = null;
         setStartingPullRequestNumber(null);
         Alert.alert("Review not started", result.value.message);
         return;
@@ -207,6 +211,7 @@ export function PullRequestReviewSheet(_props: PullRequestReviewSheetProps) {
         return;
       }
 
+      retryLaunch.current = null;
       navigation.dispatch(
         StackActions.popTo("Thread", {
           environmentId: String(childRef.environmentId),
