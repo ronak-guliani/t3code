@@ -13,9 +13,12 @@ import type {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { extractToolCommandInput } from "@t3tools/shared/toolActivity";
 import {
   commandDetailRepeatsCommand,
   compactWorkEntryLabel,
+  groupRepeatedWorkEntries,
+  hasWorkLogToolData,
   extractCommandOutputText,
   workGroupReceiptLabel,
   isWorktreeSetupActivity,
@@ -877,7 +880,7 @@ function buildWorkEntryExpandedBody(entry: WorkLogEntry, output: string | null):
     if (trimmed && (entry.command || !blocks.includes(trimmed))) blocks.push(trimmed);
   };
 
-  if (!output && entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
+  if (!output && entry.itemType === "mcp_tool_call" && hasWorkLogToolData(entry.toolData)) {
     appendBlock(`MCP call\n${JSON.stringify(entry.toolData, null, 2)}`);
   }
   appendBlock(entry.rawCommand ?? entry.command);
@@ -902,7 +905,7 @@ function workEntryHasExpandedBody(
   collapsedText: string,
   getOutput: () => string | null,
 ): boolean {
-  if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) return true;
+  if (entry.itemType === "mcp_tool_call" && hasWorkLogToolData(entry.toolData)) return true;
   if (entry.changedFiles?.some((path) => path.trim().length > 0)) return true;
   const parts = [entry.rawCommand ?? entry.command, entry.detail]
     .map((value) => value?.trim())
@@ -1154,34 +1157,11 @@ function extractToolCommand(payload: Record<string, unknown> | null): {
   command: string | null;
   rawCommand: string | null;
 } {
-  const data = asRecord(payload?.data);
-  const item = asRecord(data?.item);
-  const itemResult = asRecord(item?.result);
-  const itemInput = asRecord(item?.input);
-  const itemType = asTrimmedString(payload?.itemType);
-  const detail = asTrimmedString(payload?.detail);
-  const candidates: unknown[] = [
-    item?.command,
-    itemInput?.command,
-    itemResult?.command,
-    data?.command,
-    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
-  ];
-
-  for (const candidate of candidates) {
-    const command = normalizeCommandValue(candidate);
-    if (!command) {
-      continue;
-    }
-    return {
-      command,
-      rawCommand: toRawToolCommand(candidate, command),
-    };
-  }
-
+  const candidate = extractToolCommandInput(asRecord(payload?.data) ?? undefined);
+  const command = normalizeCommandValue(candidate);
   return {
-    command: null,
-    rawCommand: null,
+    command,
+    rawCommand: toRawToolCommand(candidate, command),
   };
 }
 
@@ -1888,26 +1868,63 @@ function appendToolGroupRows(
   if (!expanded) {
     return;
   }
-  result.push({
-    type: "activity-group",
-    id: `work-details:${groupId}`,
-    createdAt: activities[0]!.createdAt,
-    turnId: activities[0]!.turnId,
-    activities: activities.map((activity) => {
-      const workEntry = presentationEntryForActivity(activity, activity === latestActiveActivity);
-      return {
-        ...activity,
-        workEntry,
-        status: workEntryStatus(workEntry),
-        lifecycleStatus: workEntry.toolLifecycleStatus,
-        groupedToolDetail: true,
-        live:
-          isWorking &&
-          workEntry.toolLifecycleStatus === "inProgress" &&
-          activity.turnId === unsettledTurnId,
-      };
-    }),
+  const detailActivities = activities.map((activity) => {
+    const workEntry = presentationEntryForActivity(activity, activity === latestActiveActivity);
+    return {
+      ...activity,
+      workEntry,
+      status: workEntryStatus(workEntry),
+      lifecycleStatus: workEntry.toolLifecycleStatus,
+      groupedToolDetail: true,
+      live:
+        isWorking &&
+        workEntry.toolLifecycleStatus === "inProgress" &&
+        activity.turnId === unsettledTurnId,
+    };
   });
+  const repeatedGroups = groupRepeatedWorkEntries(detailActivities, (activity) =>
+    activity.status === "failure" ? null : activity.workEntry,
+  );
+  if (repeatedGroups.every((group) => group.entries.length === 1)) {
+    result.push({
+      type: "activity-group",
+      id: `work-details:${groupId}`,
+      createdAt: activities[0]!.createdAt,
+      turnId: activities[0]!.turnId,
+      activities: detailActivities,
+    });
+    return;
+  }
+  for (const group of repeatedGroups) {
+    const first = group.entries[0]!;
+    const repeatId = `${groupId}:repeat:${first.id}`;
+    if (group.entries.length > 1) {
+      const repeatExpanded = expandedWorkGroupIds.has(repeatId);
+      result.push({
+        type: "work-toggle",
+        id: `work-toggle:${repeatId}`,
+        createdAt: first.createdAt,
+        turnId: first.turnId,
+        groupId: repeatId,
+        hiddenCount: group.entries.length,
+        activeCount: 0,
+        expanded: repeatExpanded,
+        summary: `${group.label} · ${group.entries.length} calls`,
+        summaryKind: toolGroupSummaryKind([first.workEntry]),
+        hasFailure: false,
+        live: false,
+        shimmer: false,
+      });
+      if (!repeatExpanded) continue;
+    }
+    result.push({
+      type: "activity-group",
+      id: `work-details:${repeatId}`,
+      createdAt: first.createdAt,
+      turnId: first.turnId,
+      activities: group.entries,
+    });
+  }
 }
 
 /**
