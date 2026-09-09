@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   MessageId,
   QueuedTurnId,
@@ -44,7 +45,7 @@ export function queueChildNudge(
       : notification.occurredAt;
   const base = {
     ...notification,
-    eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
+    eventId: randomUUID() as OrchestrationEvent["eventId"],
     causationEventId: notification.eventId,
   };
   return batch

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import type {
+  ChildNudgeUpdate,
   ChildThreadLifecycle,
   MessageId,
   OrchestrationCommand,
@@ -7,6 +8,7 @@ import type {
   OrchestrationReadModel,
   OrchestrationThread,
   ThreadId,
+  ThreadNudging,
   TurnId,
 } from "@t3tools/contracts";
 import { Effect, Option } from "effect";
@@ -97,7 +99,7 @@ type AppendChildLifecycleNotificationInput = {
   readonly sourceEvent: PlannedOrchestrationEvent;
   readonly sourceKey: string;
   readonly createdAt: string;
-  readonly report?: import("@t3tools/contracts").ChildNudgeUpdate;
+  readonly report?: ChildNudgeUpdate;
 } & (
   | {
       readonly lifecycle: Exclude<ChildThreadLifecycle, "pr-created">;
@@ -194,7 +196,7 @@ function appendChildLifecycleNotification(
 function nudgingMetaEvent(
   thread: OrchestrationThread,
   sourceEvent: PlannedOrchestrationEvent,
-  nudging: import("@t3tools/contracts").ThreadNudging,
+  nudging: ThreadNudging,
 ): PlannedOrchestrationEvent {
   return {
     ...withEventBase({
@@ -1741,10 +1743,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      return [
-        interrupted,
-        nudgingMetaEvent(targetThread, interrupted, { ...targetThread.nudging, paused: true }),
-      ];
+      return targetThread.nudging?.paused === true
+        ? interrupted
+        : [
+            interrupted,
+            nudgingMetaEvent(targetThread, interrupted, { ...targetThread.nudging, paused: true }),
+          ];
     }
 
     case "thread.approval.respond": {
@@ -1840,7 +1844,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      return [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
+      return thread.nudging?.paused === true
+        ? stopped
+        : [stopped, nudgingMetaEvent(thread, stopped, { ...thread.nudging, paused: true })];
     }
 
     case "thread.session.set": {

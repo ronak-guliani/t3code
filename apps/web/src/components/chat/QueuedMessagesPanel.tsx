@@ -90,7 +90,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
       <ul className="flex flex-col gap-0.5">
         {visibleQueuedTurns.map(({ queuedTurn, queueIndex }) => {
           const isEditing = editingQueuedTurnId === queuedTurn.id;
-          const isPaused = queuedTurn.failedAt !== null;
+          const isFailed = queuedTurn.failedAt !== null;
           const isNudge = queuedTurn.origin?.kind === "child-nudge";
           const policyBlock =
             policyBlocks?.get(queuedTurn.id) ??
@@ -106,7 +106,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
               key={queuedTurn.id}
               className={cn(
                 "group -mx-1 rounded-lg px-1 py-1 transition-colors",
-                isPaused ? "bg-destructive/5" : "hover:bg-muted/35",
+                isFailed ? "bg-destructive/5" : "hover:bg-muted/35",
               )}
             >
               {isEditing ? (
@@ -143,10 +143,10 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   <span
                     className={cn(
                       "composer-input-font-secondary w-16 shrink-0 font-medium text-muted-foreground",
-                      isPaused ? "text-destructive" : null,
+                      isFailed ? "text-destructive" : null,
                     )}
                   >
-                    {isPaused ? "Paused" : label}
+                    {isFailed ? "Paused" : label}
                   </span>
                   <div className="min-w-0 flex-1 truncate text-foreground/85">
                     {queuedTurnLabel(queuedTurn) || (meta ?? "Queued message")}
@@ -158,7 +158,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                     {isNudge ? (
-                      isPaused && onRetryQueuedTurn ? (
+                      isFailed && onRetryQueuedTurn ? (
                         <Button
                           type="button"
                           size="xs"
@@ -193,7 +193,7 @@ export const QueuedMessagesPanel = memo(function QueuedMessagesPanel({
                   </div>
                 </div>
               )}
-              {!isEditing && isPaused && queuedTurn.failureMessage ? (
+              {!isEditing && isFailed && queuedTurn.failureMessage ? (
                 <div className="composer-input-font-secondary ml-[4.625rem] mt-0.5 whitespace-pre-wrap break-words text-destructive">
                   {queuedTurn.failureMessage}
                 </div>

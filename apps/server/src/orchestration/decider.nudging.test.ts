@@ -265,6 +265,31 @@ describe("child nudging", () => {
     ).toMatchObject({ payload: { runtimeMode: "full-access" } });
   });
 
+  it.each(["thread.turn.interrupt", "thread.session.stop"] as const)(
+    "%s does not emit redundant pause metadata",
+    async (type) => {
+      const command = {
+        type,
+        commandId: CommandId.make("pause"),
+        threadId: parentId,
+        createdAt: finished,
+      };
+      const paused = await apply(model(), command);
+      expect(paused.events).toHaveLength(2);
+      expect(paused.readModel.threads[0]!.nudging?.paused).toBe(true);
+      const repeated = await apply(paused.readModel, {
+        ...command,
+        commandId: CommandId.make("pause-again"),
+      });
+      expect(repeated.events).toHaveLength(1);
+      expect(repeated.events[0]!.type).toBe(
+        type === "thread.turn.interrupt"
+          ? "thread.turn-interrupt-requested"
+          : "thread.session-stop-requested",
+      );
+    },
+  );
+
   it.each(["archived", "deleted", "approval", "input"] as const)(
     "does not dispatch to a parent that is %s",
     async (reason) => {

@@ -2175,7 +2175,7 @@ const chatNewCommand = Command.make("new", {
         }
 
         const threadId = ThreadId.make(crypto.randomUUID());
-        const assignmentId = MessageId.make(crypto.randomUUID());
+        const firstMessageId = MessageId.make(crypto.randomUUID());
         const createdAt = new Date().toISOString();
         const outcome = yield* runNestedThreadCreationPhases(
           threadId,
@@ -2189,7 +2189,11 @@ const chatNewCommand = Command.make("new", {
               parentThreadId: parent?.id ?? null,
               ...(Option.isSome(flags.followUp)
                 ? {
-                    delegation: { assignmentId, followUp: flags.followUp.value, completedAt: null },
+                    delegation: {
+                      assignmentId: firstMessageId,
+                      followUp: flags.followUp.value,
+                      completedAt: null,
+                    },
                   }
                 : {}),
               title: flags.title,
@@ -2205,7 +2209,7 @@ const chatNewCommand = Command.make("new", {
               commandId: CommandId.make(crypto.randomUUID()),
               threadId,
               message: {
-                messageId: assignmentId,
+                messageId: firstMessageId,
                 role: "user",
                 text: flags.prompt,
                 attachments: [],
@@ -2505,7 +2509,7 @@ const chatCommand = Command.make("chat").pipe(
           dispatch({
             type: "thread.child.report",
             commandId: CommandId.make(
-              `child-report:${thread.id}:${thread.nudging?.delegation?.assignmentId}:${flags.reportId}`,
+              `child-report:${thread.id}:${thread.nudging?.delegation ? `${thread.nudging.delegation.assignmentId}:` : ""}${flags.reportId}`,
             ),
             threadId: thread.id,
             reportId: flags.reportId,
