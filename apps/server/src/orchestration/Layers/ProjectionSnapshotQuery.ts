@@ -716,9 +716,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               ORDER BY created_at DESC, activity_id DESC
             ) AS activity_rank
           FROM projection_thread_activities
-          -- Scope to known threads before windowing: orphaned rows for
-          -- deleted/purged threads are never attached to the snapshot, so
-          -- ranking them only burns sort + join work on every snapshot.
+          -- Scope to known threads before windowing: rows whose thread record
+          -- is absent (purged or never projected) are never attached to the
+          -- snapshot, so ranking them only burns sort + join work on every
+          -- snapshot. Soft-deleted threads keep their row and stay in scope.
           WHERE thread_id IN (
             SELECT thread_id
             FROM projection_threads
@@ -2718,23 +2719,38 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       Result: TranscriptSearchRowSchema,
       execute: ({ query: matchQuery }) => sql`
         WITH hits AS MATERIALIZED (
-          SELECT
-            projection_thread_message_fts.rowid AS "messageRowid",
-            messages.message_id AS "messageId",
-            messages.thread_id AS "threadId",
-            messages.updated_at AS "updatedAt",
-            bm25(projection_thread_message_fts) AS score,
-            snippet(projection_thread_message_fts, 0, '', '', '...', 20) AS excerpt
-          FROM projection_thread_message_fts
-          JOIN projection_thread_messages AS messages
-            ON messages.rowid = projection_thread_message_fts.rowid
-          JOIN projection_threads AS threads ON threads.thread_id = messages.thread_id
-          WHERE projection_thread_message_fts MATCH ${matchQuery}
-            AND threads.archived_at IS NULL
-            AND threads.deleted_at IS NULL
-          -- Bound the FTS hit set before windowing: rank is computed per
-          -- match, so cap by best-first score here instead of ranking every
-          -- match and discarding most of them below.
+          SELECT *
+          FROM (
+            SELECT
+              scored.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY scored."threadId"
+                ORDER BY scored.score, scored."updatedAt" DESC, scored."messageId"
+              ) AS "threadHitRank"
+            FROM (
+              SELECT
+                projection_thread_message_fts.rowid AS "messageRowid",
+                messages.message_id AS "messageId",
+                messages.thread_id AS "threadId",
+                messages.updated_at AS "updatedAt",
+                bm25(projection_thread_message_fts) AS score,
+                snippet(projection_thread_message_fts, 0, '', '', '...', 20) AS excerpt
+              FROM projection_thread_message_fts
+              JOIN projection_thread_messages AS messages
+                ON messages.rowid = projection_thread_message_fts.rowid
+              JOIN projection_threads AS threads ON threads.thread_id = messages.thread_id
+              WHERE projection_thread_message_fts MATCH ${matchQuery}
+                AND threads.archived_at IS NULL
+                AND threads.deleted_at IS NULL
+            ) AS scored
+          )
+          -- Bound the FTS hit set before windowing, but keep each thread's
+          -- best hits: a bare global cap lets one giant thread consume the
+          -- whole candidate set and hide other matching threads from the
+          -- per-thread window below. The pre-cap ordering matches the final
+          -- tiebreaks so the per-thread winner is deterministic. (bm25() can
+          -- only run in the MATCH scope above, hence the nesting.)
+          WHERE "threadHitRank" <= 25
           ORDER BY score
           LIMIT 500
         ),

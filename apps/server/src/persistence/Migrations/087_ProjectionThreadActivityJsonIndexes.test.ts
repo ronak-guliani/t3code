@@ -6,6 +6,7 @@ import { runMigrations } from "../Migrations.ts";
 import * as NodeSqliteClient from "../NodeSqliteClient.ts";
 
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
+const divergentLedgerLayer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 layer("087_ProjectionThreadActivityJsonIndexes", (it) => {
   it.effect("materializes hot JSON paths and serves lifecycle lookups from indexes", () =>
@@ -148,6 +149,65 @@ layer("087_ProjectionThreadActivityJsonIndexes", (it) => {
         ),
       );
       assert.ok(turnPagePlan.every((row) => !row.detail.includes("USE TEMP B-TREE")));
+    }),
+  );
+});
+
+divergentLedgerLayer("087_ProjectionThreadActivityJsonIndexes/divergent ledger", (it) => {
+  it.effect("recreates a skipped activities table instead of failing startup", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* runMigrations({ toMigrationInclusive: 86 });
+      // Simulate a ledger that advanced past 005 without creating the table.
+      yield* sql`DROP TABLE projection_thread_activities`;
+
+      const executed = yield* runMigrations();
+      assert.deepStrictEqual(
+        executed.map(([id]) => id),
+        [87],
+      );
+
+      const columns = yield* sql<{ readonly name: string }>`
+        PRAGMA table_xinfo(projection_thread_activities)
+      `;
+      for (const name of ["payload_json", "task_id", "request_id", "task_type"]) {
+        assert.ok(
+          columns.some((column) => column.name === name),
+          `expected column ${name} after repair`,
+        );
+      }
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES (
+          'activity-repaired',
+          'thread-1',
+          NULL,
+          'info',
+          'task.started',
+          'started',
+          '{"taskId":"task-1"}',
+          1,
+          '2026-09-01T00:00:00.000Z'
+        )
+      `;
+      const rows = yield* sql<{ readonly task_id: string | null }>`
+        SELECT task_id
+        FROM projection_thread_activities
+        WHERE activity_id = 'activity-repaired'
+      `;
+      assert.equal(rows[0]?.task_id, "task-1");
     }),
   );
 });

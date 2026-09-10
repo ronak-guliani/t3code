@@ -1,6 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import Projections from "./005_Projections.ts";
+
 /**
  * Indexes hot activity JSON paths and turn-scoped chronology.
  *
@@ -12,18 +14,23 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * `listThreadActivityContextRows` scanned and sorted far more rows than they
  * returned.
  *
- * Stored generated columns make those paths indexable without changing the
+ * Virtual generated columns make those paths indexable without changing the
  * write path (INSERT column lists are untouched; SQLite maintains the values).
- * They are VIRTUAL (SQLite refuses to ADD a STORED column to an existing
- * table) with supporting indexes that materialize the computed values for
- * lookups. The expressions are guarded by json_valid: payloads are not
- * guaranteed to be valid JSON (snapshot capping happens before decode, so
- * invalid rows exist), and a bare json_extract would fail their INSERTs.
- * Column adds are PRAGMA-guarded so divergent ledgers that already carry them
- * stay idempotent.
+ * They are VIRTUAL rather than STORED so upgrading an existing database does
+ * not rewrite the whole activity table once per added column. The expressions
+ * are guarded by json_valid: payloads are not guaranteed to be valid JSON
+ * (snapshot capping happens before decode, so invalid rows exist), and a bare
+ * json_extract would fail their INSERTs. Column adds are PRAGMA-guarded so
+ * divergent ledgers that already carry them stay idempotent.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
+  // A divergent ledger can advance past 005 without creating
+  // projection_thread_activities; every statement below would then fail with
+  // `no such table` and block startup. Reuse the canonical idempotent CREATE
+  // (same pattern as 063) so the prerequisite schema always exists first.
+  yield* Projections;
 
   // NB: generated columns are hidden from PRAGMA table_info (use table_xinfo),
   // so a table_info guard would re-run ADD COLUMN and fail with a duplicate
@@ -32,6 +39,15 @@ export default Effect.gen(function* () {
     PRAGMA table_xinfo(projection_thread_activities)
   `;
   const hasColumn = (name: string) => activityColumns.some((column) => column.name === name);
+
+  // 005 predates the 008 sequence column; a repaired table needs it too or
+  // the write path (which always binds sequence) fails on the fresh table.
+  if (!hasColumn("sequence")) {
+    yield* sql`
+      ALTER TABLE projection_thread_activities
+      ADD COLUMN sequence INTEGER
+    `;
+  }
 
   if (!hasColumn("task_id")) {
     yield* sql`

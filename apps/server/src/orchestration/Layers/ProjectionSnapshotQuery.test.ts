@@ -1811,6 +1811,85 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("keeps matching threads visible when one thread exceeds the FTS cap", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_threads`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-crowd', 'Crowd Project', '/tmp/crowd', NULL, '[]',
+          '2026-04-05T00:00:00.000Z', '2026-04-05T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, created_at, updated_at, archived_at, deleted_at
+        ) VALUES
+          (
+            'thread-crowd', 'project-crowd', 'Crowd thread',
+            '{"instanceId":"codex","model":"gpt-5"}', 'full-access', 'default',
+            NULL, NULL, '2026-04-05T00:00:00.000Z', '2026-04-05T00:00:01.000Z', NULL, NULL
+          ),
+          (
+            'thread-other', 'project-crowd', 'Other thread',
+            '{"instanceId":"codex","model":"gpt-5"}', 'full-access', 'default',
+            NULL, NULL, '2026-04-05T00:00:00.000Z', '2026-04-05T00:00:02.000Z', NULL, NULL
+          )
+      `;
+      // More matches in one thread than the global FTS candidate cap, all
+      // scoring better (shorter) than the other thread's match: the other
+      // thread's best match must still surface (best match per thread).
+      yield* sql`
+        WITH RECURSIVE crowd(value) AS (
+          VALUES (1)
+          UNION ALL
+          SELECT value + 1 FROM crowd WHERE value < 505
+        )
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        SELECT
+          printf('crowd-message-%04d', value),
+          'thread-crowd',
+          NULL,
+          'user',
+          'needle',
+          0,
+          '2026-04-05T00:00:01.000Z',
+          '2026-04-05T00:00:01.000Z'
+        FROM crowd
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        ) VALUES (
+          'other-message', 'thread-other', NULL, 'user', 'needle other', 0,
+          '2026-04-05T00:00:02.000Z', '2026-04-05T00:00:02.000Z'
+        )
+      `;
+
+      const searchTranscript = snapshotQuery.searchTranscript;
+      assert.ok(searchTranscript);
+      const result = yield* searchTranscript("needle");
+
+      assert.deepStrictEqual(result.matches.map((match) => match.threadId).toSorted(), [
+        ThreadId.make("thread-crowd"),
+        ThreadId.make("thread-other"),
+      ]);
+      for (const match of result.matches) {
+        assert.ok(match.excerpt.includes("needle"));
+      }
+    }),
+  );
+
   it.effect(
     "excludes soft-deleted projects and threads from the shell snapshot while still tracking their update time",
     () =>
